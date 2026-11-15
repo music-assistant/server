@@ -52,6 +52,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
+    EXTERNAL_ID_PROVIDER,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
@@ -74,7 +75,7 @@ from music_assistant.helpers.compare import (
     compare_track,
 )
 from music_assistant.helpers.database import UNSET
-from music_assistant.helpers.external_ids import normalize_external_ids
+from music_assistant.helpers.external_ids import external_item_id, normalize_external_ids
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.logging import log_once
 from music_assistant.helpers.provider_access import visible_items
@@ -650,8 +651,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         Return a library artist's discography as MusicBrainz knows it, searched, sorted and paged.
 
         Every album, EP and single credited to the artist is listed, newest first by default.
-        The ones in the library are the library albums themselves; the others are MusicBrainz
-        albums, which resolve to the user's music providers when opened or added to the library.
+        The ones in the library are the library albums themselves; the others are external
+        albums known by their MusicBrainz release group id, which resolve to the user's music
+        providers when opened or added to the library.
 
         :param item_id: The library item id of the artist.
         :param provider_instance_id_or_domain: The provider of the artist, must be ``library``.
@@ -2458,8 +2460,8 @@ def _album_from_release_group(
         the image is requested, if one is loaded.
     """
     album = Album(
-        item_id=release_group.id,
-        provider="musicbrainz",
+        item_id=external_item_id(ExternalID.MB_RELEASEGROUP, release_group.id),
+        provider=EXTERNAL_ID_PROVIDER,
         name=release_group.title,
         artists=UniqueList([artist]),
         year=release_group.first_release_year,

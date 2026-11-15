@@ -32,6 +32,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
@@ -127,6 +128,7 @@ from music_assistant.helpers.provider_access import (
     visible_music_sources,
 )
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
+from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.providers.musicbrainz.provider import relation_urls
 
@@ -134,7 +136,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
 
     from music_assistant import MusicAssistant
-    from music_assistant.models.media_capabilities import MediaCatalogMixin
     from music_assistant.models.music_provider import MusicProvider
     from music_assistant.providers.musicbrainz.models import (
         MusicBrainzArtist,
@@ -1409,19 +1410,23 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param fallback: Details to return if the provider no longer resolves the ID.
         :param allow_fallback: Allow fallback details after a provider miss.
         :param strict_provider_instance: Require this exact provider instance.
+        :raises ProviderUnavailableError: No provider the user may see serves items of its own
+            under this instance id or domain.
         """
         if provider_instance_id_or_domain == "library":
             return await self.get_library_item(item_id)
         provider = self.mass.music.resolve_visible_provider(
             provider_instance_id_or_domain, strict=strict_provider_instance
         )
-        catalog_prov = cast("MediaCatalogMixin", provider)
+        if not isinstance(provider, MediaCatalogMixin):
+            # a metadata or player provider has no items of its own to fetch
+            raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         with suppress(MediaNotFoundError):
             async with self.mass.cache.handle_refresh(force_refresh):
                 if self.media_type == MediaType.PLAYLIST:
-                    return cast("ItemCls", await catalog_prov.get_playlist(item_id))
+                    return cast("ItemCls", await provider.get_playlist(item_id))
                 if self.media_type == MediaType.RADIO:
-                    return cast("ItemCls", await catalog_prov.get_radio(item_id))
+                    return cast("ItemCls", await provider.get_radio(item_id))
                 music_prov = cast("MusicProvider", provider)
                 if self.media_type == MediaType.ARTIST:
                     return cast("ItemCls", await music_prov.get_artist(item_id))

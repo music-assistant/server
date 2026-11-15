@@ -42,6 +42,7 @@ from music_assistant.providers.musicbrainz.models import (
     MusicBrainzRelease,
     MusicBrainzUrl,
 )
+from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 from tests.common import set_music_source_access
 
 from .helpers import ISRC, create_album, create_track
@@ -588,7 +589,7 @@ async def test_release_no_provider_has_is_not_found(music: MusicController) -> N
 
 
 async def test_release_group_takes_the_release_group_route(music: MusicController) -> None:
-    """A release group id, in the external form or the MusicBrainz one, is resolved one way."""
+    """A release group id in the external form is resolved by the release group route."""
     album = create_album("spotify_1", SPOTIFY_ALBUM_ID)
     _load(music, _album_provider("spotify_1"))
     item_id = external_item_id(ExternalID.MB_RELEASEGROUP, RELEASE_GROUP_ID)
@@ -597,9 +598,8 @@ async def test_release_group_takes_the_release_group_route(music: MusicControlle
         music.albums, "resolve_musicbrainz_release_group", AsyncMock(return_value=album)
     ) as resolve:
         assert await music.get_item_by_uri(f"external://album/{item_id}") is album
-        assert await music.get_item_by_uri(f"musicbrainz://album/{RELEASE_GROUP_ID}") is album
 
-    assert [call.args for call in resolve.await_args_list] == [(RELEASE_GROUP_ID,)] * 2
+    assert [call.args for call in resolve.await_args_list] == [(RELEASE_GROUP_ID,)]
 
     not_found = MediaNotFoundError("no provider has it")
     with patch.object(
@@ -687,6 +687,20 @@ async def test_malformed_external_item_id_is_refused(music: MusicController, ite
         await music.get_item(MediaType.TRACK, item_id, EXTERNAL_ID_PROVIDER)
 
     assert _requests(spotify) == 0
+
+
+async def test_item_on_a_metadata_provider_is_not_available(music: MusicController) -> None:
+    """An album asked for on a provider without items of its own is not available."""
+    musicbrainz = MagicMock(spec=MusicbrainzProvider)
+    musicbrainz.instance_id = musicbrainz.domain = "musicbrainz"
+    musicbrainz.type = ProviderType.METADATA
+    musicbrainz.available = True
+    music.mass._providers = {"musicbrainz": musicbrainz}
+
+    with pytest.raises(ProviderUnavailableError, match="musicbrainz is not available"):
+        await music.albums.get(RELEASE_GROUP_ID, "musicbrainz")
+    with pytest.raises(ProviderUnavailableError, match="musicbrainz is not available"):
+        await music.get_item(MediaType.ALBUM, RELEASE_GROUP_ID, "musicbrainz")
 
 
 # ---------------------------------------------------------------------------
