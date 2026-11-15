@@ -1914,6 +1914,17 @@ it can group with for as long as that plays, keeps leading as well.
   - `test_grouping.py::test_a_member_that_leads_players_of_its_own_does_not_replace_the_first_member`
   - `test_grouping.py::test_a_first_member_that_plays_an_input_of_its_own_keeps_leading_the_sync_group`
 
+### GROUP-51 · Members on the leader's own stream follow it onto AirPlay, or leave
+
+Kitchen plays with Office and Den on HEOS, which can not pass AirPlay on to its members. The
+user adds Office again and Patio, which only has AirPlay. Kitchen's playback moves to its AirPlay
+receiver, which takes Patio and Office in one call. Den has no AirPlay receiver: it leaves the
+group, and that is logged as a warning.
+
+- End-to-end: **possible with** two HEOS speakers with AirPlay, a HEOS speaker without it, and an
+  AirPlay receiver.
+- Proven by: `test_grouping.py::test_members_on_the_leaders_own_stream_follow_it_onto_airplay`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered
