@@ -110,7 +110,7 @@ jobs:
           fi
           echo "build=$build" >> "$GITHUB_OUTPUT"
 
-  # Builds and starts what would be published, on the resolved nightly.
+  # Builds the amd64 image of this commit on the resolved nightly and starts it.
   check:
     name: Build and start the development image
     runs-on: ubuntu-latest
@@ -222,7 +222,8 @@ jobs:
         if: always()
         run: docker logs dev-server 2>&1 || true
 
-  # Publishes only what the check just built and started, on the same nightly.
+  # Builds the commit the check started again, on the same nightly digest and now for both
+  # platforms, and publishes it; it only runs after the check passed.
   publish:
     name: Publish development image
     runs-on: ubuntu-latest
@@ -261,6 +262,19 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+
+      # a re-run of an older run, or a nightly published since the resolve, would put :dev on
+      # another nightly than the one the check started
+      - name: Require the resolved nightly
+        env:
+          RESOLVED_DIGEST: ${{ needs.resolve.outputs.digest }}
+        run: |
+          current=$(docker buildx imagetools inspect "$IMAGE_REPOSITORY:nightly" \
+            --format '{{json .Manifest}}' | jq -r '.digest')
+          if [ "$current" != "$RESOLVED_DIGEST" ]; then
+            echo "::error::The nightly moved since this run resolved it ($RESOLVED_DIGEST, now $current), so nothing is pushed. Start the workflow again from dev."
+            exit 1
+          fi
 
       - name: Build and push development image
         id: build

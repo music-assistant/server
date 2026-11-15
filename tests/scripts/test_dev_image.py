@@ -408,22 +408,65 @@ def test_dev_image_publication_stops_on_doubt(tmp_path: Path, case: str, message
     assert message in stderr
 
 
+def test_dev_image_publication_rechecks_the_nightly_before_the_build() -> None:
+    """Right before its build, the publishing job requires the nightly the resolve job found."""
+    job = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["publish"]
+    names = [step["name"] for step in job["steps"]]
+
+    assert names.index("Require the resolved nightly") + 1 == names.index(
+        "Build and push development image"
+    )
+    assert _step(job, "Require the resolved nightly")["env"] == {
+        "RESOLVED_DIGEST": "${{ needs.resolve.outputs.digest }}"
+    }
+
+
+@needs_jq
+@pytest.mark.parametrize(("resolved", "ok"), [(NIGHTLY, True), ("sha256:" + "7" * 64, False)])
+def test_dev_image_publication_stops_when_the_nightly_moved(
+    tmp_path: Path, resolved: str, ok: bool
+) -> None:
+    """A re-run of an older run, or a nightly published since the resolve, pushes nothing."""
+    code, _outputs, log = _run_workflow_step(
+        tmp_path,
+        "publish",
+        "Require the resolved nightly",
+        _nightly(),
+        "workflow_run",
+        {"RESOLVED_DIGEST": resolved},
+    )
+
+    assert (code == 0) is ok, log
+    if not ok:
+        assert f"The nightly moved since this run resolved it ({resolved}, now {NIGHTLY})" in log
+        assert "Start the workflow again from dev." in log
+
+
 @needs_jq
 @pytest.mark.parametrize(
-    ("built", "platforms", "base", "ok"),
+    ("built", "platforms", "amd64_base", "arm64_base", "ok"),
     [
-        (DEV, ("amd64", "arm64"), NIGHTLY, True),
-        ("sha256:" + "8" * 64, ("amd64", "arm64"), NIGHTLY, False),
-        (DEV, ("amd64",), NIGHTLY, False),
-        (DEV, ("amd64", "arm64"), "sha256:" + "9" * 64, False),
+        (DEV, ("amd64", "arm64"), NIGHTLY, NIGHTLY, True),
+        ("sha256:" + "8" * 64, ("amd64", "arm64"), NIGHTLY, NIGHTLY, False),
+        (DEV, ("amd64",), NIGHTLY, NIGHTLY, False),
+        (DEV, ("amd64", "arm64"), "sha256:" + "9" * 64, "sha256:" + "9" * 64, False),
+        (DEV, ("amd64", "arm64"), NIGHTLY, "sha256:" + "9" * 64, False),
     ],
 )
 def test_dev_image_publication_verifies_the_pushed_image(
-    tmp_path: Path, built: str, platforms: tuple[str, ...], base: str, ok: bool
+    tmp_path: Path,
+    built: str,
+    platforms: tuple[str, ...],
+    amd64_base: str,
+    arm64_base: str,
+    ok: bool,
 ) -> None:
     """The tag must point at the built image, with both platforms on the nightly built on."""
     runtime = {"amd64": DEV_AMD64, "arm64": DEV_ARM64}
-    registry = _dev(base, {arch: runtime[arch] for arch in platforms})
+    registry = _dev(amd64_base, {arch: runtime[arch] for arch in platforms})
+    if "arm64" in platforms:
+        labels = {"org.opencontainers.image.base.digest": arm64_base}
+        registry[f"{IMAGE_REPOSITORY}@{DEV_ARM64}"] = {"Image": {"config": {"Labels": labels}}}
     code, _outputs, stderr = _run_workflow_step(
         tmp_path,
         "publish",
@@ -475,7 +518,8 @@ def _run_workflow_step(
         text=True,
     )
     lines = output_file.read_text(encoding="utf-8").splitlines()
-    return result.returncode, dict(line.split("=", 1) for line in lines), result.stderr
+    outputs = dict(line.split("=", 1) for line in lines)
+    return result.returncode, outputs, result.stdout + result.stderr
 
 
 def _nightly(labels: dict[str, str] | None = None) -> dict[str, Any]:
