@@ -73,9 +73,11 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.constants import (
     BASE_SORT_FIELD_SQL,
     CACHE_CATEGORY_EXTERNAL_IDS,
+    CACHE_CATEGORY_LISTED_EXTERNAL_ITEMS,
     CACHE_CATEGORY_SEARCH_RESULTS,
     COLLECTION_COVER_COUNT,
     EXTERNAL_ID_CACHE_EXPIRATION,
+    LISTED_EXTERNAL_ITEM_CACHE_EXPIRATION,
     RANDOM_SORT_FIELDS,
     RESUME_POSITION_TOLERANCE_SECONDS,
 )
@@ -111,6 +113,7 @@ from music_assistant.helpers.external_ids import (
     external_id_lookup_values,
     external_id_lookup_values_untyped,
     external_id_sort_key,
+    external_item_id,
     is_valid_mbid,
     normalize_external_id,
     normalize_external_ids,
@@ -1231,6 +1234,45 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             result.item_id, result.provider
         )
         return library_match or result
+
+    @final
+    async def store_listed_external_item(self, item: ItemCls) -> None:
+        """
+        Keep the form in which an item known only by an external id is listed.
+
+        get_listed_external_item() returns it for 30 days, so that an item a client names
+        by its uri alone can be shown as it was listed, without looking it up.
+
+        :param item: The item as it is listed, its item id built by external_item_id().
+        :raises InvalidProviderID: The item id is no valid external item id.
+        """
+        await self.mass.cache.set(
+            self._listed_external_item_cache_key(item.item_id),
+            item.to_dict(),
+            expiration=LISTED_EXTERNAL_ITEM_CACHE_EXPIRATION,
+            provider=self.mass.music.domain,
+            category=CACHE_CATEGORY_LISTED_EXTERNAL_ITEMS,
+        )
+
+    @final
+    async def get_listed_external_item(self, item_id: str) -> ItemCls | None:
+        """
+        Return an item known only by an external id in the form it was last listed in.
+
+        Nothing is looked up for it; None is returned for an item no listing was kept of.
+
+        :param item_id: Item id as external_item_id() builds it.
+        :raises InvalidProviderID: The item id is no valid external item id.
+        """
+        listed: ItemCls | None = await self.mass.cache.get(
+            self._listed_external_item_cache_key(item_id),
+            provider=self.mass.music.domain,
+            category=CACHE_CATEGORY_LISTED_EXTERNAL_ITEMS,
+            # the listing is the only source of this form, so nothing can refresh it
+            allow_bypass=False,
+            base_class=self.item_cls,
+        )
+        return listed
 
     @final
     async def get_library_items_by_prov_id(
@@ -2569,6 +2611,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Return the cache key of the item an external id was found as."""
         canonical_id = normalize_external_id(external_id_type, external_id)
         return f"{self.media_type.value}.{external_id_type.value}.{canonical_id}"
+
+    @final
+    def _listed_external_item_cache_key(self, item_id: str) -> str:
+        """Return the cache key of the form an external item was listed in."""
+        return f"{self.media_type.value}.{external_item_id(*parse_external_item_id(item_id))}"
 
     @final
     async def _linked_provider_mappings(

@@ -1043,3 +1043,57 @@ async def test_release_barcode_keeps_what_could_not_answer_past_a_failed_fetch(
 
     assert excinfo.value is error
     tidal.get_album.assert_awaited_once_with(TIDAL_ALBUM_ID)
+
+
+# ---------------------------------------------------------------------------
+# the form an external item was listed in
+# ---------------------------------------------------------------------------
+
+
+async def test_listed_form_of_an_external_item_is_kept(music: MusicController) -> None:
+    """An external item is returned as it was listed, by its item id, with nothing looked up."""
+    spotify = _track_provider("spotify_1")
+    musicbrainz = _load(music, spotify, recording=_recording())
+    listed = Track(
+        item_id=RECORDING_ITEM_ID,
+        provider=EXTERNAL_ID_PROVIDER,
+        name="Listed Track",
+        duration=123,
+        external_ids={(ExternalID.MB_RECORDING, RECORDING_ID)},
+        provider_mappings=set(),
+    )
+    assert await music.tracks.get_listed_external_item(RECORDING_ITEM_ID) is None
+
+    await music.tracks.store_listed_external_item(listed)
+
+    kept = await music.tracks.get_listed_external_item(RECORDING_ITEM_ID)
+    assert isinstance(kept, Track)
+    assert kept == listed
+    assert (kept.name, kept.duration, kept.external_ids) == (
+        "Listed Track",
+        123,
+        {(ExternalID.MB_RECORDING, RECORDING_ID)},
+    )
+    # the same id in another spelling names the same item
+    spelled = f"{ExternalID.MB_RECORDING.value}:{RECORDING_ID.upper()}"
+    assert await music.tracks.get_listed_external_item(spelled) == listed
+    # another id, and the same id as another media type, were never listed
+    assert (
+        await music.tracks.get_listed_external_item(external_item_id(ExternalID.ISRC, ISRC)) is None
+    )
+    assert await music.albums.get_listed_external_item(RECORDING_ITEM_ID) is None
+    musicbrainz.get_recording_details.assert_not_awaited()
+    assert _requests(spotify) == 0
+
+
+async def test_listed_form_is_only_kept_for_a_valid_external_item_id(
+    music: MusicController,
+) -> None:
+    """An item id that names no external id is refused, to keep and to return."""
+    _load(music)
+    track = create_track("spotify_1", SPOTIFY_TRACK_ID)
+
+    with pytest.raises(InvalidProviderID):
+        await music.tracks.store_listed_external_item(track)
+    with pytest.raises(InvalidProviderID):
+        await music.tracks.get_listed_external_item("isrc:not-an-isrc")
