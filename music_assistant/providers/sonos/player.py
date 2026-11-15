@@ -415,12 +415,19 @@ class SonosPlayer(PlayerProtocol):
             # a connect to a speaker that is not up hangs on its stale ARP entry, so probe first
             if not await self._is_reachable():
                 return False
+            if self.player is None or self.connected:
+                # detached, or connected by its own reconnect, meanwhile
+                return self.connected
             await self._connect()
             return self.connected
+        listener = self._listen_task
         try:
             async with asyncio.timeout(DEVICE_CHECK_TIMEOUT):
                 await self.client.api.player_volume.get_volume(self.client.player_id)
         except (TimeoutError, SonosException, ClientError) as err:
+            if self.player is None or self._listen_task is not listener or not self.connected:
+                # detached, or connected anew, meanwhile: the connection it asked is gone
+                return self.connected
             self.logger.debug("Sonos player %s does not answer: %r", self.display_name, err)
             # what the listener does once its connection dropped, without waiting for the
             # close of a connection that nothing answers on
