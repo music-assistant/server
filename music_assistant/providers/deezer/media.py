@@ -445,6 +445,8 @@ class DeezerMediaManager:
         self.logger.debug("search called with media_types=%s", media_types)
         need_albums = MediaType.ALBUM in media_types
         need_audiobooks = MediaType.AUDIOBOOK in media_types
+        # the audiobook hits also tell which artists are authors
+        find_audiobooks = need_audiobooks or MediaType.ARTIST in media_types
 
         # Try with full limit first; on complexity error, retry with reduced limits.
         attempts = [limit, max(limit // 2, 5), 5]
@@ -454,7 +456,7 @@ class DeezerMediaManager:
                 result = await self.provider.gql_client.search(
                     query=search_query,
                     tracks_first=attempt_limit if MediaType.TRACK in media_types else 0,
-                    albums_first=attempt_limit if (need_albums or need_audiobooks) else 0,
+                    albums_first=attempt_limit if (need_albums or find_audiobooks) else 0,
                     artists_first=attempt_limit if MediaType.ARTIST in media_types else 0,
                     playlists_first=attempt_limit if MediaType.PLAYLIST in media_types else 0,
                     livestreams_first=attempt_limit if MediaType.RADIO in media_types else 0,
@@ -481,9 +483,10 @@ class DeezerMediaManager:
                 for edge in result.results.tracks.edges
                 if edge.node is not None
             ]
-        if need_albums or need_audiobooks:
+        audiobooks: list[Audiobook] = []
+        if need_albums or find_audiobooks:
             album_nodes = [e.node for e in result.results.albums.edges if e.node is not None]
-            if album_nodes and need_audiobooks:
+            if album_nodes and find_audiobooks:
                 album_ids = [n.id for n in album_nodes]
                 audiobook_ids = await self.provider.gql_client.check_audiobook_ids(album_ids)
                 if need_albums:
@@ -492,18 +495,19 @@ class DeezerMediaManager:
                         for n in album_nodes
                         if n.id not in audiobook_ids
                     ]
-                search_results.audiobooks = [
+                audiobooks = [
                     parse_audiobook_from_album(self.provider, n)
                     for n in album_nodes
                     if n.id in audiobook_ids
                 ]
+                if need_audiobooks:
+                    search_results.audiobooks = audiobooks
             elif need_albums:
                 search_results.albums = [parse_album(self.provider, n) for n in album_nodes]
         if MediaType.ARTIST in media_types:
             author_ids = {
                 author.item_id
-                for audiobook in search_results.audiobooks
-                if isinstance(audiobook, Audiobook)
+                for audiobook in audiobooks
                 for author in audiobook.authors
                 if isinstance(author, Artist)
             }

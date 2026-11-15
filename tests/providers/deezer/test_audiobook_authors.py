@@ -170,8 +170,11 @@ async def test_author_has_no_music(provider: DeezerProvider, gql: AsyncMock, met
     gql.get_artist.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "media_types", [[MediaType.ARTIST, MediaType.AUDIOBOOK], [MediaType.ARTIST]]
+)
 async def test_search_lists_the_author_after_the_artist(
-    provider: DeezerProvider, gql: AsyncMock
+    provider: DeezerProvider, gql: AsyncMock, media_types: list[MediaType]
 ) -> None:
     """An artist who wrote an audiobook hit is listed a second time, as author."""
     conni, other = _artist_node("75255", "Conni"), _artist_node("2", "Conny")
@@ -185,9 +188,7 @@ async def test_search_lists_the_author_after_the_artist(
     )
     gql.check_audiobook_ids.return_value = {"1"}
 
-    result = await _unwrap(DeezerMediaManager.search)(
-        provider.media_manager, "conni", [MediaType.ARTIST, MediaType.AUDIOBOOK]
-    )
+    result = await _unwrap(DeezerMediaManager.search)(provider.media_manager, "conni", media_types)
 
     artists = cast("list[Artist]", result.artists)
     assert [(a.item_id, a.artist_type) for a in artists] == [
@@ -195,6 +196,7 @@ async def test_search_lists_the_author_after_the_artist(
         ("author_75255", ArtistType.AUTHOR),
         ("2", ArtistType.SINGER),
     ]
+    assert len(result.audiobooks) == (MediaType.AUDIOBOOK in media_types)
 
 
 async def test_author_writes_use_the_deezer_artist(
