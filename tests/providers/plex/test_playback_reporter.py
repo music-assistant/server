@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -161,6 +162,33 @@ async def test_play_queue_of_a_mirrored_player() -> None:
     ]
 
 
+async def test_play_queue_item_is_the_one_current_when_reported() -> None:
+    """A report waiting on an earlier send keeps the play queue item it was made for."""
+    reporter = _reporter()
+    play_queue_item_id = {"id": "901"}
+    reporter.add_play_queue("player1", lambda: {"playQueueItemID": play_queue_item_id["id"]})
+    release = asyncio.Event()
+    sent: list[tuple[str, str | None]] = []
+
+    async def send(timeline: Any) -> bool:
+        sent.append((timeline.state, timeline.play_queue_params.get("playQueueItemID")))
+        if len(sent) == 1:
+            await release.wait()
+        return True
+
+    reporter._send = send
+    first = asyncio.create_task(reporter.report(_report(10), TRACK_1, PlaybackState.PLAYING))
+    await asyncio.sleep(0)
+    second = asyncio.create_task(reporter.report(_report(40), TRACK_1, PlaybackState.PLAYING))
+    await asyncio.sleep(0)
+    # the play queue moves on to the next track while the second report waits
+    play_queue_item_id["id"] = "902"
+    release.set()
+    await asyncio.gather(first, second)
+
+    assert sent == [("playing", "901"), ("playing", "901")]
+
+
 async def test_stop_of_a_track_not_reported_before() -> None:
     """A track that stops without an earlier report is still reported stopped."""
     reporter = _reporter()
@@ -207,6 +235,26 @@ async def test_failed_stop_is_given_up() -> None:
     assert reporter._retry_timers == set()
 
 
+async def test_failed_stop_is_dropped_when_the_track_plays_again() -> None:
+    """A stop still to be sent again never ends a new play of the same track."""
+    reporter = _reporter()
+    query = reporter.provider._plex_server.query
+    await reporter.report(_report(170), TRACK_1, PlaybackState.PLAYING)
+    query.side_effect = requests.exceptions.ConnectionError
+    await reporter.report(_report(178), TRACK_1, PlaybackState.IDLE)
+    query.side_effect = None
+    # the track is repeated before the stop is sent again
+    await reporter.report(_report(1), TRACK_1, PlaybackState.PLAYING)
+
+    await _run_retry(reporter)
+
+    assert _states(reporter) == [
+        (TRACK_1, "playing", "170000"),
+        (TRACK_1, "stopped", "178000"),
+        (TRACK_1, "playing", "1000"),
+    ]
+
+
 async def test_failed_play_is_not_retried() -> None:
     """A playing track the Plex server did not take is reported again with its next report."""
     reporter = _reporter()
@@ -227,6 +275,20 @@ async def test_stop_cancels_pending_retries() -> None:
     reporter.stop()
 
     reporter.mass.cancel_timer.assert_called_once_with(task_id)
+
+
+async def test_nothing_is_sent_once_stopped() -> None:
+    """Reports and a stop retry that run after the reporter stopped send nothing."""
+    reporter = _reporter()
+    reporter.provider._plex_server.query.side_effect = requests.exceptions.ConnectionError
+    await reporter.report(_report(34), TRACK_1, PlaybackState.IDLE)
+
+    reporter.stop()
+    await _run_retry(reporter)
+    await reporter.report(_report(40), TRACK_2, PlaybackState.PLAYING)
+
+    assert len(_sent(reporter)) == 1
+    assert reporter.mass.call_later.call_count == 1
 
 
 @pytest.mark.parametrize(

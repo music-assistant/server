@@ -82,10 +82,12 @@ def _controller() -> tuple[PlayerQueuesController, dict[str, Any]]:
     providers: dict[str, Any] = {}
     for instance_id in (STREAMING, OTHER):
         prov = MagicMock(spec=MusicProvider)
+        prov.instance_id = instance_id
+        prov.available = True
         prov.unloading = False
         prov.on_playback_progress = Mock()
         providers[instance_id] = prov
-    ctrl.mass.get_provider.side_effect = providers.get
+    ctrl.mass.get_provider.side_effect = lambda instance_id, **_kwargs: providers.get(instance_id)
     return ctrl, providers
 
 
@@ -171,4 +173,45 @@ async def test_item_never_served_is_not_reported() -> None:
     _player_reports(ctrl, PlaybackState.PLAYING, "t1", 30)
     _player_reports(ctrl, PlaybackState.PAUSED, "t1", 40)
 
+    providers[STREAMING].on_playback_progress.assert_not_called()
+
+
+async def test_stream_error_still_ends_the_playback() -> None:
+    """A track whose stream failed midway is not recorded, but the provider learns it stopped."""
+    ctrl, providers = _controller()
+    await ctrl.play_index(QUEUE_ID, 0)
+    ctrl.mark_item_served(QUEUE_ID, "t1")
+
+    _player_reports(ctrl, PlaybackState.PLAYING, "t1", 30)
+    streamdetails = ctrl._queue_data[QUEUE_ID].items[0].streamdetails
+    assert streamdetails is not None
+    streamdetails.stream_error = True
+    _player_reports(ctrl, PlaybackState.IDLE, "t1", 30)
+
+    assert _hook_calls(providers[STREAMING])[-1] == ("t1", PlaybackState.IDLE, 30)
+    assert ("t1", 30, False) not in _recorded_plays(ctrl)
+
+
+async def test_unavailable_streaming_instance_is_not_replaced() -> None:
+    """Another account of the same service never receives the progress of an item it did not stream."""
+    ctrl, providers = _controller()
+    providers[STREAMING].available = False
+    other_account = MagicMock(spec=MusicProvider)
+    other_account.instance_id = "plex--2"
+    other_account.available = True
+    other_account.unloading = False
+    other_account.on_playback_progress = Mock()
+    # mass.get_provider widens an unavailable instance to another one of the same domain
+    cast("Mock", ctrl.mass.get_provider).side_effect = (
+        lambda _instance_id, return_unavailable=False: (
+            providers[STREAMING] if return_unavailable else other_account
+        )
+    )
+    await ctrl.play_index(QUEUE_ID, 0)
+    ctrl.mark_item_served(QUEUE_ID, "t1")
+
+    _player_reports(ctrl, PlaybackState.PLAYING, "t1", 30)
+    _player_reports(ctrl, PlaybackState.IDLE, "t1", 40)
+
+    other_account.on_playback_progress.assert_not_called()
     providers[STREAMING].on_playback_progress.assert_not_called()

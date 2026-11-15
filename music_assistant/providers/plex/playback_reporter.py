@@ -65,6 +65,7 @@ class PlexPlaybackReporter:
         self._retry_timers: set[str] = set()
         # reports are sent one at a time, in the order the player made them
         self._lock = asyncio.Lock()
+        self._stopped = False
 
     def add_play_queue(
         self, player_id: str, play_queue_params: Callable[[], dict[str, str]]
@@ -105,7 +106,12 @@ class PlexPlaybackReporter:
         else:
             plex_state = PLEX_STATE_STOPPED
         position_ms = report.seconds_played * 1000
+        # the play queue can move on to the next track while this report waits for the lock
+        get_params = self._play_queues.get(player_id)
+        current_play_queue_params = get_params() if get_params else {}
         async with self._lock:
+            if self._stopped:
+                return
             previous = self._timelines.get(player_id)
             if previous and previous.key != key:
                 previous = None
@@ -121,10 +127,8 @@ class PlexPlaybackReporter:
             if plex_state == PLEX_STATE_STOPPED and previous:
                 # a stop ends the play within the play queue item it started in
                 play_queue_params = previous.play_queue_params
-            elif plex_state != PLEX_STATE_STOPPED and (
-                get_params := self._play_queues.get(player_id)
-            ):
-                play_queue_params = get_params()
+            elif plex_state != PLEX_STATE_STOPPED:
+                play_queue_params = current_play_queue_params
             else:
                 play_queue_params = {}
             timeline = _Timeline(
@@ -141,10 +145,11 @@ class PlexPlaybackReporter:
                 del self._timelines[player_id]
             timeline.delivered = await self._send(timeline)
         if not timeline.delivered and plex_state == PLEX_STATE_STOPPED:
-            self._retry_stop(timeline, 1)
+            self._retry_stop(player_id, timeline, 1)
 
     def stop(self) -> None:
         """Stop reporting playback to the Plex server."""
+        self._stopped = True
         for task_id in self._retry_timers:
             self.mass.cancel_timer(task_id)
         self._retry_timers.clear()
@@ -161,21 +166,28 @@ class PlexPlaybackReporter:
             player.name if player else "Music Assistant",
         )
 
-    def _retry_stop(self, timeline: _Timeline, tries: int) -> None:
+    def _retry_stop(self, player_id: str, timeline: _Timeline, tries: int) -> None:
         """
         Send a stop the Plex server did not take again, after a delay.
 
+        :param player_id: The player the stop was reported for.
         :param timeline: The stop to send again.
         :param tries: The number of times the stop was sent before.
         """
+        if self._stopped:
+            return
         task_id = f"plex_stop_retry_{self.provider.instance_id}_{id(timeline)}"
 
         async def retry() -> None:
             self._retry_timers.discard(task_id)
             async with self._lock:
+                current = self._timelines.get(player_id)
+                if self._stopped or (current and current.key == timeline.key):
+                    # the player plays the track again, a stop now would end that new play
+                    return
                 delivered = await self._send(timeline)
             if not delivered and tries < STOP_RETRIES:
-                self._retry_stop(timeline, tries + 1)
+                self._retry_stop(player_id, timeline, tries + 1)
 
         self._retry_timers.add(task_id)
         self.mass.call_later(STOP_RETRY_DELAY, retry, task_id=task_id)

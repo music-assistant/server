@@ -58,6 +58,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_impersonated_user,
 )
 from music_assistant.helpers.compare import compare_item_ids
+from music_assistant.helpers.provider_access import exact_provider
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
@@ -871,8 +872,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         assert media_item.uri is not None  # uri is set in __post_init__
 
         if item_to_report.streamdetails and item_to_report.streamdetails.stream_error:
-            #  Ignore items that had a stream error
-            return
+            # an item that had a stream error is not recorded as played, but the provider that
+            # streamed it still learns that its playback ended
+            record_play = False
 
         if item_to_report.queue_item_id not in queue_data.served_item_ids:
             # the player named an item it never received audio for (one from its own cached
@@ -1038,7 +1040,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         """Hand a playback progress report to the music provider that streamed the item."""
         if self.mass.closing or not (streamdetails := item.streamdetails):
             return
-        music_prov = self.mass.get_provider(streamdetails.provider)
+        # never another account of the same service, which did not stream the item
+        music_prov = exact_provider(self.mass, streamdetails.provider)
         if not isinstance(music_prov, MusicProvider) or music_prov.unloading:
             return
         self.mass.create_task(music_prov.on_playback_progress(report, streamdetails.item_id, state))
