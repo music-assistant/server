@@ -113,6 +113,8 @@ class AIRadioQueueDJMixin:
                 # only if we're still the live state: a newer switch may have replaced us.
                 # flipped after cleanup so a racing pass doesn't mark old clips' gaps served
                 armed.ready = True
+            # the DJ is set up for its player, which is kept also while a browser or app is away
+            self.mass.players.keep_player(queue_id)
             self._schedule_replan(queue_id)
         return await self.get_queue_dj_status()
 
@@ -231,9 +233,11 @@ class AIRadioQueueDJMixin:
         if state is None or not state.station_id:
             return
         queue = self.mass.player_queues.get(queue_id)
-        if queue is not None and self._queue_show_station(queue_id) == state.station_id:
-            if not queue.ended:
-                return
+        if queue is None:
+            # a dropped player comes back with its queue, only PLAYER_REMOVED drops the DJ
+            return
+        if self._queue_show_station(queue_id) == state.station_id and not queue.ended:
+            return
         await self.set_queue_dj(queue_id, None)
         self._armed_show_queues.pop(queue_id, None)
 
@@ -243,6 +247,9 @@ class AIRadioQueueDJMixin:
         if armed_station_id is None:
             return
         queue = None if queue_removed else self.mass.player_queues.get(queue_id)
+        if not queue_removed and queue is None:
+            # a dropped player keeps its record until it is back or removed
+            return
         if (
             queue is not None
             and not queue.ended

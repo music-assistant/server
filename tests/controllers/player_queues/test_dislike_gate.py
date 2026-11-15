@@ -22,6 +22,7 @@ PROV = "spotify--1"
 DISLIKED = "disliked"
 LIKED = "liked"
 DISLIKED_ALBUM = "disliked-album"
+IN_DISLIKED_GENRE = "in-disliked-genre"
 DISLIKED_KEYS: DislikedTrackKeys = (
     set(),
     {(MediaType.TRACK, PROV, DISLIKED), (MediaType.ALBUM, PROV, DISLIKED_ALBUM)},
@@ -65,6 +66,7 @@ def _loader(*, userid: str | None) -> Any:
     loader.load = AsyncMock()
     loader.mass.webserver.auth.get_user = AsyncMock()
     loader.mass.music.favorites.disliked_track_keys = AsyncMock(return_value=DISLIKED_KEYS)
+    loader.mass.music.favorites.in_disliked_genres = AsyncMock(return_value=set())
     return loader
 
 
@@ -78,6 +80,7 @@ def _pool() -> tuple[ManagedPool, Any]:
     queues = MagicMock()
     queues.get_dynamic_source_tracks = AsyncMock(return_value=[_track(DISLIKED), _track(LIKED)])
     queues.mass.music.favorites.disliked_track_keys = AsyncMock(return_value=DISLIKED_KEYS)
+    queues.mass.music.favorites.in_disliked_genres = AsyncMock(return_value=set())
     return ManagedPool(queues), queues
 
 
@@ -100,6 +103,22 @@ async def test_a_dynamic_batch_of_the_pool_skips_a_track_on_a_disliked_album() -
     tracks = await pool._fetch_dynamic(MagicMock(), USER_ID)
 
     assert [x.item_id for x in tracks] == [LIKED]
+
+
+async def test_a_dynamic_batch_of_the_pool_skips_a_track_in_a_disliked_genre() -> None:
+    """A track the user never disliked itself is still skipped when its genre is disliked."""
+    pool, queues = _pool()
+    queues.get_dynamic_source_tracks = AsyncMock(
+        return_value=[_track(IN_DISLIKED_GENRE), _track(LIKED)]
+    )
+    queues.mass.music.favorites.in_disliked_genres = AsyncMock(
+        return_value={(PROV, IN_DISLIKED_GENRE)}
+    )
+
+    tracks = await pool._fetch_dynamic(MagicMock(), USER_ID)
+
+    assert [x.item_id for x in tracks] == [LIKED]
+    queues.mass.music.favorites.in_disliked_genres.assert_awaited_once()
 
 
 async def test_a_dynamic_batch_of_only_disliked_tracks_is_empty() -> None:
@@ -165,3 +184,4 @@ async def test_an_anonymous_queue_is_not_filtered() -> None:
 
     assert [x.item_id for x in tracks] == [DISLIKED, LIKED]
     queues.mass.music.favorites.disliked_track_keys.assert_not_awaited()
+    queues.mass.music.favorites.in_disliked_genres.assert_not_awaited()

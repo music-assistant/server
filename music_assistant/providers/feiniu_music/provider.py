@@ -38,6 +38,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.security import has_control_chars
 from music_assistant.models.music_provider import MusicProvider
 
 from .client import AuthenticationError, FeiNiuClient
@@ -197,16 +198,25 @@ class FeiNiuProvider(MusicProvider):
 
     async def resolve_image(self, path: str) -> bytes:
         """Proxy authenticated artwork as bytes, never as a credential-bearing URL."""
-        parts = path.split("/")
-        if len(parts) != 5 or parts[:2] != ["scoped", self._image_scope]:
+        if (artwork := self._scoped_artwork(path)) is None:
             raise ProviderPermissionDenied("Unknown FeiNiu artwork owner")
-        kind, item_id, cover = (unquote(value) for value in parts[2:])
-        if kind not in {"track", "album", "artist", "playlist"}:
-            raise ProviderPermissionDenied("Unknown FeiNiu artwork owner")
+        kind, item_id, cover = artwork
         owner = await self._get_item(kind, item_id)
         if path not in self._image_paths(owner):
             raise ProviderPermissionDenied("Artwork is outside the current FeiNiu library")
         return await self._call(lambda: self._client.cover(cover))
+
+    def accepts_stored_image_path(self, path: str) -> bool:
+        """
+        Return whether path is shaped like artwork of an item of this FeiNiu account.
+
+        :param path: The stored image path.
+        """
+        return (
+            bool(self._image_scope)
+            and not has_control_chars(path)
+            and self._scoped_artwork(path) is not None
+        )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return a server-owned stream with a stable track identity."""
@@ -380,6 +390,16 @@ class FeiNiuProvider(MusicProvider):
         return {
             image.path for media in self._image_items(item) for image in media.metadata.images or []
         }
+
+    def _scoped_artwork(self, path: str) -> tuple[str, str, str] | None:
+        """Return the owner kind, owner id and cover id of a scoped artwork path, if valid."""
+        parts = path.split("/")
+        if len(parts) != 5 or parts[:2] != ["scoped", self._image_scope]:
+            return None
+        kind, item_id, cover = (unquote(value) for value in parts[2:])
+        if kind not in {"track", "album", "artist", "playlist"}:
+            return None
+        return kind, item_id, cover
 
     async def _relation_items(self, kind: str, item_id: str, cache_id: str) -> list[dict[str, Any]]:
         # Direct MA caching preserves caller-owned cancellation for relation requests.

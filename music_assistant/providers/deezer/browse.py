@@ -813,7 +813,7 @@ class DeezerBrowseManager:
 
     # -- Recently played (shared by browse and recommendations) --
 
-    @use_cache(3600)
+    @use_cache(300)
     async def _get_recently_played_items(self) -> list[MediaItemType]:
         """Get recently played items (cached)."""
         result = await self.provider.gql_client.get_recently_played(first=50)
@@ -1103,7 +1103,7 @@ class DeezerBrowseManager:
         cache_key = f"_get_regular_playlist_tracks.{prov_playlist_id}"
         await self.mass.cache.delete(key=cache_key, provider=self.instance_id)
 
-    @use_cache(3600 * 3)
+    @use_cache(60 * 15)
     async def _get_regular_playlist_tracks(self, prov_playlist_id: str) -> list[Track]:
         """Get tracks for regular Deezer playlists (cached)."""
         result = await self.provider.gql_client.get_playlist(playlist_id=prov_playlist_id)
@@ -1119,10 +1119,11 @@ class DeezerBrowseManager:
                 break
             all_edges.extend(result.tracks.edges)
         tracks: list[Track] = []
-        for idx, edge in enumerate(all_edges, 1):
+        for edge in all_edges:
             if edge.node is None:
                 continue
-            track = parse_track(self.provider, edge.node, position=idx)
+            # count only the returned tracks, so an unavailable one leaves no gap in the positions
+            track = parse_track(self.provider, edge.node, position=len(tracks) + 1)
             # when the track was added to the playlist, not to the library
             track.date_added = parse_date(edge.added_at)
             tracks.append(track)

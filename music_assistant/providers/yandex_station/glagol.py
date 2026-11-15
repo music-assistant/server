@@ -188,6 +188,7 @@ class YandexGlagol:
             return {"error": "not_connected"}
 
         request_id = str(uuid.uuid4())
+        _LOGGER.debug("[%s] => local | %s id=%s", self.name, cmd, request_id)
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._waiters[request_id] = future

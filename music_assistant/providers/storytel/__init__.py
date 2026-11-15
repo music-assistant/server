@@ -37,6 +37,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
@@ -52,8 +53,6 @@ from .constants import (
     CACHE_EXPIRATION_PODCAST_EPISODES,
     CONF_KIDS_MODE,
     CONF_LANGUAGES,
-    CONF_PASSWORD,
-    CONF_USERNAME,
     DEFAULT_LANGUAGES,
 )
 from .storytel_helper import StorytelHelper

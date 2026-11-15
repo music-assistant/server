@@ -768,7 +768,8 @@ async def test_plugin_search_leaves_out_tracks_on_hidden_sources(mock_get_user: 
     )
     plugin.search.return_value = results
     sources = [
-        Mock(instance_id=source, type=ProviderType.MUSIC) for source in ("open_1", "hidden_1")
+        Mock(instance_id=source, type=ProviderType.MUSIC, is_streaming_provider=False)
+        for source in ("open_1", "hidden_1")
     ]
     controller = _make_controller([plugin, *sources])
     controller.get_unique_providers = Mock(return_value=[])  # type: ignore[method-assign]

@@ -41,6 +41,7 @@ from music_assistant.controllers.music.media.base import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.mass import MusicAssistant
+from tests.controllers.music.helpers import media_item_events
 
 # the user whose like a merge has to carry over to the surviving item
 MERGE_USER = "merge-user"
@@ -589,7 +590,7 @@ async def test_merge_honors_outer_event_suppression(mass: MusicAssistant) -> Non
             await mass.music.genres.merge_library_items(target.item_id, source.item_id)
     finally:
         SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
-    signal_event.assert_not_called()
+    assert media_item_events(signal_event) == []
 
 
 async def test_genre_merge_rejects_different_taxonomies(mass: MusicAssistant) -> None:
