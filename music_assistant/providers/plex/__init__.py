@@ -31,6 +31,7 @@ from music_assistant_models.enums import (
     EventType,
     ImageType,
     MediaType,
+    PlaybackState,
     ProviderFeature,
     StreamType,
 )
@@ -140,6 +141,7 @@ from music_assistant.providers.plex.helpers import (
     parse_plex_lyrics_payload,
     resolve_server_auth_token,
 )
+from music_assistant.providers.plex.playback_reporter import PlexPlaybackReporter
 
 # Public surface of the provider package. With mypy's no_implicit_reexport,
 # names imported into this module (e.g. CONF_LIBRARY_ID from .constants) are
@@ -154,6 +156,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
 
     from music_assistant_models.event import MassEvent
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
     from plexapi.library import LibraryMediaTag as PlexCollection
     from plexapi.library import MusicSection as PlexMusicSection
@@ -209,6 +212,24 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     _content_changed_at: str | None = None
     _recheck_after_sync: bool = False
     _verify_ssl: bool = True
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """
+        Initialize the Plex provider.
+
+        :param mass: The MusicAssistant instance.
+        :param manifest: The provider manifest.
+        :param config: The provider configuration.
+        :param supported_features: The features the provider supports.
+        """
+        super().__init__(mass, manifest, config, supported_features)
+        self.playback_reporter = PlexPlaybackReporter(self)
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -422,6 +443,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        self.playback_reporter.stop()
         if self._notification_task:
             self._notification_task.cancel()
         if self._unsubscribe_sync_completed:
@@ -745,6 +767,22 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
 
         resume_position_ms = await self._calc_resume_position_ms(plex_album, fully_played)
         return fully_played, resume_position_ms, timestamp
+
+    async def on_playback_progress(
+        self,
+        report: MediaItemPlaybackProgressReport,
+        prov_item_id: str,
+        state: PlaybackState,
+    ) -> None:
+        """
+        Report the playback of a track this provider streamed to the Plex server.
+
+        :param report: The playback progress report; ``player_id`` names the playing player.
+        :param prov_item_id: The Plex key of the streamed item.
+        :param state: The playback state of the item on the player.
+        """
+        if report.media_type == MediaType.TRACK:
+            await self.playback_reporter.report(report, prov_item_id, state)
 
     async def on_played(
         self,
