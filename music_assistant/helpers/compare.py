@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from difflib import SequenceMatcher
 from enum import Enum, IntEnum
 from functools import lru_cache
@@ -731,6 +731,45 @@ def compare_track_title(base_title: str, compare_title: str) -> bool:
     base_search_title, _ = parse_title_and_version(base_title, strip_for_search=True)
     compare_search_title, _ = parse_title_and_version(compare_title, strip_for_search=True)
     return compare_strings(base_search_title, compare_search_title, strict=True)
+
+
+def match_ranked_tracks(
+    ranking: Iterable[tuple[str, str]], tracks: Sequence[Track]
+) -> Iterator[Track | None]:
+    """
+    Yield the track each entry of a ranking names, in the order of the ranking.
+
+    An entry names a track by its MusicBrainz recording id, else by its title: an exact title
+    before a similar one, the original recording before a live, remix or other version of it.
+    Each track is yielded for one entry at most; None for an entry that names none of them.
+
+    :param ranking: The entries, each a title and a MusicBrainz recording id (empty if unknown).
+    :param tracks: The tracks to find the entries among.
+    """
+    by_mbid = {
+        value: track
+        for track in tracks
+        for id_type, value in track.external_ids
+        if id_type == ExternalID.MB_RECORDING
+    }
+    listed: set[str] = set()
+    for title, mbid in ranking:
+        track = by_mbid.get(mbid)
+        if track is None or track.item_id in listed:
+            unlisted = [candidate for candidate in tracks if candidate.item_id not in listed]
+            # an exact title before a similar one: "Revolution" is not "Revolution 1"
+            named = [
+                candidate for candidate in unlisted if compare_strings(candidate.name, title, True)
+            ] or [
+                candidate for candidate in unlisted if compare_strings(candidate.name, title, False)
+            ]
+            if not named:
+                yield None
+                continue
+            # the original recording before a live, remix or other version of it
+            track = min(named, key=lambda candidate: bool(candidate.version))
+        listed.add(track.item_id)
+        yield track
 
 
 def compare_playlist(
