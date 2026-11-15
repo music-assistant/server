@@ -219,6 +219,7 @@ class StateUpdatesMixin(_PlayerControllerBase):
         if changed_values.keys() & {ATTR_AVAILABLE, ATTR_ENABLED, ATTR_POWERED, ATTR_REACHABLE}:
             self._handle_membership_cleanup_on_state_change(player, changed_values)
             self._handle_external_power_off(player, changed_values)
+            self._schedule_device_check(player, changed_values)
 
         # enforce volume limits when volume changes externally
         if "volume_level" in changed_values:

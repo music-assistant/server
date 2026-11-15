@@ -181,6 +181,11 @@ class FakeProtocol(PlayerProtocol):
         super().__init__(provider, protocol_id)
         # every command received, as a tuple of the command name and its arguments
         self.commands: list[tuple[Any, ...]] = []
+        # whether its device answers a check (check_device), None for a protocol that can not
+        # check; a test sets it as the power of the device changes
+        self.device_answers: bool | None = None
+        # the clock time of every check of its device the server asked for
+        self.device_checks: list[float] = []
         # whether the protocol exists only while attached, like a browser session
         self._attr_session_only = device.session_only
         self._device = device
@@ -206,6 +211,14 @@ class FakeProtocol(PlayerProtocol):
                 required=False,
             ),
         ]
+
+    async def check_device(self) -> bool | None:
+        """Check the device: it reads available as it answers (device_answers)."""
+        self.device_checks.append(self.mass.loop.time())
+        if self.device_answers is not None:
+            self._set_reported(available=self.device_answers)
+            self.update_state()
+        return self.device_answers
 
     async def power(self, powered: bool) -> None:
         """Handle a power command."""

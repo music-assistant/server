@@ -793,6 +793,9 @@ class _PlayerControllerBase(CoreController):
         def _handle_external_power_off(
             self, player: Player, changed_values: dict[str, tuple[Any, Any]]
         ) -> None: ...
+        def _schedule_device_check(
+            self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+        ) -> None: ...
         def _check_idle_power_off(self, player: Player) -> None: ...
         def _restart_idle_count(
             self, player: Player, changed_values: dict[str, tuple[Any, Any]]

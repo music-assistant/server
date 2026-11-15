@@ -312,11 +312,12 @@ and Den plays through its Sonos protocol once that reaches it again.
   two protocols, one of which reads available for a while after the power is cut.
 - Proven by: `test_power_control.py::test_a_speaker_is_off_and_back_when_its_own_protocol_says_so`
 
-### AWAY-14 · Until its own protocol notices a power cut, a speaker reads as on
+### AWAY-14 · A speaker whose protocols can not check reads as on until one notices a power cut
 
-As in AWAY-13, but none of Den's protocols has noticed the cut yet. The player shows as available
-and powered off, and nothing tells that its device is gone: play switches the plug on and starts
-at once, on a device that still boots. That window closes when the Sonos protocol notices.
+As in AWAY-13, but none of Den's protocols has noticed the cut yet, and its Sonos protocol can not
+check its device when asked (AWAY-18). The player shows as available and powered off, and nothing
+tells that its device is gone: play switches the plug on and starts at once, on a device that
+still boots. That window closes when the Sonos protocol notices.
 
 - End-to-end: **possible with** a power control the lab can switch and a play right after the
   power is cut.
@@ -354,6 +355,47 @@ Den plays through its renderer.
 - End-to-end: **possible with** a power control the lab can switch and a LinkPlay speaker behind
   it.
 - Proven by: `test_power_control.py::test_a_speaker_whose_own_protocol_only_controls_is_there_while_its_renderer_is_too`
+
+### AWAY-18 · A speaker whose plug is cut is checked, and a play waits for its device
+
+The Den speaker has its Sonos protocol, which can check its device, and an AirPlay receiver, which
+can not, and is on a smart plug that is cut while neither has noticed. Shortly after the plug
+reports off, the Sonos protocol is asked to check: the device does not answer, and the protocol
+reads unavailable. A play 10 s after the cut switches the plug on and waits, nothing is sent to the
+device, and Den plays once, through its Sonos protocol, once that reaches it again. A play within
+those first seconds still starts at once, as in AWAY-14.
+
+- End-to-end: **possible with** a power control the lab can switch and a speaker behind it whose
+  protocol can check its device.
+- Proven by: `test_power_control.py::test_a_speaker_whose_plug_is_cut_is_checked_and_waited_for`
+
+### AWAY-19 · A speaker that kept its power while its plug reads off plays at once
+
+Den's plug reads off while the device is still there: the plug only feeds an amplifier, or Home
+Assistant can not reach the plug and reports it as off. The Sonos protocol is asked to check and
+the device answers, so Den stays reachable: play switches the plug on and starts at once.
+
+- End-to-end: **possible with** a power control the lab can switch that does not cut the power of
+  the speaker behind it.
+- Proven by: `test_power_control.py::test_a_speaker_that_kept_its_power_passes_the_check_and_plays_at_once`
+
+### AWAY-20 · A plug that is switched on again right away leaves its speaker unchecked
+
+Den's plug is switched off and on again within a few seconds, as Home Assistant can report a plug
+while it reloads. Den is not checked, nothing waits, and play starts at once. While a plug reads
+on, its speaker is never checked.
+
+- End-to-end: **possible with** a power control the lab can switch.
+- Proven by: `test_power_control.py::test_a_plug_switched_on_again_before_the_check_is_not_checked`
+
+### AWAY-21 · A device check that fails changes nothing
+
+Den's plug is cut, and the check of its Sonos protocol raises, or does not come back and is given
+up on after 10 s. That is logged at debug, and Den reads as before: play switches the plug on and
+starts at once, as for a protocol that can not check (AWAY-14).
+
+- End-to-end: **no**: it needs a protocol whose check fails.
+- Proven by: `test_power_control.py::test_a_device_check_that_fails_changes_nothing`
 
 ## Several devices on one host
 
@@ -1958,6 +2000,29 @@ group, and that is logged as a warning.
 - End-to-end: **possible with** two HEOS speakers with AirPlay, a HEOS speaker without it, and an
   AirPlay receiver.
 - Proven by: `test_grouping.py::test_members_on_the_leaders_own_stream_follow_it_onto_airplay`
+
+### GROUP-56 · A group whose member's plug was cut a moment ago waits for that member
+
+Den, a member of Downstairs, is on a smart plug that is cut while its Sonos protocol has not
+noticed. The check finds the device gone (AWAY-18). The user plays Downstairs 10 s after the cut:
+the plug is switched on and the play waits, and no speaker gets a command. Once Den's device is
+back, Downstairs starts once, on all three.
+
+- End-to-end: **possible with** a power control the lab can switch and a speaker behind it whose
+  protocol can check its device.
+- Proven by: `test_power_control.py::test_a_group_whose_member_was_cut_waits_for_it_and_starts_once`
+
+### GROUP-57 · A start asks the protocol of a member that is not back to reach its device
+
+Den, a member of Downstairs, is on a smart plug that is cut, and its Sonos protocol noticed. Once
+its device is up again, the protocol would only reach it on a reconnect minutes later. The user
+plays Downstairs: the plug is switched on, and while the play waits, Den's Sonos protocol is asked
+every few seconds to reach its device. The device is up 20 s after the play, the next ask reaches
+it, and Downstairs starts once, on all three, long before the play would leave Den out.
+
+- End-to-end: **possible with** a power control the lab can switch and a Chromecast behind it,
+  switched off long enough for its reconnect to back off.
+- Proven by: `test_power_control.py::test_a_start_asks_the_protocol_of_a_member_to_reach_its_device`
 
 ## Where playback goes
 

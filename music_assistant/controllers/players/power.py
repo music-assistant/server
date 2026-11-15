@@ -17,7 +17,7 @@ import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.constants import (
@@ -61,12 +61,25 @@ from .constants import (
 )
 from .helpers import handle_player_command, wait_for_power_on
 
+if TYPE_CHECKING:
+    from music_assistant.models.player_protocol import PlayerProtocol
+
 # How long a player must stay powered off before the queue it was playing is ended.
 # Home Assistant reports an entity that is (briefly) unavailable or unknown as off, so an
 # external power control can report a power off that comes straight back - which must not
 # stop the music. Long enough to sit out a reloading integration or a device missing a
 # poll, short enough that a real power off is not left streaming.
 EXTERNAL_POWER_OFF_STOP_DELAY = 15
+
+# How long after an external power control reported off the device of its player is checked
+# (PlayerProtocol.check_device): a device can take a moment to lose its power and its
+# connection, and Home Assistant can report a plug as off for a moment while it reloads.
+DEVICE_CHECK_DELAY = 5
+# How often a power on that waits for a device asks the protocol that reports for it to reach
+# the device: the protocol may only try again on a backoff of minutes by itself.
+DEVICE_CHECK_INTERVAL = 5
+# How long a device check may take before it is given up on.
+DEVICE_CHECK_TIMEOUT = 10
 
 # Set while the server continues playback by itself (see without_member_power_on).
 _CONTINUES_PLAYBACK: ContextVar[bool] = ContextVar("continues_playback", default=False)
@@ -189,6 +202,75 @@ class PowerMixin(_PlayerControllerBase):
             # but the queue teardown that matters here runs regardless
             with suppress(PlayerUnavailableError):
                 await self.mass.player_queues._handle_stop(player_id)
+
+    def _schedule_device_check(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """
+        Check the device of a player a moment after its external power control reported off.
+
+        :param player: The player whose state changed.
+        :param changed_values: The changed state values.
+        """
+        if ATTR_POWERED not in changed_values:
+            return
+        task_id = f"device_check_{player.player_id}"
+        if changed_values[ATTR_POWERED] == (True, False) and player.power_control in self._controls:
+            self.mass.call_later(
+                DEVICE_CHECK_DELAY,
+                self._check_switched_off_device,
+                player.player_id,
+                task_id=task_id,
+            )
+        else:
+            self.mass.cancel_timer(task_id)
+
+    async def _check_switched_off_device(self, player_id: str) -> None:
+        """
+        Check the device of a player whose external power control reads off.
+
+        Only while the protocol that reports for the device has not noticed that it is gone.
+
+        :param player_id: The player whose power control reported off.
+        """
+        player = self.get_player(player_id)
+        if (
+            player is None
+            or player.powered is not False
+            or player.power_on_in_progress
+            or player.power_control not in self._controls
+            or (device := player.device_protocol) is None
+            or not device.available
+        ):
+            return
+        await self._check_device(player, device)
+
+    async def _check_device(self, player: Player, device: PlayerProtocol) -> None:
+        """
+        Let the protocol that reports for the device of a player check it now.
+
+        The protocol reads unavailable itself when its device does not answer. Takes no lock:
+        a check waits on the network.
+
+        :param player: The player of the device.
+        :param device: The protocol that reports for its device.
+        """
+        try:
+            async with asyncio.timeout(DEVICE_CHECK_TIMEOUT):
+                answered = await device.check_device()
+        except TimeoutError:
+            self.logger.debug("The device check of player %s did not come back", player.name)
+            return
+        except Exception as err:
+            # deliberately broad: a check is a raw provider call, which changes nothing here
+            self.logger.debug("The device check of player %s failed: %s", player.name, err)
+            return
+        if answered is not None:
+            self.logger.debug(
+                "The device of player %s %s",
+                player.name,
+                "answers" if answered else "does not answer",
+            )
 
     def _check_idle_power_off(self, player: Player) -> None:
         """
@@ -494,7 +576,8 @@ class PowerMixin(_PlayerControllerBase):
         """
         Wait until the device of a player that is being powered on is online.
 
-        Returns once the protocols that brought the device back finished attaching.
+        Returns once the protocols that brought the device back finished attaching. Meanwhile
+        the protocol that reports for the device is asked every few seconds to reach it.
 
         :param player: The player, whose power control was switched on.
         :param control_id: The power control that was switched on.
@@ -505,6 +588,8 @@ class PowerMixin(_PlayerControllerBase):
         # a control reports its new state a moment after it was switched, so only an
         # off that follows its on means it was switched off again
         control_reported_on = False
+        loop = asyncio.get_running_loop()
+        next_check = loop.time() + DEVICE_CHECK_INTERVAL
         try:
             async with asyncio.timeout_at(deadline):
                 while True:
@@ -529,6 +614,17 @@ class PowerMixin(_PlayerControllerBase):
                         elif control_reported_on:
                             msg = f"Player {player.name} is switched off"
                             raise _PowerOnCalledOff(msg)
+                    if (
+                        (device := player.device_protocol) is not None
+                        and not device.available
+                        and loop.time() >= next_check
+                    ):
+                        next_check = loop.time() + DEVICE_CHECK_INTERVAL
+                        # a task of its own, so the device is still looked for meanwhile
+                        self.mass.create_task(
+                            self._check_device(player, device),
+                            task_id=f"device_check_{player.player_id}",
+                        )
                     await asyncio.sleep(0.5)
         except TimeoutError:
             msg = f"Player {player.name} did not come online after powering it on"
