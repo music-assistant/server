@@ -1006,3 +1006,40 @@ async def test_release_barcode_is_asked_for_until_a_provider_has_the_release(
     # the lookup that had it, and the fetch of the album it named
     assert _requests(tidal) == 2
     assert _requests(spotify, tidal, deezer) == 3
+
+
+@pytest.mark.parametrize("error", [MediaNotFoundError("gone"), *COULD_NOT_ANSWER])
+async def test_release_barcode_answer_that_can_not_be_fetched_is_passed_over(
+    music: MusicController, error: MusicAssistantError
+) -> None:
+    """A provider that names the release by barcode but can not hand it over is no hit."""
+    spotify, tidal = _album_provider("spotify_1"), _album_provider("tidal_1")
+    spotify.get_album_by_external_id = _has(create_album("spotify_1", SPOTIFY_ALBUM_ID))
+    spotify.get_album = AsyncMock(side_effect=error)
+    tidal_album = create_album("tidal_1", TIDAL_ALBUM_ID)
+    tidal.get_album_by_external_id = _has(tidal_album)
+    tidal.get_album = AsyncMock(return_value=tidal_album)
+    _load(music, spotify, tidal, release=_release())
+
+    found = await _resolve_release(music)
+
+    assert found is not None
+    assert (found.provider, found.item_id) == ("tidal_1", TIDAL_ALBUM_ID)
+    spotify.get_album.assert_awaited_once_with(SPOTIFY_ALBUM_ID)
+
+
+@pytest.mark.parametrize("error", COULD_NOT_ANSWER)
+async def test_release_barcode_keeps_what_could_not_answer_past_a_failed_fetch(
+    music: MusicController, error: MusicAssistantError
+) -> None:
+    """A provider that could not answer is not forgotten when a later answer is gone."""
+    spotify, tidal = _album_provider("spotify_1"), _album_provider("tidal_1")
+    spotify.get_album_by_external_id = AsyncMock(side_effect=error)
+    tidal.get_album_by_external_id = _has(create_album("tidal_1", TIDAL_ALBUM_ID))
+    _load(music, spotify, tidal, release=_release())
+
+    with pytest.raises(type(error)) as excinfo:
+        await _resolve_release(music)
+
+    assert excinfo.value is error
+    tidal.get_album.assert_awaited_once_with(TIDAL_ALBUM_ID)

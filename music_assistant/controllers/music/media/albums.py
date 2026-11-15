@@ -1530,9 +1530,10 @@ class AlbumsController(MediaControllerBase[Album]):
         self, release: MusicBrainzRelease, allow_update_metadata: bool
     ) -> Album | None:
         """
-        Return the album the first music provider finds by a release's barcode, if any.
+        Return the album the first music provider has under a release's barcode, if any.
 
-        Only an album that is the release, by title and primary artist, counts.
+        Only an album that is the release, by title and primary artist, and that its
+        provider still serves, counts.
 
         :param release: The MusicBrainz release, with its barcode and artist credits.
         :param allow_update_metadata: Whether the album's metadata may be refreshed on the way.
@@ -1542,15 +1543,13 @@ class AlbumsController(MediaControllerBase[Album]):
         if not release.barcode or not is_valid_barcode(release.barcode):
             return None
         # a barcode gets reused, and a provider answers with the first album carrying it
-        found = await self._provider_item_by_external_id(
+        return await self._provider_item_by_external_id(
             barcode_to_upc(release.barcode),
             ExternalID.BARCODE,
             accept=lambda album: release_matches_album(release, album),
-        )
-        if found is None:
-            return None
-        return await self._first_available_album(
-            list(found.provider_mappings), release.id, allow_update_metadata
+            fetch=lambda album: self._first_available_album(
+                list(album.provider_mappings), release.id, allow_update_metadata
+            ),
         )
 
     async def _first_available_album(

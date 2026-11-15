@@ -2428,6 +2428,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         external_id: str,
         external_id_type: ExternalID,
         accept: Callable[[ItemCls], bool] | None = None,
+        fetch: Callable[[ItemCls], Awaitable[ItemCls | None]] | None = None,
     ) -> ItemCls | None:
         """
         Return the item the first of the user's music providers finds by an external id.
@@ -2436,6 +2437,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param external_id_type: Type of the identifier.
         :param accept: Tells whether a provider's answer is the item looked for; every answer
             is when omitted.
+        :param fetch: Fetches the item to hand out for an accepted answer; a provider whose
+            answer it can not fetch is passed over. The answer itself is handed out when
+            omitted.
         :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when no provider has
             the item while one of them could not answer.
         """
@@ -2463,6 +2467,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                             "ItemCls | None",
                             await prov.get_artist_by_external_id(external_id, external_id_type),
                         )
+                if result and accept is not None and not accept(result):
+                    result = None
+                if result and fetch is not None:
+                    result = await fetch(result)
             except EXTERNAL_ID_LOOKUP_ERRORS as err:
                 # one provider's trouble must not keep the others from being asked
                 self.logger.debug(
@@ -2474,7 +2482,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
                     could_not_answer = err
                 continue
-            if result and (accept is None or accept(result)):
+            if result:
                 return result
         if could_not_answer is not None:
             raise could_not_answer
