@@ -178,7 +178,9 @@ class MyDemoPluginprovider(PluginProvider):
         # registers nothing itself. The server already checked that the user may use this
         # instance and holds the "scope" of the action, that the uri is of one of its
         # "media_types", and, for an action with "requires_player": true, that player_id is
-        # a player the user may use (it is None for any other action).
+        # a player the user may use (it is None for any other action). It only checked the
+        # kind of item in the uri, not that the item exists or belongs to this provider, so
+        # look the item up yourself, as below.
         # Answer nothing, or a ConfigActionResult with a message the app shows and/or a url
         # it opens once; its translation_key is looked up in config_actions of strings.json.
         # Raise a MusicAssistantError to tell the user the action failed: get_item_by_uri
