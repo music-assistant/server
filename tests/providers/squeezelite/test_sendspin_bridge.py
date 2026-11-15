@@ -1356,6 +1356,34 @@ async def test_a_start_that_is_far_off_restarts_the_stream(rig: _Rig) -> None:
     assert rig.manager.get_start_offset_us(PLAYER_ID) == 0
 
 
+async def test_a_player_that_falls_behind_mid_stream_has_its_stream_restarted(rig: _Rig) -> None:
+    """A player that stalled without running dry stays off its timeline: it gets a new stream."""
+    session = await rig.start_playing()
+    rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
+    rig.play(session, 10)
+    await _settle()
+    assert rig.session is session
+
+    rig.play(session, 5, late_ms=3000)
+    await _settle()
+
+    assert rig.session is not session
+    assert session.ended
+    assert rig.client.play_url.await_count == 2
+
+
+async def test_a_start_that_is_corrected_in_a_jump_is_no_reason_to_restart(rig: _Rig) -> None:
+    """Until the jump of a late start is heard, the player reports the start error."""
+    session = await rig.start_playing()
+    rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
+
+    rig.play(session, 10, late_ms=500)
+    await _settle()
+
+    assert rig.session is session
+    assert rig.client.play_url.await_count == 1
+
+
 # ---------------------------------------------------------------- end and stop
 
 
