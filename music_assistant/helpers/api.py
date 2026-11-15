@@ -128,6 +128,7 @@ class APICommandHandler:
         :param authenticated: Whether authentication is required (default: True).
         :param required_scope: Scope required to execute the command, a tuple of scopes
             of which the caller needs one, None for any authenticated user.
+            ``Scope.ALL`` (``*``) means administrators only.
         :param allow_impersonation: Whether the command accepts a 'user' argument
             to execute the command on behalf of another user (default: False).
         :param alias: Whether this is an alias for backward compatibility (default: False).
@@ -217,6 +218,7 @@ def api_command(
     :param authenticated: Whether authentication is required (default: True).
     :param required_scope: Scope required to execute the command, a tuple of scopes
         of which the caller needs one, None means any authenticated user.
+        ``Scope.ALL`` (``*``) means administrators only.
     :param allow_impersonation: Whether the command accepts a 'user' argument
         to execute the command on behalf of another user (default: False).
     :param alias: Whether this is a backward-compatible alias (default: False).
