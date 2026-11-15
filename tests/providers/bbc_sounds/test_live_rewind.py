@@ -1,7 +1,9 @@
 """Tests for playing a BBC programme that is on air now from the station's rewind window."""
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator, Callable
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 from zoneinfo import ZoneInfo
@@ -22,6 +24,7 @@ from music_assistant_models.media_items import ItemMapping
 from music_assistant_models.media_items import PodcastEpisode as MAPodcastEpisode
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.players.power import _CONTINUES_PLAYBACK
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.live_rewind import (
     PROGRAMME_DATE_OFFSET,
@@ -30,7 +33,7 @@ from music_assistant.providers.bbc_sounds.live_rewind import (
     rewind_playlist_url,
     stream_programme,
 )
-from tests.common import use_real_create_task
+from tests.common import bare_player_controller, use_real_create_task
 
 LOGGER = logging.getLogger(__name__)
 BASE_URL = "https://example.com/live/bbc_radio_one/bbc_radio_one.isml/"
@@ -474,6 +477,7 @@ class TestSnapToLive:
     def create_task(self, provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch) -> Mock:
         """Capture the tasks the provider creates, with the queue seek mocked."""
         monkeypatch.setattr(provider.mass.player_queues, "seek", Mock())
+        monkeypatch.setattr(provider.mass.players, "without_member_power_on", nullcontext)
         create_task = Mock()
         monkeypatch.setattr(provider.mass, "create_task", create_task)
         return create_task
@@ -508,3 +512,24 @@ class TestSnapToLive:
         )
 
         create_task.assert_not_called()
+
+
+async def test_the_seek_back_to_the_live_edge_switches_no_member_of_a_group_on(
+    provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The seek back to the live edge is no start of a group, so it switches nothing on."""
+    details = _programme_details()
+    _playing_queue(monkeypatch, provider, details)
+    use_real_create_task(provider.mass)
+    provider.mass.players = bare_player_controller()
+    seen: list[bool] = []
+
+    async def _seek(*_args: object) -> None:
+        seen.append(_CONTINUES_PLAYBACK.get())
+
+    monkeypatch.setattr(provider.mass.player_queues, "seek", _seek)
+
+    provider._snap_to_live(details, PROGRAMME, PROGRAMME.start + 1500, PROGRAMME.start + 500)
+    await asyncio.sleep(0)
+
+    assert seen == [True]

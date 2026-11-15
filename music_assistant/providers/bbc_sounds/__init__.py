@@ -1192,7 +1192,8 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         self.logger.debug(
             "Seek past the live edge of %s, moving to %ss", programme_id.pid, position
         )
-        self.mass.create_task(self.mass.player_queues.seek(queue.queue_id, position))
+        with self.mass.players.without_member_power_on():
+            self.mass.create_task(self.mass.player_queues.seek(queue.queue_id, position))
 
     def _queue_playing(self, streamdetails: StreamDetails) -> PlayerQueue | None:
         """Return the queue whose current item is being streamed with these stream details."""

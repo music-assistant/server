@@ -1927,6 +1927,17 @@ for the device, as any start does.
   - `test_group_power_on.py::test_media_that_is_only_added_by_default_switches_nothing_on`
   - `test_group_power_on.py::test_media_that_plays_by_default_switches_its_power_control_on`
 
+### GROUP-54 · BBC Sounds' seek back to the live edge switches no member on
+
+The user starts a BBC Sounds programme that is on air at a point past the live edge, on
+Downstairs, a group with Den, a speaker switched off at its plug, as a member. BBC Sounds seeks
+the queue back to where the stream really starts. That seek is no start of the group: Den's plug
+is not switched on, and nothing waits for Den.
+
+- End-to-end: **no**: it needs BBC Sounds' own stream of a live programme, which the lab does not
+  serve.
+- Proven by: `tests/providers/bbc_sounds/test_live_rewind.py::test_the_seek_back_to_the_live_edge_switches_no_member_of_a_group_on`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered
