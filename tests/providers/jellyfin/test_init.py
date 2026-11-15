@@ -282,8 +282,15 @@ async def test_get_stream_details_album_loudness(mass: MusicAssistant) -> None:
     )
 
 
-async def test_quick_connect_disabled_on_server() -> None:
-    """A server with Quick Connect disabled is named as such on the form."""
+@pytest.mark.parametrize(
+    ("error", "slug"),
+    [
+        (ClientResponseError(mock.MagicMock(), (), status=401), "quick_connect_disabled"),
+        (TimeoutError(), "server_timeout"),
+    ],
+)
+async def test_quick_connect_start_failure(error: Exception, slug: str) -> None:
+    """A server that refuses or does not answer Quick Connect is named as such on the form."""
     session = _setup_flow_session(
         {},
         [
@@ -298,14 +305,14 @@ async def test_quick_connect_disabled_on_server() -> None:
         mock.patch.object(
             setup_flow,
             "initiate_quick_connect",
-            new=mock.AsyncMock(side_effect=_response_error(401)),
+            new=mock.AsyncMock(side_effect=error),
         ),
         # the flow asks for the form again, and the fake session has no third answer
         pytest.raises(StopAsyncIteration),
     ):
         await setup_flow.run_setup(session)
 
-    assert form.await_args_list[-1].kwargs["errors"] == {"base": "quick_connect_disabled"}
+    assert form.await_args_list[-1].kwargs["errors"] == {"base": slug}
 
 
 def _response_error(status: int) -> ClientResponseError:
