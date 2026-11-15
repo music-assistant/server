@@ -421,6 +421,13 @@ def test_dev_image_publication_rechecks_the_nightly_before_the_build() -> None:
     }
 
 
+def test_dev_image_publication_stops_at_a_failed_step() -> None:
+    """No step of the publishing job may fail without stopping the job."""
+    job = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["publish"]
+
+    assert not any("continue-on-error" in step for step in job["steps"])
+
+
 @needs_jq
 @pytest.mark.parametrize(("resolved", "ok"), [(NIGHTLY, True), ("sha256:" + "7" * 64, False)])
 def test_dev_image_publication_stops_when_the_nightly_moved(

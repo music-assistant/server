@@ -263,8 +263,8 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      # a re-run of an older run, or a nightly published since the resolve, would put :dev on
-      # another nightly than the one the check started
+      # the resolved nightly can be outdated by now: on a re-run of an older run, or when a
+      # nightly was published since the resolve
       - name: Require the resolved nightly
         env:
           RESOLVED_DIGEST: ${{ needs.resolve.outputs.digest }}
