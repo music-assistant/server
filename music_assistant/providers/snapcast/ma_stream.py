@@ -25,6 +25,7 @@ from music_assistant.controllers.streams.audio_processing import (
     AudioOutputPlan,
     get_media_session_id,
 )
+from music_assistant.helpers.audio import resolve_output_player_ids
 from music_assistant.helpers.buffered_generator import buffered
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.providers.snapcast.socket_server import SnapcastSocketServer
@@ -568,15 +569,16 @@ class SnapcastMAStream:
         session_id = get_media_session_id(self.media)
         if self._output_plan is None or queue_id is None or session_id is None:
             return
-        player_ids = set(self._output_plan.output_details.player_ids)
+        protocol_ids: set[str] = set()
         if self.snap_stream:
             for group in self._provider._snapserver.groups:
                 if group.stream != self.snap_stream.identifier:
                     continue
                 for client_id in group.clients:
-                    if player_id := self._provider._get_ma_id(client_id):
-                        player_ids.add(player_id)
-        for player_id in player_ids:
+                    if protocol_id := self._provider._get_ma_id(client_id):
+                        protocol_ids.add(protocol_id)
+        player_ids = set(self._output_plan.output_details.player_ids)
+        for player_id in player_ids | resolve_output_player_ids(self._mass, protocol_ids):
             self._mass.streams.audio_processing.update_output(
                 player_id,
                 self._output_plan,

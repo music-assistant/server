@@ -93,16 +93,18 @@ async def test_load_step_names_the_step_that_timed_out() -> None:
 
 async def test_load_step_separates_an_inner_timeout_from_its_own_bound() -> None:
     """A bare TimeoutError from the provider's own code is not blamed on the bound."""
-    with pytest.raises(SetupFailedError, match="timed out while trying to load"):
+    with pytest.raises(SetupFailedError, match="timed out while trying to load") as excinfo:
         async with _provider_load_step("demo", "load", 30):
             raise TimeoutError
+    assert _provider_error_from_exc(excinfo.value).error_code == SetupFailedError.error_code
 
 
 async def test_load_step_names_the_step_for_a_message_less_error() -> None:
-    """An exception without a message is not surfaced as just its class name."""
-    with pytest.raises(SetupFailedError, match="failed to load: KeyError"):
+    """An exception without a message is not surfaced as just its class name, and stays unexpected."""
+    with pytest.raises(SetupFailedError, match="failed to load: KeyError") as excinfo:
         async with _provider_load_step("demo", "load", 30):
             raise KeyError
+    assert _provider_error_from_exc(excinfo.value).error_code == 999
 
 
 async def test_load_step_leaves_informative_errors_alone() -> None:

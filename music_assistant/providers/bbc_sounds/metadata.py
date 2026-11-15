@@ -1,9 +1,9 @@
 """Metadata-related functions for BBC Sounds provider."""
 
+from auntie_sounds.models import LiveStation, Segment
 from music_assistant_models.streamdetails import StreamMetadata
-from sounds.models import LiveStation, Segment
 
-from .constants import _Constants
+from .constants import Constants
 
 
 def _find_segment(segments: list[Segment], elapsed_time: int) -> Segment | None:
@@ -15,9 +15,8 @@ def _find_segment(segments: list[Segment], elapsed_time: int) -> Segment | None:
                 for s in segments
                 if isinstance(s, Segment)
                 and s.offset is not None
-                and (start := s.offset.get("start")) is not None
-                and (end := s.offset.get("end")) is not None
-                and int(start) <= elapsed_time < int(end)
+                and s.offset.end is not None
+                and s.offset.start <= elapsed_time < s.offset.end
             ),
             None,
         )
@@ -26,18 +25,20 @@ def _find_segment(segments: list[Segment], elapsed_time: int) -> Segment | None:
 
 def _segment_to_metadata(now_playing: Segment) -> StreamMetadata | None:
     """Convert a now-playing segment to StreamMetadata."""
-    if isinstance(now_playing, Segment):
-        title = now_playing.titles.get("secondary", "")
-        artist = now_playing.titles.get("primary", "")
-        image_url = now_playing.image_url
-        if image_url and _Constants.BLANK_IMAGE_NAME in image_url:
-            image_url = None
-        return StreamMetadata(title=title, artist=artist, image_url=image_url)
-    return None
+    title = now_playing.titles.secondary or ""
+    artist = now_playing.titles.primary or ""
+    image_url = now_playing.image_url
+    if image_url and Constants.BLANK_IMAGE_NAME in image_url:
+        image_url = None
+    return StreamMetadata(title=title, artist=artist, image_url=image_url)
 
 
-def _station_programme_display(station: LiveStation) -> StreamMetadata | None:
-    if station and station.titles:
-        title = f"{station.titles.get('secondary')} • {station.titles.get('primary')}"
+def _station_programme_display(
+    station: LiveStation, detailed: bool = False
+) -> StreamMetadata | None:
+    if station and station.titles and station.titles.primary:
+        title = f"{station.titles.secondary} • {station.titles.primary}"
+        if detailed and station.synopses and station.synopses.short:
+            title = f"{title}: {station.synopses.short}"
         return StreamMetadata(title=title, artist=None, image_url=station.image_url)
     return None

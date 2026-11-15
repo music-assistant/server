@@ -22,7 +22,7 @@ from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
-from tests.common import (
+from music_assistant.testing import (
     adopt_bound_sendspin_port,
     suppress_auto_loaded_providers,
     suppress_initial_library_sync,
@@ -45,11 +45,13 @@ async def wait_for(predicate: Callable[[], bool], timeout: float = 25.0) -> bool
 
 
 def demo_players(mass: MusicAssistant) -> list[Player]:
-    """Return the registered demo players, sorted by id."""
-    return sorted(
-        (p for p in mass.players if p.player_id.startswith("demo_")),
-        key=lambda p: p.player_id,
-    )
+    """Return the players of the demo devices, sorted by the id of their device."""
+    players = {
+        protocol.protocol_id: protocol.player
+        for protocol in mass.players.iter_protocols()
+        if protocol.provider.domain == "_demo_player_provider" and protocol.player is not None
+    }
+    return [players[protocol_id] for protocol_id in sorted(players)]
 
 
 async def group_players(mass: MusicAssistant, leader: Player, members: list[Player]) -> None:
@@ -66,8 +68,8 @@ async def group_players(mass: MusicAssistant, leader: Player, members: list[Play
     await asyncio.sleep(0.5)
     for member in members:
         await mass.players.cmd_group(member.player_id, leader.player_id)
-    assert await wait_for(lambda: len(leader.state.group_members) >= 1 + len(members)), (
-        f"group did not form: {leader.state.group_members}"
+    assert await wait_for(lambda: len(leader.group_members) >= 1 + len(members)), (
+        f"group did not form: {leader.group_members}"
     )
 
 
@@ -169,5 +171,5 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
         finally:
             # also stop after a failed boot, or the half-started server's open database
             # connections keep their non-daemon threads alive and hang the interpreter
-            # at exit (see the same note in tests/conftest.py)
+            # at exit (see the same note in music_assistant/testing.py)
             await mass_instance.stop()

@@ -16,8 +16,16 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, QueueOption
+from music_assistant_models.enums import (
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    ProtocolRole,
+    QueueOption,
+)
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
@@ -41,9 +49,10 @@ from music_assistant.models.player import Player
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 from tests.common import (
-    MockPlayer,
+    MockProtocol,
     MockProvider,
     as_user,
+    attach_mock,
     use_api_command_registry,
     use_real_create_task,
 )
@@ -56,8 +65,8 @@ USERS = [
 COMMANDS = ["ungroup", "power"]
 
 
-class _Device(MockPlayer):
-    """A member that records its device calls in ``mass.calls``."""
+class _Device(MockProtocol):
+    """The protocol of a member device, which records the commands it gets in ``mass.calls``."""
 
     stop_reports_idle = True
 
@@ -67,14 +76,14 @@ class _Device(MockPlayer):
 
     async def stop(self) -> None:
         """Record the stop; a device may acknowledge it before it reports idle."""
-        self._calls.append((self.player_id, "stop"))
+        self._calls.append((self.protocol_id, "stop"))
         if self.stop_reports_idle:
             self._attr_playback_state = PlaybackState.IDLE
             self.update_state(force_update=True)
 
     async def power(self, powered: bool) -> None:
         """Record the power command and report the new state."""
-        self._calls.append((self.player_id, "power", powered))
+        self._calls.append((self.protocol_id, "power", powered))
         self._attr_powered = powered
         if not powered:
             self._attr_playback_state = PlaybackState.IDLE
@@ -82,7 +91,7 @@ class _Device(MockPlayer):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Record what the device is asked to play."""
-        self._calls.append((self.player_id, "play_media", media.source_id))
+        self._calls.append((self.protocol_id, "play_media", media.source_id))
 
     async def set_members(
         self,
@@ -91,7 +100,7 @@ class _Device(MockPlayer):
     ) -> None:
         """Record the member change and report it on all players."""
         self._calls.append(
-            (self.player_id, "members", sorted(player_ids_to_add or []), player_ids_to_remove)
+            (self.protocol_id, "members", sorted(player_ids_to_add or []), player_ids_to_remove)
         )
         await super().set_members(player_ids_to_add, player_ids_to_remove)
         for player in self.mass.players._players.values():
@@ -99,7 +108,7 @@ class _Device(MockPlayer):
 
 
 def _config(name: str, values: dict[str, Any]) -> MagicMock:
-    """Return a player config with the given values."""
+    """Return a protocol config with the given values."""
     config = MagicMock(default_name=name, enabled=True)
     config.name = None
     config.get_value.side_effect = lambda key, default=None: values.get(key, default)
@@ -130,15 +139,20 @@ def mass() -> Iterator[MagicMock]:
 
 
 async def _build(
-    mass: MagicMock, group_cls: type[Player], power_control: bool, playing: bool = True
-) -> tuple[PlayerController, Player]:
+    mass: MagicMock,
+    group_cls: type[SyncGroupPlayer | UniversalGroupPlayer],
+    power_control: bool,
+    playing: bool = True,
+) -> tuple[PlayerController, SyncGroupPlayer | UniversalGroupPlayer]:
     """
-    Register a group player "g" with static members "a" and "b", and a player "c".
+    Attach a group player "g" with static members "a" and "b", and a player "c".
 
-    The members have a native power control; "b" leads a sync group.
+    The devices of the players are the protocols "dev_a", "dev_b" and "dev_c"; the group is
+    the real group protocol of the given class, attached in the virtual role. The members
+    have a native power control; "b" leads a sync group.
 
     :param mass: The mocked server.
-    :param group_cls: The group player class.
+    :param group_cls: The class of the group protocol.
     :param power_control: Whether the group player has a (fake) power control.
     :param playing: Whether the group (and so its members) is playing.
     """
@@ -155,47 +169,59 @@ async def _build(
             CONF_DYNAMIC_GROUP_MEMBERS: False,
         },
     }
-    mass.config.get_raw_player_config_value.side_effect = lambda pid, key, default=None: values[
-        pid
-    ].get(key, default)
+    mass.config.get_player_value.side_effect = lambda pid, key, default=None: values[pid].get(
+        key, default
+    )
+    provider = MockProvider("test", mass=mass)
+    devices = {f"dev_{pid}" for pid in ("a", "b", "c")}
     for pid in ("a", "b", "c"):
-        name = f"Player {pid.upper()}"
-        device = _Device(MockProvider("test", mass=mass), pid, name)
-        device._config = _config(name, values[pid])
+        _, device = attach_mock(
+            provider, f"dev_{pid}", f"Player {pid.upper()}", player_id=pid, protocol_class=_Device
+        )
         device._attr_supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.SET_MEMBERS}
         if pid != "c":
             device._attr_supported_features.add(PlayerFeature.POWER)
             if playing:
                 device._attr_playback_state = PlaybackState.PLAYING
-        device._attr_can_group_with = {"a", "b", "c"} - {pid}
-        controller._players[pid] = device
-        device.set_initialized()
-    mass.config.get_base_player_config.return_value = _config("Group G", values["g"])
+        device._attr_can_group_with = devices - {device.protocol_id}
+    mass.config.get_base_protocol_config.return_value = _config("Group G", values["g"])
     domain = "sync_group" if group_cls is SyncGroupPlayer else "universal_group"
-    group = group_cls(MockProvider(domain, instance_id=domain, mass=mass), "g")  # type: ignore[arg-type]
-    controller._players["g"] = group
+    group = group_cls(MockProvider(domain, instance_id=domain, mass=mass), "g_group")  # type: ignore[arg-type]
+    group_player = Player(
+        mass,
+        "g",
+        PlayerConfig(
+            values={},
+            provider=domain,
+            player_id="g",
+            default_name="Group G",
+            player_type=PlayerType.GROUP,
+        ),
+    )
+    controller._players["g"] = group_player
+    controller._protocols[group.protocol_id] = group
+    group_player.add_protocol(group, ProtocolRole.VIRTUAL)
+    group.set_player(group_player)
     await group.on_config_updated()
     group._attr_powered = True if power_control else None
     if power_control:
-        group.extra_data[ATTR_FAKE_POWER] = True
+        group_player.extra_data[ATTR_FAKE_POWER] = True
     if isinstance(group, SyncGroupPlayer):
-        leader = controller._players["b"]
-        leader._attr_group_members = ["b", "a"]
-        group.sync_leader = leader
+        controller._protocols["dev_b"]._attr_group_members = ["dev_b", "dev_a"]
+        group.sync_leader = controller._players["b"]
         group._update_attributes()
     else:
         assert isinstance(group, UniversalGroupPlayer)
         if playing:
             group.stream = MagicMock(done=False, stop=AsyncMock())
         group._set_attributes()
-    group.set_initialized()
+    group_player.set_initialized()
     if playing:
         group._attr_playback_state = PlaybackState.PLAYING
     for player in (*controller._players.values(), controller._players["a"]):
-        player._cache.clear()
         player.update_state(force_update=True, signal_event=False)
     use_api_command_registry(mass, controller)
-    assert controller._players["a"].state.active_group == "g"
+    assert controller._players["a"].active_group == "g"
     return controller, group
 
 
@@ -224,11 +250,11 @@ def _end_state(controller: PlayerController) -> dict[str, tuple[Any, ...]]:
         player.update_state(force_update=True, signal_event=False)
     return {
         player.player_id: (
-            player.state.powered,
-            player.state.playback_state,
-            player.state.active_group,
-            player.state.synced_to,
-            sorted(player.state.group_members),
+            player.powered,
+            player.playback_state,
+            player.active_group,
+            player.synced_to,
+            sorted(player.group_members),
         )
         for player in players
     }
@@ -247,9 +273,15 @@ async def test_universal_group_static_member_ends_the_session(
     await _settle()
 
     # a powered off member is switched off by its group and by its own command
-    member_off = [("a", "power", False)] if command == "power" else []
+    member_off = [("dev_a", "power", False)] if command == "power" else []
     assert sorted(mass.calls) == sorted(
-        [("a", "stop"), ("b", "stop"), ("a", "power", False), ("b", "power", False), *member_off]
+        [
+            ("dev_a", "stop"),
+            ("dev_b", "stop"),
+            ("dev_a", "power", False),
+            ("dev_b", "power", False),
+            *member_off,
+        ]
     )
     assert group.powered is False
     off: tuple[Any, ...] = (False, PlaybackState.IDLE, None, None, [])
@@ -285,8 +317,10 @@ async def test_idle_universal_group_static_member_ends_the_session(
         await _send(controller, command, member)
     await _settle()
 
-    member_off = [(member, "power", False)] if command == "power" else []
-    assert sorted(mass.calls) == sorted([("a", "power", False), ("b", "power", False), *member_off])
+    member_off = [(f"dev_{member}", "power", False)] if command == "power" else []
+    assert sorted(mass.calls) == sorted(
+        [("dev_a", "power", False), ("dev_b", "power", False), *member_off]
+    )
     assert group.powered is False
     off: tuple[Any, ...] = (False, PlaybackState.IDLE, None, None, [])
     assert _end_state(controller) == {
@@ -308,8 +342,8 @@ async def test_universal_group_without_power_control_static_member_stops_the_ses
         await _send(controller, command)
     await _settle()
 
-    member_off = [("a", "power", False)] if command == "power" else []
-    assert sorted(mass.calls) == sorted([("a", "stop"), ("b", "stop"), *member_off])
+    member_off = [("dev_a", "power", False)] if command == "power" else []
+    assert sorted(mass.calls) == sorted([("dev_a", "stop"), ("dev_b", "stop"), *member_off])
     assert _end_state(controller) == {
         "a": (command != "power", PlaybackState.IDLE, None, None, []),
         "b": (True, PlaybackState.IDLE, None, None, []),
@@ -344,12 +378,14 @@ async def test_static_member_release_restarts_nothing_beyond_the_user(
     )
     queues._queue_data["g"] = PlayerQueueData(queue=queue, items=[item], session_id="session")
     queues.signal_update = MagicMock()  # type: ignore[method-assign]
-    leader = controller._players["b"]
-    leader._attr_current_media = PlayerMedia(
+    leader_device = cast("_Device", controller._protocols["dev_b"])
+    leader_device._attr_current_media = PlayerMedia(
         uri="mass:g:i", source_id="g", queue_item_id="i", queue_session_id="session"
     )
+    for protocol in controller._protocols.values():
+        if isinstance(protocol, _Device):
+            protocol.stop_reports_idle = False
     for player in controller._players.values():
-        player.stop_reports_idle = False  # type: ignore[attr-defined]
         player.update_state(force_update=True, signal_event=False)
     mass.config.get_player_dsp_config.side_effect = lambda pid: MagicMock(enabled=pid == "b")
     restarts: list[str | None] = []
@@ -370,7 +406,7 @@ async def test_static_member_release_restarts_nothing_beyond_the_user(
     assert restarts
     assert set(restarts) == {"limited"}
     queues._play_index.assert_not_awaited()
-    assert ("b", "members", [], ["a"]) in mass.calls
+    assert ("dev_b", "members", [], ["dev_a"]) in mass.calls
 
 
 @pytest.mark.parametrize("option", [QueueOption.PLAY, QueueOption.REPLACE])
@@ -428,7 +464,11 @@ async def test_play_media_on_a_static_member_ends_the_session(
         await queues.play_media("a", track, option)
     await _settle()
 
-    assert mass.calls == [("b", "stop"), ("b", "members", [], ["a"]), ("a", "play_media", "a")]
+    assert mass.calls == [
+        ("dev_b", "stop"),
+        ("dev_b", "members", [], ["dev_a"]),
+        ("dev_a", "play_media", "a"),
+    ]
     assert queues._queue_data["g"].items == []
     assert [
         item.media_item.item_id for item in queues._queue_data["a"].items if item.media_item

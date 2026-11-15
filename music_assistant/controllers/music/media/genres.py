@@ -295,7 +295,7 @@ class GenreController(MediaControllerBase[Genre]):
 
     async def library_count(self, favorite_only: bool = False) -> int:
         """
-        Return the total number of genres in the library.
+        Return the number of genres the default genre listing shows.
 
         Never restricted by the current user's provider filter.
 
@@ -303,12 +303,12 @@ class GenreController(MediaControllerBase[Genre]):
         """
         # Genres are library-only items without provider_mappings, so - just like
         # library_items below - the user's provider filter does not apply here.
-        if favorite_only:
-            query_params: dict[str, Any] = {}
-            clause = self._favorite_filter_clause(query_params, True)
-            sql_query = f"SELECT item_id FROM {self.db_table} WHERE {clause}"
-            return await self.mass.music.database.get_count_from_query(sql_query, query_params)
-        return await self.mass.music.database.get_count(self.db_table)
+        query_params: dict[str, Any] = {}
+        return await self.get_library_items_count_by_query(
+            favorite=favorite_only or None,
+            extra_query_parts=self._listing_query_parts(query_params),
+            extra_query_params=query_params,
+        )
 
     async def library_items(  # noqa: PLR0913
         self,
@@ -359,34 +359,9 @@ class GenreController(MediaControllerBase[Genre]):
         # Pass raw lowered search for alias matching (search_raw),
         # since the normalized :search param strips spaces/special chars.
         extra_params: dict[str, Any] = {}
-        # Random sampling reads the raw table, so excluded rows must be removed before LIMIT.
-        extra_parts: list[str] = [f"{self.db_table}.is_excluded = 0"]
+        extra_parts = self._listing_query_parts(extra_params, hide_empty, media_type, content_type)
         if search:
             extra_params["search_raw"] = f"%{search.strip().lower()}%"
-        if content_type == "music":
-            # the music/general taxonomy is stored as a NULL content_type
-            extra_parts.append(f"{self.db_table}.content_type IS NULL")
-        elif content_type is not None:
-            # restrict to a single taxonomy; composes (AND) with the media_type/hide_empty clause
-            extra_parts.append(f"{self.db_table}.content_type IS :filter_content_type")
-            extra_params["filter_content_type"] = content_type
-        if media_type is not None:
-            # media_type implies non-empty: return all genres (including non-default) that
-            # have at least one mapping for the requested type.
-            gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-            extra_parts.append(
-                f"EXISTS(SELECT 1 FROM {gm} gm_mt "
-                f"WHERE gm_mt.genre_id = {self.db_table}.item_id "
-                "AND gm_mt.media_type = :filter_media_type)"
-            )
-            extra_params["filter_media_type"] = media_type.value
-        elif hide_empty is None:
-            extra_parts.append(f"{self.db_table}.translation_key IS NOT NULL")
-        elif hide_empty:
-            gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-            extra_parts.append(
-                f"EXISTS(SELECT 1 FROM {gm} gm WHERE gm.genre_id = {self.db_table}.item_id)"
-            )
         items = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -1294,6 +1269,49 @@ class GenreController(MediaControllerBase[Genre]):
             ),
             "last_scan_mapped": self._last_scan_mapped,
         }
+
+    def _listing_query_parts(
+        self,
+        query_params: dict[str, Any],
+        hide_empty: bool | None = None,
+        media_type: MediaType | None = None,
+        content_type: str | None = None,
+    ) -> list[str]:
+        """
+        Return the SQL conditions of a genre listing; the defaults give the default listing.
+
+        :param query_params: Query params dict; the conditions' bound params are added to it.
+        :param hide_empty: See `library_items`.
+        :param media_type: See `library_items`.
+        :param content_type: See `library_items`.
+        """
+        # Random sampling reads the raw table, so excluded rows must be removed before LIMIT.
+        query_parts: list[str] = [f"{self.db_table}.is_excluded = 0"]
+        if content_type == "music":
+            # the music/general taxonomy is stored as a NULL content_type
+            query_parts.append(f"{self.db_table}.content_type IS NULL")
+        elif content_type is not None:
+            # restrict to a single taxonomy; composes (AND) with the media_type/hide_empty clause
+            query_parts.append(f"{self.db_table}.content_type IS :filter_content_type")
+            query_params["filter_content_type"] = content_type
+        if media_type is not None:
+            # media_type implies non-empty: return all genres (including non-default) that
+            # have at least one mapping for the requested type.
+            gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+            query_parts.append(
+                f"EXISTS(SELECT 1 FROM {gm} gm_mt "
+                f"WHERE gm_mt.genre_id = {self.db_table}.item_id "
+                "AND gm_mt.media_type = :filter_media_type)"
+            )
+            query_params["filter_media_type"] = media_type.value
+        elif hide_empty is None:
+            query_parts.append(f"{self.db_table}.translation_key IS NOT NULL")
+        elif hide_empty:
+            gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+            query_parts.append(
+                f"EXISTS(SELECT 1 FROM {gm} gm WHERE gm.genre_id = {self.db_table}.item_id)"
+            )
+        return query_parts
 
     @staticmethod
     async def _mapped_items[ItemCls: MediaItemType](

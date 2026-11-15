@@ -165,14 +165,22 @@ The provider discovers AirPlay devices via two MDNS service types:
    - Display name
    - Manufacturer and model (via `get_model_info()` in [helpers.py](helpers.py))
 3. **Filter checks**:
-   - Skip if player is disabled in config
+   - Skip if the player controller does not want the device (`mass.players.wants_protocol()`: the player is disabled, or its AirPlay output is switched off)
    - Skip ShairportSync instances running on the same Music Assistant server (to avoid conflicts with AirPlay Receiver provider)
-4. **Create player** → `AirPlayPlayer` instance
-5. **Register with player controller** → `mass.players.register()`
+4. **Create the protocol object** → `AirPlayPlayer` instance
+5. **Register it** → `mass.players.register()`: the controller finds the player of the device (or creates one) and attaches the protocol to it
 
-### Player ID Format
+A record for a device that is already attached only updates its discovery info, so the
+replay of the cached mDNS records (when the provider loads, and on every discovery request of the
+players controller, such as when a player is enabled or removed) offers exactly the devices that
+have no attached protocol. A device whose services
+disappear from mDNS is unregistered: its player stays, unavailable, until the device returns.
 
-Player IDs follow the format: `ap{mac_address}` (e.g., `ap1a2b3c4d5e6f`)
+### Protocol ID Format
+
+Protocol IDs follow the format: `ap{mac_address}` (e.g., `ap1a2b3c4d5e6f`). The player a
+protocol belongs to has an id of its own, minted when the controller creates it. Only a player
+that keeps an id it already has in the stored config can have the protocol id as its id.
 
 ## Pairing for Apple Devices
 
@@ -537,31 +545,31 @@ After connect, the binary reports the effective lead and the device's
 buffering window on stdout (`[STATUS] latency lead_ms=... device_min_frames=...
 device_max_frames=...`), which the stream parses and logs for diagnostics.
 
-## Player Types
+## Protocol Roles
 
-The provider uses a shared AirPlay streaming base with separate player models.
+The provider uses a shared AirPlay streaming base with separate protocol models. Each
+AirPlay protocol is attached to the player of its device; the role it reports is fixed at
+attach.
 
-### PlayerType.PLAYER
+### Native (`AirPlayControlPlayer`)
 - **Devices**: Apple TV, HomePod
-- **Reason**: These are standalone players with a native control and
-  playback-monitoring plane (Companion/MRP) Music Assistant can use
-- **Behavior**: Exposed as top-level players, with external playback monitoring
-  and native controls when the device advertises them
-- **Not merged**: These players are NOT combined with other protocols
+- **Reason**: These devices have a native control and playback-monitoring plane
+  (Companion/MRP) Music Assistant can use
+- **Behavior**: The AirPlay protocol is the device's own protocol, with external
+  playback monitoring and native controls when the device advertises them
 
-### PlayerType.PROTOCOL
+### Audio (`GenericAirPlayPlayer`)
 - **Devices**: All other AirPlay receivers
 - **Reason**: AirPlay is just one output protocol among many for these devices (often supporting Chromecast, DLNA, etc.)
-- **Behavior**: Automatically merged into a **Universal Player** if other protocols are detected for the same device
+- **Behavior**: Joins the player of the same device when another protocol of it is attached, else gets a player of its own
 - **Example**: A Sonos speaker supporting both AirPlay and Chromecast will appear as a single "Sonos" player with selectable output protocols
 
 **Detection**: [provider.py](provider.py) selects `AirPlayControlPlayer` for
 Apple TV and HomePod devices (`is_apple_device`); all other endpoints use
 `GenericAirPlayPlayer`. The model is decided from the device's own identity
-only and never changes for a registered player: the model determines the
-player id exposed to API consumers (protocol endpoint behind a parent player
-vs standalone player), which must stay stable for Home Assistant and other API
-clients. Unlike the separate Companion/MRP mDNS records, the identity is
+only and never changes for an attached protocol: the model determines the
+role the protocol reports, which decides how it is combined with the other
+protocols of the device. Unlike the separate Companion/MRP mDNS records, the identity is
 always available in the very record that creates the player, so the decision
 cannot vary with discovery timing. Which control features are offered on a
 control-capable player is then decided from the advertised capabilities
@@ -589,14 +597,12 @@ Apple TV models generally expose pairable Companion and an AirPlay MRP tunnel.
 Current HomePod firmware advertises Companion without a PIN-pairing path, so
 Companion power/wake control is not available; HomePods instead use AirPlay's
 transient MRP tunnel with no PIN or persisted credentials. Third-party receivers
-remain protocol endpoints regardless of advertised control capabilities, which
-keeps their exposed player id stable and their Universal Player merging intact.
+remain audio protocols regardless of advertised control capabilities, which
+keeps the way they are combined with the other protocols of the device stable.
 
 **For more details on output protocols and protocol linking**, see the [Player Controller README](../../controllers/players/README.md), which explains:
-- How multiple protocol players for the same physical device are automatically linked
-- The Universal Player concept for devices without native vendor support
+- How the protocols of one physical device are attached to one player
 - Protocol selection and device identifier matching
-- Native player linking vs. Universal Player creation
 
 ## Configuration Options
 
@@ -682,7 +688,7 @@ AirPlay players can be bridged to the Sendspin protocol, enabling cross-protocol
 When the Sendspin provider is enabled, each AirPlay player is automatically registered as an external Sendspin client:
 
 1. **Registration**: The bridge registers the AirPlay player with the Sendspin server using the device's MAC address as the `client_id`
-2. **Protocol Linking**: The player controller links the SendspinPlayer (created by Sendspin provider) with the AirPlayPlayer via MAC address matching
+2. **Protocol Linking**: The bridge's Sendspin protocol rides on the AirPlay protocol, so the player controller attaches it to the player the AirPlay protocol belongs to
 3. **Audio Flow**: When grouped, Sendspin handles timing and synchronization while AirPlay streams the audio
 
 ```
@@ -691,7 +697,7 @@ When the Sendspin provider is enabled, each AirPlay player is automatically regi
 │  (protocol linked)  │     │                     │
 └─────────┬───────────┘     └──────────┬──────────┘
           │                            │
-          │ MAC address match          │
+          │ rides on the AirPlay protocol
           │                            │
 ┌─────────▼───────────┐     ┌──────────▼──────────┐
 │ Sendspin PushStream │────▶│ BridgePlayerRole    │

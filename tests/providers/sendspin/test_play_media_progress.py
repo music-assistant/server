@@ -12,9 +12,7 @@ behind a protocol parent is pushed once the parent starts playing.
 from __future__ import annotations
 
 import time
-from collections.abc import Coroutine
 from types import SimpleNamespace
-from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 from music_assistant_models.enums import MediaType, PlaybackState
@@ -37,17 +35,19 @@ def _player(
     :param state_after: The state's playback state once update_state has run.
     """
     player = object.__new__(SendspinPlayer)
-    player._player_id = "p1"
+    player._protocol_id = "p1"
     player.logger = Mock()
     session = Mock(cancel=AsyncMock(), start=AsyncMock())
     player.playback_session = session
     player._get_cast_bridge_manager = Mock(return_value=None)  # type: ignore[method-assign]
     # update_state() is mocked out (its real implementation needs a fully-initialized
     # player/mass), so the mock swaps in the snapshot it would normally rebuild.
-    player._state = SimpleNamespace(current_media=media_before)  # type: ignore[assignment]
+    player._player = SimpleNamespace(  # type: ignore[assignment]
+        current_media=media_before
+    )
 
     def _update_state() -> None:
-        player._state = SimpleNamespace(  # type: ignore[assignment]
+        player._player = SimpleNamespace(  # type: ignore[assignment]
             current_media=media_after, playback_state=state_after
         )
 
@@ -70,7 +70,7 @@ def _media(item: int = 1, *, elapsed_time: int | None = None) -> PlayerMedia:
 
 
 def _stopped_media() -> PlayerMedia:
-    """Return media whose position a parent that hasn't caught up still dates to the stop."""
+    """Return media whose position still dates to the stop."""
     media = _media(elapsed_time=19)
     media.elapsed_time_last_updated = time.time() - 45
     return media
@@ -80,31 +80,14 @@ async def _play_media(
     player: SendspinPlayer,
     media: PlayerMedia,
     synced_to: str | None,
-    protocol_parent_id: str | None = None,
 ) -> None:
     with (
         patch.object(
             SendspinPlayer, "synced_to", new_callable=PropertyMock, return_value=synced_to
         ),
-        patch.object(
-            SendspinPlayer,
-            "protocol_parent_id",
-            new_callable=PropertyMock,
-            return_value=protocol_parent_id,
-        ),
         patch.object(SendspinPlayer, "display_name", new_callable=PropertyMock, return_value="P"),
     ):
         await SendspinPlayer.play_media(player, media)
-
-
-def _on_protocol_parent_updated(
-    player: SendspinPlayer, changed_values: dict[str, tuple[Any, Any]]
-) -> None:
-    with patch.object(SendspinPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
-        SendspinPlayer.on_protocol_parent_updated(player, Mock(), changed_values)
-
-
-_STARTED_PLAYING = {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
 
 
 async def test_play_media_same_item_pushes_progress() -> None:
@@ -122,60 +105,13 @@ async def test_play_media_same_item_pushes_progress() -> None:
     assert create_task.call_args.kwargs["abort_existing"] is True
 
 
-async def test_play_media_resume_leaves_push_to_protocol_parent() -> None:
-    """A resume behind a parent that isn't playing yet doesn't push the parent's old position."""
+async def test_play_media_of_a_player_not_playing_yet_leaves_the_push_to_its_group() -> None:
+    """A restart of the same item on a player that is not playing yet pushes no old position."""
     player, create_task, send_metadata, _session = _player(
-        media_before=_stopped_media(), media_after=_stopped_media()
-    )
-    cast("Mock", player.mass).players.get_player.return_value = Mock(
-        state=SimpleNamespace(playback_state=PlaybackState.IDLE)
+        media_before=_stopped_media(), media_after=_stopped_media(), state_after=PlaybackState.IDLE
     )
 
-    await _play_media(player, _media(), synced_to=None, protocol_parent_id="parent")
-
-    send_metadata.assert_not_called()
-    create_task.assert_not_called()
-
-
-def test_protocol_parent_starting_to_play_pushes_its_position() -> None:
-    """A resume pushes the position the parent took on playing, not the stopped one."""
-    fresh = _media(elapsed_time=19)
-    player, create_task, send_metadata, _session = _player(
-        media_before=_stopped_media(), media_after=fresh
-    )
-    pushed_from: list[PlayerMedia | None] = []
-
-    def _create_task(coro: Coroutine[Any, Any, None], **_kwargs: object) -> None:
-        pushed_from.append(player.state.current_media)
-        coro.close()
-
-    create_task.side_effect = _create_task
-
-    _on_protocol_parent_updated(player, _STARTED_PLAYING)
-
-    send_metadata.assert_called_once()
-    assert pushed_from == [fresh]
-
-
-def test_protocol_parent_position_change_alone_pushes_nothing() -> None:
-    """A parent position correction is not forwarded, since the queue briefly reports stale ones."""
-    player, create_task, send_metadata, _session = _player(
-        media_before=_media(), media_after=_media()
-    )
-
-    _on_protocol_parent_updated(player, {"current_media.elapsed_time": (40, 0)})
-
-    send_metadata.assert_not_called()
-    create_task.assert_not_called()
-
-
-def test_protocol_parent_update_while_idle_pushes_nothing() -> None:
-    """An idle player sends nothing on a parent update, such as its own stop or another output."""
-    player, create_task, send_metadata, _session = _player(
-        media_before=_media(), media_after=_media(), state_after=PlaybackState.IDLE
-    )
-
-    _on_protocol_parent_updated(player, _STARTED_PLAYING)
+    await _play_media(player, _media(), synced_to=None)
 
     send_metadata.assert_not_called()
     create_task.assert_not_called()

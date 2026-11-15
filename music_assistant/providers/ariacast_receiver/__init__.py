@@ -17,7 +17,6 @@ from music_assistant_models.enums import (
     ContentType,
     ImageType,
     MediaType,
-    PlayerType,
     ProviderFeature,
     SourceControl,
     StreamType,
@@ -315,7 +314,8 @@ class AriaCastReceiver(PluginProvider):
             return
         self._in_use_by_player = owner_player_id
         self._active_session_id = stream_session_id
-        self._session_player_id = player_id
+        player = self.mass.players.get_player_by_protocol(player_id)
+        self._session_player_id = player.player_id if player else None
 
     async def on_source_unselected(
         self, source_id: str, owner_player_id: str, stream_session_id: str
@@ -519,9 +519,9 @@ class AriaCastReceiver(PluginProvider):
         if not player_id:
             return None
         player = self.mass.players.get_player(player_id)
-        if not player or player.state.volume_level is None:
+        if not player or player.volume_level is None:
             return None
-        return int(player.state.volume_level)
+        return int(player.volume_level)
 
     async def _handle_volume_command(
         self, ws: web.WebSocketResponse, command: str, payload: dict[str, Any]
@@ -534,7 +534,7 @@ class AriaCastReceiver(PluginProvider):
             return
         player = self.mass.players.get_player(player_id)
 
-        if not player or player.state.volume_level is None:
+        if not player or player.volume_level is None:
             with suppress(Exception):
                 await ws.send_json(
                     {"command": "volume", "action": "volume", "level": -1, "success": False}
@@ -565,7 +565,7 @@ class AriaCastReceiver(PluginProvider):
 
         # Re-fetch the resulting level after the command was applied.
         player = self.mass.players.get_player(player_id)
-        vol = player.state.volume_level if player else None
+        vol = player.volume_level if player else None
         level = int(vol) if vol is not None else -1
         with suppress(Exception):
             await ws.send_json({"command": "volume", "level": level, "success": level != -1})
@@ -774,8 +774,8 @@ class AriaCastReceiver(PluginProvider):
                 self.logger.debug("Triggering play on player %s", target)
                 self.mass.create_task(self._safe_play_media(target))
         elif not is_playing and was_playing and self._in_use_by_player:
-            # deselect the owner, not _session_player_id: that can be a protocol
-            # player whose stream we were consumed over, while the session hangs
+            # deselect the owner, not _session_player_id: that can be the group
+            # member whose stream we were consumed over, while the session hangs
             # off the owner
             owner_player_id = self._in_use_by_player
             source_session = self.mass.players.get_audio_source_session(owner_player_id)
@@ -864,14 +864,15 @@ class AriaCastReceiver(PluginProvider):
 
     async def _cmd_pause(self) -> None:
         self.logger.info("PAUSE")
-        # Stop the protocol player actually holding the stream (e.g. a sync
-        # group's leader) so a paused group stays formed
-        player_id = self._session_player_id or self._active_player_id
         # Clear queue guard before stop so a fast resume can re-trigger play_media
         self._in_use_by_player = None
         self._is_playing = False
-        if player_id:
-            await self.mass.players.cmd_stop(player_id)
+        if self._session_player_id:
+            # Stop the player actually holding the stream (e.g. a sync group's
+            # leader) so a paused group stays formed
+            await self.mass.players._handle_cmd_stop(self._session_player_id)
+        elif self._active_player_id:
+            await self.mass.players.cmd_stop(self._active_player_id)
         await self._forward_action("pause")
         await self._broadcast_meta()
 
@@ -1005,8 +1006,8 @@ class AriaCastReceiver(PluginProvider):
     @property
     def _ariacast_name(self) -> str:
         """Return the advertised receiver name: the connected player's display name."""
-        if player := self.mass.players.get_player(self._default_player_id):
-            return player.display_name
+        if player := self.mass.players.get_player_or_protocol_player(self._default_player_id):
+            return player.name
         return DEFAULT_ARIACAST_NAME
 
     def _get_target_player_id(self) -> str | None:
@@ -1028,17 +1029,16 @@ class AriaCastReceiver(PluginProvider):
 
     def _resolve_queue_player(self, player_id: str) -> str | None:
         """
-        Return the player that owns the queue for the given player, or None if unavailable.
+        Return the id of the player the given id names, or None if it is unavailable.
 
-        :param player_id: The configured or remembered player id.
+        :param player_id: The configured or remembered player id; a configured id can
+            also name a protocol of the player.
         """
-        if not player_id or not (player := self.mass.players.get_player(player_id)):
+        if not player_id or not (
+            player := self.mass.players.get_player_or_protocol_player(player_id)
+        ):
             return None
-        if player.type == PlayerType.PROTOCOL and player.protocol_parent_id:
-            if self.mass.players.get_player(player.protocol_parent_id):
-                return player.protocol_parent_id
-            return None
-        return player_id
+        return player.player_id if player.available else None
 
 
 # ---------------------------------------------------------------------------

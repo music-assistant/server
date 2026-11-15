@@ -17,10 +17,12 @@ from pyblu.errors import PlayerUnexpectedResponseError, PlayerUnreachableError
 from music_assistant.constants import (
     CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
     CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_ENFORCED,
+    MAIN_ZONE,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.util import is_valid_mac_address
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
+from music_assistant.models.player import DeviceInfo, PlayerMedia, PlayerSource
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.bluesound.const import (
     IDLE_POLL_INTERVAL,
     MAX_CONNECTING_POLLS,
@@ -38,7 +40,7 @@ if TYPE_CHECKING:
     from .provider import BluesoundDiscoveryInfo, BluesoundPlayerProvider
 
 
-class BluesoundPlayer(Player):
+class BluesoundPlayer(PlayerProtocol):
     """Holds the details of the (discovered) BluOS player."""
 
     _attr_trusts_reported_source = True
@@ -46,14 +48,14 @@ class BluesoundPlayer(Player):
     def __init__(
         self,
         provider: BluesoundPlayerProvider,
-        player_id: str,
+        protocol_id: str,
         discovery_info: BluesoundDiscoveryInfo,
         name: str,
         ip_address: str,
         port: int,
     ) -> None:
         """Initialize the BluOS Player."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self.port = port
         self.discovery_info = discovery_info
         self.ip_address = ip_address
@@ -73,6 +75,13 @@ class BluesoundPlayer(Player):
             manufacturer="BluOS",
         )
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
+        # the zones of a multi-zone device share its MAC and IP: the id of the zone tells
+        # them apart, and the primary streamer is the main zone (a secondary zone has the
+        # port of its zone in its id)
+        self._attr_device_info.add_identifier(
+            IdentifierType.ZONE,
+            MAIN_ZONE if protocol_id == discovery_info.get("mac") else protocol_id,
+        )
         # Only add MAC address if it's valid (not 00:00:00:00:00:00)
         if mac_address := discovery_info.get("mac"):
             if is_valid_mac_address(mac_address):
@@ -91,7 +100,7 @@ class BluesoundPlayer(Player):
     async def setup(self) -> None:
         """Set up the player."""
         await self.update_attributes()
-        await self.mass.players.register_or_update(self)
+        await self.mass.players.register(self)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
@@ -186,7 +195,7 @@ class BluesoundPlayer(Player):
         """Handle PLAY MEDIA for BluOS player using the provided URL."""
         self.logger.debug("Play_media called")
         self.logger.debug(media)
-        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         play_state = await self.client.play_url(url, timeout=1)
 
         # Enable dynamic polling
@@ -218,8 +227,7 @@ class BluesoundPlayer(Player):
 
         def player_id_to_paired_player(player_id: str) -> PairedPlayer:
             client = cast(
-                "BluesoundPlayer",
-                self.mass.players.get_player(player_id, raise_unavailable=True),
+                "BluesoundPlayer", self.provider.get_protocol(player_id, raise_unavailable=True)
             )
             return PairedPlayer(client.ip_address, client.port)
 
@@ -233,7 +241,7 @@ class BluesoundPlayer(Player):
                 except (PlayerUnexpectedResponseError, PlayerUnreachableError) as err:
                     self.logger.debug(f"Could not remove players: {err!s}")
                     continue
-                removed_player = self.mass.players.get_player(player_id)
+                removed_player = self.provider.get_protocol(player_id)
                 if removed_player:
                     cast("BluesoundPlayer", removed_player)._set_polling_dynamic()
                     removed_player._attr_current_media = None
@@ -248,7 +256,7 @@ class BluesoundPlayer(Player):
                     self.logger.debug(f"Could not add player {paired_player}: {err!s}")
                     continue
                 self._attr_group_members.append(player_id)
-                added_player = self.mass.players.get_player(player_id)
+                added_player = self.provider.get_protocol(player_id)
                 if added_player:
                     cast("BluesoundPlayer", added_player)._set_polling_dynamic()
                     added_player.update_state()
@@ -262,9 +270,9 @@ class BluesoundPlayer(Player):
             return
         provider = cast("BluesoundPlayerProvider", self.provider)
         if (leader_player_id := provider.player_map.get((leader.ip, leader.port))) and (
-            leader_player := self.mass.players.get_player(leader_player_id)
+            leader_player := provider.get_protocol(leader_player_id)
         ):
-            await leader_player.set_members(None, [self.player_id])
+            await leader_player.set_members(None, [self.protocol_id])
 
     async def poll(self) -> None:
         """Poll player for state updates."""
@@ -352,7 +360,7 @@ class BluesoundPlayer(Player):
 
     async def update_attributes(self) -> None:
         """Update the BluOS player attributes."""
-        self.logger.debug(f"updating {self.player_id} attributes")
+        self.logger.debug(f"updating {self.protocol_id} attributes")
         if self.dynamic_poll_count > 0:
             self.dynamic_poll_count -= 1
 
@@ -422,8 +430,13 @@ class BluesoundPlayer(Player):
             # Player has group leader
             self._attr_group_members.clear()
             leader = self.sync_status.leader
-            leader_player_id = provider.player_map.get((leader.ip, leader.port), None)
-            self._attr_active_source = leader_player_id
+            leader_protocol_id = provider.player_map.get((leader.ip, leader.port), None)
+            leader_player = (
+                self.mass.players.get_player_by_protocol(leader_protocol_id)
+                if leader_protocol_id
+                else None
+            )
+            self._attr_active_source = leader_player.player_id if leader_player else None
 
         self.update_state()
 

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.bluesound.const import PLAYER_SOURCE_MAP
 from music_assistant.providers.bluesound.player import BluesoundPlayer
-from tests.common import MockPlayer, MockProvider
+from tests.common import MockProvider, attach_mock, mock_player_mass
 
 
 def _player(input_id: str | None = None, service: str | None = "LocalMusic") -> MagicMock:
@@ -105,37 +105,49 @@ def test_ma_stream_is_not_classified_as_external() -> None:
 @pytest.mark.parametrize("own_stream", [False, True], ids=["library", "ma_stream"])
 def test_published_source_after_ma_to_library_switch(own_stream: bool) -> None:
     """Publish library metadata despite the remembered MA queue, but trust no MA stream."""
-    mass = MagicMock()
-    mass.closing = False
-    mass.config.get_raw_player_config_value = MagicMock(
-        side_effect=lambda _player_id, _key, default=None: default
-    )
-    mass.player_queues.get = MagicMock(return_value=None)
-    mass.players.get_audio_source_session = MagicMock(return_value=None)
-    mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, volume: volume)
+    mass = mock_player_mass()
     mass.streams.base_url = "http://mass.example:8097"
-    player_id = "bluesound_player"
-    player = cast(
-        "BluesoundPlayer", MockPlayer(MockProvider("bluesound", mass=mass), player_id, "BluOS")
+    player, mock_protocol = attach_mock(
+        MockProvider("bluesound", mass=mass), "bluesound_player", "BluOS"
     )
-    player._attr_trusts_reported_source = BluesoundPlayer._attr_trusts_reported_source
-    player._attr_playback_state = PlaybackState.PLAYING
-    player.set_active_mass_source(player_id)
+    protocol = cast("BluesoundPlayer", mock_protocol)
+    protocol._attr_trusts_reported_source = BluesoundPlayer._attr_trusts_reported_source
+    protocol._attr_playback_state = PlaybackState.PLAYING
+    player.set_active_mass_source(player.player_id)
     player.update_state(signal_event=False)
-    assert player.state.active_source == player_id
+    assert player.active_source == player.player_id
 
     status = _player().status
     if own_stream:
         status.stream_url = "http://mass.example:8097/flow/test.flac"
-    player.status = status
-    player.client = MagicMock(base_url="http://player.example:11000")
-    BluesoundPlayer._resolve_source(player)
-    BluesoundPlayer._resolve_media(player)
+    protocol.status = status
+    protocol.client = MagicMock(base_url="http://player.example:11000")
+    BluesoundPlayer._resolve_source(protocol)
+    BluesoundPlayer._resolve_media(protocol)
     player.update_state(signal_event=False)
 
-    assert player.state.active_source == (player_id if own_stream else "LocalMusic")
+    assert player.active_source == (player.player_id if own_stream else "LocalMusic")
     if not own_stream:
-        assert player.state.current_media is not None
-        assert player.state.current_media.title == "Kashmir"
-        assert player.state.current_media.artist == "Led Zeppelin"
-        assert player.state.current_media.album == "Mothership"
+        assert player.current_media is not None
+        assert player.current_media.title == "Kashmir"
+        assert player.current_media.artist == "Led Zeppelin"
+        assert player.current_media.album == "Mothership"
+
+
+async def test_a_grouped_zone_reports_the_player_of_its_leader_as_source() -> None:
+    """A zone that follows a leader names the leader's player, not its protocol, as source."""
+    mass = mock_player_mass()
+    leader_player, _ = attach_mock(MockProvider("bluesound", mass=mass), "leader_zone", "BluOS")
+    fake = MagicMock()
+    fake.mass = mass
+    fake.dynamic_poll_count = 0
+    fake.provider.player_map = {("192.168.1.62", 11000): "leader_zone"}
+    fake.client.status = AsyncMock(return_value=MagicMock(input_id=None, mute=False))
+    leader = MagicMock(ip="192.168.1.62", port=11000)
+    fake.client.sync_status = AsyncMock(return_value=MagicMock(leader=leader, volume=20))
+    fake._get_bluesound_sources = AsyncMock(return_value=[])
+
+    await BluesoundPlayer.update_attributes(cast("BluesoundPlayer", fake))
+
+    assert leader_player.player_id != "leader_zone"
+    assert fake._attr_active_source == leader_player.player_id

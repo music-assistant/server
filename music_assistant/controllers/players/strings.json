@@ -14,6 +14,16 @@
     "description": "Configuration of the core player management module"
   },
   "errors": {
-    "member_cannot_follow_protocol": "Cannot add {0} to {1}: {2} cannot play over {3}."
+    "member_cannot_follow_protocol": "Cannot add {0} to {1}: {2} cannot play over {3}.",
+    "merge_session_only": "{0} only exists while it is connected and can not be merged.",
+    "merge_group": "{0} is a group and can not be merged.",
+    "merge_two_own_protocols": "{0} and {1} each stand for a device of their own, so they can not be one player.",
+    "merge_shared_domain": "{0} and {1} both have a {2} output, so they can not be one player.",
+    "merge_identifiers_differ": "{0} and {1} report different devices, so they can not be one player.",
+    "unlink_session_only": "{0} only exists while it is connected and can not get a player of its own.",
+    "unlink_derived": "{0} rides on another output and follows it.",
+    "unlink_group": "{0} belongs to a group and can not be taken off it.",
+    "unlink_only_protocol": "{0} is the only output of its player, which is a player of its own already.",
+    "player_busy": "{0} is still busy with a previous command. Try again in a moment."
   }
 }

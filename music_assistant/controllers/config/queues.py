@@ -151,7 +151,10 @@ class PlayerQueueConfigMixin:
             )
             if requires_restart and queue.state == PlaybackState.PLAYING:
                 await self.mass.player_queues.stop(queue_id)
-                self.mass.call_later(1, self.mass.player_queues.resume, queue_id, False)
+                # a timer keeps the context it is set in: the resume is no command that
+                # starts a group
+                with self.mass.players.without_member_power_on():
+                    self.mass.call_later(1, self.mass.player_queues.resume, queue_id, False)
         return self.get_player_queue_config(queue_id)
 
     def _parse_player_queue_config(
