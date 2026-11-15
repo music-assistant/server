@@ -326,7 +326,6 @@ class _Rig:
         protocol.config.get_value = MagicMock(return_value=sync_adjust)
         protocol.get_supported_sample_rates.return_value = [(44100, 16)]
         protocol.volume_set = AsyncMock()
-        protocol.release_native_playback = AsyncMock()
         protocol.sendspin_bridge = None
         protocol.player.get_output_protocol_by_domain.return_value = None
         protocol.player.current_media = None

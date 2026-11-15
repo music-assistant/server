@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-from functools import partial
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -13,103 +10,49 @@ from aiosendspin.clock import ManualClock, RawMonotonicClock
 from aioslimproto.cli import SlimCLICommand, parse_args
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
-from music_assistant_models.enums import ContentType, ProtocolRole
+from music_assistant_models.enums import ProtocolRole, ProviderFeature
 from music_assistant_models.errors import PlayerUnavailableError
-from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.providers.squeezelite.player import SqueezelitePlayer
+from music_assistant.providers.squeezelite import SUPPORTED_FEATURES
 from music_assistant.providers.squeezelite.provider import SqueezelitePlayerProvider
 from music_assistant.providers.squeezelite.sendspin_bridge import (
     BRIDGE_STREAM_PATH,
     SendspinBridgeManager,
 )
 
-FLOW_FORMAT = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=192000, bit_depth=32)
 PLAYER_COMMANDS = ("cmd_play", "cmd_pause", "cmd_play_pause", "cmd_stop")
 
 
-@pytest.mark.parametrize(
-    ("fmt", "output_format", "expected_content_type"),
-    [
-        (
-            "wav",
-            AudioFormat(content_type=ContentType.WAV, sample_rate=192000, bit_depth=24),
-            "audio/wav;rate=192000;bitrate=24;channels=2",
-        ),
-        (
-            "pcm",
-            AudioFormat(content_type=ContentType.PCM_S24LE, sample_rate=96000, bit_depth=24),
-            "audio/pcm;codec=pcm;rate=96000;bitrate=24;channels=2",
-        ),
-    ],
-)
-async def test_multi_client_stream_content_type_describes_output_format(
-    fmt: str, output_format: AudioFormat, expected_content_type: str
-) -> None:
-    """Squeezelite derives the PCM params from the Content-Type, so it must match the stream."""
-
-    async def _stream(**_kwargs: Any) -> AsyncGenerator[bytes]:
-        yield b"\x00" * 16
-
-    stream = MagicMock(done=False, audio_format=FLOW_FORMAT, queue_id="q", session_id="s")
-    stream.get_stream = _stream
-    sync_parent = MagicMock(multi_client_stream=stream)
-    child = MagicMock(display_name="Child")
-    provider = MagicMock()
-    # the sync leader and its child are both protocol objects of this provider
-    provider.get_protocol = {"leader": sync_parent, "child": child}.get
-    provider.mass.players.get_player.return_value = None
-    provider.mass.streams.audio.get_output_format = AsyncMock(return_value=output_format)
-    provider.mass.streams.audio.get_player_output_plan.return_value = MagicMock(filter_params=[])
-    request = MagicMock(method="GET")
-    request.query = {"player_id": "leader", "fmt": fmt, "child_player_id": "child"}
-    resp = MagicMock(prepare=AsyncMock(), write=AsyncMock())
-
-    with patch("aiohttp.web.StreamResponse", return_value=resp) as stream_response:
-        await SqueezelitePlayerProvider._serve_multi_client_stream(provider, request)
-
-    assert stream_response.call_args.kwargs["headers"]["Content-Type"] == expected_content_type
+def test_the_provider_syncs_no_players_itself() -> None:
+    """Squeezelite players are synced by the Sendspin provider, through their bridges."""
+    assert ProviderFeature.SYNC_PLAYERS not in SUPPORTED_FEATURES
 
 
-def _synced_member() -> tuple[MagicMock, SqueezelitePlayer, MagicMock]:
-    """Return a mocked provider whose attached protocol 'member' is synced to 'leader'."""
-    leader = SqueezelitePlayer.__new__(SqueezelitePlayer)
-    leader._protocol_id = "leader"
-    leader._attr_group_members = ["leader", "member"]
-    update_state = MagicMock()
-    leader.update_state = update_state  # type: ignore[misc,method-assign]
-    member = MagicMock(protocol_id="member", synced_to="leader")
+def test_a_client_that_disconnects_is_detached_from_its_player() -> None:
+    """A client that disconnects has its protocol unregistered."""
     provider = MagicMock()
     provider.mass.closing = False
-    provider.get_protocol = MagicMock(side_effect={"leader": leader, "member": member}.get)
-    provider._release_from_sync_leader = partial(
-        SqueezelitePlayerProvider._release_from_sync_leader, provider
-    )
-    return provider, leader, update_state
-
-
-def test_disconnected_member_leaves_its_sync_leader() -> None:
-    """A synced player that disconnects is dropped from its leader and detached from its player."""
-    provider, leader, update_state = _synced_member()
-    event = SlimEvent(type=SlimEventType.PLAYER_DISCONNECTED, player_id="member")
+    provider.get_protocol.return_value = MagicMock(protocol_id="p1")
+    event = SlimEvent(type=SlimEventType.PLAYER_DISCONNECTED, player_id="p1")
 
     SqueezelitePlayerProvider._handle_slimproto_event(provider, event)
 
-    assert leader.group_members == []
-    update_state.assert_called_once()
-    provider.mass.players.unregister.assert_called_once_with("member")
+    provider.mass.players.unregister.assert_called_once_with("p1")
 
 
-def test_reconnected_member_leaves_its_sync_leader() -> None:
-    """A synced player that reconnects before its old socket closed is dropped from its leader."""
-    provider, leader, _ = _synced_member()
-    event = SlimEvent(type=SlimEventType.PLAYER_CONNECTED, player_id="member")
+def test_a_client_that_connects_is_set_up() -> None:
+    """A client that connects, also again before its old socket closed, gets a new protocol."""
+    provider = MagicMock()
+    provider.mass.closing = False
+    client = provider.slimproto.get_player.return_value
+    event = SlimEvent(type=SlimEventType.PLAYER_CONNECTED, player_id="p1")
 
-    with patch("music_assistant.providers.squeezelite.provider.SqueezelitePlayer"):
+    with patch("music_assistant.providers.squeezelite.provider.SqueezelitePlayer") as player_class:
         SqueezelitePlayerProvider._handle_slimproto_event(provider, event)
 
-    assert leader.group_members == []
+    player_class.assert_called_once_with(provider, "p1", client)
+    provider.mass.create_task.assert_called_once_with(player_class.return_value.setup.return_value)
 
 
 def test_the_display_name_is_the_one_set_in_music_assistant() -> None:
@@ -247,40 +190,6 @@ async def test_cli_stop_of_a_protocol_device_only_stops_that_device(raw: list[st
 
 
 @pytest.mark.parametrize(
-    ("active_group", "expected_members"),
-    [
-        (None, ["leader", "other"]),
-        # a sync group player would add the member back right away
-        ("syncgroup_1", ["leader", "member", "other"]),
-    ],
-)
-async def test_cli_stop_of_a_synced_protocol_device_leaves_its_group(
-    active_group: str | None, expected_members: list[str]
-) -> None:
-    """A synced protocol-only device that stops leaves its group, unless a sync group holds it."""
-    provider, leader, update_state = _synced_member()
-    leader._attr_group_members.append("other")
-    member = provider.get_protocol("member")
-    member.role = ProtocolRole.AUDIO
-    # the player of the device reports the group that holds it, its squeezelite
-    # protocol does not
-    member.player = MagicMock(active_group=active_group)
-    for cmd in PLAYER_COMMANDS:
-        setattr(provider.mass.players, cmd, AsyncMock())
-
-    # the device sends its stop twice
-    for _ in range(2):
-        with pytest.raises(NotImplementedError):
-            await SqueezelitePlayerProvider._handle_cli_command(
-                provider, _cli_command("member", ["stop"])
-            )
-
-    assert _awaited_player_commands(provider) == []
-    assert leader.group_members == expected_members
-    assert update_state.call_count == (0 if active_group else 1)
-
-
-@pytest.mark.parametrize(
     ("player_id", "raw"),
     [
         ("p1", ["power", "1"]),
@@ -351,11 +260,16 @@ async def test_the_bridge_stream_route_follows_the_provider() -> None:
     provider.mass.streams.register_dynamic_route.assert_any_call(
         BRIDGE_STREAM_PATH, provider._serve_bridge_stream
     )
+    # the stream of a bridge is the only audio the provider serves itself
+    routes = [route.args[0] for route in provider.mass.streams.register_dynamic_route.mock_calls]
+    assert routes == [BRIDGE_STREAM_PATH, "/jsonrpc.js"]
 
     await provider.unload()
 
     bridge_manager.close.assert_awaited_once()
     provider.mass.streams.unregister_dynamic_route.assert_any_call(BRIDGE_STREAM_PATH)
+    removed = [route.args[0] for route in provider.mass.streams.unregister_dynamic_route.mock_calls]
+    assert removed == routes
 
 
 async def test_a_provider_that_failed_to_load_unloads_without_a_bridge_manager() -> None:

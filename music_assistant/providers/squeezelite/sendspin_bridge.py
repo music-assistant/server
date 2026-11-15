@@ -755,8 +755,8 @@ class SendspinSqueezeliteBridge:
         if self._clock.now_us() - self._clock_sampled_us > CLOCK_MAX_AGE_US:
             self._player_clock = PlayerClock()
         sync_adjust = self.protocol.config.get_value(CONF_SYNC_ADJUST, 0)
-        # A positive sync adjust plays earlier, as it does for the squeezelite protocol
-        # itself, where it is the time the player takes to make its audio heard.
+        # A positive sync adjust plays earlier: it is the time the player takes to make
+        # its audio heard.
         shift_us = -sync_adjust * 1000 if isinstance(sync_adjust, int) else 0
         if audio_format is None:
             audio_format = self._role_format()
@@ -810,7 +810,7 @@ class SendspinSqueezeliteBridge:
     async def _start_session(self, session: BridgeSession) -> None:
         """Put the stream of a session on the player and start it at its instant."""
         try:
-            await self.protocol.release_native_playback()
+            self.protocol.release_native_playback()
             url = (
                 f"{self.mass.streams.base_url}{BRIDGE_STREAM_PATH}"
                 f"?player_id={self.protocol.protocol_id}&sid={session.session_id}"

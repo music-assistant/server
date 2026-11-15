@@ -2259,10 +2259,10 @@ class StreamsController(CoreController):
         """
         Stream a live source to a consumer that takes raw PCM rather than the http url.
 
-        AirPlay, Snapcast, squeezelite's multi-client path, universal groups and the
-        MSX bridge all consume PCM directly, so they never reach the http route and
-        need the plugin lifecycle fired here instead — those hooks are what claim and
-        release the source and kick acquisition side effects into life.
+        AirPlay, Snapcast, universal groups and the MSX bridge all consume PCM directly,
+        so they never reach the http route and need the plugin lifecycle fired here
+        instead — those hooks are what claim and release the source and kick acquisition
+        side effects into life.
 
         :param session: The live source session playing on its owner.
         :param pcm_format: The PCM format the consumer wants.

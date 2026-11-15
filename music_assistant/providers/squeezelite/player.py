@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
-from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
 
 from aioslimproto.models import EventType as SlimEventType
-from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import Preset as SlimPreset
 from aioslimproto.models import SlimEvent
 from aioslimproto.models import VisualisationType as SlimVisualisationType
-from aioslimproto.sync import SyncGroup
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -23,19 +19,14 @@ from music_assistant_models.enums import (
     ProtocolRole,
     RepeatMode,
 )
-from music_assistant_models.errors import InvalidCommand, MusicAssistantError
+from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     CONF_ENTRY_SYNC_ADJUST,
-    CONF_OUTPUT_CODEC,
-    CONF_PREFER_WAV_FOR_LIVE_SOURCES,
-    CONF_SYNC_ADJUST,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import get_mime_type
-from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_state import POSITION_JUMP_THRESHOLD
@@ -49,7 +40,6 @@ from .constants import (
     REPEATMODE_MAP,
     STATE_MAP,
 )
-from .multi_client_stream import MultiClientStream
 
 if TYPE_CHECKING:
     from aioslimproto.client import SlimClient
@@ -109,7 +99,6 @@ class SqueezelitePlayer(PlayerProtocol):
         # Set static player attributes
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
-            PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
@@ -123,7 +112,6 @@ class SqueezelitePlayer(PlayerProtocol):
             self._attr_role = ProtocolRole.AUDIO
         else:
             self._attr_supported_features.add(PlayerFeature.POWER)
-        self._attr_can_group_with = {provider.instance_id}
         max_sr = int(self.client.max_sample_rate)
         self._attr_supported_sample_rates = [
             (sr, bd)
@@ -131,27 +119,9 @@ class SqueezelitePlayer(PlayerProtocol):
             if sr <= max_sr
             for bd in (16, 24)
         ]
-        self.multi_client_stream: MultiClientStream | None = None
-        self._sync_group = SyncGroup()
-        # song position captured at pause (LMS resumeTime, the master's extrapolated
-        # song elapsed); the group resume uses it to align the members. The queue
-        # position is a different clock (the multi-client stream runs the players
-        # ahead of the queue), so using it added the stream headroom as a resume delay.
-        self._paused_at: float = 0.0
-        # set when the group membership changed while not playing, so the next resume
-        # must rebuild the stream session instead of taking the LMS _Resume path
-        self._restream_needed: bool = False
-
-    @property
-    def native_grouping_requires_own_stream(self) -> bool:
-        """Return True: sync members are fed by the stream this player serves to its group."""
-        return True
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
-        # map the per-player sync delay setting to the LMS play delay
-        sync_adjust = self.config.get_value(CONF_SYNC_ADJUST, 0)
-        self.client.play_delay = sync_adjust if isinstance(sync_adjust, int) else 0
         # set presets and display
         await self._set_preset_items()
         await self._set_display()
@@ -163,13 +133,6 @@ class SqueezelitePlayer(PlayerProtocol):
         if (bridge := self.sendspin_bridge) is not None:
             # the stream of the bridge plays on from track to track
             bridge.update_now_playing()
-
-    async def on_detach(self) -> None:
-        """Handle logic when the protocol is detached from its player."""
-        if (stream := self.multi_client_stream) is not None:
-            self.multi_client_stream = None
-            await stream.stop()
-        await super().on_detach()
 
     async def on_remove(self) -> None:
         """Handle logic when the protocol is removed for good."""
@@ -242,175 +205,56 @@ class SqueezelitePlayer(PlayerProtocol):
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""
-        async with TaskManager(self.mass) as tg:
-            for client in self._get_sync_clients():
-                tg.create_task(client.power(powered))
+        await self.client.power(powered)
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
         if (bridge := self.sendspin_bridge) is not None:
             # a stream of the Sendspin bridge ends with the stop below
             bridge.stop_streaming()
-        # Clean up any existing multi-client stream
-        if self.multi_client_stream is not None:
-            await self.multi_client_stream.stop()
-            self.multi_client_stream = None
-        self._paused_at = 0.0
-        async with TaskManager(self.mass) as tg:
-            for client in self._get_sync_clients():
-                if self.role == ProtocolRole.AUDIO:
-                    tg.create_task(client.power(False))
-                else:
-                    tg.create_task(client.stop())
+        if self.role == ProtocolRole.AUDIO:
+            await self.client.power(False)
+        else:
+            await self.client.stop()
         self.update_state()
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
-        if self.group_members:
-            if self.player is not None and (self._restream_needed or self._group_needs_restream()):
-                # a member was (re)added or its stream is gone: LMS takes the stream-idle
-                # path (re-stream, then coordinated _syncStart), not _Resume
-                self._restream_needed = False
-                # shares the regroup restart's id, so back-to-back restarts collapse
-                self.mass.create_task(
-                    self.mass.players.cmd_resume(self.player.player_id),
-                    task_id=f"squeezelite_regroup_resume_{self.protocol_id}",
-                    abort_existing=True,
-                )
-                return
-            if (paused_at := self._paused_at) > 0:
-                # stream still live: LMS _Resume (coordinated startAt + check holdoff);
-                # the pause position is only valid for the pause it was taken at
-                self._paused_at = 0.0
-                await self._sync_group.resume(self._get_sync_clients(), paused_at)
-                return
-        async with TaskManager(self.mass) as tg:
-            for client in self._get_sync_clients():
-                tg.create_task(client.play())
+        await self.client.play()
 
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
-        if self.group_members:
-            # remember where the group was paused, in the players' own clock (LMS
-            # resumeTime = the master's extrapolated song elapsed); the group resume
-            # needs it to align the members
-            self._paused_at = self.client.song_elapsed_seconds
-        async with TaskManager(self.mass) as tg:
-            for client in self._get_sync_clients():
-                tg.create_task(client.pause())
+        await self.client.pause()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
-        if self.synced_to:
-            msg = "A synced player cannot receive play commands directly"
-            raise InvalidCommand(msg)
-
         # don't report the old stream's position until the new stream's first heartbeat
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
 
-        # a Sendspin bridge that plays on one of the players gives it back: the new
-        # stream replaces the stream of that bridge
-        for slimplayer in self._get_sync_clients():
-            member = cast(
-                "SqueezelitePlayer | None", self.provider.get_protocol(slimplayer.player_id)
-            )
-            if member is not None and (bridge := member.sendspin_bridge) is not None:
-                bridge.stop_streaming()
-
-        # Clean up any existing multi-client stream before starting a new one
-        if self.multi_client_stream is not None:
-            await self.multi_client_stream.stop()
-            self.multi_client_stream = None
-        # the new stream covers the current members and has no pause to resume from
-        self._paused_at = 0.0
-        self._restream_needed = False
+        # a Sendspin bridge that plays on the player gives it back: the new stream
+        # replaces the stream of that bridge
+        if (bridge := self.sendspin_bridge) is not None:
+            bridge.stop_streaming()
 
         # Clear next media item during announcements to prevent playing the
         # next enqueued track after it finishes.
         if media.media_type == MediaType.ANNOUNCEMENT:
             self.client._next_media = None
 
-        if not self.group_members:
-            # Simple, single-player playback
-            stream_url = await self.provider.mass.streams.resolve_stream_url(
-                self.protocol_id, media
-            )
-            await self._handle_play_url_for_slimplayer(
-                self.client,
-                url=stream_url,
-                media=media,
-                send_flush=True,
-                auto_play=False,
-            )
-            self._sync_elapsed_after_flush()
-            return
-
-        # this is a syncgroup; we need to handle this with a multi client stream.
-        # pick the master flow format honoring the leader's flow-mode-sample-rate
-        # setting and supported rates. anchor on the first track when its streamdetails
-        # are already resolved so smart/bit-perfect modes start at the right rate.
-        start_queue_item = (
-            self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
-            if media.source_id and media.queue_item_id
-            else None
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
+        await self._handle_play_url_for_slimplayer(
+            url=stream_url,
+            media=media,
+            send_flush=True,
+            auto_play=False,
         )
-        # crossfade is a queue-scoped setting; read it from the queue being played (source_id),
-        # which can differ from this player when playing on behalf of a group/linked queue
-        queue = self.mass.player_queues.get(media.source_id) if media.source_id else None
-        crossfade_enabled = bool(
-            queue and queue.crossfade_enabled and media.media_type == MediaType.TRACK
-        )
-        master_audio_format = await self.mass.streams.audio.select_flow_pcm_format(
-            self,
-            start_streamdetails=start_queue_item.streamdetails if start_queue_item else None,
-            crossfade_enabled=crossfade_enabled,
-            overlay_active=bool(queue and queue.overlay_enabled and queue.overlay_source),
-        )
-
-        # select audio source, we force flow mode
-        # because multi-client streaming does not support enqueueing
-        audio_source = self.mass.streams.get_stream(
-            media, master_audio_format, player_id=self.protocol_id, force_flow_mode=True
-        )
-
-        # start the stream task
-        self.multi_client_stream = stream = MultiClientStream(
-            audio_source=audio_source,
-            audio_format=master_audio_format,
-            queue_id=media.source_id,
-            session_id=get_media_session_id(media),
-        )
-        base_url = f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.protocol_id}"
-
-        # Count how many clients will connect
-        expected_clients = len(list(self._get_sync_clients()))
-        stream.expected_clients = expected_clients
-
-        # forward to downstream play_media commands
-        # Per-member output_codec: classic Squeezeboxes silently fail on fixed flac in sync (#5506).
-        async with TaskManager(self.mass) as tg:
-            for slimplayer in self._get_sync_clients():
-                member_codec = self._get_member_output_codec(slimplayer.player_id, media)
-                url = f"{base_url}&fmt={member_codec}&child_player_id={slimplayer.player_id}"
-                tg.create_task(
-                    self._handle_play_url_for_slimplayer(
-                        slimplayer,
-                        url=url,
-                        media=media,
-                        send_flush=True,
-                        auto_play=False,
-                        is_group_playback=True,
-                        mime_type=get_mime_type(member_codec),
-                    )
-                )
         self._sync_elapsed_after_flush()
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing next media item."""
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         await self._handle_play_url_for_slimplayer(
-            self.client,
             url=stream_url,
             media=media,
             enqueue=True,
@@ -418,119 +262,26 @@ class SqueezelitePlayer(PlayerProtocol):
             auto_play=True,
         )
 
-    async def set_members(
-        self,
-        player_ids_to_add: list[str] | None = None,
-        player_ids_to_remove: list[str] | None = None,
-    ) -> None:
-        """Handle SET_MEMBERS command on the player."""
-        if self.synced_to:
-            # this should not happen, but guard anyways
-            raise InvalidCommand("Player is synced, cannot set members")
-        if not player_ids_to_add and not player_ids_to_remove:
-            # nothing to do
-            return
-
-        # handle removals first
-        if player_ids_to_remove:
-            # snapshot: the loop removes entries from the group_members it is derived from
-            for sync_client in list(self._get_sync_clients()):
-                if sync_client.player_id in player_ids_to_remove:
-                    if sync_client.player_id in self._attr_group_members:
-                        # remove child from the group
-                        self._attr_group_members.remove(sync_client.player_id)
-                        if sync_client.state != SlimPlayerState.STOPPED:
-                            # stop the player if it is playing
-                            await sync_client.stop()
-            # if no children remain, remove ourselves from the list too
-            remaining = [x for x in self._attr_group_members if x != self.protocol_id]
-            if not remaining:
-                self._attr_group_members.clear()
-
-        # handle additions
-        players_added = False
-        for player_id in player_ids_to_add or []:
-            if player_id == self.protocol_id or player_id in self.group_members:
-                # nothing to do: player is already part of the group
-                continue
-            child_player = cast("SqueezelitePlayer | None", self.provider.get_protocol(player_id))
-            if not child_player:
-                # should not happen, but guard against it
-                continue
-            if child_player.client.state != SlimPlayerState.STOPPED:
-                # stop the player if it is already playing something else
-                await child_player.stop()
-            self._attr_group_members.append(player_id)
-            players_added = True
-        # ensure the sync leader (self) is the first item in group_members
-        if self._attr_group_members and self.protocol_id not in self._attr_group_members:
-            self._attr_group_members.insert(0, self.protocol_id)
-
-        # always update the state after modifying group members
-        self.update_state()
-
-        if (
-            (players_added or player_ids_to_remove)
-            and self.player is not None
-            and self.player.current_media
-        ):
-            if self._attr_playback_state == PlaybackState.PLAYING:
-                # restart stream session if it was already playing
-                # for now, we dont support late joining into an existing stream
-                # a back-to-back restart reads the position of the one before it, so the newest wins
-                self.mass.create_task(
-                    self.mass.players.cmd_resume(self.player.player_id),
-                    task_id=f"squeezelite_regroup_resume_{self.protocol_id}",
-                    abort_existing=True,
-                )
-            else:
-                # membership changed while not playing: the stream must be rebuilt on
-                # the next resume (LMS takes the stream-idle / _syncStart path, not _Resume)
-                self._restream_needed = True
-
-    async def release_native_playback(self) -> None:
+    def release_native_playback(self) -> None:
         """
         End what this protocol plays itself, for a stream that takes the player over.
 
-        The player leaves the sync group of its leader, the stream it serves to a sync
-        group of its own ends, and the protocol reports no position of its own anymore.
-        The stream on the player itself is left to the one taking over.
+        The protocol reports no position of its own anymore. The stream on the player
+        itself is left to the one taking over.
         """
-        if (leader_id := self.synced_to) and (leader := self.provider.get_protocol(leader_id)):
-            cast("SqueezelitePlayer", leader).release_member(self.protocol_id)
-        if (stream := self.multi_client_stream) is not None:
-            self.multi_client_stream = None
-            await stream.stop()
-        self._paused_at = 0.0
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
-
-    def release_member(self, player_id: str) -> None:
-        """
-        Remove a group member that left the group stream on its own, e.g. it disconnected.
-
-        The other members keep playing without a restart of the stream.
-
-        :param player_id: The protocol id of the member that left.
-        """
-        if player_id not in self._attr_group_members:
-            return
-        self._attr_group_members.remove(player_id)
-        if self._attr_group_members == [self.protocol_id]:
-            self._attr_group_members.clear()
-        self.update_state()
 
     def handle_slim_event(self, event: SlimEvent) -> None:
         """Handle player event from slimproto server."""
         if event.type == SlimEventType.PLAYER_BUFFER_READY:
             # the Sendspin bridge starts its own stream, at the instant of its timeline
             if not self._plays_for_bridge:
-                self.mass.create_task(self._handle_buffer_ready())
+                self.mass.create_task(self.client.unpause_at(self.client.jiffies))
             return
 
         if event.type == SlimEventType.PLAYER_HEARTBEAT:
-            # the position of the stream of the Sendspin bridge is not one of this
-            # protocol, and its sync is not that of the sync group
+            # the position of the stream of the Sendspin bridge is not one of this protocol
             if not self._plays_for_bridge:
                 self._handle_player_heartbeat()
             return
@@ -591,20 +342,14 @@ class SqueezelitePlayer(PlayerProtocol):
 
     async def _handle_play_url_for_slimplayer(
         self,
-        slimplayer: SlimClient,
         url: str,
         media: PlayerMedia,
         enqueue: bool = False,
         send_flush: bool = True,
         auto_play: bool = False,
-        is_group_playback: bool = False,
-        mime_type: str | None = None,
     ) -> None:
-        """Handle playback of an url on slimproto player(s)."""
-        if mime_type is None:
-            # derive from the url extension (only reliable for plain file urls; sync
-            # group member urls have no extension, so callers pass the codec mime)
-            mime_type = get_mime_type(url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0])
+        """Handle playback of an url on the slimproto player."""
+        mime_type = get_mime_type(url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0])
         # MediaMetadata has no source and queue item ids; they ride along so
         # current_media can be restored from the client
         metadata = cast(
@@ -633,7 +378,7 @@ class SqueezelitePlayer(PlayerProtocol):
             MediaType.ANNOUNCEMENT,
         )
         stream_threshold, output_threshold = (64, 1) if low_latency_stream else (200, 20)
-        await slimplayer.play_url(
+        await self.client.play_url(
             url=url,
             mime_type=mime_type,
             metadata=metadata,
@@ -641,16 +386,10 @@ class SqueezelitePlayer(PlayerProtocol):
             send_flush=send_flush,
             # if autoplay=False playback will not start automatically
             # instead 'buffer ready' will be called when the buffer is full
-            # to coordinate a start of multiple synced players
             autostart=auto_play,
             stream_threshold=stream_threshold,
             output_threshold=output_threshold,
         )
-        # Secondary-protocol devices (WiiM/LinkPlay and the AirPlay/Cast/UPnP
-        # bridges) ignore the no-autostart flag and start before the coordinated
-        # group instant; hold them until the group start.
-        if is_group_playback and is_protocol_only_device(slimplayer.device_model):
-            await slimplayer.pause()
         # if queue is set to single track repeat,
         # immediately set this track as the next
         # this prevents race conditions with super short audio clips (on single repeat)
@@ -658,7 +397,7 @@ class SqueezelitePlayer(PlayerProtocol):
         if queue and queue.repeat_mode == RepeatMode.ONE:
             self.mass.call_later(
                 0.2,
-                slimplayer.play_url(
+                self.client.play_url(
                     url=url,
                     mime_type=mime_type,
                     metadata=metadata,
@@ -686,47 +425,6 @@ class SqueezelitePlayer(PlayerProtocol):
             or abs(published_position - self.client.elapsed_seconds) > POSITION_JUMP_THRESHOLD
         ):
             self.update_state()
-
-        # handle sync
-        if self.group_members:
-            self._handle_sync()
-
-    async def _handle_buffer_ready(self) -> None:
-        """
-        Handle buffer ready event, player has buffered a (new) track.
-
-        Only used when autoplay=0 for coordinated start of synced players.
-        """
-        if self.synced_to:
-            # unpause of sync child is handled by sync master
-            return
-        if not self.group_members:
-            # not a sync group, continue
-            await self.client.unpause_at(self.client.jiffies)
-            return
-        count = 0
-        while count < 40:
-            childs_total = 0
-            childs_ready = 0
-            await asyncio.sleep(0.2)
-            for sync_child in self._get_sync_clients():
-                childs_total += 1
-                if sync_child.state == SlimPlayerState.BUFFER_READY:
-                    childs_ready += 1
-            if childs_total == childs_ready:
-                break
-            count += 1
-
-        if self._plays_for_bridge:
-            # the Sendspin bridge took the player over while its members buffered
-            return
-        # all children ready (or timeout) - start playback in sync
-        clients = list(self._get_sync_clients())
-        if len(clients) < 2:
-            # the members dropped out while buffering, so there is nothing to sync
-            await self.client.unpause_at(self.client.jiffies)
-            return
-        await self._sync_group.start(clients)
 
     async def _handle_player_cli_event(self, event: SlimEvent) -> None:
         """Process CLI Event."""
@@ -783,24 +481,6 @@ class SqueezelitePlayer(PlayerProtocol):
         """Return whether the stream on the player is that of its Sendspin bridge."""
         return (bridge := self.sendspin_bridge) is not None and bridge.owns_stream
 
-    def _handle_sync(self) -> None:
-        """Synchronize audio of the sync group."""
-        if not self.group_members:
-            return
-        self.mass.create_task(self._sync_group.check(self._get_sync_clients()))
-
-    def _group_needs_restream(self) -> bool:
-        """
-        Return if the group stream must be rebuilt before it can resume.
-
-        Mirrors LMS's stream-state check: a group whose stream is gone, or that has a
-        member without a live stream (e.g. one just added by set_members), needs the
-        re-stream / _syncStart path rather than _Resume.
-        """
-        if self.multi_client_stream is None or self.multi_client_stream.done:
-            return True
-        return any(client.state == SlimPlayerState.STOPPED for client in self._get_sync_clients())
-
     async def _set_preset_items(self) -> None:
         """Set the presets for a player."""
         preset_items: list[SlimPreset] = []
@@ -850,27 +530,6 @@ class SqueezelitePlayer(PlayerProtocol):
         await self.client.configure_display(
             visualisation=SlimVisualisationType(visualization), disabled=not display_enabled
         )
-
-    def _get_sync_clients(self) -> Iterator[SlimClient]:
-        """Get all sync clients for a player."""
-        yield self.client
-        for member_id in self.group_members:
-            if member_id == self.protocol_id:  # ← Skip if it's the leader itself
-                continue
-            if self._provider.slimproto and (
-                slimplayer := self._provider.slimproto.get_player(member_id)
-            ):
-                yield slimplayer
-
-    def _get_member_output_codec(self, member_player_id: str, media: PlayerMedia) -> str:
-        """Return the stream format to request for a sync group member."""
-        if media.media_type == MediaType.AUDIO_SOURCE:
-            member_player = self.provider.get_protocol(member_player_id)
-            if member_player and member_player.config.get_value(
-                CONF_PREFER_WAV_FOR_LIVE_SOURCES, default=False
-            ):
-                return "wav"
-        return self.mass.config.get_protocol_value(member_player_id, CONF_OUTPUT_CODEC, "flac")
 
     def _sync_elapsed_after_flush(self) -> None:
         """Drop an old-stream heartbeat that landed before the flush."""

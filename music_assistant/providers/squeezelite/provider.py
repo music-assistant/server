@@ -11,11 +11,10 @@ from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
 from aioslimproto.server import SlimServer
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, MediaType, ProtocolRole
+from music_assistant_models.enums import ConfigEntryType, ProtocolRole
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 
 from music_assistant.constants import CONF_PORT, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -115,9 +114,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
             # ports were validated during setup, so a failure here is unlikely
             self.unload_with_error(err)
             return
-        self.mass.streams.register_dynamic_route(
-            "/slimproto/multi", self._serve_multi_client_stream
-        )
         self.mass.streams.register_dynamic_route(BRIDGE_STREAM_PATH, self._serve_bridge_stream)
         # it seems that WiiM devices do not use the json rpc port that is broadcasted
         # in the discovery info but instead they just assume that the jsonrpc endpoint
@@ -146,7 +142,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
             await bridge_manager.close()
         # Ensure complete cleanup
         await self._cleanup_server()
-        self.mass.streams.unregister_dynamic_route("/slimproto/multi")
         self.mass.streams.unregister_dynamic_route(BRIDGE_STREAM_PATH)
         self.mass.streams.unregister_dynamic_route("/jsonrpc.js")
 
@@ -209,8 +204,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
             slimclient = self.slimproto.get_player(event.player_id)
             if not slimclient:
                 return  # should not happen, but guard anyways
-            # a reconnect before the old socket closed is not reported as a disconnect
-            self._release_from_sync_leader(event.player_id)
             if not self.mass.players.wants_protocol(event.player_id):
                 return
             player = SqueezelitePlayer(self, event.player_id, slimclient)
@@ -223,7 +216,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
         # Handle player disconnect
         if event.type == SlimEventType.PLAYER_DISCONNECTED:
-            self._release_from_sync_leader(player.protocol_id)
             self.mass.create_task(self.mass.players.unregister(player.protocol_id))
             return
 
@@ -235,75 +227,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
         # forward all other events to the player itself
         player.handle_slim_event(event)
 
-    async def _serve_multi_client_stream(self, request: web.Request) -> web.StreamResponse:
-        """Serve the multi-client flow stream audio to a player."""
-        player_id = request.query.get("player_id")
-        fmt = request.query.get("fmt")
-        child_player_id = request.query.get("child_player_id")
-
-        if not player_id:
-            raise web.HTTPNotFound(reason="Missing player_id parameter")
-        if not fmt:
-            raise web.HTTPNotFound(reason="Missing fmt parameter")
-        if not child_player_id:
-            raise web.HTTPNotFound(reason="Missing child_player_id parameter")
-
-        if not (sync_parent := self.get_protocol(player_id)):
-            raise web.HTTPNotFound(reason=f"Unknown player: {player_id}")
-        sync_parent = cast("SqueezelitePlayer", sync_parent)
-
-        if not (child_player := self.get_protocol(child_player_id)):
-            raise web.HTTPNotFound(reason=f"Unknown player: {child_player_id}")
-
-        if not (stream := sync_parent.multi_client_stream) or stream.done:
-            raise web.HTTPNotFound(reason=f"There is no active stream for {player_id}!")
-
-        output_format = await self.mass.streams.audio.get_output_format(
-            output_format_str=fmt,
-            player=child_player,
-            content_sample_rate=stream.audio_format.sample_rate,  # Flow PCM sample rate
-            content_bit_depth=stream.audio_format.bit_depth,  # Flow PCM bit depth (32)
-            media_type=MediaType.FLOW_STREAM,
-        )
-        # squeezelite takes the PCM params from the Content-Type, not from the WAV header
-        resp = web.StreamResponse(
-            status=200,
-            reason="OK",
-            headers={
-                "Content-Type": get_mime_type(output_format.output_format_str),
-            },
-        )
-        await resp.prepare(request)
-
-        # return early if this is not a GET request
-        if request.method != "GET":
-            return resp
-
-        # all checks passed, start streaming!
-        self.logger.debug(
-            "Start serving multi-client flow audio stream to %s",
-            child_player.display_name,
-        )
-
-        output_plan = self.mass.streams.audio.get_player_output_plan(
-            child_player_id,
-            stream.audio_format,
-            output_format,
-            queue_id=stream.queue_id,
-            session_id=stream.session_id,
-        )
-
-        async for chunk in stream.get_stream(
-            output_format=output_format,
-            filter_params=output_plan.filter_params,
-        ):
-            try:
-                await resp.write(chunk)
-            except BrokenPipeError, ConnectionResetError, ConnectionError:
-                # race condition
-                break
-        return resp
-
     async def _serve_bridge_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve the stream of a Sendspin bridge to its player."""
         player_id = request.query.get("player_id")
@@ -311,24 +234,13 @@ class SqueezelitePlayerProvider(PlayerProvider):
             raise web.HTTPNotFound(reason=f"Unknown player: {player_id}")
         return await bridge.serve_stream(request)
 
-    def _release_from_sync_leader(self, player_id: str) -> None:
-        """Drop a player that left the stream of its sync group from the group of its leader."""
-        # a reconnect attaches a fresh protocol, so the leader must let go of the old
-        # one or it keeps listing a member that is no longer part of its stream
-        if (
-            (player := self.get_protocol(player_id))
-            and (leader_id := player.synced_to)
-            and (leader := self.get_protocol(leader_id))
-        ):
-            cast("SqueezelitePlayer", leader).release_member(player_id)
-
     async def _handle_cli_command(self, command: SlimCLICommand) -> None:
         """
         Handle play, pause and stop sent by a client, acting on its whole group like LMS does.
 
-        A stop from a protocol-only device stops only that device, which then leaves its group
-        unless that group belongs to a sync group player. A client that plays for its Sendspin
-        bridge acts on the player that leads its Sendspin group.
+        A stop from a protocol-only device stops only that device, which then leaves the
+        Sendspin session of its bridge. A client that plays for its Sendspin bridge acts on
+        the player that leads its Sendspin group.
 
         :param command: The CLI command as received from the client.
         :raises NotImplementedError: For any other command, an unknown player and a stop
@@ -353,12 +265,8 @@ class SqueezelitePlayerProvider(PlayerProvider):
             case ("stop", _) | ("mode", "stop") if protocol.role != ProtocolRole.AUDIO:
                 player_cmd = self.mass.players.cmd_stop
             case ("stop", _) | ("mode", "stop"):
-                # it most likely switched to another source, and a member that stays in the
-                # group would be pulled back by the group's next track or resume; a sync
-                # group player would add it back right away, so its members stay
-                if not player.active_group:
-                    self._release_from_sync_leader(protocol.protocol_id)
-                # its Sendspin bridge would otherwise put its stream right back
+                # it most likely switched to another source: its Sendspin bridge would
+                # otherwise put its stream right back
                 self.bridge_manager.stop_streaming(protocol.protocol_id)
                 raise NotImplementedError
             case _:
