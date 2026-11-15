@@ -50,6 +50,7 @@ from music_assistant.providers.sendspin.helpers import (
 )
 
 from .bridge_sync import MAX_START_JUMP_MS, PlayerClock, SyncLoop
+from .player import is_bridge_tool
 
 if TYPE_CHECKING:
     from aiosendspin.server import (
@@ -158,7 +159,8 @@ RECONNECT_REJOIN_DELAYS: tuple[int, ...] = (1, 5, 30)
 # How long (seconds) the group of a bridge is remembered after its player disconnected.
 RECONNECT_REJOIN_WINDOW: float = 60.0
 
-# Player state fields the bridge policy depends on: an AirPlay output denies the bridge.
+# Player state fields the bridge policy depends on: an AirPlay output denies the bridge,
+# and the Sendspin output of another bridge does while it is there.
 _BRIDGE_POLICY_STATE_FIELDS: frozenset[str] = frozenset({"output_protocols"})
 
 _SILENCE_FRAMES: int = BRIDGE_SAMPLE_RATE
@@ -1165,6 +1167,29 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
         self._start_offsets_us[protocol_id] = offset_us
         return offset_us
 
+    def is_bridgeable(self, protocol: PlayerProtocol) -> bool:
+        """
+        Return whether a squeezelite player qualifies for a Sendspin bridge.
+
+        A bridge another provider registered for the device does not count, so the answer
+        tells another provider whether this bridge takes precedence over its own.
+
+        :param protocol: The squeezelite protocol to evaluate.
+        """
+        squeezelite_player = cast("SqueezelitePlayer", protocol)
+        if not get_bridge_client_id(squeezelite_player):
+            return False
+        # the bridge starts a stream at a set instant, which the first Squeezebox, a
+        # SqueezeSlave and an unknown device can not do
+        if squeezelite_player.client.device_type not in SQUEEZEBOX2_PLAYER_TYPES:
+            return False
+        # a bridge tool plays to a device of another protocol, which is bridged over that
+        if is_bridge_tool(squeezelite_player.client.device_model):
+            return False
+        # a device with AirPlay gets its Sendspin support over AirPlay
+        player = protocol.player
+        return not (player and player.get_output_protocol_by_domain("airplay"))
+
     def _bridge_client_id(self, protocol: PlayerProtocol) -> str | None:
         """Return the Sendspin client_id used to bridge a squeezelite player."""
         return get_bridge_client_id(cast("SqueezelitePlayer", protocol))
@@ -1181,18 +1206,12 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
 
     def _should_have_bridge(self, protocol: PlayerProtocol) -> bool:
         """Return whether a squeezelite player should have a Sendspin bridge."""
-        squeezelite_player = cast("SqueezelitePlayer", protocol)
-        if not (bridge_client_id := get_bridge_client_id(squeezelite_player)):
-            return False
-        # the bridge starts a stream at a set instant, which the first Squeezebox, a
-        # SqueezeSlave and an unknown device can not do
-        if squeezelite_player.client.device_type not in SQUEEZEBOX2_PLAYER_TYPES:
-            return False
-        # a device with AirPlay gets its Sendspin support over AirPlay
-        if (player := protocol.player) and player.get_output_protocol_by_domain("airplay"):
+        bridge_client_id = self._bridge_client_id(protocol)
+        if bridge_client_id is None or not self.is_bridgeable(protocol):
             return False
         # Same deny before the AirPlay protocol joined the player: another bridge
-        # already registered a client for this device.
+        # already registered a client for this device. A Cast bridge steps back for
+        # this one and its Sendspin output leaves the player, which evaluates it again.
         return not self._has_foreign_bridge_client(protocol.protocol_id, bridge_client_id)
 
     def _has_foreign_bridge_client(self, protocol_id: str, bridge_client_id: str) -> bool:

@@ -506,6 +506,44 @@ async def test_a_change_of_outputs_evaluates_the_bridge_again(
     assert evaluate.await_args_list == ([call(rig.protocol)] if evaluated else [])
 
 
+@pytest.mark.parametrize(
+    ("device_model", "bridged"),
+    [
+        ("SqueezeLite", True),
+        # slimproto on a WiiM is a second protocol, but the WiiM plays the audio itself
+        ("WiiM Player", True),
+        # the LMS bridge tools play to a device of another protocol
+        ("RaopBridge", False),
+        ("CastBridge", False),
+        ("UPnPBridge", False),
+    ],
+)
+async def test_a_bridge_tool_gets_no_bridge(rig: _Rig, device_model: str, bridged: bool) -> None:
+    """A squeezelite player that is a bridge to a device of another protocol is not bridged."""
+    rig.client.device_model = device_model
+
+    assert rig.manager.is_bridgeable(rig.protocol) is bridged
+    assert rig.manager._should_have_bridge(rig.protocol) is bridged
+
+
+@pytest.mark.parametrize("registered", [CLIENT_ID, "spb_a8bbccddeeff"])
+async def test_a_client_another_bridge_registered_leaves_the_player_bridgeable(
+    rig: _Rig, registered: str
+) -> None:
+    """Whether the player qualifies does not depend on the bridge that holds the device now."""
+    rig.server.is_external_player.side_effect = lambda client_id: client_id == registered
+
+    assert rig.manager._should_have_bridge(rig.protocol) is False
+    assert rig.manager.is_bridgeable(rig.protocol) is True
+
+
+async def test_a_player_with_an_airplay_output_is_not_bridgeable(rig: _Rig) -> None:
+    """AirPlay takes the device ahead of every other bridge."""
+    rig.protocol.player.get_output_protocol_by_domain.return_value = MagicMock()
+
+    assert rig.manager.is_bridgeable(rig.protocol) is False
+
+
 # ---------------------------------------------------------------- registration
 
 
