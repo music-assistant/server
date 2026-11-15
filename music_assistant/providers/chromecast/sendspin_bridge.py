@@ -443,7 +443,7 @@ class SendspinChromecastBridge:
             on_fatal_audio_error=self._on_cast_fatal_audio_error,
             on_cast_connected=self._on_cast_connected,
         )
-        self.cast_player.cc.register_handler(self._log_controller)
+        self.cast_player.register_client_handler(self._log_controller)
 
         self._cast_app_was_active = self.cast_player.cc.app_id == SENDSPIN_CAST_APP_ID
         self.cast_player.on_app_status_changed = self.on_cast_status_changed
@@ -464,7 +464,7 @@ class SendspinChromecastBridge:
         self._cast_app_ready = None
 
         if self._log_controller is not None:
-            self.cast_player.cc.unregister_handler(self._log_controller)
+            self.cast_player.unregister_client_handler(self._log_controller)
             self._log_controller = None
 
         if self._launch_task and not self._launch_task.done():

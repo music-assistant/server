@@ -31,6 +31,9 @@ APP_QUIT_DELAY = 10.0
 # moves to another track, before that is taken as the end of its playback.
 APP_TRACK_CHANGE_TIME = 5.0
 
+# Seconds the cast port of a device gets to accept a connection in a device check.
+DEVICE_CHECK_TIMEOUT = 2.0
+
 # keepalive media the cast receiver plays while showing a dashboard
 DASHBOARD_KEEPALIVE_SUFFIXES = ("/dashboard-keepalive.mp4", "/keepalive.png")
 
