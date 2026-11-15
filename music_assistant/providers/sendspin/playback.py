@@ -1002,8 +1002,10 @@ class SendspinPlaybackSession:
             if producer_stopped_cleanly and not self._cancel_requested:
                 try:
                     # resamplers and encoders hold the end of the audio back until flushed
-                    with suppress(Exception):
+                    try:
                         await push_stream.flush_audio()
+                    except Exception:
+                        self.player.logger.exception("Failed to flush the end of the audio")
                     await self._wait_for_buffer_drain()
                 except asyncio.CancelledError:
                     # New playback interrupted the drain — treat as

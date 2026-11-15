@@ -64,12 +64,13 @@ async def test_superseded_stream_is_not_flushed(monkeypatch: pytest.MonkeyPatch)
 
 
 async def test_failing_flush_still_ends_the_stream(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A flush that fails does not keep the session from waiting for the drain and stopping."""
+    """A flush that fails is logged, and the session still waits for the drain and stops."""
     session = _short_session(monkeypatch)
     push_stream = _recording_push_stream(session, [])
     push_stream.flush_audio = AsyncMock(side_effect=RuntimeError("resampler failed"))
 
     await session._run_playback(MagicMock())
 
+    cast("MagicMock", session.player.logger.exception).assert_called_once()
     cast("AsyncMock", session._wait_for_buffer_drain).assert_awaited_once_with()
     cast("MagicMock", session._stop_push_stream).assert_called_once()
