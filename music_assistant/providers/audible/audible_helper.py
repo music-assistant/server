@@ -432,7 +432,15 @@ class AudibleHelper:
             "percent_complete",
         ]
 
-        started: list[Audiobook] = []
+        # a book with progress in Music Assistant may have been reset on Audible
+        with_progress = {
+            item_id
+            for media_type, item_id in await self.mass.music.get_playlog_provider_item_ids(
+                self.provider_instance
+            )
+            if media_type == MediaType.AUDIOBOOK
+        }
+        need_position: list[Audiobook] = []
         async for item in self._fetch_library_items(
             ",".join(response_groups), AUDIOBOOK_CONTENT_TYPES, use_cache=False
         ):
@@ -440,14 +448,14 @@ class AudibleHelper:
                 continue
             if item.get("is_finished"):
                 book.fully_played = True
-            elif item.get("percent_complete"):
+            elif item.get("percent_complete") or book.item_id in with_progress:
                 # yielded below, once its position is known
-                started.append(book)
+                need_position.append(book)
                 continue
             yield book
 
-        # only started books need their position, asked for many books at once
-        for batch in batched(started, LAST_POSITIONS_BATCH_SIZE, strict=False):
+        # asked for many books at once
+        for batch in batched(need_position, LAST_POSITIONS_BATCH_SIZE, strict=False):
             try:
                 positions = await self._fetch_last_positions([book.item_id for book in batch])
             except (ProviderUnavailableError, TypeError, ValueError) as exc:
@@ -729,7 +737,8 @@ class AudibleHelper:
         :param pos: Position in seconds.
         :param media_type: The type of media (audiobook or podcast episode).
         """
-        if not asin or asin == "error" or pos <= 0:
+        # 0 is sent too: the item was marked unplayed
+        if not asin or asin == "error" or pos < 0:
             return
 
         try:

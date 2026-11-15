@@ -125,17 +125,23 @@ async def test_pagination_get_library(helper: AudibleHelper) -> None:
         assert calls[1].kwargs["page"] == 2
 
 
-async def test_library_sync_carries_the_listening_progress(helper: AudibleHelper) -> None:
-    """The library sync used to leave out what was finished or started on Audible."""
+async def test_library_sync_carries_the_listening_progress(
+    helper: AudibleHelper, mass_mock: AsyncMock
+) -> None:
+    """The library sync used to leave out what was finished, started or reset on Audible."""
     library = [
         {"asin": "book_finished", "is_finished": True, "percent_complete": 100},
         {"asin": "book_new", "is_finished": False, "percent_complete": 0},
         {"asin": "book_1", "is_finished": False, "percent_complete": 10},
-        {"asin": "book_2", "is_finished": False, "percent_complete": 50},
+        # started in Music Assistant, reset on Audible
+        {"asin": "book_reset", "is_finished": False, "percent_complete": 0},
         {"asin": "book_3", "is_finished": False, "percent_complete": 90},
     ]
     for item in library:
         item |= {"title": item["asin"], "content_delivery_type": "SinglePartBook", "authors": []}
+    mass_mock.music.get_playlog_provider_item_ids = AsyncMock(
+        return_value=[(MediaType.AUDIOBOOK, "book_reset")]
+    )
     lookups: list[str] = []
 
     async def call_api(path: str, **kwargs: Any) -> dict[str, Any]:
@@ -153,7 +159,7 @@ async def test_library_sync_carries_the_listening_progress(helper: AudibleHelper
                         "last_updated": "2026-11-14T10:00:00+00:00",
                     },
                 }
-                for asin, position_ms in (("book_1", 60000), ("book_2", 120000))
+                for asin, position_ms in (("book_1", 60000), ("book_reset", 0))
             ]
         }
 
@@ -171,12 +177,25 @@ async def test_library_sync_carries_the_listening_progress(helper: AudibleHelper
         "book_finished": (True, None, None),
         "book_new": (None, None, None),
         "book_1": (None, 60000, updated),
-        "book_2": (None, 120000, updated),
+        "book_reset": (None, 0, updated),
         # a failed lookup leaves the progress to the next sync
         "book_3": (None, None, None),
     }
-    # only started books are looked up, many at once
-    assert lookups == ["book_1,book_2", "book_3"]
+    # only started books and those with progress are looked up, many at once
+    assert lookups == ["book_1,book_reset", "book_3"]
+
+
+async def test_unplayed_book_resets_its_position_on_audible(
+    helper: AudibleHelper, audible_client_mock: AsyncMock
+) -> None:
+    """Marking a book unplayed used to leave its position on Audible, for the next sync to restore."""
+    helper._acr_cache[("book_1", MediaType.AUDIOBOOK)] = "acr_1"
+
+    await helper.set_last_position("book_1", 0)
+
+    audible_client_mock.put.assert_awaited_once_with(
+        "lastpositions/book_1", body={"acr": "acr_1", "asin": "book_1", "position_ms": 0}
+    )
 
 
 async def test_pagination_browse_helpers(helper: AudibleHelper) -> None:
