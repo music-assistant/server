@@ -8,12 +8,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ConfigEntryType, EventType, ProviderTier
-from music_assistant_models.errors import ActionUnavailable
+from music_assistant_models.errors import ActionUnavailable, ResourceTemporarilyUnavailable
 
 from music_assistant.controllers.community_catalog.controller import _INDEX_CHECK
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
 from tests.conftest import full_mass_context
-from tests.controllers.community_catalog.conftest import ADDED, RELEASED, catalog_index
+from tests.controllers.community_catalog.conftest import (
+    ADDED,
+    RELEASED,
+    assert_refused,
+    catalog_index,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -142,6 +147,23 @@ async def test_refresh(mass: MusicAssistant, registry: Registry) -> None:
     assert registry.requests[1:] == [("nightly", '"one"'), ("nightly", '"two"')]
 
 
+async def test_refresh_while_the_catalog_cannot_be_reached(
+    mass: MusicAssistant, registry: Registry
+) -> None:
+    """A refresh says when the index could not be fetched; the daily check only logs it."""
+    await _switch(mass, enabled=True)
+    providers = await mass.community_catalog.get_providers()
+    registry.status = 503
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as refused:
+        await mass.community_catalog.refresh()
+
+    assert_refused(refused, "unreachable")
+    assert await mass.community_catalog.get_providers() == providers
+    await mass.community_catalog._check_index()
+    assert len(registry.requests) == 3
+
+
 async def test_kept_copy_after_a_restart(tmp_path: Path, registry: Registry) -> None:
     """A restarted server lists from its kept copy while the registry cannot be reached."""
     async with full_mass_context(tmp_path) as mass:
@@ -163,10 +185,12 @@ async def test_safe_mode(tmp_path: Path, registry: Registry) -> None:
         await mass.config.save_core_config(DOMAIN, {"community_catalog_enabled": True})
 
         assert mass.get_task(_INDEX_CHECK) is None
-        with pytest.raises(ActionUnavailable):
+        with pytest.raises(ActionUnavailable) as refused:
             await mass.community_catalog.get_providers()
-        with pytest.raises(ActionUnavailable):
+        assert_refused(refused, "safe_mode")
+        with pytest.raises(ActionUnavailable) as refused:
             await mass.community_catalog.refresh()
+        assert_refused(refused, "safe_mode")
 
     assert registry.requests == []
     assert not (tmp_path / "data" / "community_providers").exists()
