@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
@@ -431,6 +431,75 @@ async def test_a_device_check_that_fails_changes_nothing(
     await _stop(scenario, player_id)
 
 
+@pytest.mark.parametrize("goes", ["its protocol is lost", "the player is removed", "disabled"])
+async def test_a_running_device_check_is_called_off_when_its_protocol_goes(
+    scenario: Scenario, goes: str
+) -> None:
+    """
+    A device check that still runs when its protocol is taken off its player is called off.
+
+    Den's plug is cut and its Sonos protocol is asked to check its device, which takes long.
+    Meanwhile the protocol is taken off the player: its provider lost the device, or the user
+    removed or disabled the player. The check is called off, so it changes nothing afterwards.
+    """
+    (den, _), plug, player_id = await _den(scenario, ("sonos", "native"), ("airplay", "audio"))
+    started = asyncio.Event()
+    outcome: list[str] = []
+
+    async def _check() -> bool:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            outcome.append("called off")
+            raise
+        return True
+
+    with patch.object(den, "check_device", _check):
+        await scenario.switch(plug, False)
+        await scenario.advance(DEVICE_CHECK_DELAY + 1)
+        assert started.is_set()
+
+        if goes == "its protocol is lost":
+            await scenario.unregister(den)
+        elif goes == "the player is removed":
+            await scenario.remove(player_id)
+        else:
+            await scenario.disable(player_id)
+
+    assert outcome == ["called off"]
+
+
+@pytest.mark.parametrize("goes", ["removed", "disabled"])
+async def test_a_player_that_goes_before_its_check_is_not_checked(
+    scenario: Scenario, goes: str
+) -> None:
+    """
+    A player removed or disabled before the check after its power off is not checked.
+
+    Den's plug is cut, and the user removes or disables Den before its check is due. What was
+    planned for the check goes with the player, and Den's device is never checked.
+    """
+    (den, _), plug, player_id = await _den(scenario, ("sonos", "native"), ("airplay", "audio"))
+    den.device_answers = False
+    await scenario.switch(plug, False)
+    await scenario.advance(DEVICE_CHECK_DELAY - 3)
+
+    if goes == "removed":
+        await scenario.remove(player_id)
+    else:
+        await scenario.disable(player_id)
+
+    planned = [
+        timer_id
+        for timer_id in scenario.mass._tracked_timers
+        if timer_id.startswith("device_check") and timer_id.endswith(player_id)
+    ]
+    assert planned == []
+    await scenario.advance(10)
+    assert den.device_checks == []
+
+
 @pytest.mark.parametrize("group", GROUPS)
 async def test_a_group_waits_for_the_own_protocol_of_a_switched_off_member(
     scenario: Scenario, group: str
@@ -632,3 +701,34 @@ async def test_a_start_asks_the_protocol_of_a_member_to_reach_its_device(
     assert [_plays_along(scenario, group_id, player_id) for player_id in player_ids] == [True] * 3
     assert plug.commands == [True]
     await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("group", ["fixed sync group", "universal group"])
+async def test_a_group_player_on_a_power_control_is_not_checked(
+    scenario: Scenario, group: str
+) -> None:
+    """
+    A group player on a power control has no device of its own to check.
+
+    Downstairs is on a smart plug that is switched off. Its own protocol is asked to check,
+    and it can not: nothing changes, the group stays available and powered off, and none of
+    its members is checked.
+    """
+    group_id, speakers, _ = await _downstairs(scenario, group, "Kitchen", "Office", "Den")
+    plug = await _plug(scenario, group_id)
+    group_player = scenario.mass.players.get_player(group_id)
+    assert group_player is not None
+    own = group_player.own_protocol
+    assert own is not None
+    check = AsyncMock(wraps=own.check_device)
+
+    with patch.object(own, "check_device", check):
+        await scenario.switch(plug, False)
+        await scenario.advance(10)
+
+    check.assert_awaited_once_with()
+    assert await own.check_device() is None
+    state = _state(scenario, group_id)
+    assert (state.available, state.powered) == (True, False)
+    assert [speaker.device_checks for speaker in speakers] == [[], [], []]
+    assert plug.commands == []

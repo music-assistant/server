@@ -397,6 +397,24 @@ starts at once, as for a protocol that can not check (AWAY-14).
 - End-to-end: **no**: it needs a protocol whose check fails.
 - Proven by: `test_power_control.py::test_a_device_check_that_fails_changes_nothing`
 
+### AWAY-22 · A device check is called off when its protocol is taken off its player
+
+Den's plug is cut, and its Sonos protocol is asked to check its device, which takes long.
+Meanwhile its provider loses the device, or the user removes or disables Den. The check is called
+off, so nothing comes of it for a protocol that left its player.
+
+- End-to-end: **no**: it needs a check that is still running when its protocol goes.
+- Proven by: `test_power_control.py::test_a_running_device_check_is_called_off_when_its_protocol_goes`
+
+### AWAY-23 · A player that goes before its check is not checked
+
+Den's plug is cut, and the user removes or disables Den before its check is due. The check goes
+with the player: Den's device is never checked.
+
+- End-to-end: **possible with** a power control the lab can switch, and a removal within the
+  first seconds after the power is cut.
+- Proven by: `test_power_control.py::test_a_player_that_goes_before_its_check_is_not_checked`
+
 ## Several devices on one host
 
 One host, such as a Raspberry Pi, can run several players behind one MAC and one IP address.
@@ -2023,6 +2041,15 @@ it, and Downstairs starts once, on all three, long before the play would leave D
 - End-to-end: **possible with** a power control the lab can switch and a Chromecast behind it,
   switched off long enough for its reconnect to back off.
 - Proven by: `test_power_control.py::test_a_start_asks_the_protocol_of_a_member_to_reach_its_device`
+
+### GROUP-58 · A group player on a power control has no device to check
+
+Downstairs, a sync group or a universal group, is on a smart plug that is switched off. Its own
+protocol is asked to check, and it can not: Downstairs stays available and powered off, and none
+of its members is checked.
+
+- End-to-end: **possible with** a power control the lab can switch, selected for a group player.
+- Proven by: `test_power_control.py::test_a_group_player_on_a_power_control_is_not_checked`
 
 ## Where playback goes
 

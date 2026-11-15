@@ -683,6 +683,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             del self._protocols[protocol_id]
         if handle := self._pending_protocol_evaluations.pop(protocol_id, None):
             handle.cancel()
+        self._cancel_device_check(protocol_id)
         self._last_polls.pop(protocol_id, None)
         player = protocol.player
         if player is not None and player.attached_protocols.get(protocol_id) is protocol:
@@ -811,6 +812,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         for prefix in [p.value for p in PlayerLockPurpose]:
             self._player_command_locks.pop(f"{prefix}_{player_id}", None)
         self._clear_sleep_timer(player)
+        self._cancel_power_off_check(player_id)
         self.mass.cancel_timer(f"player_update_state_{player_id}")
         # once the player is gone its id can be a legacy id of another player, whose queue
         # this update must not reach

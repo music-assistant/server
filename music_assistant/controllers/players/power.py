@@ -214,18 +214,33 @@ class PowerMixin(_PlayerControllerBase):
         """
         if ATTR_POWERED not in changed_values:
             return
-        task_id = f"device_check_{player.player_id}"
         if changed_values[ATTR_POWERED] == (True, False) and player.power_control in self._controls:
             self.mass.call_later(
                 DEVICE_CHECK_DELAY,
                 self._check_switched_off_device,
                 player.player_id,
-                task_id=task_id,
+                task_id=f"device_check_after_power_off_{player.player_id}",
             )
         else:
-            self.mass.cancel_timer(task_id)
+            self._cancel_power_off_check(player.player_id)
 
-    async def _check_switched_off_device(self, player_id: str) -> None:
+    def _cancel_power_off_check(self, player_id: str) -> None:
+        """
+        Call off the check of the device of a player that is due after its power off.
+
+        :param player_id: The player whose check to call off.
+        """
+        self.mass.cancel_timer(f"device_check_after_power_off_{player_id}")
+
+    def _cancel_device_check(self, protocol_id: str) -> None:
+        """
+        Call off a check of the device of a protocol that is running.
+
+        :param protocol_id: The protocol whose check to call off.
+        """
+        self.mass.cancel_task(f"device_check_{protocol_id}")
+
+    def _check_switched_off_device(self, player_id: str) -> None:
         """
         Check the device of a player whose external power control reads off.
 
@@ -243,7 +258,20 @@ class PowerMixin(_PlayerControllerBase):
             or not device.available
         ):
             return
-        await self._check_device(player, device)
+        self._start_device_check(player, device)
+
+    def _start_device_check(self, player: Player, device: PlayerProtocol) -> None:
+        """
+        Let the protocol that reports for the device of a player check it, in a task of its own.
+
+        Does nothing while a check of that protocol still runs.
+
+        :param player: The player of the device.
+        :param device: The protocol that reports for its device.
+        """
+        self.mass.create_task(
+            self._check_device(player, device), task_id=f"device_check_{device.protocol_id}"
+        )
 
     async def _check_device(self, player: Player, device: PlayerProtocol) -> None:
         """
@@ -621,10 +649,7 @@ class PowerMixin(_PlayerControllerBase):
                     ):
                         next_check = loop.time() + DEVICE_CHECK_INTERVAL
                         # a task of its own, so the device is still looked for meanwhile
-                        self.mass.create_task(
-                            self._check_device(player, device),
-                            task_id=f"device_check_{player.player_id}",
-                        )
+                        self._start_device_check(player, device)
                     await asyncio.sleep(0.5)
         except TimeoutError:
             msg = f"Player {player.name} did not come online after powering it on"
