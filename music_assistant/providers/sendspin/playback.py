@@ -1001,6 +1001,9 @@ class SendspinPlaybackSession:
             # new playback is superseding this one, so skipping tracks is still fast.
             if producer_stopped_cleanly and not self._cancel_requested:
                 try:
+                    # resamplers and encoders hold the end of the audio back until flushed
+                    with suppress(Exception):
+                        await push_stream.flush_audio()
                     await self._wait_for_buffer_drain()
                 except asyncio.CancelledError:
                     # New playback interrupted the drain — treat as
