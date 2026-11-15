@@ -12,7 +12,7 @@ from music_assistant_models.errors import ActionUnavailable
 
 from music_assistant.controllers.community_catalog.controller import _INDEX_CHECK
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
-from tests.conftest import full_mass_context
+from music_assistant.testing import full_mass_context
 from tests.controllers.community_catalog.conftest import ADDED, RELEASED, catalog_index
 
 if TYPE_CHECKING:

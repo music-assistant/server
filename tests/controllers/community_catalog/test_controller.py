@@ -22,7 +22,7 @@ from music_assistant.controllers.community_catalog.dependencies import Dependenc
 from music_assistant.controllers.community_catalog.gate import _REASONS, Verdict
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
 from music_assistant.helpers.util import purge_provider_modules
-from tests.conftest import full_mass_context
+from music_assistant.testing import full_mass_context
 from tests.controllers.community_catalog.conftest import ADDED, RELEASED, build_archive
 from tests.controllers.community_catalog.test_dependencies import _build_wheel
 from tests.controllers.community_catalog.test_installer import _hash
