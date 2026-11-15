@@ -60,17 +60,26 @@ async def evaluate_bridge_of(mass: MusicAssistant, protocol_id: str) -> None:
     Let the bridge manager of a protocol bring its Sendspin bridge in line with what is wanted.
 
     For the Sendspin side, when the Sendspin output of a bridged device is switched on or
-    off. Nothing happens for a protocol that is not attached or has no bridge manager.
+    off. For a protocol that is not attached, the bridges of the protocols attached to its
+    player are evaluated instead, so another provider can carry the output. Nothing happens
+    for a protocol without a bridge manager.
 
     :param mass: The Music Assistant instance.
     :param protocol_id: Id of the protocol the bridge rides on.
     """
     protocol = mass.players.get_protocol(protocol_id)
-    if protocol is None or protocol.player is None:
+    if protocol is not None and protocol.player is not None:
+        protocols = [protocol]
+    elif (player_id := mass.players.get_player_id_of_protocol(protocol_id)) and (
+        player := mass.players.get_player(player_id)
+    ):
+        protocols = list(player.attached_protocols.values())
+    else:
         return
-    manager = getattr(protocol.provider, "bridge_manager", None)
-    if isinstance(manager, SendspinBridgeManagerBase):
-        await manager.evaluate_bridge(protocol)
+    for attached in protocols:
+        manager = getattr(attached.provider, "bridge_manager", None)
+        if isinstance(manager, SendspinBridgeManagerBase):
+            await manager.evaluate_bridge(attached)
 
 
 class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
