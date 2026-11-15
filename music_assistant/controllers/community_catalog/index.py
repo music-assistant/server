@@ -48,11 +48,12 @@ class IndexClient:
         self.logger = logger
         self.store = store
 
-    async def fetch(self) -> bool:
+    async def fetch(self) -> bool | None:
         """
         Fetch the index of this server's line and keep it when it is valid.
 
-        Any failure keeps the copy and logs a warning. Returns whether the index changed.
+        Any failure keeps the copy and logs a warning. Returns whether the index changed, None
+        when it could not be fetched.
         """
         line = server_line(self.mass.version)
         url = INDEX_URL.format(line=line)
@@ -71,10 +72,10 @@ class IndexClient:
             index = parse_index(json_loads(content), line)
         except TimeoutError:
             self.logger.warning("Could not fetch the community catalog from %s: no answer", url)
-            return False
+            return None
         except (ClientError, ValueError, LookupError) as err:
             self.logger.warning("Could not fetch the community catalog from %s: %s", url, err)
-            return False
+            return None
         changed = index != self.store.index
         await self.store.keep_index(content, index, etag)
         return changed

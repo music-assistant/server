@@ -19,6 +19,7 @@ from music_assistant.controllers.community_catalog.models import (
     CatalogState,
     CommunityProviderState,
 )
+from tests.controllers.community_catalog.conftest import assert_refused
 from tests.controllers.community_catalog.test_controller import (  # noqa: F401 - a fixture
     _assert_loaded,
     _events,
@@ -252,8 +253,9 @@ async def test_safe_mode(tmp_path: Path, registry: Registry, github: GitHub) -> 
 
     async with _server(tmp_path, safe_mode=True) as mass:
         assert mass.get_provider(MOVED) is None
-        with pytest.raises(ActionUnavailable, match="safe mode"):
+        with pytest.raises(ActionUnavailable, match="safe mode") as refused:
             await mass.community_catalog.dismiss_notice(MOVED)
+        assert_refused(refused, "safe_mode")
         # nothing was tried, so there is no cause to tell
         reason = mass.community_catalog.unavailable_reason(MOVED)
         assert reason is not None
