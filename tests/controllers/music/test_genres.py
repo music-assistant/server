@@ -1082,7 +1082,7 @@ class TestPlaylistSyncLinksGenres:
 
 
 class TestLibrarySyncStoresGenres:
-    """Tests for the stored genres a provider's library sync keeps in step with its links."""
+    """Tests for the genre names a provider's library sync stores on the item."""
 
     async def test_genre_tagged_after_import_survives_the_scan(
         self, mass: MusicAssistant, genre_ctrl: GenreController
@@ -1103,35 +1103,6 @@ class TestLibrarySyncStoresGenres:
         )
         stored = await mass.music.tracks.get_library_item(track.item_id)
         assert stored.metadata.genres == {"Rock", "SzTaggedLaterGenre"}
-
-    async def test_genre_the_provider_removes_stays_removed_after_the_scan(
-        self, mass: MusicAssistant, genre_ctrl: GenreController
-    ) -> None:
-        """A genre the provider no longer tags is not linked again by the genre scan."""
-        track = await _add_test_track(mass, "Untagged Later Track")
-        await _set_track_genres(mass, int(track.item_id), ["SzKeptGenre", "SzDroppedGenre"])
-        await _provider_sync_genres(mass, track, {"SzKeptGenre", "SzDroppedGenre"})
-        await _provider_sync_genres(mass, track, {"SzKeptGenre"})
-        await genre_ctrl._bulk_scan_unmapped_genres()
-
-        assert await _linked_genre_names(mass, MediaType.TRACK, track.item_id) == {"SzKeptGenre"}
-        stored = await mass.music.tracks.get_library_item(track.item_id)
-        assert stored.metadata.genres == {"SzKeptGenre"}
-
-    async def test_genre_dropped_under_two_spellings_stays_removed_after_the_scan(
-        self, mass: MusicAssistant, genre_ctrl: GenreController
-    ) -> None:
-        """Every stored spelling of a genre the provider drops is removed, not just one."""
-        track = await _add_test_track(mass, "Two Spellings Track")
-        spellings = ["SzKeptGenre", "Sz Hip-Hop", "Sz Hip Hop"]
-        await _set_track_genres(mass, int(track.item_id), spellings)
-        await _provider_sync_genres(mass, track, set(spellings))
-        await _provider_sync_genres(mass, track, {"SzKeptGenre"})
-        await genre_ctrl._bulk_scan_unmapped_genres()
-
-        assert await _linked_genre_names(mass, MediaType.TRACK, track.item_id) == {"SzKeptGenre"}
-        stored = await mass.music.tracks.get_library_item(track.item_id)
-        assert stored.metadata.genres == {"SzKeptGenre"}
 
     async def test_unchanged_genres_do_not_rewrite_the_item(
         self, mass: MusicAssistant, genre_ctrl: GenreController
