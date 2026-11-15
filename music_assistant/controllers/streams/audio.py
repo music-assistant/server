@@ -5675,21 +5675,26 @@ class StreamsAudio:
         """
         Return the configured output channels for the rendering protocol.
 
-        The value may be stored on the rendering protocol itself (the protocol
-        section of the config UI) or on the own protocol of its player (the
-        native section); the rendering protocol's own stored value wins.
+        The value stored on the rendering protocol itself (the protocol section of
+        the config UI) wins, else the one stored on the protocol it rides on (such
+        as the AirPlay output under a Sendspin bridge), else the one stored on the
+        own protocol of its player (the native section), else stereo.
 
         :param player: The protocol that renders the audio, if it is attached.
         :param protocol_id: The id of the protocol that renders the audio.
         """
         own = player.player.own_protocol if player and player.player else None
-        own_value = (
+        fallback = (
             self.mass.config.get_protocol_value(own.protocol_id, CONF_OUTPUT_CHANNELS, "stereo")
             if own
             else "stereo"
         )
+        if player and (underlying_id := player.underlying_protocol_id):
+            fallback = self.mass.config.get_protocol_value(
+                underlying_id, CONF_OUTPUT_CHANNELS, fallback
+            )
         return self.mass.config.get_protocol_value(
-            player.protocol_id if player else protocol_id, CONF_OUTPUT_CHANNELS, own_value
+            player.protocol_id if player else protocol_id, CONF_OUTPUT_CHANNELS, fallback
         )
 
     def _pick_pcm_bit_depth(

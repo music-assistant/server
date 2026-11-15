@@ -70,8 +70,10 @@ def _player(state: PlaybackState, stream_elapsed: float) -> Any:
     return SimpleNamespace(
         player_id=QUEUE_ID,
         type=PlayerType.PLAYER,
+        extra_data={},
         resolve_output_protocol=lambda: SimpleNamespace(
-            current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id="book", uri=None)
+            paused_position_reliable=False,
+            current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id="book", uri=None),
         ),
         name="P",
         available=True,

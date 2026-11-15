@@ -17,7 +17,6 @@ from aiosendspin.server.roles.player.v1 import PlayerV1Role
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
-from music_assistant.constants import CONF_OUTPUT_CHANNELS
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.ffmpeg import FFMpeg
@@ -254,12 +253,11 @@ class _JoinCatchupState:
 @dataclass(slots=True)
 class _PipelineConfig:
     requires_transform: bool
-    output_channels: str
     filter_params: tuple[str | ComplexFilter, ...]
 
     @property
-    def signature(self) -> tuple[bool, str, tuple[str | ComplexFilter, ...]]:
-        return (self.requires_transform, self.output_channels, self.filter_params)
+    def signature(self) -> tuple[bool, tuple[str | ComplexFilter, ...]]:
+        return (self.requires_transform, self.filter_params)
 
 
 @dataclass(slots=True)
@@ -1286,14 +1284,6 @@ class SendspinPlaybackSession:
             member.player_id if member else player_id
         )
         dsp_enabled = bool(dsp_config.enabled)
-        raw_output_channels = self.player.mass.config.get_protocol_value(
-            player_id,
-            CONF_OUTPUT_CHANNELS,
-            "stereo",
-        )
-        output_channels = str(raw_output_channels or "stereo").strip().lower()
-        if output_channels not in {"stereo", "left", "right", "mono"}:
-            output_channels = "stereo"
         try:
             output_format = self._get_member_output_format(player_id)
             output_plan = self.player.mass.streams.audio.get_player_output_plan(
@@ -1310,7 +1300,7 @@ class SendspinPlaybackSession:
         custom_filter_graph = any(
             not isinstance(param, str) or param.strip() for param in filter_params
         )
-        requires_transform = dsp_enabled or output_channels != "stereo" or custom_filter_graph
+        requires_transform = dsp_enabled or custom_filter_graph
         if (
             output_plan is not None
             and self._queue_id is not None
@@ -1324,7 +1314,6 @@ class SendspinPlaybackSession:
             )
         return _PipelineConfig(
             requires_transform=requires_transform,
-            output_channels=output_channels,
             filter_params=filter_params,
         )
 

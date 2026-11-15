@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
@@ -159,7 +159,9 @@ class AppleMusicMediaManager:
         else:
             endpoint = f"catalog/{self.provider._storefront}/songs/{prov_track_id}"
             response = await self.api.get_data(endpoint, include="artists,albums")
-        return parse_track(self.provider, response["data"][0])
+        track = parse_track(self.provider, response["data"][0])
+        await self.provider.library_manager.mark_purchases_on_sale([(response["data"][0], track)])
+        return track
 
     async def get_playlist(
         self,
@@ -303,15 +305,18 @@ class AppleMusicMediaManager:
             endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}/tracks"
             response = await self.api.get_data(endpoint, include="artists")
         tracks = []
+        listed: list[tuple[dict[str, Any], Track]] = []
         for track_obj in response["data"]:
             if "id" not in track_obj:
                 continue
             track = parse_track(self.provider, track_obj)
+            listed.append((track_obj, track))
             # the listing omits the album relation, so parse_track would make the album name
             # stand in as its id; callers attach the album they asked for instead, which saves
             # fetching it again for every album a library sync imports
             track.album = None
             tracks.append(track)
+        await self.provider.library_manager.mark_purchases_on_sale(listed)
         return tracks
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -338,11 +343,14 @@ class AppleMusicMediaManager:
         )
         if not response or "data" not in response:
             return result
+        listed: list[tuple[dict[str, Any], Track]] = []
         for index, track in enumerate(response["data"]):
             if track and track["id"]:
                 parsed_track = parse_track(self.provider, track)
                 parsed_track.position = offset + index + 1
                 result.append(parsed_track)
+                listed.append((track, parsed_track))
+        await self.provider.library_manager.mark_purchases_on_sale(listed)
         return result
 
     async def _fetch_station_tracks(self, station_id: str) -> list[Track]:

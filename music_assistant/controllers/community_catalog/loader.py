@@ -7,7 +7,6 @@ import os
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderTier
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import PROVIDER_LOAD_CONCURRENCY
 from music_assistant.controllers.community_catalog.dependencies import (
@@ -15,11 +14,14 @@ from music_assistant.controllers.community_catalog.dependencies import (
     DependencyConflict,
 )
 from music_assistant.controllers.community_catalog.gate import Decision, Verdict
+from music_assistant.helpers.provider_manifest import read_manifest_file
 from music_assistant.helpers.util import TaskManager, purge_provider_modules
 
 if TYPE_CHECKING:
     import logging
     from pathlib import Path
+
+    from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.controllers.community_catalog.dependencies import CommunityDependencies
     from music_assistant.controllers.community_catalog.store import CatalogStore
@@ -161,7 +163,7 @@ class ProviderLoader:
             if name.startswith(".") or not await asyncio.to_thread(os.path.isfile, manifest_path):
                 continue
             try:
-                manifest = await ProviderManifest.parse(manifest_path)
+                manifest = (await read_manifest_file(manifest_path))[0]
             except Exception as err:
                 reason = f"its manifest is invalid: {err}"
             else:

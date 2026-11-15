@@ -7,10 +7,10 @@ import time
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
 
+from aioslimproto.models import ButtonCode, RemoteCode, SlimEvent
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import Preset as SlimPreset
-from aioslimproto.models import SlimEvent
 from aioslimproto.models import VisualisationType as SlimVisualisationType
 from aioslimproto.sync import SyncGroup
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -63,6 +63,10 @@ CACHE_CATEGORY_PREV_STATE = (
     1  # category for caching previous player state (bumped to invalidate old format)
 )
 
+# Device models of the LMS bridge tools that expose AirPlay/Chromecast/UPnP devices as
+# squeezelite players.
+BRIDGE_TOOL_MODELS = ("raopbridge", "castbridge", "upnpbridge")
+
 PROTOCOL_ONLY_MODELS = (
     # Device models where slimproto is only a secondary protocol on a device with
     # its own (native) identity: WiiM/LinkPlay devices (ModelName=WiiM Player) and
@@ -70,9 +74,7 @@ PROTOCOL_ONLY_MODELS = (
     # squeezelite players. These attach as an audio protocol to the player of
     # the device.
     "wiim",
-    "raopbridge",
-    "castbridge",
-    "upnpbridge",
+    *BRIDGE_TOOL_MODELS,
 )
 
 
@@ -80,6 +82,12 @@ def is_protocol_only_device(device_model: str) -> bool:
     """Return True if the device uses squeezelite as a secondary protocol only."""
     device_model_lower = device_model.lower()
     return any(model.lower() in device_model_lower for model in PROTOCOL_ONLY_MODELS)
+
+
+def is_bridge_tool(device_model: str) -> bool:
+    """Return True if the device is an LMS bridge tool for a device of another protocol."""
+    device_model_lower = device_model.lower()
+    return any(model in device_model_lower for model in BRIDGE_TOOL_MODELS)
 
 
 class SqueezelitePlayer(PlayerProtocol):
@@ -149,6 +157,12 @@ class SqueezelitePlayer(PlayerProtocol):
         await self._set_display()
         # not awaited: the attach of this protocol does not wait for its Sendspin bridge
         self.mass.create_task(evaluate_bridge_of(self.mass, self.protocol_id))
+
+    def on_player_media_updated(self) -> None:
+        """Handle callback when the current media of the player is updated."""
+        if (bridge := self.sendspin_bridge) is not None:
+            # the stream of the bridge plays on from track to track
+            bridge.update_now_playing()
 
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""
@@ -521,7 +535,11 @@ class SqueezelitePlayer(PlayerProtocol):
                 self._handle_player_heartbeat()
             return
 
-        if event.type in (SlimEventType.PLAYER_BTN_EVENT, SlimEventType.PLAYER_CLI_EVENT):
+        if event.type == SlimEventType.PLAYER_BTN_EVENT:
+            self.mass.create_task(self._handle_player_button_event(event))
+            return
+
+        if event.type == SlimEventType.PLAYER_CLI_EVENT:
             self.mass.create_task(self._handle_player_cli_event(event))
             return
 
@@ -763,6 +781,40 @@ class SqueezelitePlayer(PlayerProtocol):
             if param.isnumeric():
                 await self.mass.player_queues.seek(queue.queue_id, int(param))
         self.logger.log(VERBOSE_LOG_LEVEL, "CLI Event: %s", event_data)
+
+    async def _handle_player_button_event(self, event: SlimEvent) -> None:
+        """
+        Handle a button or remote key of the device that aioslimproto passed on.
+
+        aioslimproto passes play and pause on when the device can not act on them itself,
+        such as on a stopped device: play starts playback on the player and pause toggles
+        it, which reaches the group that owns its playback. Other buttons are ignored.
+
+        :param event: The button event of the device.
+        """
+        match event.data:
+            case {"type": "butn", "button": ButtonCode.PLAY} | {
+                "type": "ir",
+                "code": RemoteCode.PLAY,
+            }:
+                command = self.mass.players.cmd_play
+            case {"type": "butn", "button": ButtonCode.PAUSE} | {
+                "type": "ir",
+                "code": RemoteCode.PAUSE,
+            }:
+                command = self.mass.players.cmd_play_pause
+            case _:
+                return
+        if self.player is None:
+            return
+        bridge = self.sendspin_bridge
+        player_id = (bridge.transport_command_target() if bridge else None) or self.player.player_id
+        try:
+            await command(player_id)
+        except MusicAssistantError as err:
+            self.logger.warning(
+                "Failed to handle the play or pause button of %s: %s", self.display_name, err
+            )
 
     @property
     def _plays_for_bridge(self) -> bool:

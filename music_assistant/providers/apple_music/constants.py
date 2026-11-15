@@ -49,6 +49,8 @@ CONF_MUSIC_USER_TOKEN = "music_user_token"  # noqa: S105 - config key
 CONF_MUSIC_USER_MANUAL_TOKEN = "music_user_manual_token"  # noqa: S105 - config key
 CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"  # noqa: S105 - config key
 CACHE_CATEGORY_DECRYPT_KEY = 1
+CACHE_CATEGORY_PURCHASE_ON_SALE = 2
+PURCHASE_ON_SALE_CACHE_EXPIRATION = 7 * 24 * 3600
 # Apple rate limits per developer team and all installs share the bundled token,
 # so the library syncs daily instead of every 12 hours
 LIBRARY_SYNC_INTERVAL_HOURS = 24

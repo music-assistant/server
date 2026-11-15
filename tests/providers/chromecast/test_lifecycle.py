@@ -536,3 +536,49 @@ async def test_a_detached_device_ends_the_wait_for_an_app_s_next_track(
 
     unattached_update.assert_not_called()
     assert protocol._app_track_change_ends is None
+
+
+def _output_ids(scenario: Scenario, player_id: str) -> set[str]:
+    """Return the ids of the outputs a player lists."""
+    state = scenario.player(player_id)
+    assert state is not None
+    return {output.output_protocol_id for output in state.output_protocols}
+
+
+async def test_the_removal_of_a_switched_off_bridge_output_changes_the_outputs(
+    scenario: Scenario,
+) -> None:
+    """
+    Removing the switched-off Sendspin output of a Cast bridge reports changed outputs.
+
+    That report is what lets the squeezelite bridge of the device evaluate its bridge again
+    once the Cast bridge made way for it.
+    """
+    identifiers = {IdentifierType.MAC_ADDRESS: MAC_ADDRESS}
+    squeezelite = await scenario.add_provider("squeezelite")
+    chromecast = await scenario.add_provider("chromecast")
+    sendspin = await scenario.add_provider("sendspin")
+    native = squeezelite.protocol(MAC_ADDRESS, "Kitchen", identifiers=identifiers)
+    carrier = chromecast.protocol("cast_kitchen", "Kitchen", role="audio", identifiers=identifiers)
+    bridge = sendspin.protocol(
+        "spb_001122334466", "Kitchen", role="audio", underlying_protocol_id="cast_kitchen"
+    )
+    for protocol in (native, carrier, bridge):
+        await scenario.register(protocol)
+    player_id = scenario.single_player(native, carrier, bridge).player_id
+    await scenario.mass.config.save_protocol_config(bridge.protocol_id, {"enabled": False})
+    await scenario.settle()
+    assert bridge.player is None
+    assert bridge.protocol_id in _output_ids(scenario, player_id)
+    changes: list[set[str]] = []
+    scenario.mass.players.subscribe_player_state_update(
+        lambda player, changed: (
+            changes.append(set(changed)) if player.player_id == player_id else None
+        )
+    )
+
+    await scenario.mass.players.remove_protocol(bridge.protocol_id)
+
+    # reported by the removal itself, not left to a later update of the player
+    assert any("output_protocols" in changed for changed in changes)
+    assert bridge.protocol_id not in _output_ids(scenario, player_id)

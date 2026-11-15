@@ -24,6 +24,10 @@ In that folder you should create (at least) a __init__.py file and a manifest.js
 Optional is an icon.svg file that will be used as the icon for the provider in the UI,
 but we also support that you specify a material design icon in the manifest.json file.
 
+Optional is a strings.json file with the texts of the provider in English, which are
+translated into the other languages. This demo keeps the label of its menu action there
+(menu_actions.<id>.label) and the message its menu action answers with (config_actions.<key>).
+
 IMPORTANT NOTE:
 We strongly recommend developing on either macOS or Linux and start your development
 environment by running the setup.sh scripts in the scripts folder of the repository.
@@ -37,6 +41,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
 
+from music_assistant_models.config_entries import ConfigActionResult
 from music_assistant_models.enums import (
     ContentType,
     MediaType,
@@ -161,6 +166,33 @@ class MyDemoPluginprovider(PluginProvider):
         # relevant or leave out completely if not needed.
         # it will be called when the provider is unloaded from Music Assistant.
         # this means also when the provider is getting reloaded
+
+    async def handle_menu_action(
+        self, action_id: str, uri: str, player_id: str | None
+    ) -> ConfigActionResult | None:
+        """Run a menu action this provider declares in its manifest, for a media item."""
+        # OPTIONAL
+        # Implement when manifest.json declares "menu_actions". The app shows those entries
+        # in the menu of a media item and the server calls this method of the instance the
+        # user chose, so a provider with several instances answers for each of them, and
+        # registers nothing itself. The server already checked that the user may use this
+        # instance and holds the "scope" of the action, that the uri is of one of its
+        # "media_types", and, for an action with "requires_player": true, that player_id is
+        # a player the user may use (it is None for any other action). It only checked the
+        # kind of item in the uri, not that the item exists or belongs to this provider, so
+        # look the item up yourself, as below.
+        # Answer nothing, or a ConfigActionResult with a message the app shows and/or a url
+        # it opens once; its translation_key is looked up in config_actions of strings.json.
+        # Raise a MusicAssistantError to tell the user the action failed: get_item_by_uri
+        # below raises MediaNotFoundError for an unknown item.
+        if action_id != "show_item":
+            return await super().handle_menu_action(action_id, uri, player_id)
+        item = await self.mass.music.get_item_by_uri(uri)
+        return ConfigActionResult(
+            message=f"The demo plugin was asked about {item.name}",
+            translation_key="show_item",
+            translation_args=[item.name],
+        )
 
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return the AudioSources this plugin currently exposes."""

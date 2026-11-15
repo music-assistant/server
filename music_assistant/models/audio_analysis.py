@@ -42,6 +42,8 @@ _ENERGY_LOUDNESS: Final[tuple[float, float, float]] = (-11.4158, 3.0752, 0.35)
 _ENERGY_AROUSAL_LOGIT: Final[tuple[float, float, float]] = (-1.1500, 1.3019, 0.25)
 _ENERGY_Z_LIMIT: Final = 3.0
 _ENERGY_AROUSAL_EPS: Final = 0.0001
+# Score divisor of the energy level curve, a smaller value pushes more tracks toward 1 and 10.
+_ENERGY_CURVE_WIDTH: Final = 1.3
 
 
 class AudioAnalysisError(Exception):
@@ -204,22 +206,22 @@ class AudioAnalysisData(DataClassDictMixin):
     @property
     def energy_level(self) -> float | None:
         """
-        Perceived energy of the track, from 1.0 (calmest) to 10.0 (most energetic).
+        Perceived energy of the track, between 1.0 (calmest) and 10.0 (most energetic).
 
         An average track scores 5.5. None unless brightness, arousal and loudness_integrated
         are all set. loudness_integrated should be the EBU R128 value of a loudness domain,
-        Sonic Analysis' RMS approximation reads about one level too low.
+        Sonic Analysis' RMS approximation reads about two levels too low.
         """
         if self.brightness is None or self.arousal is None or self.loudness_integrated is None:
             return None
         arousal = min(max(self.arousal, _ENERGY_AROUSAL_EPS), 1.0 - _ENERGY_AROUSAL_EPS)
-        # weights sum to 1.0, so the score spans -_ENERGY_Z_LIMIT to _ENERGY_Z_LIMIT
         score = (
             _energy_term(self.brightness, _ENERGY_BRIGHTNESS)
             + _energy_term(self.loudness_integrated, _ENERGY_LOUDNESS)
             + _energy_term(math.log(arousal / (1.0 - arousal)), _ENERGY_AROUSAL_LOGIT)
         )
-        return 1.0 + 9.0 * (score + _ENERGY_Z_LIMIT) / (2.0 * _ENERGY_Z_LIMIT)
+        # tanh is steep around an average track and flattens toward both ends of the scale
+        return 5.5 + 4.5 * math.tanh(score / _ENERGY_CURVE_WIDTH)
 
     def as_audio_metadata(self) -> AudioMetadata | None:
         """
