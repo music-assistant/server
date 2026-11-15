@@ -1428,6 +1428,19 @@ async def test_a_stream_that_ends_before_its_start_stops_the_player(rig: _Rig) -
     rig.client.unpause_at.assert_not_called()
 
 
+async def test_a_stream_that_ends_before_it_was_requested_leaves_the_player_alone(
+    rig: _Rig,
+) -> None:
+    """A player that was never asked for the stream has nothing of it to stop."""
+    rig.bridge._on_stream_start(MagicMock())
+    rig.bridge._on_stream_end()
+    await _settle()
+
+    assert not rig.owns_stream()
+    rig.client.play_url.assert_not_called()
+    rig.client.stop.assert_not_called()
+
+
 async def test_a_new_stream_replaces_the_session(rig: _Rig) -> None:
     """A seek or a new track is a new stream: the player is flushed by its request."""
     first = await rig.start_playing()
@@ -1597,6 +1610,26 @@ async def test_a_new_sendspin_stream_has_its_own_recovery_budget(rig: _Rig) -> N
 
     assert rig.owns_stream()
     assert rig.client.play_url.await_count == 4
+
+
+async def test_a_return_survives_the_stream_start_it_causes(rig: _Rig) -> None:
+    """Joining a playing group starts a stream at once, which must not cancel the join itself."""
+    client = rig.grouped()
+    group = client.group
+
+    async def _add_client(_client: Any) -> None:
+        # the group asks the bridge for a stream before the join is done
+        rig.bridge._on_stream_start(MagicMock())
+        await asyncio.sleep(0)
+
+    group.add_client = AsyncMock(side_effect=_add_client)
+
+    with patch(f"{MODULE}.REJOIN_ATTEMPT_DELAYS", (0,)):
+        await rig.bridge._leave_sendspin_session()
+        await _settle()
+
+    group.add_client.assert_awaited_once_with(client)
+    assert rig.bridge._last_rejoin_us == rig.now_us
 
 
 async def test_a_bridge_that_gave_up_right_after_its_return_stays_out(rig: _Rig) -> None:

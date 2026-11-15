@@ -578,7 +578,6 @@ class SendspinSqueezeliteBridge:
             await resp.prepare(request)
             return resp
         session.claimed = True
-        lost = True
         try:
             await resp.prepare(request)
             await resp.write(_PREROLL)
@@ -587,11 +586,11 @@ class SendspinSqueezeliteBridge:
                 if block := self._next_block(session):
                     await resp.write(block)
                 await asyncio.sleep(WRITE_INTERVAL)
-            lost = False
         except ConnectionError:
             pass
         finally:
-            if lost and not self.mass.closing:
+            # nothing to restart for a session that ended
+            if not self.mass.closing:
                 self._recover(session, "it closed its stream")
         return resp
 
