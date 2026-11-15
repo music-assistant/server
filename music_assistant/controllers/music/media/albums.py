@@ -45,7 +45,6 @@ from music_assistant.controllers.music.helpers import (
     fill_track_from_recording,
     metadata_for_update,
     provider_mappings_for_update,
-    provider_mappings_from_urls,
     search_name_match_clause,
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
@@ -127,6 +126,7 @@ class AlbumsController(MediaControllerBase[Album]):
     media_type = MediaType.ALBUM
     item_cls = Album
     summary_item_cls = AlbumSummary
+    not_available_translation_key = "album_not_available_on_music_services"
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
@@ -699,29 +699,12 @@ class AlbumsController(MediaControllerBase[Album]):
                 # a stale edition costs nothing but its turn
                 self.logger.debug("Release %s could not be looked up: %s", edition.id, err)
                 continue
-            # a link names one loaded instance of a service, while the user may only be
-            # handed an album from a music source it may see
-            linked = _within_sources(
-                await provider_mappings_from_urls(
-                    self.mass, relation_urls(release.relations), MediaType.ALBUM, set()
-                ),
-                self.mass.music.providers,
-            )
-            if album := await self._first_available_album(
-                linked, release_group_id, allow_update_metadata
-            ):
-                return album
-            # a barcode lookup fans out over every provider, so it is spent only when none
-            # of the links resolves; a linked provider is asked too, as its link may be stale
-            by_barcode = await self._album_candidates_by_barcode(release)
-            if album := await self._first_available_album(
-                by_barcode, release_group_id, allow_update_metadata
-            ):
+            if album := await self._album_of_release(release, allow_update_metadata):
                 return album
         msg = f"Release group {release_group_id} is not available on any music provider"
         raise MediaNotFoundError(
             msg,
-            translation_key="album_not_available_on_music_services",
+            translation_key=self.not_available_translation_key,
             translation_owner=self.translation_owner,
         )
 
@@ -1504,10 +1487,68 @@ class AlbumsController(MediaControllerBase[Album]):
             )
             return None
 
+    async def _resolve_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """
+        Return the album an external id names on one of the user's music providers, if any.
+
+        :param external_id: The external identifier.
+        :param external_id_type: Type of the identifier.
+        :raises ProviderUnavailableError: A MusicBrainz id is asked for while the MusicBrainz
+            provider is not loaded.
+        """
+        if external_id_type == ExternalID.MB_RELEASEGROUP:
+            with contextlib.suppress(MediaNotFoundError):
+                return await self.resolve_musicbrainz_release_group(
+                    external_id, allow_update_metadata=False
+                )
+            return None
+        if external_id_type == ExternalID.MB_ALBUM:
+            return await self._album_by_release_id(external_id)
+        return await super()._resolve_external_id(external_id, external_id_type)
+
+    async def _album_by_release_id(self, release_id: str) -> Album | None:
+        """
+        Return the album a MusicBrainz release is on one of the user's music providers, if any.
+
+        :param release_id: MusicBrainz release id.
+        :raises ProviderUnavailableError: The MusicBrainz provider is not loaded.
+        """
+        musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+        if musicbrainz is None:
+            raise ProviderUnavailableError("MusicBrainz is not available")
+        try:
+            release = await musicbrainz.get_release_details(release_id)
+        except InvalidDataError as err:
+            self.logger.debug("Release %s could not be looked up: %s", release_id, err)
+            return None
+        return await self._album_of_release(release, allow_update_metadata=False)
+
+    async def _album_of_release(
+        self, release: MusicBrainzRelease, allow_update_metadata: bool
+    ) -> Album | None:
+        """
+        Return the album a MusicBrainz release is on one of the user's music providers, if any.
+
+        The album is found through the links MusicBrainz keeps or, failing those, by the
+        release's barcode. An album already in the library is returned as the library album.
+
+        :param release: The MusicBrainz release, with its links, barcode and artist credits.
+        :param allow_update_metadata: Whether the album's metadata may be refreshed on the way.
+        """
+        linked = await self._linked_provider_mappings(release.relations)
+        if album := await self._first_available_album(linked, release.id, allow_update_metadata):
+            return album
+        # a barcode lookup fans out over every provider, so it is spent only when none
+        # of the links resolves; a linked provider is asked too, as its link may be stale
+        by_barcode = await self._album_candidates_by_barcode(release)
+        return await self._first_available_album(by_barcode, release.id, allow_update_metadata)
+
     async def _first_available_album(
         self,
         candidates: Sequence[ProviderMapping],
-        release_group_id: str,
+        release_id: str,
         allow_update_metadata: bool,
     ) -> Album | None:
         """Return the first candidate its provider still serves as an album, if any."""
@@ -1531,8 +1572,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 )
             except EXTERNAL_ID_LOOKUP_ERRORS as err:
                 self.logger.debug(
-                    "Release group %s is not available as album %s on %s: %s",
-                    release_group_id,
+                    "Release %s is not available as album %s on %s: %s",
+                    release_id,
                     candidate.item_id,
                     candidate.provider_instance,
                     err,
@@ -1822,29 +1863,6 @@ def _streaming_edition_rank(
         release.country not in ("XW", "XE"),
         release.date or "9999",
     )
-
-
-def _within_sources(
-    candidates: Iterable[ProviderMapping], sources: Sequence[MusicProvider]
-) -> list[ProviderMapping]:
-    """
-    Return the candidates that name one of the given music sources.
-
-    A candidate stays on its own instance when that is an available source; otherwise it
-    moves to the first available instance the sources have of its service, failing that to
-    the first there is. One on a service they do not include is left out.
-    """
-    available = {source.instance_id for source in sources if source.available}
-    first_by_domain: dict[str, str] = {}
-    for source in sorted(sources, key=lambda source: not source.available):
-        first_by_domain.setdefault(source.domain, source.instance_id)
-    within: list[ProviderMapping] = []
-    for candidate in candidates:
-        if candidate.provider_instance in available:
-            within.append(candidate)
-        elif instance := first_by_domain.get(candidate.provider_domain):
-            within.append(replace(candidate, provider_instance=instance))
-    return within
 
 
 def _unambiguous_release_ids(

@@ -32,7 +32,6 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
-    ProviderUnavailableError,
 )
 from music_assistant_models.favorite_update import FavoriteUpdate
 from music_assistant_models.helpers import create_safe_string, create_uri, get_global_cache_value
@@ -66,17 +65,21 @@ from music_assistant.constants import (
     DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
+    EXTERNAL_ID_PROVIDER,
     MASS_LOGGER_NAME,
 )
 from music_assistant.controllers.music.constants import (
     BASE_SORT_FIELD_SQL,
+    CACHE_CATEGORY_EXTERNAL_IDS,
     CACHE_CATEGORY_SEARCH_RESULTS,
     COLLECTION_COVER_COUNT,
+    EXTERNAL_ID_CACHE_EXPIRATION,
     RANDOM_SORT_FIELDS,
     RESUME_POSITION_TOLERANCE_SECONDS,
 )
 from music_assistant.controllers.music.helpers import (
     ResumePoint,
+    mappings_within_sources,
     preferred_thumb,
     provider_mappings_from_urls,
     search_name_match_clause,
@@ -106,7 +109,10 @@ from music_assistant.helpers.external_ids import (
     external_id_lookup_values,
     external_id_lookup_values_untyped,
     external_id_sort_key,
+    is_valid_mbid,
+    normalize_external_id,
     normalize_external_ids,
+    parse_external_item_id,
 )
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import (
@@ -125,7 +131,11 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models.media_capabilities import MediaCatalogMixin
     from music_assistant.models.music_provider import MusicProvider
-    from music_assistant.providers.musicbrainz.models import MusicBrainzArtist, MusicBrainzRelease
+    from music_assistant.providers.musicbrainz.models import (
+        MusicBrainzArtist,
+        MusicBrainzRelation,
+        MusicBrainzRelease,
+    )
     from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
 
@@ -295,6 +305,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     item_cls: type[MediaItemType]
     summary_item_cls: type[MediaItemSummaryType]
     db_table: str
+    # translation key of the message for an item none of the user's music providers has
+    not_available_translation_key: str | None = None
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
@@ -792,7 +804,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             domain to fetch the item from.
         :param allow_update_metadata: Schedule a metadata refresh on access.
             Set to False when fetching items in bulk (e.g. provider sync).
+        :raises InvalidProviderID: The item id is no valid external item id.
+        :raises MediaNotFoundError: The item is not in the library or on a music provider.
         """
+        if provider_instance_id_or_domain == EXTERNAL_ID_PROVIDER:
+            return await self._get_external_item(item_id, allow_update_metadata)
         # always prefer the full library item if we have it (on a source the user may see)
         if library_item := await self.get_visible_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
@@ -1164,7 +1180,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         external_id: str,
         external_id_type: ExternalID | None = None,
     ) -> ItemCls | None:
-        """Get item by external ID, querying library then active providers."""
+        """
+        Get item by external ID, querying library then active providers.
+
+        :param external_id: External identifier value to look up.
+        :param external_id_type: Type of the identifier; only the library is searched without.
+        """
         # an external id is not unique, so the first library item on the user's sources wins
         for library_item in await self.get_library_items_by_external_id(
             external_id, external_id_type, limit=None
@@ -1174,52 +1195,21 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         if external_id_type is None:
             return None
+        if external_id_type.is_musicbrainz:
+            if not is_valid_mbid(external_id):
+                return None
+            external_id = normalize_external_id(external_id_type, external_id)
 
-        if (feature := PROVIDER_FEATURE_BY_MEDIA_TYPE.get(self.media_type)) is None:
-            return None
-
-        for prov in self.mass.music.providers:
-            if feature not in prov.supported_features:
-                continue
-
-            try:
-                result: ItemCls | None = None
-                match self.media_type:
-                    case MediaType.TRACK:
-                        result = cast(
-                            "ItemCls | None",
-                            await prov.get_track_by_external_id(external_id, external_id_type),
-                        )
-                    case MediaType.ALBUM:
-                        result = cast(
-                            "ItemCls | None",
-                            await prov.get_album_by_external_id(external_id, external_id_type),
-                        )
-                    case MediaType.ARTIST:
-                        result = cast(
-                            "ItemCls | None",
-                            await prov.get_artist_by_external_id(external_id, external_id_type),
-                        )
-
-                if result:
-                    if result.provider == "library":
-                        return result
-                    library_match = await self.get_visible_library_item_by_prov_id(
-                        result.item_id, result.provider
-                    )
-                    return library_match or result
-            except NotImplementedError, MediaNotFoundError:
-                continue
-            except ProviderUnavailableError as err:
-                self.logger.debug(
-                    "Provider %s (%s) unavailable for external ID lookup: %s",
-                    prov.instance_id,
-                    prov.domain,
-                    err,
-                )
-                continue
-
-        return None
+        if remembered := await self._remembered_external_id(external_id, external_id_type):
+            return remembered
+        result = await self._resolve_external_id(external_id, external_id_type)
+        if result is None or result.provider == "library":
+            return result
+        await self._remember_external_id(external_id, external_id_type, result)
+        library_match = await self.get_visible_library_item_by_prov_id(
+            result.item_id, result.provider
+        )
+        return library_match or result
 
     @final
     async def get_library_items_by_prov_id(
@@ -2370,6 +2360,189 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
             return set()
         return {mapping.provider_domain for mapping in added}
+
+    @final
+    async def _get_external_item(self, item_id: str, allow_update_metadata: bool) -> ItemCls:
+        """
+        Return the item an external item id names, from the library or a music provider.
+
+        :param item_id: Item id as external_item_id() builds it.
+        :param allow_update_metadata: Schedule a metadata refresh of a library item.
+        :raises InvalidProviderID: The item id is no valid external item id.
+        :raises MediaNotFoundError: The item is not in the library or on a music provider.
+        """
+        external_id_type, external_id = parse_external_item_id(item_id)
+        item = await self.get_item_by_external_id(external_id, external_id_type)
+        if item is None:
+            msg = f"{self.media_type.value} {item_id} is not available on any music provider"
+            raise MediaNotFoundError(
+                msg,
+                translation_key=self.not_available_translation_key,
+                translation_owner=self.translation_owner,
+            )
+        if allow_update_metadata and item.provider == "library":
+            self.mass.metadata.schedule_update_metadata(item)
+        return item
+
+    async def _resolve_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> ItemCls | None:
+        """
+        Return the item an external id names on one of the user's music providers, if any.
+
+        Override in a subclass to give an id type a route of its own.
+
+        :param external_id: The external identifier.
+        :param external_id_type: Type of the identifier.
+        """
+        return await self._provider_item_by_external_id(external_id, external_id_type)
+
+    @final
+    async def _provider_item_by_external_id(
+        self,
+        external_id: str,
+        external_id_type: ExternalID,
+        accept: Callable[[ItemCls], bool] | None = None,
+    ) -> ItemCls | None:
+        """
+        Return the item the first of the user's music providers finds by an external id.
+
+        :param external_id: The external identifier.
+        :param external_id_type: Type of the identifier.
+        :param accept: Tells whether a provider's answer is the item looked for; every answer
+            is when omitted.
+        """
+        if (feature := PROVIDER_FEATURE_BY_MEDIA_TYPE.get(self.media_type)) is None:
+            return None
+        for prov in self.mass.music.providers:
+            if feature not in prov.supported_features:
+                continue
+            try:
+                result: ItemCls | None = None
+                match self.media_type:
+                    case MediaType.TRACK:
+                        result = cast(
+                            "ItemCls | None",
+                            await prov.get_track_by_external_id(external_id, external_id_type),
+                        )
+                    case MediaType.ALBUM:
+                        result = cast(
+                            "ItemCls | None",
+                            await prov.get_album_by_external_id(external_id, external_id_type),
+                        )
+                    case MediaType.ARTIST:
+                        result = cast(
+                            "ItemCls | None",
+                            await prov.get_artist_by_external_id(external_id, external_id_type),
+                        )
+            except EXTERNAL_ID_LOOKUP_ERRORS as err:
+                # one provider's trouble must not keep the others from being asked
+                self.logger.debug(
+                    "External ID lookup on provider %s (%s) failed: %s",
+                    prov.instance_id,
+                    prov.domain,
+                    err,
+                )
+                continue
+            if result and (accept is None or accept(result)):
+                return result
+        return None
+
+    @final
+    async def _remembered_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> ItemCls | None:
+        """
+        Return the item an external id was found as before, on a source the user may see.
+
+        :param external_id: The external identifier.
+        :param external_id_type: Type of the identifier.
+        """
+        cache_key = self._external_id_cache_key(external_id, external_id_type)
+        found = await self.mass.cache.get(
+            cache_key, provider=self.mass.music.domain, category=CACHE_CATEGORY_EXTERNAL_IDS
+        )
+        if not found:
+            return None
+        # what is kept names the service, not an account, so it is served through an account
+        # of that service the user may see; without one the lookup runs for this user's sources
+        provider = self.mass.music.get_visible_provider(found["provider_domain"])
+        if provider is None:
+            return None
+        if library_item := await self.get_visible_library_item_by_prov_id(
+            found["item_id"], found["provider_domain"]
+        ):
+            return library_item
+        try:
+            return await self.get_provider_item(
+                found["item_id"],
+                provider.instance_id,
+                allow_fallback=False,
+                strict_provider_instance=True,
+            )
+        except MediaNotFoundError:
+            # the service no longer has the item, so the id is looked up again
+            await self.mass.cache.delete(
+                cache_key, category=CACHE_CATEGORY_EXTERNAL_IDS, provider=self.mass.music.domain
+            )
+        except EXTERNAL_ID_LOOKUP_ERRORS as err:
+            self.logger.debug(
+                "%s %s could not be fetched from %s: %s",
+                self.media_type.value,
+                found["item_id"],
+                provider.instance_id,
+                err,
+            )
+        return None
+
+    @final
+    async def _remember_external_id(
+        self, external_id: str, external_id_type: ExternalID, item: ItemCls
+    ) -> None:
+        """
+        Keep which item on a music service an external id was found as.
+
+        :param external_id: The external identifier.
+        :param external_id_type: Type of the identifier.
+        :param item: The item as the music provider serves it.
+        """
+        # a streaming catalogue id is the same for every account of a service, so the service
+        # and the id are kept rather than the account the item was found through
+        for mapping in item.provider_mappings:
+            if mapping.item_id != item.item_id:
+                continue
+            await self.mass.cache.set(
+                self._external_id_cache_key(external_id, external_id_type),
+                {"provider_domain": mapping.provider_domain, "item_id": mapping.item_id},
+                expiration=EXTERNAL_ID_CACHE_EXPIRATION,
+                provider=self.mass.music.domain,
+                category=CACHE_CATEGORY_EXTERNAL_IDS,
+            )
+            return
+
+    @final
+    def _external_id_cache_key(self, external_id: str, external_id_type: ExternalID) -> str:
+        """Return the cache key of the item an external id was found as."""
+        canonical_id = normalize_external_id(external_id_type, external_id)
+        return f"{self.media_type.value}.{external_id_type.value}.{canonical_id}"
+
+    @final
+    async def _linked_provider_mappings(
+        self, relations: Iterable[MusicBrainzRelation] | None
+    ) -> list[ProviderMapping]:
+        """
+        Return the provider mappings a MusicBrainz entity links to, on the user's music sources.
+
+        :param relations: The URL relations of the entity, a release or a recording.
+        """
+        # a link names one loaded instance of a service, while the user may only be
+        # handed an item from a music source it may see
+        return mappings_within_sources(
+            await provider_mappings_from_urls(
+                self.mass, relation_urls(relations), self.media_type, exclude_domains=set()
+            ),
+            self.mass.music.providers,
+        )
 
     def _external_ids_query(
         self, media_type: MediaType | None = None, table_alias: str | None = None
