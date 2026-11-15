@@ -45,6 +45,7 @@ class _RowsProvider(MusicProvider):
                 provider=self.instance_id,
                 name=f"Row {i}",
                 translation_key=f"row{i}_key",
+                translation_params=[str(i)],
             )
             for i in (1, 2)
         ]
@@ -181,6 +182,9 @@ async def test_browse_lists_a_providers_rows_as_folders(
     ]
     assert [folder.name for folder in rows] == ["Row 1", "Row 2"]
     assert [folder.translation_key for folder in rows] == ["row1_key", "row2_key"]
+    # rows keep their own type, so their names translate as recommendation rows
+    assert all(isinstance(folder, RecommendationFolder) for folder in rows)
+    assert [folder.translation_params for folder in rows] == [["1"], ["2"]]
 
 
 async def test_browse_a_row_lists_all_of_its_items(

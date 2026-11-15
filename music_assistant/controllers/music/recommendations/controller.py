@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+from dataclasses import replace
 from itertools import zip_longest
 from typing import TYPE_CHECKING, cast
 
@@ -111,12 +112,11 @@ class RecommendationsController:
         rows = await self.get_recommendations()
         if provider:
             return [
-                BrowseFolder(
-                    item_id=row.item_id,
-                    provider=row.provider,
+                # a row stays a RecommendationFolder so its name translates as a row
+                replace(
+                    row,
                     path=f"{RECOMMENDATIONS_BROWSE_SCHEME}://{row.provider}/{row.item_id}",
-                    name=row.name,
-                    translation_key=row.translation_key,
+                    items=UniqueList(),
                 )
                 for row in rows
                 if row.provider == provider
