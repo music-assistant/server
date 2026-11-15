@@ -154,7 +154,7 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
 
         self.player = self.provider.mass.players.get_player(self._ma_player_id)  # type: ignore[arg-type]
 
-        self.device_name = f"{self.player.display_name}" if self.player else "Music Assistant"
+        self.device_name = f"{self.player.name}" if self.player else "Music Assistant"
 
         self.headers = {
             "X-Plex-Device-Name": self.device_name,
@@ -244,7 +244,7 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
         if self._ma_player_id:
             player = self.provider.mass.players.get_player(self._ma_player_id)
             if player:
-                player_name = player.display_name
+                player_name = player.name
 
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <MediaContainer machineIdentifier="{self.client_id}" version="1.0">
@@ -325,7 +325,7 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
             else None
         )
         if player:
-            player_name = player.display_name
+            player_name = player.name
             queue = self.provider.mass.players.get_active_queue(player)
             state = self._resolve_plex_state(player, queue)
 

@@ -9,6 +9,9 @@ import pytest
 
 from music_assistant.providers.snapcast.constants import DEFAULT_SNAPCAST_FORMAT
 
+# the real server with fake providers, for the tests of snapcast players on a running server
+from tests.scenarios.conftest import scenario  # noqa: F401
+
 
 class FakeSnapstream:
     """Minimal Snapstream stand-in for testing ma_stream._register_tcp_server_source."""

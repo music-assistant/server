@@ -768,7 +768,8 @@ async def test_plugin_search_leaves_out_tracks_on_hidden_sources(mock_get_user: 
     )
     plugin.search.return_value = results
     sources = [
-        Mock(instance_id=source, type=ProviderType.MUSIC) for source in ("open_1", "hidden_1")
+        Mock(instance_id=source, type=ProviderType.MUSIC, is_streaming_provider=False)
+        for source in ("open_1", "hidden_1")
     ]
     controller = _make_controller([plugin, *sources])
     controller.get_unique_providers = Mock(return_value=[])  # type: ignore[method-assign]
@@ -792,3 +793,55 @@ async def test_plugin_search_leaves_out_tracks_on_hidden_sources(mock_get_user: 
     cached = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
     assert [track.item_id for track in cached.tracks] == ["t1"]
     plugin.search.assert_awaited_once()
+
+
+@patch("music_assistant.controllers.music.controller.parse_uri", new_callable=AsyncMock)
+async def test_search_shareable_url_resolves_once_across_scoped_searches(
+    mock_parse: AsyncMock,
+) -> None:
+    """A pasted URL resolves only on the scoped search that targets its service."""
+    mock_parse.return_value = (MediaType.TRACK, "spotify", "t1")
+    spotify = _make_search_provider("spotify--abc", domain="spotify")
+    prov_a = _make_search_provider("prov_a")
+    controller = _make_controller([spotify, prov_a])
+    track = _make_track("t1", "spotify--abc", "My Song")
+    controller.get_item = AsyncMock(return_value=track)  # type: ignore[method-assign]
+    url = "https://open.spotify.com/track/t1"
+
+    # one search per target, like the frontend's progressive search
+    results = {
+        target: await controller.search(url, media_types=[MediaType.TRACK], providers=[target])
+        for target in ("library", "prov_a", "spotify")
+    }
+
+    assert results["spotify"].tracks == [track]
+    assert results["library"] == SearchResults()
+    assert results["prov_a"] == SearchResults()
+    controller.get_item.assert_awaited_once_with(
+        media_type=MediaType.TRACK,
+        item_id="t1",
+        provider_instance_id_or_domain="spotify--abc",
+    )
+    spotify.search.assert_not_awaited()
+    prov_a.search.assert_not_awaited()
+
+    # an unscoped search resolves the URL as well
+    result = await controller.search(url, media_types=[MediaType.TRACK])
+    assert result.tracks == [track]
+
+
+@patch("music_assistant.controllers.music.controller.parse_uri", new_callable=AsyncMock)
+async def test_search_shareable_url_skipped_when_media_type_excluded(
+    mock_parse: AsyncMock,
+) -> None:
+    """A URL resolving to a type not in media_types returns empty without a lookup."""
+    mock_parse.return_value = (MediaType.PLAYLIST, "spotify", "pl1")
+    controller = _make_controller([])
+    controller.get_item = AsyncMock()  # type: ignore[method-assign]
+
+    result = await controller._search_shareable_url(
+        "https://open.spotify.com/playlist/pl1", media_types=[MediaType.TRACK]
+    )
+
+    assert result == SearchResults()
+    controller.get_item.assert_not_awaited()

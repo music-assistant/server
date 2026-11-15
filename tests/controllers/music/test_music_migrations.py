@@ -1325,6 +1325,29 @@ async def test_migration_adds_is_endless_column_to_radios(
     assert [(row["item_id"], row["is_endless"]) for row in rows] == [(1, 1), (2, 1)]
 
 
+@pytest.mark.parametrize("table_exists", [True, False])
+async def test_migration_adds_podcast_item_id_to_media_progress(
+    database: DatabaseConnection, table_exists: bool
+) -> None:
+    """A pre-74 database gets the column; a missing table or a second run does not fail."""
+    if table_exists:
+        await database.execute(
+            f"CREATE TABLE {DB_TABLE_MEDIA_PROGRESS}([item_id] TEXT NOT NULL, "
+            "[provider] TEXT NOT NULL, [media_type] TEXT NOT NULL)"
+        )
+        await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    for _ in range(2):
+        await migrate_database(
+            mass, database, MagicMock(), prev_version=73, create_tables=AsyncMock()
+        )
+
+    columns = await _table_columns(database, DB_TABLE_MEDIA_PROGRESS)
+    assert ("podcast_item_id" in columns) is table_exists
+
+
 async def test_migration_replaces_play_history_indexes(database: DatabaseConnection) -> None:
     """Schema 70 replaces the two play-history indexes with its covering index."""
     await database.execute(
@@ -1569,8 +1592,73 @@ async def test_migration_moves_apple_music_station_playlists_to_radios(
         ]
 
 
+async def test_migration_drops_remotely_accessible_opensubsonic_images(
+    database: DatabaseConnection,
+) -> None:
+    """
+    A pre-72 database loses the external site images opensubsonic stored for artists and albums.
+
+    Cover art served by the subsonic server, images of other providers and unparsable rows
+    stay, a played item forgets such an image and running the migration twice is harmless.
+    """
+    external = _image("thumb", "https://lastfm.example/a.png", "opensubsonic--a")
+    external["remotely_accessible"] = True
+    cover_art = _image("thumb", "ar-1", "opensubsonic--a")
+    other = _image("thumb", "https://lastfm.example/b.png", "spotify--b")
+    other["remotely_accessible"] = True
+    for table in ("artists", "albums"):
+        await database.execute(f"ALTER TABLE {table} ADD COLUMN metadata json")
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        await database.execute(f"CREATE TABLE {table}([id] INTEGER PRIMARY KEY, [image] json)")
+    stored = {
+        ("artists", 1): serialize_to_json({"images": [external, cover_art, other]}),
+        ("artists", 2): 'not json "opensubsonic"',
+        ("albums", 1): serialize_to_json({"images": [external], "description": "x"}),
+        ("albums", 2): serialize_to_json({"images": [cover_art]}),
+    }
+    for (table, item_id), metadata in stored.items():
+        await database.execute(
+            f"INSERT INTO {table} (item_id, metadata) VALUES (:item_id, :metadata)",
+            {"item_id": item_id, "metadata": metadata},
+        )
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        for row_id, image in ((1, external), (2, cover_art)):
+            await database.execute(
+                f"INSERT INTO {table} (id, image) VALUES (:id, :image)",
+                {"id": row_id, "image": serialize_to_json(image)},
+            )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    for _ in range(2):
+        await migrate_database(
+            mass, database, MagicMock(), prev_version=71, create_tables=AsyncMock()
+        )
+
+    artists = {
+        row["item_id"]: row["metadata"]
+        for row in await database.get_rows_from_query("SELECT item_id, metadata FROM artists")
+    }
+    assert json.loads(artists[1]) == {"images": [cover_art, other]}
+    assert artists[2] == stored[("artists", 2)]
+    albums = {
+        row["item_id"]: row["metadata"]
+        for row in await database.get_rows_from_query("SELECT item_id, metadata FROM albums")
+    }
+    assert json.loads(albums[1]) == {"images": [], "description": "x"}
+    assert albums[2] == stored[("albums", 2)]
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        played = {
+            row["id"]: row["image"]
+            for row in await database.get_rows_from_query(f"SELECT id, image FROM {table}")
+        }
+        assert played[1] is None
+        assert json.loads(played[2]) == cover_art
+
+
 async def test_migration_fills_audiobook_collections(database: DatabaseConnection) -> None:
-    """A pre-72 database gets its collections table filled; broken metadata is skipped."""
+    """A pre-75 database gets its collections table filled; broken metadata is skipped."""
     await database.execute("ALTER TABLE audiobooks ADD COLUMN [metadata] json")
     await database.execute(
         f"CREATE TABLE {DB_TABLE_AUDIOBOOK_COLLECTIONS}([audiobook_id] INTEGER NOT NULL, "
@@ -1593,7 +1681,7 @@ async def test_migration_fills_audiobook_collections(database: DatabaseConnectio
     # a second pass must be a harmless no-op
     for _ in range(2):
         await migrate_database(
-            mass, database, MagicMock(), prev_version=71, create_tables=AsyncMock()
+            mass, database, MagicMock(), prev_version=74, create_tables=AsyncMock()
         )
 
     rows = await database.get_rows(DB_TABLE_AUDIOBOOK_COLLECTIONS, limit=0)

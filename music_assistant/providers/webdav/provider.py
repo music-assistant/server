@@ -302,6 +302,8 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve image path to actual image data or URL."""
+        # drop the cache-busting suffix the parent appends to the image path
+        path = path.split("?cs=", 1)[0]
         # Check if this is an audio file with embedded image
         ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
         if ext in SUPPORTED_EXTENSIONS:

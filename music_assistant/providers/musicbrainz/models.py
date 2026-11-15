@@ -259,7 +259,8 @@ class MusicBrainzBarcodeRelease(DataClassDictMixin):
     Release summary as listed by a barcode search or a release group browse.
 
     Carries the release and release-group identity plus the edition data (status,
-    country, date, media formats and URL relations) a listing includes, but no tracklist.
+    country, date, barcode, media formats and URL relations) a listing includes, but no
+    tracklist.
     """
 
     id: str
@@ -270,6 +271,7 @@ class MusicBrainzBarcodeRelease(DataClassDictMixin):
     status: str | None = None
     country: str | None = None
     date: str | None = None
+    barcode: str | None = None
     artist_credit: list[MusicBrainzArtistCredit] | None = None
     media: list[MusicBrainzMedia] = field(default_factory=list)
     relations: list[MusicBrainzRelation] | None = None

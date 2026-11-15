@@ -8,11 +8,13 @@ from music_assistant_models.enums import SortDirection, SortField
 
 CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
+# the playlog stores whole seconds, so closer resume positions count as unchanged
+RESUME_POSITION_TOLERANCE_SECONDS: Final[int] = 2
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_KEEP_REMASTERS_APART: Final[str] = "keep_remasters_apart"
 
-DB_SCHEMA_VERSION: Final[int] = 72
+DB_SCHEMA_VERSION: Final[int] = 75
 # headroom kept free on top of what moving the audio analysis out of library.db writes
 DB_FREE_SPACE_MARGIN: Final[int] = 100 * 1024 * 1024
 
@@ -24,6 +26,14 @@ DYNAMIC_RADIO_DYNAMIC_TARGET: Final[int] = 50
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 # the listings assembled from the providers (the tracks of an album, ...), kept as a whole
 CACHE_CATEGORY_LISTINGS: Final[int] = 11
+# which item on a music service an external id (a MusicBrainz id, ISRC or barcode) was found as
+CACHE_CATEGORY_EXTERNAL_IDS: Final[int] = 12
+# how long that item is handed out without looking the external id up again
+EXTERNAL_ID_CACHE_EXPIRATION: Final[int] = 7 * 24 * 3600
+# the form in which an item known only by an external id was listed, before it is looked up
+CACHE_CATEGORY_LISTED_EXTERNAL_ITEMS: Final[int] = 13
+# how long that form is kept for a client that names the item by its uri alone
+LISTED_EXTERNAL_ITEM_CACHE_EXPIRATION: Final[int] = 30 * 24 * 3600
 # how long an assembled listing is served without asking the providers again
 LISTING_CACHE_EXPIRATION: Final[int] = 15 * 60
 # a browse folder can show what is live right now, so it is kept just long enough to page
@@ -64,6 +74,7 @@ DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
 PROVIDER_MAPPING_CORRECTION_TASK_ID: Final[str] = "music_provider_mapping_correction"
 MUSIC_SYNC_COMPLETION_CHECK_TASK_ID: Final[str] = "music_sync_completion_check"
 TRACK_RECONCILIATION_TASK_ID: Final[str] = "music_track_reconciliation"
+UNAVAILABLE_MAPPING_CHECK_TASK_ID: Final[str] = "music_unavailable_mapping_check"
 
 # number of duplicate track candidate pairs examined per reconciliation run
 TRACK_RECONCILIATION_BATCH_SIZE: Final[int] = 100

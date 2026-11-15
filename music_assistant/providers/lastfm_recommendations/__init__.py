@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from itertools import islice
 from typing import TYPE_CHECKING
 
 from music_assistant_models.background_task import TaskSchedule
@@ -22,11 +23,12 @@ from music_assistant_models.media_items import RecommendationFolder, Track, Uniq
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.compare import match_ranked_tracks
 from music_assistant.helpers.throttle_retry import RequestPriority, with_request_priority
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
 from music_assistant.providers.lastfm_recommendations.constants import (
-    CACHE_CATEGORY_RESOLVED_ITEMS,
+    ARTIST_TOP_TRACKS_FETCH_LIMIT,
     CACHE_EXPIRATION_SECONDS,
     CONF_ACTION_CLEAR_CACHE,
     CONF_API_KEY,
@@ -37,6 +39,7 @@ from music_assistant.providers.lastfm_recommendations.constants import (
     CONF_GEO_COUNTRY,
     GEO_COUNTRIES,
     REFRESH_TASK_ID,
+    SIMILAR_ITEMS_FETCH_LIMIT,
 )
 from music_assistant.providers.lastfm_recommendations.recommendations import (
     LastFMRecommendationManager,
@@ -207,14 +210,12 @@ class LastFMRecommendationsProvider(MetadataProvider):
         :param limit: Maximum number of similar artists to return.
         """
         artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
-        similar_raw = await self.api.get_similar_artists(artist.name, artist_mbid, limit)
+        similar_raw = await self.api.get_similar_artists(
+            artist.name, artist_mbid, max(limit, SIMILAR_ITEMS_FETCH_LIMIT)
+        )
         if not similar_raw:
             return []
-
-        resolved = await asyncio.gather(
-            *[self.recommendations_manager.get_or_resolve_artist(raw) for raw in similar_raw]
-        )
-        return [a for a in resolved if a is not None]
+        return await self.recommendations_manager.resolve_similar_artists(similar_raw, limit)
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
         """
@@ -225,24 +226,33 @@ class LastFMRecommendationsProvider(MetadataProvider):
         """
         artist_name = track.artists[0].name if track.artists else "Unknown Artist"
         track_mbid = track.get_external_id(ExternalID.MB_RECORDING)
-        similar_raw = await self.api.get_similar_tracks(artist_name, track.name, track_mbid, limit)
+        similar_raw = await self.api.get_similar_tracks(
+            artist_name, track.name, track_mbid, max(limit, SIMILAR_ITEMS_FETCH_LIMIT)
+        )
         if not similar_raw:
             return []
-
-        resolved = await asyncio.gather(
-            *[self.recommendations_manager.get_or_resolve_track(raw) for raw in similar_raw]
-        )
-        return [t for t in resolved if t is not None]
+        return await self.recommendations_manager.resolve_similar_tracks(similar_raw, limit)
 
     async def get_artist_toptracks(self, artist: Artist, limit: int = 25) -> list[Track]:
         """
-        Retrieve an artist's top tracks from Last.fm.
+        Retrieve an in-library artist's library tracks, in the order of Last.fm's top tracks.
+
+        Only tracks in the library are listed; empty for an artist that is not a library item.
 
         :param artist: The reference artist.
         :param limit: Maximum number of top tracks to return.
         """
-        artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
-        return await self._get_artist_toptracks(artist.name, artist_mbid, limit)
+        if artist.provider != "library":
+            return []
+        library_tracks = await self.mass.music.artists.get_library_artist_tracks(artist.item_id)
+        if not library_tracks:
+            return []
+        ranking = await self._get_artist_toptrack_entries(
+            artist.name, artist.get_external_id(ExternalID.MB_ARTIST)
+        )
+        # comparing every title with every track takes too long for the event loop once an
+        # artist has many tracks
+        return await asyncio.to_thread(_match_library_tracks, ranking, library_tracks, limit)
 
     async def get_artist_toptrack_titles(self, artist: Artist, limit: int = 25) -> list[str]:
         """
@@ -251,8 +261,10 @@ class LastFMRecommendationsProvider(MetadataProvider):
         :param artist: The reference artist.
         :param limit: Maximum number of titles to return.
         """
-        artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
-        return await self._get_artist_toptrack_titles(artist.name, artist_mbid, limit)
+        ranking = await self._get_artist_toptrack_entries(
+            artist.name, artist.get_external_id(ExternalID.MB_ARTIST)
+        )
+        return [entry["name"] for entry in ranking[:limit]]
 
     # a background job, also when it runs from the startup timer or a config action: the
     # music provider searches it fans out must leave headroom for user actions and playback
@@ -283,41 +295,29 @@ class LastFMRecommendationsProvider(MetadataProvider):
         except MusicAssistantError as err:
             self.logger.warning("Failed to build recommendations: %s", err)
 
-    @use_cache(
-        CACHE_EXPIRATION_SECONDS,
-        category=CACHE_CATEGORY_RESOLVED_ITEMS,
-        allow_expired_cache=True,
-    )
-    async def _get_artist_toptracks(
-        self, artist_name: str, artist_mbid: str | None, limit: int
-    ) -> list[Track]:
-        """Fetch and resolve an artist's top tracks, keyed by name/mbid for caching."""
-        top_raw = await self.api.get_artist_top_tracks(artist_name, artist_mbid, limit)
-        if not top_raw:
-            return []
-
-        # Tolerate individual resolution failures (e.g. a rate-limited lookup) so one bad
-        # track can't sink the whole listing.
-        resolved = await asyncio.gather(
-            *[self.recommendations_manager.get_or_resolve_track(raw) for raw in top_raw],
-            return_exceptions=True,
-        )
-        tracks = [t for t in resolved if isinstance(t, Track)]
-        self.logger.debug(
-            "Resolved %d/%d top tracks to playable items for '%s'",
-            len(tracks),
-            len(top_raw),
-            artist_name,
-        )
-        return tracks
-
     @use_cache(CACHE_EXPIRATION_SECONDS, allow_expired_cache=True)
-    async def _get_artist_toptrack_titles(
-        self, artist_name: str, artist_mbid: str | None, limit: int
-    ) -> list[str]:
-        """Fetch the titles of an artist's top tracks, keyed by name/mbid for caching."""
+    async def _get_artist_toptrack_entries(
+        self, artist_name: str, artist_mbid: str | None
+    ) -> list[dict[str, str]]:
+        """Fetch the title and recording mbid of an artist's top tracks, keyed by name/mbid."""
         return [
-            raw["name"]
-            for raw in await self.api.get_artist_top_tracks(artist_name, artist_mbid, limit)
+            {"name": raw["name"], "mbid": raw.get("mbid") or ""}
+            for raw in await self.api.get_artist_top_tracks(
+                artist_name, artist_mbid, ARTIST_TOP_TRACKS_FETCH_LIMIT
+            )
             if raw.get("name")
         ]
+
+
+def _match_library_tracks(
+    ranking: list[dict[str, str]], tracks: list[Track], limit: int
+) -> list[Track]:
+    """
+    Return at most one library track per ranked entry, in the order of the ranking.
+
+    :param ranking: Ranked entries with the track's title and MusicBrainz recording id.
+    :param tracks: The artist's library tracks.
+    :param limit: Maximum number of tracks to return.
+    """
+    matched = match_ranked_tracks(((entry["name"], entry["mbid"]) for entry in ranking), tracks)
+    return list(islice((track for track in matched if track), limit))

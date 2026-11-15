@@ -1428,6 +1428,29 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
                 )
 
     if prev_version <= 71:
+        # opensubsonic stored artist/album info image urls of external sites as its own
+        # images; the provider no longer passes those through when resolving an image
+        await _drop_opensubsonic_external_images(database)
+
+    if prev_version <= 72:
+        # The old name referred to either name COLLATE NOCASE or search_name;
+        # startup now creates search_name_idx, so neither old definition is needed.
+        for table in MEDIA_ITEM_DB_TABLES:
+            await database.execute(f"DROP INDEX IF EXISTS {table}_name_nocase_idx")
+
+    if prev_version <= 73:
+        # the podcast of an episode, so the cleanup keeps the progress of library podcasts;
+        # existing rows get it from the next report of their provider
+        try:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_MEDIA_PROGRESS} ADD COLUMN podcast_item_id TEXT"
+            )
+        except Exception as err:
+            # create_tables makes a missing table with the column already in place
+            if "duplicate column" not in str(err) and "no such table" not in str(err):
+                raise
+
+    if prev_version <= 74:
         # fill the audiobook collections table from the collections in the metadata
         try:
             await database.execute(
@@ -2059,6 +2082,54 @@ async def _drop_audiobookshelf_image_tokens(database: DatabaseConnection) -> Non
                 await database.update(
                     table, {id_column: db_row[id_column]}, {column: serialize_to_json(value)}
                 )
+
+
+async def _drop_opensubsonic_external_images(database: DatabaseConnection) -> None:
+    """Drop the remotely accessible images of opensubsonic artists and albums."""
+
+    def _is_external(image: Any) -> bool:
+        return (
+            isinstance(image, dict)
+            and str(image.get("provider")).startswith("opensubsonic")
+            and image.get("remotely_accessible") is True
+        )
+
+    for table in (
+        DB_TABLE_ARTISTS,
+        DB_TABLE_ALBUMS,
+        DB_TABLE_MEDIA_PROGRESS,
+        DB_TABLE_PLAY_HISTORY,
+    ):
+        columns = await _table_columns(database, table)
+        # media items keep a list of images in their metadata, played items a single image
+        if "metadata" in columns:
+            id_column, column = "item_id", "metadata"
+        elif "image" in columns:
+            id_column, column = "id", "image"
+        else:
+            continue
+        for db_row in await database.get_rows_from_query(
+            f"SELECT {id_column}, {column} FROM {table} WHERE {column} LIKE '%opensubsonic%'",
+            limit=0,
+        ):
+            try:
+                value = json_loads(db_row[column])
+            except ValueError:
+                continue
+            if column == "image":
+                if _is_external(value):
+                    await database.update(table, {id_column: db_row[id_column]}, {column: None})
+                continue
+            images = value.get("images") if isinstance(value, dict) else None
+            if not isinstance(images, list):
+                continue
+            kept_images = [x for x in images if not _is_external(x)]
+            if len(kept_images) == len(images):
+                continue
+            value["images"] = kept_images
+            await database.update(
+                table, {id_column: db_row[id_column]}, {column: serialize_to_json(value)}
+            )
 
 
 async def _move_apple_music_stations_to_radios(database: DatabaseConnection) -> None:
