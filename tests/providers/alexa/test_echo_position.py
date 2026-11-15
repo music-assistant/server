@@ -531,3 +531,25 @@ async def test_the_skill_gets_the_player_id_of_the_echo() -> None:
     with patch.object(alexa, "get_playback_state", lookup):
         await player._correct_position()
     lookup.assert_awaited_once_with(provider, "pl0123456789ab")
+
+
+async def test_a_delayed_answer_does_not_make_a_stale_report_look_newer() -> None:
+    """The answer's travel time must not move a pause from before a resume past it."""
+    player, provider = _player()
+    await _correct(player, _report(activity="STOPPED", offsetMs=90_500))
+    await _send(player, provider, "play", NOW + 100)
+    clock = {"now": NOW + 100.5}
+
+    async def delayed_answer(*_args: Any) -> dict[str, Any]:
+        # observed at 99, answer built at 101 (age 2), received at 104
+        clock["now"] = NOW + 104
+        return _report(activity="STOPPED", offsetMs=91_000, ageSeconds=2.0, observedAt=43.0)
+
+    with (
+        patch.object(alexa, "get_playback_state", AsyncMock(side_effect=delayed_answer)),
+        patch("music_assistant.providers.alexa.time.time", side_effect=lambda: clock["now"]),
+        patch.object(player, "update_state") as update_state,
+    ):
+        await player._correct_position()
+    update_state.assert_not_called()
+    assert player._attr_playback_state == PlaybackState.PLAYING

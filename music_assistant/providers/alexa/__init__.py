@@ -623,6 +623,7 @@ class AlexaPlayer(PlayerProtocol):
             # Stopped by MA; the Echo has nothing newer to say about this queue.
             return
         generation = self._playback_generation
+        requested_at = time.time()
         report = await get_playback_state(
             cast("AlexaProvider", self.provider), self._skill_player_id
         )
@@ -644,13 +645,13 @@ class AlexaPlayer(PlayerProtocol):
         ):
             return
         # The age keeps the observation on MA's clock even if the skill API runs elsewhere.
-        observed_on_ma_clock = time.time() - age
-        if observed_on_ma_clock < self._command_completed_at:
+        # The answer was built after the request went out, so this is the latest it can be.
+        if requested_at - age < self._command_completed_at:
             # Cached from before MA's last playback command, so older than what MA knows.
             return
         self._position_observed_at = observed_at
         self._attr_elapsed_time = offset_ms / 1000
-        self._attr_elapsed_time_last_updated = observed_on_ma_clock
+        self._attr_elapsed_time_last_updated = time.time() - age
         self._attr_playback_state = state
         # The Echo's paused offset is its real position, so the queue may follow it.
         self._attr_paused_position_reliable = state == PlaybackState.PAUSED
