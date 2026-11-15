@@ -187,6 +187,43 @@ def _slim_client(device_type: str = "squeezeplay") -> MagicMock:
     return client
 
 
+def _real_client(rig: _Rig) -> tuple[asyncio.StreamReader, list[tuple[bytes, bytes]]]:
+    """
+    Give the bridge of a rig a real slimproto client instead of a mocked one.
+
+    :param rig: The rig whose player gets the client.
+    :return: The reader to feed what the player sends, and the frames the player is sent
+        as they come: command and data.
+    """
+    sent: list[tuple[bytes, bytes]] = []
+    writer = MagicMock(drain=AsyncMock())
+    writer.is_closing.return_value = False
+    writer.write.side_effect = lambda packet: sent.append((packet[2:6], packet[6:]))
+    reader = asyncio.StreamReader()
+
+    def _report(_client: SlimClient, event_type: SlimEventType, data: Any = None) -> None:
+        rig.bridge.handle_slim_event(SlimEvent(event_type, PLAYER_ID, data))
+
+    rig.client = rig.protocol.client = SlimClient(reader, writer, _report)
+    return reader, sent
+
+
+async def _player_reports(reader: asyncio.StreamReader, event: bytes) -> None:
+    """Let a player report a stream event to its real slimproto client."""
+    payload = event + bytes(47)
+    reader.feed_data(b"STAT" + struct.pack("!I", len(payload)) + payload)
+    await _settle()
+
+
+def _stream_commands(sent: list[tuple[bytes, bytes]]) -> list[tuple[bytes, int]]:
+    """Return what a player was told about its stream, with the time it was told: no status requests."""
+    return [
+        (data[:1], int.from_bytes(data[14:18], "big"))
+        for command, data in sent
+        if command == b"strm" and data[:1] != b"t"
+    ]
+
+
 def _grouped_client(*, members: int = 2) -> MagicMock:
     """
     Return a Sendspin client in a group with other clients.
@@ -1935,6 +1972,42 @@ async def test_an_underrun_restarts_the_stream_on_the_timeline(rig: _Rig) -> Non
     await _settle()
     assert second_session.start_us == rig.origin_us + 3_000_000 - PREROLL_US
     assert _frames(rig.bridge._next_block(second_session))[0] == 3 * SECOND
+
+
+async def test_an_underrun_is_answered_before_the_stream_is_restarted(rig: _Rig) -> None:
+    """
+    A Squeezebox Radio that ran dry is resumed by aioslimproto and restarted by the bridge.
+
+    The resume reaches the player before the new stream does, and nothing resumes that one
+    ahead of the instant the bridge starts it at.
+    """
+    reader, sent = _real_client(rig)
+    try:
+        first = await rig.start_playing()
+        await _player_reports(reader, b"STMs")
+        rig.clock.advance_us(first.start_us - rig.now_us + 2_000_000)
+        sent.clear()
+
+        await _player_reports(reader, b"STMo")
+
+        restarted = rig.session
+        assert restarted is not first
+        # resumed at once, then flushed and given the stream of the new session
+        assert [command for command, _ in _stream_commands(sent)] == [b"u", b"f", b"q", b"s"]
+        assert _stream_commands(sent)[0] == (b"u", 0)
+        requests = [data for command, data in sent if command == b"strm" and data[:1] == b"s"]
+        assert restarted.session_id.encode() in requests[-1]
+        # the player reports the underrun of the stream that was flushed once more
+        await _player_reports(reader, b"STMo")
+        assert rig.session is restarted
+        assert len(_stream_commands(sent)) == 4
+        # its new stream starts when the bridge says so, on the clock of the player
+        rig.fetched(restarted)
+        await _player_reports(reader, b"STMl")
+        assert restarted.start_decided.is_set()
+        assert _stream_commands(sent)[4:] == [(b"u", rig.jiffies(restarted.command_us))]
+    finally:
+        rig.client._reader_task.cancel()
 
 
 async def test_an_underrun_before_the_start_is_not_one_of_the_stream(rig: _Rig) -> None:
