@@ -698,6 +698,9 @@ class SqueezelitePlayer(PlayerProtocol):
                 break
             count += 1
 
+        if self._plays_for_bridge:
+            # the Sendspin bridge took the player over while its members buffered
+            return
         # all children ready (or timeout) - start playback in sync
         clients = list(self._get_sync_clients())
         if len(clients) < 2:

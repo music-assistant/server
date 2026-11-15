@@ -740,6 +740,36 @@ def test_a_stream_of_the_bridge_is_started_by_the_bridge(owns_stream: bool) -> N
     assert handle_buffer_ready.call_count == (0 if owns_stream else 1)
 
 
+@pytest.mark.parametrize("members_left", [1, 2])
+async def test_a_group_start_that_waits_leaves_the_player_to_its_bridge(members_left: int) -> None:
+    """A bridge that takes the player over while its sync group buffers decides its start."""
+    player, bridge = _player_with_bridge(owns_stream=False)
+    player.client = leader = MagicMock(
+        state=SlimPlayerState.BUFFER_READY, jiffies=1234, unpause_at=AsyncMock()
+    )
+    clients = [leader, MagicMock(state=SlimPlayerState.BUFFER_READY)][:members_left]
+    player._sync_group = sync_group = MagicMock(start=AsyncMock())
+
+    async def taken_over(_delay: float) -> None:
+        bridge.owns_stream = True
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(
+            SqueezelitePlayer,
+            "group_members",
+            new_callable=PropertyMock,
+            return_value=["leader", "member"],
+        ),
+        patch.object(player, "_get_sync_clients", side_effect=lambda: iter(clients)),
+        patch("music_assistant.providers.squeezelite.player.asyncio.sleep", new=taken_over),
+    ):
+        await player._handle_buffer_ready()
+
+    leader.unpause_at.assert_not_awaited()
+    sync_group.start.assert_not_called()
+
+
 @pytest.mark.parametrize("owns_stream", [True, False])
 def test_the_position_of_a_bridge_stream_is_not_that_of_the_protocol(owns_stream: bool) -> None:
     """Neither the elapsed time nor the sync check of the sync group follows a bridge stream."""
