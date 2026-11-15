@@ -250,8 +250,6 @@ rm -rf "$frontend_dir"
 
 fi  # End of build_frontend check
 
-# extra arguments for the server
-set --
 if [ -n "$provider_repo" ]; then
     echo "-----------------------------------------------------------"
     echo "Step 3: Fetching Provider Repository"
@@ -275,7 +273,7 @@ if [ -n "$provider_repo" ]; then
 
     # the server only loads providers from a local folder in dev mode
     export PYTHONDEVMODE=1
-    set -- --dev-providers-dir "$provider_dir"
+    set -- "$@" --dev-providers-dir "$provider_dir"
 fi
 
 echo "-----------------------------------------------------------"
@@ -284,5 +282,6 @@ echo "-----------------------------------------------------------"
 echo ""
 
 # Start Music Assistant via the server image's entrypoint, which preloads jemalloc
-# (that preload also pulls in libstdc++, which aiolibdatachannel's extension needs)
+# (that preload also pulls in libstdc++, which aiolibdatachannel's extension needs),
+# with the arguments the container was started with
 exec /usr/local/bin/entrypoint.sh --data-dir /data --cache-dir /data/.cache "$@"
