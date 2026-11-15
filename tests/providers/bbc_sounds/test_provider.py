@@ -120,7 +120,7 @@ class TestMenuPlaylists:
     async def test_playlist_in_a_rail_is_filled_in(self, provider: BBCSoundsProvider) -> None:
         """Test a playlist inside a menu rail lists the playlist's contents."""
         playlist = Playlist(id="playlist_pid", title="Playlist")
-        provider.menu = Menu(
+        provider.browse_manager.menu = Menu(
             sub_items=[
                 MenuItem(
                     id="explore",
@@ -190,7 +190,7 @@ class TestProgrammeSegments:
         provider.mass.cache.get = AsyncMock(return_value=False)  # type: ignore[method-assign]
         provider.mass.cache.set = cache_set  # type: ignore[method-assign]
 
-        assert await provider._get_programme_segments("vpid") == segments
+        assert await provider.stream_manager.now_playing._get_programme_segments("vpid") == segments
         assert cache_set.await_args is not None
         cached = cache_set.await_args.kwargs["data"]
         assert [Segment.from_dict(item) for item in cached] == segments
@@ -204,7 +204,9 @@ class TestProgrammeSegments:
         stream_details.data = {"vpid": "vpid", "pid": "pid"}
         stream_details.stream_metadata = StreamMetadata(title="Programme")
 
-        await provider._update_on_demand_stream_metadata(stream_details, elapsed_time=30)
+        await provider.stream_manager.now_playing._update_on_demand_stream_metadata(
+            stream_details, elapsed_time=30
+        )
 
         assert stream_details.stream_metadata.title == "Song"
         assert stream_details.stream_metadata.artist == "Artist"
@@ -221,8 +223,12 @@ class TestProgrammeSegments:
         stream_details.data = {"vpid": "vpid", "pid": "pid"}
         stream_details.stream_metadata = StreamMetadata(title="Programme")
 
-        await provider._update_on_demand_stream_metadata(stream_details, elapsed_time=30)
-        await provider._update_on_demand_stream_metadata(stream_details, elapsed_time=35)
+        await provider.stream_manager.now_playing._update_on_demand_stream_metadata(
+            stream_details, elapsed_time=30
+        )
+        await provider.stream_manager.now_playing._update_on_demand_stream_metadata(
+            stream_details, elapsed_time=35
+        )
 
         _mock(provider.client.content).get_show_segments.assert_awaited_once()
         cache_set.assert_not_awaited()

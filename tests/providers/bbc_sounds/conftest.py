@@ -14,7 +14,7 @@ from auntie_sounds.playback import PlaybackService
 from auntie_sounds.schedule import ScheduleService
 from auntie_sounds.stations import StationService
 
-from music_assistant.providers.bbc_sounds.adaptor import Adaptor
+from music_assistant.providers.bbc_sounds import BrowseManager
 from music_assistant.providers.bbc_sounds.provider import BBCSoundsProvider
 
 RADIO_FOUR_SERVICE_ID = "bbc_radio_fourfm"
@@ -47,9 +47,15 @@ def provider(client: SoundsClient) -> BBCSoundsProvider:
         "log_level": "GLOBAL",
     }.get(key, default)
     instance = BBCSoundsProvider(mass, manifest, config)
-    instance.adaptor = Adaptor(instance)
     instance.client = client
+    instance._create_managers()
     return instance
+
+
+@pytest.fixture
+def browse_manager(provider: BBCSoundsProvider) -> BrowseManager:
+    """Return the provider's real browse manager."""
+    return provider.browse_manager
 
 
 @pytest.fixture

@@ -223,7 +223,7 @@ class BaseConverter(ABC):
 
     def _create_provider_mapping(self, item_id: str) -> ProviderMapping:
         """Create provider mapping for the item."""
-        return self.context.provider._get_provider_mapping(item_id)
+        return self.context.provider.adaptor._get_provider_mapping(item_id)
 
     def _get_attr(self, obj: Any, attr_path: str, default: Any = None) -> Any:
         """
@@ -868,6 +868,13 @@ class Adaptor:
         """
         context = self._create_context(force_type=MAPodcastEpisode)
         return await LiveProgrammeConverter(context).convert(programme)
+
+    def _get_provider_mapping(self, item_id: str) -> ProviderMapping:
+        return ProviderMapping(
+            item_id=item_id,
+            provider_domain=self.provider.domain,
+            provider_instance=self.provider.instance_id,
+        )
 
     def _create_context(
         self,
