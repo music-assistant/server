@@ -28,15 +28,95 @@ on:
 permissions:
   contents: read
 
+# a pull request cancels its own earlier run; every other run may publish, so it waits its turn
+concurrency:
+  group: dev-image-${{ github.event.pull_request.number || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/server
+
 jobs:
+  # Decides whether to build, and on which nightly: the check and the publishing build on the
+  # digest found here. It needs no login, so a pull request from a fork gets through too.
+  resolve:
+    name: Resolve nightly image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.nightly.outputs.build }}
+      digest: ${{ steps.nightly.outputs.digest }}
+      version: ${{ steps.nightly.outputs.version }}
+      revision: ${{ steps.nightly.outputs.revision }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      # Most release runs bring no new nightly: after one, an image that already sits on the
+      # current nightly is left as it is. Started by hand or by a push, it is always built.
+      - name: Resolve nightly image
+        id: nightly
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          docker buildx imagetools inspect "$IMAGE_REPOSITORY:nightly" \
+            --format '{{json .Manifest}}' > "$RUNNER_TEMP/nightly-manifest.json"
+          digest=$(jq -r '.digest' "$RUNNER_TEMP/nightly-manifest.json")
+          amd64_digest=$(jq -r \
+            '.manifests[]
+             | select(.platform.os == "linux" and .platform.architecture == "amd64")
+             | .digest' \
+            "$RUNNER_TEMP/nightly-manifest.json")
+          docker buildx imagetools inspect "$IMAGE_REPOSITORY@$amd64_digest" \
+            --format '{{json .Image}}' > "$RUNNER_TEMP/nightly-image.json"
+          version=$(jq -r '.config.Labels["org.opencontainers.image.version"] // empty' \
+            "$RUNNER_TEMP/nightly-image.json")
+          revision=$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' \
+            "$RUNNER_TEMP/nightly-image.json")
+          if [ -z "$version" ] || [ -z "$revision" ]; then
+            echo "$IMAGE_REPOSITORY:nightly ($digest) has no version or revision label" >&2
+            exit 1
+          fi
+          {
+            echo "digest=$digest"
+            echo "version=$version"
+            echo "revision=$revision"
+          } >> "$GITHUB_OUTPUT"
+          echo "Nightly $version ($revision) is $digest"
+
+          build=true
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            error_file="$RUNNER_TEMP/dev-inspect-error.txt"
+            if docker buildx imagetools inspect "$IMAGE_REPOSITORY:dev" \
+              --format '{{json .Manifest}}' \
+              > "$RUNNER_TEMP/dev-manifest.json" 2> "$error_file"; then
+              dev_amd64_digest=$(jq -r \
+                '.manifests[]
+                 | select(.platform.os == "linux" and .platform.architecture == "amd64")
+                 | .digest' \
+                "$RUNNER_TEMP/dev-manifest.json")
+              current_base=$(docker buildx imagetools inspect \
+                "$IMAGE_REPOSITORY@$dev_amd64_digest" --format '{{json .Image}}' |
+                jq -r '.config.Labels["org.opencontainers.image.base.digest"] // empty')
+              if [ "$current_base" = "$digest" ]; then
+                echo "$IMAGE_REPOSITORY:dev already sits on nightly $version ($digest)"
+                build=false
+              fi
+            elif ! grep -Eqi 'not found|manifest unknown|status.*404' "$error_file"; then
+              cat "$error_file" >&2
+              echo "Unable to inspect $IMAGE_REPOSITORY:dev" >&2
+              exit 1
+            fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  # Builds and starts what would be published, on the resolved nightly.
   check:
     name: Build and start the development image
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
     timeout-minutes: 30
-    concurrency:
-      group: dev-image-check-${{ github.event.pull_request.number || github.ref }}
-      cancel-in-progress: true
     env:
       IMAGE: music-assistant-server-dev:ci
       PROVIDER_REPO: music-assistant/community-provider-template
@@ -59,6 +139,8 @@ jobs:
           tags: ${{ env.IMAGE }}
           load: true
           push: false
+          build-args: |
+            BASE_IMAGE=${{ env.IMAGE_REPOSITORY }}@${{ needs.resolve.outputs.digest }}
 
       # Refused before anything is installed, so it stops within seconds and needs no network.
       - name: Refuse an invalid provider repository
@@ -140,20 +222,19 @@ jobs:
         if: always()
         run: docker logs dev-server 2>&1 || true
 
-  # Builds on the exact digest of the current nightly, so the image runs what that nightly runs.
+  # Publishes only what the check just built and started, on the same nightly.
   publish:
     name: Publish development image
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' && github.repository == 'music-assistant/server'
+    needs: [resolve, check]
+    if: >-
+      needs.resolve.outputs.build == 'true' &&
+      github.event_name != 'pull_request' &&
+      github.repository == 'music-assistant/server'
     timeout-minutes: 60
     permissions:
       contents: read
       packages: write
-    concurrency:
-      group: dev-image-publish
-      cancel-in-progress: false
-    env:
-      IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/server
     steps:
       - name: Require dev
         env:
@@ -174,72 +255,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
 
-      # Most release runs bring no new nightly: after one, an image that already sits on the
-      # current nightly is left as it is. Started by hand or by a push, it is always built.
-      - name: Resolve nightly image
-        id: nightly
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          docker buildx imagetools inspect "$IMAGE_REPOSITORY:nightly" \
-            --format '{{json .Manifest}}' > "$RUNNER_TEMP/nightly-manifest.json"
-          digest=$(jq -r '.digest' "$RUNNER_TEMP/nightly-manifest.json")
-          amd64_digest=$(jq -r \
-            '.manifests[]
-             | select(.platform.os == "linux" and .platform.architecture == "amd64")
-             | .digest' \
-            "$RUNNER_TEMP/nightly-manifest.json")
-          docker buildx imagetools inspect "$IMAGE_REPOSITORY@$amd64_digest" \
-            --format '{{json .Image}}' > "$RUNNER_TEMP/nightly-image.json"
-          version=$(jq -r '.config.Labels["org.opencontainers.image.version"] // empty' \
-            "$RUNNER_TEMP/nightly-image.json")
-          revision=$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' \
-            "$RUNNER_TEMP/nightly-image.json")
-          if [ -z "$version" ] || [ -z "$revision" ]; then
-            echo "$IMAGE_REPOSITORY:nightly ($digest) has no version or revision label" >&2
-            exit 1
-          fi
-          {
-            echo "digest=$digest"
-            echo "version=$version"
-            echo "revision=$revision"
-          } >> "$GITHUB_OUTPUT"
-
-          build=true
-          if [ "$EVENT_NAME" = "workflow_run" ]; then
-            error_file="$RUNNER_TEMP/dev-inspect-error.txt"
-            if docker buildx imagetools inspect "$IMAGE_REPOSITORY:dev" \
-              --format '{{json .Manifest}}' \
-              > "$RUNNER_TEMP/dev-manifest.json" 2> "$error_file"; then
-              dev_amd64_digest=$(jq -r \
-                '.manifests[]
-                 | select(.platform.os == "linux" and .platform.architecture == "amd64")
-                 | .digest' \
-                "$RUNNER_TEMP/dev-manifest.json")
-              current_base=$(docker buildx imagetools inspect \
-                "$IMAGE_REPOSITORY@$dev_amd64_digest" --format '{{json .Image}}' |
-                jq -r '.config.Labels["org.opencontainers.image.base.digest"] // empty')
-              if [ "$current_base" = "$digest" ]; then
-                echo "$IMAGE_REPOSITORY:dev already sits on nightly $version ($digest)"
-                build=false
-              fi
-            elif ! grep -Eqi 'not found|manifest unknown|status.*404' "$error_file"; then
-              cat "$error_file" >&2
-              echo "Unable to inspect $IMAGE_REPOSITORY:dev" >&2
-              exit 1
-            fi
-          fi
-          echo "build=$build" >> "$GITHUB_OUTPUT"
-
+      # the commit the check built, which the step above holds to dev
       - name: Check out dev
-        if: steps.nightly.outputs.build == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: dev
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Build and push development image
-        if: steps.nightly.outputs.build == 'true'
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -250,16 +273,15 @@ jobs:
           push: true
           provenance: true
           build-args: |
-            BASE_IMAGE=${{ env.IMAGE_REPOSITORY }}@${{ steps.nightly.outputs.digest }}
+            BASE_IMAGE=${{ env.IMAGE_REPOSITORY }}@${{ needs.resolve.outputs.digest }}
           labels: |
-            org.opencontainers.image.version=${{ steps.nightly.outputs.version }}
-            org.opencontainers.image.revision=${{ steps.nightly.outputs.revision }}
-            org.opencontainers.image.base.digest=${{ steps.nightly.outputs.digest }}
+            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.resolve.outputs.revision }}
+            org.opencontainers.image.base.digest=${{ needs.resolve.outputs.digest }}
 
       - name: Verify development image
-        if: steps.nightly.outputs.build == 'true'
         env:
-          BASE_DIGEST: ${{ steps.nightly.outputs.digest }}
+          BASE_DIGEST: ${{ needs.resolve.outputs.digest }}
           BUILT_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           manifest_file="$RUNNER_TEMP/dev-manifest.json"

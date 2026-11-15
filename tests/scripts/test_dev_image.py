@@ -43,7 +43,7 @@ NIGHTLY_AMD64 = "sha256:" + "2" * 64
 DEV = "sha256:" + "3" * 64
 DEV_AMD64 = "sha256:" + "4" * 64
 DEV_ARM64 = "sha256:" + "5" * 64
-# the steps of the publishing job use jq, which the runner has and the test container lacks
+# the workflow's steps use jq, which the runner has and the container of the tests lacks
 needs_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is not installed")
 # answers `docker buildx imagetools inspect <ref> --format '{{json .Manifest|.Image}}'` from a
 # JSON file of {ref: {"Manifest": ..., "Image": ...}}, as the registry would
@@ -241,15 +241,19 @@ def test_dev_image_builds_on_the_base_image_argument() -> None:
     assert re.findall(r"^FROM .*$", dockerfile, re.MULTILINE) == ["FROM $BASE_IMAGE"]
 
 
-def test_dev_image_check_needs_no_write_access() -> None:
-    """The check of the image runs for pull requests and pushes, and only reads the repository."""
+def test_dev_image_resolve_and_check_need_no_write_access() -> None:
+    """Resolving the nightly and checking the image only read, and need no login."""
     workflow = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))
+    resolve = workflow["jobs"]["resolve"]
     check = workflow["jobs"]["check"]
 
     assert workflow["permissions"] == {"contents": "read"}
-    assert "permissions" not in check
-    assert check["if"] == "github.event_name == 'pull_request' || github.event_name == 'push'"
-    assert check["timeout-minutes"] > 0
+    for job in (resolve, check):
+        assert "permissions" not in job
+        assert job["timeout-minutes"] > 0
+        # a pull request from a fork has no token to log in with
+        assert not any("login-action" in step.get("uses", "") for step in job["steps"])
+    assert "if" not in resolve
     triggers = _triggers(workflow)
     for event in ("pull_request", "push"):
         assert set(triggers[event]["paths"]) == {
@@ -259,14 +263,35 @@ def test_dev_image_check_needs_no_write_access() -> None:
         }
 
 
-def test_dev_image_publication_runs_only_on_dev() -> None:
-    """The image is published from dev of this repository, never for a pull request."""
+def test_dev_image_check_starts_the_image_on_the_resolved_nightly() -> None:
+    """The check builds and starts the image on the digest the resolve job found."""
+    jobs = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+    check = jobs["check"]
+    build = _step(check, "Build development image")["with"]
+
+    assert check["needs"] == "resolve"
+    assert check["if"] == "needs.resolve.outputs.build == 'true'"
+    assert build["platforms"] == "linux/amd64"
+    assert build["push"] is False
+    assert build["build-args"].splitlines() == [
+        "BASE_IMAGE=${{ env.IMAGE_REPOSITORY }}@${{ needs.resolve.outputs.digest }}"
+    ]
+    assert jobs["resolve"]["outputs"]["build"] == "${{ steps.nightly.outputs.build }}"
+    assert jobs["resolve"]["outputs"]["digest"] == "${{ steps.nightly.outputs.digest }}"
+
+
+def test_dev_image_publication_follows_a_passed_check_on_dev() -> None:
+    """Only an image the check passed is published, from dev of this repository, never for a PR."""
     workflow = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))
     triggers = _triggers(workflow)
     job = workflow["jobs"]["publish"]
 
+    assert job["needs"] == ["resolve", "check"]
+    # without a status function the job only runs when the check succeeded
     assert job["if"] == (
-        "github.event_name != 'pull_request' && github.repository == 'music-assistant/server'"
+        "needs.resolve.outputs.build == 'true' && "
+        "github.event_name != 'pull_request' && "
+        "github.repository == 'music-assistant/server'"
     )
     assert triggers["push"]["branches"] == ["dev"]
     assert triggers["workflow_run"] == {
@@ -279,41 +304,55 @@ def test_dev_image_publication_runs_only_on_dev() -> None:
     assert require_dev["env"] == {"DISPATCH_REF": "${{ github.ref }}"}
     assert '[ "$DISPATCH_REF" != "refs/heads/dev" ]' in require_dev["run"]
     assert job["steps"][0]["name"] == "Require dev"
-    assert _step(job, "Check out dev")["with"] == {"ref": "dev", "persist-credentials": False}
+    assert _step(job, "Check out dev")["with"] == {
+        "ref": "${{ github.sha }}",
+        "persist-credentials": False,
+    }
     assert job["permissions"] == {"contents": "read", "packages": "write"}
-    assert job["concurrency"] == {"group": "dev-image-publish", "cancel-in-progress": False}
     assert job["timeout-minutes"] > 0
+    assert workflow["concurrency"] == {
+        "group": "dev-image-${{ github.event.pull_request.number || 'publish' }}",
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+    }
+    assert all("concurrency" not in job for job in workflow["jobs"].values())
 
 
-def test_dev_image_publication_builds_on_the_nightly_digest() -> None:
-    """The image is built for both platforms on the digest of the nightly, not on its tag."""
+def test_dev_image_publication_builds_on_the_checked_nightly() -> None:
+    """The image is built for both platforms on the digest the check ran on, not on a tag."""
     job = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["publish"]
     build = _step(job, "Build and push development image")
 
-    assert build["if"] == "steps.nightly.outputs.build == 'true'"
     assert build["with"]["file"] == "Dockerfile.dev"
     assert build["with"]["platforms"] == "linux/amd64,linux/arm64"
     assert build["with"]["tags"] == "${{ env.IMAGE_REPOSITORY }}:dev"
     assert build["with"]["push"] is True
     assert build["with"]["build-args"].splitlines() == [
-        "BASE_IMAGE=${{ env.IMAGE_REPOSITORY }}@${{ steps.nightly.outputs.digest }}"
+        "BASE_IMAGE=${{ env.IMAGE_REPOSITORY }}@${{ needs.resolve.outputs.digest }}"
     ]
     assert build["with"]["labels"].splitlines() == [
-        "org.opencontainers.image.version=${{ steps.nightly.outputs.version }}",
-        "org.opencontainers.image.revision=${{ steps.nightly.outputs.revision }}",
-        "org.opencontainers.image.base.digest=${{ steps.nightly.outputs.digest }}",
+        "org.opencontainers.image.version=${{ needs.resolve.outputs.version }}",
+        "org.opencontainers.image.revision=${{ needs.resolve.outputs.revision }}",
+        "org.opencontainers.image.base.digest=${{ needs.resolve.outputs.digest }}",
     ]
     assert _step(job, "Verify development image")["env"] == {
-        "BASE_DIGEST": "${{ steps.nightly.outputs.digest }}",
+        "BASE_DIGEST": "${{ needs.resolve.outputs.digest }}",
         "BUILT_DIGEST": "${{ steps.build.outputs.digest }}",
     }
 
 
 @needs_jq
 def test_dev_image_publication_skips_a_release_run_without_a_new_nightly(tmp_path: Path) -> None:
-    """After a release run, an image that already sits on the current nightly is left alone."""
-    code, outputs, stderr = _run_publish_step(
-        tmp_path, "Resolve nightly image", {**_nightly(), **_dev(NIGHTLY)}, "workflow_run"
+    """After a release run with an unchanged nightly, nothing is built, started or published."""
+    jobs = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+    for name in ("check", "publish"):
+        assert jobs[name]["if"].startswith("needs.resolve.outputs.build == 'true'"), name
+
+    code, outputs, stderr = _run_workflow_step(
+        tmp_path,
+        "resolve",
+        "Resolve nightly image",
+        {**_nightly(), **_dev(NIGHTLY)},
+        "workflow_run",
     )
 
     assert code == 0, stderr
@@ -338,7 +377,9 @@ def test_dev_image_publication_skips_a_release_run_without_a_new_nightly(tmp_pat
 def test_dev_image_publication_builds(tmp_path: Path, event: str, dev_base: str | None) -> None:
     """A new nightly, a first image, a start by hand and a push all build the image."""
     registry = {**_nightly(), **(_dev(dev_base) if dev_base else {})}
-    code, outputs, stderr = _run_publish_step(tmp_path, "Resolve nightly image", registry, event)
+    code, outputs, stderr = _run_workflow_step(
+        tmp_path, "resolve", "Resolve nightly image", registry, event
+    )
 
     assert code == 0, stderr
     assert outputs["build"] == "true"
@@ -359,8 +400,8 @@ def test_dev_image_publication_stops_on_doubt(tmp_path: Path, case: str, message
         registry = _nightly(labels={"org.opencontainers.image.revision": "abc123"})
     else:
         registry = {**_nightly(), f"{IMAGE_REPOSITORY}:dev": {"error": "unauthorized"}}
-    code, _outputs, stderr = _run_publish_step(
-        tmp_path, "Resolve nightly image", registry, "workflow_run"
+    code, _outputs, stderr = _run_workflow_step(
+        tmp_path, "resolve", "Resolve nightly image", registry, "workflow_run"
     )
 
     assert code != 0
@@ -383,8 +424,9 @@ def test_dev_image_publication_verifies_the_pushed_image(
     """The tag must point at the built image, with both platforms on the nightly built on."""
     runtime = {"amd64": DEV_AMD64, "arm64": DEV_ARM64}
     registry = _dev(base, {arch: runtime[arch] for arch in platforms})
-    code, _outputs, stderr = _run_publish_step(
+    code, _outputs, stderr = _run_workflow_step(
         tmp_path,
+        "publish",
         "Verify development image",
         registry,
         "workflow_dispatch",
@@ -394,14 +436,15 @@ def test_dev_image_publication_verifies_the_pushed_image(
     assert (code == 0) is ok, stderr
 
 
-def _run_publish_step(
+def _run_workflow_step(
     tmp_path: Path,
+    job_name: str,
     name: str,
     registry: dict[str, Any],
     event: str,
     env: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, str], str]:
-    job = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["publish"]
+    job = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))["jobs"][job_name]
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
     stub = stub_dir / "docker"
