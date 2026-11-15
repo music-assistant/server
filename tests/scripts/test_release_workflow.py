@@ -657,7 +657,7 @@ def test_addon_version_update_leaves_the_rest_of_the_config_alone(tmp_path: Path
     config = tmp_path / "config.yaml"
     original = (
         "name: Music Assistant DEV SERVER\n"
-        "# tracks the nightly base image; bumped by the server release workflow\n"
+        "# the nightly the development image sits on; bumped once that image is published\n"
         "version: 1.6.0\n"
         "slug: music_assistant_dev\n"
     )
@@ -693,33 +693,12 @@ def test_addon_version_update_requires_exactly_one_version_field(
     assert config.read_text(encoding="utf-8") == config_text
 
 
-def test_release_workflow_bumps_the_dev_addon_on_nightly_only() -> None:
-    """Nightly carries the locally built dev add-on along with the nightly add-on."""
+def test_release_workflow_leaves_the_dev_addon_alone() -> None:
+    """The dev add-on follows the development image, which a release run does not publish."""
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-    parsed_workflow = cast("dict[str, Any]", yaml.safe_load(workflow))
-    channel_run = str(
-        _workflow_step(parsed_workflow, "update_addon", "Resolve add-on channel")["run"]
-    )
 
-    assert channel_run.index('dev_folder=""') < channel_run.index('case "$CHANNEL" in')
-    assert channel_run.count('dev_folder="music_assistant_dev"') == 1
-    nightly_arm = channel_run.split("nightly)")[1].split(";;", maxsplit=1)[0]
-    assert 'dev_folder="music_assistant_dev"' in nightly_arm
-    assert 'echo "dev_folder=$dev_folder" >> "$GITHUB_OUTPUT"' in channel_run
-
-    dev_step = _workflow_step(parsed_workflow, "update_addon", "Update dev add-on version")
-    assert dev_step["if"] == "steps.channel.outputs.dev_folder != ''"
-    dev_run = str(dev_step["run"])
-    assert "release_workflow.py set-addon-version" in dev_run
-    assert '--config "addon-repo/$DEV_FOLDER/config.yaml"' in dev_run
-
-    commit_step = _workflow_step(parsed_workflow, "update_addon", "Commit add-on update")
-    assert commit_step["env"]["DEV_FOLDER"] == "${{ steps.channel.outputs.dev_folder }}"
-    assert 'git add "$DEV_FOLDER/config.yaml"' in str(commit_step["run"])
-
-    # the bump is only committed if it happens first
-    step_names = [step.get("name") for step in parsed_workflow["jobs"]["update_addon"]["steps"]]
-    assert step_names.index("Update dev add-on version") < step_names.index("Commit add-on update")
+    assert "music_assistant_dev" not in workflow
+    assert "set-addon-version" not in workflow
 
 
 def test_automation_drops_legacy_credentials() -> None:

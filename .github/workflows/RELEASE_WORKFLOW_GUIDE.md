@@ -62,9 +62,8 @@ Only one release workflow runs at a time, and queued runs are never cancelled.
    - Nightly: `nightly`
    Each alias's current amd64 and arm64 image labels are checked independently. An alias
    that already points to a newer release is never moved backward.
-10. Deterministically update the matching Home Assistant add-on, and on nightly the
-    `music_assistant_dev` add-on as well, then dispatch the frontend version from
-    `source_sha` to `app.music-assistant.io`.
+10. Deterministically update the matching Home Assistant add-on, then dispatch the
+    frontend version from `source_sha` to `app.music-assistant.io`.
 
 The exact image tag is already the full version (`X.Y.Z`, `X.Y.ZbN`, `X.Y.ZrcN`, or
 `X.Y.Z.devN`). Rolling aliases are never pushed before the immutable release verifies.
@@ -157,12 +156,14 @@ canonical entry using the GitHub publication date, and retains three distinct re
 The add-on repository's default branch is resolved through GitHub, and non-fast-forward
 updates retry a bounded pull/rebase/push sequence.
 
-A nightly release also sets the `music_assistant_dev` add-on to the same version, in the
-same commit. That add-on has no prebuilt image: the Supervisor builds it locally from
-`ghcr.io/music-assistant/server:nightly`, so moving its version is what offers installed
-add-ons the rebuild that picks up the new base image and the current wrapper files. It
-gets no changelog entry, because it runs whichever source branch the user configured
-rather than the published release.
+The `music_assistant_dev` add-on is not updated by a release. It has no prebuilt image:
+the Supervisor builds it locally from `ghcr.io/music-assistant/server:dev`, which the
+Development image workflow (`dev-image.yml`) builds on the new nightly after a release
+run. Once that workflow has pushed and verified `:dev`, it sets the add-on to the
+nightly's version, which offers installed add-ons the rebuild that picks up the new image
+and the current wrapper files. A release run that brings no new nightly leaves `:dev`
+and the add-on as they are. The add-on gets no changelog entry, because it runs whichever
+source branch the user configured rather than the published release.
 
 Frontend recovery reads the target repository's `channels.json` first. Equal or newer
 frontend state suppresses the dispatch; an older state receives a payload containing a

@@ -8,6 +8,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -421,9 +422,10 @@ def test_dev_image_publication_rechecks_the_nightly_before_the_build() -> None:
     }
 
 
-def test_dev_image_publication_stops_at_a_failed_step() -> None:
-    """No step of the publishing job may fail without stopping the job."""
-    job = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["publish"]
+@pytest.mark.parametrize("job_name", ["publish", "update_app"])
+def test_dev_image_publication_stops_at_a_failed_step(job_name: str) -> None:
+    """No step of the publishing or the app job may fail without stopping the job."""
+    job = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))["jobs"][job_name]
 
     assert not any("continue-on-error" in step for step in job["steps"])
 
@@ -484,6 +486,77 @@ def test_dev_image_publication_verifies_the_pushed_image(
     )
 
     assert (code == 0) is ok, stderr
+
+
+def test_dev_app_follows_a_verified_publication() -> None:
+    """Only a pushed and verified image moves the Dev app, and only that job holds the bot key."""
+    text = DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8")
+    jobs = yaml.safe_load(text)["jobs"]
+    job = jobs["update_app"]
+    names = [step["name"] for step in job["steps"]]
+    token = _step(job, "Create app repository token")
+
+    assert job["needs"] == ["resolve", "publish"]
+    # without an `if` the job only runs when the publishing job succeeded
+    assert "if" not in job
+    assert "permissions" not in job
+    assert job["timeout-minutes"] > 0
+    assert names.index("Verify GitHub App identity") < names.index("Check out the app repository")
+    assert token["with"]["repositories"] == "home-assistant-addon"
+    assert token["with"]["permission-contents"] == "write"
+    assert set(re.findall(r"secrets\.([A-Z0-9_]+)", text)) == {"MUSIC_ASSISTANT_BOT_PRIVATE_KEY"}
+    for name, other in jobs.items():
+        if name != "update_app":
+            assert "secrets." not in json.dumps(other), name
+    assert _step(job, "Check out dev")["with"] == {
+        "ref": "${{ github.sha }}",
+        "path": "server",
+        "persist-credentials": False,
+    }
+    assert (
+        _step(job, "Bump the Dev app")["env"]["VERSION"] == "${{ needs.resolve.outputs.version }}"
+    )
+
+
+def test_dev_app_bump(tmp_path: Path) -> None:
+    """The Dev app moves to the nightly's version once, as a bot commit on its default branch."""
+    origin = _app_repository(tmp_path)
+
+    code, log = _run_app_bump(tmp_path, "2.11.0.dev2026111603")
+    assert code == 0, log
+    assert _git(origin, "show", "main:music_assistant_dev/config.yaml") == (
+        "name: Music Assistant DEV SERVER\nversion: 2.11.0.dev2026111603\nslug: dev"
+    )
+    assert _git(origin, "log", "-1", "--format=%an <%ae>%n%s", "main") == (
+        "musicassistant-bot[bot] <304008617+musicassistant-bot[bot]@users.noreply.github.com>\n"
+        "🤖 Bump dev add-on to version 2.11.0.dev2026111603"
+    )
+
+    head = _git(origin, "rev-parse", "main")
+    code, log = _run_app_bump(tmp_path, "2.11.0.dev2026111603")
+    assert code == 0, log
+    assert "The Dev app already references 2.11.0.dev2026111603" in log
+    assert _git(origin, "rev-parse", "main") == head
+
+
+def test_dev_app_bump_lands_on_a_moved_branch(tmp_path: Path) -> None:
+    """A commit pushed to the app repository since its checkout is kept under the bump."""
+    origin = _app_repository(tmp_path)
+    _git(tmp_path, "clone", "-q", str(origin), "addon-repo")
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", str(origin), str(other))
+    (other / "README.md").write_text("updated\n", encoding="utf-8")
+    _git(other, "commit", "-qam", "Update the README")
+    _git(other, "push", "-q", "origin", "main")
+
+    code, log = _run_app_bump(tmp_path, "2.11.0.dev2026111603")
+
+    assert code == 0, log
+    assert _git(origin, "log", "--format=%s", "main").splitlines() == [
+        "🤖 Bump dev add-on to version 2.11.0.dev2026111603",
+        "Update the README",
+        "Add the app",
+    ]
 
 
 def _run_workflow_step(
@@ -574,3 +647,72 @@ def _step(job: dict[str, Any], name: str) -> dict[str, Any]:
             return dict(step)
     msg = f"Step {name!r} not found"
     raise AssertionError(msg)
+
+
+def _app_repository(tmp_path: Path) -> Path:
+    origin = tmp_path / "origin.git"
+    seed = tmp_path / "seed"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    _git(tmp_path, "init", "-q", "-b", "main", str(seed))
+    (seed / "music_assistant_dev").mkdir()
+    (seed / "music_assistant_dev" / "config.yaml").write_text(
+        "name: Music Assistant DEV SERVER\nversion: 2.11.0.dev2026111503\nslug: dev\n",
+        encoding="utf-8",
+    )
+    (seed / "README.md").write_text("Apps\n", encoding="utf-8")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-qm", "Add the app")
+    _git(seed, "push", "-q", str(origin), "main")
+    return origin
+
+
+def _run_app_bump(tmp_path: Path, version: str) -> tuple[int, str]:
+    # the checkouts of the job: this repository as `server`, the app repository as `addon-repo`
+    server = tmp_path / "server"
+    if not server.exists():
+        server.symlink_to(ROOT)
+    addon_repo = tmp_path / "addon-repo"
+    if not addon_repo.exists():
+        _git(tmp_path, "clone", "-q", str(tmp_path / "origin.git"), str(addon_repo))
+    job = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["update_app"]
+    result = subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "bash",
+            "--noprofile",
+            "--norc",
+            "-eo",
+            "pipefail",
+            "-c",
+            _step(job, "Bump the Dev app")["run"],
+        ],
+        capture_output=True,
+        check=False,
+        cwd=tmp_path,
+        env={
+            **_git_env(),
+            # the step runs the release script, which needs this interpreter, not the system's
+            "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}",
+            "APP_SLUG": "musicassistant-bot",
+            "APP_USER_ID": "304008617",
+            "VERSION": version,
+        },
+        text=True,
+    )
+    return result.returncode, result.stdout + result.stderr
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(  # noqa: S603
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", *args],  # noqa: S607
+        capture_output=True,
+        check=True,
+        cwd=cwd,
+        env=_git_env(),
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _git_env() -> dict[str, str]:
+    # the developer's own git configuration (signing, hooks, identity) stays out of the tests
+    return {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
