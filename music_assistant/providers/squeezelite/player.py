@@ -787,26 +787,34 @@ class SqueezelitePlayer(PlayerProtocol):
         Handle a button or remote key of the device that aioslimproto passed on.
 
         aioslimproto passes play and pause on when the device can not act on them itself,
-        such as on a stopped device: those start playback on the player, which resumes the
-        group that owns its playback. Other buttons are ignored.
+        such as on a stopped device: play starts playback on the player and pause toggles
+        it, which reaches the group that owns its playback. Other buttons are ignored.
 
         :param event: The button event of the device.
         """
         match event.data:
-            case {"type": "butn", "button": ButtonCode.PLAY | ButtonCode.PAUSE} | {
+            case {"type": "butn", "button": ButtonCode.PLAY} | {
                 "type": "ir",
-                "code": RemoteCode.PLAY | RemoteCode.PAUSE,
-            } if self.player is not None:
-                bridge = self.sendspin_bridge
-                player_id = (
-                    bridge.transport_command_target() if bridge else None
-                ) or self.player.player_id
-                try:
-                    await self.mass.players.cmd_play(player_id)
-                except MusicAssistantError as err:
-                    self.logger.warning(
-                        "Failed to handle the play button of %s: %s", self.display_name, err
-                    )
+                "code": RemoteCode.PLAY,
+            }:
+                command = self.mass.players.cmd_play
+            case {"type": "butn", "button": ButtonCode.PAUSE} | {
+                "type": "ir",
+                "code": RemoteCode.PAUSE,
+            }:
+                command = self.mass.players.cmd_play_pause
+            case _:
+                return
+        if self.player is None:
+            return
+        bridge = self.sendspin_bridge
+        player_id = (bridge.transport_command_target() if bridge else None) or self.player.player_id
+        try:
+            await command(player_id)
+        except MusicAssistantError as err:
+            self.logger.warning(
+                "Failed to handle the play or pause button of %s: %s", self.display_name, err
+            )
 
     @property
     def _plays_for_bridge(self) -> bool:

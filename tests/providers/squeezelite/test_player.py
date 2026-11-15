@@ -948,30 +948,40 @@ def _button_event(data: dict[str, int | str]) -> SlimEvent:
 
 
 @pytest.mark.parametrize(
-    ("data", "target", "played"),
+    ("data", "target", "command", "played"),
     [
-        ({"type": "butn", "timestamp": 1, "button": ButtonCode.PLAY}, None, "kitchen"),
-        ({"type": "ir", "timestamp": 1, "code": RemoteCode.PAUSE}, None, "kitchen"),
+        ({"type": "butn", "timestamp": 1, "button": ButtonCode.PLAY}, None, "cmd_play", "kitchen"),
+        ({"type": "ir", "timestamp": 1, "code": RemoteCode.PLAY}, None, "cmd_play", "kitchen"),
+        (
+            {"type": "ir", "timestamp": 1, "code": RemoteCode.PAUSE},
+            None,
+            "cmd_play_pause",
+            "kitchen",
+        ),
         (
             {"type": "butn", "timestamp": 1, "button": ButtonCode.PAUSE},
             "living_room",
+            "cmd_play_pause",
             "living_room",
         ),
     ],
 )
-async def test_play_or_pause_passed_on_by_the_device_plays_its_player(
-    data: dict[str, int | str], target: str | None, played: str
+async def test_play_or_pause_passed_on_by_the_device_goes_to_its_player(
+    data: dict[str, int | str], target: str | None, command: str, played: str
 ) -> None:
-    """While the player plays for its bridge, the press plays the leader of its group."""
+    """Play plays and pause toggles, on the leader of its group while it plays for its bridge."""
     player, bridge = _player_with_bridge()
     mass = cast("MagicMock", player.mass)
     player._player = MagicMock(player_id="kitchen")
     bridge.transport_command_target.return_value = target
     mass.players.cmd_play = AsyncMock()
+    mass.players.cmd_play_pause = AsyncMock()
 
     await player._handle_player_button_event(_button_event(data))
 
-    mass.players.cmd_play.assert_awaited_once_with(played)
+    getattr(mass.players, command).assert_awaited_once_with(played)
+    other = "cmd_play" if command == "cmd_play_pause" else "cmd_play_pause"
+    getattr(mass.players, other).assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -992,11 +1002,13 @@ async def test_other_buttons_of_the_device_do_nothing(
     player.logger = MagicMock()
     player.sendspin_bridge = None
     mass.players.cmd_play = AsyncMock()
+    mass.players.cmd_play_pause = AsyncMock()
 
     player.handle_slim_event(_button_event(data))
     await asyncio.sleep(0)
 
     mass.players.cmd_play.assert_not_called()
+    mass.players.cmd_play_pause.assert_not_called()
     assert "Exception in task" not in caplog.text
 
 

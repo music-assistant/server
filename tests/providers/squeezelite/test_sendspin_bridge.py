@@ -2717,6 +2717,9 @@ async def test_the_keys_of_the_player_pause_and_resume_its_sendspin_group(
     leader = MagicMock(player_id="living_room")
     rig.mass.players.get_player_by_protocol.side_effect = {"spb_leader": leader}.get
     rig.mass.players.cmd_play = AsyncMock()
+    rig.mass.players.cmd_play_pause = AsyncMock()
+    # play plays, and pause toggles what Music Assistant shows for the player
+    resume = rig.mass.players.cmd_play if resume_key == "PLAY" else rig.mass.players.cmd_play_pause
 
     async def _pause_group(_player_id: str) -> None:
         # Sendspin has no pause: the stream of every bridge in the group ends
@@ -2736,13 +2739,18 @@ async def test_the_keys_of_the_player_pause_and_resume_its_sendspin_group(
         assert [command for command, _ in _stream_commands(sent)] == [b"p", b"q"]
         assert client.state == SlimPlayerState.STOPPED
         rig.mass.players.cmd_play.assert_not_called()
+        rig.mass.players.cmd_play_pause.assert_not_called()
         sent.clear()
 
         await _player_presses(reader, kind, resume_key)
 
         # the player of the bridge, which Music Assistant hands on to the player that
         # owns its playback
-        rig.mass.players.cmd_play.assert_awaited_once_with("kitchen")
+        resume.assert_awaited_once_with("kitchen")
+        assert (
+            rig.mass.players.cmd_play.await_count + (rig.mass.players.cmd_play_pause.await_count)
+            == 1
+        )
         assert _stream_commands(sent) == []
         rig.mass.players.cmd_pause.assert_awaited_once()
     finally:
