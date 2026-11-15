@@ -69,7 +69,7 @@ def mock_provider() -> MagicMock:
         zones=[_zone(i) for i in range(4)],
         sources=[_source(i, input_str="") for i in range(4)],
     )
-    # map player_id -> zone id
+    # map protocol id -> zone id
     provider.zone_id_for = MagicMock(
         side_effect=lambda pid: (
             int(pid.rsplit("_", 1)[1]) if pid.startswith("amplipi_test_zone_") else None
@@ -85,7 +85,7 @@ def mock_provider() -> MagicMock:
     config.enabled = True
     config.player_type = None
     config.get_value = MagicMock(return_value=None)
-    provider.mass.config.get_base_player_config.return_value = config
+    provider.mass.config.get_base_protocol_config.return_value = config
     return provider
 
 
@@ -115,7 +115,7 @@ class TestSupportedFeatures:
     def test_player_id_includes_instance_and_zone(self, mock_provider: MagicMock) -> None:
         """Player id should be namespaced by provider instance and zone id."""
         player = _make_player(mock_provider, 3)
-        assert player.player_id == "amplipi_test_zone_3"
+        assert player.protocol_id == "amplipi_test_zone_3"
         assert player.zone_id == 3
 
     def test_player_name_uses_zone_name(self, mock_provider: MagicMock) -> None:
@@ -272,7 +272,7 @@ class TestPlayMedia:
         # the zone must be unmuted, otherwise AmpliPi plays silently
         assert multi.update.mute is False
 
-        assert player.active_source == player.player_id
+        assert player.active_source == player.protocol_id
         assert player.playback_state == PlaybackState.PLAYING
         assert player.powered is True
         # AmpliPi reports no position, so play_media must seed the self-clock: without it
@@ -326,7 +326,7 @@ class TestPlayMedia:
             sources=[_source(0, input_str="")],
         )
         player = _make_player(mock_provider, 0)
-        player._attr_group_members = [player.player_id, "amplipi_test_zone_2"]
+        player._attr_group_members = [player.protocol_id, "amplipi_test_zone_2"]
         await player.play_media(MagicMock())
         attach = mock_provider.api.set_zones.await_args.args[0]
         assert set(attach.zones) == {0, 2}
@@ -483,11 +483,15 @@ class TestPlayStop:
         player = _make_player(mock_provider, 0)
         player._source_id = 0
         player._attr_playback_state = PlaybackState.PAUSED
-        mock_provider.mass.player_queues.get.return_value = SimpleNamespace(active=True)
+        # the queue is the one of the player the zone belongs to
+        player._player = MagicMock(player_id="pl_zone_0")
+        mock_provider.mass.player_queues.get.side_effect = lambda queue_id: (
+            SimpleNamespace(active=True, queue_id=queue_id) if queue_id == "pl_zone_0" else None
+        )
         mock_provider.mass.player_queues.resume = AsyncMock()
         await player.play()
         # AmpliPi cannot unpause in place, so play() delegates to the queue's resume
-        mock_provider.mass.player_queues.resume.assert_awaited_once_with(player.player_id)
+        mock_provider.mass.player_queues.resume.assert_awaited_once_with("pl_zone_0")
         # it must NOT replay the stale (stopped) stream
         mock_provider.api.play_stream.assert_not_awaited()
 
@@ -495,22 +499,24 @@ class TestPlayStop:
         """stop() should stop the bound stream and mark the zone idle."""
         player = _make_player(mock_provider, 0)
         player._source_id = 0
+        attached = player._player = MagicMock()
         mock_provider.api.get_source = AsyncMock(return_value=SimpleNamespace(input="stream=5"))
         await player.stop()
         mock_provider.api.stop_stream.assert_awaited_once_with(5)
         assert player.playback_state == PlaybackState.IDLE
-        assert player.stop_called is True
+        attached.mark_stop_called.assert_called_once()
 
     async def test_pause_stops_active_stream(self, mock_provider: MagicMock) -> None:
         """pause() should stop the bound stream but report PAUSED (not idle)."""
         player = _make_player(mock_provider, 0)
         player._source_id = 0
+        attached = player._player = MagicMock()
         mock_provider.api.get_source = AsyncMock(return_value=SimpleNamespace(input="stream=5"))
         await player.pause()
         mock_provider.api.stop_stream.assert_awaited_once_with(5)
         assert player.playback_state == PlaybackState.PAUSED
         # unlike stop(), pause() must not mark the queue as stopped (resume re-plays it)
-        assert player.stop_called is False
+        attached.mark_stop_called.assert_not_called()
 
     async def test_pause_without_active_stream(self, mock_provider: MagicMock) -> None:
         """With no source bound, pause() still reports PAUSED but issues no stream command."""
@@ -576,7 +582,7 @@ class TestAvailability:
         )
         player = _make_player(mock_provider, 0)
         player.update_from_status(mock_provider.status)
-        assert player.active_source == player.player_id
+        assert player.active_source == player.protocol_id
 
     def test_external_active_source_cleared_when_input_changes(
         self, mock_provider: MagicMock
@@ -597,7 +603,7 @@ class TestAvailability:
             zones=[_zone(0, source_id=0)], sources=[_source(0, input_str="stream=42")]
         )
         player.update_from_status(mock_provider.status)
-        assert player.active_source == player.player_id
+        assert player.active_source == player.protocol_id
 
 
 class TestGrouping:
@@ -614,13 +620,13 @@ class TestGrouping:
         assert multi.update.source_id == 1
         # the added zone must be unmuted, otherwise it joins the group silently
         assert multi.update.mute is False
-        assert leader.group_members == [leader.player_id, "amplipi_test_zone_2"]
+        assert leader.group_members == [leader.protocol_id, "amplipi_test_zone_2"]
 
     async def test_remove_member_disconnects(self, mock_provider: MagicMock) -> None:
         """Removing the last member should dissolve the group view."""
         leader = _make_player(mock_provider, 0)
         leader._source_id = 1
-        leader._attr_group_members = [leader.player_id, "amplipi_test_zone_2"]
+        leader._attr_group_members = [leader.protocol_id, "amplipi_test_zone_2"]
         await leader.set_members(player_ids_to_remove=["amplipi_test_zone_2"])
         multi = mock_provider.api.set_zones.await_args.args[0]
         assert multi.zones == [2]
@@ -642,7 +648,7 @@ class TestGrouping:
         assert zone_id == 0
         assert update.source_id == 0
         assert update.mute is False
-        assert leader.group_members == [leader.player_id, "amplipi_test_zone_2"]
+        assert leader.group_members == [leader.protocol_id, "amplipi_test_zone_2"]
 
     async def test_add_member_raises_when_no_source(self, mock_provider: MagicMock) -> None:
         """Grouping fails if the sourceless leader cannot acquire a source."""
@@ -666,7 +672,7 @@ class TestGrouping:
         """Removing only unknown/unmapped player ids must not issue an empty set_zones call."""
         leader = _make_player(mock_provider, 0)
         leader._source_id = 1
-        leader._attr_group_members = [leader.player_id, "nonexistent"]
+        leader._attr_group_members = [leader.protocol_id, "nonexistent"]
         await leader.set_members(player_ids_to_remove=["nonexistent"])
         mock_provider.api.set_zones.assert_not_awaited()
         assert leader.group_members == []
@@ -678,7 +684,7 @@ class TestGrouping:
             sources=[_source(0, input_str="stream=42")],
         )
         leader = _make_player(mock_provider, 0)
-        leader._attr_group_members = [leader.player_id, "amplipi_test_zone_2"]
+        leader._attr_group_members = [leader.protocol_id, "amplipi_test_zone_2"]
         leader.update_from_status(mock_provider.status)
         assert leader.group_members == []
 
@@ -689,9 +695,9 @@ class TestGrouping:
             sources=[_source(0, input_str="stream=42")],
         )
         leader = _make_player(mock_provider, 0)
-        leader._attr_group_members = [leader.player_id, "amplipi_test_zone_2"]
+        leader._attr_group_members = [leader.protocol_id, "amplipi_test_zone_2"]
         leader.update_from_status(mock_provider.status)
-        assert leader.group_members == [leader.player_id, "amplipi_test_zone_2"]
+        assert leader.group_members == [leader.protocol_id, "amplipi_test_zone_2"]
 
     def test_poll_dissolves_group_when_disconnected(self, mock_provider: MagicMock) -> None:
         """When the leader zone itself disconnects, its group is dissolved entirely."""
@@ -700,7 +706,8 @@ class TestGrouping:
             sources=[],
         )
         leader = _make_player(mock_provider, 0)
-        leader._attr_group_members = [leader.player_id, "amplipi_test_zone_2"]
+        leader._attr_group_members = [leader.protocol_id, "amplipi_test_zone_2"]
         leader.update_from_status(mock_provider.status)
         assert leader.group_members == []
-        mock_provider.mass.players.trigger_player_update.assert_any_call("amplipi_test_zone_2")
+        mock_provider.get_protocol.assert_any_call("amplipi_test_zone_2")
+        mock_provider.get_protocol.return_value.update_state.assert_called()

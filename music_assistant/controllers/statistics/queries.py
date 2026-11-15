@@ -48,7 +48,7 @@ TRACK_HISTORY_CTE = f"""
     played_pairs AS (
         SELECT provider, item_id, media_type, COUNT(*) AS play_count
         FROM {DB_TABLE_PLAY_HISTORY}
-        WHERE userid = :user_id
+        WHERE userid IN :user_ids
             AND media_type = :media_type
             AND timestamp >= :cutoff_timestamp
         GROUP BY provider, item_id, media_type
@@ -96,7 +96,7 @@ TRACK_ARTISTS_CTE = f"""
         FROM {DB_TABLE_PLAY_HISTORY}
         WHERE artists IS NOT NULL
             AND media_type = '{MediaType.TRACK.value}'
-            AND userid = :user_id
+            AND userid IN :user_ids
             AND timestamp >= :cutoff_timestamp
         GROUP BY provider, item_id, media_type, artists
     ), normalized_artist_credits AS (

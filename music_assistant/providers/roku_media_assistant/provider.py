@@ -20,9 +20,6 @@ from .player import MediaAssistantPlayer
 
 if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
-    from music_assistant_models.enums import ProviderFeature
-
-SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
 
 class MediaAssistantprovider(PlayerProvider):
@@ -30,11 +27,6 @@ class MediaAssistantprovider(PlayerProvider):
 
     roku_players: ClassVar[dict[str, MediaAssistantPlayer]] = {}
     lock: asyncio.Lock
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -66,14 +58,21 @@ class MediaAssistantprovider(PlayerProvider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
+        self.logger.info("MediaAssistantProvider loaded")
+
+    async def discover_players(self) -> None:
+        """Set up the Rokus at the manually configured addresses that are not attached."""
         manual_ip_config = cast(
             "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
         )
-
+        attached_ips = {
+            roku_player.device_info.ip_address
+            for roku_player in self.roku_players.values()
+            if self.get_protocol(roku_player.protocol_id) is roku_player
+        }
         for ip in manual_ip_config:
-            await self._device_discovered(ip)
-
-        self.logger.info("MediaAssistantProvider loaded")
+            if ip not in attached_ips:
+                await self._device_discovered(ip)
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -101,6 +100,17 @@ class MediaAssistantprovider(PlayerProvider):
             return
         await self._device_discovered(device_ip)
 
+    async def forget_player(self, roku_player: MediaAssistantPlayer) -> None:
+        """
+        Let go of a removed player, so the next discovery registers its Roku as a new player.
+
+        :param roku_player: The removed player.
+        """
+        await self._device_disconnect(roku_player)
+        # a discovery during the disconnect may have put a new player in its place
+        if self.roku_players.get(roku_player.protocol_id) is roku_player:
+            del self.roku_players[roku_player.protocol_id]
+
     async def _device_disconnect(self, roku_player: MediaAssistantPlayer) -> None:
         """Destroy connections to the device."""
         async with roku_player.lock:
@@ -111,7 +121,7 @@ class MediaAssistantprovider(PlayerProvider):
             self.logger.debug("Disconnecting from %s", roku_player.name)
 
             old_device = roku_player.roku
-            self.roku_players.pop(roku_player.player_id)
+            self.roku_players.pop(roku_player.protocol_id)
             await old_device.close_session()
 
     async def _device_discovered(self, ip: str) -> None:
@@ -130,11 +140,18 @@ class MediaAssistantprovider(PlayerProvider):
             if device.info.serial_number is None:
                 return
 
-            player_id = "ROKU_" + device.info.serial_number
+            protocol_id = "ROKU_" + device.info.serial_number
+            if not self.mass.players.wants_protocol(protocol_id):
+                self.logger.debug("Ignoring disabled Roku at: %s", ip)
+                return
 
-            if roku_player := self.roku_players.get(player_id):
+            if roku_player := self.roku_players.get(protocol_id):
                 # existing player
-                if roku_player.device_info.ip_address == ip and roku_player.available:
+                if (
+                    roku_player.device_info.ip_address == ip
+                    and roku_player.available
+                    and self.get_protocol(protocol_id) is roku_player
+                ):
                     # nothing to do, device is already connected
                     return
                 # update description url to newly discovered one
@@ -142,7 +159,7 @@ class MediaAssistantprovider(PlayerProvider):
             else:
                 roku_player = MediaAssistantPlayer(
                     provider=self,
-                    player_id=player_id,
+                    protocol_id=protocol_id,
                     roku_name=device.info.name if device.info.name is not None else "",
                     roku=Roku(ip),
                 )
@@ -165,5 +182,5 @@ class MediaAssistantprovider(PlayerProvider):
                         IdentifierType.MAC_ADDRESS, device.info.wifi_mac
                     )
 
-                self.roku_players[player_id] = roku_player
+                self.roku_players[protocol_id] = roku_player
             await roku_player.setup()

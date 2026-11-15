@@ -6,14 +6,50 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock
+
+from music_assistant.models.player import Player
+
+if TYPE_CHECKING:
+    from music_assistant_models.player_queue import PlayerQueue
+
+    from music_assistant.providers.msx_bridge.player import MSXPlayer
 
 
 async def empty_async_generator() -> AsyncIterator[object]:
     """Provide an empty async generator for playlist track responses."""
     if asyncio.current_task() is None:
         yield object()
+
+
+def attach_tv(protocol: MSXPlayer) -> None:
+    """
+    Attach a TV to a player of its own, whose id differs from the id of the TV.
+
+    :param protocol: The protocol object of the TV.
+    """
+    player = Mock(spec=Player, player_id=f"pl_{protocol.protocol_id}", extra_data={})
+    player.name = protocol.name or protocol.protocol_id
+    protocol.set_player(player)
+
+
+def serve_active_queue(mass: Any, queue: PlayerQueue, player_id: str = "pl_msx_test") -> None:
+    """
+    Serve a queue as the active queue of one player, as the queue controller does.
+
+    :param mass: The mocked server.
+    :param queue: The queue the player plays from (its own, or its group leader's).
+    :param player_id: The id of the player (not of its TV) the queue is active for.
+    """
+    mass.player_queues.get_active_queue = Mock(
+        side_effect=lambda queried_id: queue if queried_id == player_id else None
+    )
+
+
+async def _attach(protocol: MSXPlayer) -> None:
+    """Attach a TV the way the players controller does for a TV the server wants."""
+    attach_tv(protocol)
 
 
 class FakeMass:
@@ -33,9 +69,8 @@ class FakeMass:
         )
         self.cache = SimpleNamespace(get=AsyncMock(return_value=None), set=AsyncMock())
         self.config = SimpleNamespace(
-            create_default_player_config=Mock(),
-            get_base_player_config=Mock(return_value=player_config),
-            get_raw_player_config_value=Mock(return_value="stereo"),
+            get_base_protocol_config=Mock(return_value=player_config),
+            get_protocol_value=Mock(return_value="stereo"),
             get_raw_provider_config_value=Mock(return_value=None),
             remove_provider_config_value=AsyncMock(),
             get_player_dsp_config=Mock(),
@@ -79,14 +114,12 @@ class FakeMass:
             _handle_cmd_play=AsyncMock(),
             _handle_cmd_stop=AsyncMock(),
             _handle_play_media=AsyncMock(),
-            get=Mock(return_value=None),
-            get_player=Mock(return_value=None),
+            get_protocol=Mock(return_value=None),
             get_player_lock=Mock(side_effect=self._player_lock),
-            register=AsyncMock(),
+            register=AsyncMock(side_effect=_attach),
             unregister=AsyncMock(),
-            all=Mock(return_value=[]),
-            all_players=Mock(return_value=[]),
-            iter_players=Mock(return_value=[]),
+            wants_protocol=Mock(return_value=True),
+            iter_protocols=Mock(return_value=[]),
         )
         self.verify_event_loop_thread = Mock()
         self.create_task = Mock()

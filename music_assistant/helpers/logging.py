@@ -14,7 +14,7 @@ import logging
 import logging.handlers
 import queue
 import traceback
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Hashable
 from functools import partial, wraps
 from typing import Any, cast, overload
 
@@ -94,6 +94,24 @@ def activate_log_queue_handler() -> None:
     queue_handler.listener = listener
 
     listener.start()
+
+
+def log_once(
+    logger: logging.Logger, logged: set[Hashable], key: Hashable, level: int, msg: str, *args: Any
+) -> None:
+    """
+    Log a message unless one was logged for the same key before.
+
+    :param logger: The logger to log to.
+    :param logged: The keys logged so far, kept by the caller for as long as a key logs once.
+    :param key: What the message is about, such as the id of the item it names.
+    :param level: The log level.
+    :param msg: The message, formatted with the args as the logger does.
+    """
+    if key in logged or not logger.isEnabledFor(level):
+        return
+    logged.add(key)
+    logger.log(level, msg, *args)
 
 
 def log_exception(format_err: Callable[..., Any], *args: Any) -> None:

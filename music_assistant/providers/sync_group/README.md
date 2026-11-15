@@ -28,7 +28,7 @@ The Sync Group Player provider enables creating persistent groups of compatible 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    SyncGroupProvider                             │
-│  - Discovers/registers sync group players from config           │
+│  - Registers the stored sync groups with the players controller │
 │  - Creates/removes sync groups via UI                           │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -86,10 +86,10 @@ The sync leader is selected when the group is powered on (which forms the group)
 The sync leader is the **source of truth** for the group's playback state:
 - Receives the actual `play_media` command
 - Syncs all other group members to itself
-- Reports playback state, elapsed time, current media, and active source to the group (via the group's `_update_attributes` reading the leader's raw values)
+- Reports playback state, elapsed time, current media, and active source to the group (via the group's `_update_attributes` reading what the leader's protocols report)
 - Contributes features (enqueue, gapless, volume, DSP) to the group
 
-> **State derivation note:** The leader's own `__final_playback_state` does **not** mirror its parent group — that would create a circular dependency (group derives from leader → leader derives from group → both stuck at last value). Members of an active group always report their own raw playback state; only manually-synced clients (`synced_to`) mirror their leader's state.
+> **State derivation note:** The leader's own playback state does **not** mirror its parent group — that would create a circular dependency (group derives from leader → leader derives from group → both stuck at last value). Members of an active group always report their own raw playback state; only manually-synced clients (`synced_to`) mirror their leader's state.
 
 ## Group Types
 
@@ -140,21 +140,21 @@ When a sync group starts playback:
 
 ### Example Scenario
 
-Consider a sync group mixing a Universal Player (Denon AVR with multiple protocols) and native AirPlay devices:
+Consider a sync group mixing a player with several protocols (a Denon AVR) and AirPlay devices:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Sync Group: "Living Room"                     │
 │                                                                  │
 │  Members: Denon AVR, HomePod, Apple TV                          │
-│  Sync Leader: Denon AVR (Universal Player)                       │
+│  Sync Leader: Denon AVR                                          │
 │  Compatible via: AirPlay protocol                                │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               │ play_media() forwarded to leader
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│              Denon AVR (Sync Leader - Universal Player)          │
+│              Denon AVR (Sync Leader)                             │
 │                                                                  │
 │  Linked Output Protocols:                                        │
 │  - AirPlay  ◄── selected (members are AirPlay-compatible)        │
@@ -173,9 +173,9 @@ In this scenario, the Denon AVR has three output protocols available. Since the 
 - **Unified experience**: Users interact with one sync group player
 - **Automatic optimization**: The leader picks the best protocol for its device type
 - **Protocol-aware syncing**: Members sync using their native protocol (Sonos-to-Sonos, AirPlay-to-AirPlay)
-- **Fallback support**: If native protocol unavailable, linked protocols provide alternatives
+- **Fallback support**: If the native protocol is unavailable, the other output protocols of a player provide alternatives
 
-For detailed information on protocol linking, output protocol selection, and how devices with multiple protocols are handled, see the [Player Controller README](../../controllers/players/README.md#multi-protocol-player-system).
+For detailed information on protocol linking, output protocol selection, and how devices with multiple protocols are handled, see the [Player Controller README](../../controllers/players/README.md#player-playerprotocol-and-playerstate).
 
 ## Group Lifecycle
 
@@ -253,7 +253,7 @@ When `SET_MEMBERS` is called on a dynamic group:
 
 1. Validate the member exists, is available, and is not in the members filter
 2. If there is no sync leader yet (empty / unpowered group): just register the member; sync happens when the group is next formed
-3. Otherwise check compatibility with the current sync leader's `can_group_with` (which already includes all of the leader's linked output protocols, so e.g. an AirPlay-only player IS valid for a Sonos leader that has AirPlay as a linked protocol)
+3. Otherwise check compatibility with the current sync leader's `can_group_with` (which already covers what every output protocol of the leader can group with, so e.g. an AirPlay-only player IS valid for a Sonos leader that also has an AirPlay protocol)
 4. Incompatible members are **not** registered (avoids stranding orphan entries in the group)
 5. Compatible members are appended to the internal member list and forwarded to `cmd_set_members` on the leader, which handles protocol selection (and possibly switching the leader to a different output protocol so the new member can be grouped via that protocol)
 
@@ -261,7 +261,7 @@ When `SET_MEMBERS` is called on a dynamic group:
 
 1. Remove from the internal member list (static members cannot be removed)
 2. If removing the **sync leader** while playing:
-   - If the active protocol supports dynamic leader switching (provider domain is in `PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH` — currently AirPlay, Snapcast, Sendspin), perform a **seamless handoff** at the protocol level: pick a new leader from the live session, then call `set_members(player_ids_to_remove=[old_leader_protocol])` on the old session player and `set_members(player_ids_to_add=[remaining_protocol_ids])` on the new leader's protocol player. Remaining members keep playing.
+   - If the active protocol supports dynamic leader switching (provider domain is in `PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH` — currently AirPlay, Snapcast, Sendspin), perform a **seamless handoff** at the protocol level: pick a new leader from the live session, then call `set_members(player_ids_to_remove=[old_session_protocol_id])` on the protocol that carries the session and `set_members(player_ids_to_add=[remaining_protocol_ids])` on the new leader's protocol of the same domain. Remaining members keep playing.
    - If no remaining member is part of the live session (e.g. only freshly-added players are left), or the protocol doesn't support handoff: fall back to **dissolve + re-form** (brief audio gap)
 3. If removing a non-leader member: forward to `cmd_set_members` on the leader
 
@@ -308,11 +308,13 @@ Boolean option to allow runtime member changes. When enabled:
 
 ## Provider Details
 
-### Player ID Format
+### Ids and Settings
 
-Sync group players use the format: `syncgroup_{random_8_chars}`
+A sync group is a `PlayerProtocol` with the virtual role: the players controller builds the group's `Player` from it.
 
-Example: `syncgroup_ab12cd34`
+- The protocol id has the format `syncgroup_{random_8_chars}` (e.g. `syncgroup_ab12cd34`); a new group gets a player with an id of its own, minted by the controller (`pl…`). Only a group whose player keeps an id it already has in the stored config can have equal ids.
+- The group names its members by **player id**: the configured members, the allow-list, `group_members` and `static_group_members`. The member lists and the dynamic toggle are settings of the group protocol and live on its record (`player_protocols/{protocol_id}`); the power control is a setting of the player (`players/{player_id}`).
+- The protocols of the members speak protocol ids of their own provider. The group only uses those for the seamless leader handoff, where it talks to the member protocols directly, and translates what they report back to player ids.
 
 ### Provider Features
 
@@ -328,21 +330,20 @@ The Sync Group provider is:
 
 ## State Properties
 
-The SyncGroupPlayer reads most state from the sync leader's **raw** attributes (deliberately not `.state.*`, see the leader-responsibilities note above):
+The SyncGroupPlayer reads most state from the sync leader: what its protocols report where the leader's final values would route back to the group (see the leader-responsibilities note above), else the leader's final values:
 
 | Property | Source |
 |----------|--------|
 | `powered` | `_attr_powered` — set by `power()`, the canonical "is this group active" signal |
-| `playback_state` | Sync leader's raw `state.playback_state` (or IDLE if no leader) |
-| `elapsed_time` | Sync leader's raw `state.elapsed_time` |
-| `elapsed_time_last_updated` | Sync leader's raw `state.elapsed_time_last_updated` |
-| `current_media` | Sync leader's raw `current_media` (set optimistically in `play_media`) |
-| `active_source` | Sync leader's raw `active_source` (set optimistically in `play_media`) |
-| `group_members` | Sync leader's reported `state.group_members` (preferred) or internal list |
+| `playback_state` | Sync leader's `playback_state` (or IDLE if no leader) |
+| `elapsed_time` | Sync leader's `elapsed_time` |
+| `elapsed_time_last_updated` | Sync leader's `elapsed_time_last_updated` |
+| `current_media` | Reported by the protocol that carries the session (set optimistically in `play_media`) |
+| `active_source` | Reported by the protocol of the leader's device (set optimistically in `play_media`) |
+| `group_members` | Sync leader's `group_members` (preferred) or internal list |
 | `can_group_with` | Aggregated from all current members' `can_group_with` |
 | `supported_features` | Base features + features inherited from the active sync leader |
 
 ## Related Documentation
 
 - [Player Controller README](../../controllers/players/README.md) - For understanding player management, protocol linking, and sync coordination
-- [Universal Player README](../universal_player/README.md) - For understanding how protocol players are merged

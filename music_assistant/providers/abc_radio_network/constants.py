@@ -1,12 +1,13 @@
 """Constants for the ABC Radio provider."""
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import aiohttp
 
 # Now-playing API, also used by ABC's own web players.
-API_BASE_URL = "https://music.abcradio.net.au/api/v1"
-NOW_PLAYING_URL = API_BASE_URL + "/plays/{station_id}/now.json"
+# The station code is the upper-cased station id (e.g. TRIPLEJ, CLASSIC).
+API_BASE_URL = "https://www.abc.net.au/core-next/api"
+NOW_PLAYING_URL = API_BASE_URL + "/musicNowPlaying/{station_code}"
 
 # Live HLS streams as served by ABC's streaming CDN.
 STREAM_BASE_URL = "https://streaming.abc-cdn.net.au/audio/hls"
@@ -20,23 +21,44 @@ STREAM_METADATA_UPDATE_INTERVAL = 30
 # Per-request timeout for ABC Radio API calls.
 API_TIMEOUT = aiohttp.ClientTimeout(total=10)
 
+# The listener's state, which picks the local stream and now-playing info.
+CONF_STATE = "state"
+DEFAULT_STATE = "nsw"
+
+# Timezone of each state, sent to the now-playing API (its "tz" query parameter)
+# for the stream being played. The order here is the order of the options.
+STATE_TIMEZONES = {
+    "nsw": "Australia/Sydney",
+    "vic": "Australia/Melbourne",
+    "qld": "Australia/Brisbane",
+    "sa": "Australia/Adelaide",
+    "nt": "Australia/Darwin",
+    "wa": "Australia/Perth",
+    "tas": "Australia/Hobart",
+}
+
 
 class ABCRadioStation(TypedDict):
     """Type definition for an ABC Radio station."""
 
     name: str
     description: str
+    # Holds a "{region}" placeholder when the station has regions.
     stream_url: str
     logo_url: str
+    # States with their own stream; other states play DEFAULT_STATE's stream.
+    # Left out for stations with a single national stream.
+    regions: NotRequired[tuple[str, ...]]
 
 
-# Station ids double as the service ids used by the ABC Radio now-playing API.
+# Station ids, upper-cased, double as the station codes used by the now-playing API.
 ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
     "triplej": {
         "name": "triple j",
         "description": "New music and the best new and emerging artists",
-        "stream_url": f"{STREAM_BASE_URL}/triplejnsw.m3u8",
+        "stream_url": f"{STREAM_BASE_URL}/triplej{{region}}.m3u8",
         "logo_url": f"{STATION_LOGO_BASE_URL}/c170c3d8b69f13bf43865be27b027687",
+        "regions": ("nsw", "qld", "sa", "nt", "wa"),
     },
     "h100": {
         "name": "triple j Hottest",
@@ -47,8 +69,9 @@ ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
     "doublej": {
         "name": "Double J",
         "description": "Music news, interviews and new releases for grown-up music lovers",
-        "stream_url": f"{STREAM_BASE_URL}/doublejnsw.m3u8",
+        "stream_url": f"{STREAM_BASE_URL}/doublej{{region}}.m3u8",
         "logo_url": f"{STATION_LOGO_BASE_URL}/fe840de7a554fe27949bd9f6ee74c67d",
+        "regions": ("nsw", "qld", "sa", "nt", "wa"),
     },
     "unearthed": {
         "name": "triple j Unearthed",
@@ -59,8 +82,9 @@ ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
     "classic": {
         "name": "ABC Classic",
         "description": "Classical music to help you relax, focus and escape",
-        "stream_url": f"{STREAM_BASE_URL}/classicnsw.m3u8",
+        "stream_url": f"{STREAM_BASE_URL}/classic{{region}}.m3u8",
         "logo_url": f"{STATION_LOGO_BASE_URL}/1613925515143520dff362b9f5bdf0cf",
+        "regions": ("nsw", "vic", "qld", "sa", "nt", "wa"),
     },
     "classic2": {
         "name": "ABC Classic 2",
@@ -83,7 +107,8 @@ ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
     "kidslisten": {
         "name": "ABC Kids listen",
         "description": "Music and stories made for young children",
-        "stream_url": f"{STREAM_BASE_URL}/abckids.m3u8",
+        "stream_url": f"{STREAM_BASE_URL}/abckids{{region}}.m3u8",
         "logo_url": f"{STATION_LOGO_BASE_URL}/fca9b9528d2502f6ed38568557274e21",
+        "regions": ("nsw", "qld", "sa", "nt", "wa"),
     },
 }

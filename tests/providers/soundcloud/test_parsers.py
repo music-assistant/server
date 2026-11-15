@@ -73,8 +73,6 @@ async def test_parse_artist_skips_default_avatar(provider: SoundcloudMusicProvid
 
 async def test_parse_track_metadata(provider: SoundcloudMusicProvider) -> None:
     """Version, artwork, description, genre and tags end up on the track."""
-    provider._soundcloud.get_user_details.return_value = _artist_obj()
-
     track = await provider._parse_track(
         _track_obj(
             artwork_url="https://i1.sndcdn.com/artworks-abc-large.jpg",
@@ -95,10 +93,18 @@ async def test_parse_track_metadata(provider: SoundcloudMusicProvider) -> None:
     assert [artist.item_id for artist in track.artists] == ["5"]
 
 
+async def test_parse_track_uses_embedded_user(provider: SoundcloudMusicProvider) -> None:
+    """The artist comes from the user object embedded in the track, without a request."""
+    track = await provider._parse_track(
+        _track_obj(user={"id": 7, "username": "Embedded Artist", "permalink": "embedded"})
+    )
+
+    provider._soundcloud.get_user_details.assert_not_awaited()
+    assert [(artist.item_id, artist.name) for artist in track.artists] == [("7", "Embedded Artist")]
+
+
 async def test_parse_track_position(provider: SoundcloudMusicProvider) -> None:
     """The playlist position is stored on the track."""
-    provider._soundcloud.get_user_details.return_value = _artist_obj()
-
     track = await provider._parse_track(_track_obj(), 4)
 
     assert track.position == 4

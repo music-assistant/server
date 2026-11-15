@@ -27,6 +27,7 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_BOOKMARKS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
@@ -119,9 +120,16 @@ class MusicDatabaseSetupMixin:
         """Perform database cleanup/maintenance."""
         self.logger.debug("Performing database cleanup...")
         update_current_task_progress_text("Cleaning old playlog entries")
-        # Remove playlog entries older than 90 days
+        # Remove playlog entries older than 90 days, except the progress of library audiobooks
+        # and of the episodes of library podcasts
         await self.database.delete_where_query(
-            DB_TABLE_MEDIA_PROGRESS, f"timestamp < strftime('%s','now') - {3600 * 24 * 90}"
+            DB_TABLE_MEDIA_PROGRESS,
+            f"timestamp < strftime('%s','now') - {3600 * 24 * 90} "
+            "AND NOT (provider = 'library' AND media_type = 'audiobook') "
+            f"AND NOT (media_type = 'podcast_episode' AND EXISTS (SELECT 1 FROM "
+            f"{DB_TABLE_PROVIDER_MAPPINGS} m WHERE m.media_type = 'podcast' "
+            f"AND m.provider_instance = {DB_TABLE_MEDIA_PROGRESS}.provider "
+            f"AND m.provider_item_id = {DB_TABLE_MEDIA_PROGRESS}.podcast_item_id))",
         )
         # db tables cleanup
         for ctrl in (
@@ -164,6 +172,17 @@ class MusicDatabaseSetupMixin:
                 f"AND item_id not in (select item_id from {ctrl.db_table})"
             )
             await self.mass.music.database.delete_where_query(DB_TABLE_FAVORITES, query)
+        # Bookmarks of an audiobook copy, or of an episode of a podcast copy, that is no longer
+        # in the library; episodes have no mappings of their own
+        await self.database.delete_where_query(
+            DB_TABLE_BOOKMARKS,
+            f"NOT EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} AS pm "
+            f"WHERE pm.provider_instance = {DB_TABLE_BOOKMARKS}.provider_instance "
+            f"AND ((pm.media_type = {DB_TABLE_BOOKMARKS}.media_type "
+            f"AND pm.provider_item_id = {DB_TABLE_BOOKMARKS}.provider_item_id) "
+            f"OR (pm.media_type = '{self.podcasts.media_type}' "
+            f"AND pm.provider_item_id = {DB_TABLE_BOOKMARKS}.podcast_item_id)))",
+        )
         update_current_task_progress_text("Cleaning orphaned relations")
         # A relation row can outlive the item on either of its ends: the item deletions above
         # leave one behind, and so do the removal paths that only delete their own side of the
@@ -302,6 +321,7 @@ class MusicDatabaseSetupMixin:
                 [queue_id] TEXT,
                 [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
                 [playback_speed] REAL NOT NULL DEFAULT 1.0,
+                [podcast_item_id] TEXT,
                 UNIQUE(item_id, provider, media_type, userid));"""
             )
         await self.database.execute(
@@ -327,6 +347,17 @@ class MusicDatabaseSetupMixin:
                 [favorite] BOOLEAN,
                 [timestamp] INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(user_id, media_type, item_id));"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_BOOKMARKS}(
+                [user_id] TEXT NOT NULL,
+                [media_type] TEXT NOT NULL,
+                [provider_instance] TEXT NOT NULL,
+                [provider_item_id] TEXT NOT NULL,
+                [podcast_item_id] TEXT,
+                [start] REAL NOT NULL,
+                [name] TEXT NOT NULL,
+                UNIQUE(user_id, media_type, provider_instance, provider_item_id, start));"""
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUMS}(
@@ -604,8 +635,10 @@ class MusicDatabaseSetupMixin:
                 f"CREATE INDEX IF NOT EXISTS {db_table}_name_idx on {db_table}(name);"
             )
             # index on search_name (=lowercase name without diacritics)
+            # Older databases already use name_nocase_idx for name COLLATE NOCASE.
+            # Reusing that name silently skips this index on upgrades.
             await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_name_nocase_idx ON {db_table}(search_name);"
+                f"CREATE INDEX IF NOT EXISTS {db_table}_search_name_idx ON {db_table}(search_name);"
             )
             # index on sort_name
             await self.database.execute(

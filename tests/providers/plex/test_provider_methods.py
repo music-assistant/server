@@ -1160,3 +1160,34 @@ class TestGetOrCreateArtistByName:
         assert isinstance(result, ItemMapping)
         assert result.name == "Air"
         assert result.item_id == "101"
+
+
+@pytest.mark.parametrize(
+    "path", ["/library/metadata/42/thumb/1700000001", "/library/metadata/7/thumb/1"]
+)
+def test_accepts_stored_image_path_thumbnails(music_provider: Any, path: str) -> None:
+    """Thumbnails of Plex library items are accepted as stored image paths."""
+    assert music_provider.accepts_stored_image_path(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "",
+        "@evil.com/x",
+        "//evil.com/x",
+        "http://evil/x",
+        "library/metadata/42/thumb/1",
+        "/library/metadata/42/thumb/1?X-Plex-Token=x",
+        "/library/metadata/42/thumb/1#x",
+        "/library/metadata/42/thumb/1/../../../sections/1/refresh",
+        "/library/metadata/42/thumb/1\n",
+        "/library/metadata/42\\thumb/1",
+        "/library/sections/1/refresh",
+        "/:/scrobble?key=42&identifier=com.plexapp.plugins.library",
+        "/playlists/42/composite/1700000000",
+    ],
+)
+def test_accepts_stored_image_path_refuses_paths(music_provider: Any, path: str) -> None:
+    """Anything but a library item thumbnail is refused."""
+    assert not music_provider.accepts_stored_image_path(path)

@@ -323,7 +323,7 @@ async def test_profile_is_passed_to_both_clients(stored: str) -> None:
     """Both clients act as the stored profile, an empty value means the account itself."""
     provider = _provider({CONF_ARL_TOKEN: "arl", CONF_FAMILY_PROFILE: stored})
     with (
-        patch("music_assistant.providers.deezer.provider.DeezerGQLClient") as gql_client,
+        patch("music_assistant.providers.deezer.provider.ThrottledGQLClient") as gql_client,
         patch("music_assistant.providers.deezer.provider.GWClient") as gw_client,
     ):
         gql_client.return_value.get_me = AsyncMock(return_value=Mock(id=stored or ADMIN))

@@ -584,6 +584,7 @@ class ZvukMusicProvider(MusicProvider):
             self.logger.warning("Refusing to fetch image from untrusted host: %s", hostname)
             return str(path)
         headers: dict[str, str] = {
+            # mimics a browser on the Zvuk website, which serves these images (#3242)
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "

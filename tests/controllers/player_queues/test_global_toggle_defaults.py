@@ -36,6 +36,7 @@ def _controller(*, global_autoplay: bool = True, global_crossfade: bool = False)
     """
     queues = MagicMock(spec=PlayerQueuesController)
     queues._queue_data = {}
+    queues._resolve_queue_id = lambda queue_id: queue_id
     queues.mass = MagicMock()
     defaults = {"autoplay_enabled": global_autoplay, "crossfade_enabled": global_crossfade}
     queues.mass.config.get_raw_core_config_value = MagicMock(

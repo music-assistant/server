@@ -15,10 +15,13 @@ from unittest.mock import MagicMock, patch
 
 import ifaddr
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.enums import MediaType, ProviderTier, ProviderType
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import Album, ItemMapping, ProviderMapping, Track
+from music_assistant_models.provider import ProviderManifest
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
     TaskManager,
@@ -301,6 +304,19 @@ class TestImportModuleInThread:
         assert import_mock.call_count == 1
 
 
+def _sendspin_manifest(tier: ProviderTier = ProviderTier.CORE) -> ProviderManifest:
+    """Return a provider manifest with one pinned requirement that carries an extra."""
+    return ProviderManifest(
+        type=ProviderType.PLAYER,
+        domain="sendspin",
+        name="Sendspin",
+        description="",
+        codeowners=[],
+        tier=tier,
+        requirements=["aiosendspin[server]==6.1.1"],
+    )
+
+
 class TestLoadProviderModule:
     """load_provider_module verifies pinned requirements before importing the provider."""
 
@@ -321,7 +337,7 @@ class TestLoadProviderModule:
             patch("music_assistant.helpers.util.install_package") as install_mock,
             patch("music_assistant.helpers.util.importlib.import_module"),
         ):
-            await load_provider_module("sendspin", ["aiosendspin[server]==6.1.1"])
+            await load_provider_module(_sendspin_manifest())
         version_mock.assert_awaited_once_with("aiosendspin")
         install_mock.assert_not_awaited()
 
@@ -333,7 +349,7 @@ class TestLoadProviderModule:
             patch("music_assistant.helpers.util.install_package") as install_mock,
             patch("music_assistant.helpers.util.importlib.import_module"),
         ):
-            await load_provider_module("sendspin", ["aiosendspin[server]==6.1.1"])
+            await load_provider_module(_sendspin_manifest())
         install_mock.assert_awaited_once_with("aiosendspin[server]==6.1.1")
 
     @pytest.mark.asyncio
@@ -346,8 +362,8 @@ class TestLoadProviderModule:
             patch("music_assistant.helpers.util.install_package") as install_mock,
             patch("music_assistant.helpers.util.importlib.import_module"),
         ):
-            await load_provider_module("sendspin", ["aiosendspin[server]==6.1.1"])
-            await load_provider_module("sendspin", ["aiosendspin[server]==6.1.1"])
+            await load_provider_module(_sendspin_manifest())
+            await load_provider_module(_sendspin_manifest())
         version_mock.assert_awaited_once()
         install_mock.assert_not_awaited()
 
@@ -363,10 +379,41 @@ class TestLoadProviderModule:
             patch("music_assistant.helpers.util.importlib.import_module"),
         ):
             with pytest.raises(RuntimeError):
-                await load_provider_module("sendspin", ["aiosendspin[server]==6.1.1"])
+                await load_provider_module(_sendspin_manifest())
             install_mock.side_effect = None
-            await load_provider_module("sendspin", ["aiosendspin[server]==6.1.1"])
+            await load_provider_module(_sendspin_manifest())
         assert install_mock.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_community_requirement_not_installed(self) -> None:
+        """An outdated requirement of a community provider is left as it is."""
+        with (
+            patch(
+                "music_assistant.helpers.util.get_package_version", return_value="6.0.0"
+            ) as version_mock,
+            patch("music_assistant.helpers.util.install_package") as install_mock,
+            patch("music_assistant.helpers.util.importlib.import_module") as import_mock,
+        ):
+            module = await load_provider_module(_sendspin_manifest(ProviderTier.COMMUNITY))
+        assert module is import_mock.return_value
+        import_mock.assert_called_once_with(".sendspin", "music_assistant.providers")
+        version_mock.assert_not_awaited()
+        install_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_community_import_error_installs_nothing(self) -> None:
+        """A community provider that fails to import raises without an install attempt."""
+        with (
+            patch("music_assistant.helpers.util.install_package") as install_mock,
+            patch(
+                "music_assistant.helpers.util.importlib.import_module",
+                side_effect=ImportError("no module named aiosendspin"),
+            ) as import_mock,
+            pytest.raises(ImportError),
+        ):
+            await load_provider_module(_sendspin_manifest(ProviderTier.COMMUNITY))
+        assert import_mock.call_count == 1
+        install_mock.assert_not_awaited()
 
 
 class TestGetIpAddresses:
@@ -812,6 +859,29 @@ class TestGuardSingleRequest:
         assert isinstance(results[0], asyncio.CancelledError)
         assert results[1:] == ["result-123", "result-123"]
         assert caller.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_callers_of_different_identities_do_not_share_a_request(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """A request resolves per user and role, so only the same identity joins one flight."""
+        caller = _GuardedCaller(mass_minimal)
+        users = [
+            User(user_id=name, username=name, role=role)
+            for name, role in (("a", UserRole.USER), ("a", UserRole.USER), ("b", UserRole.USER))
+        ]
+        # the same account after a role change is a different identity as well
+        users.append(User(user_id="a", username="a", role=UserRole.GUEST))
+
+        async def fetch_as(user: User) -> str:
+            set_current_user(user)
+            return await caller.fetch("123")
+
+        calls = [asyncio.create_task(fetch_as(user)) for user in users]
+        await asyncio.sleep(0)
+        assert caller.calls == 3
+        caller.release.set()
+        assert await asyncio.gather(*calls) == ["result-123"] * 4
 
     @pytest.mark.asyncio
     async def test_failure_reaches_the_caller_without_being_logged(
