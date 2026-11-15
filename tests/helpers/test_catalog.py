@@ -207,13 +207,14 @@ def test_set_up_single_instance() -> None:
 
 
 def test_set_up_multi_instance() -> None:
-    """A provider that allows more than one instance is still suggested once it is set up."""
+    """A provider that is set up is not suggested again, also when it allows another instance."""
     manifests = [_manifest("multi", multi_instance=True)]
     community = _community("comm", added=_iso(NOW), multi_instance=True)
 
-    assert _recommend(
+    assert not _recommend(
         manifests, configured={"multi", "comm"}, new_domains={"multi"}, community=[community]
-    ) == [
+    )
+    assert _recommend(manifests, new_domains={"multi"}, community=[community]) == [
         CatalogRecommendation("multi", CatalogRecommendationReason.POPULAR),
         CatalogRecommendation("multi", CatalogRecommendationReason.NEW),
         CatalogRecommendation("comm", CatalogRecommendationReason.NEW),

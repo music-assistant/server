@@ -89,11 +89,11 @@ def get_recommendations(
 
     Only providers that can be added are suggested: not built-in, not deprecated, of a type
     the Marketplace offers, allowed for the user, not withdrawn or blocked by the community
-    catalog, and not set up already unless more than one instance is allowed. A provider may
-    be suggested for more than one reason.
+    catalog, and not set up by the user already. A provider may be suggested for more than
+    one reason.
 
     :param manifests: The manifests of the providers the server knows.
-    :param configured: The domains of the providers that are set up, by anyone.
+    :param configured: The domains of the providers the user has set up.
     :param can_add: Whether the user may add an instance of a provider.
     :param discovered: The domains of the providers seen on the network.
     :param new_domains: The domains of the built-in providers that are new in this release line.
@@ -112,16 +112,12 @@ def get_recommendations(
             and manifest.stage != ProviderStage.DEPRECATED
             and manifest.type in _CATALOG_TYPES
             and manifest.domain not in unlisted
-            and (manifest.multi_instance or manifest.domain not in configured)
+            and manifest.domain not in configured
             and can_add(manifest)
         )
 
     known = {manifest.domain: manifest for manifest in manifests if addable(manifest)}
-    found = [
-        manifest
-        for domain, manifest in known.items()
-        if domain in discovered and domain not in configured
-    ]
+    found = [manifest for domain, manifest in known.items() if domain in discovered]
     complements: dict[str, str] = {}
     for configured_domain, suggested in CATALOG_PAIRINGS.items():
         if configured_domain in configured:
