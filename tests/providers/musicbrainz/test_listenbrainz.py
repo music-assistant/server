@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -37,11 +36,16 @@ if TYPE_CHECKING:
 
 WEEK = 7 * 24 * 3600
 DAY = 24 * 3600
+# the moment the cache and the throttler see as now, so no test depends on the wall clock
+NOW = 1_800_000_000
 OTHER_ARTIST_MBID = "8ed2e0b3-aa4c-4e13-bec3-dc7393ed4d6b"
 USER_A = User(user_id="user-a", username="user-a", role=UserRole.USER)
 USER_B = User(user_id="user-b", username="user-b", role=UserRole.USER)
 CACHE_CLOCK = "music_assistant.controllers.cache.controller.time"
+THROTTLER_CLOCK = "music_assistant.helpers.throttle_retry.time"
 CLIENT = "music_assistant.providers.musicbrainz.listenbrainz"
+# how long a test waits for something the code under test does in real time
+DEADLINE = 10
 
 
 @pytest.fixture
@@ -150,14 +154,14 @@ async def test_recording_without_release_cover_or_length(client: ListenBrainzCli
 async def test_list_is_kept_for_a_week(client: ListenBrainzClient) -> None:
     """A second call inside the week makes no request, after it the list is asked for again."""
     get = answer_listenbrainz(client.mass)
-    now = time.time()
 
-    first = await client.get_top_recordings(RADIOHEAD_MBID)
     with patch(CACHE_CLOCK) as clock:
-        clock.time.return_value = now + WEEK - 60
+        clock.time.return_value = NOW
+        first = await client.get_top_recordings(RADIOHEAD_MBID)
+        clock.time.return_value = NOW + WEEK
         kept = await client.get_top_recordings(RADIOHEAD_MBID)
         assert get.call_count == 1
-        clock.time.return_value = now + WEEK + 60
+        clock.time.return_value = NOW + WEEK + 1
         await client.get_top_recordings(RADIOHEAD_MBID)
 
     assert get.call_count == 2
@@ -172,19 +176,17 @@ async def test_401_is_no_list_kept_for_a_day(client: ListenBrainzClient) -> None
         status=401,
         body={"code": 401, "error": "you need to provide an Auth token for this endpoint."},
     )
-    now = time.time()
 
-    top = await client.get_top_recordings(RADIOHEAD_MBID)
-
-    assert top.recordings == []
     with patch(CACHE_CLOCK) as clock:
-        clock.time.return_value = now + DAY - 60
+        clock.time.return_value = NOW
+        assert (await client.get_top_recordings(RADIOHEAD_MBID)).recordings == []
+        clock.time.return_value = NOW + DAY
         assert (await client.get_top_recordings(RADIOHEAD_MBID)).recordings == []
         assert get.call_count == 1
         # an artist ListenBrainz does not know answers the same 401, the others are asked
         await client.get_top_recordings(OTHER_ARTIST_MBID)
         assert get.call_count == 2
-        clock.time.return_value = now + DAY + 60
+        clock.time.return_value = NOW + DAY + 1
         await client.get_top_recordings(RADIOHEAD_MBID)
     assert get.call_count == 3
 
@@ -195,36 +197,42 @@ async def test_rate_limit_is_not_retried_and_holds_back_the_next_call(
     """A 429 is not retried; the wait ListenBrainz asks for holds back the next call."""
     get = answer_listenbrainz(client.mass, status=429, headers={"X-RateLimit-Reset-In": "9"})
 
-    with pytest.raises(RetriesExhausted):
-        await client.get_top_recordings(RADIOHEAD_MBID)
+    with patch(THROTTLER_CLOCK) as clock:
+        clock.monotonic.return_value = NOW
+        with pytest.raises(RetriesExhausted):
+            await client.get_top_recordings(RADIOHEAD_MBID)
+        assert client.throttler.cooldown_remaining == 9
 
     assert get.call_count == 1
-    assert 8 < client.throttler.cooldown_remaining <= 9
 
 
 async def test_long_rate_limit_sends_nothing_until_it_is_over(client: ListenBrainzClient) -> None:
     """While ListenBrainz asks for a long wait, a call fails at once and sends nothing."""
     get = answer_listenbrainz(client.mass, status=429, headers={"X-RateLimit-Reset-In": "120"})
 
-    for _ in range(2):
-        with pytest.raises(RetriesExhausted):
-            await client.get_top_recordings(RADIOHEAD_MBID)
+    with patch(THROTTLER_CLOCK) as clock:
+        clock.monotonic.return_value = NOW
+        for _ in range(2):
+            with pytest.raises(RetriesExhausted):
+                await client.get_top_recordings(RADIOHEAD_MBID)
+        assert client.throttler.cooldown_remaining == 120
 
     assert get.call_count == 1
-    assert 118 < client.throttler.cooldown_remaining <= 120
 
 
 async def test_calls_at_the_same_moment_share_one_request(client: ListenBrainzClient) -> None:
     """Two users opening the artist at once cost one request; one of them gets it as fetched."""
     get, released = _answer_when_released(client)
 
-    with user_auth_context(USER_A):
-        first = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
-    with user_auth_context(USER_B):
-        second = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
-    await _until(lambda: get.call_count == 1)
-    released.set()
-    tops = [await first, await second]
+    with patch.object(client.mass, "create_task", wraps=client.mass.create_task) as fills:
+        with user_auth_context(USER_A):
+            first = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
+        with user_auth_context(USER_B):
+            second = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
+        # both calls ask for the fill while its request is still out
+        await _wait_for(lambda: fills.call_count == 2 and get.called)
+        released.set()
+        tops = [await first, await second]
     third = await client.get_top_recordings(RADIOHEAD_MBID)
 
     assert get.call_count == 1
@@ -232,8 +240,7 @@ async def test_calls_at_the_same_moment_share_one_request(client: ListenBrainzCl
     assert tops[0].recordings == tops[1].recordings == third.recordings
     assert not third.fetched
     # nothing is left behind for the artist
-    await asyncio.sleep(0)
-    assert not [task_id for task_id in client.mass._tracked_tasks if "listenbrainz" in task_id]
+    await _wait_for(lambda: not _fill_running(client))
 
 
 async def test_cancelled_caller_leaves_the_shared_request_to_the_other(
@@ -242,12 +249,13 @@ async def test_cancelled_caller_leaves_the_shared_request_to_the_other(
     """A caller that gives up neither cancels the request nor fails the call that joined it."""
     get, released = _answer_when_released(client)
 
-    first = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
-    second = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
-    await _until(lambda: get.call_count == 1)
-    first.cancel()
-    released.set()
-    top = await second
+    with patch.object(client.mass, "create_task", wraps=client.mass.create_task) as fills:
+        first = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
+        second = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
+        await _wait_for(lambda: fills.call_count == 2 and get.called)
+        first.cancel()
+        released.set()
+        top = await second
 
     with pytest.raises(asyncio.CancelledError):
         await first
@@ -263,7 +271,7 @@ async def test_call_that_missed_the_list_as_it_was_kept_makes_no_request(
     get, released = _answer_when_released(client)
     cache_get = client.mass.cache.get
     first = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
-    await _until(lambda: get.call_count == 1)
+    await _wait_for(lambda: get.call_count == 1)
     looks = 0
 
     async def look_late(key: str, **kwargs: Any) -> Any:
@@ -274,7 +282,7 @@ async def test_call_that_missed_the_list_as_it_was_kept_makes_no_request(
             # the first call's fetch keeps the list and lets go of the artist meanwhile
             released.set()
             await first
-            await asyncio.sleep(0)
+            await _wait_for(lambda: not _fill_running(client))
         return kept
 
     with patch.object(client.mass.cache, "get", AsyncMock(side_effect=look_late)):
@@ -287,10 +295,8 @@ async def test_call_that_missed_the_list_as_it_was_kept_makes_no_request(
 
 async def test_stalled_answer_is_given_up_on(client: ListenBrainzClient) -> None:
     """An answer that does not come within the timeout fails the call and keeps nothing."""
-    requests: list[web.Request] = []
 
-    async def stall(request: web.Request) -> web.Response:
-        requests.append(request)
+    async def stall(_request: web.Request) -> web.Response:
         await asyncio.sleep(10)
         return web.json_response([])
 
@@ -302,12 +308,10 @@ async def test_stalled_answer_is_given_up_on(client: ListenBrainzClient) -> None
             patch(f"{CLIENT}.LB_BASE_URL", str(server.make_url("/1"))),
             patch(f"{CLIENT}.REQUEST_TIMEOUT", ClientTimeout(total=0.2)),
         ):
+            # a kept outcome would answer the second call without asking again
             for _ in range(2):
                 with pytest.raises(TimeoutError):
                     await client.get_top_recordings(RADIOHEAD_MBID)
-
-    # nothing is kept, so the second call asked again
-    assert len(requests) == 2
 
 
 async def test_failure_is_not_kept(client: ListenBrainzClient) -> None:
@@ -342,10 +346,18 @@ def _answer_when_released(client: ListenBrainzClient) -> tuple[MagicMock, asynci
     return get, released
 
 
-async def _until(condition: Callable[[], bool]) -> None:
-    """Let the event loop run until the condition holds."""
-    for _ in range(100):
-        if condition():
-            return
-        await asyncio.sleep(0)
-    raise AssertionError("condition never held")
+def _fill_running(client: ListenBrainzClient) -> bool:
+    """Return whether a fill of the client's cache is still tracked."""
+    return any("listenbrainz" in task_id for task_id in client.mass._tracked_tasks)
+
+
+async def _wait_for(condition: Callable[[], bool]) -> None:
+    """
+    Wait until the condition holds.
+
+    The code under test reaches it through the cache, whose queries run on a thread of their
+    own, so this waits in real time, up to DEADLINE seconds.
+    """
+    async with asyncio.timeout(DEADLINE):
+        while not condition():
+            await asyncio.sleep(0.001)
