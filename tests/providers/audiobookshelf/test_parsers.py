@@ -6,8 +6,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 from aioaudiobookshelf.schema.author import Author, AuthorExpanded
+from aioaudiobookshelf.schema.media_progress import MediaProgress
 from aioaudiobookshelf.schema.podcast import PodcastEpisodeExpanded
 
+from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_audiobook,
     parse_author,
@@ -24,14 +26,36 @@ BASE_URL = "http://abs.local"
 INSTANCE_ID = "audiobookshelf--test123"
 
 
-def _parse_book(book: LibraryItemExpandedBook) -> Audiobook:
+def _parse_book(
+    book: LibraryItemExpandedBook, media_progress: MediaProgress | None = None
+) -> Audiobook:
     return parse_audiobook(
         abs_audiobook=book,
         instance_id=INSTANCE_ID,
         domain="audiobookshelf",
         base_url=BASE_URL,
         audiobook_narrators=set(),
+        media_progress=media_progress,
     )
+
+
+def test_audiobook_progress_carries_its_abs_time() -> None:
+    """The progress keeps when abs last changed it, so core can compare it with the playlog."""
+    progress = MediaProgress(
+        id_="progress1",
+        library_item_id="book1",
+        duration=3600,
+        current_time=600,
+        is_finished=False,
+        hide_from_continue_listening=False,
+        last_update=1_700_000_000_000,
+        started_at=100,
+    )
+
+    book = _parse_book(expanded_book(), progress)
+
+    assert book.resume_position_ms == 600_000
+    assert book.resume_position_timestamp == from_utc_timestamp(1_700_000_000)
 
 
 @pytest.mark.parametrize(

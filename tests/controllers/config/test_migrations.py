@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 from music_assistant_models.errors import InvalidDataError
 
@@ -13,31 +11,28 @@ from music_assistant.constants import (
     CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
-    CONF_NFS_SUBFOLDER_MIGRATED,
-    CONF_SERVER_ID,
+    CONF_PLAYER_SPLIT_SESSION_ONLY,
+    CONF_PLAYER_SPLIT_TREE,
     ENCRYPT_SUFFIX,
 )
-from music_assistant.controllers.config.controller import ConfigController
 from music_assistant.controllers.config.migrations import (
     PROVIDER_SETUP_FLOW_DEFAULTS,
     PROVIDER_SETUP_FLOW_KEYS,
     _migrate_airplay_apple_power_control,
-    _migrate_airplay_receiver_ghost_players,
     _migrate_apple_music_sync_schedule,
+    _migrate_artist_catalogue_selection,
     _migrate_bluesound_http_profile,
     _migrate_bose_soundtouch_presets,
+    _migrate_drop_http_profile,
     _migrate_emby_album_artists_heal,
+    _migrate_milkdrop_drop_color_tint,
     _migrate_nicovideo_drop_mail_login,
-    _migrate_orphaned_disabled_protocol_configs,
-    _migrate_output_limiter,
     _migrate_player_icons,
     _migrate_player_setup_data,
     _migrate_raumfeld_icy_basic,
     _migrate_unrenamed_player_names,
     migrate,
     migrate_connected_player_plugins,
-    migrate_hass_engine_selection,
-    migrate_nfs_subfolder_into_export_path,
     migrate_provider_setup_data,
 )
 
@@ -57,27 +52,6 @@ def _fake_decrypt(value: str) -> str:
     return value.removeprefix(ENCRYPT_SUFFIX)
 
 
-def test_migrate_output_limiter_drops_stored_values() -> None:
-    """The removed output limiter setting is dropped, other player values are kept."""
-    data: dict[str, Any] = {
-        "players": {
-            "p1": {"player_id": "p1", "values": {"output_limiter": False, "flow_mode": True}},
-            "p2": {"player_id": "p2", "values": {"output_limiter": True}},
-            "p3": {"player_id": "p3", "values": {}},
-        }
-    }
-    assert _migrate_output_limiter(data) is True
-    assert data["players"]["p1"]["values"] == {"flow_mode": True}
-    assert data["players"]["p2"]["values"] == {}
-    assert data["players"]["p3"]["values"] == {}
-
-
-def test_migrate_output_limiter_noop_when_absent() -> None:
-    """Migration reports no change when no player stored the setting."""
-    data: dict[str, Any] = {"players": {"p1": {"player_id": "p1", "values": {"flow_mode": True}}}}
-    assert _migrate_output_limiter(data) is False
-
-
 def test_migrate_bluesound_http_profile_drops_stored_pick() -> None:
     """A Bluesound player left on another HTTP profile is returned to the required one."""
     data: dict[str, Any] = {
@@ -93,7 +67,7 @@ def test_migrate_bluesound_http_profile_drops_stored_pick() -> None:
     assert _migrate_bluesound_http_profile(data) is True
     assert data["players"]["b1"]["values"] == {"flow_mode": True}
     assert data["players"]["b2"]["values"] == {}
-    # other providers still offer the setting, so their pick is left alone
+    # other providers are left to the step that drops the setting everywhere
     assert data["players"]["c1"]["values"] == {"http_profile": "chunked"}
 
 
@@ -113,213 +87,164 @@ def test_migrate_bluesound_http_profile_noop_when_already_required() -> None:
     assert _migrate_bluesound_http_profile(data) is False
 
 
-def _airplay_receiver_ghost_data() -> dict[str, Any]:
-    """Build a config store with AirPlay Receiver ghost players next to real players."""
-    return {
-        "providers": {
-            "airplay_receiver--abc1": {
-                "domain": "airplay_receiver",
-                "instance_id": "airplay_receiver--abc1",
-                "values": {"airplay_name": "Garage [AirPlay]"},
-            },
-            "airplay": {"domain": "airplay", "instance_id": "airplay", "values": {}},
-        },
+def test_migrate_drop_http_profile_drops_every_stored_value() -> None:
+    """The HTTP profile is dropped from every player, protocol players included."""
+    data: dict[str, Any] = {
         "players": {
-            # ghosts of the receiver: airplay player + sendspin bridge + universal wrapper
-            "ap41cf0e23916f": {
-                "player_id": "ap41cf0e23916f",
-                "provider": "airplay",
-                "default_name": "Garage [AirPlay]",
-                "values": {},
+            "sonos_1": {
+                "provider": "sonos",
+                "values": {
+                    "http_profile": "chunked",
+                    "dlna_1||protocol||http_profile": "forced_content_length",
+                    "dlna_1||protocol||flow_mode": True,
+                    "output_codec": "mp3",
+                },
             },
-            "spb_41cf0e23916f": {
-                "player_id": "spb_41cf0e23916f",
-                "provider": "sendspin",
-                "default_name": "Garage [AirPlay] (AirPlay)",
-                "values": {},
+            "dlna_1": {
+                "provider": "dlna",
+                "player_type": "protocol",
+                "values": {"http_profile": "forced_content_length", "flow_mode": True},
             },
-            "up41cf0e23916f": {
-                "player_id": "up41cf0e23916f",
-                "provider": "universal_player",
-                "default_name": "Garage [AirPlay]",
-                "values": {"linked_protocol_ids": ["ap41cf0e23916f", "spb_41cf0e23916f"]},
-            },
-            # a real airplay player with another name must be kept
-            "apaabbccddeeff": {
-                "player_id": "apaabbccddeeff",
-                "provider": "airplay",
-                "default_name": "Kitchen",
-                "values": {},
-            },
-            # a universal player with a matching name wrapping a native (non-ghost)
-            # protocol player must be kept
-            "up10b41dc887f8": {
-                "player_id": "up10b41dc887f8",
-                "provider": "universal_player",
-                "default_name": "Garage [AirPlay]",
-                "values": {"linked_protocol_ids": ["10:B4:1D:C8:87:F8", "spb_10b41dc887f8"]},
-            },
-            # a group referencing a ghost keeps its other members
-            "syncgroup1": {
-                "player_id": "syncgroup1",
-                "provider": "sync_group",
-                "default_name": "All Speakers",
-                "values": {"group_members": ["up41cf0e23916f", "apaabbccddeeff"]},
-            },
-        },
-        "player_queues": {"up41cf0e23916f": {"queue_id": "up41cf0e23916f"}},
-        "player_dsp": {"up41cf0e23916f": {"enabled": True}},
+            "cast_1": {"provider": "chromecast", "values": {"http_profile": "chunked"}},
+            "ap_1": {"provider": "airplay", "values": {"output_codec": "flac"}},
+        }
     }
-
-
-def test_migrate_airplay_receiver_ghosts_removes_matching_players() -> None:
-    """Ghost ap/spb/up players of an own receiver are removed with their leftover state."""
-    data = _airplay_receiver_ghost_data()
-
-    assert _migrate_airplay_receiver_ghost_players(data) is True
-
     players = data["players"]
-    assert "ap41cf0e23916f" not in players
-    assert "spb_41cf0e23916f" not in players
-    assert "up41cf0e23916f" not in players
-    # real players survive, including the same-name wrapper of a native player
-    assert "apaabbccddeeff" in players
-    assert "up10b41dc887f8" in players
-    # ghost references are stripped from group membership and per-player state trees
-    assert players["syncgroup1"]["values"]["group_members"] == ["apaabbccddeeff"]
-    assert data["player_queues"] == {}
-    assert data["player_dsp"] == {}
 
-
-def test_migrate_airplay_receiver_ghosts_uses_default_name() -> None:
-    """A receiver without an explicit airplay_name matches ghosts of the default name."""
-    data: dict[str, Any] = {
-        "providers": {
-            "airplay_receiver--abc1": {
-                "domain": "airplay_receiver",
-                "instance_id": "airplay_receiver--abc1",
-                "values": {},
-            },
-        },
-        "players": {
-            "apdb1ff0aae80e": {
-                "player_id": "apdb1ff0aae80e",
-                "provider": "airplay",
-                "default_name": "Music Assistant",
-                "values": {},
-            },
-        },
+    assert _migrate_drop_http_profile(data) is True
+    assert players["sonos_1"]["values"] == {
+        "dlna_1||protocol||flow_mode": True,
+        "output_codec": "mp3",
     }
+    assert players["dlna_1"]["values"] == {"flow_mode": True}
+    assert players["cast_1"]["values"] == {}
+    assert players["ap_1"]["values"] == {"output_codec": "flac"}
 
-    assert _migrate_airplay_receiver_ghost_players(data) is True
-    assert data["players"] == {}
 
-
-def test_migrate_airplay_receiver_ghosts_ignores_setup_flow_instances() -> None:
-    """Setup-flow receivers are skipped because they cannot have produced legacy ghosts."""
+async def test_migrate_drop_http_profile_idempotent() -> None:
+    """The settings migration drops the HTTP profile once and reports no change after."""
     data: dict[str, Any] = {
-        "providers": {
-            "airplay_receiver--abc1": {
-                "domain": "airplay_receiver",
-                "instance_id": "airplay_receiver--abc1",
-                "values": {},
-                "setup_data": {"airplay_name": ENCRYPT_SUFFIX + "Garage [AirPlay]"},
-            },
-        },
-        "players": {
-            "apdb1ff0aae80e": {
-                "player_id": "apdb1ff0aae80e",
-                "provider": "airplay",
-                "default_name": "Music Assistant",
-                "values": {},
-            },
-        },
+        "players": {"dlna_1": {"provider": "dlna", "values": {"http_profile": "chunked"}}}
     }
+    assert await migrate(data) is True
+    assert await migrate(data) is False
+    assert data["players"]["dlna_1"]["values"] == {}
+    # the split gave the value to the record of the player's own protocol, where it is gone too
+    assert data["player_protocols"]["dlna_1"]["values"] == {}
 
-    assert _migrate_airplay_receiver_ghost_players(data) is False
-    assert "apdb1ff0aae80e" in data["players"]
 
-
-def test_migrate_airplay_receiver_ghosts_keeps_same_name_wrapper_without_ghost_links() -> None:
-    """A wrapper sharing the receiver name is kept unless it links only ghost endpoints."""
+async def test_migrate_drops_the_http_profile_of_a_config_from_before_the_split() -> None:
+    """A config from before the split keeps no HTTP profile in any record the split makes."""
     data: dict[str, Any] = {
-        "providers": {
-            "airplay_receiver--abc1": {
-                "domain": "airplay_receiver",
-                "instance_id": "airplay_receiver--abc1",
-                "values": {"airplay_name": "Garage [AirPlay]"},
-            },
-        },
         "players": {
-            # empty linked list: must NOT be deleted (all([]) is True)
-            "upemptylinks": {
-                "player_id": "upemptylinks",
+            # a player with the copy it held of its protocol player's value
+            "sonos_1": {
+                "provider": "sonos",
+                "player_type": "player",
+                "values": {
+                    "http_profile": "chunked",
+                    "dlna_1||protocol||http_profile": "forced_content_length",
+                    "output_codec": "mp3",
+                },
+            },
+            "dlna_1": {
+                "provider": "dlna",
+                "player_type": "protocol",
+                "values": {
+                    "protocol_parent_id": "sonos_1",
+                    "http_profile": "forced_content_length",
+                    "flow_mode": True,
+                },
+            },
+            # a universal player, whose values stay on the record of its player
+            "up_cast": {
                 "provider": "universal_player",
-                "default_name": "Garage [AirPlay]",
-                "values": {"linked_protocol_ids": []},
+                "player_type": "player",
+                "values": {
+                    "linked_protocol_ids": ["cast_1"],
+                    "cast_1||protocol||http_profile": "chunked",
+                    "cast_1||protocol||output_codec": "flac",
+                },
             },
-            # no linked_protocol_ids at all: must NOT be deleted
-            "upnolinks": {
-                "player_id": "upnolinks",
-                "provider": "universal_player",
-                "default_name": "Garage [AirPlay]",
-                "values": {},
+            "cast_1": {
+                "provider": "chromecast",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "up_cast", "http_profile": "chunked"},
             },
-            # links a native (non-ghost) protocol player: must NOT be deleted
-            "upnative": {
-                "player_id": "upnative",
-                "provider": "universal_player",
-                "default_name": "Garage [AirPlay]",
-                "values": {"linked_protocol_ids": ["spb_10b41dc887f8"]},
-            },
-        },
+        }
     }
 
-    assert _migrate_airplay_receiver_ghost_players(data) is False
-    assert set(data["players"]) == {"upemptylinks", "upnolinks", "upnative"}
+    assert await migrate(data) is True
+
+    records = [*data["players"].values(), *data["player_protocols"].values()]
+    assert not [key for record in records for key in record["values"] if "http_profile" in key]
+    assert data["player_protocols"]["sonos_1"]["values"] == {"output_codec": "mp3"}
+    assert data["player_protocols"]["dlna_1"]["values"] == {"flow_mode": True}
+    assert data["player_protocols"]["cast_1"]["values"] == {}
+    assert data["players"]["up_cast"]["values"] == {"cast_1||protocol||output_codec": "flac"}
+    assert await migrate(data) is False
 
 
-def test_migrate_airplay_receiver_ghosts_ignores_disabled_receiver() -> None:
-    """A disabled receiver's name is not used, so same-named players are kept."""
+async def test_migrate_drops_the_http_profile_of_a_split_config() -> None:
+    """A config split before this step existed loses the HTTP profile its protocols hold."""
     data: dict[str, Any] = {
-        "providers": {
-            "airplay_receiver--abc1": {
-                "domain": "airplay_receiver",
-                "instance_id": "airplay_receiver--abc1",
-                "enabled": False,
-                "values": {"airplay_name": "Garage [AirPlay]"},
-            },
-        },
+        CONF_PLAYER_SPLIT_SESSION_ONLY: True,
+        CONF_PLAYER_SPLIT_TREE: True,
         "players": {
-            "ap41cf0e23916f": {
-                "player_id": "ap41cf0e23916f",
-                "provider": "airplay",
-                "default_name": "Garage [AirPlay]",
-                "values": {},
-            },
+            "pl_a": {"player_id": "pl_a", "provider": "dlna", "values": {"hide_in_ui": True}}
+        },
+        "player_protocols": {
+            "dlna_a": {
+                "protocol_id": "dlna_a",
+                "provider": "dlna",
+                "player_id": "pl_a",
+                "role": "native",
+                "enabled": True,
+                "values": {"http_profile": "chunked", "flow_mode": True},
+            }
         },
     }
 
-    assert _migrate_airplay_receiver_ghost_players(data) is False
-    assert "ap41cf0e23916f" in data["players"]
+    assert await migrate(data) is True
+
+    assert data["player_protocols"]["dlna_a"]["values"] == {"flow_mode": True}
+    assert data["players"]["pl_a"]["values"] == {"hide_in_ui": True}
+    assert await migrate(data) is False
 
 
-def test_migrate_airplay_receiver_ghosts_noop_without_receivers() -> None:
-    """Without configured receiver instances no player config is touched."""
+def test_migrate_drop_http_profile_tolerates_malformed_protocol_records() -> None:
+    """Missing or non-dict protocol records and values are skipped without raising."""
+    assert _migrate_drop_http_profile({"player_protocols": "broken"}) is False
     data: dict[str, Any] = {
-        "providers": {"airplay": {"domain": "airplay", "instance_id": "airplay", "values": {}}},
-        "players": {
-            "apdb1ff0aae80e": {
-                "player_id": "apdb1ff0aae80e",
-                "provider": "airplay",
-                "default_name": "Music Assistant",
-                "values": {},
-            },
-        },
+        "player_protocols": {
+            "a": "broken",
+            "b": {"provider": "dlna"},
+            "c": {"provider": "dlna", "values": None},
+            "d": {"provider": "dlna", "values": {"http_profile": None}},
+        }
     }
+    assert _migrate_drop_http_profile(data) is True
+    assert data["player_protocols"]["a"] == "broken"
+    assert "values" not in data["player_protocols"]["b"]
+    assert data["player_protocols"]["d"]["values"] == {}
 
-    assert _migrate_airplay_receiver_ghost_players(data) is False
-    assert "apdb1ff0aae80e" in data["players"]
+
+def test_migrate_drop_http_profile_tolerates_malformed_data() -> None:
+    """Missing or non-dict player configs and values are skipped without raising."""
+    assert _migrate_drop_http_profile({}) is False
+    assert _migrate_drop_http_profile({"players": "broken"}) is False
+    data: dict[str, Any] = {
+        "players": {
+            "p1": "broken",
+            "p2": {"provider": "dlna"},
+            "p3": {"provider": "dlna", "values": None},
+            "p4": {"provider": "dlna", "values": {"http_profile": None}},
+        }
+    }
+    assert _migrate_drop_http_profile(data) is True
+    assert data["players"]["p1"] == "broken"
+    assert "values" not in data["players"]["p2"]
+    assert data["players"]["p4"]["values"] == {}
 
 
 def test_migrate_airplay_apple_power_control_flips_stale_default() -> None:
@@ -862,203 +787,6 @@ def test_migrate_bose_soundtouch_presets_noop_when_absent() -> None:
     assert _migrate_bose_soundtouch_presets(data) is False
 
 
-def test_migrate_nfs_subfolder_folds_into_export_path() -> None:
-    """The subfolder is appended to the export path and the now-obsolete key is dropped."""
-    data: dict[str, Any] = {
-        "providers": {
-            "filesystem_nfs--1": {
-                "domain": "filesystem_nfs",
-                "setup_data": {
-                    "host": ENCRYPT_SUFFIX + "nas.local",
-                    "export_path": ENCRYPT_SUFFIX + "/mnt/vault",
-                    "subfolder": ENCRYPT_SUFFIX + "Music",
-                    "nfs_version": ENCRYPT_SUFFIX + "3",
-                },
-                "values": {"sync_tracks": True},
-            }
-        }
-    }
-
-    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is True
-
-    setup_data = data["providers"]["filesystem_nfs--1"]["setup_data"]
-    assert setup_data["export_path"] == ENCRYPT_SUFFIX + "/mnt/vault/Music"
-    assert "subfolder" not in setup_data
-    assert setup_data["host"] == ENCRYPT_SUFFIX + "nas.local"
-    assert setup_data["nfs_version"] == ENCRYPT_SUFFIX + "3"
-    assert data["providers"]["filesystem_nfs--1"]["values"] == {"sync_tracks": True}
-    # the marker stops a second pass
-    assert data[CONF_NFS_SUBFOLDER_MIGRATED] is True
-    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is False
-    assert setup_data["export_path"] == ENCRYPT_SUFFIX + "/mnt/vault/Music"
-
-
-def test_migrate_nfs_subfolder_normalizes_leading_slash_and_nesting() -> None:
-    """A leading slash is tolerated and a nested subfolder keeps its full depth."""
-    data: dict[str, Any] = {
-        "providers": {
-            "rooted": {
-                "domain": "filesystem_nfs",
-                "setup_data": {
-                    "export_path": ENCRYPT_SUFFIX + "/volume1",
-                    "subfolder": ENCRYPT_SUFFIX + "/music",
-                },
-            },
-            "nested": {
-                "domain": "filesystem_nfs",
-                "setup_data": {
-                    "export_path": ENCRYPT_SUFFIX + "/exports/media/",
-                    "subfolder": ENCRYPT_SUFFIX + " albums/A-K ",
-                },
-            },
-        }
-    }
-
-    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is True
-
-    providers = data["providers"]
-    assert providers["rooted"]["setup_data"]["export_path"] == ENCRYPT_SUFFIX + "/volume1/music"
-    assert (
-        providers["nested"]["setup_data"]["export_path"]
-        == ENCRYPT_SUFFIX + "/exports/media/albums/A-K"
-    )
-
-
-def test_migrate_nfs_subfolder_noop_cases() -> None:
-    """Instances without a usable subfolder, and other providers, are left untouched."""
-    data: dict[str, Any] = {
-        "providers": {
-            "empty_subfolder": {
-                "domain": "filesystem_nfs",
-                "setup_data": {
-                    "export_path": ENCRYPT_SUFFIX + "/mnt/vault",
-                    "subfolder": ENCRYPT_SUFFIX + "",
-                },
-            },
-            "no_subfolder_key": {
-                "domain": "filesystem_nfs",
-                "setup_data": {"export_path": ENCRYPT_SUFFIX + "/mnt/vault"},
-            },
-            "no_export_path": {
-                "domain": "filesystem_nfs",
-                "setup_data": {"subfolder": ENCRYPT_SUFFIX + "Music"},
-            },
-            "smb": {
-                "domain": "filesystem_smb",
-                "setup_data": {
-                    "share": ENCRYPT_SUFFIX + "media",
-                    "subfolder": ENCRYPT_SUFFIX + "Music",
-                },
-            },
-        }
-    }
-    providers_before = deepcopy(data["providers"])
-
-    # only the one-shot marker is written; no provider config is touched
-    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is True
-    assert data["providers"] == providers_before
-    assert data[CONF_NFS_SUBFOLDER_MIGRATED] is True
-
-
-def test_migrate_nfs_subfolder_never_folds_a_post_fix_config() -> None:
-    """A subfolder stored after the marker is set is never folded, however often this runs."""
-    data: dict[str, Any] = {
-        CONF_NFS_SUBFOLDER_MIGRATED: True,
-        "providers": {
-            "filesystem_nfs--1": {
-                "domain": "filesystem_nfs",
-                "setup_data": {
-                    "export_path": ENCRYPT_SUFFIX + "/mnt/vault",
-                    "subfolder": ENCRYPT_SUFFIX + "Music",
-                },
-            }
-        },
-    }
-    before = deepcopy(data)
-
-    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is False
-    assert data == before
-
-
-def test_migrate_nfs_subfolder_handles_plaintext_values() -> None:
-    """A value that was never encrypted at rest folds just the same."""
-    data: dict[str, Any] = {
-        "providers": {
-            "filesystem_nfs--1": {
-                "domain": "filesystem_nfs",
-                "setup_data": {"export_path": "/mnt/vault", "subfolder": "Music"},
-            }
-        }
-    }
-
-    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is True
-    assert (
-        data["providers"]["filesystem_nfs--1"]["setup_data"]["export_path"]
-        == ENCRYPT_SUFFIX + "/mnt/vault/Music"
-    )
-
-
-def test_migrate_nfs_subfolder_skips_an_undecryptable_instance() -> None:
-    """An unreadable value costs that instance its migration, not the server its startup."""
-
-    def _failing_decrypt(_value: str) -> str:
-        raise InvalidDataError("Password decryption failed")
-
-    data: dict[str, Any] = {
-        "providers": {
-            "broken": {
-                "domain": "filesystem_nfs",
-                "setup_data": {
-                    "export_path": ENCRYPT_SUFFIX + "unreadable",
-                    "subfolder": ENCRYPT_SUFFIX + "unreadable",
-                },
-            }
-        }
-    }
-
-    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _failing_decrypt) is True
-
-    # left as it was, but the marker is still claimed
-    assert data["providers"]["broken"]["setup_data"] == {
-        "export_path": ENCRYPT_SUFFIX + "unreadable",
-        "subfolder": ENCRYPT_SUFFIX + "unreadable",
-    }
-    assert data[CONF_NFS_SUBFOLDER_MIGRATED] is True
-
-
-def test_migrate_nfs_subfolder_round_trips_through_real_encryption(tmp_path: Path) -> None:
-    """The folded export path is re-encrypted with the live key, so a migrated config loads."""
-    mass = SimpleNamespace(storage_path=str(tmp_path))
-    controller = ConfigController(mass)  # type: ignore[arg-type]
-    controller.initialized = True
-    controller.save = lambda **_kwargs: None  # type: ignore[method-assign]
-    controller.set(CONF_SERVER_ID, uuid4().hex)
-    controller._init_encryption()
-
-    data: dict[str, Any] = {
-        "providers": {
-            "filesystem_nfs--1": {
-                "domain": "filesystem_nfs",
-                "setup_data": {
-                    "export_path": controller.encrypt_string("/mnt/vault"),
-                    "subfolder": controller.encrypt_string("Music"),
-                },
-            }
-        }
-    }
-
-    assert (
-        migrate_nfs_subfolder_into_export_path(
-            data, controller.encrypt_string, controller.decrypt_string
-        )
-        is True
-    )
-
-    stored = data["providers"]["filesystem_nfs--1"]["setup_data"]["export_path"]
-    assert stored.startswith(ENCRYPT_SUFFIX)
-    assert controller.decrypt_string(stored) == "/mnt/vault/Music"
-
-
 def _connected_plugins_data() -> dict[str, Any]:
     """Build a config store with legacy per-instance spotify_connect configurations."""
     return {
@@ -1170,10 +898,15 @@ def test_migrate_connected_player_plugins_all_disabled_stays_disabled(tmp_path: 
     assert survivor["values"]["connected_players"] == []
 
 
-def test_migrate_connected_player_plugins_drops_auto_and_unknown_players(
+def test_migrate_connected_player_plugins_drops_auto_and_keeps_unstored_players(
     tmp_path: Path,
 ) -> None:
-    """The removed automatic selection and vanished players contribute nothing."""
+    """
+    The removed automatic selection contributes nothing, every configured player carries over.
+
+    Also one without a stored config: a player that only exists while its device is
+    connected has none.
+    """
     data: dict[str, Any] = {
         "providers": {
             "airplay_receiver--1": {
@@ -1185,7 +918,7 @@ def test_migrate_connected_player_plugins_drops_auto_and_unknown_players(
                 "domain": "airplay_receiver",
                 "instance_id": "airplay_receiver--2",
                 "setup_data": {
-                    "mass_player_id": ENCRYPT_SUFFIX + "vanished",
+                    "mass_player_id": ENCRYPT_SUFFIX + "web_player",
                     "airplay_name": ENCRYPT_SUFFIX + "Garage [AirPlay]",
                 },
             },
@@ -1203,9 +936,9 @@ def test_migrate_connected_player_plugins_drops_auto_and_unknown_players(
     providers = data["providers"]
     assert set(providers) == {"airplay_receiver"}
     survivor = providers["airplay_receiver"]
-    # the first instance survives; only the still-existing explicit player carries over
+    # the first instance survives; the explicitly configured players carry over
     assert survivor["instance_id"] == "airplay_receiver"
-    assert survivor["values"]["connected_players"] == ["office"]
+    assert survivor["values"]["connected_players"] == ["web_player", "office"]
     assert survivor["setup_data"] == {}
 
 
@@ -1306,7 +1039,7 @@ def test_migrate_connected_player_plugins_sanitizes_player_id_in_data_path(
 
 
 def test_migrate_connected_player_plugins_mandatory_player_cleanup(tmp_path: Path) -> None:
-    """AriaCast/Ynison auto or vanished players are cleared, valid ones kept, names dropped."""
+    """AriaCast/Ynison: the automatic selection is cleared, a player kept, names dropped."""
     data: dict[str, Any] = {
         "providers": {
             "ariacast_receiver": {
@@ -1321,7 +1054,7 @@ def test_migrate_connected_player_plugins_mandatory_player_cleanup(tmp_path: Pat
                 "domain": "yandex_ynison",
                 "instance_id": "yandex_ynison--1",
                 "setup_data": {
-                    "mass_player_id": ENCRYPT_SUFFIX + "vanished",
+                    "mass_player_id": ENCRYPT_SUFFIX + "web_player",
                     "publish_name": ENCRYPT_SUFFIX + "Office Yandex",
                     "token": ENCRYPT_SUFFIX + "music-token",
                 },
@@ -1339,8 +1072,11 @@ def test_migrate_connected_player_plugins_mandatory_player_cleanup(tmp_path: Pat
 
     providers = data["providers"]
     assert providers["ariacast_receiver"]["setup_data"] == {}
-    # the vanished player is cleared, the unrelated auth values stay untouched
-    assert providers["yandex_ynison--1"]["setup_data"] == {"token": ENCRYPT_SUFFIX + "music-token"}
+    # a player without a stored config can be one that only exists while it is connected
+    assert providers["yandex_ynison--1"]["setup_data"] == {
+        "mass_player_id": ENCRYPT_SUFFIX + "web_player",
+        "token": ENCRYPT_SUFFIX + "music-token",
+    }
     assert providers["yandex_ynison--2"]["setup_data"] == {
         "mass_player_id": ENCRYPT_SUFFIX + "office"
     }
@@ -1352,148 +1088,6 @@ def test_migrate_connected_player_plugins_noop(tmp_path: Path) -> None:
     assert migrate_connected_player_plugins({}, _fake_decrypt, str(tmp_path)) is False
     data: dict[str, Any] = {"providers": {}}
     assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is False
-
-
-def test_airplay_ghost_cleanup_skips_collapsed_instance() -> None:
-    """The collapsed receiver instance is never treated as a legacy default-named one."""
-    data: dict[str, Any] = {
-        "providers": {
-            "airplay_receiver": {
-                "domain": "airplay_receiver",
-                "instance_id": "airplay_receiver",
-                "values": {"connected_players": []},
-                "setup_data": {},
-            }
-        },
-        "players": {
-            "aplegitimate": {
-                "player_id": "aplegitimate",
-                "provider": "airplay",
-                "default_name": "Music Assistant",
-                "values": {},
-            }
-        },
-    }
-
-    assert _migrate_airplay_receiver_ghost_players(data) is False
-    assert "aplegitimate" in data["players"]
-
-
-def _hass_engine_data(instance_id: str = "hass", **hass_values: Any) -> dict[str, Any]:
-    """Build a config store with a hass provider and all three engine consumers."""
-    return {
-        "providers": {
-            instance_id: {
-                "domain": "hass",
-                "instance_id": instance_id,
-                "values": {"verify_ssl": True, **hass_values},
-            },
-            "ai_radio": {"domain": "ai_radio", "instance_id": "ai_radio", "values": {}},
-            "music_quiz": {"domain": "music_quiz", "instance_id": "music_quiz", "values": {}},
-            "smart_playlist": {
-                "domain": "smart_playlist",
-                "instance_id": "smart_playlist",
-                "values": {},
-            },
-        }
-    }
-
-
-def test_migrate_hass_engine_selection_fans_out_to_all_consumers() -> None:
-    """Both stored entity ids become engine uids on every consumer, encrypted for ai_radio."""
-    data = _hass_engine_data(tts_entity="tts.piper", ai_task_entity="ai_task.google")
-    assert migrate_hass_engine_selection(data, _fake_encrypt) is True
-    prov = data["providers"]
-    assert prov["ai_radio"]["setup_data"] == {
-        "ai_engine": ENCRYPT_SUFFIX + "hass/ai_task.google",
-        "tts_engine": ENCRYPT_SUFFIX + "hass/tts.piper",
-    }
-    # the plain providers store their pick unencrypted in values
-    assert prov["music_quiz"]["values"] == {"ai_engine": "hass/ai_task.google"}
-    assert prov["smart_playlist"]["values"] == {"ai_engine": "hass/ai_task.google"}
-    # the dead keys are consumed, the hass config is otherwise untouched
-    assert prov["hass"]["values"] == {"verify_ssl": True}
-    # a second pass finds nothing left to migrate
-    assert migrate_hass_engine_selection(data, _fake_encrypt) is False
-
-
-def test_migrate_hass_engine_selection_uses_own_instance_id() -> None:
-    """The engine uid is built from the hass config's own instance id, not its domain."""
-    data = _hass_engine_data("hass--abc", ai_task_entity="ai_task.google")
-    assert migrate_hass_engine_selection(data, _fake_encrypt) is True
-    assert data["providers"]["music_quiz"]["values"] == {"ai_engine": "hass--abc/ai_task.google"}
-
-
-def test_migrate_hass_engine_selection_migrates_keys_independently() -> None:
-    """A single stored key migrates on its own; the other selection stays unset."""
-    data = _hass_engine_data(tts_entity="tts.piper")
-    assert migrate_hass_engine_selection(data, _fake_encrypt) is True
-    prov = data["providers"]
-    assert prov["ai_radio"]["setup_data"] == {"tts_engine": ENCRYPT_SUFFIX + "hass/tts.piper"}
-    assert prov["music_quiz"]["values"] == {}
-    assert prov["smart_playlist"]["values"] == {}
-    assert prov["hass"]["values"] == {"verify_ssl": True}
-
-
-def test_migrate_hass_engine_selection_without_consumers() -> None:
-    """The dead hass keys are dropped even when no consuming provider is installed."""
-    data: dict[str, Any] = {
-        "providers": {
-            "hass": {
-                "domain": "hass",
-                "instance_id": "hass",
-                "values": {"tts_entity": "tts.piper", "ai_task_entity": "ai_task.google"},
-            },
-            "music_quiz": {"domain": "music_quiz", "instance_id": "music_quiz", "values": {}},
-        }
-    }
-    assert migrate_hass_engine_selection(data, _fake_encrypt) is True
-    assert data["providers"]["hass"]["values"] == {}
-    assert data["providers"]["music_quiz"]["values"] == {"ai_engine": "hass/ai_task.google"}
-    assert migrate_hass_engine_selection(data, _fake_encrypt) is False
-
-
-def test_migrate_hass_engine_selection_preserves_existing_choice() -> None:
-    """A selection the user already made on a consumer is never overwritten."""
-    data = _hass_engine_data(tts_entity="tts.piper", ai_task_entity="ai_task.google")
-    prov = data["providers"]
-    prov["music_quiz"]["values"]["ai_engine"] = "openai/gpt"
-    prov["ai_radio"]["setup_data"] = {"tts_engine": ENCRYPT_SUFFIX + "elevenlabs/voice"}
-    assert migrate_hass_engine_selection(data, _fake_encrypt) is True
-    assert prov["music_quiz"]["values"] == {"ai_engine": "openai/gpt"}
-    assert prov["ai_radio"]["setup_data"] == {
-        "ai_engine": ENCRYPT_SUFFIX + "hass/ai_task.google",
-        "tts_engine": ENCRYPT_SUFFIX + "elevenlabs/voice",
-    }
-    # the consumer that had no choice yet still gets the migrated one
-    assert prov["smart_playlist"]["values"] == {"ai_engine": "hass/ai_task.google"}
-    assert prov["hass"]["values"] == {"verify_ssl": True}
-
-
-def test_migrate_hass_engine_selection_noop_without_stored_values() -> None:
-    """Nothing stored (or no hass provider at all) reports no change."""
-    assert migrate_hass_engine_selection({}, _fake_encrypt) is False
-    assert migrate_hass_engine_selection({"providers": {}}, _fake_encrypt) is False
-    data = _hass_engine_data()
-    assert migrate_hass_engine_selection(data, _fake_encrypt) is False
-    assert "setup_data" not in data["providers"]["ai_radio"]
-    assert data["providers"]["music_quiz"]["values"] == {}
-
-
-def test_migrate_hass_engine_selection_skips_multiple_hass_configs() -> None:
-    """With several hass configurations there is no correct winner, so nothing is touched."""
-    data = _hass_engine_data(tts_entity="tts.piper", ai_task_entity="ai_task.google")
-    data["providers"]["hass--second"] = {
-        "domain": "hass",
-        "instance_id": "hass--second",
-        "values": {"tts_entity": "tts.cloud"},
-    }
-    assert migrate_hass_engine_selection(data, _fake_encrypt) is False
-    prov = data["providers"]
-    assert prov["hass"]["values"]["tts_entity"] == "tts.piper"
-    assert prov["hass"]["values"]["ai_task_entity"] == "ai_task.google"
-    assert prov["music_quiz"]["values"] == {}
-    assert "setup_data" not in prov["ai_radio"]
 
 
 def test_migrate_player_icons_rewrites_legacy_values() -> None:
@@ -1575,95 +1169,6 @@ def test_migrate_player_icons_tolerates_malformed_data() -> None:
     assert _migrate_player_icons(data) is False
     assert data["players"]["p3"]["values"]["icon"] is None
     assert data["players"]["p4"]["values"]["icon"] == 123
-
-
-def _orphaned_protocol_data() -> dict[str, Any]:
-    """Build a config store with a disabled protocol player whose parent was removed."""
-    return {
-        "players": {
-            "spb_esp32": {
-                "player_id": "spb_esp32",
-                "provider": "sendspin",
-                "player_type": "protocol",
-                "enabled": False,
-                "values": {"protocol_parent_id": "up_esp32"},
-            },
-            "spb_kitchen": {
-                "player_id": "spb_kitchen",
-                "provider": "sendspin",
-                "player_type": "protocol",
-                "enabled": False,
-                "values": {"protocol_parent_id": "up_kitchen"},
-            },
-            # only the parent side of the link survived
-            "ap_office": {
-                "player_id": "ap_office",
-                "provider": "airplay",
-                "player_type": "protocol",
-                "enabled": False,
-                "values": {},
-            },
-            "cast_office": {
-                "player_id": "cast_office",
-                "provider": "chromecast",
-                "player_type": "player",
-                "enabled": True,
-                "values": {"linked_protocol_ids": ["ap_office"]},
-            },
-            # neither side of the link survived
-            "ap_ghost": {
-                "player_id": "ap_ghost",
-                "provider": "airplay",
-                "player_type": "protocol",
-                "enabled": False,
-                "values": {},
-            },
-            "up_kitchen": {
-                "player_id": "up_kitchen",
-                "provider": "universal_player",
-                "player_type": "player",
-                "enabled": False,
-                "values": {"linked_protocol_ids": ["spb_kitchen"]},
-            },
-        },
-        "player_dsp": {"spb_esp32": {"enabled": True}, "spb_kitchen": {"enabled": True}},
-    }
-
-
-def test_migrate_orphaned_disabled_protocol_configs() -> None:
-    """A disabled protocol player without a parent config is dropped, others are kept."""
-    data = _orphaned_protocol_data()
-    assert _migrate_orphaned_disabled_protocol_configs(data) is True
-    assert "spb_esp32" not in data["players"]
-    assert "spb_esp32" not in data["player_dsp"]
-    assert "ap_ghost" not in data["players"]
-    # protocol players that are still owned by a player are left alone
-    assert "spb_kitchen" in data["players"]
-    assert "spb_kitchen" in data["player_dsp"]
-    assert "ap_office" in data["players"]
-    assert _migrate_orphaned_disabled_protocol_configs(data) is False
-
-
-def test_migrate_orphaned_disabled_protocol_configs_keeps_enabled_players() -> None:
-    """An enabled protocol player is kept: it can register and find a new parent."""
-    data = _orphaned_protocol_data()
-    data["players"]["spb_esp32"]["enabled"] = True
-    data["players"]["ap_ghost"]["enabled"] = True
-    assert _migrate_orphaned_disabled_protocol_configs(data) is False
-    assert "spb_esp32" in data["players"]
-
-
-def test_migrate_orphaned_disabled_protocol_configs_tolerates_malformed_data() -> None:
-    """Non-dict player configs/values and non-protocol players are skipped."""
-    data: dict[str, Any] = {
-        "players": {
-            "p1": "not-a-dict",
-            "p2": {"player_id": "p2", "player_type": "player", "enabled": False, "values": None},
-            "p3": {"player_id": "p3", "player_type": "player", "enabled": False, "values": {}},
-        }
-    }
-    assert _migrate_orphaned_disabled_protocol_configs(data) is False
-    assert len(data["players"]) == 3
 
 
 def test_migrate_unrenamed_player_names() -> None:
@@ -1825,6 +1330,108 @@ def test_migrate_nicovideo_drop_mail_login_survives_malformed_config() -> None:
     assert data["providers"]["nicovideo--a"]["values"] == "broken"
 
 
+async def test_migrate_milkdrop_drop_color_tint_removes_the_stored_value() -> None:
+    """The color tint is removed from every milkdrop instance, whatever its value."""
+    data: dict[str, Any] = {
+        "providers": {
+            "milkdrop_visualizer": {
+                "domain": "milkdrop_visualizer",
+                "values": {"color_tint": False, "log_level": "debug"},
+            },
+            "milkdrop_visualizer--b": {
+                "domain": "milkdrop_visualizer",
+                "values": {"color_tint": True},
+            },
+            "milkdrop_visualizer--c": {"domain": "milkdrop_visualizer"},
+            "spotify--s": {"domain": "spotify", "values": {"color_tint": False}},
+        }
+    }
+    providers = data["providers"]
+
+    assert await migrate(data) is True
+    assert providers["milkdrop_visualizer"]["values"] == {"log_level": "debug"}
+    assert providers["milkdrop_visualizer--b"]["values"] == {}
+    assert providers["milkdrop_visualizer--c"] == {"domain": "milkdrop_visualizer"}
+    assert providers["spotify--s"]["values"] == {"color_tint": False}
+
+    # a second run has nothing left to remove
+    assert _migrate_milkdrop_drop_color_tint(data) is False
+
+
+def test_migrate_milkdrop_drop_color_tint_survives_malformed_config() -> None:
+    """Malformed provider configs are skipped without raising."""
+    assert _migrate_milkdrop_drop_color_tint({"providers": "broken"}) is False
+    data: dict[str, Any] = {
+        "providers": {
+            "milkdrop_visualizer": {"domain": "milkdrop_visualizer", "values": "broken"},
+            "broken": "broken",
+        }
+    }
+    assert _migrate_milkdrop_drop_color_tint(data) is False
+    assert data["providers"]["milkdrop_visualizer"]["values"] == "broken"
+
+
+async def test_migrate_drops_the_milkdrop_color_tint_of_a_config_from_before_the_split() -> None:
+    """A config from before the split loses the color tint and is split in one start."""
+    data: dict[str, Any] = {
+        "providers": {
+            "milkdrop_visualizer": {
+                "domain": "milkdrop_visualizer",
+                "values": {"color_tint": False},
+            }
+        },
+        "players": {
+            "sonos_1": {
+                "provider": "sonos",
+                "player_type": "player",
+                # a player's value of that name is not the provider's
+                "values": {"output_codec": "mp3", "color_tint": False},
+            }
+        },
+    }
+
+    assert await migrate(data) is True
+
+    assert data["providers"]["milkdrop_visualizer"]["values"] == {}
+    assert data["player_protocols"]["sonos_1"]["values"] == {
+        "output_codec": "mp3",
+        "color_tint": False,
+    }
+    assert await migrate(data) is False
+
+
+async def test_migrate_drops_the_milkdrop_color_tint_of_a_split_config() -> None:
+    """A config split before this step existed loses the color tint, and nothing else."""
+    data: dict[str, Any] = {
+        CONF_PLAYER_SPLIT_SESSION_ONLY: True,
+        CONF_PLAYER_SPLIT_TREE: True,
+        "providers": {
+            "milkdrop_visualizer": {
+                "domain": "milkdrop_visualizer",
+                "values": {"color_tint": True},
+            }
+        },
+        "players": {"pl_a": {"player_id": "pl_a", "provider": "sonos", "values": {}}},
+        "player_protocols": {
+            "sonos_a": {
+                "protocol_id": "sonos_a",
+                "provider": "sonos",
+                "player_id": "pl_a",
+                "role": "native",
+                "enabled": True,
+                "values": {"output_codec": "mp3", "color_tint": True},
+            }
+        },
+    }
+    records = deepcopy({key: data[key] for key in ("players", "player_protocols")})
+
+    assert await migrate(data) is True
+
+    assert data["providers"]["milkdrop_visualizer"]["values"] == {}
+    assert {key: data[key] for key in ("players", "player_protocols")} == records
+    assert await migrate(data) is False
+
+
 def test_migrate_raumfeld_icy_basic_moves_former_default() -> None:
     """Raumfeld players on the former "full" ICY default move to "basic", once."""
     data: dict[str, Any] = {
@@ -1865,8 +1472,115 @@ def test_migrate_raumfeld_icy_basic_survives_malformed_players() -> None:
     assert data["players"]["raumfeld_bar"] == "broken"
 
 
+async def test_migrate_artist_catalogue_selection_moves_to_library_album_tracks() -> None:
+    """A stored artist selection that listed the whole catalogue plays the library albums."""
+    for stored in ("all_tracks", "all_album_tracks"):
+        values: dict[str, Any] = {"default_enqueue_select_artist": stored, "other": "kept"}
+        data: dict[str, Any] = {"core": {"player_queues": {"values": values}}}
+
+        assert await migrate(data) is True
+        assert values == {
+            "default_enqueue_select_artist": "library_album_tracks",
+            "other": "kept",
+        }
+        assert _migrate_artist_catalogue_selection(data) is False
+
+
+async def test_migrate_moves_the_artist_selection_of_a_config_from_before_the_split() -> None:
+    """A config from before the split gets the new artist selection and its split in one start."""
+    values: dict[str, Any] = {"default_enqueue_select_artist": "all_tracks"}
+    data: dict[str, Any] = {
+        "core": {"player_queues": {"values": values}},
+        "players": {
+            "sonos_1": {
+                "provider": "sonos",
+                "player_type": "player",
+                "values": {"output_codec": "mp3"},
+            }
+        },
+    }
+
+    assert await migrate(data) is True
+
+    assert values == {"default_enqueue_select_artist": "library_album_tracks"}
+    assert data["player_protocols"]["sonos_1"]["values"] == {"output_codec": "mp3"}
+    assert await migrate(data) is False
+
+
+async def test_migrate_moves_the_artist_selection_of_a_split_config() -> None:
+    """A config split before this step existed gets the new artist selection, and nothing else."""
+    values: dict[str, Any] = {"default_enqueue_select_artist": "all_album_tracks"}
+    data: dict[str, Any] = {
+        CONF_PLAYER_SPLIT_SESSION_ONLY: True,
+        CONF_PLAYER_SPLIT_TREE: True,
+        "core": {"player_queues": {"values": values}},
+        "players": {"pl_a": {"player_id": "pl_a", "provider": "sonos", "values": {}}},
+        "player_protocols": {
+            "sonos_a": {
+                "protocol_id": "sonos_a",
+                "provider": "sonos",
+                "player_id": "pl_a",
+                "role": "native",
+                "enabled": True,
+                "values": {"output_codec": "mp3"},
+            }
+        },
+    }
+    records = deepcopy({key: data[key] for key in ("players", "player_protocols")})
+
+    assert await migrate(data) is True
+
+    assert values == {"default_enqueue_select_artist": "library_album_tracks"}
+    assert {key: data[key] for key in ("players", "player_protocols")} == records
+    assert await migrate(data) is False
+
+
+def test_migrate_artist_catalogue_selection_leaves_other_data_alone() -> None:
+    """An offered selection, or a missing or malformed config, is left as it is."""
+    cases: list[dict[str, Any]] = [
+        {},
+        {"core": "broken"},
+        {"core": {"player_queues": "broken"}},
+        {"core": {"player_queues": {"values": None}}},
+        {"core": {"player_queues": {"values": {}}}},
+        {"core": {"player_queues": {"values": {"default_enqueue_select_artist": ["odd"]}}}},
+        {"core": {"player_queues": {"values": {"default_enqueue_select_artist": "top_tracks"}}}},
+    ]
+    for data in cases:
+        before = deepcopy(data)
+        assert _migrate_artist_catalogue_selection(data) is False
+        assert data == before
+
+
 def test_migrate_raumfeld_icy_basic_noop_without_raumfeld() -> None:
     """Installs without a Raumfeld player are left untouched."""
     data: dict[str, Any] = {"players": {"sonos_kitchen": {"provider": "sonos"}}}
     assert _migrate_raumfeld_icy_basic(data) is False
     assert "raumfeld_icy_basic_migrated" not in data
+
+
+def test_migrate_provider_setup_data_moves_opensubsonic_legacy_auth() -> None:
+    """A legacy auth choice stored as an Open Subsonic option moves to setup_data unencrypted."""
+    data: dict[str, Any] = {
+        "providers": {
+            "opensubsonic--a": {
+                "domain": "opensubsonic",
+                "values": {"enable_legacy_auth": True, "enable_radio_stations": False},
+                "setup_data": {"baseURL": ENCRYPT_SUFFIX + "https://sonic.local"},
+            },
+            "opensubsonic--b": {
+                "domain": "opensubsonic",
+                "values": {"enable_legacy_auth": False},
+                # a choice already collected by the setup flow wins
+                "setup_data": {"enable_legacy_auth": True},
+            },
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    first = data["providers"]["opensubsonic--a"]
+    assert first["values"] == {"enable_radio_stations": False}
+    assert first["setup_data"]["enable_legacy_auth"] is True
+    second = data["providers"]["opensubsonic--b"]
+    assert second["values"] == {}
+    assert second["setup_data"]["enable_legacy_auth"] is True
+    assert migrate_provider_setup_data(data, _fake_encrypt) is False

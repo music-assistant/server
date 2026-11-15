@@ -60,6 +60,10 @@
       "label": "Automatically play (resume on power on)",
       "description": "When this player is turned ON, automatically start playing (if there are items in the queue)."
     },
+    "idle_power_off": {
+      "label": "Power off when idle (minutes)",
+      "description": "Turn this player off once it has been stopped for this many minutes. Set to 0 to never turn it off automatically.\n\nMusic Assistant only sees playback it knows about, so a device that is in use in another way, such as a TV or receiver on another input, may be turned off while in use."
+    },
     "crossfade_different_sample_rates": {
       "label": "Allow crossfades between tracks of different sample rates",
       "description": "Enable this option to allow crossfades between tracks that have different sample rates (e.g. 44.1kHz to 48kHz). \n\n Disable this option if you experience audio glitches during transitions between tracks."
@@ -98,20 +102,6 @@
         "48000": "Resamples everything to a fixed 48 kHz (or the closest rate the player supports). A good compromise of quality and bandwidth.",
         "96000": "Resamples everything to a fixed 96 kHz (or the closest rate the player supports).",
         "highest": "Resamples everything to the highest rate the player supports. Best quality, but can waste a lot of bandwidth."
-      }
-    },
-    "http_profile": {
-      "label": "HTTP Profile used for sending audio",
-      "description": "This is considered to be a very advanced setting, only adjust this if needed, for example if your player stops playing halfway streams or if you experience other playback related issues. In most cases the default setting is fine.",
-      "options": {
-        "chunked": "Profile 1 - chunked",
-        "no_content_length": "Profile 2 - no content length",
-        "forced_content_length": "Profile 3 - forced content length"
-      },
-      "option_descriptions": {
-        "chunked": "Send audio using chunked transfer encoding, without a fixed length up front.",
-        "no_content_length": "Stream without a Content-Length header. Works for most players (the default).",
-        "forced_content_length": "Send an estimated Content-Length header. Some players need this to start playback or to seek."
       }
     },
     "icon": {
@@ -245,6 +235,10 @@
     "preview_note": {
       "label": "Please note that this feature/provider is still in early stages. \n\nFunctionality may still be limited and/or bugs may occur!"
     },
+    "requires_fixed_content_length": {
+      "label": "Requires a fixed content length",
+      "description": "Only enable this if the player stops or loops during playback. Most players play fine without it."
+    },
     "sample_rates": {
       "label": "Sample rates supported by this player",
       "description": "The sample rates (and bit depths) supported by this player.\nContent with unsupported sample rates will be automatically resampled.",
@@ -324,6 +318,7 @@
     },
     "power_control": {
       "label": "Power Control",
+      "description": "A Home Assistant entity chosen here, such as a smart plug, is also used to turn on this player when it is offline.",
       "options": {
         "native": "Native power control",
         "none": "None",
@@ -451,6 +446,13 @@
     },
     "tts_engine_unavailable": {
       "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
+    },
+    "image_engine": {
+      "label": "Image engine",
+      "description": "The image generation engine used for this feature."
+    },
+    "image_engine_unavailable": {
+      "label": "No image engine is available. Set up a plugin that can generate images, for example the Home Assistant plugin with an AI task entity that supports images, or the OpenAI Compatible plugin with an image model selected."
     }
   },
   "config_categories": {
@@ -1122,6 +1124,12 @@
     "adaptive_drc": {
       "name": "Adaptive DRC"
     },
+    "audio_delay": {
+      "name": "Audio delay"
+    },
+    "balance": {
+      "name": "Balance"
+    },
     "bass": {
       "name": "Bass"
     },
@@ -1161,6 +1169,9 @@
     "extra_bass": {
       "name": "Extra bass"
     },
+    "ir_repeater": {
+      "name": "IR repeater"
+    },
     "link_audio_delay": {
       "name": "Link audio delay"
     },
@@ -1170,8 +1181,20 @@
     "link_control": {
       "name": "Link control"
     },
+    "loudness": {
+      "name": "Loudness"
+    },
+    "mono_mode": {
+      "name": "Mono"
+    },
+    "music_surround_level": {
+      "name": "Surround level (music)"
+    },
     "network_name": {
       "name": "Network name"
+    },
+    "night_mode": {
+      "name": "Night mode"
     },
     "party_mode": {
       "name": "Party mode"
@@ -1179,14 +1202,32 @@
     "pure_direct": {
       "name": "Pure direct"
     },
+    "remote_led_feedback": {
+      "name": "Status light on remote control"
+    },
     "sleep": {
       "name": "Sleep timer"
+    },
+    "spatial_audio": {
+      "name": "Spatial audio"
     },
     "speaker_a": {
       "name": "Speaker A"
     },
     "speaker_b": {
       "name": "Speaker B"
+    },
+    "speech_enhancement": {
+      "name": "Speech enhancement"
+    },
+    "status_light": {
+      "name": "Status light"
+    },
+    "sub_crossover": {
+      "name": "Subwoofer crossover"
+    },
+    "sub_enabled": {
+      "name": "Subwoofer"
     },
     "subwoofer_volume": {
       "name": "Subwoofer Volume"
@@ -1197,16 +1238,56 @@
     "surround_decoder_type": {
       "name": "Surround decoder type"
     },
+    "surround_enabled": {
+      "name": "Surround speakers"
+    },
+    "surround_level": {
+      "name": "Surround level (TV)"
+    },
+    "surround_mode": {
+      "name": "Full-volume surround for music"
+    },
     "tone_control_mode": {
       "name": "Tone control mode"
     },
+    "touch_controls": {
+      "name": "Touch controls"
+    },
     "treble": {
       "name": "Treble"
+    },
+    "trueplay": {
+      "name": "Trueplay"
     }
   },
   "errors": {
     "setup_required": "Music Assistant is not set up yet.",
     "provider_unavailable": "The provider is currently unavailable.",
+    "provider_no_longer_available": "This is no longer available on your server. You can remove it.",
+    "community_provider_catalog_unreachable": "The community catalog could not be reached to check this, so it does not run. Restart Music Assistant when your server is online again.",
+    "community_provider_blocked": "The community catalog blocked this, so it no longer runs. You can remove it. Reason: {0}",
+    "community_provider_not_listed": "This is no longer in the community catalog, so it no longer runs. You can remove it.",
+    "community_provider_not_for_this_version": "This is not available for this version of Music Assistant, so it does not run. You can remove it.",
+    "community_provider_requirements_clash": "This needs versions of Python packages that clash with Music Assistant or with something else from the community catalog, so it does not run.",
+    "community_provider_reinstall_failed": "The files of this were changed on your server and could not be downloaded again ({0}), so it does not run. Restart Music Assistant to try again.",
+    "community_provider_went_back": "Version {0} of this failed to load, and the version before it is no longer available, so it does not run.",
+    "community_provider_restart_to_go_back": "Version {0} of this failed to load. Restart Music Assistant to finish going back to the version before it.",
+    "community_provider_restart_to_update": "Version {0} of this is ready. Restart Music Assistant to finish the update.",
+    "community_provider_moved": "This moved to the community catalog. Music Assistant installs it from there by itself as soon as the catalog offers it for this version and your server can reach it.",
+    "community_provider_move_failed": "This moved to the community catalog, but Music Assistant could not install it from there ({0}). It tries again at every start and whenever it checks the catalog.",
+    "community_provider_not_installed": "This is no longer installed. An administrator can install it again from the Marketplace, or you can remove it here.",
+    "community_provider_starting": "Music Assistant is still starting what comes from the community catalog. This runs in a moment.",
+    "community_provider_safe_mode": "Nothing from the community catalog runs while Music Assistant is in safe mode.",
+    "community_catalog_remove_first": "Remove what you installed from the community catalog before you disable it.",
+    "community_catalog_switched_off": "Enable the community catalog to install from it.",
+    "community_catalog_not_installed": "{0} is not installed from the community catalog.",
+    "community_catalog_no_update": "There is no update of {0} to install.",
+    "community_catalog_not_offered": "The community catalog does not offer {0} for this version of Music Assistant.",
+    "community_catalog_already_installed": "{0} is installed already.",
+    "community_catalog_name_taken": "Music Assistant already has something named {0}, so it cannot be installed from the community catalog.",
+    "community_catalog_packages_in_use": "{0} needs other versions of Python packages that something else from the community catalog uses while it runs, so it cannot be installed.",
+    "community_catalog_safe_mode": "The community catalog is not available while Music Assistant is in safe mode.",
+    "community_catalog_unreachable": "The community catalog could not be reached to check for changes. Try again later.",
     "media_not_found": "The requested media item could not be found.",
     "media_not_available_for_user": "This is not available on any of your music sources.",
     "no_playable_items": "There is nothing to play here.",
@@ -1231,9 +1312,11 @@
     "role_in_use": "This role is still assigned to one or more users. Give them another role first.",
     "role_scope_not_allowed": "A custom role can not be granted this permission.",
     "playlist_not_owned": "Only the owner of this playlist may change it.",
+    "playlist_changed": "The playlist changed in the meantime. Please try again.",
     "playlist_follows_source": "This playlist follows the sharing of its music source.",
     "playlist_owner_must_be_member": "Only a member can own a playlist",
     "source_available_to_everyone": "{0} is always available to everyone",
+    "provider_can_not_be_disabled": "{0} cannot be disabled",
     "source_sharing_owner_only": "Only the owner of a music source may share it",
     "source_owner_change_admin_only": "Only an administrator can change who owns a music source",
     "source_no_owner_admin_only": "Only an administrator can manage a music source that has no owner",
@@ -1245,6 +1328,7 @@
     "login_failed": "Login failed. Please check your credentials and try again.",
     "audio_error": "An error occurred while processing audio.",
     "provider_stream_limit": "{0} has reached its limit of {1} simultaneous streams. Stop playback on another player and try again.",
+    "provider_stream_held": "{0} is already playing on {1}. Stop playback there first.",
     "queue_empty": "The queue is empty.",
     "unsupported_feature": "This feature is not supported.",
     "unsupported_system": "This is not supported on this system.",

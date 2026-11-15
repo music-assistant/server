@@ -19,15 +19,27 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-def _mapping(item_id: str) -> set[ProviderMapping]:
-    """Return a single qobuz provider mapping for a library item."""
-    return {ProviderMapping(item_id=item_id, provider_domain="qobuz", provider_instance="qobuz_1")}
+def _mapping(item_id: str, *, in_library: bool = True) -> set[ProviderMapping]:
+    """Return a single qobuz provider mapping, in the qobuz library unless told otherwise."""
+    return {
+        ProviderMapping(
+            item_id=item_id,
+            provider_domain="qobuz",
+            provider_instance="qobuz_1",
+            in_library=in_library,
+        )
+    }
 
 
 async def _add_album(
-    mass: MusicAssistant, name: str, *, last_refresh: int | None = None, artwork: bool = False
+    mass: MusicAssistant,
+    name: str,
+    *,
+    last_refresh: int | None = None,
+    artwork: bool = False,
+    in_library: bool = True,
 ) -> Album:
-    """Add a library album with the given refresh marker, with or without artwork."""
+    """Add an album row with the given refresh marker, with or without artwork."""
     metadata = MediaItemMetadata(last_refresh=last_refresh)
     if artwork:
         metadata.images = UniqueList(
@@ -39,7 +51,7 @@ async def _add_album(
             provider="library",
             name=name,
             artists=UniqueList(),
-            provider_mappings=_mapping(name),
+            provider_mappings=_mapping(name, in_library=in_library),
             metadata=metadata,
         )
     )
@@ -118,3 +130,29 @@ async def test_scan_skips_items_while_a_metadata_provider_is_rate_limiting(
         update_artist.assert_awaited_once()
         assert update_artist.await_args is not None
         assert update_artist.await_args.args[0].item_id == artist.item_id
+
+
+async def test_scan_skips_artists_and_albums_outside_the_library(mass: MusicAssistant) -> None:
+    """A row stored only to support a library item is left alone, however bare it is."""
+    album = await _add_album(mass, "Bare")
+    await _add_album(mass, "Placeholder", in_library=False)
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(item_id="0", provider="library", name="Radiohead", provider_mappings=_mapping("rh"))
+    )
+    await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Thom Yorke",
+            provider_mappings=_mapping("ty", in_library=False),
+        )
+    )
+
+    with (
+        patch.object(mass.metadata, "_update_album_metadata", AsyncMock()) as update_album,
+        patch.object(mass.metadata, "_update_artist_metadata", AsyncMock()) as update_artist,
+    ):
+        await mass.metadata._scan_missing_metadata()
+
+    assert [call.args[0].item_id for call in update_album.await_args_list] == [album.item_id]
+    assert [call.args[0].item_id for call in update_artist.await_args_list] == [artist.item_id]

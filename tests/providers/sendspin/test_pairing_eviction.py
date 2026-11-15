@@ -87,6 +87,7 @@ def _make_provider(
     provider._held_elsewhere = set()
     provider._held_unapproved = set()
     provider._held_paired = set()
+    provider._refused_here = {}
     provider._unencrypted_clients = set()
     refreshed: list[str] = []
 

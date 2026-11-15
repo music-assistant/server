@@ -164,7 +164,9 @@ def _controller(**queue_kwargs: Any) -> Any:
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = Mock()
     ctrl.mass = MagicMock()
-    ctrl.mass.players.get_player = Mock(return_value=Mock(extra_data={}))
+    ctrl.mass.players.get_player = Mock(
+        return_value=Mock(extra_data={}, offline_by_power_control=False)
+    )
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
@@ -204,14 +206,14 @@ def _controller(**queue_kwargs: Any) -> Any:
     ctrl._media_resolver._album_order_applies = partial(
         MediaResolver._album_order_applies, ctrl._media_resolver
     )
-    ctrl._media_resolver._artist_albums = AsyncMock(return_value=[[_album()]])
+    ctrl._media_resolver._artist_albums = AsyncMock(return_value=[_album()])
     ctrl._media_resolver._album_tracks_in_turn = AsyncMock(
         side_effect=lambda *_args: [_track(item_id) for item_id in ALBUM_TRACKS]
     )
     ctrl._media_resolver._shuffled_artist_tracks = AsyncMock(
         side_effect=lambda *_args: [_track(item_id) for item_id in ALBUM_TRACKS]
     )
-    ctrl._media_resolver.mass.config.get_raw_core_config_value = Mock(return_value="all_tracks")
+    ctrl._media_resolver.mass.config.get_raw_core_config_value = Mock(return_value="library_tracks")
     ctrl._media_resolver._resolve_media_items = AsyncMock(
         side_effect=lambda *_args, **_kwargs: [
             ResolvedItem(_track(item_id)) for item_id in ALBUM_TRACKS

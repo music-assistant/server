@@ -40,6 +40,7 @@ from music_assistant.constants import (
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_PLAYLISTS,
     DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     VERBOSE_LOG_LEVEL,
 )
@@ -49,6 +50,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import system_auth_context
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import (
     ALBUM_RETAIL_SUFFIX_KEYS,
@@ -65,6 +67,7 @@ from .constants import (
     ALBUM_RECONCILIATION_TASK_ID,
     CONF_ENABLE_ONLINE_METADATA,
     CONF_ENABLE_RADIO_METADATA_LOOKUP,
+    CONF_LANGUAGE_CHANGED,
     CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ,
     CONF_MUSICBRAINZ_LINKED_DOMAINS,
     CONF_PREFER_LOCAL_GENRES,
@@ -80,6 +83,7 @@ from .constants import (
     MUSICBRAINZ_LINK_ITEM_INTERVAL,
     MUSICBRAINZ_LINK_ITEM_TIMEOUT,
     MUSICBRAINZ_LINK_TASK_ID,
+    MUSICBRAINZ_RELINK_TASK_ID_PREFIX,
     PLAYLIST_METADATA_SCAN_TASK_ID,
     REFRESH_INTERVAL,
     THUMB_CACHE_CLEANUP_TASK_ID,
@@ -186,6 +190,14 @@ class MetaDataController(
                 multi_value=True,
                 hidden=True,
             ),
+            # when the preferred language last changed; declared so a config save carries it over
+            ConfigEntry(
+                key=CONF_LANGUAGE_CHANGED,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=0,
+                hidden=True,
+            ),
             ConfigEntry(
                 key=CONF_PREFER_LOCAL_GENRES,
                 type=ConfigEntryType.BOOLEAN,
@@ -228,6 +240,13 @@ class MetaDataController(
         self.mass.streams.unregister_dynamic_route("/imageproxy/*")
         self.mass.webserver.unregister_dynamic_route("/imageproxy/*")
 
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        previous_locale = str(self.config.get_value(CONF_LANGUAGE) or DEFAULT_LANGUAGE)
+        await super().update_config(config, changed_keys)
+        if f"values/{CONF_LANGUAGE}" in changed_keys:
+            self._note_language_change(previous_locale)
+
     @property
     def providers(self) -> list[MetadataProvider]:
         """Return all loaded/running MetadataProviders."""
@@ -248,6 +267,13 @@ class MetaDataController(
             self.domain, CONF_LANGUAGE, DEFAULT_LANGUAGE
         )
         return str(value)
+
+    @property
+    def language_changed(self) -> int:
+        """Return when the preferred language last changed (epoch seconds, 0 if never)."""
+        return int(
+            self.mass.config.get_raw_core_config_value(self.domain, CONF_LANGUAGE_CHANGED, 0) or 0
+        )
 
     @property
     def link_providers_via_musicbrainz(self) -> bool:
@@ -278,22 +304,20 @@ class MetaDataController(
         """
         # prefer exact match
         if lang in LOCALES:
-            self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, lang)
+            self._store_language(lang)
             return
         # try strict matching on either locale code or region
         lang = lang.lower().replace("-", "_")
         for locale_code, lang_name in LOCALES.items():
             if lang in (locale_code.lower(), lang_name.lower()):
-                self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
+                self._store_language(locale_code)
                 return
         # attempt loose match on language code or region code
         for lang_part in (lang[:2], lang[:-2]):
             for locale_code in tuple(LOCALES):
                 language_code, region_code = locale_code.lower().split("_", 1)
                 if lang_part in (language_code, region_code):
-                    self.mass.config.set_raw_core_config_value(
-                        self.domain, CONF_LANGUAGE, locale_code
-                    )
+                    self._store_language(locale_code)
                     return
         # if we reach this point, we couldn't match the language
         self.logger.warning("%s is not a valid language", lang)
@@ -310,72 +334,86 @@ class MetaDataController(
         :return: The item, or None when the item given by its uri is no longer in the library.
         """
         async with self._throttler:
-            # an item given by its uri is read once it is its turn, as it may change meanwhile
-            async with self.cache.handle_refresh(force_refresh):
-                if isinstance(item, str):
-                    try:
-                        retrieved_item = await self.mass.music.get_item_by_uri(item)
-                    except MediaNotFoundError:
-                        # a library item can be removed, or merged into another, while its
-                        # update waits
-                        if not item.startswith("library://"):
-                            raise
-                        self.logger.debug("%s was removed from the library, skipping", item)
-                        return None
-                    if isinstance(retrieved_item, BrowseFolder):
-                        raise TypeError("Cannot update metadata on a BrowseFolder item.")
-                    item = retrieved_item
+            # the refresh fills the household's library item from all its sources
+            with system_auth_context():
+                # an item given by its uri is read once it is its turn, as it may change meanwhile
+                async with self.cache.handle_refresh(force_refresh):
+                    if isinstance(item, str):
+                        try:
+                            retrieved_item = await self.mass.music.get_item_by_uri(item)
+                        except MediaNotFoundError:
+                            # a library item can be removed, or merged into another, while its
+                            # update waits
+                            if not item.startswith("library://"):
+                                raise
+                            self.logger.debug("%s was removed from the library, skipping", item)
+                            return None
+                        if isinstance(retrieved_item, BrowseFolder):
+                            raise TypeError("Cannot update metadata on a BrowseFolder item.")
+                        item = retrieved_item
 
-            if item.provider != "library":
-                # this shouldn't happen but just in case.
-                raise RuntimeError("Metadata can only be updated for library items")
+                if item.provider != "library":
+                    # this shouldn't happen but just in case.
+                    raise RuntimeError("Metadata can only be updated for library items")
 
-            try:
-                if item.media_type == MediaType.ARTIST:
-                    await self._update_artist_metadata(
-                        cast("Artist", item), force_refresh=force_refresh
+                try:
+                    if item.media_type == MediaType.ARTIST:
+                        await self._update_artist_metadata(
+                            cast("Artist", item), force_refresh=force_refresh
+                        )
+                        item = await self.mass.music.artists.get_merged_library_item(
+                            cast("Artist", item)
+                        )
+                    if item.media_type == MediaType.ALBUM:
+                        await self._update_album_metadata(
+                            cast("Album", item), force_refresh=force_refresh
+                        )
+                    if item.media_type == MediaType.TRACK:
+                        await self._update_track_metadata(
+                            cast("Track", item), force_refresh=force_refresh
+                        )
+                    if item.media_type == MediaType.PLAYLIST:
+                        await self._update_playlist_metadata(
+                            cast("Playlist", item), force_refresh=force_refresh
+                        )
+                    if item.media_type == MediaType.AUDIOBOOK:
+                        await self._update_audiobook_metadata(
+                            cast("Audiobook", item), force_refresh=force_refresh
+                        )
+                    if item.media_type == MediaType.PODCAST:
+                        await self._update_podcast_metadata(
+                            cast("Podcast", item), force_refresh=force_refresh
+                        )
+                except MediaNotFoundError:
+                    # the item can be removed from the library, or merged into another, while its
+                    # update runs
+                    if await self._in_library(item):
+                        raise
+                    self.logger.debug(
+                        "%s %s was removed from the library, skipping",
+                        item.media_type.value,
+                        item.name,
                     )
-                    item = await self.mass.music.artists.get_merged_library_item(
-                        cast("Artist", item)
-                    )
-                if item.media_type == MediaType.ALBUM:
-                    await self._update_album_metadata(
-                        cast("Album", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.TRACK:
-                    await self._update_track_metadata(
-                        cast("Track", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.PLAYLIST:
-                    await self._update_playlist_metadata(
-                        cast("Playlist", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.AUDIOBOOK:
-                    await self._update_audiobook_metadata(
-                        cast("Audiobook", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.PODCAST:
-                    await self._update_podcast_metadata(
-                        cast("Podcast", item), force_refresh=force_refresh
-                    )
-            except MediaNotFoundError:
-                # the item can be removed from the library, or merged into another, while its
-                # update runs
-                if await self._in_library(item):
-                    raise
-                self.logger.debug(
-                    "%s %s was removed from the library, skipping", item.media_type.value, item.name
-                )
         return item
 
     def schedule_update_metadata(self, item: MediaItemType) -> None:
-        """Schedule metadata update for given MediaItem."""
+        """
+        Schedule metadata update for given MediaItem.
+
+        An artist whose metadata is up to date is linked to the music providers loaded since
+        it was last looked up on MusicBrainz instead.
+        """
         if item.provider != "library":
             # this shouldn't happen but just in case.
             return
         last_refresh = item.metadata.last_refresh or 0
-        needs_update = (time() - last_refresh) > REFRESH_INTERVAL
+        needs_update = (time() - last_refresh) > REFRESH_INTERVAL or (
+            item.media_type in (MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK)
+            and self._description_language_outdated(item.metadata)
+        )
         if not needs_update:
+            if isinstance(item, Artist):
+                self._schedule_musicbrainz_relink(item)
             return
         assert item.uri is not None
         uri = item.uri
@@ -429,7 +467,9 @@ class MetaDataController(
             await self._link_track_to_musicbrainz(item)
             await self.mass.music.tracks.update_item_in_library(item.item_id, item)
 
-    @api_command("metadata/get_track_lyrics", required_scope=Scope.LIBRARY_READ)
+    @api_command(
+        "metadata/get_track_lyrics", required_scope=Scope.LIBRARY_READ, allow_impersonation=True
+    )
     async def get_track_lyrics(
         self,
         track: Track,
@@ -467,13 +507,21 @@ class MetaDataController(
             return track.metadata.lyrics, track.metadata.lrc_lyrics
 
         if track.provider == "library":
-            # try to update metadata first
-            await self._update_track_metadata(track, force_refresh=False)
+            # the stored item is refreshed, never the caller's copy of it; the refresh fills
+            # the household's library item from all its sources, so it runs as the server
+            track = await self.mass.music.tracks.get(
+                track.item_id, "library", allow_update_metadata=False
+            )
+            with system_auth_context():
+                await self._update_track_metadata(track, force_refresh=False)
             return track.metadata.lyrics, track.metadata.lrc_lyrics
 
         # prefer lyrics from the track's own provider
-        track_provider = self.mass.get_provider(track.provider, provider_type=MusicProvider)
-        if track_provider and ProviderFeature.LYRICS in track_provider.supported_features:
+        track_provider = self.mass.music.get_visible_provider(track.provider)
+        if (
+            isinstance(track_provider, MusicProvider)
+            and ProviderFeature.LYRICS in track_provider.supported_features
+        ):
             full_track = await self.mass.music.tracks.get_provider_item(
                 track.item_id, track.provider
             )
@@ -565,6 +613,19 @@ class MetaDataController(
         # a run already pending or running is not queued twice; the hourly schedule
         # covers whatever such a run misses
         self.mass.tasks.run_task(MUSICBRAINZ_LINK_TASK_ID)
+
+    def _store_language(self, locale_code: str) -> None:
+        """Store the preferred language, noting when it changes."""
+        previous_locale = self.locale
+        self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
+        self._note_language_change(previous_locale)
+
+    def _note_language_change(self, previous_locale: str) -> None:
+        """Store that the preferred language changed now, if it differs from the previous one."""
+        if previous_locale.split("_", maxsplit=1)[0] != self.preferred_language:
+            self.mass.config.set_raw_core_config_value(
+                self.domain, CONF_LANGUAGE_CHANGED, int(time())
+            )
 
     @staticmethod
     def _get_metadata_lookup_task_id(uri: str) -> str:
@@ -760,6 +821,7 @@ class MetaDataController(
                 limit=budget,
                 sort_field=SortField.TIMESTAMP_ADDED,
                 sort_direction=SortDirection.DESC,
+                in_library_only=False,
             )
             for item in items:
                 if musicbrainz.rate_limited:
@@ -880,6 +942,26 @@ class MetaDataController(
         dropped. The very first run seeds the providers present with 0, as the library was
         linked to those while it was identified.
         """
+        stored = self._stored_musicbrainz_linked_domains()
+        first_seen = 0 if stored is None else int(time())
+        # a provider whose instance was gone for a run comes back as a new one: the items
+        # identified meanwhile lack its links, so its relink phase re-checks those still not
+        # mapped to it, from the MusicBrainz cache
+        linked = {
+            domain: (stored or {}).get(domain, first_seen)
+            for domain in sorted(self._loaded_musicbrainz_link_domains())
+        }
+        # an empty map is persisted too: it tells the first run apart from a later one
+        if stored is None or linked != stored:
+            self.mass.config.set_raw_core_config_value(
+                self.domain,
+                CONF_MUSICBRAINZ_LINKED_DOMAINS,
+                [f"{domain}:{seen}" for domain, seen in linked.items()],
+            )
+        return linked
+
+    def _stored_musicbrainz_linked_domains(self) -> dict[str, int] | None:
+        """Return since when each linked music provider has been loaded, None before any run."""
         # persisted as "domain:epoch" entries, the map itself not being a config value type
         entries = cast(
             "list[str] | None",
@@ -887,30 +969,67 @@ class MetaDataController(
                 self.domain, CONF_MUSICBRAINZ_LINKED_DOMAINS
             ),
         )
+        if entries is None:
+            return None
         stored: dict[str, int] = {}
-        for entry in entries or []:
+        for entry in entries:
             domain, _, seen = entry.partition(":")
             if seen.isdigit():
                 stored[domain] = int(seen)
+        return stored
+
+    def _loaded_musicbrainz_link_domains(self) -> list[str]:
+        """Return the music providers MusicBrainz links to that have a loaded instance."""
         # the providers the link step maps to: those with a loaded instance, available or not
-        present = [
+        return [
             domain
             for domain in MUSICBRAINZ_LINK_DOMAINS
             if self.mass.music.get_provider_instances(domain, return_unavailable=True)
         ]
-        first_seen = 0 if entries is None else int(time())
-        # a provider whose instance was gone for a run comes back as a new one: the items
-        # identified meanwhile lack its links, so its relink phase re-checks those still not
-        # mapped to it, from the MusicBrainz cache
-        linked = {domain: stored.get(domain, first_seen) for domain in sorted(present)}
-        # an empty map is persisted too: it tells the first run apart from a later one
-        if entries is None or linked != stored:
-            self.mass.config.set_raw_core_config_value(
-                self.domain,
-                CONF_MUSICBRAINZ_LINKED_DOMAINS,
-                [f"{domain}:{seen}" for domain, seen in linked.items()],
-            )
-        return linked
+
+    def _schedule_musicbrainz_relink(self, artist: Artist) -> None:
+        """Queue linking an artist to the music providers loaded since its MusicBrainz lookup."""
+        if not self._musicbrainz_relink_due(artist):
+            return
+        assert artist.uri is not None
+        uri, item_id = artist.uri, artist.item_id
+        self.mass.tasks.run_background_task(
+            task_id=f"{MUSICBRAINZ_RELINK_TASK_ID_PREFIX}_{uuid5(NAMESPACE_URL, uri).hex}",
+            name=f"Link {artist.name} to your music services",
+            handler=lambda: self._relink_artist(item_id),
+            translation_key="link_artist_to_music_services",
+            translation_args=[artist.name],
+            translation_owner=self.translation_owner,
+            # the user is looking at the artist, so it goes ahead of the metadata refreshes
+            priority=True,
+            metadata={"task_domain": "metadata_musicbrainz_relink", "item_uri": uri},
+        )
+
+    async def _relink_artist(self, item_id: str) -> None:
+        """Link a library artist to the music providers loaded since its MusicBrainz lookup."""
+        try:
+            artist = await self.mass.music.artists.get_library_item(item_id)
+        except MediaNotFoundError:
+            self.logger.debug("Artist %s left the library, skipping its relink", item_id)
+            return
+        # a metadata refresh or the link run may have linked it while the task waited
+        if self._musicbrainz_relink_due(artist):
+            await self.link_item_to_musicbrainz(artist)
+
+    def _musicbrainz_relink_due(self, artist: Artist) -> bool:
+        """Return whether an artist misses the links of a music provider loaded since its lookup."""
+        if not self.link_providers_via_musicbrainz or self.mass.music.active_sync_tasks:
+            return False
+        if (musicbrainz := self._musicbrainz_provider()) is None or musicbrainz.rate_limited:
+            return False
+        # a provider the link run has not recorded yet is left to that run
+        stored = self._stored_musicbrainz_linked_domains() or {}
+        linked = {
+            domain: stored[domain]
+            for domain in self._loaded_musicbrainz_link_domains()
+            if domain in stored
+        }
+        return _misses_musicbrainz_links(artist, linked)
 
     async def _pending_musicbrainz_link_counts(self) -> dict[str, int]:
         """Return how many albums, artists and tracks still await their MusicBrainz lookup."""
@@ -946,8 +1065,14 @@ class MetaDataController(
         limit: int = METADATA_SCAN_BATCH_SIZE,
         sort_field: SortField = SortField.RANDOM,
         sort_direction: SortDirection | None = None,
+        in_library_only: bool = True,
     ) -> list[ItemCls]:
-        """Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON."""
+        """
+        Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON.
+
+        :param in_library_only: Only select items in the library; False leaves the scope to
+            the query.
+        """
         try:
             items = await media_controller.get_library_items_by_query(
                 limit=limit,
@@ -955,6 +1080,7 @@ class MetaDataController(
                 sort_direction=sort_direction,
                 extra_query_parts=[query],
                 extra_query_params=query_params,
+                in_library_only=in_library_only,
             )
         except sqlite3.OperationalError as err:
             if "malformed JSON" not in str(err):
@@ -966,6 +1092,7 @@ class MetaDataController(
                 sort_direction=sort_direction,
                 extra_query_parts=[f"{_valid_metadata_guard(table)} AND {query}"],
                 extra_query_params=query_params,
+                in_library_only=in_library_only,
             )
         # a clean scan proves the table currently holds no corrupt rows
         self._corrupt_metadata_rows.pop(table, None)
@@ -1074,6 +1201,56 @@ def _has_musicbrainz_id(item_id: str, media_type: MediaType, id_type: ExternalID
     )
 
 
+def _in_library_query(item_id: str, media_type: MediaType) -> str:
+    """
+    Return a query part that is true for an item in the library.
+
+    :param item_id: SQL expression of the library item id, e.g. ``albums.item_id``.
+    :param media_type: Media type of the item.
+    """
+    # the definition the library listings use (in_library_only)
+    return (
+        f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+        f"WHERE {DB_TABLE_PROVIDER_MAPPINGS}.media_type = '{media_type.value}' "
+        f"AND {DB_TABLE_PROVIDER_MAPPINGS}.item_id = {item_id} "
+        f"AND {DB_TABLE_PROVIDER_MAPPINGS}.in_library = 1)"
+    )
+
+
+def _musicbrainz_link_scope(media_type: MediaType) -> str:
+    """
+    Return a query part selecting the items a MusicBrainz link run may work on.
+
+    That is every library item, plus an album holding a library track and an artist
+    credited on a library album or track.
+
+    :param media_type: Media type of the items: album, artist or track.
+    """
+    if media_type == MediaType.ALBUM:
+        library_track = _in_library_query(f"{DB_TABLE_ALBUM_TRACKS}.track_id", MediaType.TRACK)
+        holds_library_track = (
+            f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUM_TRACKS} "
+            f"WHERE {DB_TABLE_ALBUM_TRACKS}.album_id = {DB_TABLE_ALBUMS}.item_id "
+            f"AND {library_track})"
+        )
+        in_library = _in_library_query(f"{DB_TABLE_ALBUMS}.item_id", MediaType.ALBUM)
+        return f"({in_library} OR {holds_library_track})"
+    if media_type == MediaType.ARTIST:
+        scope = [_in_library_query(f"{DB_TABLE_ARTISTS}.item_id", MediaType.ARTIST)]
+        for credit_table, column, credited_type in (
+            (DB_TABLE_ALBUM_ARTISTS, "album_id", MediaType.ALBUM),
+            (DB_TABLE_TRACK_ARTISTS, "track_id", MediaType.TRACK),
+        ):
+            credited_item = _in_library_query(f"{credit_table}.{column}", credited_type)
+            scope.append(
+                f"EXISTS (SELECT 1 FROM {credit_table} "
+                f"WHERE {credit_table}.artist_id = {DB_TABLE_ARTISTS}.item_id "
+                f"AND {credited_item})"
+            )
+        return f"({' OR '.join(scope)})"
+    return _in_library_query(f"{DB_TABLE_TRACKS}.item_id", MediaType.TRACK)
+
+
 def _albums_to_identify_query() -> str:
     """Return a query part selecting albums due for a MusicBrainz lookup (param ``stale``)."""
     marker = _musicbrainz_lookup_marker(DB_TABLE_ALBUMS)
@@ -1081,7 +1258,10 @@ def _albums_to_identify_query() -> str:
         f"{DB_TABLE_ALBUMS}.item_id", MediaType.ALBUM, ExternalID.MB_ALBUM
     )
     # an album MusicBrainz did not know is looked up again once its lookup is stale
-    return f"({marker} ISNULL OR ({marker} < :stale AND NOT {identified}))"
+    return (
+        f"({marker} ISNULL OR ({marker} < :stale AND NOT {identified})) "
+        f"AND {_musicbrainz_link_scope(MediaType.ALBUM)}"
+    )
 
 
 def _artists_to_identify_query() -> str:
@@ -1099,7 +1279,10 @@ def _artists_to_identify_query() -> str:
         f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {DB_TABLE_ARTISTS}.item_id "
         f"AND {album_identified})"
     )
-    return f"({marker} ISNULL AND NOT {identified} AND {has_identified_album})"
+    return (
+        f"({marker} ISNULL AND NOT {identified} AND {has_identified_album}) "
+        f"AND {_musicbrainz_link_scope(MediaType.ARTIST)}"
+    )
 
 
 def _tracks_to_identify_query() -> str:
@@ -1117,7 +1300,10 @@ def _tracks_to_identify_query() -> str:
         f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = {DB_TABLE_TRACKS}.item_id "
         f"AND {album_identified})"
     )
-    return f"({marker} ISNULL AND NOT {identified} AND {has_identified_album})"
+    return (
+        f"({marker} ISNULL AND NOT {identified} AND {has_identified_album}) "
+        f"AND {_musicbrainz_link_scope(MediaType.TRACK)}"
+    )
 
 
 def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str:
@@ -1125,7 +1311,8 @@ def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str
     Return a query part selecting identified items that miss the links of a music provider.
 
     Selects items not mapped to the provider (param ``domain``) that were looked up before
-    it was loaded (param ``seen``) or never looked up at all.
+    it was loaded (param ``seen``) or never looked up at all. :func:`_misses_musicbrainz_links`
+    makes the same selection for one item.
 
     :param table: The library table to select from.
     :param media_type: Media type of the items.
@@ -1140,7 +1327,30 @@ def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str
     )
     marker = _musicbrainz_lookup_marker(table)
     # an id taken from tags or a local server leaves the marker unset: never linked at all
-    return f"({identified} AND NOT {mapped} AND ({marker} ISNULL OR {marker} <= :seen))"
+    return (
+        f"({identified} AND NOT {mapped} AND ({marker} ISNULL OR {marker} <= :seen)) "
+        f"AND {_musicbrainz_link_scope(media_type)}"
+    )
+
+
+def _misses_musicbrainz_links(item: Artist | Album, linked_domains: dict[str, int]) -> bool:
+    """
+    Return whether an identified item misses the links of one of the given music providers.
+
+    The same selection :func:`_relink_query` makes in the library database, for one item.
+
+    :param item: The library artist or album.
+    :param linked_domains: Since when each linked music provider has been loaded, by domain.
+    """
+    if not item.mbid:
+        return False
+    mapped = {mapping.provider_domain for mapping in item.provider_mappings}
+    marker = item.metadata.last_musicbrainz_lookup
+    # an id taken from tags or a local server leaves the marker unset: never linked at all
+    return any(
+        domain not in mapped and (marker is None or marker <= seen)
+        for domain, seen in linked_domains.items()
+    )
 
 
 def _valid_metadata_guard(table: str) -> str:

@@ -49,7 +49,7 @@ def mock_mass() -> MagicMock:
     mass = MagicMock()
     mass.webserver.base_url = "https://my-ma.example.com"
     mass.webserver.register_dynamic_route = MagicMock(return_value=MagicMock())
-    mass.players = []
+    mass.players.iter_players.return_value = []
     mass.http_session = MagicMock()
     # No setup_data persisted on the mock config store, so get_setup_value falls through
     # to the config entry value/default via get_config_value (the provided ProviderConfig).

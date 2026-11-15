@@ -12,12 +12,19 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable, Sequence
+from datetime import MAXYEAR, MINYEAR, UTC, datetime
 from typing import Any, Final
 
 from music_assistant_models.enums import ListingType, SortDirection, SortField
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.helpers import create_safe_string, create_sort_name
-from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaCollection, MediaItem
+from music_assistant_models.media_items import (
+    Album,
+    BrowseFolder,
+    ItemMapping,
+    MediaCollection,
+    MediaItem,
+)
 
 from music_assistant.controllers.music.constants import LEGACY_SORT_KEYS
 from music_assistant.controllers.music.sorting import LISTING_SORT_OPTIONS
@@ -85,7 +92,7 @@ def apply_listing[ItemT: ListingItem](
     Search, sort and page a listing assembled in memory.
 
     Items that sort the same keep the order the source lists them in, the tracks of one album
-    their disc and track order.
+    their disc and track order, and albums released on the same date their name order.
 
     :param items: The whole listing, in the order the source lists it.
     :param listing: The listing the items belong to, which decides the sort options.
@@ -153,6 +160,20 @@ def _date_added(item: ListingItem) -> float:
     return date_added.timestamp() if date_added else 0.0
 
 
+def _release_date(item: ListingItem) -> float:
+    """Return the release timestamp, falling back to January 1 of the release year."""
+    if not isinstance(item, Album):
+        return float("-inf")
+    if released := item.metadata.release_date:
+        return (
+            released if released.tzinfo is not None else released.replace(tzinfo=UTC)
+        ).timestamp()
+    # a stored year outside datetime's range (an unvalidated tag) counts as unknown
+    if (year := item.year) and MINYEAR <= year <= MAXYEAR:
+        return datetime(year, 1, 1, tzinfo=UTC).timestamp()
+    return float("-inf")
+
+
 def _duration(item: ListingItem) -> int:
     # a collection carries the duration of all its items in its metadata
     if isinstance(item, MediaCollection):
@@ -184,6 +205,7 @@ _SORT_KEYS: Final[dict[SortField, Callable[[ListingItem], Any]]] = {
     SortField.LAST_PLAYED: lambda item: getattr(item, "last_played", 0) or 0,
     SortField.DURATION: _duration,
     SortField.YEAR: lambda item: getattr(item, "year", 0) or 0,
+    SortField.RELEASE_DATE: _release_date,
     SortField.POSITION: lambda item: getattr(item, "position", 0) or 0,
     SortField.ARTIST_NAME: _artist_name,
     SortField.TRACK_NUMBER: _track_number,
@@ -193,6 +215,8 @@ _SORT_KEYS: Final[dict[SortField, Callable[[ListingItem], Any]]] = {
 
 # the order among the items a sort field ties, whichever the direction
 _TIE_KEYS: Final[dict[SortField, Callable[[ListingItem], Any]]] = {
+    # albums released on the same date stay apart in a fixed order across pages
+    SortField.RELEASE_DATE: lambda item: (_normalize(_name(item)), item.uri or ""),
     # the tracks of one album keep their disc and track order
     SortField.ALBUM_NAME: _track_number,
 }

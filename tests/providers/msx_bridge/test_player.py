@@ -12,7 +12,7 @@ from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 
-from music_assistant.constants import CONF_HTTP_PROFILE
+from music_assistant.constants import CONF_REQUIRES_FIXED_CONTENT_LENGTH
 from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
@@ -52,12 +52,11 @@ def test_init_custom_params(provider: Any) -> None:
     assert p._attr_name == "Living Room TV"
 
 
-async def test_http_profile_defaults_to_chunked(player: MSXPlayer) -> None:
+async def test_no_fixed_content_length_entry(player: MSXPlayer) -> None:
     """Redirected streams must receive EOF without an estimated body length."""
     entries = await player.get_config_entries()
 
-    http_profile = next(entry for entry in entries if entry.key == CONF_HTTP_PROFILE)
-    assert http_profile.default_value == "chunked"
+    assert CONF_REQUIRES_FIXED_CONTENT_LENGTH not in {entry.key for entry in entries}
 
 
 def test_needs_poll_always_true(player: MSXPlayer) -> None:
@@ -227,7 +226,7 @@ async def test_play_resume(player: MSXPlayer) -> None:
         await player.play()
 
     assert player._attr_playback_state == PlaybackState.PLAYING
-    mock_notify.assert_called_once_with(player.player_id)
+    mock_notify.assert_called_once_with(player.protocol_id)
 
 
 async def test_pause_accumulates_time(player: MSXPlayer) -> None:
@@ -268,7 +267,7 @@ async def test_pause_notifies_pause_on_msx(player: MSXPlayer) -> None:
         await player.pause()
 
     assert player._attr_playback_state == PlaybackState.PAUSED
-    mock_notify.assert_called_once_with(player.player_id)
+    mock_notify.assert_called_once_with(player.protocol_id)
 
 
 async def test_stop_clears_all(player: MSXPlayer) -> None:
@@ -325,7 +324,7 @@ async def test_volume_set_reaches_native_client(
     server = MSXHTTPServer(provider, 0)
     provider.http_server = server
     ws = Mock(closed=False, send_str=AsyncMock())
-    server._ws_clients[player.player_id] = {ws}
+    server._ws_clients[player.protocol_id] = {ws}
     tasks: list[asyncio.Task[Any]] = []
     mass_mock.create_task = Mock(side_effect=lambda coro: tasks.append(asyncio.ensure_future(coro)))
 
@@ -450,13 +449,13 @@ async def test_play_media_non_queue_sends_broadcast_play(
 
     mock_playlist.assert_not_called()
     mock_play.assert_called_once_with(
-        player.player_id,
+        player.protocol_id,
         title="Track 1",
         artist="Artist 1",
         image_url="http://ma-server/image.png",
         duration=180,
-        next_action=f"execute:/api/next/{player.player_id}",
-        prev_action=f"execute:/api/previous/{player.player_id}",
+        next_action=f"execute:/api/next/{player.protocol_id}",
+        prev_action=f"execute:/api/previous/{player.protocol_id}",
     )
 
 
@@ -671,7 +670,7 @@ async def test_resume_sends_ws_resume(player: MSXPlayer) -> None:
 
     assert player._attr_playback_state == PlaybackState.PLAYING
     assert player._attr_elapsed_time_last_updated is not None
-    mock_notify.assert_called_once_with(player.player_id)
+    mock_notify.assert_called_once_with(player.protocol_id)
 
 
 async def test_resume_skips_ws_when_skip_notify(player: MSXPlayer) -> None:
@@ -705,11 +704,10 @@ async def test_pause_skips_ws_when_skip_notify(player: MSXPlayer) -> None:
     mock_notify.assert_not_called()
 
 
-async def test_disabled_player_rejects_direct_media_and_resume(
-    player: MSXPlayer, player_config_mock: Mock
-) -> None:
+async def test_disabled_player_rejects_direct_media_and_resume(player: MSXPlayer) -> None:
     """Native and delayed core commands cannot start a disabled player."""
-    player_config_mock.enabled = False
+    # the protocol of a disabled player is detached
+    player.set_player(None)
     with pytest.raises(PlayerUnavailableError):
         await player.play_media(PlayerMedia(uri="http://ma/track"))
     with pytest.raises(PlayerUnavailableError):

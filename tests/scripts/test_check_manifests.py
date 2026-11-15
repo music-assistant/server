@@ -84,6 +84,37 @@ def test_empty_text_fields_rejected() -> None:
     )
 
 
+def test_tier_rejected() -> None:
+    """A manifest that sets a tier is reported, whatever the value."""
+    for tier in ("core", "community"):
+        manifest = _valid_manifest()
+        manifest["tier"] = tier
+        assert _validate(manifest, "demo") == [
+            "'tier' is set by the server and must not be in the manifest"
+        ]
+
+
+def test_support_url_must_be_https() -> None:
+    """A support_url must be an https URL with a host when present."""
+    manifest = _valid_manifest()
+    manifest["support_url"] = "https://github.com/octocat/demo/issues"
+    assert _validate(manifest, "demo") == []
+    bad_urls = (
+        "http://example.com",
+        "https://",
+        "https:///issues",
+        "https://?report",
+        "https://#support",
+        "https://[::1",
+        "",
+        None,
+        ["https://example.com"],
+    )
+    for bad_url in bad_urls:
+        manifest["support_url"] = bad_url
+        assert any("'support_url' must be" in issue for issue in _validate(manifest, "demo"))
+
+
 def test_real_tree_is_clean() -> None:
     """Every shipped provider manifest passes validation."""
     assert find_violations() == []

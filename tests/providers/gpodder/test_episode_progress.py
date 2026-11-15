@@ -89,7 +89,11 @@ def test_index_ranks_actions_newest_first_whatever_their_timestamps() -> None:
 
 
 async def test_sync_writes_the_progress_of_every_matched_episode(provider: GPodder) -> None:
-    """Episodes reported by url only are matched although their item id holds the guid."""
+    """
+    Episodes reported by url only are matched although their item id holds the guid.
+
+    Each write carries the time of its action.
+    """
     _serve(provider)
     _subscribe(provider, [FEED])
     with patch(
@@ -101,11 +105,14 @@ async def test_sync_writes_the_progress_of_every_matched_episode(provider: GPodd
     assert [podcast.item_id for podcast in podcasts] == [FEED]
     music = cast("Mock", provider.mass.music)
     played = music.mark_item_played
-    assert [(c.args[0].item_id, c.kwargs["seconds_played"]) for c in played.call_args_list] == [
-        (f"{FEED} guid-1", 600)
-    ]
+    assert [
+        (c.args[0].item_id, c.kwargs["seconds_played"], c.kwargs["progress_timestamp"])
+        for c in played.call_args_list
+    ] == [(f"{FEED} guid-1", 600, 1704189600)]
     unplayed = music.mark_item_unplayed
-    assert [c.args[0].item_id for c in unplayed.call_args_list] == [f"{FEED} guid-2"]
+    assert [
+        (c.args[0].item_id, c.kwargs["progress_timestamp"]) for c in unplayed.call_args_list
+    ] == [(f"{FEED} guid-2", 1704362400)]
     assert provider.timestamp_actions == 999
 
 
@@ -304,8 +311,10 @@ async def test_reset_in_another_client_carries_its_own_time(
     cast("Mock", provider._client).get_episode_actions = AsyncMock(return_value=([reset], 999))
 
     resume = await provider.get_resume_position(f"{FEED} guid-2", MediaType.PODCAST_EPISODE)
+    episode = await provider.get_podcast_episode(f"{FEED} guid-2")
 
     assert resume == (False, 0, timestamp)
+    assert episode.resume_position_timestamp == timestamp
 
 
 # a feed without itunes:duration leaves the episode without one
