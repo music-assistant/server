@@ -773,6 +773,29 @@ async def test_failed_show_leaves_the_previous_cast_its_key_and_owner() -> None:
     assert controller._session_owners["dash1"] == "user-1"
 
 
+async def test_failed_show_after_a_hide_mid_launch_restores_nothing() -> None:
+    """A dashboard hidden while the launch ran stays cleared when the launch then fails."""
+    controller = _make_controller()
+    keys: list[str] = []
+    _register_resolving_endpoint(controller, keys)
+    await controller.show_dashboard("dash1", DashboardType.PARTY)
+    controller._session_owners["dash1"] = "user-1"
+
+    async def hidden_then_failing_on_show(
+        _dashboard: DashboardType, _player_id: str | None
+    ) -> None:
+        await _resolve_key(controller)
+        await controller.hide_dashboard("dash1")
+        raise MusicAssistantError("launch failed")
+
+    controller._dashboards["dash1"].on_show = hidden_then_failing_on_show
+    with pytest.raises(MusicAssistantError):
+        await controller.show_dashboard("dash1", DashboardType.PARTY)
+
+    assert "dash1" not in controller._viewer_keys
+    assert "dash1" not in controller._session_owners
+
+
 async def test_get_url_between_shows_keeps_the_current_viewer_key() -> None:
     """Re-resolving the url after a show does not rotate the key."""
     controller = _make_controller()

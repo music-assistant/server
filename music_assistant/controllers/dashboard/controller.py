@@ -207,6 +207,7 @@ class DashboardController(CoreController):
         # bound before the launch: its new key is usable as soon as the url is out,
         # and must never read the previous caster's preferences
         previous_owner = self._session_owners.get(dashboard_id)
+        previous_session = self._sessions.get(dashboard_id)
         user = get_current_user()
         _set_or_pop(self._session_owners, dashboard_id, user.user_id if user else None)
 
@@ -222,8 +223,13 @@ class DashboardController(CoreController):
                 )
             shown = True
         finally:
-            if not shown:
-                # the previous cast is still on screen: give it back its key and owner
+            # unless a hide or unregister during the launch cleared the dashboard,
+            # the previous cast is still on screen: give it back its key and owner
+            if (
+                not shown
+                and self._dashboards.get(dashboard_id) is registration
+                and self._sessions.get(dashboard_id) is previous_session
+            ):
                 _set_or_pop(self._viewer_keys, dashboard_id, previous_key)
                 _set_or_pop(self._session_owners, dashboard_id, previous_owner)
 
