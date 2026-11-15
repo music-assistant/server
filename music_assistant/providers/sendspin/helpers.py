@@ -20,6 +20,8 @@ if TYPE_CHECKING:
         PairMethodDescriptor,
     )
     from aiosendspin.models.management import ManagementResultData
+    from aiosendspin.server import SendspinClient
+    from aiosendspin.server.roles import Role
 
 
 class SecurityActionError(Exception):
@@ -185,6 +187,20 @@ def bridge_client_id_variants(client_id: str) -> list[str]:
     except ValueError:
         return [client_id]
     return [client_id, f"{BRIDGE_PREFIX}{toggled:02x}{mac_hex[2:]}"]
+
+
+def holds_bridge_client(client: SendspinClient, role: Role | None) -> bool:
+    """
+    Return whether a bridge still holds the Sendspin client it registered.
+
+    Another bridge of the device can register the same client id while this one is still
+    registered: the server then hands that bridge the client, with roles of its own. A
+    bridge that stops only removes a client it still holds.
+
+    :param client: The client the registration of the bridge returned.
+    :param role: The role the bridge got with that client, if any.
+    """
+    return role is None or role in client.roles_by_family(role.role_family)
 
 
 def mac_from_bridge_client_id(client_id: str) -> str | None:

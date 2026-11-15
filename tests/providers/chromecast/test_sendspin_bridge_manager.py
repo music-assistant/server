@@ -96,7 +96,7 @@ class TestCastBridgePolicy:
         """Test the cast bridge is denied when the device has AirPlay at all."""
         manager, _, cast_protocol = _make_cast_environment()
         airplay_output = MagicMock()
-        # AirPlay output listed but NOT available (e.g. disabled by user)
+        # AirPlay output listed but NOT available (e.g. its device is away)
         airplay_output.available = False
         cast_protocol.player = _player(airplay=airplay_output)
 

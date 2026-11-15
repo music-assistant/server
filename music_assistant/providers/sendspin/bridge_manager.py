@@ -26,6 +26,8 @@ from music_assistant_models.enums import EventType
 
 from music_assistant.constants import CONF_PLAYERS, CONF_UNDERLYING_PLAYER_ID
 
+from .helpers import bridge_client_id_variants
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -33,6 +35,7 @@ if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.player import Player
     from music_assistant.models.player_protocol import PlayerProtocol
     from music_assistant.models.player_provider import PlayerProvider
 
@@ -159,6 +162,8 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             # The Sendspin provider was reloaded; rebuild against the new server
             await self.remove_bridge(protocol_id)
         if not self._has_bridge(protocol_id):
+            if client_id:
+                await self._remove_outputs_of_switched_off_protocols(client_id)
             await self.setup_bridge(protocol)
 
     async def setup_bridge(self, protocol: PlayerProtocol) -> None:
@@ -286,6 +291,23 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         """Return whether a bridge is currently in place for the protocol."""
         return protocol_id in self._bridges
 
+    def _has_switched_on_output(self, player: Player, protocol_domain: str) -> bool:
+        """
+        Return whether a player has an output of a protocol that the user has switched on.
+
+        An output that is away counts; one switched off as an output of the player, or whose
+        provider is disabled, does not.
+
+        :param player: The player to look at.
+        :param protocol_domain: The domain of the protocol of the output, such as "airplay".
+        """
+        if (output := player.get_output_protocol_by_domain(protocol_domain)) is None:
+            return False
+        # a native output is listed as "native", not under the id of its protocol
+        return output.is_native or self.mass.config.is_protocol_switched_on(
+            output.output_protocol_id
+        )
+
     def _lifecycle_allows_bridge(self, protocol: PlayerProtocol) -> bool:
         """Return whether the current lifecycle state allows a bridge for the protocol."""
         if self.sendspin_server is None:
@@ -331,7 +353,9 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         Remove the Sendspin protocol of a bridge client and its config, when it is ours.
 
         Another bridge manager can compute the same client id for the same device (an
-        AirPlay id equal to the Cast MAC), so only a client riding on this protocol goes.
+        AirPlay id equal to the Cast MAC), so only a client riding on this protocol goes. A
+        client another bridge registered meanwhile keeps its output, which is attached again
+        riding on the protocol of that bridge.
 
         :param protocol_id: The id of the bridged protocol.
         :param client_id: The client id of its bridge.
@@ -345,8 +369,32 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             return False
         if underlying_id != protocol_id:
             return False
+        if (server := self.sendspin_server) and server.is_external_player(client_id):
+            # Sendspin tells nothing when a bridge registers an id that is registered
+            # already, so the output still rides on this protocol until it attaches again
+            await self.mass.players.unregister(client_id)
+            if sendspin_provider := self.sendspin_provider:
+                await sendspin_provider.discover_players()
+            return False
         await self.mass.players.remove_protocol(client_id)
         return True
+
+    async def _remove_outputs_of_switched_off_protocols(self, client_id: str) -> None:
+        """
+        Remove the Sendspin outputs of a device that ride on a protocol the user switched off.
+
+        Such an output, stored under another form of the device's client id, can not return
+        while that protocol is switched off, yet keeps the place of the Sendspin output of the
+        device from the bridge that registers under the given client id.
+
+        :param client_id: The client id of the bridge that is about to register.
+        """
+        for other_id in bridge_client_id_variants(client_id)[1:]:
+            underlying_id = self.mass.config.get_protocol_value(other_id, CONF_UNDERLYING_PLAYER_ID)
+            if isinstance(underlying_id, str) and not self.mass.config.is_protocol_switched_on(
+                underlying_id
+            ):
+                await self.mass.players.remove_protocol(other_id)
 
     async def _heal_stale_client_disable(self, protocol: PlayerProtocol, client_id: str) -> None:
         """

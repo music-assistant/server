@@ -46,6 +46,7 @@ from music_assistant.providers.sendspin.bridge_role import (
 from music_assistant.providers.sendspin.helpers import (
     bridge_client_id_from_mac,
     bridge_client_id_variants,
+    holds_bridge_client,
 )
 
 from .bridge_role import SLIMPROTO_BRIDGE_ROLE_ID, SlimprotoBridgeRole
@@ -155,8 +156,8 @@ RECONNECT_REJOIN_WINDOW: float = 60.0
 # The cache category of what was learned about the start of a player, by protocol id.
 CACHE_CATEGORY_START_OFFSET = 2
 
-# Player state fields the bridge policy depends on: an AirPlay output denies the bridge,
-# and the Sendspin output of another bridge does while it is there.
+# Player state fields the bridge policy depends on: an AirPlay output that is switched on
+# denies the bridge, and the Sendspin output of another bridge does while it is there.
 _BRIDGE_POLICY_STATE_FIELDS: frozenset[str] = frozenset({"output_protocols"})
 
 
@@ -495,10 +496,12 @@ class SendspinSqueezeliteBridge:
             self._close_session(session, stop_player=True)
         if self.protocol.sendspin_bridge is self:
             self.protocol.sendspin_bridge = None
-        if self._sendspin_client is not None and (client_id := self._bridge_client_id):
+        if (client := self._sendspin_client) is not None and (client_id := self._bridge_client_id):
+            holds_client = holds_bridge_client(client, self._bridge_role)
             self._sendspin_client = None
             self._bridge_role = None
-            await self.sendspin_server.remove_client(client_id)
+            if holds_client:
+                await self.sendspin_server.remove_client(client_id)
         self.logger.debug("Sendspin bridge stopped for %s", self.protocol.display_name)
 
     def stop_streaming(self) -> bool:
@@ -1306,9 +1309,10 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
         # a bridge tool plays to a device of another protocol, which is bridged over that
         if is_bridge_tool(squeezelite_player.client.device_model):
             return False
-        # a device with AirPlay gets its Sendspin support over AirPlay
+        # a device with AirPlay gets its Sendspin support over AirPlay, while the user has
+        # that switched on
         player = protocol.player
-        return not (player and player.get_output_protocol_by_domain("airplay"))
+        return not (player and self._has_switched_on_output(player, "airplay"))
 
     async def _restore_start_offset(self, protocol_id: str) -> None:
         """

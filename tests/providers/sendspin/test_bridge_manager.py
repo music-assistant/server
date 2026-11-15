@@ -78,6 +78,8 @@ class _Environment:
             side_effect=lambda coro, **_kwargs: asyncio.get_running_loop().create_task(coro)
         )
         self.sendspin_provider = MagicMock()
+        # no other bridge registered a client of this device
+        self.sendspin_provider.server_api.is_external_player.return_value = False
         mass.get_provider = MagicMock(
             side_effect=lambda domain: self.sendspin_provider if domain == "sendspin" else None
         )
