@@ -77,6 +77,10 @@ class HeosPlayer(PlayerProtocol):
         self._device: PyHeosPlayer = device
         self._ma_controls_playback = False
         self._ma_playback_starting = False
+        # play_url -> (restart STOP) -> PLAY: progress before that PLAY belongs to the
+        # previous stream, see _track_ma_stream_start
+        self._ma_awaiting_restart_stop = False
+        self._ma_stream_started = False
         self._ma_playback_transition_timer_id = f"heos_playback_transition_{self.protocol_id}"
         self._queue_cleanup_lock = asyncio.Lock()
         self._queue_cleanup_pending = False
@@ -248,10 +252,20 @@ class HeosPlayer(PlayerProtocol):
         playback_state = HEOS_PLAY_STATE_TO_PLAYBACK_STATE.get(
             self._device.state, PlaybackState.UNKNOWN
         )
+        self._track_ma_stream_start()
         if self._ma_playback_starting and playback_state == PlaybackState.IDLE:
             # HEOS reports a transient stop while it switches to the new MA stream
             return
         self._attr_playback_state = playback_state
+
+    def _track_ma_stream_start(self) -> None:
+        """Detect when HEOS plays the new MA stream during the playback transition."""
+        if not self._ma_playback_starting or self._ma_stream_started:
+            return
+        if self._device.state == HeosPlayState.STOP:
+            self._ma_awaiting_restart_stop = False
+        elif self._device.state == HeosPlayState.PLAY and not self._ma_awaiting_restart_stop:
+            self._ma_stream_started = True
 
     def _update_player_current_media(self) -> None:
         """Update current media properties."""
@@ -322,6 +336,11 @@ class HeosPlayer(PlayerProtocol):
 
     def _update_player_playing_progress(self) -> None:
         """Update current media progress properties."""
+        if self._ma_playback_starting and not self._ma_stream_started:
+            # Progress before the new MA stream plays belongs to the previous stream
+            self._attr_elapsed_time = None
+            self._attr_elapsed_time_last_updated = None
+            return
         now_playing = self._device.now_playing_media
 
         self._attr_elapsed_time = (
@@ -389,6 +408,9 @@ class HeosPlayer(PlayerProtocol):
         url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         self._cancel_ma_playback_transition()
         self._ma_playback_starting = True
+        self._ma_stream_started = False
+        # Only a playing player stops while it restarts on the new stream
+        self._ma_awaiting_restart_stop = self._device.state == HeosPlayState.PLAY
         self._ma_controls_playback = True
         try:
             await self._device.play_url(url)
