@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -42,6 +43,8 @@ NIGHTLY_AMD64 = "sha256:" + "2" * 64
 DEV = "sha256:" + "3" * 64
 DEV_AMD64 = "sha256:" + "4" * 64
 DEV_ARM64 = "sha256:" + "5" * 64
+# the steps of the publishing job use jq, which the runner has and the test container lacks
+needs_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is not installed")
 # answers `docker buildx imagetools inspect <ref> --format '{{json .Manifest|.Image}}'` from a
 # JSON file of {ref: {"Manifest": ..., "Image": ...}}, as the registry would
 STUB_DOCKER = """#!/usr/bin/env python3
@@ -306,6 +309,7 @@ def test_dev_image_publication_builds_on_the_nightly_digest() -> None:
     }
 
 
+@needs_jq
 def test_dev_image_publication_skips_a_release_run_without_a_new_nightly(tmp_path: Path) -> None:
     """After a release run, an image that already sits on the current nightly is left alone."""
     code, outputs, stderr = _run_publish_step(
@@ -321,6 +325,7 @@ def test_dev_image_publication_skips_a_release_run_without_a_new_nightly(tmp_pat
     }
 
 
+@needs_jq
 @pytest.mark.parametrize(
     ("event", "dev_base"),
     [
@@ -340,6 +345,7 @@ def test_dev_image_publication_builds(tmp_path: Path, event: str, dev_base: str 
     assert outputs["digest"] == NIGHTLY
 
 
+@needs_jq
 @pytest.mark.parametrize(
     ("case", "message"),
     [
@@ -361,6 +367,7 @@ def test_dev_image_publication_stops_on_doubt(tmp_path: Path, case: str, message
     assert message in stderr
 
 
+@needs_jq
 @pytest.mark.parametrize(
     ("built", "platforms", "base", "ok"),
     [
