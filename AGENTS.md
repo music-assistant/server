@@ -125,6 +125,7 @@ The ProviderMapping has this structure:
 
 - A media item itself also has an item_id and provider attribute. For an item that comes straight from the musicprovider itself (so not from the MA library) the provider attribute will be set to the instance_id of that provider.
 - Library items are identified by `item.provider == "library"` where `item.item_id` is the library DB ID
+- `item.provider == "library"` only says the item has a row in the database, not that it is in the user's library: the album and artists of a library track get a row too. Whether an item is in the library is the `in_library` flag on its provider mappings (and a liked item counts as in the library)
 - `provider_domain='library'` **never exists** in provider_mappings — library items don't have mappings to themselves
 - To resolve a provider item to its library equivalent, use: `await mass.music.<mediatype>.get_library_item_by_prov_id(item_id, provider_instance_id_or_domain)`
 - Never assume you can use `mapping.item_id` directly as a library DB ID — always use the resolution method above

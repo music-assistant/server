@@ -85,6 +85,54 @@ In most cases, you won't need to modify the models. However, if you do need to m
 
 **Note:** You must rerun this command whenever you add or remove files from the `models` repository to ensure the changes are picked up.
 
+### Running a provider from a folder outside the server
+
+A provider that lives outside the server repository (for example in a repository of its own) can be run from where it is:
+* Name the provider folder after the provider's `domain`. A domain the server already has is refused.
+* Start the server in dev mode (`PYTHONDEVMODE=1`, or from a checkout with a `.venv` in the repository root) and pass the folder that holds your provider folders:
+
+      PYTHONDEVMODE=1 python -m music_assistant --dev-providers-dir /path/to/my_providers
+
+* The `requirements` in `manifest.json` are plain package names with versions, such as `aiohttp-retry==2.9.1`. They are installed next to the server's own packages and never replace one of them: a provider whose requirements clash with the server is not loaded.
+* A change to the code takes effect after a restart of the server.
+* To test the provider against a real server, add `pytest_plugins = ["music_assistant.testing"]` to `tests/conftest.py` (with pytest-asyncio's `asyncio_mode = "auto"`). The `mass` fixture then gives a started server in dev mode that loads the providers in the root folder of the test run, kept off the network. Next to the server, install the requirements of its built-in Sendspin provider (`aiosendspin[server]` and `av`, at the versions in `music_assistant/providers/sendspin/manifest.json`): the server starts that provider at every boot.
+
+### Trying a branch or your own provider in Docker
+
+The development image `ghcr.io/music-assistant/server:dev` runs a server without a development setup. It is the nightly server image plus the tools to install the server from a branch, a pull request or a fork, to build the frontend from a branch, and to load providers from their own repository. It runs the code of the repositories you name, so use it to test, not to run your daily server.
+
+Three environment variables say what to run; an empty or unset one is not used.
+* `SERVER_REPO`: the server to install instead of the nightly. A branch (`dev`, `feature/new-player`), a pull request (`pr-123`), a full commit hash, or a fork as `owner/repo@ref` (`owner/repo` uses the fork's default branch).
+* `FRONTEND_REPO`: the frontend to build instead of the one that comes with the server, in the same forms.
+* `PROVIDER_REPO`: a repository with one or more provider folders, such as one made from the [community provider template](https://github.com/music-assistant/community-provider-template). It is `owner/repo` (its default branch), `owner/repo@ref` (a branch, a tag or a commit) or `owner/repo@pr-12` (pull request 12 of that repository). The repository is fetched again at every start and the server runs in dev mode with it as its provider folder, see [Running a provider from a folder outside the server](#running-a-provider-from-a-folder-outside-the-server).
+
+The server keeps its data in `/data`, so give that a volume:
+
+```sh
+docker run --rm --network host -v ma-dev-data:/data \
+  -e PROVIDER_REPO=your-github-handle/your-repository \
+  ghcr.io/music-assistant/server:dev
+```
+
+With Docker Compose:
+
+```yaml
+services:
+  music-assistant-dev:
+    image: ghcr.io/music-assistant/server:dev
+    network_mode: host
+    volumes:
+      - ma-dev-data:/data
+    environment:
+      SERVER_REPO: pr-123
+      PROVIDER_REPO: your-github-handle/your-repository@my-branch
+
+volumes:
+  ma-dev-data:
+```
+
+Further arguments go to the server, as with the server image: `docker run … ghcr.io/music-assistant/server:dev --log-level debug`. A restart fetches and installs the named references again, so it picks up new commits. Pull the image again for a newer nightly. The Music Assistant DEV SERVER app for Home Assistant runs this image, and its options `server_repo`, `frontend_repo` and `provider_repo` are the three variables.
+
 ## Listing random order
 
 Server listing commands accept an optional integer `random_seed`. With `sort_field=random`,
@@ -123,7 +171,7 @@ Add a new folder to the `providers` folder with the name of provider. Add two fi
 
 **Configuring the manifest.json file**
 
-The easiest way to get start is to copy the contents of the manifest of an existing Music Provider, e.g. Spotify or Youtube Music. See [the manifest section](#⚙️-manifest-file) for all available properties.
+The easiest way to get start is to copy the contents of the manifest of an existing Music Provider, e.g. Spotify or Youtube Music. See [the manifest section](#%EF%B8%8F-manifest-file) for all available properties.
 
 **Creating the provider**
 
@@ -163,6 +211,8 @@ A provider that talks to a music service must therefore:
   service has no endpoint for that way. Paging through the user's own library, through the
   throttler, is fine. A provider without an artist tracks endpoint does not offer
   `ProviderFeature.ARTIST_TRACKS`; artist top tracks (`ARTIST_TOPTRACKS`) is a feature of its own.
+  A listing of an artist's albums stops at `ARTIST_ALBUMS_LIMIT` releases (100, in
+  [`music_provider.py`](./music_assistant/models/music_provider.py)).
   The throttler serves playback first, user actions second and background work last. Background
   work may use only half of the rate limit and is spread evenly over time, which keeps room free
   for the user. Music Assistant sets the priority where a request starts, so a provider normally
@@ -186,11 +236,33 @@ All Providers (of all types) can be found in the `music_assistant/providers` fol
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_player_provider` to get you started fast!
 
+A player provider implements one `PlayerProtocol` (`music_assistant/models/player_protocol.py`) per device and registers it with `mass.players.register()`. The server builds the `Player` that users see from the protocols of a device, and attaches the protocol to it: the protocol finds it as `self.player`. The contract between the two:
+
+* A protocol reports its own values (`_attr_*` or its properties) and reads them back from itself, never from a published state.
+* It reads the final values of its player (`self.player.<field>`: what the player published last, the same values as in `self.player.state`) only for what the device has to display or follow: the current media and its position.
+* The grouping as users see it comes from the player too (`self.player.group_members`, `self.player.synced_to`, `self.player.active_group`); what a protocol reports about grouping names the protocol ids of its own provider.
+* A property of a protocol is read while the server derives the state of its player, when `self.player.<field>` is still the previous value. Such a property never reads a final value of its own player: it asks what is true right now (`self.player.attached_protocols`, `self.player.resolve_output_protocol()`).
+* Whether another player takes part in what a protocol does (a member of its group, the target of a handover) is the `available` that player published, as for a client. A player that is switched off at its external power control is available too, while its device is off the network (`offline_by_power_control`). A protocol never switches such a player on itself: the server powers it on, and waits for its device, before a command starts the group or adds the player. A protocol that restarts playback by itself, which is no command of a user, does that inside `with mass.players.without_member_power_on():`, so the restart switches no member of a group on and waits for none. The members that play along right now come from `mass.players.iter_group_members()`.
+* Data that only lives while the server runs (`extra_data`, the stop and external source markers) stays on `self.player`.
+* `self.player` is already `None` when `on_detach()` runs: a protocol releases what it holds itself.
+* The same object can be attached again after a detach, when the server moves it to another player or changes its role: whatever `on_detach()` ends, `on_attach()` starts again.
+* `on_remove()` also reaches a protocol that is not attached, as long as its provider holds the object: the server keeps those only weakly, so a provider with a configured device list keeps the object of every device on it.
+* The config of a protocol has no name: the name the user gave the device is `self.player.config.name`.
+* Software players that share a host report an id of their own instance as `UUID` or `SERIAL_NUMBER` identifier.
+* A provider whose native protocol stands for devices of other makes (a Home Assistant media player) is ranked below the vendor's own protocol in `NATIVE_PRIORITY`: on a device that has both, it attaches as a control protocol of the vendor's player.
+* Every zone of a multi-zone chassis reports its zone as `ZONE` next to the identifiers of the chassis: `MAIN_ZONE` for the zone where the protocols of the chassis that report no zone (AirPlay, DLNA, ...) play, its own id for every other zone.
+
+The server asks a provider to look for its devices again when one may be found again: after a player is enabled, after a player that is not a group is removed, and when a protocol that is not attached moves to another player (in a merge, or when it is taken off its player) or is switched on again as an output. It then replays the cached mDNS records of the provider's `mdns_discovery` types and reruns the SSDP search of its `upnp_discovery` targets. So `discover_players()` only has to offer the known devices that this cannot reach.
+
+An audio protocol that matches no player and has no globally administered MAC address (none at all, or only a locally administered one) waits up to 15 seconds before it gets a player of its own, as the other protocols of its device may still identify it. A protocol that only exists while connected does not wait; a protocol that rides on another one waits for that one instead.
+
 ## 💽 Building your own Metadata Provider
 Will follow soon™
 
 ## 🔌 Building your own Plugin Provider
 Will follow soon™
+
+A provider of any type that stores the id of a player (in its config or setup data) can find it turned into a legacy id: the user merged that player into another one, which answers to the stored id from then on. Resolve a stored id with `mass.players.resolve_player_id()` where it is read, and compare the ids of events and live players with the resolved id. A browser or app player only stays while its client is away once something about it is stored; a plugin that stores something the user set up for such a player (a DJ on its queue, a choice in its settings) calls `mass.players.keep_player()` for it, so the player and what was set up are there when the client comes back. Drop what you store about a player on `PLAYER_REMOVED`: it is only sent for a player that is gone for good, removed by the user, merged into another one, or a browser or app player whose client disconnected while nothing was stored of it and its queue was empty. A disabled player is no removal: it gets a last `PLAYER_UPDATED`, disabled and unavailable, and `PLAYER_ADDED` when it is enabled again. A browser or app player that was removed and connects again is a new player under the same id, announced with `PLAYER_ADDED`. A player stays while its device is away, so neither `PLAYER_ADDED` nor `get_player()` tells whether the device is there: a device that goes away or comes back is a change of `available` in `PLAYER_UPDATED`.
 
 ## ⚙️ Manifest file
 The manifest file contains metadata and configuration about a provider. The supported properties are:

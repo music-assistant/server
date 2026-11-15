@@ -57,9 +57,15 @@ from music_assistant.constants import (
     MASS_LOGGER_NAME,
     MASS_VERSION,
     MIN_SCHEMA_VERSION,
+    PROVIDER_LOAD_CONCURRENCY,
+    UNHANDLED_PROVIDER_ERROR_CODE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import CacheController
+from music_assistant.controllers.community_catalog import CommunityCatalogController
+from music_assistant.controllers.community_catalog.constants import (
+    CONF_ENABLED as CONF_COMMUNITY_CATALOG_ENABLED,
+)
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.config.filesystem_consolidation import (
     consolidate_filesystem_sources,
@@ -83,10 +89,20 @@ from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver import WebserverController
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_scope,
+)
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.build_info import get_official_build_info
+from music_assistant.helpers.catalog import (
+    CATALOG_NEW_FILE,
+    CatalogRecommendation,
+    get_recommendations,
+    read_new_domains,
+)
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.provider_access import visible_music_sources
@@ -95,6 +111,7 @@ from music_assistant.helpers.util import (
     TaskManager,
     is_hass_supervisor,
     load_provider_module,
+    set_provider_tier,
     warn_if_missing_x86_64_v2,
 )
 from music_assistant.models import ProviderInstanceType
@@ -111,6 +128,7 @@ if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ProviderConfig
 
+    from music_assistant.controllers.community_catalog.models import CommunityProvider
     from music_assistant.models.core_controller import CoreController
 
 isdir = wrap(os.path.isdir)
@@ -136,7 +154,6 @@ PROVIDER_SETUP_TIMEOUT = 120
 # Generous enough for the slowest hosts to load their ML models, but bounded so a wedged
 # provider fails to load instead of holding up startup forever.
 PROVIDER_ASYNC_INIT_TIMEOUT = 300
-PROVIDER_LOAD_CONCURRENCY = 8
 # Seconds before each retry of a failed provider load; the last delay repeats.
 PROVIDER_RETRY_DELAYS = (10, 30, 60, 120)
 PROVIDER_RETRY_JITTER = 3
@@ -162,18 +179,25 @@ def is_audio_analysis_provider(
     return provider.type == ProviderType.AUDIO_ANALYSIS
 
 
+class _UnexpectedSetupError(SetupFailedError):
+    """A provider load step that failed with an unexpected error that has no message."""
+
+
 def _provider_error_from_exc(exc: BaseException) -> ProviderError:
     """Build a serializable, localizable ProviderError from a provider setup exception."""
     message = str(exc) or type(exc).__name__
     if isinstance(exc, MusicAssistantError):
         return ProviderError(
-            error_code=exc.error_code,
+            # a failure that only names an unexpected error is as unexpected as that error
+            error_code=UNHANDLED_PROVIDER_ERROR_CODE
+            if isinstance(exc, _UnexpectedSetupError)
+            else exc.error_code,
             message=message,
             translation_key=exc.translation_key,
             translation_args=list(exc.translation_args),
             translation_owner=exc.translation_owner,
         )
-    return ProviderError(error_code=999, message=message)
+    return ProviderError(error_code=UNHANDLED_PROVIDER_ERROR_CODE, message=message)
 
 
 def _provider_error_traceback(exc: BaseException) -> BaseException | None:
@@ -221,7 +245,7 @@ async def _provider_load_step(
         # an exception without a message (a bare TimeoutError from an http call, say) would
         # otherwise reach the user as nothing but its class name, with no hint of what failed
         msg = f"Provider {domain} failed to {action}: {type(err).__name__}"
-        raise SetupFailedError(msg) from err
+        raise _UnexpectedSetupError(msg) from err
 
 
 class MusicAssistant:
@@ -245,8 +269,15 @@ class MusicAssistant:
     dashboard: DashboardController
     statistics: StatisticsController
     storage: StorageController
+    community_catalog: CommunityCatalogController
 
-    def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
+    def __init__(
+        self,
+        storage_path: str,
+        cache_path: str,
+        safe_mode: bool = False,
+        dev_providers_path: str | None = None,
+    ) -> None:
         """Initialize the MusicAssistant Server."""
         self._state = CoreState.STARTING
         self.storage_path = storage_path
@@ -255,10 +286,13 @@ class MusicAssistant:
         # default, which is a RAM-backed tmpfs on HAOS - redirect to the data volume.
         os.environ.setdefault("SQLITE_TMPDIR", storage_path)
         self.safe_mode = safe_mode
+        self.dev_providers_path = dev_providers_path
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()
         self._provider_manifests: dict[str, ProviderManifest] = {}
+        # the built-in providers that are new in this release line
+        self._catalog_new_domains: frozenset[str] = frozenset()
         self._provider_icons: dict[str, dict[ProviderIconVariant, tuple[str, bytes]]] = {}
         self._providers: dict[str, ProviderInstanceType] = {}
         self._tracked_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -296,6 +330,7 @@ class MusicAssistant:
         await self.discovery.start_zeroconf()
         # load all available providers from manifest files
         await self.__load_provider_manifests()
+        self._catalog_new_domains = await asyncio.to_thread(read_new_domains, CATALOG_NEW_FILE)
         # setup/migrate storage
         await self._setup_storage()
         LOGGER.info(
@@ -339,6 +374,7 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.dashboard))
             tg.create_task(setup_controller(self.statistics))
             tg.create_task(setup_controller(self.storage))
+            tg.create_task(setup_controller(self.community_catalog))
 
         for controller_name in (
             "cache",
@@ -395,6 +431,7 @@ class MusicAssistant:
         # the startup if they fail or take a long time to load
         if not self.safe_mode:
             await self._load_providers()
+            self.create_task(self.community_catalog.start(), task_name="community_catalog_start")
         # at this point we are fully up and running,
         # set state to running to signal we're ready
         self._set_state(CoreState.RUNNING)
@@ -524,6 +561,7 @@ class MusicAssistant:
             homeassistant_addon=self.running_as_hass_addon,
             onboard_done=self.config.onboard_done,
             status=self._state,
+            dev_mode=self.dev_mode,
         )
 
     @api_command("time", authenticated=False)
@@ -551,6 +589,34 @@ class MusicAssistant:
         if provider := self.get_provider(instance_id_or_domain, return_unavailable=True):
             return provider.manifest
         raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
+
+    @api_command("catalog/recommendations", required_scope=Scope.PROVIDERS_READ)
+    async def get_catalog_recommendations(self) -> list[CatalogRecommendation]:
+        """
+        Return what the Marketplace suggests the calling user adds, and why.
+
+        Only providers the user may add and has not set up are suggested. Providers of the
+        community catalog are only suggested to a user who manages the server, while the
+        community catalog is enabled.
+        """
+        user = get_current_user()
+        if user is not None and not has_scope(user, Scope.CONFIG_PROVIDERS_OWN):
+            # adding a provider takes this scope
+            return []
+        manifests = self.get_provider_manifests()
+        return get_recommendations(
+            manifests,
+            configured=self.config.own_provider_domains(),
+            can_add=self.config.can_add_provider,
+            discovered={
+                manifest.domain
+                for manifest in manifests
+                if self.discovery.is_seen_on_mdns(manifest, identifying=True)
+            },
+            new_domains=self._catalog_new_domains,
+            community=await self._get_catalog_community_providers(user),
+            now=utc(),
+        )
 
     @api_command("providers/icon", required_scope=Scope.PROVIDERS_READ)
     def get_provider_icon_data(
@@ -1020,19 +1086,24 @@ class MusicAssistant:
         """
         Register the manifest of a provider, which makes the provider available for loading.
 
+        The texts of a community provider are loaded with it.
+
         :param provider_path: Folder of the provider, holding its manifest.json.
         :param tier: Who maintains the provider, which follows from where it loads.
         :raises InvalidDataError: A community provider's folder is not named after its domain.
         :raises AlreadyRegisteredError: A community provider's domain is already registered.
         """
         manifest = await self._load_provider_manifest(provider_path, tier)
+        if tier == ProviderTier.COMMUNITY:
+            await self.translations.load_provider_strings(manifest.domain, provider_path)
         if manifest.mdns_discovery:
             await self.discovery.refresh_mdns_browser()
+        self._update_players_without_provider()
         return manifest
 
     async def unregister_provider_manifest(self, domain: str) -> None:
         """
-        Remove the manifest of a community provider, after which it can no longer be loaded.
+        Remove the manifest and texts of a community provider, so it can no longer be loaded.
 
         Does nothing for a domain that is not a registered community provider.
 
@@ -1043,12 +1114,14 @@ class MusicAssistant:
             return
         del self._provider_manifests[domain]
         self._provider_icons.pop(domain, None)
+        self.translations.unload_provider_strings(domain)
         # a load that is still waiting for its retry has nothing left to load
         for instance_id, raw_conf in self.config.get(CONF_PROVIDERS, {}).items():
             if raw_conf["domain"] == domain:
                 self.cancel_timer(f"load_provider_{instance_id}")
         if manifest.mdns_discovery:
             await self.discovery.refresh_mdns_browser()
+        self._update_players_without_provider()
 
     async def load_provider_config(
         self,
@@ -1252,8 +1325,6 @@ class MusicAssistant:
                 # a live source cannot outlive the plugin exposing it: the player would go
                 # on naming a source that can no longer be streamed, its queue held inactive
                 await self.players.release_provider_sources(instance_id)
-            if isinstance(provider, PlayerProvider):
-                await self.players.on_provider_unload(provider)
             if isinstance(provider, MusicProvider):
                 await self.music.on_provider_unload(provider)
             # check if there are no other providers dependent of this provider
@@ -1261,15 +1332,9 @@ class MusicAssistant:
                 if dep_prov.manifest.depends_on == provider.domain:
                     await self.unload_provider(dep_prov.instance_id)
             try:
-                if is_player_provider(provider):
-                    # unregister all players of this provider, straight from the registry: the
-                    # provider's own players listing hides disabled and still-initializing
-                    # players, which must be unregistered here too so their on_unload runs
-                    # and no stale entry is left behind
-                    for player in list(self.players):
-                        if player.provider.instance_id != instance_id:
-                            continue
-                        await self.players.unregister(player.player_id, permanent=is_removed)
+                if isinstance(provider, PlayerProvider):
+                    # inside the try: a teardown that fails still deregisters the provider
+                    await self.players.on_provider_unload(provider)
                 await provider.unload(is_removed)
             except Exception as err:
                 LOGGER.warning(
@@ -1352,6 +1417,7 @@ class MusicAssistant:
             self.dashboard,
             self.statistics,
             self.storage,
+            self.community_catalog,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
@@ -1390,6 +1456,7 @@ class MusicAssistant:
         self.dashboard = DashboardController(self)
         self.statistics = StatisticsController(self)
         self.storage = StorageController(self)
+        self.community_catalog = CommunityCatalogController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
             controller: CoreController = getattr(self, controller_name)
@@ -1450,16 +1517,10 @@ class MusicAssistant:
                 continue
             if not (manifest := self._provider_manifests.get(default_provider)):
                 continue
-            if require_mdns:
-                # if mdns discovery is required, check if we have seen any mdns entries
-                # for this provider before setting it up
-                for mdns_name in set(self.discovery.aiozc.zeroconf.cache.cache):
-                    if manifest.mdns_discovery and any(
-                        mdns_type in mdns_name for mdns_type in manifest.mdns_discovery
-                    ):
-                        break
-                else:
-                    continue
+            # if mdns discovery is required, check if we have seen any mdns entries
+            # for this provider before setting it up
+            if require_mdns and not self.discovery.is_seen_on_mdns(manifest):
+                continue
             # A config the user enabled by hand before this became a default is not an auto setup.
             if await self.config.create_builtin_provider_config(manifest.domain):
                 newly_created_defaults.add(manifest.domain)
@@ -1705,7 +1766,7 @@ class MusicAssistant:
             os.path.join(provider_path, "manifest.json")
         )
         # the tier follows from where a provider loads, not from its manifest file
-        provider_manifest.tier = tier
+        set_provider_tier(provider_manifest, tier)
         if tier == ProviderTier.COMMUNITY:
             domain = provider_manifest.domain
             # the folder name is the module name, and a provider is imported by its domain
@@ -1715,8 +1776,6 @@ class MusicAssistant:
             if domain in self._provider_manifests:
                 msg = f"Provider domain {domain} is already registered"
                 raise AlreadyRegisteredError(msg)
-            provider_manifest.builtin = False
-            provider_manifest.allow_disable = True
         # detect provider icon image variants (svg preferred over png)
         icons = await detect_provider_icons(provider_path)
         if icons:
@@ -1735,6 +1794,12 @@ class MusicAssistant:
         self._provider_manifests[provider_manifest.domain] = provider_manifest
         LOGGER.log(VERBOSE_LOG_LEVEL, "Loaded manifest for provider %s", provider_manifest.name)
         return provider_manifest
+
+    def _update_players_without_provider(self) -> None:
+        """Let the stored players follow a provider manifest that was registered or removed."""
+        # players that are restored later read the manifests as they are by then
+        if hasattr(self, "players"):
+            self.players.on_provider_manifests_changed()
 
     async def _update_available_providers_cache(self) -> None:
         """Update the global cache variable of loaded/available providers."""
@@ -1759,6 +1824,25 @@ class MusicAssistant:
                 },
             }
         )
+
+    async def _get_catalog_community_providers(self, user: User | None) -> list[CommunityProvider]:
+        """
+        Return the providers of the community catalog to suggest to the user, if any.
+
+        :param user: The calling user, None for the server itself.
+        """
+        if (
+            self.safe_mode
+            or not self.community_catalog.config.get_value(CONF_COMMUNITY_CATALOG_ENABLED)
+            or (user is not None and not has_scope(user, Scope.SYSTEM_MANAGE))
+        ):
+            return []
+        try:
+            return await self.community_catalog.get_providers()
+        except MusicAssistantError as err:
+            # the other recommendations do not depend on it
+            LOGGER.warning("Could not list the community catalog for the Marketplace: %s", err)
+            return []
 
     async def _setup_storage(self) -> None:
         """Handle Setup of storage/cache folder(s)."""

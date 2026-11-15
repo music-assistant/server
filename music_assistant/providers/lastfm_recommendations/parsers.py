@@ -398,7 +398,8 @@ async def _resolve_via_musicbrainz(
     :param ctrl: Controller for the media type.
     :param item_mapping: ItemMapping to resolve, carrying a MusicBrainz id if Last.fm had one.
     :param mass: MusicAssistant instance.
-    :param providers: Streaming providers to resolve on, in order of preference.
+    :param providers: Streaming providers to resolve an artist or album on, in order of
+        preference; a track is resolved on the music sources of the user.
     :param artist_name: Artist name to verify the linked item against, if known.
     :returns: The verified item (None when MusicBrainz could not settle it, which says
         nothing about whether a provider has it), and whether the linked provider could
@@ -420,6 +421,10 @@ async def _resolve_via_musicbrainz(
         LOGGER.debug("MusicBrainz lookup of %s failed: %s", item_mapping.name, type(err).__name__)
         return None, False
 
+    if item_mapping.media_type == MediaType.TRACK:
+        return await _resolve_recording(
+            cast("MusicBrainzRecording", entity), item_mapping, mass, artist_name
+        )
     mappings = await provider_mappings_from_urls(
         mass, relation_urls(entity.relations), item_mapping.media_type, exclude_domains=set()
     )
@@ -466,4 +471,41 @@ async def _resolve_via_musicbrainz(
         result.name,
         item_mapping.name,
     )
+    return result, False
+
+
+async def _resolve_recording(
+    recording: MusicBrainzRecording,
+    item_mapping: ItemMapping,
+    mass: MusicAssistant,
+    artist_name: str | None,
+) -> tuple[Track | None, bool]:
+    """
+    Resolve a track through the streaming service links of its MusicBrainz recording.
+
+    :param recording: The MusicBrainz recording Last.fm names for the track.
+    :param item_mapping: ItemMapping to resolve.
+    :param mass: MusicAssistant instance.
+    :param artist_name: Artist name to verify the linked track against, if known.
+    :returns: The verified track (None when its links could not settle it), and whether the
+        linked provider could not hand the track over, so a miss elsewhere is inconclusive.
+    """
+    try:
+        async with _SEARCH_SEMAPHORE:
+            # the linked track only counts when it is the track Last.fm names
+            result = await mass.music.tracks.resolve_musicbrainz_recording(
+                recording, lambda track: _is_matching_result(item_mapping, track, artist_name)
+            )
+    except MusicAssistantError as err:
+        LOGGER.debug(
+            "Linked track could not be fetched: %s (%s)", item_mapping.name, type(err).__name__
+        )
+        return None, True
+    if result is not None:
+        LOGGER.debug(
+            "Match on %s via MusicBrainz: %s (looked up: %s)",
+            result.provider,
+            result.name,
+            item_mapping.name,
+        )
     return result, False

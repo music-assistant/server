@@ -38,6 +38,7 @@ from music_assistant.providers.lastfm_recommendations.constants import (
     CONF_GEO_COUNTRY,
     GEO_COUNTRIES,
     REFRESH_TASK_ID,
+    SIMILAR_ITEMS_FETCH_LIMIT,
 )
 from music_assistant.providers.lastfm_recommendations.recommendations import (
     LastFMRecommendationManager,
@@ -208,14 +209,12 @@ class LastFMRecommendationsProvider(MetadataProvider):
         :param limit: Maximum number of similar artists to return.
         """
         artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
-        similar_raw = await self.api.get_similar_artists(artist.name, artist_mbid, limit)
+        similar_raw = await self.api.get_similar_artists(
+            artist.name, artist_mbid, max(limit, SIMILAR_ITEMS_FETCH_LIMIT)
+        )
         if not similar_raw:
             return []
-
-        resolved = await asyncio.gather(
-            *[self.recommendations_manager.get_or_resolve_artist(raw) for raw in similar_raw]
-        )
-        return [a for a in resolved if a is not None]
+        return await self.recommendations_manager.resolve_similar_artists(similar_raw, limit)
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
         """
@@ -226,14 +225,12 @@ class LastFMRecommendationsProvider(MetadataProvider):
         """
         artist_name = track.artists[0].name if track.artists else "Unknown Artist"
         track_mbid = track.get_external_id(ExternalID.MB_RECORDING)
-        similar_raw = await self.api.get_similar_tracks(artist_name, track.name, track_mbid, limit)
+        similar_raw = await self.api.get_similar_tracks(
+            artist_name, track.name, track_mbid, max(limit, SIMILAR_ITEMS_FETCH_LIMIT)
+        )
         if not similar_raw:
             return []
-
-        resolved = await asyncio.gather(
-            *[self.recommendations_manager.get_or_resolve_track(raw) for raw in similar_raw]
-        )
-        return [t for t in resolved if t is not None]
+        return await self.recommendations_manager.resolve_similar_tracks(similar_raw, limit)
 
     async def get_artist_toptracks(self, artist: Artist, limit: int = 25) -> list[Track]:
         """

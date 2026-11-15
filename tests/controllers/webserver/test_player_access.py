@@ -37,9 +37,25 @@ def _user(role: UserRole, player_filter: list[str]) -> User:
     return User(user_id="user_1", username="tester", role=role, player_filter=player_filter)
 
 
+def _device_id(player_id: str) -> str:
+    """Return the id of the protocol of a shared speaker, which differs from its player id."""
+    return f"{player_id}_device"
+
+
 def _player(player_id: str, *, private: bool) -> Player:
-    """Build a stand-in player carrying just what the access rule reads."""
-    return cast("Player", SimpleNamespace(player_id=player_id, private=private))
+    """
+    Build a stand-in player carrying just what the access rule reads.
+
+    A private client player has the id of the protocol its client announces, a shared
+    speaker's protocol has an id of its own.
+    """
+    protocol_id = player_id if private else _device_id(player_id)
+    return cast(
+        "Player",
+        SimpleNamespace(
+            player_id=player_id, attached_protocols={protocol_id: SimpleNamespace(private=private)}
+        ),
+    )
 
 
 @contextmanager
@@ -81,11 +97,27 @@ def test_restricted_user_is_limited_to_the_filter() -> None:
     assert not has_player_access(user, OTHER_PLAYER, _player(OTHER_PLAYER, private=False))
 
 
+def test_player_looked_up_by_a_legacy_id_is_checked_by_its_own_id() -> None:
+    """A player looked up by a legacy id is permitted when the filter holds its own id."""
+    user = _user(UserRole.USER, [ALLOWED_PLAYER])
+    assert has_player_access(user, "old_kitchen", _player(ALLOWED_PLAYER, private=False))
+    assert not has_player_access(user, "old_living_room", _player(OTHER_PLAYER, private=False))
+
+
 def test_own_client_player_is_permitted() -> None:
     """The private client player the user connected on is usable even when filtered out."""
     user = _user(UserRole.USER, [ALLOWED_PLAYER])
     with _connected_on(OWN_CLIENT):
         assert has_player_access(user, OWN_CLIENT, _player(OWN_CLIENT, private=True))
+
+
+def test_another_private_client_player_is_refused() -> None:
+    """Only the private client player the user connected on is exempt from the filter."""
+    user = _user(UserRole.USER, [ALLOWED_PLAYER])
+    with _connected_on(OWN_CLIENT):
+        assert not has_player_access(
+            user, "browser_session_2", _player("browser_session_2", private=True)
+        )
 
 
 @pytest.mark.parametrize(("caller_id", "permitted"), [("user_1", True), ("service_1", False)])
@@ -109,7 +141,7 @@ def test_own_client_player_is_not_lent_to_an_impersonated_user(
 
 
 def test_shared_speaker_claimed_as_the_client_player_is_refused() -> None:
-    """Announcing a shared speaker's id as the client id does not grant access to it."""
+    """Announcing a shared speaker's protocol id as the client id does not grant access to it."""
     user = _user(UserRole.USER, [ALLOWED_PLAYER])
-    with _connected_on(OTHER_PLAYER):
+    with _connected_on(_device_id(OTHER_PLAYER)):
         assert not has_player_access(user, OTHER_PLAYER, _player(OTHER_PLAYER, private=False))

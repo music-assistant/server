@@ -42,7 +42,7 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
-    CONF_PLAYERS,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PROVIDERS,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
 )
@@ -51,6 +51,7 @@ from music_assistant.controllers.config.helpers import (
     _mask_encrypted,
     _provider_status,
     _reject_encrypted_values,
+    _unavailable_provider_config,
     _with_translation_owner,
 )
 from music_assistant.helpers.api import api_command
@@ -99,6 +100,7 @@ class ProviderConfigMixin:
         provider_type: ProviderType | None = None,
         provider_domain: str | None = None,
         include_values: bool = False,
+        include_unavailable: bool = False,
     ) -> list[ProviderConfig]:
         """
         Return all known provider configurations, optionally filtered by ProviderType.
@@ -109,6 +111,8 @@ class ProviderConfigMixin:
         :param provider_type: Optionally only return providers of this type.
         :param provider_domain: Optionally only return providers of this domain.
         :param include_values: Include the resolved config entries of each provider.
+        :param include_unavailable: Also return configs of providers that are no longer
+            available, with status UNAVAILABLE and the reason in last_error.
         """
         raw_values = self.get(CONF_PROVIDERS, {})
         prov_entries = {x.domain for x in self.mass.get_provider_manifests()}
@@ -119,10 +123,13 @@ class ProviderConfigMixin:
                 continue
             if provider_domain is not None and prov_conf["domain"] != provider_domain:
                 continue
+            if self._is_hidden_source(prov_conf, visible_sources):
+                continue
             # guard for deleted providers
             if prov_conf["domain"] not in prov_entries:
-                continue
-            if self._is_hidden_source(prov_conf, visible_sources):
+                if include_unavailable:
+                    reason = self.mass.community_catalog.unavailable_reason(prov_conf["domain"])
+                    configs.append(_unavailable_provider_config(prov_conf, reason))
                 continue
             if include_values:
                 # get_provider_config already stamps the derived status
@@ -137,11 +144,16 @@ class ProviderConfigMixin:
         return configs
 
     @api_command("config/providers/get", required_scope=Scope.CONFIG_PROVIDERS_READ)
-    async def get_provider_config(self, instance_id: str) -> ProviderConfig:
+    async def get_provider_config(
+        self, instance_id: str, include_unavailable: bool = False
+    ) -> ProviderConfig:
         """
         Return configuration for a single provider.
 
         :param instance_id: The provider instance id.
+        :param include_unavailable: Return the config of a provider that is no longer
+            available, with status UNAVAILABLE and the reason in last_error, instead of
+            raising KeyError.
         :raises InsufficientPermissions: The caller may not use this music source.
         """
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
@@ -150,6 +162,9 @@ class ProviderConfigMixin:
                 if prov.domain == raw_conf["domain"]:
                     break
             else:
+                if include_unavailable:
+                    reason = self.mass.community_catalog.unavailable_reason(raw_conf["domain"])
+                    return _unavailable_provider_config(raw_conf, reason)
                 msg = f"Unknown provider domain: {raw_conf['domain']}"
                 raise KeyError(msg)
             config_entries = await self.get_provider_config_entries(instance_id)
@@ -489,8 +504,12 @@ class ProviderConfigMixin:
             msg = f"Provider {instance_id} does not exist"
             raise KeyError(msg)
         self._check_provider_manage_permission(instance_id)
-        prov_manifest = self.mass.get_provider_manifest(existing["domain"])
-        if prov_manifest.builtin:
+        # no manifest means the provider is no longer available, its config can still go
+        prov_manifest = next(
+            (x for x in self.mass.get_provider_manifests() if x.domain == existing["domain"]),
+            None,
+        )
+        if prov_manifest is not None and prov_manifest.builtin:
             msg = f"Builtin provider {prov_manifest.name} can not be removed."
             raise RuntimeError(msg)
         self.remove(conf_key)
@@ -504,17 +523,11 @@ class ProviderConfigMixin:
         if existing["type"] == "metadata":
             await self.mass.music.cleanup_provider_images(instance_id)
         if existing["type"] == "player":
-            # all players should already be removed by now through unload_provider
-            for player in list(self.mass.players):
-                if player.provider.instance_id != instance_id:
-                    continue
-                self.mass.players.delete_player_config(player.player_id)
-            # cleanup remaining player configs
-            for key, player_conf in list(self.get(CONF_PLAYERS, {}).items()):
-                if not isinstance(player_conf, dict):
-                    continue
-                if player_conf.get("provider") == instance_id:
-                    self.mass.players.delete_player_config(player_conf.get("player_id") or key)
+            # the protocols of this provider were detached by unload_provider. Their
+            # configs go with it; a player only when it has no other protocol left
+            for protocol_id, protocol_conf in list(self.get(CONF_PLAYER_PROTOCOLS, {}).items()):
+                if isinstance(protocol_conf, dict) and protocol_conf.get("provider") == instance_id:
+                    await self.mass.players.remove_protocol(protocol_id)
 
     async def remove_provider_config_value(self, instance_id: str, key: str) -> None:
         """Remove/reset single Provider config value."""
@@ -681,6 +694,41 @@ class ProviderConfigMixin:
         ):
             entry.value = value
 
+    def can_add_provider(self, manifest: ProviderManifest) -> bool:
+        """
+        Return whether the calling user may add an instance of the given provider.
+
+        :param manifest: The manifest of the provider.
+        """
+        user, manages_all_sources = self._access_caller()
+        if user is None or manages_all_sources:
+            return True
+        # a member may only add what becomes a music source of its own: a music
+        # service that allows more than one account and lets members set it up
+        return (
+            manifest.type == ProviderType.MUSIC
+            and not manifest.builtin
+            and manifest.multi_instance
+            and manifest.self_service
+        )
+
+    def own_provider_domains(self) -> builtins.set[str]:
+        """
+        Return the domains of the providers the calling user has set up.
+
+        A user who manages every music source has all that is set up; anyone else has the
+        music sources they own.
+        """
+        user, manages_all_sources = self._access_caller()
+        raw_confs: dict[str, dict[str, Any]] = self.get(CONF_PROVIDERS, {})
+        if user is None or manages_all_sources:
+            return {raw_conf["domain"] for raw_conf in raw_confs.values()}
+        return {
+            raw_conf["domain"]
+            for instance_id, raw_conf in raw_confs.items()
+            if source_owner(self.mass, instance_id) == user.user_id
+        }
+
     @api_command("config/providers/reload", required_scope=Scope.CONFIG_PROVIDERS_OWN)
     async def _reload_provider(self, instance_id: str) -> None:
         """
@@ -735,28 +783,34 @@ class ProviderConfigMixin:
                 new_values[key] = value
         raw_conf["values"] = new_values
         self.set(conf_key, raw_conf)
-        if config.enabled and prov_instance and available:
-            # update config for existing/loaded provider instance
-            await prov_instance.update_config(config, changed_keys)
-            # push instance name to config (to persist it if it was autogenerated)
-            if prov_instance.default_name != config.default_name:
-                self.set_provider_default_name(
-                    prov_instance.instance_id, prov_instance.default_name
-                )
-            if "name" in changed_keys:
-                # signal providers updated so frontends refresh the provider name
-                self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
-        elif config.enabled:
-            # provider is enabled but not available, try to load it
-            await self.mass.load_provider_config(config)
-        else:
-            # disable provider
-            # also unload any other providers dependent of this provider
-            for dep_prov in self.mass.providers:
-                if dep_prov.manifest.depends_on == config.domain:
-                    await self.mass.unload_provider(dep_prov.instance_id)
-            await self.mass.unload_provider(config.instance_id)
-            # For player providers, unload_provider should have removed all its players by now
+        try:
+            if config.enabled and prov_instance and available:
+                # update config for existing/loaded provider instance
+                await prov_instance.update_config(config, changed_keys)
+                # push instance name to config (to persist it if it was autogenerated)
+                if prov_instance.default_name != config.default_name:
+                    self.set_provider_default_name(
+                        prov_instance.instance_id, prov_instance.default_name
+                    )
+                if "name" in changed_keys:
+                    # signal providers updated so frontends refresh the provider name
+                    self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
+            elif config.enabled:
+                # provider is enabled but not available, try to load it
+                await self.mass.load_provider_config(config)
+            else:
+                # disable provider
+                # also unload any other providers dependent of this provider
+                for dep_prov in self.mass.providers:
+                    if dep_prov.manifest.depends_on == config.domain:
+                        await self.mass.unload_provider(dep_prov.instance_id)
+                await self.mass.unload_provider(config.instance_id)
+                # For player providers, unload_provider should have removed all its players by now
+        finally:
+            if "enabled" in changed_keys:
+                # what ranks among the protocols of a player follows the user's switch, also
+                # for a provider that is not loaded
+                self.mass.players.schedule_protocol_roles_of_provider(config.instance_id)
         return config
 
     async def _create_provider_instance(
@@ -910,17 +964,7 @@ class ProviderConfigMixin:
 
     def _check_provider_setup_permission(self, manifest: ProviderManifest) -> None:
         """Raise when the calling user may not add an instance of the given provider."""
-        user, manages_all_sources = self._access_caller()
-        if user is None or manages_all_sources:
-            return
-        # a member may only add what becomes a music source of its own: a music
-        # service that allows more than one account and lets members set it up
-        if (
-            manifest.type != ProviderType.MUSIC
-            or manifest.builtin
-            or not manifest.multi_instance
-            or not manifest.self_service
-        ):
+        if not self.can_add_provider(manifest):
             raise InsufficientPermissions(
                 f"The {Scope.CONFIG_PROVIDERS_WRITE.value} scope is required to add {manifest.name}"
             )

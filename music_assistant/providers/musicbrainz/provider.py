@@ -23,7 +23,11 @@ from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata,
 from music_assistant_models.media_items.metadata import LifeSpan
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
-from music_assistant.helpers.compare import compare_album_name, compare_strings
+from music_assistant.helpers.compare import (
+    compare_album_name,
+    compare_strings,
+    compare_track_title,
+)
 from music_assistant.helpers.external_ids import (
     external_id_lookup_values,
     is_valid_barcode,
@@ -1258,6 +1262,24 @@ def release_matches_album(release: MusicBrainzRelease, album: Album) -> bool:
     primary_credit = release.artist_credit[0]
     return primary_credit.artist.id == VARIOUS_ARTISTS_MBID or bool(
         _matching_artist_credit([primary_credit], album.artists[0].name)
+    )
+
+
+def recording_matches_track(recording: MusicBrainzRecording, track: Track) -> bool:
+    """
+    Return whether a MusicBrainz recording is the given track, by title and credited artist.
+
+    :param recording: The recording, with its artist credits.
+    :param track: The track as a music provider or the library has it.
+    """
+    if not compare_track_title(recording.title, track.name) and not compare_strings(
+        recording.title, track.name, strict=False
+    ):
+        return False
+    if not track.artists or not recording.artist_credit:
+        return True
+    return any(
+        _matching_artist_credit(recording.artist_credit, artist.name) for artist in track.artists
     )
 
 

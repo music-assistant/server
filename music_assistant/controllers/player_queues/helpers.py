@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard, overload
 
-from music_assistant_models.enums import MediaType, SleepTimerMode
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerType, SleepTimerMode
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant_models.media_items import (
     ItemMapping,
@@ -20,15 +20,16 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
-from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
+from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, EXTERNAL_ID_PROVIDER
 from music_assistant.controllers.player_queues.constants import (
     PLAY_REQUEST_RESOLVE_TIMEOUT,
     ArtistOrder,
 )
 from music_assistant.controllers.players.constants import SwitchedOffAction
+from music_assistant.helpers.external_ids import external_item_id, parse_external_item_id
 
 if TYPE_CHECKING:
-    from music_assistant_models.enums import ContentType, PlaybackState
+    from music_assistant_models.enums import ContentType
     from music_assistant_models.media_items import (
         Album,
         BrowseFolder,
@@ -80,6 +81,8 @@ class _PlayActionHost(Protocol):
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None: ...
 
+    def _drop_pending_step(self, queue_id: str) -> None: ...
+
 
 @overload
 def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
@@ -92,6 +95,7 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     func: None = None,
     *,
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+    starts_unless_playing: bool = False,
 ) -> Callable[
     [Callable[Concatenate[PlayActionHostT, P], Awaitable[R]]],
     Callable[Concatenate[PlayActionHostT, P], Coroutine[Any, Any, R | None]],
@@ -102,6 +106,7 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     func: Callable[Concatenate[PlayActionHostT, P], Awaitable[R]] | None = None,
     *,
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+    starts_unless_playing: bool = False,
 ) -> (
     Callable[Concatenate[PlayActionHostT, P], Coroutine[Any, Any, R | None]]
     | Callable[
@@ -114,16 +119,20 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
 
     Acquires the playback lock for the queue's player, preceded by that of the group
     holding the player (both re-entrant), and sets ATTR_PLAY_ACTION_IN_PROGRESS on the
-    queue while the action runs. The locks are taken strictly: the action waits for a
-    running one to finish and fails with ResourceBusyError when that takes too long,
-    rather than run alongside it.
+    queue while the action runs. The action waits for a running one to finish and fails
+    with ResourceBusyError when that takes too long, rather than run alongside it.
     Uses an internal refcount so nested actions don't clear the flag prematurely.
 
     :param func: The function to wrap (when used without parentheses).
     :param switched_off: What the action does with a queue whose player is switched off at
         its external power control (see SwitchedOffAction), handled before the locks are
         taken: refused by default, ignored, powered on first for actions that start
-        playback, or run as is for actions that handle it themselves.
+        playback, or run as is for actions that handle it themselves. An action that powers
+        such a player on also waits for the switched-off members of the group player it
+        starts: the queue's player itself, or the group that its playback goes to.
+    :param starts_unless_playing: The action makes a queue that does not play start playing
+        (a seek), so on such a queue it waits for the switched-off members of a group player
+        as well. A queue whose player itself is switched off is handled as switched_off says.
     """  # noqa: D401
 
     def decorator(
@@ -136,12 +145,23 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
             assert isinstance(queue_id, str)  # for type checking
             queue_data = self._queue_data.get(queue_id)
             if queue_data is None:
-                return await fn(self, *args, **kwargs)
+                # a legacy id of the queue's player: the action works on the queue's own id
+                queue_id = self.mass.players.resolve_player_id(queue_id)
+                if (queue_data := self._queue_data.get(queue_id)) is None:
+                    return await fn(self, *args, **kwargs)
+                if "queue_id" in kwargs:
+                    kwargs["queue_id"] = queue_id
+                else:
+                    args = (queue_id, *args[1:])  # type: ignore[assignment]
+            if switched_off == SwitchedOffAction.POWER_ON or starts_unless_playing:
+                # the action takes the place of a step (next, previous) that has not played
+                # yet, from the moment it arrives
+                self._drop_pending_step(queue_id)
             if (
                 player := self.mass.players.get_player(queue_id)
             ) is not None and player.offline_by_power_control:
                 if switched_off == SwitchedOffAction.REFUSE:
-                    msg = f"Player {player.display_name} is switched off"
+                    msg = f"Player {player.name} is switched off"
                     raise PlayerUnavailableError(msg)
                 if switched_off == SwitchedOffAction.IGNORE:
                     return None
@@ -149,11 +169,23 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                     await self.mass.players._power_on_switched_off_player(queue_id)
                     # the queue can register anew while its device comes online
                     queue_data = self._queue_data[queue_id]
+            elif player is not None and (
+                switched_off == SwitchedOffAction.POWER_ON
+                or (
+                    starts_unless_playing
+                    and queue_data.queue.active
+                    and queue_data.queue.state != PlaybackState.PLAYING
+                )
+            ):
+                # the group player itself, or the group that the playback of a member goes to
+                target = self.mass.players._resolve_play_media_target(player)
+                if target.type == PlayerType.GROUP:
+                    await self.mass.players._power_on_members(target)
             queue = queue_data.queue
             # a play action on the queue of a player captured by a (sync)group releases the
             # player from it first, which takes the group's lock - so that one is taken
             # before the player's own (see PlayerController.get_group_and_player_lock)
-            async with self.mass.players.get_group_and_player_lock(queue_id, strict=True):
+            async with self.mass.players.get_group_and_player_lock(queue_id):
                 prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
                 try:
                     queue_data.play_action_refcount += 1
@@ -261,6 +293,52 @@ def build_queue_item(
         # track's metadata here does not lose anything the queue listing still needs
         queue_item.media_item.metadata = MediaItemMetadata()
     return queue_item
+
+
+def can_be_enqueued(media_item: MediaItemType) -> bool:
+    """
+    Return whether a media item can go onto a queue.
+
+    A track known only by an external id is on no music source until the queue looks it
+    up when it loads it, so it counts like an item that is available.
+
+    :param media_item: The media item to check.
+    """
+    return media_item.available or media_item.provider == EXTERNAL_ID_PROVIDER
+
+
+def replace_media_item(queue_item: QueueItem, media_item: PlayableMediaItemType) -> None:
+    """
+    Make a queue item play another media item.
+
+    The queue item keeps its id, its place in the queue and its origin; its name, duration
+    and image follow the new media item.
+
+    :param queue_item: The queue item to change.
+    :param media_item: The media item it plays from now on.
+    """
+    derived = QueueItem.from_media_item(queue_item.queue_id, media_item)
+    queue_item.media_item = derived.media_item
+    queue_item.name = derived.name
+    queue_item.duration = derived.duration
+    queue_item.image = derived.image
+
+
+def external_track_placeholder(item_id: str) -> Track:
+    """
+    Return a track known only by an external id, named by that id.
+
+    :param item_id: Item id as external_item_id() builds it.
+    :raises InvalidProviderID: The item id is no valid external item id.
+    """
+    external_id_type, external_id = parse_external_item_id(item_id)
+    return Track(
+        item_id=external_item_id(external_id_type, external_id),
+        provider=EXTERNAL_ID_PROVIDER,
+        name=external_id,
+        external_ids={(external_id_type, external_id)},
+        provider_mappings=set(),
+    )
 
 
 def origin_for(

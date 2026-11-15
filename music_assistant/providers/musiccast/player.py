@@ -40,7 +40,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.helpers.upnp import AVTransport, search_xml
 from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
-from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.musiccast.constants import (
     CONF_PLAYER_AUTO_ADVANCE,
     CONF_PLAYER_HANDLE_SOURCE_DISABLED,
@@ -121,13 +121,13 @@ class UpnpUpdateHelper:
     current_uri: str | None
 
 
-class MusicCastPlayer(Player):
+class MusicCastPlayer(PlayerProtocol):
     """MusicCastPlayer in Music Assistant."""
 
     def __init__(
         self,
         provider: MusicCastProvider,
-        player_id: str,
+        protocol_id: str,
         physical_device: MusicCastPhysicalDevice,
         zone_device: MusicCastZoneDevice,
     ) -> None:
@@ -136,7 +136,7 @@ class MusicCastPlayer(Player):
 
         Keep reference to physical and zone device.
         """
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self.physical_device = physical_device
         self.zone_device = zone_device
 
@@ -192,7 +192,7 @@ class MusicCastPlayer(Player):
             software_version=(self.physical_device.device.data.system_version or "unknown version"),
         )
 
-        if "zone" not in self.player_id:
+        if "zone" not in self.protocol_id:
             # we do not add mac/ ip information to zone players to prevent false player merging
             try:
                 network_status = await self.physical_device.device.device.request_json(
@@ -351,7 +351,7 @@ class MusicCastPlayer(Player):
                 controlled_by_mass = False
                 if _player_current_url is not None:
                     controlled_by_mass = (
-                        self.player_id in _player_current_url
+                        self.protocol_id in _player_current_url
                         and self.mass.streams.base_url in _player_current_url
                         and self.zone_device.source_id == "server"
                     )
@@ -382,9 +382,7 @@ class MusicCastPlayer(Player):
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
             _server_id = self._get_player_id_from_zone_device(_server)
-            _server_player = cast(
-                "MusicCastPlayer | None", self.mass.players.get_player(_server_id)
-            )
+            _server_player = cast("MusicCastPlayer | None", self.provider.get_protocol(_server_id))
             _server_update_helper: UpnpUpdateHelper | None = None
             if _server_player is not None:
                 _server_update_helper = _server_player.upnp_update_helper
@@ -404,7 +402,7 @@ class MusicCastPlayer(Player):
                 )
         else:
             self.set_current_media(
-                uri=f"{self.player_id}_{self.zone_device.source_id}",
+                uri=f"{self.protocol_id}_{self.zone_device.source_id}",
                 title=self.zone_device.media_title,
                 artist=self.zone_device.media_artist,
                 album=self.zone_device.media_album_name,
@@ -412,15 +410,13 @@ class MusicCastPlayer(Player):
             )
 
         # SOURCE
-        self._attr_active_source = self.player_id
+        self._attr_active_source = self._queue_id
         if not self.zone_device.is_client and not self.upnp_update_helper.controlled_by_mass:
             self._attr_active_source = self.zone_device.source_id
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
             _server_id = self._get_player_id_from_zone_device(_server)
-            _server_player = cast(
-                "MusicCastPlayer | None", self.mass.players.get_player(_server_id)
-            )
+            _server_player = cast("MusicCastPlayer | None", self.provider.get_protocol(_server_id))
             if _server_player is not None and _server_player.upnp_update_helper is not None:
                 self._attr_active_source = (
                     self.zone_device.source_id
@@ -550,16 +546,23 @@ class MusicCastPlayer(Player):
         if update_state:
             self.update_state()
 
-        # state.current_media is queue-derived, so a current_uri change alone does not
+        # the player's current_media is queue-derived, so a current_uri change alone does not
         # produce a state diff. Nudge the queue directly so it re-parses the new URI.
         if (
             update_state
+            and self.player is not None
             and self.upnp_update_helper.controlled_by_mass
             and self.upnp_update_helper.current_uri != _prev_current_uri
         ):
-            self.mass.player_queues.on_player_update(self, {})
+            self.mass.player_queues.on_player_update(self.player, {})
 
         self._maybe_advance_on_track_end()
+
+    async def on_remove(self) -> None:
+        """Handle logic when the player is removed for good."""
+        if TYPE_CHECKING:
+            assert isinstance(self.provider, MusicCastProvider)
+        await self.provider.forget_player(self.protocol_id)
 
     def _maybe_advance_on_track_end(self) -> None:
         """Schedule a queue advance if the device went idle at end of track."""
@@ -580,12 +583,12 @@ class MusicCastPlayer(Player):
         ):
             return
         if not bool(
-            self.mass.config.get_raw_player_config_value(
-                self.player_id, CONF_PLAYER_AUTO_ADVANCE, default=True
+            self.mass.config.get_protocol_value(
+                self.protocol_id, CONF_PLAYER_AUTO_ADVANCE, default=True
             )
         ):
             return
-        queue = self.mass.player_queues.get(self.player_id)
+        queue = self.mass.player_queues.get(self._queue_id) if self._queue_id else None
         if queue is None or queue.current_item is None or queue.next_item is None:
             return
         _duration = queue.current_item.duration or 0
@@ -596,14 +599,14 @@ class MusicCastPlayer(Player):
             3,
             self._advance_queue_after_idle,
             queue.current_item.queue_item_id,
-            task_id=f"musiccast_advance_after_idle_{self.player_id}",
+            task_id=f"musiccast_advance_after_idle_{self.protocol_id}",
         )
 
     async def _advance_queue_after_idle(self, expected_current_item_id: str) -> None:
         """Advance the queue if the player is still idle on the same item."""
         if self._attr_playback_state != PlaybackState.IDLE:
             return
-        queue = self.mass.player_queues.get(self.player_id)
+        queue = self.mass.player_queues.get(self._queue_id) if self._queue_id else None
         if queue is None or not queue.active:
             return
         if (
@@ -614,7 +617,7 @@ class MusicCastPlayer(Player):
         if queue.next_item is None:
             return
         self.logger.debug("Advancing queue to next item after end-of-track idle")
-        await self.mass.player_queues.next(self.player_id)
+        await self.mass.player_queues.next(queue.queue_id)
 
     @property
     def synced_to(self) -> str | None:
@@ -627,7 +630,7 @@ class MusicCastPlayer(Player):
         """
         if self.zone_device.is_network_client:
             server_id = self._get_player_id_from_zone_device(self.zone_device.group_server)
-            return server_id if server_id != self.player_id else None
+            return server_id if server_id != self.protocol_id else None
         return None
 
     async def _cmd_run(self, fun: Callable[..., Coroutine[Any, Any, None]], *args: Any) -> None:
@@ -655,13 +658,13 @@ class MusicCastPlayer(Player):
         player_id = self._get_player_id_from_zone_device(zone_player)
         assert player_id is not None  # for TYPE_CHECKING
 
-        mass_player = self.mass.players.get_player(player_id)
+        mass_player = self.provider.get_protocol(player_id)
         if mass_player is None:
             # Do not assert here, should the player not yet exist
             return
 
         # skip zone handling if player is disabled globally
-        if not mass_player.enabled:
+        if not self.mass.players.wants_protocol(player_id):
             self.logger.debug("Ignoring zone handling for disabled player %s.", player_id)
             return
 
@@ -730,7 +733,7 @@ class MusicCastPlayer(Player):
         self.update_state()
 
         for zone_device in self.zone_device.other_zones:
-            if zone_device_player := self.mass.players.get_player(
+            if zone_device_player := self.provider.get_protocol(
                 self._get_player_id_from_zone_device(zone_device)
             ):
                 assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
@@ -750,7 +753,7 @@ class MusicCastPlayer(Player):
             (
                 zone_device
                 for zone_device in self.physical_device.zone_devices.values()
-                if self.mass.players.get_player(self._get_player_id_from_zone_device(zone_device))
+                if self.provider.get_protocol(self._get_player_id_from_zone_device(zone_device))
             ),
             None,
         )
@@ -771,7 +774,7 @@ class MusicCastPlayer(Player):
             await self.set_dynamic_attributes()
             # fetch() above covers every zone; push it to the other zone players too
             for zone_device in self.zone_device.other_zones:
-                if zone_device_player := self.mass.players.get_player(
+                if zone_device_player := self.provider.get_protocol(
                     self._get_player_id_from_zone_device(zone_device)
                 ):
                     assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
@@ -857,7 +860,7 @@ class MusicCastPlayer(Player):
             # autoplay_disabled stops the device resuming the input's last queue
             if _zone_handling_attempted or self.zone_device.source_id != "server":
                 await self._cmd_run(self.zone_device.select_source, "server", "autoplay_disabled")
-            media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+            media.uri = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
             # clear any pending AVT state to avoid wedging on rapid play_media
             await self.avt.stop()
             await self.avt.set_url(media)
@@ -871,7 +874,7 @@ class MusicCastPlayer(Player):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Enqueue next command."""
-        media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        media.uri = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         await self.avt.set_url(media, enqueue=True)
 
     async def select_source(self, source: str) -> None:
@@ -940,7 +943,7 @@ class MusicCastPlayer(Player):
         # Removing players
         if player_ids_to_remove:
             for player_id in player_ids_to_remove:
-                if player := self.mass.players.get_player(player_id):
+                if player := self.provider.get_protocol(player_id):
                     assert isinstance(player, MusicCastPlayer)  # for type checking
                     await player.ungroup()
 
@@ -953,7 +956,7 @@ class MusicCastPlayer(Player):
         rejected_reasons: list[str] = []
         player_ids_to_add = [] if player_ids_to_add is None else player_ids_to_add
         for child_id in player_ids_to_add:
-            child_player = self.mass.players.get_player(child_id)
+            child_player = self.provider.get_protocol(child_id)
             if child_player is None:
                 continue
             assert isinstance(child_player, MusicCastPlayer)  # for type checking
@@ -995,7 +998,7 @@ class MusicCastPlayer(Player):
                 if not x.is_netusb or x.zone_data is None or x.zone_data.power != "on":
                     continue
                 _other_player_id = self._get_player_id_from_zone_device(x)
-                _other_player = self.mass.players.get_player(_other_player_id)
+                _other_player = self.provider.get_protocol(_other_player_id)
                 if _other_player is None or not _other_player.enabled:
                     continue
                 _other_zone_mc = x
@@ -1024,7 +1027,7 @@ class MusicCastPlayer(Player):
             rejected_reasons.extend(
                 await self._join_network_children(
                     [
-                        cast("MusicCastPlayer", self.mass.players.get_player(child_id))
+                        cast("MusicCastPlayer", self.provider.get_protocol(child_id))
                         for child_id in children
                     ]
                 )
@@ -1033,7 +1036,7 @@ class MusicCastPlayer(Player):
         # after the joins: a main with a main_sync zone counts as server and would
         # close that local group when it joins as client
         for child_id in children_zones:
-            child_player = self.mass.players.get_player(child_id)
+            child_player = self.provider.get_protocol(child_id)
             if TYPE_CHECKING:
                 child_player = cast("MusicCastPlayer", child_player)
             child_main = child_player.zone_device.physical_device.zone_devices["main"]
@@ -1147,7 +1150,7 @@ class MusicCastPlayer(Player):
             )
         # likewise for a second zone of a device that joins in this call on its own
         if child_zone.zone_name != "main" and any(
-            isinstance(player := self.mass.players.get_player(player_id), MusicCastPlayer)
+            isinstance(player := self.provider.get_protocol(player_id), MusicCastPlayer)
             and player.zone_device.device.ip == child_zone.device.ip
             for player_id in joining_player_ids
         ):
@@ -1168,3 +1171,8 @@ class MusicCastPlayer(Player):
             if child_player.zone_device.device.ip != self.zone_device.device.ip
             and not self._is_in_group(child_player.zone_device)
         ]
+
+    @property
+    def _queue_id(self) -> str | None:
+        """Return the id of the queue of the player this protocol is attached to."""
+        return self.player.player_id if self.player is not None else None
