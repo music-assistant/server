@@ -1081,8 +1081,8 @@ class SyncGroupPlayer(PlayerProtocol):
         """
         Select a (new) sync leader, preferring session and protocol continuity.
 
-        Among equally preferred members the first one leads, unless it can group with
-        none of the other members while a later one can.
+        Among equally preferred members the first one leads, unless it is at rest and
+        can group with none of the other members while a later one can.
 
         :param new_members: Optional list of newly added member ids to consider
             when no current/static members are available. They count as members
@@ -1136,10 +1136,23 @@ class SyncGroupPlayer(PlayerProtocol):
             if not matches:
                 continue
             leader = matches[0]
-            # a member that follows another player has an empty list until forming the
-            # group releases it, which says nothing about what it can lead
-            if not leader.synced_to and not _can_lead(leader):
-                leader = next(filter(_can_lead, matches[1:]), leader)
+            # what a member can group with only shows in full while it is at rest: the
+            # list is empty while it follows another player, and what it plays itself
+            # can narrow it
+            if (
+                not leader.synced_to
+                and leader.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                and not _can_lead(leader)
+            ):
+                # a member that leads players of its own is left to that
+                leader = next(
+                    (
+                        x
+                        for x in matches[1:]
+                        if _can_lead(x) and not set(x.group_members) - {x.player_id}
+                    ),
+                    leader,
+                )
             self.logger.debug(
                 "Auto-selected %s as sync leader for group %s (%s)",
                 leader.name,

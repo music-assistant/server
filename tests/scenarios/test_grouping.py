@@ -1029,3 +1029,92 @@ async def test_a_member_that_leads_another_playing_group_does_not_take_a_sync_gr
     assert den_queue.current_item is not None
     await _stop(scenario, group_id)
     await _stop(scenario, den_id)
+
+
+async def test_a_member_that_leads_players_of_its_own_does_not_replace_the_first_member(
+    scenario: Scenario,
+) -> None:
+    """
+    A member that leads players of its own is not put in the place of the first member.
+
+    Garden, the first member of Downstairs, can group with none of the others, and Kitchen plays
+    with Hall following it. Downstairs plays on Garden alone, and Kitchen keeps playing with Hall.
+    """
+    _, (kitchen, office, hall) = await _speakers(scenario, "Kitchen", "Office", "Hall")
+    _, garden_id = await _garden(scenario)
+    kitchen_id, office_id, hall_id = (_player_id(scenario, x) for x in (kitchen, office, hall))
+    group_id = await _sync_group(scenario, garden_id, kitchen_id, office_id)
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[hall_id])
+    await scenario.play(kitchen_id)
+    await scenario.idle()
+    scenario.expect_log("can not be grouped with")
+
+    await scenario.play(group_id)
+    await scenario.idle()
+
+    assert _state(scenario, garden_id).active_group == group_id
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, hall_id).synced_to == kitchen_id
+    assert _state(scenario, kitchen_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, kitchen_id).active_group is None
+    assert _state(scenario, office_id).synced_to is None
+    await _stop(scenario, group_id)
+    await _stop(scenario, kitchen_id)
+
+
+async def test_a_first_member_that_plays_an_input_of_its_own_keeps_leading_the_sync_group(
+    scenario: Scenario,
+) -> None:
+    """
+    A first member whose own input narrows what it can group with keeps leading the sync group.
+
+    Garden, Kitchen, Office and Den all have AirPlay, and Kitchen and Office also group on their
+    own make. Garden and Kitchen each play an input of their own, which leaves them only that
+    make to group with. Downstairs plays: Garden, its first member, leads, and Office and Den
+    follow it over AirPlay.
+    """
+    _, (kitchen, office) = await _speakers(scenario, "Kitchen", "Office")
+    garden, garden_id = await _garden(scenario)
+    airplay = await scenario.add_provider("airplay")
+    airplay_ids = {"airplay_garden", "airplay_kitchen", "airplay_office", "airplay_den"}
+    for name, identifiers in (
+        ("garden", _device(30)),
+        ("kitchen", _device(10)),
+        ("office", _device(11)),
+    ):
+        await scenario.register(
+            airplay.protocol(
+                f"airplay_{name}",
+                f"{name.title()} AirPlay",
+                role="audio",
+                identifiers=identifiers,
+                supported_features=set(GROUPING),
+                can_group_with=airplay_ids - {f"airplay_{name}"},
+            )
+        )
+    den = airplay.protocol(
+        "airplay_den",
+        "Den",
+        identifiers=_device(40),
+        supported_features=set(GROUPING),
+        can_group_with=airplay_ids - {"airplay_den"},
+    )
+    await scenario.register(den)
+    await scenario.idle()
+    kitchen_id, office_id, den_id = (_player_id(scenario, x) for x in (kitchen, office, den))
+    group_id = await _sync_group(scenario, garden_id, kitchen_id, office_id, den_id)
+    for speaker, source in ((garden, "tv"), (kitchen, "line_in")):
+        await scenario.report(speaker, playback_state=PlaybackState.PLAYING, active_source=source)
+    await scenario.idle()
+
+    await _load_music(scenario)
+    play = await scenario.command(scenario.mass.player_queues.play_media(group_id, TEST_TRACK_URI))
+    await scenario.advance(12)
+    await play
+    await scenario.idle()
+
+    assert _state(scenario, garden_id).active_group == group_id
+    assert _state(scenario, office_id).synced_to == garden_id
+    assert _state(scenario, den_id).synced_to == garden_id
+    assert _state(scenario, kitchen_id).active_group is None
+    await _stop(scenario, group_id)

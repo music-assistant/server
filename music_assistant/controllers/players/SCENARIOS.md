@@ -1903,12 +1903,16 @@ Downstairs is a sync group of Kitchen, Office and Den, in that order. Members th
 leader outside the group when Downstairs plays are released and play in it, with its first
 member leading as it would have. A member that plays as the leader of a group of its own does
 not take Downstairs over: the first member leads, and that member is left out and keeps playing
-with its own group.
+with its own group. That also holds when the first member can group with none of the others: it
+plays Downstairs alone then. A first member that plays an input of its own, which narrows what
+it can group with for as long as that plays, keeps leading as well.
 
 - End-to-end: **possible with** three Squeezelite players and a fourth player outside the group.
 - Proven by:
   - `test_grouping.py::test_members_that_follow_a_leader_outside_a_sync_group_are_not_passed_over`
   - `test_grouping.py::test_a_member_that_leads_another_playing_group_does_not_take_a_sync_group`
+  - `test_grouping.py::test_a_member_that_leads_players_of_its_own_does_not_replace_the_first_member`
+  - `test_grouping.py::test_a_first_member_that_plays_an_input_of_its_own_keeps_leading_the_sync_group`
 
 ## Where playback goes
 
