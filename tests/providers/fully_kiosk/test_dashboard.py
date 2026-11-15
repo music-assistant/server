@@ -329,7 +329,7 @@ async def test_on_show_escapes_url_for_the_extra_decode() -> None:
     """Fully decodes the url once more before loading it, so it must arrive escaped once more."""
     dashboards = _make_dashboards()
     player = _make_player()
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     target = (
         "http://192.168.1.10:8095/?dashboard=ABC123"
         "&path=%2Fnow-playing%3Fplayer%3Dp1%26dashboard_id%3Dd1%26viewer_key%3Dk1"
@@ -346,7 +346,7 @@ async def test_on_show_url_carries_the_endpoints_dashboard_id() -> None:
     """The url identifies this endpoint's session, so its viewer resolves the caster's prefs."""
     dashboards = _make_dashboards()
     player = _make_player()
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value="http://host/")  # type: ignore[method-assign]
 
     await dashboards._on_show(PLAYER_ID, DashboardType.NOW_PLAYING, "target_player")
