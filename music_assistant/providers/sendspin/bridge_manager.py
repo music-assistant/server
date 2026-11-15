@@ -29,7 +29,7 @@ from music_assistant.constants import CONF_PLAYERS, CONF_UNDERLYING_PLAYER_ID
 from .helpers import bridge_client_id_variants
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from aiosendspin.server import SendspinServer
     from music_assistant_models.event import MassEvent
@@ -79,10 +79,7 @@ async def evaluate_bridge_of(mass: MusicAssistant, protocol_id: str) -> None:
         protocols = list(player.attached_protocols.values())
     else:
         return
-    for attached in protocols:
-        manager = getattr(attached.provider, "bridge_manager", None)
-        if isinstance(manager, SendspinBridgeManagerBase):
-            await manager.evaluate_bridge(attached)
+    await _evaluate_bridges(protocols)
 
 
 class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
@@ -208,7 +205,9 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         :param protocol_id: The id of the bridged protocol.
         :param permanent: Also remove the Sendspin protocol of the bridge client and its
             config, when it rides on this protocol. Use when the protocol should not have a
-            bridge at all; plain removal keeps the config so user settings survive.
+            bridge at all; plain removal keeps the config so user settings survive. When this
+            removed something, the bridges of the other protocols of its player are evaluated
+            again, so another one can take the Sendspin output of the device.
         """
         async with self._lock:
             bridge = self._bridges.pop(protocol_id, None)
@@ -220,6 +219,10 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             removed_any = await self._remove_client_protocol(protocol_id, client_id) or removed_any
         if removed_any:
             self.logger.debug("Sendspin bridge removed for protocol %s", protocol_id)
+            if permanent:
+                # the Sendspin output of the device is free now: a bridge of another protocol
+                # of its player that waited for it, or failed to register, can take it
+                self.mass.create_task(self._evaluate_other_bridges(protocol_id), eager_start=False)
 
     def get_bridge(self, protocol_id: str) -> BridgeT | None:
         """
@@ -396,6 +399,22 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             ):
                 await self.mass.players.remove_protocol(other_id)
 
+    async def _evaluate_other_bridges(self, protocol_id: str) -> None:
+        """
+        Evaluate the bridges of the other protocols attached to the player of a protocol.
+
+        :param protocol_id: The id of the protocol whose bridge stepped back.
+        """
+        if not (player_id := self.mass.players.get_player_id_of_protocol(protocol_id)) or not (
+            player := self.mass.players.get_player(player_id)
+        ):
+            return
+        await _evaluate_bridges(
+            protocol
+            for protocol in list(player.attached_protocols.values())
+            if protocol.protocol_id != protocol_id
+        )
+
     async def _heal_stale_client_disable(self, protocol: PlayerProtocol, client_id: str) -> None:
         """
         Re-enable a bridge client whose disabled state lost the player it was made for.
@@ -426,3 +445,15 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         for protocol in self.provider.protocols:
             if protocol.player is not None:
                 await self.evaluate_bridge(protocol)
+
+
+async def _evaluate_bridges(protocols: Iterable[PlayerProtocol]) -> None:
+    """
+    Let the bridge manager of each protocol bring its Sendspin bridge in line.
+
+    :param protocols: The attached protocols; one without a bridge manager is skipped.
+    """
+    for protocol in protocols:
+        manager = getattr(protocol.provider, "bridge_manager", None)
+        if isinstance(manager, SendspinBridgeManagerBase):
+            await manager.evaluate_bridge(protocol)

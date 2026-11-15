@@ -239,7 +239,7 @@ A client whose record says it rides on another protocol is that bridge again whe
 
 The bridge managers (`SendspinBridgeManagerBase` in `bridge_manager.py`, subclassed by the AirPlay, squeezelite and Chromecast bridges) keep a bridge for as long as the protocol it bridges is attached and its Sendspin output is switched on. The interface they offer the bridged providers takes the protocol id of the bridged protocol.
 
-A device gets one Sendspin output, carried by the first of its bridges in the order AirPlay, squeezelite, Chromecast. A protocol the user switched off as an output, or whose provider is disabled, lets the next bridge take the output over; a protocol that is merely away keeps its place. The managers settle this when the outputs of the player change, so a protocol switched on or off while its device is away on it takes effect at the next change of those outputs or at a restart.
+A device gets one Sendspin output, carried by the first of its bridges in the order AirPlay, squeezelite, Chromecast. A protocol the user switched off as an output, or whose provider is disabled, lets the next bridge take the output over. An AirPlay protocol that is merely away keeps its place, while a squeezelite protocol that is away leaves the output to Chromecast until it returns. The managers settle this when the outputs of the player change, so a protocol switched on or off while its device is away on it takes effect at the next change of those outputs or at a restart.
 
 ### Implemented Bridges
 

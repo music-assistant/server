@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from collections.abc import AsyncGenerator
 from types import MethodType
 from typing import Any
@@ -34,6 +35,7 @@ from music_assistant.providers.chromecast.sendspin_bridge import (
     SendspinBridgeManager as CastSendspinBridgeManager,
 )
 from music_assistant.providers.chromecast.sendspin_bridge import SendspinChromecastBridge
+from music_assistant.providers.sendspin.bridge_manager import evaluate_bridge_of
 from music_assistant.providers.sendspin.bridge_role import BRIDGE_ROLE_ID
 from music_assistant.providers.sendspin.helpers import holds_bridge_client
 from music_assistant.providers.sendspin.player import SendspinPlayer
@@ -150,6 +152,7 @@ class _Device:
         cast: bool = False,
         squeezelite: bool = True,
         slow_teardown: bool = False,
+        cast_connected: bool = False,
     ) -> None:
         """
         Set up the device with none of its protocols attached.
@@ -159,9 +162,12 @@ class _Device:
         :param squeezelite: Whether the device has a squeezelite protocol.
         :param slow_teardown: Let a bridge that stops take a moment before its client leaves,
             as one that streams, or waits for its lock or its Cast app launch, does.
+        :param cast_connected: Let the Sendspin Cast receiver connect to the client of the
+            Cast bridge, as it does while the Cast app runs.
         """
         _DEVICES.append(self)
         self._slow_teardown = slow_teardown
+        self._cast_connected = cast_connected
         self.mass = mass = MagicMock()
         use_real_create_task(mass)
         mass.loop = asyncio.get_running_loop()
@@ -253,16 +259,27 @@ class _Device:
         """
         Attach a protocol to the player, then let its manager evaluate its bridge.
 
-        The managers that hear of the changed outputs start their evaluations at once, as
-        Music Assistant starts its tasks eagerly, and the provider of the protocol evaluates
-        its bridge once that is done or waits.
+        In the order of the players controller: the hooks of the protocol evaluate its
+        bridge (AirPlay awaits it, squeezelite starts it eagerly, Cast as a task that waits),
+        then the changed outputs of the player are published, which the managers act on at
+        once as Music Assistant starts its tasks eagerly, and then the AirPlay provider
+        evaluates its bridge again once the registration returned.
 
         :param protocol: The protocol that attaches, as its provider registers it.
         """
         self.player.attached_protocols[protocol.protocol_id] = protocol
         protocol.player = self.player
+        manager = self.manager_of(protocol)
+        domain = protocol.provider.domain
+        if domain == "airplay":
+            await manager.evaluate_bridge(protocol)
+        elif domain == "squeezelite":
+            self.mass.create_task(evaluate_bridge_of(self.mass, protocol.protocol_id))
+        else:
+            self.mass.create_task(manager.evaluate_bridge(protocol), eager_start=False)
         self._outputs_changed()
-        await self.manager_of(protocol).evaluate_bridge(protocol)
+        if domain == "airplay":
+            await manager.evaluate_bridge(protocol)
         await self.settle()
 
     async def switch(self, protocol: Any, enabled: bool) -> None:
@@ -365,6 +382,7 @@ class _Device:
         """
         protocol_id = protocol.protocol_id
         bridge = MagicMock(is_registered=True, sendspin_server=self.server, shared_group=None)
+        bridge.client = None
 
         async def _start() -> None:
             client_id = self.manager_of(protocol)._client_ids[protocol_id]
@@ -377,9 +395,16 @@ class _Device:
                 on_stream_start=bridge.on_stream_start,
             )
             (bridge.role,) = bridge.client.roles_by_family("player")
+            if domain == "chromecast" and self._cast_connected:
+                # the Sendspin Cast receiver holds a connection to the client
+                bridge.client._connection = MagicMock()
+                bridge.client._connected = True
             self.timeline.append(("registered", domain))
 
         async def _stop() -> None:
+            if bridge.client is None:
+                # its registration failed
+                return
             if self._slow_teardown:
                 # long enough for the evaluations that wait for this client to run first
                 for _ in range(10):
@@ -639,16 +664,15 @@ async def test_an_output_riding_on_a_protocol_that_is_away_keeps_its_place() -> 
 
 @pytest.mark.parametrize("taker", ["squeezelite", "chromecast"])
 @pytest.mark.parametrize(
-    "airplay_first", [True, False], ids=["airplay registers first", "taker steps back first"]
+    "slow_teardown", [False, True], ids=["taker stops at once", "taker takes a moment"]
 )
-async def test_airplay_takes_back_a_client_of_the_same_id(taker: str, airplay_first: bool) -> None:
+async def test_airplay_takes_back_a_client_of_the_same_id(taker: str, slow_teardown: bool) -> None:
     """AirPlay switched on again holds the client the taker registered under the same id."""
-    # AirPlay registers first while the taker takes a moment to step back
     device = _Device(
         airplay_id=SAME_ID_AIRPLAY_ID,
         cast=taker == "chromecast",
         squeezelite=taker == "squeezelite",
-        slow_teardown=airplay_first,
+        slow_teardown=slow_teardown,
     )
     protocol = device.squeezelite if taker == "squeezelite" else device.cast
     await _airplay_bridged(device, SQUEEZELITE_CLIENT)
@@ -659,8 +683,8 @@ async def test_airplay_takes_back_a_client_of_the_same_id(taker: str, airplay_fi
     await device.switch(device.airplay, True)
     await device.attach(device.airplay)
 
-    order = [("registered", "airplay"), ("stopped", taker)]
-    assert device.timeline == (order if airplay_first else order[::-1])
+    # AirPlay registers from its attach, before the taker hears that the outputs changed
+    assert device.timeline == [("registered", "airplay"), ("stopped", taker)]
     assert device.manager_of(protocol).get_bridge(protocol.protocol_id) is None
     _assert_carried_by(device, SQUEEZELITE_CLIENT, SAME_ID_AIRPLAY_ID)
 
@@ -721,3 +745,60 @@ async def test_a_bridge_that_stops_leaves_a_client_another_bridge_took_over(
         if taken_over
         else "the bridge left its own client behind"
     )
+
+
+async def test_airplay_gets_the_device_back_from_a_connected_cast_receiver() -> None:
+    """AirPlay switched on again bridges the device once a connected Cast receiver let go."""
+    device = _Device(
+        airplay_id=SAME_ID_AIRPLAY_ID,
+        cast=True,
+        squeezelite=False,
+        slow_teardown=True,
+        cast_connected=True,
+    )
+    await _airplay_bridged(device, CAST_CLIENT)
+    await device.switch(device.airplay, False)
+    _assert_carried_by(device, CAST_CLIENT, CAST_ID)
+    client = device.server.get_client(CAST_CLIENT)
+    assert client is not None
+    assert client.is_connected
+
+    await device.switch(device.airplay, True)
+    await device.attach(device.airplay)
+
+    assert device.manager_of(device.cast).get_bridge(CAST_ID) is None
+    _assert_carried_by(device, CAST_CLIENT, SAME_ID_AIRPLAY_ID)
+
+
+async def test_stepping_back_lets_the_others_evaluate_once_when_none_can_take_over() -> None:
+    """The evaluations a bridge that steps back starts end, also when no bridge can register."""
+    device = _Device(cast=True)
+    device.configs[AIRPLAY_ID]["enabled"] = False
+    await device.attach(device.squeezelite)
+    await device.attach(device.cast)
+    _assert_carried_by(device, SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
+    # AirPlay can not register, so squeezelite and Cast are both denied and nobody takes over
+    airplay_starts = AsyncMock(side_effect=RuntimeError("the client is connected"))
+    device.manager_of(device.airplay)._create_bridge = MagicMock(
+        side_effect=lambda _: MagicMock(start=airplay_starts, stop=AsyncMock())
+    )
+    evaluations: Counter[str] = Counter()
+    for manager in device.managers:
+
+        async def _counted(protocol: Any, evaluate: Any = manager.evaluate_bridge) -> None:
+            evaluations[protocol.provider.domain] += 1
+            await evaluate(protocol)
+
+        manager.evaluate_bridge = _counted
+
+    await device.switch(device.airplay, True)
+    await device.attach(device.airplay)
+    settled = dict(evaluations)
+    for _ in range(20):
+        await device.settle()
+
+    assert dict(evaluations) == settled, "the evaluations do not come to an end"
+    # its attach, the AirPlay provider and the step-back of squeezelite tried AirPlay
+    assert airplay_starts.await_count == 3, "the step-back of squeezelite did not let AirPlay try"
+    assert device.manager_of(device.squeezelite).get_bridge(SQUEEZELITE_ID) is None
+    assert device.sendspin_output() is None
