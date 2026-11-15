@@ -63,6 +63,9 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.community_catalog import CommunityCatalogController
+from music_assistant.controllers.community_catalog.constants import (
+    CONF_ENABLED as CONF_COMMUNITY_CATALOG_ENABLED,
+)
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.config.filesystem_consolidation import (
     consolidate_filesystem_sources,
@@ -86,10 +89,20 @@ from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver import WebserverController
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_scope,
+)
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.build_info import get_official_build_info
+from music_assistant.helpers.catalog import (
+    CATALOG_NEW_FILE,
+    CatalogRecommendation,
+    get_recommendations,
+    read_new_domains,
+)
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.provider_access import visible_music_sources
@@ -115,6 +128,7 @@ if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ProviderConfig
 
+    from music_assistant.controllers.community_catalog.models import CommunityProvider
     from music_assistant.models.core_controller import CoreController
 
 isdir = wrap(os.path.isdir)
@@ -277,6 +291,8 @@ class MusicAssistant:
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()
         self._provider_manifests: dict[str, ProviderManifest] = {}
+        # the built-in providers that are new in this release line
+        self._catalog_new_domains: frozenset[str] = frozenset()
         self._provider_icons: dict[str, dict[ProviderIconVariant, tuple[str, bytes]]] = {}
         self._providers: dict[str, ProviderInstanceType] = {}
         self._tracked_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -314,6 +330,7 @@ class MusicAssistant:
         await self.discovery.start_zeroconf()
         # load all available providers from manifest files
         await self.__load_provider_manifests()
+        self._catalog_new_domains = await asyncio.to_thread(read_new_domains, CATALOG_NEW_FILE)
         # setup/migrate storage
         await self._setup_storage()
         LOGGER.info(
@@ -572,6 +589,33 @@ class MusicAssistant:
         if provider := self.get_provider(instance_id_or_domain, return_unavailable=True):
             return provider.manifest
         raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
+
+    @api_command("catalog/recommendations", required_scope=Scope.PROVIDERS_READ)
+    async def get_catalog_recommendations(self) -> list[CatalogRecommendation]:
+        """
+        Return what the Marketplace suggests the calling user adds, and why.
+
+        Only providers the user may add are suggested. Providers of the community catalog are
+        only suggested to a user who manages the server, while the community catalog is enabled.
+        """
+        user = get_current_user()
+        if user is not None and not has_scope(user, Scope.CONFIG_PROVIDERS_OWN):
+            # adding a provider takes this scope
+            return []
+        manifests = self.get_provider_manifests()
+        return get_recommendations(
+            manifests,
+            configured={conf["domain"] for conf in self.config.get(CONF_PROVIDERS, {}).values()},
+            can_add=self.config.can_add_provider,
+            discovered={
+                manifest.domain
+                for manifest in manifests
+                if self.discovery.is_seen_on_mdns(manifest, identifying=True)
+            },
+            new_domains=self._catalog_new_domains,
+            community=await self._get_catalog_community_providers(user),
+            now=utc(),
+        )
 
     @api_command("providers/icon", required_scope=Scope.PROVIDERS_READ)
     def get_provider_icon_data(
@@ -1472,16 +1516,10 @@ class MusicAssistant:
                 continue
             if not (manifest := self._provider_manifests.get(default_provider)):
                 continue
-            if require_mdns:
-                # if mdns discovery is required, check if we have seen any mdns entries
-                # for this provider before setting it up
-                for mdns_name in set(self.discovery.aiozc.zeroconf.cache.cache):
-                    if manifest.mdns_discovery and any(
-                        mdns_type in mdns_name for mdns_type in manifest.mdns_discovery
-                    ):
-                        break
-                else:
-                    continue
+            # if mdns discovery is required, check if we have seen any mdns entries
+            # for this provider before setting it up
+            if require_mdns and not self.discovery.is_seen_on_mdns(manifest):
+                continue
             # A config the user enabled by hand before this became a default is not an auto setup.
             if await self.config.create_builtin_provider_config(manifest.domain):
                 newly_created_defaults.add(manifest.domain)
@@ -1785,6 +1823,25 @@ class MusicAssistant:
                 },
             }
         )
+
+    async def _get_catalog_community_providers(self, user: User | None) -> list[CommunityProvider]:
+        """
+        Return the providers of the community catalog to suggest to the user, if any.
+
+        :param user: The calling user, None for the server itself.
+        """
+        if (
+            self.safe_mode
+            or not self.community_catalog.config.get_value(CONF_COMMUNITY_CATALOG_ENABLED)
+            or (user is not None and not has_scope(user, Scope.SYSTEM_MANAGE))
+        ):
+            return []
+        try:
+            return await self.community_catalog.get_providers()
+        except MusicAssistantError as err:
+            # the other recommendations do not depend on it
+            LOGGER.warning("Could not list the community catalog for the Marketplace: %s", err)
+            return []
 
     async def _setup_storage(self) -> None:
         """Handle Setup of storage/cache folder(s)."""
