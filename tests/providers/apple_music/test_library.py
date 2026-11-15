@@ -1,13 +1,14 @@
 """Unit tests for Apple Music library track streaming and windowed enrichment."""
 
 import asyncio
+import copy
 from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError, RetriesExhausted
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -1131,73 +1132,145 @@ async def test_track_sync_reads_catalog_relationships_from_listing() -> None:
     assert all(not mapping.available for mapping in withdrawn_track.provider_mappings)
 
 
-async def test_resolve_purchased_ids_returns_only_what_apple_still_sells() -> None:
-    """A purchasedId that still resolves in the catalog is one Apple will license."""
-    provider = MagicMock()
-    provider._storefront = "pt"
-    provider.instance_id = "apple_music--test"
-    provider.logger = MagicMock()
-    get_data = AsyncMock(
-        return_value={"data": [{"id": "397010985"}]}  # the U2 id is simply absent
+class _FakeCache:
+    """In-memory stand-in for the cache controller."""
+
+    def __init__(self) -> None:
+        self.data: dict[tuple[str, int], Any] = {}
+        self.get = AsyncMock(side_effect=self._get)
+        self.set = AsyncMock(side_effect=self._set)
+
+    async def _get(self, key: str, provider: str = "", category: int = 0, **_: Any) -> Any:
+        return self.data.get((key, category))
+
+    async def _set(
+        self, key: str, data: Any, provider: str = "", category: int = 0, **_: Any
+    ) -> None:
+        self.data[(key, category)] = data
+
+
+def _purchase(idx: int, purchased_id: str, *, library_album: bool = False) -> dict[str, Any]:
+    """Build a me/library/songs row of a purchase, optionally with its library album."""
+    item = _library_song(idx, catalog_id=None)
+    item["attributes"]["playParams"]["purchasedId"] = purchased_id
+    if library_album:
+        item["attributes"]["albumName"] = "Purchased Album"
+        item["relationships"] = {
+            "albums": {
+                "data": [
+                    {
+                        "id": "l.album",
+                        "type": "library-albums",
+                        "attributes": {"name": "Purchased Album"},
+                    }
+                ]
+            }
+        }
+    return item
+
+
+def _make_purchases_manager(
+    items: list[dict[str, Any]], on_sale: set[str]
+) -> tuple[AppleMusicLibraryManager, MagicMock, list[tuple[str, dict[str, Any]]]]:
+    """Build a manager streaming library-only songs, where Apple still sells ``on_sale``."""
+    manager, provider, calls = _make_library_only_manager(items)
+    provider.mass.cache = _FakeCache()
+    manager.mass = provider.mass
+    items_by_id = {item["id"]: item for item in items}
+
+    async def _get_data(endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((endpoint, kwargs))
+        if not endpoint.startswith("catalog/"):
+            details = [copy.deepcopy(items_by_id[item_id]) for item_id in kwargs["ids"].split(",")]
+            for detail in details:
+                detail["attributes"]["albumName"] = f"Album {detail['id']}"
+            return {"data": details}
+        found = [{"id": item_id} for item_id in kwargs["ids"].split(",") if item_id in on_sale]
+        if not found:
+            raise MediaNotFoundError("none of these exist")
+        return {"data": found}
+
+    provider.api_client.get_data = AsyncMock(side_effect=_get_data)
+    return manager, provider, calls
+
+
+def _available(track: Track) -> bool:
+    return all(mapping.available for mapping in track.provider_mappings)
+
+
+def _purchase_lookups(calls: list[tuple[str, dict[str, Any]]]) -> list[str]:
+    return [kwargs["ids"] for endpoint, kwargs in calls if endpoint.startswith("catalog/")]
+
+
+@pytest.mark.parametrize("library_album", [False, True])
+async def test_sync_marks_only_the_purchases_apple_still_sells(library_album: bool) -> None:
+    """A purchase still sold becomes available, a revoked one and uploads keep their state."""
+    items = [
+        _purchase(1, "397010985", library_album=library_album),
+        _purchase(2, "915794195", library_album=library_album),
+        _library_song(3, catalog_id=None),
+    ]
+    manager, _provider, calls = _make_purchases_manager(items, on_sale={"397010985"})
+
+    tracks = {track.item_id: track async for track in manager.get_library_tracks()}
+
+    assert _available(tracks["i.1"])
+    assert not _available(tracks["i.2"])
+    assert _available(tracks["i.3"])
+    assert _purchase_lookups(calls) == ["397010985,915794195"]
+    # the listing-only path keeps the parsed track, the other path swaps in the detail
+    detail_ids = [
+        kwargs["ids"].split(",") for endpoint, kwargs in calls if endpoint == "me/library/songs"
+    ]
+    assert any("i.1" in ids for ids in detail_ids) is not library_album
+
+
+async def test_sync_answers_known_purchases_from_the_cache() -> None:
+    """Both outcomes are cached, so a second sync asks Apple nothing about the purchases."""
+    items = [_purchase(1, "397010985"), _purchase(2, "915794195")]
+    manager, _provider, calls = _make_purchases_manager(items, on_sale={"397010985"})
+    [track async for track in manager.get_library_tracks()]
+    calls.clear()
+
+    tracks = {track.item_id: track async for track in manager.get_library_tracks()}
+
+    assert _purchase_lookups(calls) == []
+    assert _available(tracks["i.1"])
+    assert not _available(tracks["i.2"])
+
+
+async def test_sync_survives_a_throttled_purchase_lookup() -> None:
+    """A failed lookup leaves the purchases unavailable, is not cached and keeps the sync going."""
+    items = [_purchase(1, "397010985"), _library_song(2, catalog_id=None)]
+    manager, provider, calls = _make_purchases_manager(items, on_sale={"397010985"})
+    library_get_data = provider.api_client.get_data.side_effect
+
+    async def _throttled(endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        if endpoint.startswith("catalog/"):
+            raise RetriesExhausted("throttled")
+        return cast("dict[str, Any]", await library_get_data(endpoint, **kwargs))
+
+    provider.api_client.get_data = AsyncMock(side_effect=_throttled)
+
+    tracks = {track.item_id: track async for track in manager.get_library_tracks()}
+
+    assert not _available(tracks["i.1"])
+    assert _available(tracks["i.2"])
+    assert provider.mass.cache.data == {}
+
+    provider.api_client.get_data = AsyncMock(side_effect=library_get_data)
+    tracks = {track.item_id: track async for track in manager.get_library_tracks()}
+
+    assert _available(tracks["i.1"])
+    assert _purchase_lookups(calls) == ["397010985"]
+
+
+async def test_sync_without_purchases_makes_no_lookup() -> None:
+    """A library without purchases costs no extra request."""
+    manager, _provider, calls = _make_purchases_manager(
+        [_library_song(1, catalog_id=None)], on_sale=set()
     )
-    provider.api_client.get_data = get_data
-    manager = AppleMusicLibraryManager(provider)
 
-    result = await manager._resolve_purchased_ids({"397010985", "915794195"})
+    [track async for track in manager.get_library_tracks()]
 
-    assert result == {"397010985"}
-    assert get_data.await_args is not None
-    assert get_data.await_args.args[0] == "catalog/pt/songs"
-    assert get_data.await_args.kwargs["ids"] == "397010985,915794195"
-
-
-async def test_resolve_purchased_ids_treats_a_404_as_none_still_sold() -> None:
-    """Apple answers 404 when it recognises none of them; that is an answer, not a failure."""
-    provider = MagicMock()
-    provider._storefront = "pt"
-    provider.logger = MagicMock()
-    provider.api_client.get_data = AsyncMock(side_effect=MediaNotFoundError("not found"))
-    manager = AppleMusicLibraryManager(provider)
-
-    assert await manager._resolve_purchased_ids({"915794195"}) == set()
-
-
-async def test_resolve_purchased_ids_makes_no_call_when_there_are_no_purchases() -> None:
-    """The common case is a library with no purchases at all; it must cost nothing."""
-    provider = MagicMock()
-    provider.logger = MagicMock()
-    get_data = AsyncMock()
-    provider.api_client.get_data = get_data
-    manager = AppleMusicLibraryManager(provider)
-
-    assert await manager._resolve_purchased_ids(set()) == set()
-    get_data.assert_not_awaited()
-
-
-def test_promote_purchase_only_ever_promotes() -> None:
-    """Promotion must not contradict a judgement the parser made on stronger evidence."""
-    provider = MagicMock()
-    provider.instance_id = "apple_music--test"
-    provider.logger = MagicMock()
-    provider.api_client = MagicMock()
-    manager = AppleMusicLibraryManager(provider)
-
-    track = Track(
-        item_id="i.librarysong",
-        provider="apple_music",
-        name="Library Song",
-        provider_mappings={
-            ProviderMapping(
-                item_id="i.librarysong",
-                provider_domain="apple_music",
-                provider_instance="apple_music--test",
-                available=False,
-            )
-        },
-    )
-
-    manager._promote_purchase(track, still_on_sale=False)
-    assert all(m.available is False for m in track.provider_mappings)
-
-    manager._promote_purchase(track, still_on_sale=True)
-    assert all(m.available is True for m in track.provider_mappings)
+    assert _purchase_lookups(calls) == []

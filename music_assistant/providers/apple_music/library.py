@@ -12,11 +12,12 @@ from music_assistant_models.media_items import Track
 
 from music_assistant.controllers.cache import use_cache
 
+from .constants import CACHE_CATEGORY_PURCHASE_ON_SALE, PURCHASE_ON_SALE_CACHE_EXPIRATION
 from .helpers.utils import is_catalog_id, is_library_id, translate_media_type_to_apple_type
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Iterable
 
     from music_assistant_models.media_items import Album, Artist, MediaItemType, Playlist
 
@@ -283,6 +284,28 @@ class AppleMusicLibraryManager:
         }
         await self.api.put_data(endpoint, data=data)
 
+    async def mark_purchases_on_sale(self, tracks: Iterable[tuple[dict[str, Any], Track]]) -> None:
+        """
+        Mark the purchases among the given tracks available when Apple still sells them.
+
+        A purchase parses as unavailable, as its metadata cannot tell whether Apple still
+        sells it. Purchases whose lookup fails stay unavailable for now.
+
+        :param tracks: Library-song items as Apple lists them, each with its parsed track.
+        """
+        purchases = [
+            (purchased_id, track) for item, track in tracks if (purchased_id := _purchased_id(item))
+        ]
+        if not purchases:
+            return
+        on_sale = await self._get_purchases_on_sale({purchased_id for purchased_id, _ in purchases})
+        for purchased_id, track in purchases:
+            if purchased_id not in on_sale:
+                continue
+            for mapping in track.provider_mappings:
+                if mapping.provider_instance == self.instance_id:
+                    mapping.available = True
+
     async def _flush_catalog_tracks(
         self, library_items_by_catalog_id: dict[str, dict[str, Any]]
     ) -> AsyncGenerator[Track]:
@@ -439,12 +462,6 @@ class AppleMusicLibraryManager:
             (item, parse_track(self.provider, item, rating_response.get(item["id"])))
             for item in library_only_items
         ]
-        purchased_ids = {
-            item["id"]: purchased_id
-            for item in library_only_items
-            if (purchased_id := self._purchased_id(item))
-        }
-        still_sold = await self._resolve_purchased_ids(set(purchased_ids.values()))
         details = await self._fetch_library_song_details(
             [
                 item["id"]
@@ -452,11 +469,10 @@ class AppleMusicLibraryManager:
                 if self._track_has_weak_album_mapping(track)
             ]
         )
+        tracks: list[tuple[dict[str, Any], Track]] = []
         for item, parsed_track in parsed_tracks:
-            still_on_sale = purchased_ids.get(item["id"]) in still_sold
             if (detail := details.get(item["id"])) is None:
-                self._promote_purchase(parsed_track, still_on_sale)
-                yield parsed_track
+                tracks.append((item, parsed_track))
                 continue
             track = self._apply_album_detail(
                 item, parsed_track, detail, rating_response.get(item["id"])
@@ -464,59 +480,47 @@ class AppleMusicLibraryManager:
             # the detail fetch replaces the track wholesale, so re-apply dateAdded from the
             # listing row, which is the object that actually owns it
             _set_date_added(track, item)
-            self._promote_purchase(track, still_on_sale)
+            tracks.append((item, track))
+        await self.mark_purchases_on_sale(tracks)
+        for _, track in tracks:
             yield track
 
-    async def _resolve_purchased_ids(self, purchased_ids: set[str]) -> set[str]:
-        """
-        Return the purchase adam IDs Apple still sells.
-
-        A purchase carries no ``catalogId`` and no catalog relationship, so
-        ``_is_available()`` can only report it unavailable. Its ``purchasedId`` is a
-        catalog adam ID all the same, and whether that still resolves is exactly what
-        decides whether the license server will serve it. Measured over 24 purchases:
-        13 resolved and all 13 were licensed, 11 returned 404 and all 11 were refused.
-
-        One request covers a whole sync window, which ``_TRACK_SYNC_WINDOW`` keeps
-        well under the catalog's limit of ids per request.
-
-        :param purchased_ids: The ``purchasedId`` values seen in this window.
-        """
-        if not purchased_ids:
-            return set()
+    async def _get_purchases_on_sale(self, purchased_ids: set[str]) -> set[str]:
+        """Return the purchase adam ids among purchased_ids that Apple still sells."""
+        on_sale: set[str] = set()
+        unknown: list[str] = []
+        for purchased_id in sorted(purchased_ids):
+            cached = await self.mass.cache.get(
+                purchased_id, provider=self.instance_id, category=CACHE_CATEGORY_PURCHASE_ON_SALE
+            )
+            if cached is None:
+                unknown.append(purchased_id)
+            elif cached:
+                on_sale.add(purchased_id)
         endpoint = f"catalog/{self.provider._storefront}/songs"
-        try:
-            response = await self.api.get_data(endpoint, ids=",".join(sorted(purchased_ids)))
-        except MediaNotFoundError:
-            # Apple answers 404 when it recognises none of them, which is a valid
-            # outcome rather than an error: every one of these is no longer for sale.
-            return set()
-        return {item["id"] for item in response.get("data", [])}
-
-    @staticmethod
-    def _purchased_id(item: dict[str, Any]) -> str | None:
-        """Return the purchase adam ID for a library item, or None if it is not a purchase."""
-        play_params = (item.get("attributes") or {}).get("playParams") or {}
-        if play_params.get("catalogId"):
-            return None
-        return cast("str | None", play_params.get("purchasedId"))
-
-    def _promote_purchase(self, track: Track, still_on_sale: bool) -> None:
-        """
-        Mark a purchase available when Apple still sells it.
-
-        ``_is_available()`` defaults every purchase to unavailable because metadata
-        alone cannot tell a licensable one from a revoked one. Only promote; never
-        demote, so this cannot contradict a judgement the parser already made on
-        stronger evidence.
-
-        :param still_on_sale: Whether this track's ``purchasedId`` resolved in the catalog.
-        """
-        if not still_on_sale:
-            return
-        for mapping in track.provider_mappings:
-            if mapping.provider_instance == self.provider.instance_id:
-                mapping.available = True
+        for offset in range(0, len(unknown), _DETAIL_BATCH_SIZE):
+            batch = unknown[offset : offset + _DETAIL_BATCH_SIZE]
+            try:
+                response = await self.api.get_data(endpoint, ids=",".join(batch))
+            except MediaNotFoundError:
+                # Apple answers 404 when it sells none of them
+                found: set[str] = set()
+            except MusicAssistantError as err:
+                # not cached, so the next listing asks again
+                self.logger.debug("Unable to look up %s purchases: %s", len(batch), err)
+                continue
+            else:
+                found = {item["id"] for item in response.get("data", [])}
+            on_sale |= found
+            for purchased_id in batch:
+                await self.mass.cache.set(
+                    purchased_id,
+                    purchased_id in found,
+                    expiration=PURCHASE_ON_SALE_CACHE_EXPIRATION,
+                    provider=self.instance_id,
+                    category=CACHE_CATEGORY_PURCHASE_ON_SALE,
+                )
+        return on_sale
 
     async def _fetch_library_song_details(
         self, library_ids: list[str]
@@ -632,3 +636,11 @@ def _set_date_added(media_item: MediaItemType, item: dict[str, Any]) -> None:
             # the DB only persists whole-second precision, so truncate here to avoid
             # every sync seeing a (sub-second) mismatch and flagging the item as changed
             media_item.date_added = datetime.fromisoformat(added).replace(microsecond=0)
+
+
+def _purchased_id(item: dict[str, Any]) -> str | None:
+    """Return the purchase adam id of a library-song item, or None if it is not a purchase."""
+    play_params = (item.get("attributes") or {}).get("playParams") or {}
+    if play_params.get("catalogId"):
+        return None
+    return cast("str | None", play_params.get("purchasedId"))
