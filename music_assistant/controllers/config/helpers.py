@@ -83,7 +83,7 @@ def _unavailable_provider_config(
     conf.status = ProviderStatus.UNAVAILABLE
     conf.last_error = reason or ProviderError(
         error_code=ProviderUnavailableError.error_code,
-        message="This provider is no longer available.",
+        message="This is no longer available on your server. You can remove it.",
         translation_key="provider_no_longer_available",
     )
     return conf
