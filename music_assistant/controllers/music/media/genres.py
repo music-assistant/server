@@ -1143,7 +1143,7 @@ class GenreController(MediaControllerBase[Genre]):
 
     async def sync_media_item_genres(
         self, media_type: MediaType, media_id: str | int, genre_names: set[str]
-    ) -> None:
+    ) -> set[str]:
         """
         Sync genre mappings for a media item.
 
@@ -1154,6 +1154,7 @@ class GenreController(MediaControllerBase[Genre]):
         :param media_type: The type of media item being synced.
         :param media_id: The database ID of the media item.
         :param genre_names: Set of genre names from the provider.
+        :return: The genre names newly linked to the item.
         """
         media_id_int = int(media_id)
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
@@ -1171,7 +1172,7 @@ class GenreController(MediaControllerBase[Genre]):
             )
             # a genre the user excluded from the item is never mapped to it again
             if removable_ids <= target_ids - excluded_ids <= stored_ids:
-                return
+                return set()
 
         # batch the (possible) genre creations and mapping changes into a single commit
         async with self.mass.music.database.deferred_commit():
@@ -1217,6 +1218,7 @@ class GenreController(MediaControllerBase[Genre]):
                     },
                     allow_replace=True,
                 )
+        return {target_mappings[genre_id] for genre_id in to_add}
 
     def register_scheduled_scan_task(self) -> BackgroundTask:
         """Register the recurring genre mapping scan task."""

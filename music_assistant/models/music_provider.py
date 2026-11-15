@@ -1537,9 +1537,23 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                 return
             genre_names = fallback_genres
 
-        await self.mass.music.genres.sync_media_item_genres(
+        if not await self.mass.music.genres.sync_media_item_genres(
             media_type, library_item_id, set(genre_names)
-        )
+        ):
+            return
+        # the genre scan keeps only links whose name is stored on the item, and an item with
+        # stored genres no longer inherits genres from its tracks, so store every name
+        controller = self.mass.music.get_controller(media_type)
+        library_item = await controller.get_library_item(library_item_id)
+        stored = set(library_item.metadata.genres or set())
+        # the genre scan compares names case-insensitively, so skip names stored in another case
+        stored_keys = {name.strip().lower() for name in stored}
+        stored |= {
+            name.strip()
+            for name in genre_names
+            if name.strip() and name.strip().lower() not in stored_keys
+        }
+        await controller.replace_metadata(library_item_id, {"genres": stored})
 
     async def _sync_library_artists(self) -> set[int]:
         """Sync Library Artists to Music Assistant library."""
