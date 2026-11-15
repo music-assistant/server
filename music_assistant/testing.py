@@ -1,4 +1,10 @@
-"""Boot a real Music Assistant server for a test."""
+"""
+Boot a real Music Assistant server for a test.
+
+Also a pytest plugin for the repository of a provider: with
+``pytest_plugins = ["music_assistant.testing"]`` in its ``tests/conftest.py``, the ``mass``
+fixture gives a started server that loads the providers of that repository.
+"""
 
 import asyncio
 import contextlib
@@ -7,6 +13,7 @@ import pathlib
 from collections.abc import AsyncGenerator, Iterator
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
+import pytest
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
@@ -19,9 +26,26 @@ from music_assistant.providers.sendspin.provider import SendspinProvider
 LOOPBACK_IP = "127.0.0.1"
 
 
+@pytest.fixture
+async def mass(
+    tmp_path: pathlib.Path, pytestconfig: pytest.Config
+) -> AsyncGenerator[MusicAssistant]:
+    """
+    Start a Music Assistant in dev mode that loads the providers in the root folder of the test run.
+
+    :param tmp_path: Temporary directory for test data.
+    :param pytestconfig: The configuration of the test run.
+    """
+    async with full_mass_context(tmp_path, dev_providers_path=pytestconfig.rootpath) as server:
+        yield server
+
+
 @contextlib.asynccontextmanager
 async def full_mass_context(
-    tmp_path: pathlib.Path, *, safe_mode: bool = False
+    tmp_path: pathlib.Path,
+    *,
+    safe_mode: bool = False,
+    dev_providers_path: pathlib.Path | None = None,
 ) -> AsyncGenerator[MusicAssistant]:
     """
     Boot a full server on the given temporary directory.
@@ -31,6 +55,8 @@ async def full_mass_context(
 
     :param tmp_path: Temporary directory for test data.
     :param safe_mode: Boot the server in safe mode.
+    :param dev_providers_path: Folder of providers to load as community providers. The server
+        then runs in dev mode and is handed over once these are loaded.
     """
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"
@@ -39,7 +65,15 @@ async def full_mass_context(
 
     logging.getLogger("aiosqlite").level = logging.INFO
 
-    mass_instance = MusicAssistant(str(storage_path), str(cache_path), safe_mode)
+    mass_instance = MusicAssistant(
+        str(storage_path),
+        str(cache_path),
+        safe_mode,
+        str(dev_providers_path) if dev_providers_path else None,
+    )
+    if dev_providers_path:
+        # the server only loads a local provider folder in dev mode
+        mass_instance.dev_mode = True
 
     # Mock zeroconf to prevent real network I/O during tests
     mock_zc = _create_mock_zeroconf()
@@ -76,6 +110,11 @@ async def full_mass_context(
     ):
         try:
             await mass_instance.start()
+            if dev_providers_path:
+                # the server loads the providers of the local folder in a task of its own
+                for task in list(mass_instance._tracked_tasks.values()):
+                    if task.get_name() == "community_catalog_start":
+                        await task
             await wait_for_boot_to_settle(mass_instance)
             adopt_bound_sendspin_port(mass_instance)
             yield mass_instance
