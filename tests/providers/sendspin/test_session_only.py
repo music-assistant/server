@@ -46,6 +46,9 @@ def _refreshed_player(
     player._provider = cast(
         "SendspinProvider", SimpleNamespace(is_virtual_player=lambda _player_id: virtual)
     )
+    # no config is stored for it
+    player.mass = Mock()
+    player.mass.config.get_protocol_record.return_value = None
     player._attr_device_info = DeviceInfo()
     device_info = (
         SendspinDeviceInfo(product_name=product_name, manufacturer=manufacturer)
