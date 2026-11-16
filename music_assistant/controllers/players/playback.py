@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 from contextlib import suppress
+from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.auth import Scope, UserRole
@@ -460,6 +461,7 @@ class PlaybackMixin(_PlayerControllerBase):
             provider. Use this for a lookup on every song change (such as to show whether the
             song is a favorite) and leave the provider search to an action of the user.
         """
+        self.check_player_access(player_id)
         player = self._get_player_with_redirect(player_id)
         item = await self._resolve_currently_playing(
             player, self.get_active_queue(player), library_only
@@ -468,12 +470,12 @@ class PlaybackMixin(_PlayerControllerBase):
             return None
         # a fresh read of the library item carries the current favorite state of the user
         # who asks, also for a queue item or a cached search result
-        return (
-            await self.mass.music.tracks.get_visible_library_item_by_prov_id(
-                item.item_id, item.provider
-            )
-            or item
-        )
+        if library_item := await self.mass.music.tracks.get_visible_library_item_by_prov_id(
+            item.item_id, item.provider
+        ):
+            return library_item
+        # outside the library of the user who asks, the track holds no favorite of theirs
+        return replace(item, favorite=None)
 
     @api_command("players/add_currently_playing_to_favorites", required_scope=Scope.LIBRARY_WRITE)
     async def add_currently_playing_to_favorites(self, player_id: str) -> None:

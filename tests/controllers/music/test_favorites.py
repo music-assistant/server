@@ -391,6 +391,7 @@ async def test_currently_playing_track_carries_the_favorite_of_the_user_who_asks
 
     favorites: dict[str, bool | None] = {}
     with (
+        patch.object(players, "check_player_access"),
         patch.object(players, "_get_player_with_redirect", return_value=MagicMock()),
         patch.object(players, "get_active_queue", return_value=queue),
     ):

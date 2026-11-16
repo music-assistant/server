@@ -4467,8 +4467,26 @@ class TestGetCurrentlyPlayingTrack:
         lookup.assert_awaited_once_with("abc", "spotify--1")
         search.assert_not_awaited()
 
+        # outside the library of the user who asks, the like of whoever queued it is left out
+        queued.favorite = True
         lookup.return_value = None
-        assert await self._get(mock_mass, MagicMock(), _queue(queued)) is queued
+        result = await self._get(mock_mass, MagicMock(), _queue(queued))
+        assert result is not None
+        assert (result.item_id, result.provider, result.favorite) == ("abc", "spotify--1", None)
+
+    async def test_player_access(self, mock_mass: MagicMock) -> None:
+        """A user who may not use the player is not told what plays on it."""
+        controller = _controller(mock_mass)
+        with (
+            patch.object(
+                controller,
+                "check_player_access",
+                side_effect=InsufficientPermissions("no access"),
+            ) as check,
+            pytest.raises(InsufficientPermissions),
+        ):
+            await controller.get_currently_playing_track("player1")
+        check.assert_called_once_with("player1")
 
     @pytest.mark.parametrize(
         ("library_only", "providers"),
@@ -4491,7 +4509,7 @@ class TestGetCurrentlyPlayingTrack:
             library_only=library_only,
         )
 
-        assert result is track
+        assert result == track
         search.assert_awaited_once_with(
             search_query="Artist - Title", media_types=[MediaType.TRACK], providers=providers
         )
@@ -4542,7 +4560,7 @@ class TestGetCurrentlyPlayingTrack:
             )
         )
 
-        assert await self._get(mock_mass, player, None, library_only=True) is track
+        assert await self._get(mock_mass, player, None, library_only=True) == track
         search.assert_awaited_once_with(
             search_query="Artist - Title", media_types=[MediaType.TRACK], providers=["library"]
         )
