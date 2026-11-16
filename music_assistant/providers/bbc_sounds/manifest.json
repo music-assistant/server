@@ -14,5 +14,5 @@
   "requirements": [
     "auntie-sounds==3.0.1"
   ],
-  "multi_instance": false
+  "multi_instance": true
 }
