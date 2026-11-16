@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import math
+import time
 from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
 from gql import Client
 from gql.transport.aiohttp import AIOHTTPTransport
 from music_assistant_models.config_entries import ConfigEntry
@@ -18,7 +22,12 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError, UnplayableMediaError
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+    UnplayableMediaError,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -36,12 +45,21 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_PASSWORD, DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.datetime import from_utc_timestamp, future_timestamp, utc
+from music_assistant.helpers.datetime import from_utc_timestamp, utc
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.ard_audiothek.auth import (
+    PlayHistoryEntry,
+    add_subscription,
+    get_play_history,
+    get_subscribed_podcast_ids,
+    refresh_tokens,
+    remove_play_history_entry,
+    remove_subscription,
+    set_play_history_entry,
+)
 from music_assistant.providers.ard_audiothek.database_queries import (
-    get_history_query,
-    get_subscriptions_query,
+    episode_asset_id_query,
     livestream_query,
     organizations_query,
     publication_services_query,
@@ -51,12 +69,10 @@ from music_assistant.providers.ard_audiothek.database_queries import (
     show_episode_query,
     show_length_query,
     show_query,
-    update_history_entry,
 )
 
 if TYPE_CHECKING:
-    from aiohttp import ClientSession
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -68,6 +84,7 @@ CONF_TOKEN_BEARER = "token"  # noqa: S105 - config key
 CONF_EXPIRY_TIME = "token_expiry"
 CONF_USERID = "user_id"
 CONF_DISPLAY_NAME = "display_name"
+CONF_REFRESH_TOKEN = "refresh_token"  # noqa: S105 - config key
 
 # Constants for config actions
 CONF_ACTION_AUTH = "authenticate"
@@ -77,15 +94,28 @@ CONF_ACTION_CLEAR_AUTH = "clear_auth"
 CONF_MAX_BITRATE = "max_num_episodes"
 CONF_PODCAST_FINISHED = "podcast_finished_time"
 
-IDENTITY_TOOLKIT_BASE_URL = "https://identitytoolkit.googleapis.com/v1/accounts"
-IDENTITY_TOOLKIT_TOKEN = "AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90"  # noqa: S105 - public API key of the ARD web app
-ARD_ACCOUNTS_URL = "https://accounts.ard.de"
 ARD_AUDIOTHEK_GRAPHQL = "https://api.ardaudiothek.de/graphql"
+PROGRESS_CACHE_SECONDS = 60
+MIN_HISTORY_PLAYTIME = 30
+REFRESH_RETRY_SECONDS = 60
+# the ARD account cannot be reached, so its data is skipped and the public catalogue still served
+ACCOUNT_ERRORS = (
+    LoginFailed,
+    ResourceTemporarilyUnavailable,
+    RuntimeError,
+    aiohttp.ClientError,
+    TimeoutError,
+)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
+}
+# without a linked account there is no library, and a sync of an empty one would remove the
+# podcasts (and their likes) a former account synced
+ACCOUNT_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.LIBRARY_PODCASTS_EDIT,
 }
 
 
@@ -93,33 +123,10 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return ARDAudiothek(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def _login(session: ClientSession, email: str, password: str) -> tuple[str, str, str]:
-    response = await session.post(
-        f"{IDENTITY_TOOLKIT_BASE_URL}:signInWithPassword?key={IDENTITY_TOOLKIT_TOKEN}",
-        # TODO: check whether this can use MASS_USER_AGENT
-        headers={"User-Agent": "Music Assistant", "Origin": ARD_ACCOUNTS_URL},
-        json={
-            "returnSecureToken": True,
-            "email": email,
-            "password": password,
-            "clientType": "CLIENT_TYPE_WEB",
-        },
-    )
-    data = await response.json()
-    if "error" in data:
-        message = data["error"].get("message", "")
-        if message == "EMAIL_NOT_FOUND":
-            raise LoginFailed("Email address is not registered")
-        if message == "INVALID_PASSWORD":
-            raise LoginFailed("Password is wrong")
-        if message == "INVALID_LOGIN_CREDENTIALS":
-            raise LoginFailed("Email address or password is wrong")
-        raise LoginFailed(f"Login failed: {message}")
-
-    return data["idToken"], data["localId"], data.get("displayName", "")
+    features = set(SUPPORTED_FEATURES)
+    if mass.config.get_provider_setup_value(config.instance_id, CONF_REFRESH_TOKEN):
+        features |= ACCOUNT_FEATURES
+    return ARDAudiothek(mass, manifest, config, features)
 
 
 def _create_aiohttptransport(headers: dict[str, str] | None = None) -> AIOHTTPTransport:
@@ -128,6 +135,9 @@ def _create_aiohttptransport(headers: dict[str, str] | None = None) -> AIOHTTPTr
 
 class ARDAudiothek(MusicProvider):
     """ARD Audiothek Music provider."""
+
+    _client_initialized: bool
+    _client_token: ConfigValueType
 
     @property
     def max_concurrent_streams(self) -> None:
@@ -170,31 +180,28 @@ class ARDAudiothek(MusicProvider):
 
         This happens when the token is expired or user credentials are updated.
         """
-        _email = self.get_setup_value(CONF_EMAIL)
-        _password = self.get_setup_value(CONF_PASSWORD)
+        _refresh_token = self.get_setup_value(CONF_REFRESH_TOKEN)
         self.token = self.get_setup_value(CONF_TOKEN_BEARER)
         self.user_id = self.get_setup_value(CONF_USERID)
         self.token_expire = from_utc_timestamp(
-            float(str(self.get_setup_value(CONF_EXPIRY_TIME, 0)))
+            float(str(self.get_setup_value(CONF_EXPIRY_TIME) or 0))
         )
 
         self.max_bitrate = int(float(str(self.config.get_value(CONF_MAX_BITRATE))))
 
-        if (
-            _email is not None
-            and _password is not None
-            and (self.token is None or self.user_id is None or self.token_expire < utc())
-        ):
-            self.token, self.user_id, _display_name = await _login(
-                self.mass.http_session, str(_email), str(_password)
-            )
-            self._update_setup_data(CONF_TOKEN_BEARER, self.token)
-            self._update_setup_data(CONF_USERID, self.user_id)
-            self._update_setup_data(CONF_DISPLAY_NAME, _display_name)
-            self._update_setup_data(CONF_EXPIRY_TIME, str(future_timestamp(hours=1)))
-            self._client_initialized = False
+        if _refresh_token and self._token_expired():
+            async with self._refresh_lock:
+                # requests waiting here use the token the first one refreshed
+                if self._token_expired():
+                    refreshed = time.monotonic() >= self._refresh_retry_at and (
+                        await self._refresh_login(str(_refresh_token))
+                    )
+                    if not refreshed:
+                        # without a valid token the public catalogue is still served
+                        self.token = None
+                        self.user_id = None
 
-        if not self._client_initialized:
+        if not self._client_initialized or self._client_token != self.token:
             headers = None
             if self.token:
                 headers = {"Authorization": f"Bearer {self.token}"}
@@ -204,54 +211,36 @@ class ARDAudiothek(MusicProvider):
                 fetch_schema_from_transport=True,
             )
             self._client_initialized = True
+            self._client_token = self.token
 
         return self._client
 
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
         self._client_initialized = False
+        self._client_token = None
+        self._refresh_retry_at: float = 0.0
+        self._refresh_lock = asyncio.Lock()
+        self._account_error: Exception | None = None
+        self.remote_progress: dict[str, PlayHistoryEntry] = {}
+        # the play history is keyed by an episode's asset id, not by the core id we use
+        self._asset_ids: dict[str, str] = {}
+        self._durations: dict[str, int] = {}
+        self._progress_fetched_at: float = -PROGRESS_CACHE_SECONDS
+        self._drop_password_login()
         await self.get_client()
-
-    async def _update_progress(self) -> None:
-        if not self.user_id:
-            self.remote_progress = {}
-            return
-
-        async with await self.get_client() as session:
-            get_history_query.variable_values = {"loginId": self.user_id}
-            result = (await session.execute(get_history_query))["allEndUsers"]["nodes"][0][
-                "history"
-            ]["nodes"]
-
-            new_progress = {}  # type: dict[str, tuple[bool, float]]
-            time_limit = int(str(self.config.get_value(CONF_PODCAST_FINISHED)))
-            for x in result:
-                core_id = x["item"]["coreId"]
-                if core_id is None:
-                    continue
-                duration = x["item"]["duration"]
-                if duration is None:
-                    continue
-                progress = x["progress"]
-                time_limit_reached = (progress / duration) * 100 > time_limit
-                new_progress[core_id] = (time_limit_reached, progress)
-            self.remote_progress = new_progress
-
-    def _get_progress(self, episode_id: str) -> tuple[bool, int]:
-        if episode_id in self.remote_progress:
-            return self.remote_progress[episode_id][0], int(
-                self.remote_progress[episode_id][1] * 1000
-            )
-        return False, 0
 
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
     ) -> tuple[bool, int, datetime | None]:
         """Return: finished, position_ms."""
         assert media_type == MediaType.PODCAST_EPISODE
-        await self._update_progress()
-
-        return *self._get_progress(item_id), None
+        # called right before playback, so it must see progress made elsewhere just now
+        await self._update_progress(force=True)
+        if self.remote_progress:
+            await self._get_asset_id(item_id)
+        entry = self._get_history_entry(item_id)
+        return *self._get_progress(item_id), entry.updated_on if entry else None
 
     async def on_played(
         self,
@@ -263,17 +252,46 @@ class ARDAudiothek(MusicProvider):
         is_playing: bool = False,
     ) -> None:
         """Update progress."""
-        if not self.user_id:
+        if not self.get_setup_value(CONF_REFRESH_TOKEN):
             return
         if media_item is None or not isinstance(media_item, PodcastEpisode):
             return
         if media_type != MediaType.PODCAST_EPISODE:
             return
-        async with await self.get_client() as session:
-            update_history_entry.variable_values = {"itemId": prov_item_id, "progress": position}
-            await session.execute(
-                update_history_entry,
-            )
+        time_limit = int(str(self.config.get_value(CONF_PODCAST_FINISHED)))
+        duration = media_item.duration or 0
+        completed = fully_played or (duration > 0 and position / duration * 100 >= time_limit)
+        # Music Assistant reports an episode marked as unplayed with position 0
+        mark_unplayed = position == 0 and not completed and not is_playing
+        # like the ARD Sounds apps, only episodes listened to for a while enter the history
+        if not mark_unplayed and position < MIN_HISTORY_PLAYTIME and not completed:
+            self.logger.debug("Not storing progress of %s, played only %ss", prov_item_id, position)
+            return
+        id_token, user_id = await self._get_account()
+        if not (asset_id := await self._get_asset_id(prov_item_id)):
+            self.logger.debug("Not storing progress of %s, ARD knows no asset id", prov_item_id)
+            return
+        if mark_unplayed:
+            await remove_play_history_entry(self.mass.http_session, id_token, user_id, asset_id)
+            self.remote_progress.pop(asset_id, None)
+            self.logger.debug("Removed %s (%s) from the ARD play history", prov_item_id, asset_id)
+            return
+        await set_play_history_entry(
+            self.mass.http_session,
+            id_token,
+            user_id,
+            asset_id,
+            position,
+            completed,
+        )
+        self.logger.debug(
+            "Stored progress of %s (%s) in the ARD play history: %ss, completed: %s",
+            prov_item_id,
+            asset_id,
+            position,
+            completed,
+        )
+        self.remote_progress[asset_id] = PlayHistoryEntry(completed, float(position), utc())
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -353,21 +371,49 @@ class ARDAudiothek(MusicProvider):
             prov_radio_id,
         )
 
+    async def library_add(self, item: MediaItemType) -> bool:
+        """Subscribe to a podcast in the ARD account."""
+        if item.media_type != MediaType.PODCAST:
+            return await super().library_add(item)
+        if not self.get_setup_value(CONF_REFRESH_TOKEN):
+            return False
+        id_token, user_id = await self._get_account()
+        await add_subscription(self.mass.http_session, id_token, user_id, item.item_id)
+        return True
+
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
+        """Unsubscribe from a podcast in the ARD account."""
+        if media_type != MediaType.PODCAST:
+            return await super().library_remove(prov_item_id, media_type)
+        if not self.get_setup_value(CONF_REFRESH_TOKEN):
+            return False
+        id_token, user_id = await self._get_account()
+        await remove_subscription(self.mass.http_session, id_token, user_id, prov_item_id)
+        return True
+
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """
         Retrieve library/subscribed podcasts from the provider.
 
         Minified podcast information is enough.
         """
-        if not self.user_id:
+        if not self.get_setup_value(CONF_REFRESH_TOKEN):
             return
-        async with await self.get_client() as session:
-            get_subscriptions_query.variable_values = {"loginId": self.user_id}
-            result = (await session.execute(get_subscriptions_query))["allEndUsers"]["nodes"][0][
-                "subscriptions"
-            ]["programSets"]["nodes"]
-        for show in result:
-            yield await self.get_podcast(show["subscribedProgramSet"]["coreId"])
+        # raising when the account cannot be reached keeps the sync from dropping the podcasts
+        id_token, user_id = await self._get_account()
+        podcast_ids = await get_subscribed_podcast_ids(self.mass.http_session, id_token, user_id)
+        self.logger.debug(
+            "ARD account has %s subscribed podcasts: %s", len(podcast_ids), podcast_ids
+        )
+        for podcast_id in podcast_ids:
+            try:
+                podcast = await self.get_podcast(podcast_id)
+            except Exception as err:
+                # one podcast ARD cannot serve must not end the sync of the others
+                self.logger.warning("Skipping subscribed podcast %s: %r", podcast_id, err)
+                self.report_skipped_sync_item(MediaType.PODCAST, podcast_id, err)
+                continue
+            yield podcast
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
@@ -444,6 +490,7 @@ class ARDAudiothek(MusicProvider):
         positions = rank_episodes_by_date([_publish_date(episode) for episode in episodes])
         for position, episode in zip(positions, episodes, strict=True):
             episode_id = episode["coreId"]
+            self._remember_episode(episode_id, episode)
             yield _parse_podcast_episode(
                 self.domain,
                 self.instance_id,
@@ -463,6 +510,7 @@ class ARDAudiothek(MusicProvider):
             result = (await session.execute(show_episode_query))["itemByCoreId"]
         if not result:
             raise MediaNotFoundError("Podcast episode not found")
+        self._remember_episode(prov_episode_id, result)
         progress = self._get_progress(prov_episode_id)
         return _parse_podcast_episode(
             self.domain,
@@ -606,6 +654,127 @@ class ARDAudiothek(MusicProvider):
             publications += [podcast]
 
         return publications
+
+    def _token_expired(self) -> bool:
+        return self.token is None or self.user_id is None or self.token_expire < utc()
+
+    async def _refresh_login(self, refresh_token: str) -> bool:
+        try:
+            tokens = await refresh_tokens(self.mass.http_session, refresh_token)
+        except LoginFailed as err:
+            self.logger.warning(
+                "ARD rejected the account login, please sign in to your ARD account again: %s", err
+            )
+            # retrying a rejected token cannot succeed, so the account rests until a new sign-in
+            self._refresh_retry_at = math.inf
+            self._account_error = err
+            return False
+        except (ResourceTemporarilyUnavailable, aiohttp.ClientError, TimeoutError) as err:
+            self.logger.warning(
+                "Could not refresh the ARD login, continuing without the account for now: %s", err
+            )
+            backoff = getattr(err, "backoff_time", 0) or REFRESH_RETRY_SECONDS
+            self._refresh_retry_at = time.monotonic() + backoff
+            self._account_error = err
+            return False
+        self._account_error = None
+        self.token = tokens.id_token
+        self.user_id = tokens.user_id
+        self.token_expire = from_utc_timestamp(tokens.expires_at - 60)
+        self.logger.debug(
+            "Refreshed the ARD login, valid until %s",
+            self.token_expire.astimezone().isoformat(timespec="seconds"),
+        )
+        self._update_setup_data(CONF_REFRESH_TOKEN, tokens.refresh_token)
+        self._update_setup_data(CONF_TOKEN_BEARER, tokens.id_token)
+        self._update_setup_data(CONF_USERID, tokens.user_id)
+        self._update_setup_data(CONF_DISPLAY_NAME, tokens.display_name)
+        self._update_setup_data(CONF_EXPIRY_TIME, str(tokens.expires_at - 60))
+        return True
+
+    def _drop_password_login(self) -> None:
+        """Forget the credentials of the former password login, which ARD no longer accepts."""
+        if self.get_setup_value(CONF_REFRESH_TOKEN) or not self.get_setup_value(CONF_PASSWORD):
+            return
+        self.logger.warning(
+            "ARD no longer accepts password logins, continuing without the account. "
+            "Please sign in to your ARD account again in the provider settings"
+        )
+        try:
+            for key in (
+                CONF_EMAIL,
+                CONF_PASSWORD,
+                CONF_TOKEN_BEARER,
+                CONF_USERID,
+                CONF_DISPLAY_NAME,
+                CONF_EXPIRY_TIME,
+            ):
+                self._update_setup_data(key, None)
+        except Exception as err:
+            # a failed cleanup is retried on the next start and must not keep the provider down
+            self.logger.debug("Could not clear the former ARD credentials: %r", err)
+
+    async def _get_account(self) -> tuple[str, str]:
+        """
+        Return the ID token and user id of the linked ARD account.
+
+        :raises LoginFailed: When ARD rejected the account login.
+        :raises ResourceTemporarilyUnavailable: When the account cannot be reached right now.
+        """
+        await self.get_client()
+        if self.token and self.user_id:
+            return str(self.token), str(self.user_id)
+        if isinstance(self._account_error, LoginFailed):
+            raise self._account_error
+        raise ResourceTemporarilyUnavailable(
+            "The ARD account cannot be reached right now", backoff_time=REFRESH_RETRY_SECONDS
+        )
+
+    async def _update_progress(self, force: bool = False) -> None:
+        if not self.get_setup_value(CONF_REFRESH_TOKEN):
+            self.remote_progress = {}
+            return
+        # listing episodes asks for the progress many times in a row
+        if not force and time.monotonic() - self._progress_fetched_at < PROGRESS_CACHE_SECONDS:
+            return
+        try:
+            id_token, user_id = await self._get_account()
+            self.remote_progress = await get_play_history(self.mass.http_session, id_token, user_id)
+        except ACCOUNT_ERRORS as err:
+            # progress is optional, listing and playing the episodes is not
+            self.logger.warning("Could not fetch the ARD play history: %s", err)
+        self._progress_fetched_at = time.monotonic()
+
+    def _get_progress(self, episode_id: str) -> tuple[bool, int]:
+        if not (entry := self._get_history_entry(episode_id)):
+            return False, 0
+        time_limit = int(str(self.config.get_value(CONF_PODCAST_FINISHED)))
+        duration = self._durations.get(episode_id) or 0
+        finished = entry.completed or (
+            duration > 0 and entry.playtime / duration * 100 >= time_limit
+        )
+        return finished, int(entry.playtime * 1000)
+
+    def _remember_episode(self, episode_id: str, episode: dict[str, Any]) -> None:
+        if episode.get("assetId"):
+            self._asset_ids[episode_id] = str(episode["assetId"])
+        if episode.get("duration"):
+            self._durations[episode_id] = int(episode["duration"])
+
+    def _get_history_entry(self, episode_id: str) -> PlayHistoryEntry | None:
+        asset_id = self._asset_ids.get(episode_id)
+        return self.remote_progress.get(asset_id) if asset_id else None
+
+    async def _get_asset_id(self, episode_id: str) -> str | None:
+        if asset_id := self._asset_ids.get(episode_id):
+            return asset_id
+        async with await self.get_client() as session:
+            episode_asset_id_query.variable_values = {"coreId": episode_id}
+            result = (await session.execute(episode_asset_id_query))["itemByCoreId"]
+        if not result or not result.get("assetId"):
+            return None
+        self._remember_episode(episode_id, result)
+        return self._asset_ids[episode_id]
 
 
 def _parse_social_media(
