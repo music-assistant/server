@@ -438,11 +438,14 @@ Den's plug, which cuts its power, is off, and Den's protocols were told that its
 The user switches the setting off, sets Den's power control to none or picks another plug, or the
 plug goes with its provider. Nothing tells the protocols any more when the power is back, so they
 are told at once and reach Den by themselves again. The same when the setting is switched off
-while Den starts up for a play, which fails as switched off.
+while Den starts up for a play, which fails as switched off, and after a power on of Den that
+failed because the plug did not answer: the power is still cut, and the protocols still told so.
 
 - End-to-end: **possible with** a power control the lab can switch, a speaker behind it whose
   provider lets go of it when its power is cut, and a change of the player settings while it is off.
-- Proven by: `test_power_control.py::test_protocols_told_of_a_power_cut_are_told_it_is_back_once_nothing_follows_it`
+- Proven by:
+  - `test_power_control.py::test_protocols_told_of_a_power_cut_are_told_it_is_back_once_nothing_follows_it`
+  - `test_power_control.py::test_a_switch_on_that_fails_leaves_the_power_cut_as_it_was`
 
 ## Several devices on one host
 

@@ -616,12 +616,16 @@ class PowerMixin(_PlayerControllerBase):
             if player.startup_ends_at is None:
                 # the start-up time runs from here, so the control reporting on changes
                 # nothing
+                power_cut = self._power_cuts.get(player_id)
                 self._begin_startup(player)
                 try:
                     assert player_control.power_on is not None  # for type checking
                     await player_control.power_on()
                 except BaseException:
                     self._end_startup(player, called_off=True)
+                    if power_cut is not None:
+                        # the control was not switched on: the power is cut as it was
+                        self._power_cuts[player_id] = power_cut
                     raise
             self.logger.debug("Waiting for player %s to start up", player.name)
             await wait.over.wait()

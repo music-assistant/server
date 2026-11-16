@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
-from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 
 from music_assistant.constants import (
     CONF_POWER_CONTROL_CUTS_POWER,
@@ -16,7 +16,14 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.players.power import EXTERNAL_POWER_OFF_STOP_DELAY
 
-from .test_group_power_on import GROUPS, _downstairs, _play, _plays_along, _starts
+from .test_group_power_on import (
+    GROUPS,
+    _downstairs,
+    _play,
+    _plays_along,
+    _refuse_to_switch_on,
+    _starts,
+)
 from .test_grouping import _state, _stop
 
 if TYPE_CHECKING:
@@ -666,6 +673,33 @@ async def test_protocols_told_of_a_power_cut_are_told_it_is_back_once_nothing_fo
     # told once: nothing follows the power of Den any more
     await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME + EXTERNAL_POWER_OFF_STOP_DELAY)
     assert len(den.power_reports) == len(den_airplay.power_reports) == 2
+    await scenario.idle()
+
+
+async def test_a_switch_on_that_fails_leaves_the_power_cut_as_it_was(scenario: Scenario) -> None:
+    """
+    A plug that fails to switch on leaves the power of its speaker cut, and that told.
+
+    Den's plug, which cuts its power, is off, and Den's protocols were told that its power
+    was cut. A power on of Den fails: the plug does not answer. The user then switches the
+    setting off: Den's protocols are told that the power is back, as nothing follows it any
+    more.
+    """
+    (den, den_airplay), plug, player_id = await _den(
+        scenario, ("sonos", "native"), ("airplay", "audio")
+    )
+    await _cut(scenario, plug, den, den_airplay)
+    _refuse_to_switch_on(scenario, plug)
+
+    power_on = await scenario.command(scenario.mass.players.cmd_power(player_id, True))
+    with pytest.raises(PlayerCommandFailed, match="The plug does not answer"):
+        await power_on
+    changed_at = scenario.mass.loop.time()
+    await scenario.configure_player(player_id, power_control_cuts_power=False)
+
+    # what Den's protocols were told about its power
+    assert [kind for kind, _ in den.power_reports] == ["cut", "restored"]
+    assert den.power_reports[1:] == den_airplay.power_reports[1:] == [("restored", changed_at)]
     await scenario.idle()
 
 
