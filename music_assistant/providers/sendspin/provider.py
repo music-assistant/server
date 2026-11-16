@@ -400,6 +400,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
     _held_paired: set[str]
     _refused_here: dict[str, GoodbyeReason]
     _unencrypted_clients: set[str]
+    _announced_clients: set[str]
     _unloading: bool
     _hass_available: bool
     _server_start_failed: bool
@@ -437,6 +438,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self._held_paired = set()
         self._refused_here = {}
         self._unencrypted_clients = set()
+        self._announced_clients = set()
         self._pin_sessions: dict[str, PinPairingSession] = {}
         self._pending_pairing_evictions: set[str] = set()
         self._running_pairing_evictions: set[asyncio.Task[None]] = set()
@@ -542,9 +544,11 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         """Event callback registered to the sendspin server."""
         match event:
             case ClientAddedEvent(client_id):
+                self._announced_clients.add(client_id)
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_added(client_id, event_version))
             case ClientRemovedEvent(client_id):
+                self._announced_clients.discard(client_id)
                 self._set_held_elsewhere(client_id, held=False)
                 self._unencrypted_clients.discard(client_id)
                 event_version = self._begin_client_event(client_id)
@@ -563,6 +567,10 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 else:
                     self._unencrypted_clients.discard(client_id)
                 self._set_held_elsewhere(client_id, held=False)
+                # aiosendspin announces a client once while it keeps it, so a client whose
+                # player was removed meanwhile gets a new one here
+                if client_id in self._announced_clients:
+                    self._add_client_without_protocol(client_id)
                 # A reconnect within aiosendspin's cleanup delay reuses the player, and this
                 # event fires before the new connection's roles are attached.
                 self.mass.loop.call_soon(self._refresh_player_state, client_id)

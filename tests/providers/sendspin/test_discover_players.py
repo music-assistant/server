@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+from aiosendspin.server import ClientConnectedEvent
+
 import music_assistant.providers.sendspin.provider as provider_module
 from music_assistant.constants import CONF_UNDERLYING_PLAYER_ID
 from music_assistant.providers.sendspin.provider import SendspinProvider
@@ -70,6 +72,46 @@ async def test_a_connected_client_without_a_protocol_is_added_again() -> None:
     await provider.discover_players()
 
     assert added == ["removed"]
+
+
+def _connect(
+    client_ids: list[str], *, attached: tuple[str, ...] = (), announced: tuple[str, ...] = ()
+) -> list[str]:
+    """
+    Signal a connect of each given client and return the ids the provider adds.
+
+    :param client_ids: The clients that connect.
+    :param attached: Ids of the clients whose protocol is attached.
+    :param announced: Ids of the clients aiosendspin announced before.
+    """
+    clients = [_client(client_id) for client_id in client_ids]
+    for client in clients:
+        client.connection_security = None
+    provider, added = _provider(clients, attached=attached)
+    provider._unencrypted_clients = set()
+    provider._held_elsewhere = set()
+    provider._held_unapproved = set()
+    provider._held_paired = set()
+    provider._refused_here = {}
+    provider._hass_auto_pairer = MagicMock()
+    provider._announced_clients = set(announced)
+    for client_id in client_ids:
+        provider.event_cb(provider.server_api, ClientConnectedEvent(client_id=client_id))
+    return added
+
+
+async def test_a_reconnecting_client_without_a_protocol_is_added_again() -> None:
+    """A client whose player was removed while it was away is added on its next connect."""
+    added = _connect(
+        ["attached", "removed"], attached=("attached",), announced=("attached", "removed")
+    )
+
+    assert added == ["removed"]
+
+
+async def test_a_first_connect_is_left_to_the_announcement() -> None:
+    """Aiosendspin announces a new client after its connect, which adds it once."""
+    assert _connect(["new"]) == []
 
 
 async def test_a_client_registered_in_process_is_added_again() -> None:
