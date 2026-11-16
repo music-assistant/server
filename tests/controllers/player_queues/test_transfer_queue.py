@@ -53,6 +53,7 @@ def _fake_controller(source_id: str, target_player: MagicMock) -> MagicMock:
     target_queue = MagicMock()
 
     fake = MagicMock()
+    fake.mass.players._needs_power_on = lambda player: player.offline_by_power_control
     fake._resolve_queue_id = lambda queue_id: queue_id
     fake.get = MagicMock(side_effect=lambda qid: source_queue if qid == source_id else target_queue)
     fake.stop = AsyncMock()
@@ -173,6 +174,7 @@ def _shuffle_controller(
     )
 
     fake = MagicMock()
+    fake.mass.players._needs_power_on = lambda player: player.offline_by_power_control
     fake._resolve_queue_id = lambda queue_id: queue_id
     fake.get = MagicMock(side_effect=lambda qid: source_queue if qid == "src" else target_queue)
     fake._queue_data = {

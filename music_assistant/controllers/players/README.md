@@ -580,7 +580,12 @@ a client can still power it on or play to it. What a command does with it is par
 (`SwitchedOffAction`): play, resume, play media and select source power it on first and wait for
 the device; stop and pause call off a power on under way and otherwise do nothing; volume, mute and
 ungroup do nothing; power, play/pause and announcements handle it themselves; every other command
-is refused.
+is refused. A play, a resume, play media, a selection of a source and a queue transfer that plays
+on the player also wait again for a device that still boots after a stop called its power on off,
+as a group does for such a member (see below): until the 90 seconds of that power on are over,
+without switching the control once more (`_needs_power_on`). All but the selection of a source do
+so also while the player shows as unavailable meanwhile, which it does when no other protocol of
+it reads available.
 
 Such a player is the one case of a player that is available and can not play yet, and it stays
 that while a power on still waits for its device, when it already shows as powered on. Code

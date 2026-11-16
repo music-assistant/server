@@ -61,6 +61,7 @@ def _controller(
     """Build a bare controller whose queue "q1" plays the first of two books at 40 seconds."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     mass = MagicMock()
+    mass.players._needs_power_on = lambda player: player.offline_by_power_control
     mass.players.get_player.return_value.extra_data = {}
     mass.players.get_player.return_value.offline_by_power_control = False
     ctrl.mass = mass

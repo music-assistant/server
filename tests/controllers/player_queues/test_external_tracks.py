@@ -314,6 +314,7 @@ def _controller(music: MusicController, userid: str | None = None) -> Any:
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = Mock()
     ctrl.mass = MagicMock()
+    ctrl.mass.players._needs_power_on = lambda player: player.offline_by_power_control
     ctrl.mass.music = music
     ctrl.mass.config = music.mass.config
     ctrl.mass.providers = []

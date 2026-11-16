@@ -52,6 +52,7 @@ def _controller(
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
     ctrl.get_item = Mock(return_value=item)  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players._needs_power_on = lambda player: player.offline_by_power_control
     player = MagicMock()
     player.offline_by_power_control = False
     player.playback_state = PlaybackState.IDLE

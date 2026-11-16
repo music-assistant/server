@@ -415,6 +415,22 @@ with the player: Den's device is never checked.
   first seconds after the power is cut.
 - Proven by: `test_power_control.py::test_a_player_that_goes_before_its_check_is_not_checked`
 
+### AWAY-24 · A play right after a stop waits again for a speaker that still boots
+
+As in AWAY-15, the user plays music on Den, which switches its plug on and waits, and stops Den.
+The plug stays on and the device still boots: with its Sonos protocol alone Den shows as
+unavailable, with an AirPlay receiver that never noticed the cut as available and powered on. The
+user starts Den again before the device is back: play media, a resume, a play, a transfer of the
+queue of Kitchen, or, with the receiver, a selection of Den's HDMI input. That waits for Den's Sonos protocol and holds
+no lock meanwhile, the plug is not switched a second time, and Den plays through its Sonos
+protocol once that is back, as a group does for such a member (GROUP-33).
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by:
+  - `test_power_control.py::test_a_play_after_a_stop_waits_again_for_a_speaker_that_still_boots`
+  - `test_power_control.py::test_a_source_selected_after_a_stop_waits_again_for_a_speaker_that_still_boots`
+
 ## Several devices on one host
 
 One host, such as a Raspberry Pi, can run several players behind one MAC and one IP address.

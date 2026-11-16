@@ -73,6 +73,7 @@ def _controller() -> tuple[PlayerQueuesController, dict[str, Any]]:
     ctrl._get_next_index = Mock(return_value=None)  # type: ignore[method-assign]
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players._needs_power_on = lambda player: player.offline_by_power_control
     ctrl.mass.closing = False
     ctrl.mass.create_task.side_effect = _close
     ctrl.mass.players.get_player.return_value.offline_by_power_control = False

@@ -99,10 +99,11 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](  
         the command has nothing to act on (volume), ignored after calling off a power on
         under way (stop, pause), powered on first (before any lock is taken) for commands
         that start playback, or run as is for commands that handle it themselves. A command
-        that powers such a player on also waits for the switched-off members of the group
-        player it starts (the player itself, or the owner of its playback), and one that
-        calls a power on off ends the wait of the player and of the owner of its playback
-        for their members.
+        that starts playback also waits again for a player whose device still boots after
+        a power on that was called off. A command that powers such a player on also waits
+        for the switched-off members of the group player it starts (the player itself, or
+        the owner of its playback), and one that calls a power on off ends the wait of the
+        player and of the owner of its playback for their members.
     :param accept_unavailable: Run the command for an unavailable player too, for a
         command that handles such a player itself (power).
     :param to_playback_owner: The command acts on the owner of the player's playback (its
@@ -128,10 +129,22 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](  
                     command_player_id,
                     fn.__name__,
                 )
-            player = self.get_player(command_player_id, raise_unavailable=not accept_unavailable)
+            player = self.get_player(command_player_id)
             if player is None:
                 msg = f"Player {player_id} is not available"
                 raise PlayerUnavailableError(msg)
+            is_switched_off = (
+                self._needs_power_on(player)
+                if switched_off == SwitchedOffAction.POWER_ON
+                else player.offline_by_power_control
+            )
+            # a start powers on (or waits for) a switched-off player itself, which can show
+            # as unavailable while its device still boots
+            if not (
+                accept_unavailable
+                or (is_switched_off and switched_off == SwitchedOffAction.POWER_ON)
+            ):
+                self.get_player(command_player_id, raise_unavailable=True)
             # the command works with the current id of the player
             if "player_id" in kwargs:
                 kwargs["player_id"] = player.player_id
@@ -152,7 +165,6 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](  
                 f"by user {current_user.username}" if current_user else "unauthenticated",
             )
 
-            is_switched_off = player.offline_by_power_control
             if is_switched_off and switched_off == SwitchedOffAction.REFUSE:
                 msg = f"Player {player.name} is switched off"
                 raise PlayerUnavailableError(msg)

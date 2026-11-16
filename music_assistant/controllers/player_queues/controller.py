@@ -814,14 +814,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._drop_pending_step(queue_id)
             # powered on before the play action takes its locks, and so are the switched-off
             # members of a group; media that is only enqueued leaves the player switched off
+            needs_power_on = self.mass.players._needs_power_on(player)
             if (
-                player.offline_by_power_control
+                needs_power_on
                 or (
                     player.type == PlayerType.GROUP
                     and self.mass.players._members_to_power_on(player)
                 )
             ) and not await self._only_enqueues_by_default(media, option, radio_mode):
-                if player.offline_by_power_control:
+                if needs_power_on:
                     await self.mass.players._power_on_switched_off_player(queue_id)
                 else:
                     await self.mass.players._power_on_members(player)
@@ -1419,7 +1420,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if target_player.type == PlayerType.GROUP:
                 await self.mass.players._power_on_members(target_player)
             elif (
-                target_player.offline_by_power_control
+                self.mass.players._needs_power_on(target_player)
                 and target_player.type in PLAYBACK_TARGET_TYPES
             ):
                 await self.mass.players._power_on_switched_off_player(target_queue_id)

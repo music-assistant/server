@@ -48,6 +48,7 @@ def _controller() -> tuple[PlayerQueuesController, PlayerQueue]:
     ctrl._check_player_permission = Mock()  # type: ignore[method-assign]
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players._needs_power_on = lambda player: player.offline_by_power_control
     ctrl.mass.players.get_player = Mock(
         return_value=MagicMock(playback_state=PlaybackState.IDLE, offline_by_power_control=False)
     )

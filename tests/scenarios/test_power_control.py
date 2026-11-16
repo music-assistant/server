@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.player import PlayerSource
 
 from music_assistant.controllers.players.power import (
     DEVICE_CHECK_DELAY,
@@ -17,6 +18,7 @@ from music_assistant.controllers.players.power import (
     DEVICE_CHECK_TIMEOUT,
 )
 
+from .harness import TEST_TRACK_URI
 from .test_group_power_on import GROUPS, _downstairs, _play, _plays_along, _starts
 from .test_grouping import (
     _device,
@@ -29,6 +31,8 @@ from .test_grouping import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
     from .harness import FakePowerControl, FakeProtocol, Role, Scenario
 
 DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
@@ -109,6 +113,26 @@ async def _boot(scenario: Scenario, protocol: FakeProtocol) -> None:
     """Let the device of a protocol be up again: it answers a check, and the protocol reaches it."""
     protocol.device_answers = True
     await _reach(scenario, protocol)
+
+
+def _start(
+    scenario: Scenario, player_id: str, command: str, source_id: str
+) -> Coroutine[Any, Any, None]:
+    """
+    Return a request that starts playback on a player, which may wait.
+
+    :param command: ``"queue play_media"`` plays a track, ``"queue resume"`` and
+        ``"players cmd_play"`` play what the queue of the player holds, ``"queue transfer"``
+        moves the queue of another player to it and plays it there.
+    :param source_id: The player whose queue a transfer moves.
+    """
+    if command == "queue play_media":
+        return scenario.mass.player_queues.play_media(player_id, TEST_TRACK_URI)
+    if command == "queue resume":
+        return scenario.mass.player_queues.resume(player_id)
+    if command == "queue transfer":
+        return scenario.mass.player_queues.transfer_queue(source_id, player_id, auto_play=True)
+    return scenario.mass.players.cmd_play(player_id)
 
 
 @pytest.mark.parametrize("receiver", ["never noticed the cut", "is back first"])
@@ -207,6 +231,105 @@ async def test_a_stop_calls_off_the_power_on_of_a_speaker_whose_receiver_reads_a
     await scenario.idle()
     assert den.commands == den_airplay.commands == []
     assert _state(scenario, player_id).playback_state == PlaybackState.IDLE
+    assert plug.commands == [True]
+
+
+@pytest.mark.parametrize("receiver", ["own protocol only", "receiver reads available"])
+@pytest.mark.parametrize(
+    "command", ["queue play_media", "queue resume", "players cmd_play", "queue transfer"]
+)
+async def test_a_play_after_a_stop_waits_again_for_a_speaker_that_still_boots(
+    scenario: Scenario, receiver: str, command: str
+) -> None:
+    """
+    A speaker that is stopped while its play waits, and played again, is waited for again.
+
+    Den played a track before its plug was cut; its Sonos protocol noticed the cut and reads
+    unavailable, while its AirPlay receiver, when it has one, never noticed. A play (or a
+    transfer of the queue of Kitchen, which plays) switches the plug on and waits; a stop
+    calls it off and leaves the plug on, so the device still boots. The new play waits for
+    Den's own protocol, holds no lock meanwhile and does not switch the plug again: Den plays
+    through its Sonos protocol once that is back.
+    """
+    protocols: list[tuple[str, Role]] = [("sonos", "native")]
+    if receiver == "receiver reads available":
+        protocols.append(("airplay", "audio"))
+    speakers, plug, player_id = await _den(scenario, *protocols)
+    den = speakers[0]
+    kitchen = scenario.provider("sonos").protocol(
+        "sonos_kitchen", "Kitchen", identifiers=_device(1)
+    )
+    await scenario.register(kitchen)
+    kitchen_id = _player_id(scenario, kitchen)
+    await scenario.play(player_id)
+    await _stop(scenario, player_id)
+    if command == "queue transfer":
+        await scenario.play(kitchen_id)
+    await _cut(scenario, plug, den)
+    play = await scenario.command(_start(scenario, player_id, command, kitchen_id))
+    assert not play.done(), play.exception()
+    await _stop(scenario, player_id)
+    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+        await play
+
+    play = await scenario.command(_start(scenario, player_id, command, kitchen_id))
+
+    assert not play.done(), play.exception()
+    await scenario.advance(10)
+    assert not play.done(), play.exception()
+    # it waits before any lock is taken, as the first play did
+    assert not any(lock.locked() for lock in scenario.mass.players._player_command_locks.values())
+    state = _state(scenario, player_id)
+    assert (state.available, state.powered) == (True, True)
+    assert [_starts(speaker) for speaker in speakers] == [1] + [0] * (len(speakers) - 1)
+    await _reach(scenario, den)
+    await play
+    await scenario.idle()
+
+    assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
+    assert [_starts(speaker) for speaker in speakers] == [2] + [0] * (len(speakers) - 1)
+    assert plug.commands == [True]
+    await _stop(scenario, player_id)
+
+
+async def test_a_source_selected_after_a_stop_waits_again_for_a_speaker_that_still_boots(
+    scenario: Scenario,
+) -> None:
+    """
+    A source selected on a speaker whose device still boots after a stop waits for it.
+
+    Den has an HDMI input on its Sonos protocol and an AirPlay receiver. Its plug is cut and
+    its Sonos protocol reads unavailable, while its receiver never noticed. Selecting HDMI
+    switches the plug on and waits; a stop calls it off and leaves the plug on. HDMI selected
+    again waits for Den's own protocol, and reaches the device once that is back.
+    """
+    (den, den_airplay), plug, player_id = await _den(
+        scenario, ("sonos", "native"), ("airplay", "audio")
+    )
+    await scenario.report(
+        den,
+        supported_features={*den.supported_features, PlayerFeature.SELECT_SOURCE},
+        source_list=[PlayerSource(id="hdmi", name="HDMI")],
+    )
+    await _cut(scenario, plug, den)
+    select = await scenario.command(scenario.mass.players.select_source(player_id, "hdmi"))
+    assert not select.done(), select.exception()
+    await _stop(scenario, player_id)
+    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+        await select
+
+    select = await scenario.command(scenario.mass.players.select_source(player_id, "hdmi"))
+
+    assert not select.done(), select.exception()
+    await scenario.advance(10)
+    assert not select.done(), select.exception()
+    assert den.commands == den_airplay.commands == []
+    await _reach(scenario, den)
+    await select
+    await scenario.idle()
+
+    assert [command[0] for command in den.commands] == ["select_source"]
+    assert den_airplay.commands == []
     assert plug.commands == [True]
 
 

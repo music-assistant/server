@@ -58,6 +58,7 @@ def _controller() -> PlayerQueuesController:
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players._needs_power_on = lambda player: player.offline_by_power_control
     ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     ctrl.mass.streams.is_smart_fades_active.return_value = False
     ctrl.mass.music.get_playback_speed = AsyncMock(return_value=1.0)

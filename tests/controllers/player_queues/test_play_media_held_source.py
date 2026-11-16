@@ -69,6 +69,7 @@ def _controller(default_option: QueueOption = QueueOption.REPLACE) -> Any:
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = Mock()
     ctrl.mass = MagicMock()
+    ctrl.mass.players._needs_power_on = lambda player: player.offline_by_power_control
     ctrl.mass.players.get_player = Mock(
         return_value=Mock(extra_data={}, offline_by_power_control=False)
     )

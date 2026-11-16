@@ -59,6 +59,7 @@ def _controller(*, player_available: bool = True) -> tuple[PlayerQueuesControlle
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
     ctrl._managed_pool = MagicMock()
     ctrl.mass = MagicMock()
+    ctrl.mass.players._needs_power_on = lambda player: player.offline_by_power_control
     ctrl.mass.create_task = Mock(side_effect=lambda coro, **_kw: coro.close())
     ctrl.mass.players.play_media = AsyncMock()
     ctrl.mass.music.get_playback_speed = AsyncMock(return_value=1.0)

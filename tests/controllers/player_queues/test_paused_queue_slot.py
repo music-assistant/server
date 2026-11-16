@@ -149,6 +149,7 @@ class _Rig:
         self.players: dict[str, SimpleNamespace] = {}
         self.tasks: list[asyncio.Future[Any]] = []
         mass = MagicMock()
+        mass.players._needs_power_on = lambda player: player.offline_by_power_control
         mass.get_provider.side_effect = lambda instance, **_kwargs: (
             self.provider if instance == INSTANCE else self.other_providers.get(instance)
         )

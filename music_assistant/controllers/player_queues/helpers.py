@@ -127,9 +127,11 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     :param switched_off: What the action does with a queue whose player is switched off at
         its external power control (see SwitchedOffAction), handled before the locks are
         taken: refused by default, ignored, powered on first for actions that start
-        playback, or run as is for actions that handle it themselves. An action that powers
-        such a player on also waits for the switched-off members of the group player it
-        starts: the queue's player itself, or the group that its playback goes to.
+        playback, or run as is for actions that handle it themselves. An action that starts
+        playback also waits again for a player whose device still boots after a power on
+        that was called off. An action that powers such a player on also waits for the
+        switched-off members of the group player it starts: the queue's player itself, or
+        the group that its playback goes to.
     :param starts_unless_playing: The action makes a queue that does not play start playing
         (a seek), so on such a queue it waits for the switched-off members of a group player
         as well. A queue whose player itself is switched off is handled as switched_off says.
@@ -157,9 +159,12 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                 # the action takes the place of a step (next, previous) that has not played
                 # yet, from the moment it arrives
                 self._drop_pending_step(queue_id)
-            if (
-                player := self.mass.players.get_player(queue_id)
-            ) is not None and player.offline_by_power_control:
+            if (player := self.mass.players.get_player(queue_id)) is not None and (
+                # a start also waits again for a device that still boots after a power on
+                self.mass.players._needs_power_on(player)
+                if switched_off == SwitchedOffAction.POWER_ON
+                else player.offline_by_power_control
+            ):
                 if switched_off == SwitchedOffAction.REFUSE:
                     msg = f"Player {player.name} is switched off"
                     raise PlayerUnavailableError(msg)

@@ -300,6 +300,9 @@ class _FakePlayers:
     def get_player(self, player_id: str) -> _FakePlayer | None:
         return self._players.get(player_id)
 
+    def _needs_power_on(self, player: _FakePlayer) -> bool:
+        return player.offline_by_power_control
+
 
 class _FakeMass:
     def __init__(self, player_ids: set[str]) -> None:

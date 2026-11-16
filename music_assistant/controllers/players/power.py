@@ -759,6 +759,18 @@ class PowerMixin(_PlayerControllerBase):
             )
         ]
 
+    def _needs_power_on(self, player: Player) -> bool:
+        """
+        Return whether a start of the player first waits for its device at its power control.
+
+        The player is switched off at its power control, or its device still boots after a
+        power on that was called off. Either way it is powered on (or waited for) with
+        _power_on_switched_off_player.
+
+        :param player: The player that is about to play.
+        """
+        return player.offline_by_power_control or self._still_boots(player)
+
     def _still_boots(self, player: Player) -> bool:
         """
         Return whether the device of a player still boots after its power on was called off.

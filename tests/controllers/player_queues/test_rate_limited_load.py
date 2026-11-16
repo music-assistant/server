@@ -71,6 +71,7 @@ def _controller(
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
     ctrl.stop = stop_mock  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players._needs_power_on = lambda player: player.offline_by_power_control
     ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     # the queue's player is not in a group
     ctrl.mass.players._resolve_playback_owner = Mock(side_effect=lambda player: player)

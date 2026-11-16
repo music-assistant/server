@@ -370,7 +370,7 @@ class AudioSourceMixin(_PlayerControllerBase):
         # no lock while a device comes online: a switched-off player is powered on first,
         # and so are the switched-off members of a group player for a source that plays.
         # A queue that is selected only becomes the source: that starts nothing
-        if player.offline_by_power_control:
+        if self._needs_power_on(player):
             player = await self._power_on_switched_off_player(player_id)
         elif player.type == PlayerType.GROUP and not is_queue:
             await self._power_on_members(player)
