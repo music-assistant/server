@@ -4168,6 +4168,19 @@ class StreamsAudio:
                         queue_item.streamdetails = last_failed_streamdetails
             streamdetails = queue_item.streamdetails
             assert streamdetails is not None  # for type checking
+            # an item that resumes from its own buffer (the reuse check of get_buffer) opens
+            # no new source, so a held slot is nothing to refuse it over
+            own_buffer = streamdetails.buffer
+            resumes = (
+                own_buffer is not None
+                and not own_buffer.has_error
+                and own_buffer.is_valid(seek_position_ms)
+            )
+            if not resumes:
+                # what holds a slot of this provider and is needed by nothing gives it up
+                # first. Everything below is decided after that wait, so it counts what is
+                # really in use, and finds out whether the consumer is still there
+                await self._release_unneeded_sources(queue_item, streamdetails.provider)
             # the preparation lock and the waits between attempts can outlast the consumer:
             # a source opened for a request nobody reads anymore only ties up its slot
             if consumer_connected is not None and not consumer_connected():
@@ -4195,18 +4208,6 @@ class StreamsAudio:
             last_resort = final_pass or not (
                 alternatives_left or busy_instances or match_pending or paused_holder
             )
-            # an item that resumes from its own buffer (the reuse check of get_buffer) opens
-            # no new source, so a held slot is nothing to refuse it over
-            own_buffer = streamdetails.buffer
-            resumes = (
-                own_buffer is not None
-                and not own_buffer.has_error
-                and own_buffer.is_valid(seek_position_ms)
-            )
-            if not resumes:
-                # what holds a slot of this provider and is needed by nothing gives it up
-                # first, so the refusal and the wait below only count what is really in use
-                await self._release_unneeded_sources(queue_item, streamdetails.provider)
             if last_resort and not resumes:
                 # a realtime source keeps its slot until its item ends, so the budget would
                 # run out with nothing to show for it: refuse right away instead

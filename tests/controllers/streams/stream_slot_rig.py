@@ -9,8 +9,9 @@ crossfade mixer and the players are left out.
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -50,6 +51,8 @@ SESSION_ID = "session-a"
 PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16)
 # seconds a speaker's request may wait for the slot in these tests
 SHORT_WAIT = 2.0
+# seconds a source that is slow to stop holds on at most
+SLOW_STOP_LIMIT = 3.0
 
 Source = Callable[[], AsyncGenerator[bytes]]
 
@@ -92,6 +95,25 @@ async def realtime_capture() -> AsyncGenerator[bytes]:
     for _ in range(3):
         yield seconds(1)
     await asyncio.Event().wait()
+
+
+async def slow_to_stop_capture(stopped: asyncio.Event) -> AsyncGenerator[bytes]:
+    """
+    Capture a track in real time, and keep its slot after it is told to stop until allowed to go.
+
+    :param stopped: Set by the test once the source may finish unwinding.
+    """
+    try:
+        for _ in range(3):
+            yield seconds(1)
+        await asyncio.Event().wait()
+    finally:
+        # however often it is told to stop meanwhile, though never longer than a test may take
+        deadline = asyncio.get_running_loop().time() + SLOW_STOP_LIMIT
+        while not stopped.is_set() and asyncio.get_running_loop().time() < deadline:
+            with suppress(asyncio.CancelledError, TimeoutError):
+                async with asyncio.timeout_at(deadline):
+                    await stopped.wait()
 
 
 async def source(
@@ -179,6 +201,8 @@ class SlotRig:
         self.tasks: list[asyncio.Task[Any]] = []
         # the sources of the tracks by name; a track without one is captured in real time
         self.sources: dict[str, Source] = {}
+        # how often the source of each track was opened
+        self.opened: Counter[str] = Counter()
         # schedules tasks with the server's own create_task: started eagerly, tracked by id
         self._task_host = SimpleNamespace(
             _tracked_tasks={},
@@ -416,6 +440,7 @@ class SlotRig:
     def _media_stream(self, streamdetails: StreamDetails, *_args: Any) -> AsyncGenerator[bytes]:
         """Open the source of a track, as the provider would."""
         name = streamdetails.item_id.removeprefix("track-")
+        self.opened[name] += 1
         return self.sources.get(name, realtime_capture)()
 
 

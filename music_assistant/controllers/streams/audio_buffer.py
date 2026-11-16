@@ -259,7 +259,8 @@ class AudioBuffer:
         Stop the source of this buffer when it still fills and nothing needs it.
 
         A buffer with a user is needed. One without is kept or given up as ``may_release``
-        says.
+        says. A buffer that gives its source up is no longer valid from that moment, also
+        while the source still takes its time to stop.
 
         :return: The task that stops the source, or None when the buffer keeps it.
         """
@@ -272,6 +273,9 @@ class AudioBuffer:
         if self.may_release is None or not self.may_release(self):
             return None
         LOGGER.debug("Releasing the source of %s, which nothing needs", self._source_name)
+        # no longer valid from here on: the source takes a moment to stop, and nobody may
+        # take the buffer in the meantime
+        self._cancelled = True
         self._release_task = asyncio.get_running_loop().create_task(self.clear())
         return self._release_task
 

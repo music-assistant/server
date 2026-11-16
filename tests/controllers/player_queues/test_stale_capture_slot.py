@@ -34,6 +34,7 @@ from tests.controllers.streams.stream_slot_rig import (
     UnlimitedProvider,
     drain,
     install_mixer,
+    slow_to_stop_capture,
     source,
 )
 
@@ -244,6 +245,47 @@ async def test_a_request_that_ended_before_it_took_the_source_leaves_nothing_beh
     assert buffer is not None
     assert not rig.fills(capture)
     assert list(capture.users) == []
+
+
+async def test_a_request_under_way_is_not_handed_a_source_that_is_being_released(
+    rig: SlotRig,
+) -> None:
+    """
+    Nobody takes a source from the moment it is told to give its slot up.
+
+    The track that now plays next takes the slot of the prepared track. While that source still
+    unwinds, a request for the prepared track that was already under way arrives: it waits for
+    the release and then opens a source of its own.
+    """
+    playing, prepared, _later = rig.play("track 0", "track 1", "track 2")
+    stopped = asyncio.Event()
+    rig.sources["track 1"] = lambda: (
+        slow_to_stop_capture(stopped) if rig.opened["track 1"] == 1 else source(3)
+    )
+    capture = await rig.prepare_next(playing)
+    new_next = rig.track("track 5")
+    rig.sources["track 5"] = partial(source, 3)
+    await rig.queues._enqueue_with_option(QUEUE_ID, [new_next], QueueOption.NEXT)
+
+    next_request = asyncio.ensure_future(rig.ask(new_next))
+    await asyncio.sleep(0.05)
+    stale_stream = rig.audio.get_queue_item_stream(prepared, PCM_FORMAT)
+    stale_request = asyncio.ensure_future(anext(stale_stream))
+    await asyncio.sleep(0.05)
+
+    # the source still unwinds, and it is nobody's any more
+    assert not rig.slot_free()
+    assert not stale_request.done()
+    assert list(capture.users) == []
+
+    stopped.set()
+    assert await next_request is not None
+    assert len(await stale_request) == PCM_FORMAT.pcm_sample_size
+    await stale_stream.aclose()
+
+    assert capture.cancelled
+    assert rig.buffer(prepared) is not capture
+    assert rig.opened["track 1"] == 2
 
 
 # --- a flow stream keeps the track it selected
