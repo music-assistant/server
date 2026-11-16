@@ -361,6 +361,21 @@ async def test_forced_track_refresh_looks_up_the_lyrics_again() -> None:
 
 
 @pytest.mark.asyncio
+async def test_track_refresh_that_is_not_forced_keeps_the_stored_lyrics() -> None:
+    """A refresh that is due keeps the stored lyrics and reads the lookup cache."""
+    enrichment = _enrichment()
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lyrics="other"))
+    enrichment.providers = [lyrics_provider]  # type: ignore[misc]
+    track = _track_with_lyrics("stored", None)
+
+    await enrichment._update_track_metadata(track, force_refresh=False)
+
+    _mass(enrichment).cache.handle_refresh.assert_called_once_with(False)
+    _replaced_lyrics(enrichment).assert_not_awaited()
+    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == ("stored", None)
+
+
+@pytest.mark.asyncio
 async def test_track_refresh_that_is_not_forced_adds_lrc_to_stored_plain_lyrics() -> None:
     """A refresh reads the lookup cache and adds synchronized lyrics to stored plain lyrics."""
     enrichment = _enrichment()
