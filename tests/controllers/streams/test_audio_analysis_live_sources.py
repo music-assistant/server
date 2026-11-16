@@ -749,9 +749,10 @@ async def test_metadata_reported_for_a_session_that_is_not_a_live_source_does_no
         queue_id=PLAYER_ID,
     )
     await controller.start_analysis(AudioBuffer(PCM_FORMAT), streamdetails)
-    assert streamdetails.uri in provider._sessions
+    (session_key,) = provider._sessions
+    assert session_key.startswith(f"{streamdetails.uri}#")
 
-    provider.report_stream_metadata(streamdetails.uri, StreamMetadata(title="Recognised"))
+    provider.report_stream_metadata(session_key, StreamMetadata(title="Recognised"))
 
     assert streamdetails.stream_metadata is None
     cast("MagicMock", controller.mass).player_queues.signal_update.assert_not_called()
