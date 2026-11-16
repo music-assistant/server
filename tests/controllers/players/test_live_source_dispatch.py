@@ -7,7 +7,7 @@ its own items. This replaces the queue-delegation tests, which covered the same
 forwarding while a live source was a queue item.
 """
 
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -25,7 +25,7 @@ from music_assistant_models.player import PlayerSource
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.audio_sources import AudioSourceSession
 from music_assistant.models.plugin import PluginProvider
-from tests.common import MockPlayer, MockProvider
+from tests.common import MockProtocol, MockProvider, attach_mock
 
 PLAYER_ID = "player_1"
 PROVIDER_INSTANCE = "spotify_connect--abc"
@@ -74,12 +74,11 @@ def _controller(source: AudioSource | None) -> tuple[Any, MagicMock]:
         )
     player = MagicMock()
     player.player_id = PLAYER_ID
-    player.display_name = "Player 1"
+    player.name = "Player 1"
     player.available = True
     player.offline_by_power_control = False
-    player.state.synced_to = None
-    player.state.active_group = None
-    player.protocol_parent_id = None
+    player.synced_to = None
+    player.active_group = None
     controller.get_player = MagicMock(return_value=player)  # type: ignore[method-assign]
     # the command decorator looks the player up in the registry, not via get_player
     controller._players[PLAYER_ID] = player
@@ -185,15 +184,13 @@ async def test_a_group_member_is_playing_its_groups_source() -> None:
     )
     member = MagicMock()
     member.player_id = "member_1"
-    member.display_name = "Member"
-    member.state.synced_to = None
-    member.state.active_group = "group_1"
-    member.protocol_parent_id = None
+    member.name = "Member"
+    member.synced_to = None
+    member.active_group = "group_1"
     group = MagicMock()
     group.player_id = "group_1"
-    group.state.synced_to = None
-    group.state.active_group = None
-    group.protocol_parent_id = None
+    group.synced_to = None
+    group.active_group = None
     controller.get_player = MagicMock(
         side_effect=lambda pid, *_a, **_k: {"member_1": member, "group_1": group}.get(pid)
     )
@@ -266,11 +263,11 @@ async def test_an_unknown_repeat_mode_is_refused_before_it_reaches_a_source() ->
     provider.on_source_control.assert_not_awaited()
 
 
-class _NativeSourcePlayer(MockPlayer):
-    """A player whose device runs a source of its own and orders that source itself."""
+class _NativeSourceProtocol(MockProtocol):
+    """The protocol of a device that runs a source of its own and orders that source itself."""
 
-    def __init__(self, provider: MockProvider, player_id: str, name: str) -> None:
-        super().__init__(provider, player_id, name)
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
         self.shuffle_calls: list[bool] = []
         self.repeat_calls: list[RepeatMode] = []
 
@@ -287,8 +284,12 @@ def _native_source_controller(
     can_repeat: bool = False,
     active_source: str = NATIVE_SOURCE_ID,
     queue: MagicMock | None = None,
-) -> tuple[PlayerController, _NativeSourcePlayer]:
-    """Build a controller whose player is playing a source its own device runs."""
+) -> tuple[PlayerController, _NativeSourceProtocol]:
+    """
+    Build a controller whose player is playing a source its own device runs.
+
+    Returns the controller and the protocol of the device.
+    """
     mass = MagicMock()
     mass.closing = False
     mass.config.get_raw_core_config_value.return_value = "GLOBAL"
@@ -299,8 +300,14 @@ def _native_source_controller(
     mass.player_queues = MagicMock()
     mass.player_queues.get = MagicMock(return_value=queue)
     provider = MockProvider("test_provider", instance_id="test", mass=mass)
-    player = _NativeSourcePlayer(provider, PLAYER_ID, "Player 1")
-    player._attr_source_list = [
+    player, protocol = attach_mock(
+        provider,
+        "device_1",
+        "Player 1",
+        player_id=PLAYER_ID,
+        protocol_class=_NativeSourceProtocol,
+    )
+    protocol._attr_source_list = [
         PlayerSource(
             id=NATIVE_SOURCE_ID,
             name="Spotify",
@@ -308,24 +315,22 @@ def _native_source_controller(
             can_repeat=can_repeat,
         )
     ]
-    player._attr_active_source = active_source
+    protocol._attr_active_source = active_source
     # a device only counts as playing its own source while it is not idle
-    player._attr_playback_state = PlaybackState.PLAYING
-    player._cache.clear()
-    controller._players[PLAYER_ID] = player
+    protocol._attr_playback_state = PlaybackState.PLAYING
     player.update_state(signal_event=False)
-    return controller, player
+    return controller, cast("_NativeSourceProtocol", protocol)
 
 
 async def test_a_device_native_source_orders_its_own_content() -> None:
     """A source the device runs itself has no session, so the player is asked directly."""
-    controller, player = _native_source_controller(can_shuffle=True, can_repeat=True)
+    controller, protocol = _native_source_controller(can_shuffle=True, can_repeat=True)
 
     await controller.cmd_shuffle(PLAYER_ID, shuffle_enabled=True)
     await controller.cmd_repeat(PLAYER_ID, RepeatMode.ONE)
 
-    assert player.shuffle_calls == [True]
-    assert player.repeat_calls == [RepeatMode.ONE]
+    assert protocol.shuffle_calls == [True]
+    assert protocol.repeat_calls == [RepeatMode.ONE]
 
 
 @pytest.mark.parametrize(
@@ -336,13 +341,13 @@ async def test_a_device_native_source_without_the_capability_is_refused(
     command: str, kwargs: dict[str, Any]
 ) -> None:
     """A source that does not claim to order its own content is told no, not left waiting."""
-    controller, player = _native_source_controller()
+    controller, protocol = _native_source_controller()
 
     with pytest.raises(PlayerCommandFailed, match="unavailable for this source"):
         await getattr(controller, command)(PLAYER_ID, **kwargs)
 
-    assert not player.shuffle_calls
-    assert not player.repeat_calls
+    assert not protocol.shuffle_calls
+    assert not protocol.repeat_calls
 
 
 async def test_a_command_aimed_at_a_source_that_stopped_is_refused() -> None:
@@ -355,7 +360,7 @@ async def test_a_command_aimed_at_a_source_that_stopped_is_refused() -> None:
     """
     queue = MagicMock()
     queue.queue_id = PLAYER_ID
-    controller, player = _native_source_controller(
+    controller, protocol = _native_source_controller(
         can_shuffle=True, active_source=PLAYER_ID, queue=queue
     )
     controller.mass.player_queues.set_shuffle = AsyncMock()  # type: ignore[method-assign]
@@ -364,7 +369,7 @@ async def test_a_command_aimed_at_a_source_that_stopped_is_refused() -> None:
         await controller.cmd_shuffle(PLAYER_ID, shuffle_enabled=True, source_id=NATIVE_SOURCE_ID)
 
     controller.mass.player_queues.set_shuffle.assert_not_awaited()
-    assert not player.shuffle_calls
+    assert not protocol.shuffle_calls
 
 
 async def test_a_command_aimed_at_the_queue_still_reaches_it() -> None:
@@ -381,11 +386,11 @@ async def test_a_command_aimed_at_the_queue_still_reaches_it() -> None:
 
 async def test_a_command_aimed_at_the_source_still_playing_is_delivered() -> None:
     """The source named is the one playing, so the command goes through as usual."""
-    controller, player = _native_source_controller(can_repeat=True)
+    controller, protocol = _native_source_controller(can_repeat=True)
 
     await controller.cmd_repeat(PLAYER_ID, RepeatMode.ALL, source_id=NATIVE_SOURCE_ID)
 
-    assert player.repeat_calls == [RepeatMode.ALL]
+    assert protocol.repeat_calls == [RepeatMode.ALL]
 
 
 async def test_a_command_aimed_at_a_live_source_reaches_its_session() -> None:
@@ -398,7 +403,7 @@ async def test_a_command_aimed_at_a_live_source_reaches_its_session() -> None:
     source = _source()
     controller, provider = _controller(source)
     player = controller.get_player(PLAYER_ID)
-    player.state.active_source = source.uri
+    player.active_source = source.uri
     controller._get_player_with_redirect = MagicMock(return_value=player)
 
     await controller.cmd_shuffle(PLAYER_ID, shuffle_enabled=True, source_id=source.uri)
@@ -410,7 +415,7 @@ async def test_a_command_aimed_at_a_live_source_that_ended_is_refused() -> None:
     """A session that is gone gets nothing, and neither does the queue that took over."""
     controller, provider = _controller(None)
     player = controller.get_player(PLAYER_ID)
-    player.state.active_source = PLAYER_ID
+    player.active_source = PLAYER_ID
     controller._get_player_with_redirect = MagicMock(return_value=player)
     queue = MagicMock()
     queue.queue_id = PLAYER_ID

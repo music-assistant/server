@@ -12,6 +12,7 @@ import functools
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, overload
 
+from music_assistant_models.enums import PlaybackState, PlayerType
 from music_assistant_models.errors import (
     InsufficientPermissions,
     MusicAssistantError,
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
 
     from music_assistant.models.player import Player
 
-    from .controller import PlayerController
+    from .base import _PlayerControllerBase
 
 
 class AnnounceData(TypedDict):
@@ -41,34 +42,40 @@ class AnnounceData(TypedDict):
     announcement_url: str
     pre_announce: bool
     pre_announce_url: str
-    # player that fetches the announcement stream when it is not the
-    # visible player itself (e.g. a linked protocol player)
+    # protocol that fetches the announcement stream when it is not the
+    # own protocol of the player (e.g. one of its audio protocols)
     announce_player_id: str | None
 
 
 @overload
-def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
+def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
     func: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]],
 ) -> Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]: ...
 
 
 @overload
-def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
+def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
     func: None = None,
     *,
     lock: PlayerLockPurpose | None = None,
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+    accept_unavailable: bool = False,
+    to_playback_owner: bool = False,
+    ignored_while_playing: bool = False,
 ) -> Callable[
     [Callable[Concatenate[PlayerControllerT, P], Awaitable[R]]],
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]],
 ]: ...
 
 
-def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
+def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](  # noqa: PLR0915
     func: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]] | None = None,
     *,
     lock: PlayerLockPurpose | None = None,
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+    accept_unavailable: bool = False,
+    to_playback_owner: bool = False,
+    ignored_while_playing: bool = False,
 ) -> (
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]
     | Callable[
@@ -80,7 +87,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     Decorator to check and log commands to players.
 
     Validates that the player exists and is available before executing the command,
-    raising PlayerUnavailableError otherwise.
+    raising PlayerUnavailableError otherwise (see accept_unavailable).
     Also checks user permissions and optionally acquires a per-player lock.
 
     :param func: The function to wrap (when used without parentheses).
@@ -91,7 +98,18 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
         external power control (see SwitchedOffAction): refused by default, ignored when
         the command has nothing to act on (volume), ignored after calling off a power on
         under way (stop, pause), powered on first (before any lock is taken) for commands
-        that start playback, or run as is for commands that handle it themselves.
+        that start playback, or run as is for commands that handle it themselves. A command
+        that powers such a player on also waits for the switched-off members of the group
+        player it starts (the player itself, or the owner of its playback), and one that
+        calls a power on off ends the wait of the player and of the owner of its playback
+        for their members.
+    :param accept_unavailable: Run the command for an unavailable player too, for a
+        command that handles such a player itself (power).
+    :param to_playback_owner: The command acts on the owner of the player's playback (its
+        sync leader or group player), so the user needs access to that owner as well.
+    :param ignored_while_playing: The command does nothing on a player that plays already
+        (play), so it does not wait for the switched-off members of a group player that
+        plays.
     """  # noqa: D401
 
     def decorator(
@@ -103,46 +121,43 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
             player_id = kwargs.get("player_id") or args[0]
             assert isinstance(player_id, str)  # for type checking
 
-            # this should not happen, but in case a player_id of a protocol player is used,
-            # auto-resolve it to the parent player
-            if (
-                (player := self._players.get(player_id))
-                and player.protocol_parent_id
-                and (protocol_parent := self._players.get(player.protocol_parent_id))
-            ):
-                if "player_id" in kwargs:
-                    kwargs["player_id"] = protocol_parent.player_id
-                else:
-                    args = (protocol_parent.player_id, *args[1:])  # type: ignore[assignment]
+            if (command_player_id := self._command_player_id(player_id)) != player_id:
                 self.logger.debug(
-                    "Auto-resolved protocol player %s to linked parent %s for command %s",
+                    "Resolved %s to its player %s for command %s",
                     player_id,
-                    protocol_parent.player_id,
+                    command_player_id,
                     fn.__name__,
                 )
-                player_id = protocol_parent.player_id
-
-            player = self.get_player(player_id, raise_unavailable=True)
-            assert player is not None  # for type checking
+            player = self.get_player(command_player_id, raise_unavailable=not accept_unavailable)
+            if player is None:
+                msg = f"Player {player_id} is not available"
+                raise PlayerUnavailableError(msg)
+            # the command works with the current id of the player
+            if "player_id" in kwargs:
+                kwargs["player_id"] = player.player_id
+            else:
+                args = (player.player_id, *args[1:])  # type: ignore[assignment]
 
             current_user = get_current_user()
             if current_user and not has_player_access(current_user, player.player_id, player):
-                msg = (
-                    f"{current_user.username} does not have access to player {player.display_name}"
-                )
+                msg = f"{current_user.username} does not have access to player {player.name}"
                 raise InsufficientPermissions(msg)
+            if to_playback_owner and (owner := self._resolve_playback_owner(player)) is not player:
+                self.check_player_access(owner.player_id)
 
             self.logger.debug(
                 "Handling command %s for player %s (%s)",
                 fn.__name__,
-                player.display_name,
+                player.name,
                 f"by user {current_user.username}" if current_user else "unauthenticated",
             )
 
             is_switched_off = player.offline_by_power_control
             if is_switched_off and switched_off == SwitchedOffAction.REFUSE:
-                msg = f"Player {player.display_name} is switched off"
+                msg = f"Player {player.name} is switched off"
                 raise PlayerUnavailableError(msg)
+            if switched_off == SwitchedOffAction.CANCEL_POWER_ON:
+                self._cancel_member_power_ons(player, self._resolve_playback_owner(player))
             if is_switched_off and switched_off in (
                 SwitchedOffAction.IGNORE,
                 SwitchedOffAction.CANCEL_POWER_ON,
@@ -152,13 +167,27 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 self.logger.debug(
                     "Ignoring command %s for player %s: it is switched off",
                     fn.__name__,
-                    player.display_name,
+                    player.name,
                 )
                 return
 
             try:
+                target = self._resolve_playback_owner(player) if to_playback_owner else player
                 if is_switched_off and switched_off == SwitchedOffAction.POWER_ON:
                     await self._power_on_switched_off_player(player.player_id)
+                elif (
+                    switched_off == SwitchedOffAction.POWER_ON
+                    and target.type == PlayerType.GROUP
+                    and not (
+                        ignored_while_playing and target.playback_state == PlaybackState.PLAYING
+                    )
+                ):
+                    # the start takes the place of a step (next, previous) within the queue
+                    # the group plays that has not played yet
+                    self.mass.player_queues._drop_pending_step(
+                        target.active_source or target.player_id
+                    )
+                    await self._power_on_members(target)
                 if lock:
                     async with self.get_player_lock(player.player_id, lock):
                         await fn(self, *args, **kwargs)
@@ -200,11 +229,11 @@ async def wait_for_power_on(
                 while not player_control.power_state:
                     await asyncio.sleep(0.1)
             else:
-                while not player.powered:
+                while not ((own := player.own_protocol) and own.powered):
                     await asyncio.sleep(0.1)
     except TimeoutError:
         logger.debug(
             "Player %s did not report powered on within %s seconds",
-            player.state.name,
+            player.name,
             timeout,
         )

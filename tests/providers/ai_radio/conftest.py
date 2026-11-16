@@ -9,6 +9,9 @@ from music_assistant_models.auth import User, UserRole
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 
+# the real server with fake providers, for the tests that follow a player's lifecycle
+from tests.scenarios.conftest import scenario  # noqa: F401
+
 
 @pytest.fixture
 def kitchen_only_user() -> Generator[None]:

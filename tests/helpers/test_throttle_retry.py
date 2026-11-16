@@ -508,11 +508,21 @@ class TestLongWaits:
         assert await provider.api_call("ok") == "ok"
         assert fake_clock.now == pytest.approx(MAX_WAIT_TIME)
 
-    async def test_playback_caller_ignores_a_long_cooldown(
+    async def test_playback_caller_gives_up_on_a_long_cooldown(
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
-        """A playback caller still reaches the api during a long cooldown."""
+        """A playback caller sends nothing into a long cooldown and fails right away."""
         provider.throttler.set_cooldown(3600)
+        with request_priority(RequestPriority.HIGH), pytest.raises(RetriesExhausted):
+            await provider.api_call("ok")
+        assert provider.call_count == 0
+        assert fake_clock.now == 0
+
+    async def test_playback_caller_passes_a_short_cooldown(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A playback caller reaches the api during a short cooldown without waiting it out."""
+        provider.throttler.set_cooldown(MAX_WAIT_TIME)
         with request_priority(RequestPriority.HIGH):
             assert await provider.api_call("ok") == "ok"
         assert provider.call_count == 1
@@ -880,13 +890,13 @@ class TestThrottlerVirtualClock:
 
 
 class TestThrottlerManagerPriority:
-    """Playback takes a slot without regard to a cooldown."""
+    """Playback takes a slot without sitting out a cooldown."""
 
-    @pytest.mark.parametrize("cooldown", [5, 3600])
-    async def test_high_priority_passes_a_cooldown(
+    @pytest.mark.parametrize("cooldown", [5, MAX_WAIT_TIME])
+    async def test_high_priority_passes_a_short_cooldown(
         self, fake_clock: FakeClock, cooldown: int
     ) -> None:
-        """A high priority request neither waits out nor fails on an armed cooldown."""
+        """A high priority request neither waits out nor fails on a short cooldown."""
         throttler = ThrottlerManager(rate_limit=1, period=10)
         throttler.set_cooldown(cooldown)
         with request_priority(RequestPriority.HIGH):
@@ -895,10 +905,20 @@ class TestThrottlerManagerPriority:
         assert fake_clock.now == 0
         assert throttler.cooldown_remaining == cooldown
 
+    async def test_high_priority_fails_on_a_long_cooldown(self, fake_clock: FakeClock) -> None:
+        """A high priority request fails right away instead of passing a long cooldown."""
+        throttler = ThrottlerManager(rate_limit=1, period=10)
+        throttler.set_cooldown(MAX_WAIT_TIME + 1)
+        with request_priority(RequestPriority.HIGH), pytest.raises(RateLimited) as exc_info:
+            async with throttler.acquire():
+                pytest.fail("a request went out during a long cooldown")
+        assert exc_info.value.backoff_time == MAX_WAIT_TIME + 1
+        assert fake_clock.now == 0
+
     async def test_high_priority_waits_for_a_free_slot(self, fake_clock: FakeClock) -> None:
         """A high priority request still waits for a free slot when the window is full."""
         throttler = ThrottlerManager(rate_limit=1, period=10)
-        throttler.set_cooldown(3600)
+        throttler.set_cooldown(MAX_WAIT_TIME)
         with request_priority(RequestPriority.HIGH):
             async with throttler.acquire():
                 pass

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
@@ -15,11 +16,9 @@ from music_assistant.controllers.player_queues.constants import (
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.storage import StorageController
 from music_assistant.mass import MusicAssistant
-from tests.conftest import full_mass_context
+from music_assistant.testing import full_mass_context
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import pytest
     from aiohttp import ClientSession
     from music_assistant_models.config_entries import CoreConfig
@@ -58,6 +57,14 @@ async def test_core_controller_setup_can_use_the_http_sessions(tmp_path: Path) -
             assert len(sessions) == 2
             assert sessions[0] is mass.http_session
             assert sessions[1] is mass.http_session_no_ssl
+
+
+async def test_runtime_dir_lives_while_the_server_runs(tmp_path: Path) -> None:
+    """The runtime dir is created on start and removed on stop."""
+    async with full_mass_context(tmp_path) as mass:
+        runtime_path = Path(mass.runtime_path)
+        assert runtime_path.is_dir()
+    assert not runtime_path.exists()
 
 
 async def test_server_info(mass: MusicAssistant) -> None:
@@ -264,21 +271,23 @@ async def test_stop_logs_a_failed_provider_unload(
 
 
 async def test_stop_cancels_tracked_timers(mass_minimal: MusicAssistant) -> None:
-    """A timer scheduled through call_later, also during the shutdown, does not fire after a stop."""
+    """A timer scheduled through call_later, also during the shutdown, is cancelled by a stop."""
     callback = MagicMock()
-    mass_minimal.call_later(0.05, callback, task_id="before_stop")
+    # far enough out that no timer is due before the stop cancels it, on any runner
+    timers = [mass_minimal.call_later(60, callback, task_id="before_stop")]
     config_close = mass_minimal.config.close
 
     async def close_scheduling_a_timer() -> None:
-        mass_minimal.call_later(0.05, callback, task_id="during_stop")
+        timers.append(mass_minimal.call_later(60, callback, task_id="during_stop"))
         await config_close()
 
     with patch.object(mass_minimal.config, "close", close_scheduling_a_timer):
         await mass_minimal.stop()
-    await asyncio.sleep(0.1)
 
-    callback.assert_not_called()
+    assert len(timers) == 2
+    assert all(timer.cancelled() for timer in timers)
     assert not mass_minimal._tracked_timers
+    callback.assert_not_called()
 
 
 async def test_stop_closes_the_queues_while_tasks_and_timers_still_run(

@@ -1156,15 +1156,17 @@
                 } else {
                     output.className = 'response-output show error';
 
-                    // Handle 401/403 - token invalid or revoked
-                    if (response.status === 401 || response.status === 403) {
+                    // Handle 401 - token invalid or revoked (a 403 only refuses this command)
+                    if (response.status === 401) {
                         clearAuth();
                         output.textContent = 'Authentication Error: Your session has expired '
                             + 'or token was revoked. Please login again.';
                     } else {
                         // Try to extract a meaningful error message
                         let errorMsg = 'Request failed';
-                        if (result.error) {
+                        if (result.details) {
+                            errorMsg = result.details;
+                        } else if (result.error) {
                             errorMsg = result.error;
                         } else if (result.message) {
                             errorMsg = result.message;
@@ -1173,7 +1175,9 @@
                         } else {
                             errorMsg = JSON.stringify(result, null, 2);
                         }
-                        output.textContent = 'Error: ' + errorMsg;
+                        const retryAfter = response.headers.get('Retry-After');
+                        output.textContent = 'Error (HTTP ' + response.status + '): ' + errorMsg
+                            + (retryAfter ? ' Try again in ' + retryAfter + ' seconds.' : '');
                     }
                 }
             } catch (error) {

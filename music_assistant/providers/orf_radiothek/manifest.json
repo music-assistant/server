@@ -10,6 +10,5 @@
   "type": "music",
   "dependencies": [],
   "config_entries": [],
-  "codeowners": ["@DButter"],
-  "tier": "community"
+  "codeowners": ["@DButter"]
 }

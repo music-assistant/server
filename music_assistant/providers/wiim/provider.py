@@ -8,11 +8,8 @@ from typing import TYPE_CHECKING, cast
 from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client_factory import UpnpFactory
 from async_upnp_client.exceptions import UpnpError
-from music_assistant_models.enums import IdentifierType
 from pywiim import WiiMClient, WiiMError
 from wiim import WiimController
-from wiim.discovery import async_create_wiim_device
-from wiim.exceptions import WiimDeviceException, WiimRequestException
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
@@ -33,7 +30,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
     from zeroconf.asyncio import AsyncServiceInfo
 
-    from music_assistant.models.player import Player
+    from music_assistant.models.player_protocol import PlayerProtocol
 
 # UPnP description.xml ports used by LinkPlay devices, tried in addition to the
 # mDNS-advertised port: 49152 serves the description, 59152 is the advertised UPnP port.
@@ -70,15 +67,15 @@ class WiimProvider(PlayerProvider):
         requester = AiohttpSessionRequester(self.mass.http_session_no_ssl, with_sleep=True)
         self.upnp_factory = UpnpFactory(requester, non_strict=True)
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
+    async def discover_players(self) -> None:
+        """Discover the manually configured devices; mDNS discovers the others."""
         manual_ip_config: list[str] = cast(
             "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
         )
         for ip_address in manual_ip_config:
             stripped_ip_address = ip_address.strip()
             await self._discover_device(
-                stripped_ip_address, "Unknown", self._candidate_locations(stripped_ip_address)
+                stripped_ip_address, self._candidate_locations(stripped_ip_address)
             )
 
     async def on_mdns_service_state_change(
@@ -96,12 +93,14 @@ class WiimProvider(PlayerProvider):
 
         locations = self._candidate_locations(cur_address, get_port_from_zeroconf(info))
 
-        # Try to get player_id from mDNS properties first (avoids a network call)
+        # Try to get the protocol id from mDNS properties first (avoids a network call)
         udn = info.decoded_properties.get("uuid") if info.decoded_properties else None
-        player_id = f"{PLAYER_ID_PREFIX}{udn}" if udn else None
-        if player_id and (mass_player := self.mass.players.get_player(player_id)):
+        protocol_id = f"{PLAYER_ID_PREFIX}{udn}" if udn else None
+        if protocol_id and (mass_player := self.get_protocol(protocol_id)):
             await self._handle_known_player_address(mass_player, cur_address, locations)
-            self.mass.players.trigger_player_update(player_id)
+            mass_player.update_state()
+            return
+        if protocol_id and not self.mass.players.wants_protocol(protocol_id):
             return
 
         mac_address = info.decoded_properties.get("MAC") if info.decoded_properties else None
@@ -110,7 +109,6 @@ class WiimProvider(PlayerProvider):
             5,
             self._discover_device,
             cur_address,
-            name,
             locations,
             mac_address,
             task_id=f"setup_wiim_{cur_address}",
@@ -118,63 +116,47 @@ class WiimProvider(PlayerProvider):
 
     async def try_add_player(
         self,
-        player_id: str,
+        protocol_id: str,
         ip_address: str,
-        name: str,
+        upnp_device: UpnpDevice,
         upnp_location: str,
         mac_address: str | None = None,
     ) -> None:
-        """Add an official WiiM/Audio Pro device via the official SDK."""
-        try:
-            wiim_dev = await async_create_wiim_device(
-                upnp_location,
-                self.mass.http_session_no_ssl,
-                host=ip_address,
-                local_host=await self.mass.streams.get_source_ip(ip_address),
-                polling_interval=60,
-            )
-        except (WiimRequestException, WiimDeviceException) as err:
-            self.logger.warning("Failed to initialize WiiM device at %s: %s", ip_address, err)
+        """Add an official WiiM/Audio Pro device; it connects through the official SDK."""
+        if not self.mass.players.wants_protocol(protocol_id):
             return
-        except Exception:
-            self.logger.exception("Unexpected error initializing WiiM device at %s", ip_address)
-            return
-
-        await self.wiim_controller.add_device(wiim_dev)
         try:
             player = WiimPlayer(
                 provider=self,
-                player_id=player_id,
-                device=wiim_dev,
+                protocol_id=protocol_id,
+                upnp_device=upnp_device,
+                description_url=upnp_location,
+                ip_address=ip_address,
                 mac_address=mac_address,
             )
-            await player.setup()
-            await self.mass.players.register_or_update(player)
-            # read the live topology now the player is registered (setup runs before
-            # registration, so the coordinator would discard a read taken there), then
-            # reconcile so any leader that already lists this device, or that it leads,
-            # self-heals regardless of discovery order.
-            await self.native_groups.refresh_leader(player, force=True)
-            self.native_groups.schedule_reconcile()
-            self.logger.info("WiiM player registered: %s (%s)", wiim_dev.name, player_id)
+            await self.mass.players.register(player)
+            if self.get_protocol(protocol_id) is not player:
+                # the user disabled the player meanwhile
+                return
+            self.logger.info("WiiM player registered: %s (%s)", player.name, protocol_id)
         except Exception:
-            self.logger.exception("Failed to register WiiM player %s", wiim_dev.name)
-            await self.wiim_controller.remove_device(wiim_dev.udn)
-            await wiim_dev.disconnect()
+            self.logger.exception("Failed to register WiiM player %s", protocol_id)
 
     async def try_add_linkplay_player(
         self,
-        player_id: str,
+        protocol_id: str,
         ip_address: str,
         upnp_device: UpnpDevice,
         description_url: str,
         mac_address: str | None = None,
     ) -> None:
-        """Add a generic LinkPlay device as a grouping/identity shell."""
+        """Add a generic LinkPlay device as the control protocol of its player."""
+        if not self.mass.players.wants_protocol(protocol_id):
+            return
         client = WiiMClient(ip_address, session=self.mass.http_session)
         try:
             # A successful call confirms the device speaks the LinkPlay API and yields the
-            # device info primed on the shell (used for native group join-mode selection),
+            # device info primed on the protocol (used for native group join-mode selection),
             # so this stays the single authoritative probe done at discovery.
             device_info = await client.get_device_info_model()
         except WiiMError as err:
@@ -185,7 +167,7 @@ class WiimProvider(PlayerProvider):
 
         player = LinkPlayPlayer(
             provider=self,
-            player_id=player_id,
+            protocol_id=protocol_id,
             client=client,
             upnp_device=upnp_device,
             description_url=description_url,
@@ -193,14 +175,14 @@ class WiimProvider(PlayerProvider):
             device_info=device_info,
         )
         await player.setup()
-        await self.mass.players.register_or_update(player)
-        # read the live topology now the player is registered (setup runs before
-        # registration, so the coordinator would discard a read taken there), then
+        await self.mass.players.register(player)
+        # read the live topology now the protocol is registered (the coordinator discards
+        # a read for a protocol that is not attached, as it is during setup), then
         # reconcile so any leader that already lists this device, or that it leads,
         # self-heals regardless of discovery order.
         await self.native_groups.refresh_leader(player, force=True)
         self.native_groups.schedule_reconcile()
-        self.logger.info("LinkPlay player registered: %s (%s)", player.name, player_id)
+        self.logger.info("LinkPlay player registered: %s (%s)", player.name, protocol_id)
 
     def _candidate_locations(
         self, ip_address: str, advertised_port: int | None = None
@@ -236,7 +218,6 @@ class WiimProvider(PlayerProvider):
     async def _discover_device(
         self,
         ip_address: str,
-        name: str,
         locations: tuple[str, ...],
         mac_address: str | None = None,
     ) -> None:
@@ -246,9 +227,9 @@ class WiimProvider(PlayerProvider):
             # No reachable UPnP description; leave the backend undecided and retry later.
             return
 
-        player_id = f"{PLAYER_ID_PREFIX}{upnp_device.udn}"
-        if (existing := self.mass.players.get_player(player_id)) is not None:
-            # Already registered; the fast path may have missed, so still reconcile a
+        protocol_id = f"{PLAYER_ID_PREFIX}{upnp_device.udn}"
+        if (existing := self.get_protocol(protocol_id)) is not None:
+            # Already attached; the fast path may have missed, so still reconcile a
             # moved device here using the description we just probed.
             await self._reconcile_player_address(
                 existing, ip_address, upnp_device, matched_location
@@ -256,16 +237,18 @@ class WiimProvider(PlayerProvider):
             return
 
         if is_official_device(upnp_device.manufacturer, upnp_device.model_name):
-            await self.try_add_player(player_id, ip_address, name, matched_location, mac_address)
+            await self.try_add_player(
+                protocol_id, ip_address, upnp_device, matched_location, mac_address
+            )
         else:
             await self.try_add_linkplay_player(
-                player_id, ip_address, upnp_device, matched_location, mac_address
+                protocol_id, ip_address, upnp_device, matched_location, mac_address
             )
 
     async def _handle_known_player_address(
-        self, mass_player: Player, cur_address: str, locations: tuple[str, ...]
+        self, mass_player: PlayerProtocol, cur_address: str, locations: tuple[str, ...]
     ) -> None:
-        """Reconcile an already-registered player with its current mDNS address."""
+        """Reconcile an attached player with its current mDNS address."""
         if cur_address == mass_player.device_info.ip_address:
             return
         # Probe the new address so the shared reconciler can verify the device identity
@@ -277,17 +260,21 @@ class WiimProvider(PlayerProvider):
             )
 
     async def _reconcile_player_address(
-        self, mass_player: Player, cur_address: str, upnp_device: UpnpDevice, matched_location: str
+        self,
+        mass_player: PlayerProtocol,
+        cur_address: str,
+        upnp_device: UpnpDevice,
+        matched_location: str,
     ) -> None:
-        """Apply an address change to an already-registered player."""
+        """Apply an address change to an attached player."""
         if cur_address == mass_player.device_info.ip_address:
             return
         # Guard against a stale mDNS/DHCP update where the address now hosts a
         # different speaker: never bind this player to another device's UPnP identity.
-        if f"{PLAYER_ID_PREFIX}{upnp_device.udn}" != mass_player.player_id:
+        if f"{PLAYER_ID_PREFIX}{upnp_device.udn}" != mass_player.protocol_id:
             self.logger.warning(
                 "Ignoring address update for %s: %s now hosts a different device (udn=%s)",
-                mass_player.player_id,
+                mass_player.protocol_id,
                 cur_address,
                 upnp_device.udn,
             )
@@ -298,6 +285,7 @@ class WiimProvider(PlayerProvider):
             await mass_player.async_handle_address_change(
                 cur_address, upnp_device, matched_location
             )
-        else:
-            # Official players self-heal their connection; only refresh their identifier.
-            mass_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, cur_address)
+        elif isinstance(mass_player, WiimPlayer):
+            # Official players self-heal a live connection; one still to set up (or set up
+            # again) uses the new location.
+            mass_player.set_location(cur_address, matched_location)

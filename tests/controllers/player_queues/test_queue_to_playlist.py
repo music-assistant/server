@@ -12,6 +12,8 @@ from music_assistant_models.errors import InvalidDataError, QueueEmpty
 from music_assistant.controllers.player_queues import PlayerQueuesController
 
 QUEUE_ID = "kitchen"
+# the id of a player that was merged into the player of the queue
+LEGACY_ID = "old_kitchen"
 PLAYLIST_ID = "42"
 
 
@@ -34,18 +36,24 @@ def _controller(*items: SimpleNamespace) -> tuple[PlayerQueuesController, _Playl
     """Build a bare queue controller holding one queue with the given items."""
     playlists = _Playlists()
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
-    controller.mass = SimpleNamespace(music=SimpleNamespace(playlists=playlists))  # type: ignore[assignment]
+    controller.mass = SimpleNamespace(  # type: ignore[assignment]
+        music=SimpleNamespace(playlists=playlists),
+        players=SimpleNamespace(
+            resolve_player_id=lambda player_id: QUEUE_ID if player_id == LEGACY_ID else player_id
+        ),
+    )
     controller._queue_data = {QUEUE_ID: SimpleNamespace(items=list(items))}  # type: ignore[dict-item]
     controller._check_player_permission = MagicMock()  # type: ignore[method-assign]
     controller.get = MagicMock(return_value=SimpleNamespace(queue_id=QUEUE_ID))  # type: ignore[method-assign]
     return controller, playlists
 
 
-async def test_the_whole_queue_is_added_to_an_existing_playlist() -> None:
+@pytest.mark.parametrize("queue_id", [QUEUE_ID, LEGACY_ID])
+async def test_the_whole_queue_is_added_to_an_existing_playlist(queue_id: str) -> None:
     """Every playlist-compatible item goes to the playlist, in queue order."""
     controller, playlists = _controller(_item("a"), _item("b", MediaType.RADIO), _item("c"))
 
-    task = await controller.add_to_playlist(QUEUE_ID, PLAYLIST_ID)
+    task = await controller.add_to_playlist(queue_id, PLAYLIST_ID)
 
     assert task is playlists.task
     playlists.add_playlist_tracks.assert_awaited_once_with(
@@ -54,11 +62,12 @@ async def test_the_whole_queue_is_added_to_an_existing_playlist() -> None:
     playlists.create_playlist.assert_not_awaited()
 
 
-async def test_saving_as_a_new_playlist_creates_it_first() -> None:
+@pytest.mark.parametrize("queue_id", [QUEUE_ID, LEGACY_ID])
+async def test_saving_as_a_new_playlist_creates_it_first(queue_id: str) -> None:
     """Saving creates the named playlist and then fills it with the queue."""
     controller, playlists = _controller(_item("a"))
 
-    await controller.save_as_playlist(QUEUE_ID, "Tonight")
+    await controller.save_as_playlist(queue_id, "Tonight")
 
     playlists.create_playlist.assert_awaited_once_with("Tonight")
     playlists.add_playlist_tracks.assert_awaited_once_with(PLAYLIST_ID, ["library://track/a"])

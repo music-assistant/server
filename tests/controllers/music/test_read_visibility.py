@@ -378,6 +378,15 @@ async def test_sound_effect_of_a_hidden_source_is_not_found(music: MusicControll
         await music.get_item(MediaType.SOUND_EFFECT, "rain", THEIRS)
 
 
+async def test_database_is_not_an_alias_of_library(music: MusicController) -> None:
+    """The old `database` provider name is an unknown provider, not the library."""
+    await music.tracks.add_item_to_library(create_track(THEIRS, "t1"))
+    library_item = await music.get_item(MediaType.TRACK, "1", "library")
+
+    with pytest.raises(ProviderUnavailableError):
+        await music.get_item(MediaType.TRACK, library_item.item_id, "database")
+
+
 def _mapping(instance_id: str, item_id: str) -> ProviderMapping:
     return ProviderMapping(
         item_id=item_id,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
@@ -22,6 +22,7 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.track_filter import filter_tracks
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT
 
 from .constants import (
     ARTWORK_CACHE_EXPIRATION,
@@ -158,7 +159,9 @@ class AppleMusicMediaManager:
         else:
             endpoint = f"catalog/{self.provider._storefront}/songs/{prov_track_id}"
             response = await self.api.get_data(endpoint, include="artists,albums")
-        return parse_track(self.provider, response["data"][0])
+        track = parse_track(self.provider, response["data"][0])
+        await self.provider.library_manager.mark_purchases_on_sale([(response["data"][0], track)])
+        return track
 
     async def get_playlist(
         self,
@@ -302,15 +305,18 @@ class AppleMusicMediaManager:
             endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}/tracks"
             response = await self.api.get_data(endpoint, include="artists")
         tracks = []
+        listed: list[tuple[dict[str, Any], Track]] = []
         for track_obj in response["data"]:
             if "id" not in track_obj:
                 continue
             track = parse_track(self.provider, track_obj)
+            listed.append((track_obj, track))
             # the listing omits the album relation, so parse_track would make the album name
             # stand in as its id; callers attach the album they asked for instead, which saves
             # fetching it again for every album a library sync imports
             track.album = None
             tracks.append(track)
+        await self.provider.library_manager.mark_purchases_on_sale(listed)
         return tracks
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -337,11 +343,14 @@ class AppleMusicMediaManager:
         )
         if not response or "data" not in response:
             return result
+        listed: list[tuple[dict[str, Any], Track]] = []
         for index, track in enumerate(response["data"]):
             if track and track["id"]:
                 parsed_track = parse_track(self.provider, track)
                 parsed_track.position = offset + index + 1
                 result.append(parsed_track)
+                listed.append((track, parsed_track))
+        await self.provider.library_manager.mark_purchases_on_sale(listed)
         return result
 
     async def _fetch_station_tracks(self, station_id: str) -> list[Track]:
@@ -361,20 +370,21 @@ class AppleMusicMediaManager:
 
     @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist."""
+        """Get a list of albums for the given artist."""
         endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}/albums"
+        albums: list[Album] = []
         try:
-            response = await self.api.get_all_items(endpoint)
+            async for album in self.api.iter_all_items(endpoint):
+                if not album["id"]:
+                    continue
+                parsed = parse_album(self.provider, album)
+                if parsed:
+                    albums.append(cast("Album", parsed))
+                if len(albums) >= ARTIST_ALBUMS_LIMIT:
+                    break
         except MediaNotFoundError:
             self.logger.info("No albums found for artist %s", prov_artist_id)
             return []
-        albums = []
-        for album in response:
-            if not album["id"]:
-                continue
-            parsed = parse_album(self.provider, album)
-            if parsed:
-                albums.append(cast("Album", parsed))
         return albums
 
     @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)

@@ -5,11 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
-from aiohttp import (
-    ClientConnectorCertificateError,
-    ClientConnectorSSLError,
-    ClientResponseError,
-)
+from aiohttp import ClientConnectorCertificateError, ClientConnectorSSLError, ClientResponseError
 from libopensonic import AsyncConnection as SonicConnection
 from libopensonic import Extensions as OpenSubsonicExtensions
 from libopensonic.errors import (
@@ -358,6 +354,15 @@ class OpenSonicProvider(MusicProvider):
         except DataNotFoundError:
             self.logger.warning("Unable to locate a cover image for %s", path)
             return None
+
+    def accepts_stored_image_path(self, path: str) -> bool:
+        """
+        Return whether path can be a cover art id of the Subsonic server.
+
+        :param path: The stored image path.
+        """
+        # a cover art id is opaque and only ever sent to the server, which decides if it exists
+        return bool(path)
 
     @use_cache(3600 * 3)  # cache for 3 hours
     async def search(
@@ -984,7 +989,7 @@ class OpenSonicProvider(MusicProvider):
                 return (
                     False,
                     mark.position,
-                    datetime.fromisoformat(mark.created) if mark.created else None,
+                    datetime.fromisoformat(mark.changed) if mark.changed else None,
                 )
         # If we get here, there is no bookmark
         return (False, 0, None)

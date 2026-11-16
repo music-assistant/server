@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import logging
@@ -17,9 +18,13 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
+from music_assistant.controllers.players.constants import OFFLINE_POWER_ON_TIMEOUT
 from music_assistant.providers.fastmcp_server.auth import LOOKUP_FAILURE_CLIENT_ID
 from music_assistant.providers.fastmcp_server.capabilities import Capability
-from music_assistant.providers.fastmcp_server.execution import DynamicAPIAdapter
+from music_assistant.providers.fastmcp_server.execution import (
+    _CALL_TIMEOUT_SECONDS,
+    DynamicAPIAdapter,
+)
 from music_assistant.providers.fastmcp_server.meta_discovery import MetaDiscoveryService
 from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware
 from music_assistant.providers.fastmcp_server.policy import (
@@ -236,6 +241,74 @@ async def test_control_execution_audits_success() -> None:
 
     assert [record.outcome for record in records] == ["execution.succeeded"]
     assert records[0].capability == "control:volume"
+
+
+async def _call_with_clock(
+    monkeypatch: pytest.MonkeyPatch,
+    seconds: float,
+    *,
+    device_comes_online: bool,
+) -> tuple[list[str], BaseException | None]:
+    """Run a play call whose command waits for a device, with the clock moved by seconds."""
+    played: list[str] = []
+    device_online = asyncio.Event()
+
+    async def play(player_id: str) -> None:
+        del player_id
+        await device_online.wait()
+        played.append("kitchen")
+
+    token = AccessToken(token="play-bearer", client_id="exact-token-id", scopes=[])
+    adapter = _adapter(
+        [_handler("players/cmd/play", play, "players.control")],
+        current_token=[token],
+        policies={"play-bearer": _custom(control__playback=PolicyMode.ALLOW)},
+    )
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    monkeypatch.setattr(loop, "time", lambda: now)
+    call = asyncio.create_task(
+        adapter.call(
+            "ma_api:players/cmd/play",
+            {"player_id": "kitchen"},
+            response_mode="compact",
+            fields=None,
+            max_items=None,
+            ctx=cast("Context", MagicMock()),
+        )
+    )
+    for _ in range(20):
+        await asyncio.sleep(0)
+    now += seconds
+    for _ in range(20):
+        await asyncio.sleep(0)
+    if device_comes_online:
+        device_online.set()
+    outcome = (await asyncio.gather(call, return_exceptions=True))[0]
+    return played, outcome if isinstance(outcome, BaseException) else None
+
+
+async def test_call_waits_for_a_player_that_is_powered_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A play command that waits for a slow device to come online still starts playback."""
+    played, error = await _call_with_clock(
+        monkeypatch, OFFLINE_POWER_ON_TIMEOUT - 1, device_comes_online=True
+    )
+
+    assert error is None
+    assert played == ["kitchen"]
+
+
+async def test_call_that_hangs_is_cancelled_after_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A command that never finishes fails once the call budget has passed."""
+    played, error = await _call_with_clock(
+        monkeypatch, _CALL_TIMEOUT_SECONDS + 1, device_comes_online=False
+    )
+
+    assert isinstance(error, ToolError)
+    assert "timed out" in str(error)
+    assert played == []
 
 
 async def test_dynamic_denial_is_audited_once() -> None:

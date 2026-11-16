@@ -229,12 +229,10 @@ class DiagnosticsController(CoreController):
         by_provider: Counter[str] = Counter()
         by_type: Counter[str] = Counter()
         total = available = 0
-        for player in self.mass.players.all_players(
-            return_unavailable=True, return_disabled=True, return_protocol_players=True
-        ):
+        for player in self.mass.players.iter_players(return_unavailable=True):
             total += 1
             available += int(player.available)
-            by_provider[player.provider.domain] += 1
+            by_provider[player.provider_id.split("--", maxsplit=1)[0]] += 1
             by_type[player.type.value] += 1
         return {
             "total": total,

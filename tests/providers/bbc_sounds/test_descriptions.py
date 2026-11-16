@@ -5,20 +5,28 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from auntie_sounds.models import (
+    Duration,
+    Podcast,
+    PodcastEpisode,
+    RadioClip,
+    RadioShow,
+    Synopses,
+    Titles,
+)
 from music_assistant_models.media_items import PodcastEpisode as MAPodcastEpisode
-from sounds.models import Podcast, PodcastEpisode, RadioClip, RadioShow
 
 from music_assistant.providers.bbc_sounds.adaptor import Context, PodcastConverter
-from music_assistant.providers.bbc_sounds.constants import _Constants
+from music_assistant.providers.bbc_sounds.constants import Constants
 
 if TYPE_CHECKING:
     from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 
-SYNOPSES = {
-    "short": "Short synopsis",
-    "medium": "Medium synopsis",
-    "long": "Long synopsis",
-}
+SYNOPSES = Synopses(
+    short="Short synopsis",
+    medium="Medium synopsis",
+    long="Long synopsis",
+)
 
 
 @pytest.fixture
@@ -28,20 +36,20 @@ def converter(provider: BBCSoundsProvider) -> PodcastConverter:
 
 
 def _podcast() -> Podcast:
-    return Podcast(id="p01", titles={"primary": "A podcast"}, synopses=SYNOPSES)
+    return Podcast(id="p01", titles=Titles(primary="A podcast"), synopses=SYNOPSES)
 
 
 @pytest.mark.parametrize(
     ("synopses", "expected"),
     [
         (SYNOPSES, "Long synopsis"),
-        ({"short": "Short synopsis", "medium": "Medium synopsis"}, "Medium synopsis"),
-        ({"short": "Short synopsis"}, "Short synopsis"),
-        ({}, None),
+        (Synopses(short="Short synopsis", medium="Medium synopsis"), "Medium synopsis"),
+        (Synopses(short="Short synopsis"), "Short synopsis"),
+        (Synopses(), None),
     ],
 )
 def test_get_synopsis_prefers_the_longest_available(
-    converter: PodcastConverter, synopses: dict[str, str], expected: str | None
+    converter: PodcastConverter, synopses: Synopses, expected: str | None
 ) -> None:
     """The fullest synopsis wins, and nothing is returned when there is none."""
     assert converter._get_synopsis(Podcast(id="p01", synopses=synopses)) == expected
@@ -52,7 +60,7 @@ async def test_podcast_episode_gets_the_long_synopsis(converter: PodcastConverte
     episode = PodcastEpisode(
         id="e01",
         pid="e01",
-        titles={"primary": "A podcast", "secondary": "An episode"},
+        titles=Titles(primary="A podcast", secondary="An episode"),
         synopses=SYNOPSES,
         container=_podcast(),
     )
@@ -68,8 +76,8 @@ async def test_radio_show_episode_gets_a_description(converter: PodcastConverter
     show = RadioShow(
         id="s01",
         pid="s01",
-        duration={"value": _Constants.TRACK_DURATION_THRESHOLD + 1},
-        titles={"primary": "A show", "secondary": "An edition"},
+        duration=Duration(label="", value=Constants.TRACK_DURATION_THRESHOLD + 1),
+        titles=Titles(primary="A show", secondary="An edition"),
         synopses=SYNOPSES,
         container=_podcast(),
     )
@@ -85,13 +93,11 @@ async def test_stream_title_is_the_episode_name(converter: PodcastConverter) -> 
     episode = PodcastEpisode(
         id="e01",
         pid="e01",
-        titles={"primary": "A podcast", "secondary": "An episode"},
+        titles=Titles(primary="A podcast", secondary="An episode"),
         synopses=SYNOPSES,
         container=_podcast(),
         stream="https://example.invalid/e01.m3u8",
     )
-
-    converter.context.provider.stream_format = _Constants.HLS
 
     stream_details = await converter.get_stream_details(episode)
 
@@ -105,8 +111,8 @@ async def test_radio_clip_description_is_a_synopsis(converter: PodcastConverter)
     clip = RadioClip(
         id="c01",
         pid="c01",
-        duration={"value": 60},
-        titles={"entity_title": "A clip"},
+        duration=Duration(label="", value=60),
+        titles=Titles(entity_title="A clip"),
         synopses=SYNOPSES,
     )
 
@@ -122,13 +128,11 @@ async def test_clip_stream_title_survives_titles_without_a_primary_key(
     clip = RadioClip(
         id="c01",
         pid="c01",
-        duration={"value": 60},
-        titles={"entity_title": "A clip"},
+        duration=Duration(label="", value=60),
+        titles=Titles(entity_title="A clip"),
         synopses=SYNOPSES,
         stream="https://example.invalid/c01.m3u8",
     )
-
-    converter.context.provider.stream_format = _Constants.HLS
 
     stream_details = await converter.get_stream_details(clip)
 

@@ -66,8 +66,13 @@ PROVIDER_LOUDNESS_DOMAIN = "provider_loudness"
 LOUDNESS_PROVIDER_PRIORITY = (PROVIDER_LOUDNESS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN)
 SMART_FADES_ANALYSIS_DOMAIN = "smart_fades"
 SONIC_ANALYSIS_DOMAIN = "sonic_analysis"
-# AA domains trusted for frontend-facing track data (bpm/key/waveform), authoritative first.
-TRACK_EXPORT_AA_PRIORITY = (SMART_FADES_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN)
+# AA domains trusted for frontend-facing track data (bpm/key/energy/waveform), authoritative
+# first. The loudness providers precede Sonic Analysis, whose loudness is an RMS approximation.
+TRACK_EXPORT_AA_PRIORITY = (
+    SMART_FADES_ANALYSIS_DOMAIN,
+    *LOUDNESS_PROVIDER_PRIORITY,
+    SONIC_ANALYSIS_DOMAIN,
+)
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
@@ -678,7 +683,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
     async def get_track_audio_metadata(self, track: Track) -> AudioMetadata | None:
         """
-        Return AudioMetadata (bpm, musical key) for a track, or None when no analysis exists.
+        Return AudioMetadata (bpm, musical key, energy level) for a track, or None without analysis.
 
         Provider mappings are tried in the order playback would pick them; per field the
         Smart Fades AA provider is preferred over other AA providers.
@@ -698,7 +703,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         self, tracks: Sequence[Track]
     ) -> list[AudioMetadata | None]:
         """
-        Return AudioMetadata (bpm, musical key) for many tracks at once.
+        Return AudioMetadata (bpm, musical key, energy level) for many tracks at once.
 
         Each entry matches what get_track_audio_metadata returns for that track. Only the
         scalars are read from the stored headers, in a few queries instead of one per track.
@@ -741,7 +746,10 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 id_placeholders = ",".join(f":id{i}" for i in range(len(chunk)))
                 rows = await self.database.get_rows_from_query(
                     "SELECT item_id, json_extract(header, '$.bpm') AS bpm, "
-                    "json_extract(header, '$.key') AS key, json_extract(header, '$.mode') AS mode "
+                    "json_extract(header, '$.key') AS key, json_extract(header, '$.mode') AS mode, "
+                    "json_extract(header, '$.brightness') AS brightness, "
+                    "json_extract(header, '$.arousal') AS arousal, "
+                    "json_extract(header, '$.loudness_integrated') AS loudness_integrated "
                     f"FROM {AA_TABLE_ANALYSIS} "
                     "WHERE provider = :provider AND media_type = :media_type "
                     f"AND aa_provider_domain IN ({domain_placeholders}) "
@@ -758,9 +766,12 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 for row in rows:
                     analysis_by_key[(prov_key, row["item_id"])].update(
                         AudioAnalysisData(
-                            bpm=None if row["bpm"] is None else float(row["bpm"]),
+                            bpm=_float_or_none(row["bpm"]),
                             key=row["key"],
                             mode=row["mode"],
+                            brightness=_float_or_none(row["brightness"]),
+                            arousal=_float_or_none(row["arousal"]),
+                            loudness_integrated=_float_or_none(row["loudness_integrated"]),
                         )
                     )
 
@@ -1826,3 +1837,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         return {
             p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
         } | {PROVIDER_LOUDNESS_DOMAIN}
+
+
+def _float_or_none(value: Any) -> float | None:
+    """Return a stored JSON number as float, keeping None."""
+    return None if value is None else float(value)

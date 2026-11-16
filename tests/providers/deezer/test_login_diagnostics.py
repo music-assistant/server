@@ -43,7 +43,7 @@ async def _init_with(error: Exception) -> LoginFailed:
     mass.config.get.return_value = {}
     provider = _provider(mass)
     with (
-        patch("music_assistant.providers.deezer.provider.DeezerGQLClient") as gql_client,
+        patch("music_assistant.providers.deezer.provider.ThrottledGQLClient") as gql_client,
         patch("music_assistant.providers.deezer.provider.GWClient") as gw_client,
     ):
         gql_client.return_value.get_me = AsyncMock(return_value=Mock(id="user123"))

@@ -69,15 +69,14 @@ def _player_reports(
     """Feed a player update naming the item it plays and its position in it."""
     player = SimpleNamespace(
         player_id=QUEUE_ID,
-        active_output_protocol=None,
-        current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id=item_id, uri=None),
-        state=SimpleNamespace(
-            name="Sonos",
-            available=True,
-            playback_state=state,
-            corrected_elapsed_time=elapsed,
-            group_members=[],
+        resolve_output_protocol=lambda: SimpleNamespace(
+            current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id=item_id, uri=None)
         ),
+        name="Sonos",
+        available=True,
+        playback_state=state,
+        corrected_elapsed_time=elapsed,
+        group_members=[],
     )
     ctrl._update_queue_from_player(player)  # type: ignore[arg-type]
 

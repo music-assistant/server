@@ -48,7 +48,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.track_filter import filter_tracks
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT, MusicProvider
 
 from .constants import (
     CONF_API_BASE_URL,
@@ -1207,7 +1207,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get all albums for an artist."""
+        """Get albums for an artist."""
         limit = 100
         offset = 0
         seen_album_ids: set[str] = set()
@@ -1236,9 +1236,9 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
             has_more = bool(data.get("more") or data.get("hasMore"))
             offset += limit
-            if not has_more and len(raw_albums) < limit:
+            if (not has_more and len(raw_albums) < limit) or len(albums) >= ARTIST_ALBUMS_LIMIT:
                 break
-        return albums
+        return albums[:ARTIST_ALBUMS_LIMIT]
 
     @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:

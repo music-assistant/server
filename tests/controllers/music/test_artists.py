@@ -535,6 +535,7 @@ async def test_match_provider_skips_the_artists_mappings_on_hidden_sources() -> 
         return []
 
     ctrl.mass.music.artists.tracks = AsyncMock(side_effect=_listing)
+    ctrl.mass.music.artists.top_tracks = AsyncMock(side_effect=_listing)
     ctrl.mass.music.artists.albums = AsyncMock(side_effect=_listing)
     db_artist = Artist(
         item_id="1",
@@ -548,4 +549,6 @@ async def test_match_provider_skips_the_artists_mappings_on_hidden_sources() -> 
 
     assert await ctrl.match_provider(db_artist, MagicMock(name="Tidal")) == []
     asked = {call.args[1] for call in ctrl.mass.music.artists.tracks.await_args_list}
-    assert asked == {"library", own}
+    assert asked == {"library"}
+    asked = {call.args[1] for call in ctrl.mass.music.artists.top_tracks.await_args_list}
+    assert asked == {own}

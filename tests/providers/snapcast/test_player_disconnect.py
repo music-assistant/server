@@ -14,25 +14,29 @@ from music_assistant.providers.snapcast.player import SnapCastPlayer
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.player import Player
     from music_assistant.providers.snapcast.provider import SnapCastProvider
     from music_assistant.providers.snapcast.snap_cntrl_proto import SnapclientProto
 
 
 def _make_player(queue_active: bool) -> SnapCastPlayer:
     player = SnapCastPlayer.__new__(SnapCastPlayer)
-    player._player_id = "kitchen"
+    player._protocol_id = "ma_kitchen"
+    # the player the protocol is attached to, whose id is the id of its queue
+    player._player = cast(
+        "Player", SimpleNamespace(player_id="kitchen", active_output_protocol=None)
+    )
     player._last_tracked_state = None
     player._snap_ma_stream = None
     player._announcement_clip_playing = False
-    player._extra_data = {}
     player._attr_available = True
     player._is_alive = lambda: True  # type: ignore[method-assign]
-    player._Player__attr_active_output_protocol = None  # type: ignore[attr-defined]
     player._poke_evt = asyncio.Event()
     player._state_update_lock = asyncio.Lock()
-    player._state = SimpleNamespace(available=True)  # type: ignore[assignment]
-    player.update_state = lambda: setattr(  # type: ignore[misc,assignment]
-        player, "_state", SimpleNamespace(available=player._attr_available)
+    # the availability the protocol published, in order
+    player.published = []  # type: ignore[attr-defined]
+    player.update_state = lambda: player.published.append(  # type: ignore[attr-defined,misc,assignment]
+        player._attr_available
     )
     group = SimpleNamespace(stream="ma-stream", clients=[], name="group")
     player.snap_client = cast(
@@ -47,7 +51,7 @@ def _make_player(queue_active: bool) -> SnapCastPlayer:
     player._provider = cast("SnapCastProvider", provider)
     mass = MagicMock()
     mass.player_queues.get.return_value = SimpleNamespace(
-        active=queue_active, state=PlaybackState.PLAYING
+        queue_id="kitchen", active=queue_active, state=PlaybackState.PLAYING
     )
     mass.player_queues.stop = AsyncMock()
     player.mass = cast("MusicAssistant", mass)
@@ -73,15 +77,16 @@ async def test_dropped_client_stops_its_playing_queue() -> None:
     await _process_update(player)
     available_at_stop: list[bool] = []
     player.mass.player_queues.stop.side_effect = lambda _: available_at_stop.append(  # type: ignore[attr-defined]
-        player.state.available
+        player.published[-1]  # type: ignore[attr-defined]
     )
 
     _drop_client(player)
     await _process_update(player)
 
-    player.mass.player_queues.stop.assert_awaited_once_with(player.player_id)  # type: ignore[attr-defined]
+    player.mass.player_queues.get.assert_called_with("kitchen")  # type: ignore[attr-defined]
+    player.mass.player_queues.stop.assert_awaited_once_with("kitchen")  # type: ignore[attr-defined]
     assert available_at_stop == [True]
-    assert player.state.available is False
+    assert player.published[-1] is False  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -100,10 +105,23 @@ async def test_dropped_group_member_leaves_queue_alone() -> None:
 async def test_dropped_client_leaves_other_output_protocol_alone() -> None:
     """Playback through another output protocol does not depend on the snapclient."""
     player = _make_player(queue_active=True)
-    player._Player__attr_active_output_protocol = "sendspin-kitchen"  # type: ignore[attr-defined]
+    player._player.active_output_protocol = "sendspin-kitchen"  # type: ignore[union-attr,misc]
     await _process_update(player)
 
     _drop_client(player)
     await _process_update(player)
 
+    player.mass.player_queues.stop.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_client_that_was_away_leaves_the_queue_alone() -> None:
+    """A client seen unavailable from the start did not drop now, so the queue plays on."""
+    player = _make_player(queue_active=True)
+    _drop_client(player)
+    player._attr_available = False
+
+    await _process_update(player)
+
+    assert player.published == [False]  # type: ignore[attr-defined]
     player.mass.player_queues.stop.assert_not_awaited()  # type: ignore[attr-defined]

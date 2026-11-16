@@ -7,7 +7,13 @@
    xmlns:xlink="http://www.w3.org/1999/xlink"
    xmlns="http://www.w3.org/2000/svg">
   <title>MSX / Media Station X logo</title>
+  <defs>
+    <filter id="dark">
+      <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0" />
+    </filter>
+  </defs>
   <image
+     filter="url(#dark)"
      width="512"
      height="512"
      preserveAspectRatio="xMidYMid meet"

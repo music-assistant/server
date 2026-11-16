@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.constants import (
@@ -11,7 +10,7 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
 )
-from music_assistant_models.enums import PlayerFeature, PlayerType
+from music_assistant_models.enums import PlayerFeature, PlayerType, ProtocolRole
 
 from music_assistant.constants import (
     CONF_IDLE_POWER_OFF,
@@ -20,6 +19,8 @@ from music_assistant.constants import (
     CONF_VOLUME_CONTROL,
 )
 from music_assistant.mass import MusicAssistant
+
+from .helpers import attach_on_config
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
@@ -33,32 +34,38 @@ _CONTROL_FEATURES = [
 _ALL_FEATURES = {feature for _conf_key, feature in _CONTROL_FEATURES}
 
 
-def _make_player(
-    features: set[PlayerFeature], player_type: PlayerType = PlayerType.PLAYER
-) -> MagicMock:
-    """Return a mock player of the given type that supports exactly the given features."""
-    player = MagicMock()
-    player.state.type = player_type
-    player.linked_output_protocols = []
-    player.supports_feature.side_effect = lambda feature: feature in features
-    return player
-
-
 def _entries_by_key(
     mass: MusicAssistant,
     features: set[PlayerFeature],
-    protocol_player: MagicMock | None = None,
+    audio_features: set[PlayerFeature] | None = None,
     player_type: PlayerType = PlayerType.PLAYER,
 ) -> dict[str, ConfigEntry]:
-    """Build the player-control config entries for a player with the given features."""
-    player = _make_player(features, player_type)
-    if protocol_player is not None:
-        player.linked_output_protocols = [
-            MagicMock(output_protocol_id="protocol_player_1", protocol_domain="squeezelite")
-        ]
-    mass.players = MagicMock()
-    mass.players.player_controls.return_value = []
-    mass.players.get_player.return_value = protocol_player
+    """
+    Build the player-control config entries for a player.
+
+    :param mass: A server with a real config controller.
+    :param features: The features the own protocol of the player supports.
+    :param audio_features: The features of an audio protocol of the player, if it has one.
+    :param player_type: The type of the player.
+    """
+    is_group = player_type == PlayerType.GROUP
+    player, _ = attach_on_config(
+        mass,
+        "test",
+        "own_1",
+        role=ProtocolRole.VIRTUAL if is_group else ProtocolRole.NATIVE,
+        features=set(features),
+        player_type=player_type,
+    )
+    if audio_features is not None:
+        attach_on_config(
+            mass,
+            "squeezelite",
+            "audio_1",
+            role=ProtocolRole.AUDIO,
+            player=player,
+            features=audio_features,
+        )
     entries = mass.config._create_player_control_config_entries(player)
     return {entry.key: entry for entry in entries}
 
@@ -101,20 +108,14 @@ async def test_fake_mute_offered_when_volume_provided_by_protocol_player(
     mass_minimal: MusicAssistant,
 ) -> None:
     """
-    Fake mute is offered when the volume path comes from a linked protocol player.
+    Fake mute is offered when the volume path comes from an audio protocol.
 
-    Regression test: players whose volume is provided by a linked protocol player
-    (e.g. squeezelite wrapped by the universal player) don't report VOLUME_SET
+    Regression test: players whose volume is provided by an audio protocol
+    (e.g. a device that is only known through squeezelite) don't report VOLUME_SET
     natively, yet fake mute works fine for them as it drives the configured
     volume control.
     """
-    protocol_player = MagicMock()
-    protocol_player.available = True
-    protocol_player.available_for_playback = True
-    protocol_player.supports_feature.side_effect = lambda feature: (
-        feature == PlayerFeature.VOLUME_SET
-    )
-    entry = _entries_by_key(mass_minimal, set(), protocol_player)[CONF_MUTE_CONTROL]
+    entry = _entries_by_key(mass_minimal, set(), {PlayerFeature.VOLUME_SET})[CONF_MUTE_CONTROL]
     fake = next(option for option in entry.options if option.value == PLAYER_CONTROL_FAKE)
     assert fake.disabled is False
 
@@ -122,7 +123,7 @@ async def test_fake_mute_offered_when_volume_provided_by_protocol_player(
 async def test_fake_mute_not_offered_without_any_volume_path(
     mass_minimal: MusicAssistant,
 ) -> None:
-    """Fake mute stays hidden when neither the player nor a protocol player provides volume."""
+    """Fake mute stays hidden when neither the player nor an audio protocol provides volume."""
     entry = _entries_by_key(mass_minimal, {PlayerFeature.VOLUME_MUTE})[CONF_MUTE_CONTROL]
     assert all(option.value != PLAYER_CONTROL_FAKE for option in entry.options)
 

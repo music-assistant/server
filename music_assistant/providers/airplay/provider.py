@@ -21,7 +21,7 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
     CONF_LOG_LEVEL,
-    CONF_PLAYERS,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PROVIDERS,
     VERBOSE_LOG_LEVEL,
 )
@@ -200,9 +200,11 @@ class AirPlayProvider(PlayerProvider):
 
     def handle_remote_command(self, player: AirPlayPlayer, command: AirPlayRemoteCommand) -> None:
         """Dispatch a transport command received from an AirPlay receiver."""
-        player_id = (
-            self.bridge_manager.get_transport_command_target(player.player_id) or player.player_id
+        player_id = self.bridge_manager.get_transport_command_target(player.protocol_id) or (
+            player.player.player_id if player.player else None
         )
+        if player_id is None:
+            return
         match command:
             case AirPlayRemoteCommand.PLAY:
                 # Some receivers echo play as confirmation of a command from MA.
@@ -314,28 +316,28 @@ class AirPlayProvider(PlayerProvider):
             display_name = info.name.split(".")[0]
         else:
             return
-        player_id = f"ap{raw_id.lower()}"
+        protocol_id = f"ap{raw_id.lower()}"
         # handle removed player
         if state_change == ServiceStateChange.Removed:
-            if _player := self.mass.players.get_player(player_id):
+            if _player := self.get_protocol(protocol_id):
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", _player.display_name)
                 # Remove the Sendspin bridge first
-                await self._bridge_manager.remove_bridge(player_id)
-                await self.mass.players.unregister(player_id)
-            self.dashboards.unregister(player_id)
+                await self._bridge_manager.remove_bridge(protocol_id)
+                await self.mass.players.unregister(protocol_id)
+            self.dashboards.unregister(protocol_id)
             return
         # handle update for existing device
         assert info is not None  # type guard
         player: AirPlayPlayer | None
-        if player := cast("AirPlayPlayer | None", self.mass.players.get_player(player_id)):
+        if player := cast("AirPlayPlayer | None", self.get_protocol(protocol_id)):
             # update the latest discovery info for existing player
             player.set_discovery_info(info, display_name)
             # only control players can ever be dashboard endpoints
             if isinstance(player, AirPlayControlPlayer):
-                self.dashboards.reconcile(player_id)
+                self.dashboards.reconcile(protocol_id)
             return
-        await self._setup_player(player_id, display_name, info)
+        await self._setup_player(protocol_id, display_name, info)
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -392,12 +394,12 @@ class AirPlayProvider(PlayerProvider):
         }
 
     def get_players(self) -> list[AirPlayPlayer]:
-        """Return all airplay players belonging to this instance."""
-        return cast("list[AirPlayPlayer]", self.players)
+        """Return the AirPlay protocols of this instance that are attached or wait for a player."""
+        return cast("list[AirPlayPlayer]", self.protocols)
 
-    def get_player(self, player_id: str) -> AirPlayPlayer | None:
-        """Return AirplayPlayer by id."""
-        return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))
+    def get_player(self, protocol_id: str) -> AirPlayPlayer | None:
+        """Return AirplayPlayer by its protocol id."""
+        return cast("AirPlayPlayer | None", self.get_protocol(protocol_id))
 
     async def resolve_image(self, path: str) -> bytes:
         """
@@ -408,10 +410,10 @@ class AirPlayProvider(PlayerProvider):
         :raises MediaNotFoundError: If the artwork is invalid, stale, or unavailable.
         """
         try:
-            prefix, player_id, artwork_id = path.split("/", 2)
+            prefix, protocol_id, artwork_id = path.split("/", 2)
         except ValueError as err:
             raise MediaNotFoundError("Invalid AirPlay artwork path") from err
-        player = self.get_player(player_id)
+        player = self.get_player(protocol_id)
         if (
             prefix != EXTERNAL_ARTWORK_PATH_PREFIX
             or not artwork_id
@@ -433,11 +435,11 @@ class AirPlayProvider(PlayerProvider):
             logging.getLogger("pyatv").setLevel(max(self.logger.level + 10, logging.INFO))
 
     async def _setup_player(
-        self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
+        self, protocol_id: str, display_name: str, discovery_info: AsyncServiceInfo
     ) -> None:
         """Handle setup of a new player that is discovered using mdns."""
-        # return early if player is disabled in config
-        if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
+        # return early if the user disabled the player or switched this output off
+        if not self.mass.players.wants_protocol(protocol_id):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
             return
         # Filter out this server's own AirPlay Receiver (shairport-sync) instances
@@ -487,16 +489,14 @@ class AirPlayProvider(PlayerProvider):
 
         # Get stored volume from playerconfig
         volume = int(
-            self.mass.config.get_raw_player_config_value(
-                player_id, CONF_STORED_VOLUME, FALLBACK_VOLUME
-            )
+            self.mass.config.get_protocol_value(protocol_id, CONF_STORED_VOLUME, FALLBACK_VOLUME)
         )
 
         # Final check before registration to handle race conditions
         # (multiple MDNS events processed in parallel for same device)
-        if self.mass.players.get_player(player_id):
+        if self.get_protocol(protocol_id):
             self.logger.debug(
-                "Player %s already registered during setup, skipping registration", player_id
+                "Player %s already attached during setup, skipping register", protocol_id
             )
             return
 
@@ -542,7 +542,7 @@ class AirPlayProvider(PlayerProvider):
         if enhanced_control:
             player = AirPlayControlPlayer(
                 provider=self,
-                player_id=player_id,
+                protocol_id=protocol_id,
                 raop_discovery_info=raop_discovery_info,
                 airplay_discovery_info=airplay_discovery_info,
                 companion_discovery_info=companion_info,
@@ -556,7 +556,7 @@ class AirPlayProvider(PlayerProvider):
         else:
             player = GenericAirPlayPlayer(
                 provider=self,
-                player_id=player_id,
+                protocol_id=protocol_id,
                 raop_discovery_info=raop_discovery_info,
                 airplay_discovery_info=airplay_discovery_info,
                 address=address,
@@ -567,6 +567,9 @@ class AirPlayProvider(PlayerProvider):
                 is_local_shairport=is_local_shairport,
             )
         await self.mass.players.register(player)
+        if self.get_protocol(protocol_id) is not player:
+            # not attached: the user disabled the player (e.g. a Mac, disabled by default)
+            return
 
         # A receiver only publishes its audio formats (and so whether it can do
         # 24-bit) in its /info response, never in its mDNS records, so ask it
@@ -621,11 +624,11 @@ class AirPlayProvider(PlayerProvider):
                 # best effort: a registered player's live name, else its stored config
                 # name; when neither resolves the port match stays the strong signal
                 if player := self.mass.players.get_player(player_id):
-                    player_name: str | None = player.display_name
+                    player_name: str | None = player.name
                 else:
-                    stored_name = self.mass.config.get_raw_player_config_value(
+                    stored_name = self.mass.config.get_player_value(
                         player_id, "name"
-                    ) or self.mass.config.get_raw_player_config_value(player_id, "default_name")
+                    ) or self.mass.config.get_player_value(player_id, "default_name")
                     player_name = str(stored_name) if stored_name else None
                 if player_name:
                     receiver_names.add(resolve_publish_name(template, player_name))
@@ -1073,16 +1076,11 @@ class AirPlayProvider(PlayerProvider):
                     "raw_b64": base64.b64encode(raw_request).decode("ascii"),
                 }
                 self.logger.log(VERBOSE_LOG_LEVEL, "AIRPLAY_DACP_CAPTURE %s", json.dumps(capture))
-            if not player:
+            if not player or (parent_player := player.player) is None:
                 return
-            if player.protocol_parent_id and (
-                parent := self.mass.players.get_player(player.protocol_parent_id)
-            ):
-                parent_player = parent
-            else:
-                parent_player = player
 
-            player_id = player.player_id
+            # commands from the device address the player it renders for
+            player_id = parent_player.player_id
             if path == "/ctrl-int/1/nextitem":
                 self.handle_remote_command(player, AirPlayRemoteCommand.NEXT)
             elif path == "/ctrl-int/1/previtem":
@@ -1098,7 +1096,7 @@ class AirPlayProvider(PlayerProvider):
             elif path == "/ctrl-int/1/volumedown":
                 self.mass.create_task(self.mass.players.cmd_volume_down(player_id))
             elif path == "/ctrl-int/1/shuffle_songs":
-                active_queue = self.mass.players.get_active_queue(player)
+                active_queue = self.mass.players.get_active_queue(parent_player)
                 if not active_queue:
                     return
                 await self.mass.player_queues.set_shuffle(
@@ -1112,7 +1110,7 @@ class AirPlayProvider(PlayerProvider):
                 # unnecessary pause commands that would interfere with source switching
                 # so we only process the pause command if we don't receive a
                 # prevent-playback=1 within a short time window.
-                if player.state.playback_state == PlaybackState.PLAYING:
+                if player.playback_state == PlaybackState.PLAYING:
                     self.mass.call_later(
                         1.0,
                         self.mass.players.cmd_pause,
@@ -1130,6 +1128,7 @@ class AirPlayProvider(PlayerProvider):
                     if player.stream and player.stream.running:
                         self.mass.create_task(player.stream.send_cli_command("VOLUME=0"))
                     player.update_state()
+                    self.bridge_manager.sync_volume(player.protocol_id)
                 else:
                     if player.volume_muted:
                         player._attr_volume_muted = False
@@ -1170,7 +1169,7 @@ class AirPlayProvider(PlayerProvider):
                             "Prevent playback command detected for player %s",
                             player.name,
                         )
-                        if player.synced_to or parent_player.state.active_group:
+                        if player.synced_to or parent_player.active_group:
                             self.mass.create_task(
                                 self.mass.players.cmd_ungroup(parent_player.player_id)
                             )
@@ -1220,18 +1219,15 @@ class AirPlayProvider(PlayerProvider):
             self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, False
         ):
             return
-        # walks the stored configs rather than get_player_configs(), which drops
-        # every protocol player - the type each non-Apple receiver is registered
-        # as - and only lists the ones discovered so far
-        for player_id, raw_conf in self.mass.config.get(CONF_PLAYERS, {}).items():
+        # walks the stored protocol configs, which also hold the devices that
+        # were not discovered yet
+        for protocol_id, raw_conf in self.mass.config.get(CONF_PLAYER_PROTOCOLS, {}).items():
             if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
                 continue
-            if not self.mass.config.get_raw_player_config_value(
-                player_id, CONF_PASSWORD_INVALID, False
-            ):
+            if not self.mass.config.get_protocol_value(protocol_id, CONF_PASSWORD_INVALID, False):
                 continue
-            self.logger.info("Clearing the unverified password marker on %s", player_id)
-            self.mass.config.set_raw_player_config_value(player_id, CONF_PASSWORD_INVALID, False)
+            self.logger.info("Clearing the unverified password marker on %s", protocol_id)
+            self.mass.config.set_protocol_value(protocol_id, CONF_PASSWORD_INVALID, False)
         # last, so a failure part-way through leaves the review to be retried on
         # the next load instead of stranding the players it never reached
         self.mass.config.set_raw_provider_config_value(
@@ -1253,20 +1249,19 @@ class AirPlayProvider(PlayerProvider):
             self.instance_id, CONF_COMPAT_PINS_REVIEWED, False
         ):
             return
-        # walks the stored configs rather than get_player_configs(), which drops
-        # every protocol player - the type each non-Apple receiver is registered
-        # as - and only lists the ones discovered so far
-        for player_id, raw_conf in self.mass.config.get(CONF_PLAYERS, {}).items():
+        # walks the stored protocol configs, which also hold the devices that
+        # were not discovered yet
+        for protocol_id, raw_conf in self.mass.config.get(CONF_PLAYER_PROTOCOLS, {}).items():
             if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
                 continue
             if (
-                self.mass.config.get_raw_player_config_value(player_id, CONF_STREAMING_MODE)
+                self.mass.config.get_protocol_value(protocol_id, CONF_STREAMING_MODE)
                 != STREAMING_MODE_AP2_COMPAT
             ):
                 continue
-            self.logger.info("Resetting the streaming mode of %s back to Automatic", player_id)
-            self.mass.config.set_raw_player_config_value(
-                player_id, CONF_STREAMING_MODE, STREAMING_MODE_AUTO
+            self.logger.info("Resetting the streaming mode of %s back to Automatic", protocol_id)
+            self.mass.config.set_protocol_value(
+                protocol_id, CONF_STREAMING_MODE, STREAMING_MODE_AUTO
             )
         # last, so a failure part-way through leaves the reset to be retried on
         # the next load instead of stranding the players it never reached

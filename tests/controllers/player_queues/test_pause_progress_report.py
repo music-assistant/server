@@ -80,15 +80,14 @@ def _player_reports(
     """Feed a player update reporting its position within the stream it plays."""
     player = SimpleNamespace(
         player_id=QUEUE_ID,
-        active_output_protocol=None,
-        current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id="book", uri=None),
-        state=SimpleNamespace(
-            name="Sonos",
-            available=True,
-            playback_state=state,
-            corrected_elapsed_time=stream_elapsed,
-            group_members=[],
+        resolve_output_protocol=lambda: SimpleNamespace(
+            current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id="book", uri=None)
         ),
+        name="Sonos",
+        available=True,
+        playback_state=state,
+        corrected_elapsed_time=stream_elapsed,
+        group_members=[],
     )
     ctrl._update_queue_from_player(player)  # type: ignore[arg-type]
 
@@ -138,9 +137,7 @@ async def test_pause_keeps_the_last_played_position(
         )
         ctrl._queue_data["target"] = PlayerQueueData(queue=target)
         ctrl.mass.players.get_player = Mock(  # type: ignore[method-assign]
-            return_value=SimpleNamespace(
-                state=SimpleNamespace(type=PlayerType.PLAYER, active_group=None, synced_to=None)
-            )
+            return_value=SimpleNamespace(type=PlayerType.PLAYER, active_group=None, synced_to=None)
         )
         ctrl.stop = AsyncMock()  # type: ignore[method-assign]
         ctrl.load = AsyncMock()  # type: ignore[method-assign]

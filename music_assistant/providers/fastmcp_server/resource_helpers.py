@@ -14,63 +14,34 @@ from .models import PlayerBrief, QueueBrief, QueueItemBrief
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from music_assistant.models.player import Player
 
-def to_brief_player(player: Any, active_queue: Any = None) -> PlayerBrief:
+
+def to_brief_player(player: Player, active_queue: Any = None) -> PlayerBrief:
     """
-    Convert a Player-like object to ``PlayerBrief``.
+    Convert a player to ``PlayerBrief``.
 
-    :param player: Player-like object to summarize.
+    :param player: Player to summarize.
     :param active_queue: Active player queue, when available.
     """
-    state_obj = getattr(player, "playback_state", None) or getattr(player, "state", None)
-    state_value = (
-        str(getattr(state_obj, "value", state_obj)) if state_obj is not None else "unknown"
-    )
-
-    player_state = getattr(player, "state", None)
-    if player_state is not None and hasattr(player_state, "powered"):
-        powered_val = bool(player_state.powered) if player_state.powered is not None else True
-        current_media = getattr(player_state, "current_media", None)
-    else:
-        powered_val = bool(getattr(player, "powered", True))
-        current_media = getattr(player, "current_media", None)
-
+    state = player.state
     current_item: str | None = None
-    if current_media is not None:
-        current_item = _str_or_none(getattr(current_media, "title", None)) or _str_or_none(
-            getattr(current_media, "uri", None)
-        )
+    if (current_media := state.current_media) is not None:
+        current_item = _str_or_none(current_media.title) or _str_or_none(current_media.uri)
 
-    available_val = bool(getattr(player, "available", True))
-    enabled_val = bool(getattr(player, "enabled", True))
-    needs_setup_val = bool(getattr(player, "needs_setup", False))
-
-    if player_state is not None and hasattr(player_state, "active_group"):
-        active_group_val = _str_or_none(player_state.active_group)
-        synced_to_val = _str_or_none(player_state.synced_to)
-    else:
-        active_group_val = _str_or_none(getattr(player, "active_group", None))
-        synced_to_val = _str_or_none(getattr(player, "synced_to", None))
-
-    volume_muted_val, group_volume_val, group_volume_muted_val = _volume_fields(
-        player, player_state
-    )
-
-    if not available_val:
+    queue_state = getattr(active_queue, "state", None)
+    if not state.available:
         state_value = "unavailable"
-    elif not enabled_val:
+    elif not state.enabled:
         state_value = "disabled"
-    elif needs_setup_val:
+    elif state.needs_setup:
         state_value = "needs_setup"
-    elif synced_to_val is not None or active_group_val is not None:
+    elif state.synced_to is not None or state.active_group is not None:
         state_value = "synced"
-    elif active_queue is not None:
-        queue_state = getattr(active_queue, "state", None)
-        state_value = (
-            str(getattr(queue_state, "value", queue_state))
-            if queue_state is not None
-            else state_value
-        )
+    elif queue_state is not None:
+        state_value = str(getattr(queue_state, "value", queue_state))
+    else:
+        state_value = state.playback_state.value
 
     external_source: str | None = None
     if active_queue is not None:
@@ -81,20 +52,20 @@ def to_brief_player(player: Any, active_queue: Any = None) -> PlayerBrief:
                 current_item = now_playing.title
 
     return PlayerBrief(
-        player_id=str(getattr(player, "player_id", "")),
-        name=str(getattr(player, "display_name", None) or getattr(player, "name", "")),
+        player_id=state.player_id,
+        name=player.name,
         state=state_value,
-        volume_level=_int(getattr(player, "volume_level", None)),
-        powered=powered_val,
+        volume_level=state.volume_level,
+        powered=state.powered is not False,
         current_item=current_item,
-        available=available_val,
-        enabled=enabled_val,
-        needs_setup=needs_setup_val,
-        active_group=active_group_val,
-        synced_to=synced_to_val,
-        volume_muted=volume_muted_val,
-        group_volume=group_volume_val,
-        group_volume_muted=group_volume_muted_val,
+        available=state.available,
+        enabled=state.enabled,
+        needs_setup=state.needs_setup,
+        active_group=state.active_group,
+        synced_to=state.synced_to,
+        volume_muted=state.volume_muted,
+        group_volume=state.group_volume,
+        group_volume_muted=state.group_volume_muted,
         external_source=external_source,
     )
 
@@ -220,23 +191,3 @@ def _names(items: Any) -> list[str]:
 def _str_or_none(value: Any) -> str | None:
     """Convert a present value to string."""
     return None if value is None else str(value)
-
-
-def _volume_fields(player: Any, player_state: Any) -> tuple[bool | None, int | None, bool | None]:
-    """Extract mute and group-volume fields from canonical player state first."""
-    if player_state is not None and hasattr(player_state, "volume_muted"):
-        raw_muted = player_state.volume_muted
-        volume_muted = bool(raw_muted) if raw_muted is not None else None
-    else:
-        raw_muted = getattr(player, "volume_muted", None)
-        volume_muted = bool(raw_muted) if raw_muted is not None else None
-
-    if player_state is not None and hasattr(player_state, "group_volume"):
-        group_volume = _int(player_state.group_volume)
-        raw_group_muted = getattr(player_state, "group_volume_muted", None)
-        group_muted = bool(raw_group_muted) if raw_group_muted is not None else None
-    else:
-        group_volume = _int(getattr(player, "group_volume", None))
-        raw_group_muted = getattr(player, "group_volume_muted", None)
-        group_muted = bool(raw_group_muted) if raw_group_muted is not None else None
-    return volume_muted, group_volume, group_muted

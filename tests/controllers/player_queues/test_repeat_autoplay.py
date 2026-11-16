@@ -84,6 +84,7 @@ def _controller(*, global_autoplay: bool = True) -> tuple[Any, dict[str, bool]]:
     """Build a queue-controller stand-in with the real toggle resolver bound."""
     queues = MagicMock(spec=PlayerQueuesController)
     queues._queue_data = {}
+    queues._resolve_queue_id = lambda queue_id: queue_id
     queues.mass = MagicMock()
     defaults = {"autoplay_enabled": global_autoplay, "crossfade_enabled": False}
     queues.mass.config.get_raw_core_config_value = MagicMock(
@@ -153,11 +154,18 @@ def _loader(
     return loader
 
 
-def _player(player_id: str = "p1") -> Any:
-    """Build a player stand-in with the state fields the queue snapshot is built from."""
-    return SimpleNamespace(
-        player_id=player_id, state=SimpleNamespace(name="Player A", available=True)
+def _player(queues: Any, player_id: str = "p1") -> Any:
+    """
+    Build a live player stand-in with the state fields the queue snapshot is built from.
+
+    :param queues: The queue-controller stand-in, whose players controller gets the player.
+    :param player_id: The id of the player.
+    """
+    player = SimpleNamespace(player_id=player_id, name="Player A", available=True)
+    queues.mass.players.get_player = MagicMock(
+        side_effect=lambda queried_id: player if queried_id == player_id else None
     )
+    return player
 
 
 @pytest.mark.parametrize(
@@ -285,7 +293,7 @@ async def test_repeating_queue_is_restored_with_locked_autoplay_from_cache() -> 
     )
     queues.mass.cache.get = AsyncMock(side_effect=[stored.to_cache(), []])
 
-    await PlayerQueuesController.on_player_register(queues, _player())
+    await PlayerQueuesController.on_player_register(queues, _player(queues))
 
     restored = queues._queue_data["p1"]
     assert restored.autoplay_override is True
@@ -297,9 +305,9 @@ async def test_repeating_queue_is_transferred_with_locked_autoplay_override() ->
     """A transferred repeating queue keeps the saved autoplay override and stays locked off."""
     queues, _ = _controller(global_autoplay=False)
     target_player = MagicMock()
-    target_player.state.type = PlayerType.PLAYER
-    target_player.state.active_group = None
-    target_player.state.synced_to = None
+    target_player.type = PlayerType.PLAYER
+    target_player.active_group = None
+    target_player.synced_to = None
     queues.mass.players.get_player = MagicMock(return_value=target_player)
 
     source_queue = PlayerQueue(

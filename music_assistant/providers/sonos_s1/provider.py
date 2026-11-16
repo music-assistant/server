@@ -181,15 +181,14 @@ class SonosPlayerProvider(PlayerProvider):
             _ = soco.player_name
             return True, fixed_volume
 
-        player_id = await asyncio.to_thread(_read_uid)
+        protocol_id = await asyncio.to_thread(_read_uid)
 
-        if existing := cast("SonosPlayer", self.mass.players.get_player(player_id=player_id)):
+        if existing := cast("SonosPlayer", self.get_protocol(protocol_id)):
             if existing.soco.ip_address != soco.ip_address:
                 await existing.update_ip(soco)
             return
-        enabled = self.mass.config.get_raw_player_config_value(player_id, "enabled", True)
-        if not enabled:
-            self.logger.debug("Ignoring disabled player: %s", player_id)
+        if not self.mass.players.wants_protocol(protocol_id):
+            self.logger.debug("Ignoring disabled player: %s", protocol_id)
             return
         is_visible, fixed_volume = await asyncio.to_thread(_interrogate)
         if not is_visible:
@@ -201,7 +200,7 @@ class SonosPlayerProvider(PlayerProvider):
             await sonos_player.setup()
 
         except Exception as err:
-            self.logger.error("Error setting up Sonos player %s: %s", player_id, err)
+            self.logger.error("Error setting up Sonos player %s: %s", protocol_id, err)
 
     async def _discover_household_ids(self, prefer_s1: bool = True) -> list[str]:
         """Discover the HouseHold ID of S1 speaker(s) the network."""
