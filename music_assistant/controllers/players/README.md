@@ -665,11 +665,12 @@ the addition the same way, and removing that player from it ends the wait for th
 new start right after that waits for what is left of the start-up time of such a member, without
 switching its control once more.
 
-A stop the server sends by itself does not call a wait off. While a command still waits for
+Two stops the server sends by itself do not call a wait off: while a command still waits for
 players to start up before it acts on a player (`_has_waiting_start`), the pause timeout of a
 queue does not stop the paused queue of that player and counts again from the end of the wait,
 and the stop that follows a power off outside of Music Assistant looks again once the wait is
-over. A sleep timer that ends is a stop the user asked for, and calls the wait off.
+over. A sleep timer that ends is a stop the user asked for and calls the wait off, and so does
+the stop that frees a stream slot for another queue.
 
 Only such a command switches a member on; nothing does because a state changed. A play on a group
 player that plays already is ignored, as on any player, and switches nothing on. Neither does a
