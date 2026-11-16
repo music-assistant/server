@@ -93,12 +93,17 @@ PREROLL_US: int = 250_000
 # the lead below and the reports the start error is taken from, about 0.6 s together, and
 # twice what the player starts later than that offset.
 LEAD_IN_US: int = 1_350_000
-# Silence the stream is kept ahead of what the player can have taken from it until its
-# start is corrected, which is all of it since the instant it was told to start: a
-# player reports what is heard, and its output holds more. What a late player was sent
-# can not be taken back, so the lead is short. It still has to ride out a hiccup of the
-# network.
+# Silence the stream is at least kept ahead of what the player can have taken from it
+# until its start is corrected, which is all of it since the instant it was told to
+# start: a player reports what is heard, and its output holds more. What a late player
+# was sent can not be taken back, so the lead is short.
 ALIGN_LEAD_US: int = 200_000
+# Silence before the first audio that is not sent until the start is corrected: the room
+# to leave out what a player starts late. The silence before it goes to the player at
+# once, so it holds more than the lead above through a hiccup of the network. The room
+# is half of what the lead-in is longer than that lead and the quarter of a second of
+# reports the start error is taken from: no more audio is left out than with the lead alone.
+ALIGN_ROOM_US: int = 450_000
 # A start that is not corrected this long after its instant is given its audio as it is:
 # its error is corrected in the audio when the player shows where it is.
 ALIGN_TIMEOUT_US: int = 2_000_000
@@ -128,7 +133,7 @@ BRIDGE_MIN_BUFFER_MS: int = 2000
 
 # The player is asked for its status this often (seconds) during a session. Faster while
 # its clock is not mapped yet, so the first start does not have to wait for it, and from
-# its start until that is corrected, which takes a few reports.
+# the instant it is told to start until its start is corrected, which takes a few reports.
 STATUS_POLL_INTERVAL: float = 0.25
 STATUS_POLL_INTERVAL_FAST: float = 0.05
 # Status requests still waiting for their reply that are remembered.
@@ -969,8 +974,12 @@ class SendspinSqueezeliteBridge:
         :param loop: The sync loop of that session.
         :param now_us: The time on the server clock.
         """
+        assert session.first_audible_us is not None  # the start is decided with a first chunk
+        lead_in_us = session.first_audible_us - session.start_us
         taken_us = max(0, now_us - session.command_us)
-        frames = max(0, session.frames(taken_us + ALIGN_LEAD_US) - loop.frames_sent)
+        ahead_us = max(taken_us + ALIGN_LEAD_US, lead_in_us - ALIGN_ROOM_US)
+        frames = max(0, session.frames(ahead_us) - loop.frames_sent)
+        frames = min(frames, session.frames(MAX_BLOCK_US))
         # what is left out for a late player comes on top: it is sent no less for it
         frames += max(0, loop.pending_jump)
         silence = loop.process(bytes(frames * session.frame_size))
@@ -1018,9 +1027,22 @@ class SendspinSqueezeliteBridge:
             while len(self._pending_status) > MAX_PENDING_STATUS:
                 del self._pending_status[next(iter(self._pending_status))]
             await self._client.request_status(token)
-            mapped = self._player_clock.to_jiffies(now_us) is not None
-            fast = not mapped or (session.started and session.aligning)
-            await asyncio.sleep(STATUS_POLL_INTERVAL_FAST if fast else STATUS_POLL_INTERVAL)
+            await asyncio.sleep(self._poll_interval(session, now_us))
+
+    def _poll_interval(self, session: BridgeSession, now_us: int) -> float:
+        """
+        Return the time until the player is asked for its status again, in seconds.
+
+        :param session: The session the player is asked for.
+        :param now_us: The time on the server clock.
+        """
+        if self._player_clock.to_jiffies(now_us) is None:
+            return STATUS_POLL_INTERVAL_FAST
+        if not session.aligning or not session.start_decided.is_set():
+            return STATUS_POLL_INTERVAL
+        # the start is measured from the reports after the instant the player is told to start
+        until_start = (session.command_us - now_us) / 1_000_000
+        return min(STATUS_POLL_INTERVAL, max(STATUS_POLL_INTERVAL_FAST, until_start))
 
     def _on_status(self, status: PlayerStatus) -> None:
         """Take in a status of the player: its clock, and how far it played the stream."""
@@ -1376,7 +1398,8 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
         # The offset is the shortest the player takes to start: a start that was early
         # is taken whole, a late one for an eighth. A start now and then takes hundreds
         # of milliseconds longer, and following those would start the next ones early.
-        offset_us += error_us if error_us < 0 else error_us // 8
+        # A player does not start before it is told to.
+        offset_us = max(0, offset_us + (error_us if error_us < 0 else error_us // 8))
         if offset_us != self._start_offsets_us.get(protocol_id):
             self._start_offsets_us[protocol_id] = offset_us
             self.mass.create_task(
