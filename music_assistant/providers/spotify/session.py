@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -38,7 +39,7 @@ API_URL = "https://api.spotify.com/v1"
 # reason Spotify gives in the body of a 429 when the quota of the app is used up
 QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
 # seconds to wait for the body of a 429, which only adds the reason to what its headers say
-RATE_LIMIT_BODY_TIMEOUT = 5
+RATE_LIMIT_BODY_TIMEOUT = 2
 
 
 class SpotifySession:
@@ -80,17 +81,25 @@ class SpotifySession:
         self._get_auth = get_auth
         self._on_unauthorized = on_unauthorized
         self._has_fallback = has_fallback
-        # the reason Spotify gave with its last rate limit answer, None when it gave none
-        self.last_rate_limit_reason: str | None = None
+        self._last_rate_limit_reason: str | None = None
         self._last_rate_limit_at: datetime | None = None
+        # until when (monotonic) the cooldown of this session is the one that answer armed
+        self._cooldown_reason_until = 0.0
         # quota answers in a row, without an answered request in between
         self._quota_answers = 0
+
+    @property
+    def cooldown_reason(self) -> str | None:
+        """Return the reason Spotify gave for the limit that holds this session back now."""
+        if time.monotonic() < self._cooldown_reason_until:
+            return self._last_rate_limit_reason
+        return None
 
     def get_diagnostics(self) -> dict[str, Any]:
         """Return the rate limit state of this session for a diagnostics report."""
         return {
             "cooldown_remaining_sec": round(self.throttler.cooldown_remaining),
-            "last_rate_limit_reason": self.last_rate_limit_reason,
+            "last_rate_limit_reason": self._last_rate_limit_reason,
             "last_rate_limit_at": (
                 self._last_rate_limit_at.isoformat() if self._last_rate_limit_at else None
             ),
@@ -247,8 +256,15 @@ class SpotifySession:
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = parse_retry_after(response.headers.get("Retry-After"))
+                # another session serves user actions and playback meanwhile
+                moves_on = self._has_fallback and current_priority() is not RequestPriority.LOW
+                cooldown = max(backoff_time, self.throttler.initial_backoff)
+                if moves_on:
+                    # the gate closes before the body is read, so nothing follows this
+                    # request to a client that just asked to wait
+                    self.throttler.set_cooldown(cooldown)
                 reason = await _rate_limit_reason(response)
-                self.last_rate_limit_reason = reason
+                self._last_rate_limit_reason = reason
                 self._last_rate_limit_at = utc()
                 message = f"Spotify rate limited the {self.label}"
                 if reason:
@@ -258,13 +274,9 @@ class SpotifySession:
                     self._quota_answers += 1
                     if self._quota_answers == 1:
                         self._warn_quota_exceeded(backoff_time)
-                if self._has_fallback and (
-                    quota_exceeded or current_priority() is not RequestPriority.LOW
-                ):
-                    # another session serves user actions and playback meanwhile, and a used up
-                    # quota does not come back within a retry: close the gate for the time
-                    # asked and give up right away
-                    cooldown = max(backoff_time, self.throttler.initial_backoff)
+                if moves_on or (self._has_fallback and quota_exceeded):
+                    # a used up quota does not come back within a retry either: the gate stays
+                    # closed for the time asked and the request gives up right away
                     if quota_exceeded:
                         # a block that goes on is asked about less and less
                         doublings = min(self._quota_answers - 1, 10)
@@ -273,6 +285,7 @@ class SpotifySession:
                             min(self.throttler.initial_backoff * 2**doublings, MAX_BACKOFF),
                         )
                     self.throttler.set_cooldown(cooldown)
+                    self._cooldown_reason_until = time.monotonic() + cooldown
                     raise RetriesExhausted(message, translation_key=RateLimited.translation_key)
                 raise RateLimited(message, backoff_time=backoff_time)
             self._quota_answers = 0

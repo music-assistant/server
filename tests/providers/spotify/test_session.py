@@ -1,5 +1,6 @@
 """Tests for the request handling of a Spotify Web API session."""
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -277,3 +278,74 @@ async def test_quota_exceeded_on_the_shared_client_is_a_rate_limit_like_any_othe
         "shared client",
         "Spotify asks to wait 42 seconds",
     )
+
+
+async def test_the_gate_closes_before_the_body_of_a_limit_is_read() -> None:
+    """A client that moves user actions on holds further requests back while the body comes."""
+    session = _make_session(personal=True)
+    body_asked = asyncio.Event()
+    body_sent = asyncio.Event()
+
+    async def _slow_body(**_kwargs: Any) -> dict[str, Any]:
+        body_asked.set()
+        await body_sent.wait()
+        return {}
+
+    request = _stub_response(session, status=429, headers={"Retry-After": "3600"})
+    request.return_value.__aenter__.return_value.json = _slow_body
+
+    async def _user_action() -> None:
+        async with session._request("GET", "me"):
+            pass
+
+    task = asyncio.create_task(_user_action())
+    await asyncio.wait_for(body_asked.wait(), 1)
+    assert session.throttler.cooldown_remaining > 3590
+    body_sent.set()
+    with pytest.raises(RetriesExhausted):
+        await task
+
+
+async def test_a_body_that_never_comes_is_given_up_on() -> None:
+    """A limit whose body stalls is handled from its headers once the wait for it is over."""
+    session = _make_session()
+
+    async def _no_body(**_kwargs: Any) -> dict[str, Any]:
+        await asyncio.sleep(3600)
+        return {}
+
+    request = _stub_response(session, status=429, headers={"Retry-After": "42"})
+    request.return_value.__aenter__.return_value.json = _no_body
+
+    async def _attempt() -> None:
+        async with session._request("GET", "me"):
+            pass
+
+    with (
+        patch("music_assistant.providers.spotify.session.RATE_LIMIT_BODY_TIMEOUT", 0.01),
+        pytest.raises(RateLimited) as err,
+    ):
+        await asyncio.wait_for(_attempt(), 1)
+    assert err.value.backoff_time == 42
+    assert session.get_diagnostics()["last_rate_limit_reason"] is None
+
+
+async def test_the_reason_goes_with_the_limit_it_came_with() -> None:
+    """The reason of a limit is not given for a later limit that came without one."""
+    session = _make_session(personal=True)
+    _stub_response(
+        session,
+        status=429,
+        payload={"error": {"reason": "SOME_REASON"}},
+        headers={"Retry-After": "8"},
+    )
+    with pytest.raises(RetriesExhausted):
+        async with session._request("GET", "me"):
+            pass
+    assert session.cooldown_reason == "SOME_REASON"
+
+    # that limit ran out, and the client is held back again by something that gave no reason
+    session.throttler._cooldown_until = 0
+    session._cooldown_reason_until = 0
+    session.throttler.set_cooldown(3600)
+    assert session.cooldown_reason is None
