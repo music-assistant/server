@@ -339,10 +339,10 @@ class DemucsStemSeparator:
         :param sample_rate: Sample rate of the audio.
         :param stem: Name of the stem, one of the sources of the model.
         """
-        import julius  # noqa: PLC0415
         import torch  # noqa: PLC0415
         from demucs.apply import apply_model  # noqa: PLC0415
         from demucs.audio import convert_audio  # noqa: PLC0415
+        from julius.resample import resample_frac  # noqa: PLC0415
 
         model = self._model
         if model is None:
@@ -366,7 +366,7 @@ class DemucsStemSeparator:
             estimate = sources[0, model.sources.index(stem)] * std
             if channels == 1:
                 estimate = estimate.mean(0, keepdim=True)
-            estimate = julius.resample_frac(estimate, model.samplerate, sample_rate)
+            estimate = resample_frac(estimate, model.samplerate, sample_rate)
         length = min(frames, estimate.shape[-1])
         result[:, :length] = estimate[:, :length].numpy()
         return result
