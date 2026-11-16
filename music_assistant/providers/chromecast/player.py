@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -71,6 +72,10 @@ if TYPE_CHECKING:
     from pychromecast.socket_client import ConnectionStatus, SocketClient
 
     from .provider import ChromecastProvider
+
+# takes what a client that is stopped on purpose still logs
+_STOPPED_CLIENT_LOGGER = logging.getLogger(f"{__name__}.stopped_client")
+_STOPPED_CLIENT_LOGGER.disabled = True
 
 
 async def _port_answers(host: str, port: int) -> bool:
@@ -1043,6 +1048,8 @@ class ChromecastPlayer(PlayerProtocol):
         for handler in (self.mz_controller, self.command_controller, *self._client_handlers):
             if handler is not None:
                 old_client.unregister_handler(handler)
+        # its worker logs the end of a connect that was stopped as an error
+        old_client.socket_client.logger.logger = _STOPPED_CLIENT_LOGGER
         disconnect_cast(old_client, 0)
         self._start_client()
 

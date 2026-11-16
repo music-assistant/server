@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import socket
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pychromecast.const import CAST_TYPE_AUDIO, CAST_TYPE_GROUP
+from pychromecast.error import ChromecastConnectionError
 from pychromecast.models import HostServiceInfo
 from pychromecast.socket_client import SocketClient
 
@@ -312,3 +314,25 @@ async def test_a_client_that_connected_by_itself_during_the_probe_is_kept() -> N
 
     assert (protocol.available, client.disconnect.call_count, connect.call_count) == (True, 0, 0)
     assert answered is True
+
+
+async def test_a_client_that_is_replaced_logs_no_error(caplog: pytest.LogCaptureFixture) -> None:
+    """
+    The worker of a client that is replaced ends its connect without an error in the log.
+
+    pychromecast logs the end of a connect that was stopped as an error.
+    """
+    protocol, client = await _attached(connected=False, answers=True)
+    socket_client = _real_socket_client(protocol, client, _closed_port())
+    try:
+        with caplog.at_level(logging.DEBUG, logger="pychromecast"):
+            _, new_client = await _check(protocol)
+            # what its worker does once the client is stopped
+            socket_client.stop.set()
+            with pytest.raises(ChromecastConnectionError):
+                await asyncio.to_thread(socket_client.initialize_connection)
+    finally:
+        _close_socket_client(socket_client)
+
+    assert new_client is not None
+    assert [record.getMessage() for record in caplog.records] == []
