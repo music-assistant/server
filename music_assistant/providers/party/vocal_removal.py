@@ -17,6 +17,7 @@ import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import aclosing
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 import numpy as np
@@ -130,6 +131,7 @@ async def remove_vocals(  # noqa: PLR0915
     pcm_format: AudioFormat,
     separator: VocalSeparator,
     logger: logging.Logger,
+    vocal_volume: float = 0.0,
 ) -> AsyncGenerator[bytes]:
     """
     Yield the audio of the source with its vocals removed, in 1-second chunks.
@@ -141,7 +143,9 @@ async def remove_vocals(  # noqa: PLR0915
     :param pcm_format: The PCM format of the source.
     :param separator: Estimates the vocals of each segment.
     :param logger: Logger for progress and failures.
+    :param vocal_volume: Share of the vocals to keep as a guide, from 0 (none) to 1 (all).
     """
+    removed_share = np.float32(1 - min(max(vocal_volume, 0.0), 1.0))
     sample_rate = pcm_format.sample_rate
     frame_size = pcm_format.channels * pcm_format.bit_depth // 8
     chunk_size = pcm_format.pcm_sample_size
@@ -190,7 +194,7 @@ async def remove_vocals(  # noqa: PLR0915
                     pending.clear()
                     break
                 instrumental = mix[:, :hop_frames] - (
-                    blended[:, :hop_frames] / blended_weights[:hop_frames]
+                    blended[:, :hop_frames] / blended_weights[:hop_frames] * removed_share
                 )
                 output += float_to_pcm(instrumental, pcm_format)
                 carried_vocals = blended[:, hop_frames:]
@@ -212,7 +216,7 @@ async def remove_vocals(  # noqa: PLR0915
                 mix, blended, blended_weights = await _blend(remaining_frames)
                 vocals = blended / blended_weights
                 audio_seconds += remaining_frames / sample_rate
-            output += float_to_pcm(mix - vocals, pcm_format)
+            output += float_to_pcm(mix - vocals * removed_share, pcm_format)
             output += pending[remaining_frames * frame_size :]
         except Exception:
             logger.exception("Vocal removal failed, playing the end of the track as is")
@@ -233,6 +237,31 @@ async def remove_vocals(  # noqa: PLR0915
             )
         else:
             logger.debug("Vocal removal ran at %.1fx playback speed", speed)
+
+
+@dataclass(frozen=True)
+class VocalRemoval:
+    """
+    Vocal removal as a transform of the audio of a stream.
+
+    Two of them are equal when they give the same audio, whichever model instance runs
+    them, so buffered audio stays valid across a reload of the plugin.
+    """
+
+    separator: VocalSeparator = field(compare=False)
+    logger: logging.Logger = field(compare=False)
+    vocal_volume: float = 0.0
+
+    def __call__(
+        self, source: AsyncGenerator[bytes], pcm_format: AudioFormat
+    ) -> AsyncGenerator[bytes]:
+        """
+        Return the audio of the source with its vocals turned down.
+
+        :param source: Decoded PCM audio of a track.
+        :param pcm_format: The PCM format of the source.
+        """
+        return remove_vocals(source, pcm_format, self.separator, self.logger, self.vocal_volume)
 
 
 class DemucsVocalSeparator:

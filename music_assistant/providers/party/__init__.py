@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 from mashumaro import DataClassDictMixin
@@ -46,7 +45,7 @@ from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
 
-from .vocal_removal import DemucsVocalSeparator, remove_vocals, supports_pcm_format
+from .vocal_removal import DemucsVocalSeparator, VocalRemoval, supports_pcm_format
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -83,6 +82,7 @@ CONF_BOOST_BADGE_COLOR = "boost_badge_color"
 CONF_PARTY_KARAOKE_MODE = "karaoke_mode"
 CONF_PARTY_HIGHLIGHT_AHEAD = "highlight_ahead"
 CONF_PARTY_REMOVE_VOCALS = "remove_vocals"
+CONF_PARTY_VOCAL_VOLUME = "vocal_volume"
 # Anti burn-in
 CONF_ANTI_BURN_IN = "anti_burn_in"
 # Custom party settings
@@ -272,6 +272,14 @@ class PartyPlugin(PluginProvider):
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
                 depends_on=CONF_PARTY_KARAOKE_MODE,
+                category="karaoke",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_VOCAL_VOLUME,
+                type=ConfigEntryType.INTEGER,
+                default_value=0,
+                range=(0, 100),
+                depends_on=CONF_PARTY_REMOVE_VOCALS,
                 category="karaoke",
             ),
             ConfigEntry(
@@ -512,7 +520,7 @@ class PartyPlugin(PluginProvider):
                 is_removed or not self.config.enabled or not self._vocal_removal_enabled()
             )
             if switched_off and not self.mass.closing:
-                self.mass.create_task(self._sync_playing_track(remove_vocals=False))
+                self.mass.create_task(self._sync_playing_track())
 
         # Tear down the shared playback session (detaches guest listeners and,
         # in remote mode, removes the virtual player)
@@ -1202,7 +1210,7 @@ class PartyPlugin(PluginProvider):
         except Exception as err:
             self.logger.warning("Vocal removal is unavailable: %s", err)
             return
-        await self._sync_playing_track(remove_vocals=True)
+        await self._sync_playing_track()
 
     def _vocal_removal_enabled(self) -> bool:
         """Return whether karaoke mode is set to remove the vocals."""
@@ -1211,14 +1219,12 @@ class PartyPlugin(PluginProvider):
             and self.config.get_value(CONF_PARTY_REMOVE_VOCALS)
         )
 
-    async def _sync_playing_track(self, *, remove_vocals: bool) -> None:
+    async def _sync_playing_track(self) -> None:
         """
-        Restart the playing party track where it is when its audio is in the other state.
+        Restart the playing party track where it is when the settings ask for other audio.
 
         Audio is rewritten when it is buffered, so a track that already plays keeps what it
         buffered until its stream is rebuilt.
-
-        :param remove_vocals: Whether the track should play without its vocals.
         """
         for queue in self.mass.player_queues:
             item = queue.current_item
@@ -1226,11 +1232,12 @@ class PartyPlugin(PluginProvider):
             if not queue.active or queue.state != PlaybackState.PLAYING or streamdetails is None:
                 continue
             buffer: AudioBuffer | None = streamdetails.buffer
-            if buffer is None or buffer.transformed == remove_vocals:
+            if buffer is None:
                 continue
-            if remove_vocals and self._resolve_vocal_removal(streamdetails) is None:
+            wanted = self._resolve_vocal_removal(streamdetails)
+            if buffer.pcm_transform == wanted:
                 continue
-            if not remove_vocals and not self._is_party_queue(queue.queue_id):
+            if wanted is None and not isinstance(buffer.pcm_transform, VocalRemoval):
                 continue
             try:
                 await self.mass.player_queues.seek(
@@ -1256,7 +1263,8 @@ class PartyPlugin(PluginProvider):
             or not supports_pcm_format(decoded_pcm_format(streamdetails))
         ):
             return None
-        return partial(remove_vocals, separator=separator, logger=self.logger)
+        vocal_volume = cast("int", self.config.get_value(CONF_PARTY_VOCAL_VOLUME) or 0)
+        return VocalRemoval(separator, self.logger, vocal_volume / 100)
 
     def _is_party_queue(self, queue_id: str) -> bool:
         """

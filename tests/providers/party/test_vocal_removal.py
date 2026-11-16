@@ -19,9 +19,11 @@ from music_assistant.providers.party import (
     CONF_PARTY_MODE,
     CONF_PARTY_PLAYER,
     CONF_PARTY_PLAYER_AUTO,
+    CONF_PARTY_VOCAL_VOLUME,
     PartyPlugin,
 )
 from music_assistant.providers.party.vocal_removal import (
+    VocalRemoval,
     float_to_pcm,
     pcm_to_float,
     remove_vocals,
@@ -244,9 +246,36 @@ def test_vocal_removal_uses_the_session_queue_in_remote_mode() -> None:
     assert plugin._resolve_vocal_removal(_stream_details("other_player")) is None
 
 
-def _playing_queue(streamdetails: StreamDetails, *, transformed: bool) -> MagicMock:
-    """Build a queue that plays an item whose buffer is in the given state."""
-    streamdetails.buffer = MagicMock(transformed=transformed)
+async def test_vocal_volume_keeps_a_share_of_the_vocals() -> None:
+    """A guide vocal leaves the given share of the vocals in the audio."""
+    data = _make_pcm(9.3)
+    separator = _FakeSeparator(vocal_share=0.8)
+    source = _source(data, PCM_FORMAT.pcm_sample_size)
+    removal = VocalRemoval(cast("Any", separator), MagicMock(), vocal_volume=0.25)
+
+    output = b"".join([chunk async for chunk in removal(source, PCM_FORMAT)])
+
+    # 0.8 of the audio is vocals, of which a quarter stays: 0.2 + 0.8 * 0.25
+    expected = pcm_to_float(data, PCM_FORMAT) * 0.4
+    np.testing.assert_allclose(pcm_to_float(output, PCM_FORMAT), expected, atol=2**-14)
+
+
+def test_vocal_removals_compare_by_the_audio_they_give() -> None:
+    """A reloaded plugin's removal equals the old one unless the vocal volume differs."""
+    assert VocalRemoval(MagicMock(), MagicMock(), 0.2) == VocalRemoval(
+        MagicMock(), MagicMock(), 0.2
+    )
+    assert VocalRemoval(MagicMock(), MagicMock(), 0.2) != VocalRemoval(
+        MagicMock(), MagicMock(), 0.0
+    )
+
+
+def _playing_queue(streamdetails: StreamDetails, buffered_volume: float | None) -> MagicMock:
+    """Build a queue that plays an item buffered with the given vocal volume, or untouched."""
+    transform = None
+    if buffered_volume is not None:
+        transform = VocalRemoval(MagicMock(), MagicMock(), buffered_volume)
+    streamdetails.buffer = MagicMock(pcm_transform=transform)
     queue = MagicMock(
         queue_id=streamdetails.queue_id,
         active=True,
@@ -258,23 +287,39 @@ def _playing_queue(streamdetails: StreamDetails, *, transformed: bool) -> MagicM
 
 
 @pytest.mark.parametrize(
-    ("buffer_transformed", "remove", "restarts"),
-    [(False, True, True), (True, False, True), (True, True, False), (False, False, False)],
+    ("buffered_volume", "wanted_volume", "restarts"),
+    [
+        (None, 0, True),
+        (0.0, None, True),
+        (0.0, 30, True),
+        (0.3, 30, False),
+        (None, None, False),
+    ],
 )
-async def test_playing_track_restarts_only_when_its_audio_is_in_the_other_state(
-    buffer_transformed: bool, remove: bool, restarts: bool
+async def test_playing_track_restarts_only_when_the_settings_ask_for_other_audio(
+    buffered_volume: float | None, wanted_volume: int | None, restarts: bool
 ) -> None:
-    """Toggling vocal removal restarts the playing party track at its position."""
+    """
+    Changing vocal removal restarts the playing party track at its position.
+
+    A wanted volume of None stands for vocal removal that is switched off.
+    """
     plugin = _create_plugin(
-        {CONF_PARTY_MODE: SharedPlaybackMode.VENUE.value, CONF_PARTY_PLAYER: "party_player"}
+        {
+            CONF_PARTY_MODE: SharedPlaybackMode.VENUE.value,
+            CONF_PARTY_PLAYER: "party_player",
+            CONF_PARTY_VOCAL_VOLUME: wanted_volume,
+        }
     )
-    other = _playing_queue(_stream_details("other_player"), transformed=buffer_transformed)
-    party = _playing_queue(_stream_details("party_player"), transformed=buffer_transformed)
+    if wanted_volume is None:
+        plugin._vocal_separator = None
+    other = _playing_queue(_stream_details("other_player"), None)
+    party = _playing_queue(_stream_details("party_player"), buffered_volume)
     player_queues = cast("MagicMock", plugin.mass.player_queues)
     player_queues.__iter__.side_effect = lambda: iter([other, party])
     player_queues.seek = AsyncMock()
 
-    await plugin._sync_playing_track(remove_vocals=remove)
+    await plugin._sync_playing_track()
 
     if restarts:
         player_queues.seek.assert_awaited_once_with("party_player", 42)

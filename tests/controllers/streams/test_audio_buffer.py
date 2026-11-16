@@ -732,7 +732,7 @@ async def test_get_buffer_replaces_a_buffer_in_the_other_transform_state() -> No
         mass, streamdetails, reason="test", wait_ready=True, pcm_transform=_transform
     )
     assert transformed is not plain
-    assert transformed.transformed
+    assert transformed.pcm_transform is _transform
     assert (
         await AudioBuffer.get_buffer(mass, streamdetails, reason="test", pcm_transform=_transform)
         is transformed
@@ -740,7 +740,7 @@ async def test_get_buffer_replaces_a_buffer_in_the_other_transform_state() -> No
 
     restored = await AudioBuffer.get_buffer(mass, streamdetails, reason="test", wait_ready=True)
     assert restored is not transformed
-    assert not restored.transformed
+    assert restored.pcm_transform is None
     for buffer in (plain, transformed, restored):
         await buffer.clear()
 

@@ -50,7 +50,11 @@
     },
     "remove_vocals": {
       "label": "Remove Vocals",
-      "description": "When enabled, the vocals are removed from the tracks that play on the party player, so guests can sing along to the instrumental. The change applies from the next track. The audio is processed on this server while it plays: this needs a fast multi-core CPU, delays the start of a track by a few seconds, and downloads the Demucs model on first use."
+      "description": "When enabled, the vocals are removed from the tracks that play on the party player, so guests can sing along to the instrumental. The audio is processed on this server while it plays: this needs a fast multi-core CPU, delays the start of a track by a few seconds, and downloads the Demucs model on first use."
+    },
+    "vocal_volume": {
+      "label": "Vocal Volume",
+      "description": "How much of the original vocals stays in the music, in percent. Leave at 0 to remove them completely, or raise it to keep a quiet guide vocal that singers can follow."
     },
     "highlight_ahead": {
       "label": "Highlight Lyrics Ahead of Time",

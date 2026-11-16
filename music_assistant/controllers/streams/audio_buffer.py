@@ -151,8 +151,8 @@ class AudioBuffer:
         self.ready = asyncio.Event()
         self._cancel_callbacks: list[CancelCallback] = []
         self._ready_wait_lock = asyncio.Lock()
-        # whether a pcm transform rewrote the audio, so the buffer no longer holds the source's
-        self.transformed = False
+        # the transform that rewrote the audio, when the buffer does not hold the source's
+        self.pcm_transform: PCMTransform | None = None
         # media second currently heard from this buffer (None if unknown),
         # so played audio is retained relative to what the listener hears
         self.playback_position: Callable[[AudioBuffer], float | None] | None = None
@@ -498,7 +498,7 @@ class AudioBuffer:
             if (
                 existing_buffer.has_error
                 or not existing_buffer.is_valid(seek_position_ms)
-                or existing_buffer.transformed != (pcm_transform is not None)
+                or existing_buffer.pcm_transform != pcm_transform
             ):
                 LOGGER.debug(
                     "%s: Existing buffer invalid for %s (seek_ms: %s, discarded: %s)",
@@ -558,7 +558,7 @@ class AudioBuffer:
         )
         if pcm_transform is not None:
             audio_source = pcm_transform(audio_source, audio_buffer.pcm_format)
-            audio_buffer.transformed = True
+            audio_buffer.pcm_transform = pcm_transform
 
         audio_buffer.fill(audio_source, source_name=streamdetails.uri, on_complete=on_complete)
 
