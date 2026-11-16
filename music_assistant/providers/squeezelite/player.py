@@ -299,6 +299,7 @@ class SqueezelitePlayer(PlayerProtocol):
         self.update_attributes()
         self.update_state()
         self._store_volume()
+        self._report_delivered_format()
 
     def update_attributes(self) -> None:
         """Update player attributes from slim player."""
@@ -580,3 +581,37 @@ class SqueezelitePlayer(PlayerProtocol):
         volume = self.client.volume_level
         if volume != self.mass.config.get_protocol_value(self.protocol_id, CONF_STORED_VOLUME):
             self.mass.config.set_protocol_value(self.protocol_id, CONF_STORED_VOLUME, volume)
+
+    def _report_delivered_format(self) -> None:
+        """Add the format Music Assistant streams to the player to the metadata of its stream."""
+        # the Sendspin bridge reports the format of its own stream
+        if self._plays_for_bridge or (media := self.client.current_media) is None:
+            return
+        metadata = media.metadata
+        # once, as the stream starts: the update goes to the stream requested last, which
+        # later on can be a newer one
+        if metadata.get("samplerate"):
+            return
+        source_id = cast("str | None", metadata.get("source_id"))
+        queue_item_id = cast("str | None", metadata.get("queue_item_id"))
+        if not source_id or not queue_item_id:
+            return
+        # the stream controller records the format once the player fetched the stream
+        queue_item = self.mass.player_queues.get_item(source_id, queue_item_id)
+        streamdetails = queue_item.streamdetails if queue_item else None
+        if streamdetails is None or (chain := streamdetails.audio_processing) is None:
+            return
+        player_id = self.player.player_id if self.player else self.protocol_id
+        output_format = next(
+            (output.output_format for output in chain.outputs if player_id in output.player_ids),
+            None,
+        )
+        if output_format is None:
+            return
+        quality = {"samplerate": str(output_format.sample_rate)}
+        if output_format.content_type.is_lossless():
+            quality["samplesize"] = str(output_format.bit_depth)
+        # the update replaces all metadata of the stream
+        self.mass.create_task(
+            self.client.update_metadata(cast("MediaMetadata", {**metadata, **quality}))
+        )

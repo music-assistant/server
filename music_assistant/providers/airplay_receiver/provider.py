@@ -796,20 +796,16 @@ class AirPlayReceiverProvider(PluginProvider):
         """
         Build the shairport-sync ``general.interface`` directive, or an empty string.
 
-        When the stream server is bound to a specific interface (not 0.0.0.0), pin
-        the AirPlay mDNS advertisement to that same interface so the receiver is
-        announced on the intended network instead of an unrelated one (e.g. a
-        Docker bridge). Returns an empty string to advertise on all interfaces.
+        Pins the receiver's mDNS records to the interface of the stream server's bind IP,
+        or of its publish IP when it binds all interfaces, so senders only learn addresses
+        on the network Music Assistant is reached on instead of those of unrelated
+        interfaces (e.g. Docker or VPN). Returns an empty string to advertise on all
+        interfaces when no local interface holds that IP.
         """
-        bind_ip = await self.mass.streams.get_source_ip()
-        if not bind_ip:
-            return ""
-        iface_name = interface_name_for_ip(bind_ip)
+        ip = await self.mass.streams.get_source_ip() or self.mass.streams.publish_ip
+        iface_name = interface_name_for_ip(ip)
         if not iface_name:
-            self.logger.debug(
-                "No interface found for stream bind IP %s; advertising on all interfaces",
-                bind_ip,
-            )
+            self.logger.debug("No interface found for IP %s; advertising on all interfaces", ip)
             return ""
         return f'\tinterface = "{iface_name}";\n'
 

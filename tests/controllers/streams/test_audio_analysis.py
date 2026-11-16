@@ -520,7 +520,7 @@ def _make_streamdetails(
     )
     sd.item_id = item_id
     sd.provider = "test-provider"
-    sd.media_type = MagicMock()
+    sd.media_type = MediaType.TRACK
     sd.duration = duration
     return sd
 
@@ -561,6 +561,8 @@ def _make_aa_provider(
     provider = MagicMock(spec=AudioAnalysisProvider)
     provider.instance_id = instance_id
     provider.available = available
+    provider.unloading = False
+    provider.media_types = frozenset(MediaType)
     provider.process_pcm_chunk = process_pcm_chunk or AsyncMock(return_value=None)
     provider.cancel = AsyncMock(return_value=None)
     provider.abort = AsyncMock(return_value=None)

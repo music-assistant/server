@@ -88,6 +88,11 @@ EXPECTED_DOWNBEATS = [
 ]
 
 
+def test_offered_tracks_only() -> None:
+    """Smart fades only analyzes music tracks."""
+    assert SmartFadesProvider.media_types == frozenset({MediaType.TRACK})
+
+
 @pytest.fixture
 def mass_mock() -> Mock:
     """Return a mock MusicAssistant instance."""
