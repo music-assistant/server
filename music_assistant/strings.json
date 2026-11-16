@@ -84,7 +84,7 @@
     },
     "flow_mode": {
       "label": "Enable queue flow mode",
-      "description": "Enable \"flow\" mode where all queue tracks are sent as a continuous audio stream.\nUse for players that do not natively support gapless and/or crossfading or if the player has trouble transitioning between tracks."
+      "description": "Enable \"flow\" mode where all queue tracks are sent as a continuous audio stream.\nUse for players that do not natively support gapless and/or crossfading or if the player has trouble transitioning between tracks.\nA player without gapless support always uses flow mode while crossfade is enabled, regardless of this setting."
     },
     "flow_mode_sample_rate": {
       "label": "Flow Mode sample rate",

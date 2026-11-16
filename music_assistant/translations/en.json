@@ -98,7 +98,7 @@
   "common.config_entries.enable_icy_metadata.options.full": "Profile 2 - full info (including image)",
   "common.config_entries.expose_player_to_ha.description": "Expose this player to the Home Assistant integration. \nIf disabled, this player will not be imported into Home Assistant.",
   "common.config_entries.expose_player_to_ha.label": "Expose this player to Home Assistant",
-  "common.config_entries.flow_mode.description": "Enable \"flow\" mode where all queue tracks are sent as a continuous audio stream.\nUse for players that do not natively support gapless and/or crossfading or if the player has trouble transitioning between tracks.",
+  "common.config_entries.flow_mode.description": "Enable \"flow\" mode where all queue tracks are sent as a continuous audio stream.\nUse for players that do not natively support gapless and/or crossfading or if the player has trouble transitioning between tracks.\nA player without gapless support always uses flow mode while crossfade is enabled, regardless of this setting.",
   "common.config_entries.flow_mode.label": "Enable queue flow mode",
   "common.config_entries.flow_mode_sample_rate.description": "When streaming in Flow Mode, the entire queue is sent as one gapless stream and must use a single sample rate for the whole stream.",
   "common.config_entries.flow_mode_sample_rate.label": "Flow Mode sample rate",
