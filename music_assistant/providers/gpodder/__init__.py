@@ -310,7 +310,7 @@ class GPodder(MusicProvider):
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get Podcast Episode, with the progress gPodder got since the last sync."""
-        podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
+        podcast_id, guid_or_stream_url = prov_episode_id.split(" ", 1)
         podcast = await self._cache_get_podcast(podcast_id)
         for position, parsed_episode, stream_url, guid in iter_episodes(podcast):
             # the episode part of the item id, see parse_podcast_episode
@@ -343,7 +343,7 @@ class GPodder(MusicProvider):
     ) -> tuple[bool, int, datetime | None]:
         """Return: finished, position_ms."""
         assert media_type == MediaType.PODCAST_EPISODE
-        podcast_id, guid_or_stream_url = item_id.split(" ")
+        podcast_id, guid_or_stream_url = item_id.split(" ", 1)
         try:
             # only the library sync moves this timestamp, as it writes the actions to the playlog
             progresses, _ = await self._client.get_episode_actions(since=self.timestamp_actions)
@@ -390,7 +390,7 @@ class GPodder(MusicProvider):
             return
         if time.time() - self.progress_guard_timestamp <= 5:
             return
-        podcast_id, guid_or_stream_url = prov_item_id.split(" ")
+        podcast_id, guid_or_stream_url = prov_item_id.split(" ", 1)
         stream_url = next(
             (x.url for x in media_item.provider_mappings if x.item_id == prov_item_id and x.url),
             None,
@@ -414,7 +414,7 @@ class GPodder(MusicProvider):
         self, prov_episode_id: str
     ) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
         """Get the transcript for a podcast episode."""
-        podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
+        podcast_id, guid_or_stream_url = prov_episode_id.split(" ", 1)
         podcast = await self._cache_get_podcast(podcast_id)
         return await get_episode_transcript(
             mass=self.mass,
@@ -426,7 +426,7 @@ class GPodder(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for item."""
-        podcast_id, guid_or_stream_url = item_id.split(" ")
+        podcast_id, guid_or_stream_url = item_id.split(" ", 1)
         stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
         if stream_url is None:
             raise MediaNotFoundError
