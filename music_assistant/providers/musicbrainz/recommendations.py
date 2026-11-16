@@ -134,10 +134,6 @@ class MusicBrainzRecommendationManager:
             if not mbid:
                 continue
             scanned += 1
-            last_refresh = artist.metadata.last_refresh if artist.metadata else None
-            if last_refresh is None:
-                self.mass.metadata.schedule_update_metadata(artist)
-                continue
             life_span = artist.metadata.life_span if artist.metadata else None
             if not life_span:
                 continue

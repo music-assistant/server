@@ -27,8 +27,8 @@
         "global": "Follow the Player Queues default."
       },
       "disabled_reasons": {
-        "similar": "No music or metadata provider that can supply similar tracks is currently available.",
-        "similar_artists": "No music provider that can supply similar artists is currently available."
+        "similar": "No music source or metadata provider that can supply similar tracks is currently available.",
+        "similar_artists": "No music source that can supply similar artists is currently available."
       }
     },
     "autoplay_playlist": {
@@ -142,18 +142,22 @@
         "global": "Follow the Player Queues default."
       }
     },
+    "pause_timeout": {
+      "label": "Stop a paused player after (seconds)",
+      "description": "How long a player may stay paused before Music Assistant stops it to free the audio it holds. Once stopped, the player shows as idle, and pressing play still continues where you paused. Not every player can stay paused for long."
+    },
     "default_enqueue_select_artist": {
       "label": "Items to select when you play a (in-library) artist.",
       "options": {
         "top_tracks": "Artist top tracks only",
         "library_tracks": "In-library tracks for the artist only",
-        "prefer_library": "Prefer library, fall back to top",
-        "all_tracks": "All tracks from all providers"
+        "prefer_library": "Prefer library, fall back to top tracks",
+        "library_album_tracks": "All tracks of the artist's albums in your library"
       }
     },
     "default_enqueue_order_artist": {
       "label": "Order to play an artist in.",
-      "description": "With an album order, the items to select for an artist pick the artist's own albums. Each album plays as it does on its own. Singles are left out. Top tracks, or an artist with no albums, play shuffled tracks.",
+      "description": "With an album order, an artist plays its albums in your library, each as it plays on its own. Singles are left out. Top tracks, or an artist without albums in your library, play shuffled tracks.",
       "options": {
         "shuffled_tracks": "Shuffled tracks",
         "random_albums": "Albums in random order, each album in track order",
@@ -307,5 +311,8 @@
         "play_track": "Play only this track"
       }
     }
+  },
+  "errors": {
+    "play_request_timeout": "Loading what you asked to play took longer than {0} seconds and was cancelled."
   }
 }

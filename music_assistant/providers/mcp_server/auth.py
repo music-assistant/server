@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.auth import AuthProviderType
 
-from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    current_user,
     get_authenticated_user,
     is_request_from_ingress,
     resolve_impersonated_user,
@@ -42,7 +43,8 @@ async def is_request_from_home_assistant(request: web.Request) -> bool:
 
     :param request: The aiohttp request.
     """
-    # stands in for a bearer token Home Assistant cannot send yet, see handle_async_init
+    # stands in for the bearer token Home Assistant older than 2026.12 does not send,
+    # see handle_async_init
     if not is_request_from_ingress(request) or request.transport is None:
         return False
     peername = request.transport.get_extra_info("peername")
@@ -97,14 +99,18 @@ async def impersonate_home_assistant_user(mass: MusicAssistant, params: dict[str
     """
     Act as the Home Assistant user named in the _meta of a tools/call request, if linked.
 
-    A Home Assistant user that is not linked to a Music Assistant user leaves the request
-    running as the Home Assistant system user.
+    Only applies to a request authenticated as the Home Assistant system user. A Home
+    Assistant user that is not linked to a Music Assistant user leaves the request running
+    as the Home Assistant system user.
 
     :param mass: The Music Assistant instance.
     :param params: The params of the tools/call request.
     :raises ToolError: When the linked Music Assistant account is disabled.
     :raises InsufficientPermissions: When the current user may not impersonate another user.
     """
+    authenticated_user = current_user.get()
+    if authenticated_user is None or authenticated_user.username != HOMEASSISTANT_SYSTEM_USER:
+        return
     meta = params.get("_meta")
     ha_user_id = meta.get(META_HA_USER_ID) if isinstance(meta, dict) else None
     if not isinstance(ha_user_id, str) or not ha_user_id:

@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.enums import ContentType, MediaType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 
@@ -17,17 +17,23 @@ PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=44100, 
 
 
 def _controller() -> Any:
-    """Return a streams controller with one gapless, non-flow HTTP player."""
+    """Return a streams controller with one gapless, non-flow HTTP player and its output protocol."""
     controller: Any = StreamsController.__new__(StreamsController)
     controller._base_url = "http://mass:8097"
     controller._flow_mode_owners = {}
     controller._boundary_mix_owners = {}
     controller.mass = mass = MagicMock()
     player = MagicMock()
-    player.config.get_value.side_effect = lambda _key, default=None: default
     player.flow_mode = False
     player.supports_gapless = True
+    # no group that hands its members one shared stream
+    player.own_protocol.get_shared_stream.return_value = None
     mass.players.get_player.return_value = player
+    protocol = MagicMock()
+    protocol.config.get_value.side_effect = lambda _key, default=None: default
+    protocol.flow_mode = False
+    mass.players.get_output_protocol.return_value = protocol
+    _set_gapless(controller, True)
     mass.player_queues.get.return_value = SimpleNamespace(
         queue_id="queue-1",
         crossfade_enabled=False,
@@ -35,6 +41,13 @@ def _controller() -> Any:
         overlay_source=None,
     )
     return controller
+
+
+def _set_gapless(controller: Any, supported: bool) -> None:
+    """Set whether the output protocol of the player plays gapless."""
+    controller.mass.players.get_output_protocol.return_value.supports_feature.side_effect = (
+        lambda feature: supported if feature == PlayerFeature.GAPLESS_PLAYBACK else False
+    )
 
 
 def _media(media_type: MediaType = MediaType.SOUND_EFFECT) -> PlayerMedia:
@@ -110,7 +123,7 @@ async def test_a_boundary_mix_requirement_puts_only_a_player_without_gapless_in_
 ) -> None:
     """Mixed boundaries need flow mode only on a player that cannot play gapless."""
     controller = _controller()
-    controller.mass.players.get_player.return_value.supports_gapless = supports_gapless
+    _set_gapless(controller, supports_gapless)
     controller.set_boundary_mix_required("queue-1", "ai_radio", True)
 
     url = await controller.resolve_stream_url("player-1", _media())
@@ -125,7 +138,7 @@ def test_a_boundary_mix_requirement_gets_the_flow_stream_without_gapless() -> No
     controller._get_flow_start_item = MagicMock()
     controller._update_audio_processing_context = MagicMock()
     controller._count_as_output_stream = lambda stream: stream
-    controller.mass.players.get_player.return_value.supports_gapless = False
+    _set_gapless(controller, False)
     controller.set_boundary_mix_required("queue-1", "ai_radio", True)
 
     controller.get_stream(_media(), PCM_FORMAT, player_id="player-1")

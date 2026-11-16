@@ -20,7 +20,7 @@ from music_assistant_models.media_items import (
     ProviderMapping,
 )
 
-from music_assistant.constants import DB_TABLE_BOOKMARKS
+from music_assistant.constants import DB_TABLE_BOOKMARKS, DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.models.music_provider import MusicProvider
 from tests.common import set_music_source_access
@@ -85,10 +85,16 @@ async def _library_book(mass: MusicAssistant) -> Audiobook:
             name="Dune",
             provider_mappings={
                 ProviderMapping(
-                    item_id="book1", provider_domain="audiobookshelf", provider_instance=ABS
+                    item_id="book1",
+                    provider_domain="audiobookshelf",
+                    provider_instance=ABS,
+                    in_library=True,
                 ),
                 ProviderMapping(
-                    item_id="dune.m4b", provider_domain="filesystem_local", provider_instance=LOCAL
+                    item_id="dune.m4b",
+                    provider_domain="filesystem_local",
+                    provider_instance=LOCAL,
+                    in_library=True,
                 ),
             },
         )
@@ -224,7 +230,10 @@ async def test_episode_bookmarks_leave_with_the_podcast(
             name="Show",
             provider_mappings={
                 ProviderMapping(
-                    item_id="show1", provider_domain="audiobookshelf", provider_instance=ABS
+                    item_id="show1",
+                    provider_domain="audiobookshelf",
+                    provider_instance=ABS,
+                    in_library=True,
                 )
             },
         )
@@ -256,6 +265,39 @@ async def test_bookmarks_of_a_hidden_copy(
     assert await bookmarks.bookmarks(AUDIOBOOK, book.item_id, "library") == []
     with pytest.raises(MediaNotFoundError):
         await bookmarks.set_bookmark(AUDIOBOOK, ABS, "book1", 60.0, "Hidden")
+
+
+@pytest.mark.parametrize("in_library", [True, False])
+async def test_bookmarks_of_a_copy_that_leaves_the_library(
+    music_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, in_library: bool
+) -> None:
+    """
+    A copy kept only for its metadata or a dislike is not in the library.
+
+    It loses the bookmarks MA stores at the next cleanup, and takes no new ones.
+    """
+    set_current_user(LISTENER)
+    monkeypatch.setattr(EXACT_PROVIDER, lambda _mass, _instance_id: _provider(set()))
+    book = await _library_book(music_mass)
+    bookmarks = music_mass.music.bookmarks
+    await bookmarks.set_bookmark(AUDIOBOOK, LOCAL, "dune.m4b", 30.0, "Arrakis")
+    # what a library sync does with a copy its provider dropped from the library
+    await music_mass.music.database.execute(
+        f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = :in_library "
+        "WHERE provider_instance = :provider_instance",
+        {"in_library": in_library, "provider_instance": LOCAL},
+    )
+
+    await music_mass.music._cleanup_database()
+
+    listed = [
+        x.name
+        for x in await bookmarks.bookmarks(AUDIOBOOK, book.item_id, "library")
+        if x.provider_instance == LOCAL
+    ]
+    assert listed == (["Arrakis"] if in_library else [])
+    with nullcontext() if in_library else pytest.raises(MediaNotFoundError):
+        await bookmarks.set_bookmark(AUDIOBOOK, LOCAL, "dune.m4b", 60.0, "Later")
 
 
 @pytest.mark.parametrize(("write_target", "refused"), [(True, False), (False, True)])

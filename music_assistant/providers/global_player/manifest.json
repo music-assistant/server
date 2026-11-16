@@ -6,7 +6,6 @@
   "description": "Listen to UK radio stations from Global Media including Capital, Heart, Classic FM, Smooth, Radio X, LBC, and Gold.",
   "documentation": "https://music-assistant.io/music-providers/global-player/",
   "codeowners": ["@scarrington76"],
-  "tier": "community",
   "requirements": [],
   "multi_instance": false
 }

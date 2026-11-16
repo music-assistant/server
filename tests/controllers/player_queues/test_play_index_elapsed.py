@@ -6,12 +6,13 @@ import time
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
+from music_assistant_models.enums import SleepTimerMode
 from music_assistant_models.errors import InvalidCommand, MediaNotFoundError
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.player_queues.state import PlayerQueueData, SleepTimerTarget
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 QUEUE_ID = "q1"
@@ -50,14 +51,17 @@ def _controller_with_stale_queue() -> tuple[
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
     ctrl.mass.players.get_player.return_value.offline_by_power_control = False
+    # the queue's player is not in a group
+    ctrl.mass.players._resolve_playback_owner = Mock(side_effect=lambda player: player)
     ctrl.mass.players.play_media = AsyncMock()
     ctrl.logger = MagicMock()  # the retry-fallback path logs a warning
     return ctrl, queue, signals
 
 
 async def test_play_index_resets_elapsed_with_item_switch() -> None:
-    """Starting a new item zeroes elapsed_time and freshens its timestamp."""
+    """Starting a new item zeroes elapsed_time, freshens its timestamp and takes its speed."""
     ctrl, queue, signals = _controller_with_stale_queue()
+    queue.playback_speed = 2.0
     before = time.time()
 
     await ctrl.play_index(QUEUE_ID, 1)
@@ -66,6 +70,7 @@ async def test_play_index_resets_elapsed_with_item_switch() -> None:
     assert queue.current_item.queue_item_id == "new"
     assert queue.elapsed_time == 0
     assert queue.elapsed_time_last_updated >= before
+    assert queue.playback_speed == 1.0
     # no signaled state may pair the new item with the previous item's elapsed
     assert all(elapsed == 0 for item_id, elapsed in signals if item_id == "new"), signals
 
@@ -78,6 +83,29 @@ async def test_play_index_sets_elapsed_to_seek_position() -> None:
 
     assert queue.elapsed_time == 30
     assert all(elapsed == 30 for item_id, elapsed in signals if item_id == "new"), signals
+
+
+async def test_play_index_moves_the_sleep_timer_stop_to_the_new_item() -> None:
+    """A user switch moves the point a sleep timer stops at to the end of the new item."""
+    ctrl, _queue, _signals = _controller_with_stale_queue()
+    queue_data = ctrl._queue_data[QUEUE_ID]
+    queue_data.sleep_timer_target = SleepTimerTarget(SleepTimerMode.END_OF_ITEM, "old", 50_000)
+
+    await ctrl.play_index(QUEUE_ID, 1)
+
+    assert queue_data.sleep_timer_target == SleepTimerTarget(SleepTimerMode.END_OF_ITEM, "new", 279)
+
+
+async def test_play_index_drops_a_step_that_has_not_played_yet() -> None:
+    """An item that starts to play takes the place of a next or a previous that still waits."""
+    ctrl, _queue, _signals = _controller_with_stale_queue()
+
+    await ctrl._play_index(QUEUE_ID, 1, None, fade_in=False)
+
+    # the second for which the step holds its item back, and its move once that waits
+    step = f"queue_play_index_{QUEUE_ID}"
+    ctrl.mass.cancel_timer.assert_any_call(step)  # type: ignore[attr-defined]
+    ctrl.mass.cancel_task.assert_any_call(step)  # type: ignore[attr-defined]
 
 
 async def test_seek_publishes_target_before_restarting_stream() -> None:

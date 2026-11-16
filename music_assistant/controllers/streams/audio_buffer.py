@@ -31,6 +31,7 @@ from music_assistant_models.errors import AudioError
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.constants import (
+    BUFFER_INACTIVITY_TIMEOUT,
     BUFFER_SIZE_MAP,
     CONF_BUFFER_SIZE,
     CONF_BUFFER_SIZE_DEFAULT,
@@ -800,7 +801,7 @@ class AudioBuffer:
             self._inactivity_task = loop.create_task(self._monitor_inactivity())
 
     async def _monitor_inactivity(
-        self, inactivity_timeout: float = 300, check_interval: float = 30
+        self, inactivity_timeout: float = BUFFER_INACTIVITY_TIMEOUT, check_interval: float = 30
     ) -> None:
         """
         Clear the buffer once it has been inactive for inactivity_timeout seconds.

@@ -32,6 +32,7 @@ def _make_player_mock(ready: asyncio.Future[None]) -> MagicMock:
     member = MagicMock()
     member.display_name = MEMBER_NAME
     mock.mass.players.get_player.return_value = member
+    mock.provider.get_protocol = lambda pid, **_: mock.mass.players.get_player(pid)
     bridge = MagicMock()
     bridge.refresh_cast_app_state = AsyncMock()
     bridge.reset_cast_app_ready.return_value = ready

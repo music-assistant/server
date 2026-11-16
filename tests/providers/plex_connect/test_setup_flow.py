@@ -31,13 +31,18 @@ def _provider(instance_id: str, name: str) -> mock.Mock:
 
 
 def _player(
-    player_id: str, display_name: str, player_type: PlayerType = PlayerType.PLAYER
+    player_id: str,
+    display_name: str,
+    player_type: PlayerType = PlayerType.PLAYER,
+    *,
+    session_only: bool = False,
 ) -> mock.Mock:
     """Build a stand-in for a Music Assistant player."""
     player = mock.Mock()
     player.player_id = player_id
-    player.display_name = display_name
+    player.name = display_name
     player.type = player_type
+    player.session_only = session_only
     return player
 
 
@@ -141,6 +146,34 @@ async def test_prefills_stored_selection() -> None:
     assert step.entries[0].value == "plex--2"
     # the stored player disappeared: fall back to the first available option
     assert step.entries[1].value == "player1"
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.parametrize(
+    ("stored", "offered"),
+    [(None, ["player1"]), ("web1", ["web1", "player1"])],
+)
+async def test_offers_a_browser_player_only_as_the_stored_selection(
+    stored: str | None, offered: list[str]
+) -> None:
+    """A session-only player is no choice, but a stored selection of one stays selected."""
+
+    async def finish(_s: SetupSession, _values: dict[str, Any]) -> dict[str, str]:
+        return {"instance_id": "plex_connect--1"}
+
+    session = _make_session(
+        finish,
+        players=[_player("player1", "Kitchen"), _player("web1", "Browser", session_only=True)],
+        setup_data={CONF_PLEX_PROVIDER_ID: "plex--1", CONF_MASS_PLAYER_ID: stored},
+    )
+    task = asyncio.create_task(pc_flow.run_setup(session))
+    step = await _await_user_form(session)
+
+    assert [option.value for option in step.entries[1].options] == offered
+    assert step.entries[1].value == offered[0]
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

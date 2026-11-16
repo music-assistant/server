@@ -31,6 +31,12 @@ FAVORITES_PAGE_SIZE = 50
 AUDIOBOOK_CHAPTERS_PAGE_SIZE = 200
 FLOW_BATCH_COUNT = 2
 
+# -- API rate limit, shared by the GraphQL and gw-light requests of a provider instance --
+
+# Deezer documents 50 requests per 5 seconds, enforced per second so they never come in one burst
+API_RATE_LIMIT = 10
+API_RATE_PERIOD = 1
+
 # -- Browse folder names (used as path segments for routing) --
 
 BROWSE_MADE_FOR_YOU = "Made For You"
@@ -49,6 +55,10 @@ BROWSE_TOP_ALBUMS = "Top Albums"
 BROWSE_TOP_ARTISTS = "Top Artists"
 BROWSE_TOP_PLAYLISTS = "Top Playlists"
 BROWSE_ALL_FLOWS = "All Flows"
+
+# -- Stream quality --
+
+CONF_QUALITY = "quality"
 
 # -- Track decryption --
 

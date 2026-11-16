@@ -1110,7 +1110,14 @@ class SonicSimilarityPlugin(PluginProvider):
 
         async def _resolve(entry: dict[str, Any]) -> Track | None:
             try:
-                return await self.mass.music.tracks.get(entry["item_id"], entry["provider"])
+                # artist details and metadata refreshes would cost each candidate extra provider
+                # calls, the queue fetches full details for the tracks that actually play
+                return await self.mass.music.tracks.get(
+                    entry["item_id"],
+                    entry["provider"],
+                    allow_update_metadata=False,
+                    recursive=False,
+                )
             except MusicAssistantError:
                 return None
 

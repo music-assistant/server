@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player import PlayerMedia
 
@@ -130,7 +132,9 @@ async def test_announcement_does_not_disturb_source_detection(player: HomeAssist
     player._update_attributes(_external_attributes())
     assert player._attr_active_source == "External"
 
-    player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
+    # the core flags the announcement on the player of the entity
+    extra_data = {ATTR_ANNOUNCEMENT_IN_PROGRESS: True}
+    player._player = SimpleNamespace(extra_data=extra_data)  # type: ignore[assignment]
     player.update_from_compressed_state(
         {
             "s": "playing",
@@ -143,7 +147,7 @@ async def test_announcement_does_not_disturb_source_detection(player: HomeAssist
     assert player._attr_active_source == "External"
 
     # an unrelated update after the announcement may not pick the announcement up either
-    player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
+    extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
     player.update_from_compressed_state({"s": "playing", "a": {"volume_level": 0.5}})
 
     assert player._reports_stream_url is False
@@ -156,3 +160,17 @@ async def test_stop_ends_the_ma_session(player: HomeAssistantPlayer) -> None:
     await player.stop()
 
     assert player._ma_playback_active is False
+
+
+@pytest.mark.parametrize("content_id", [42, {"id": 42, "type": "movie"}], ids=["int", "dict"])
+async def test_non_text_media_content_id_is_ignored(
+    player: HomeAssistantPlayer, content_id: object
+) -> None:
+    """An entity reporting a library id instead of a URL does not break its state updates."""
+    player.update_from_compressed_state(
+        {"s": "playing", "a": {"media_content_id": content_id, "media_title": "Some Movie"}}
+    )
+
+    assert player._reports_stream_url is False
+    assert player._attr_active_source is None
+    assert player._attr_current_media is None

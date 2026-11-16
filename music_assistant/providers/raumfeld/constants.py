@@ -9,7 +9,6 @@ from music_assistant_models.enums import ConfigEntryType
 from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_HTTP_PROFILE_FORCED_1,
     create_sample_rates_config_entry,
 )
 
@@ -43,7 +42,7 @@ LONG_POLL_RETRY_DELAY = 5
 UNLOAD_TIMEOUT = 5
 
 # How long (seconds) to wait for a renderer's device description, which is read once per
-# room to get the hardware serial the player_id is derived from.
+# room to get the hardware serial the room's protocol id is derived from.
 DEVICE_INFO_TIMEOUT = 10
 
 # How long (seconds) a UPnP request to a speaker or the host may take.
@@ -93,8 +92,8 @@ GROUP_SETTLE_TIME = 10
 JOIN_SETTLE_TIME = 5
 JOIN_SETTLE_INTERVAL = 0.5
 
-# Player id prefix so ids are namespaced and stable-ish per room.
-PLAYER_ID_PREFIX = "raumfeld"
+# Protocol id prefix so ids are namespaced and stable-ish per room.
+PROTOCOL_ID_PREFIX = "raumfeld"
 
 # Media-server container listing each device's analog Line-In input, and the MA
 # source id used to expose a room's Line-In via PlayerFeature.SELECT_SOURCE.
@@ -110,6 +109,12 @@ LIBRARY_REFRESH_INTERVAL = 60
 # button gets a new object id, so this only bounds how long a renamed item keeps its old title.
 BUTTON_ITEM_CACHE_TTL = 300
 CACHE_CATEGORY_BUTTON_ITEMS = 1
+# The protocol id a room got, kept per room UDN. A room of several speakers takes its id from one
+# speaker's serial, and the host lists a room's speakers in no fixed order; without it the room
+# would take another speaker's id - and so another protocol record and player - when a speaker
+# joins it or is away for a while.
+CACHE_CATEGORY_ROOM_ID = 3
+ROOM_ID_CACHE_TTL = 10 * 365 * 24 * 3600
 SOURCE_LINE_IN = "line_in"
 
 # A room joining a group that plays hooks into the running stream a little behind the others
@@ -132,11 +137,10 @@ PLAYER_CONFIG_ENTRIES = [
     # groups too. Switched off, each item plays as its own stream: a gap between tracks, but
     # the Raumfeld app then shows each track's own elapsed time and duration.
     ConfigEntry.from_dict({**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True}),
-    # Chunked, hidden. The host's stream relay reconnects and replays the stream from the
-    # start whenever the response carries a finite Content-Length (measured, and
-    # forced_content_length reproduces it); a chunked response carries none, so the host
-    # relays the flow as one continuous connection.
-    CONF_ENTRY_HTTP_PROFILE_FORCED_1,
+    # No fixed content length entry. The host's stream relay reconnects and replays the
+    # stream from the start whenever the response carries a finite Content-Length
+    # (measured); a chunked response carries none, so the host relays the flow as one
+    # continuous connection.
     # ICY on by default. The stream never changes - it is one flow for the whole queue - so
     # the ICY StreamTitle, which the host parses out of the relayed stream, is how the
     # Raumfeld app follows the title of each track. "basic" rather than "full": the cover

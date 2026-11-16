@@ -251,6 +251,9 @@ def parse_podcast_episode(
     if media_progress is not None and media_progress.current_time is not None:
         mass_episode.resume_position_ms = int(media_progress.current_time * 1000)
         mass_episode.fully_played = media_progress.is_finished
+        mass_episode.resume_position_timestamp = from_utc_timestamp(
+            media_progress.last_update / 1000
+        )
 
     mass_episode.metadata.chapters = [
         MediaItemChapter(
@@ -380,6 +383,9 @@ def parse_audiobook(
     if media_progress is not None and media_progress.current_time is not None:
         mass_audiobook.resume_position_ms = int(media_progress.current_time * 1000)
         mass_audiobook.fully_played = media_progress.is_finished
+        mass_audiobook.resume_position_timestamp = from_utc_timestamp(
+            media_progress.last_update / 1000
+        )
 
     mass_audiobook.date_added = from_utc_timestamp(abs_audiobook.added_at / 1000)
 

@@ -10,7 +10,7 @@ import pytest
 from aiohttp import StreamReader, web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import AuthProviderType, UserRole
-from music_assistant_models.enums import PlaybackState, PlayerType, QueueOption, RepeatMode
+from music_assistant_models.enums import PlaybackState, QueueOption, RepeatMode
 from music_assistant_models.media_items import Playlist, SearchResults, Track
 
 from music_assistant.constants import HASSIO_SUPERVISOR_IP, INGRESS_SERVER_PORT
@@ -26,6 +26,7 @@ from music_assistant.providers.mcp_server import CONF_HOME_ASSISTANT_SECRET
 from music_assistant.providers.mcp_server.auth import META_HA_USER_ID
 from music_assistant.providers.mcp_server.registry import TOOLS
 from music_assistant.providers.mcp_server.transport import MCPTransport
+from tests.common import mock_player
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
@@ -372,9 +373,22 @@ async def test_secret_survives_reload(mass: MusicAssistant) -> None:
     assert mass.get_provider("mcp_server") is not provider
 
 
-async def test_meta_impersonates_linked_home_assistant_user(mass: MusicAssistant) -> None:
-    """On the internal path the HA user in _meta is impersonated; an unlinked one is not."""
+@pytest.mark.parametrize(
+    ("peer", "home_assistant", "with_token"),
+    [
+        # Home Assistant before 2026.12, without a token on the private endpoint
+        (INGRESS_IP, True, False),
+        # Home Assistant 2026.12 and newer, with the system token of the discovery
+        (HOST_IP, False, True),
+        ("172.30.33.7", True, True),
+    ],
+)
+async def test_meta_impersonates_linked_home_assistant_user(
+    mass: MusicAssistant, peer: str, home_assistant: bool, with_token: bool
+) -> None:
+    """For Home Assistant the HA user in _meta is impersonated; an unlinked one is not."""
     await _create_admin(mass)
+    token = await mass.webserver.auth.get_homeassistant_system_user_token() if with_token else None
     member = await mass.webserver.auth.create_user(username="member")
     await mass.webserver.auth.link_user_to_provider(
         member, AuthProviderType.HOME_ASSISTANT, "ha-member"
@@ -386,10 +400,10 @@ async def test_meta_impersonates_linked_home_assistant_user(mass: MusicAssistant
                 mass,
                 # the literal key Home Assistant sends, so a rename of the constant shows here
                 _call("get_players", {}, meta={"io.home-assistant/user_id": ha_user_id}),
-                None,
-                peer=INGRESS_IP,
+                token,
+                peer=peer,
                 ingress=True,
-                home_assistant=True,
+                home_assistant=home_assistant,
             )
     system_user = await mass.webserver.auth.get_homeassistant_system_user()
     assert [user.user_id if user else None for user in seen.users] == [
@@ -412,6 +426,17 @@ async def test_meta_ignored_with_token(mass: MusicAssistant) -> None:
     assert [user.user_id if user else None for user in seen.users] == [admin.user_id]
 
 
+@pytest.mark.parametrize("home_assistant", [False, True])
+async def test_home_assistant_token_refused_on_public_site(
+    mass: MusicAssistant, home_assistant: bool
+) -> None:
+    """The token of the Home Assistant system user only works on the internal site."""
+    await _create_admin(mass)
+    token = await mass.webserver.auth.get_homeassistant_system_user_token()
+    response = await _post(mass, _rpc("ping"), token, peer=HOST_IP, home_assistant=home_assistant)
+    assert response.status == 401
+
+
 async def test_discovery_announced_and_withdrawn(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -423,8 +448,10 @@ async def test_discovery_announced_and_withdrawn(
     provider = mass.get_provider("mcp_server")
     assert provider is not None
 
-    await provider.loaded_in_mass()
-    await asyncio.sleep(0)
+    with patch.object(mass, "create_task") as create_task:
+        await provider.loaded_in_mass()
+    # run the announce the provider schedules
+    await create_task.call_args.args[0]
     supervisor_request.assert_awaited_once_with(
         mass,
         "post",
@@ -432,7 +459,8 @@ async def test_discovery_announced_and_withdrawn(
         json_data={
             "service": "mcp",
             "config": {
-                "url": f"http://abcd1234-music-assistant:{INGRESS_SERVER_PORT}/mcp/{_secret(mass)}"
+                "url": f"http://abcd1234-music-assistant:{INGRESS_SERVER_PORT}/mcp/{_secret(mass)}",
+                "token": await mass.webserver.auth.get_homeassistant_system_user_token(),
             },
         },
     )
@@ -552,7 +580,7 @@ async def test_discovery_skipped_when_not_addon(
 async def test_discovery_reannounced_daily(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The daily announce to Home Assistant posts the MCP server again."""
+    """The daily announce to Home Assistant posts the MCP server again, with the system token."""
     monkeypatch.setenv("HOSTNAME", "abcd1234-music-assistant")
     monkeypatch.setattr(mass, "running_as_hass_addon", True)
     supervisor_request = AsyncMock(return_value={"uuid": "discovery-uuid"})
@@ -564,6 +592,8 @@ async def test_discovery_reannounced_daily(
 
     services = [call.kwargs["json_data"]["service"] for call in supervisor_request.await_args_list]
     assert services == ["music_assistant", "mcp"]
+    configs = [call.kwargs["json_data"]["config"] for call in supervisor_request.await_args_list]
+    assert configs[1]["token"] == configs[0]["auth_token"]
 
 
 class _UserCapture:
@@ -670,18 +700,14 @@ def _track(item_id: str, name: str) -> Track:
 
 def _fake_player(player_id: str, name: str) -> MagicMock:
     """Return a stand-in for a player with the state the tools read."""
-    player = MagicMock()
-    player.player_id = player_id
-    player.state.player_id = player_id
-    player.state.name = name
-    player.state.hide_in_ui = False
-    player.state.playback_state = PlaybackState.PLAYING
-    player.state.available = True
-    player.state.powered = True
-    player.state.volume_level = 30
-    player.state.volume_muted = False
-    player.state.type = PlayerType.PLAYER
-    player.state.group_members = []
-    player.state.current_media = None
-    player.private = False
+    player = mock_player(
+        player_id,
+        name=name,
+        playback_state=PlaybackState.PLAYING,
+        powered=True,
+        volume_level=30,
+        volume_muted=False,
+    )
+    # no client protocol, so no caller counts as connected on it
+    player.attached_protocols = {}
     return player

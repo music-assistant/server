@@ -41,6 +41,7 @@ from music_assistant.controllers.player_queues.constants import (
     MANAGED_POOL_TARGET,
 )
 from music_assistant.controllers.player_queues.helpers import (
+    can_be_enqueued,
     interleave_groups,
     is_dynamic_source,
     space_by_artist,
@@ -51,6 +52,7 @@ from music_assistant.helpers.track_filter import track_filter
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
@@ -121,12 +123,20 @@ class ManagedPool:
         # finite-source materialized state, keyed by queue id then source uri; see _MaterializedSource
         self._materialized: dict[str, dict[str, _MaterializedSource]] = {}
 
-    async def fill(self, queue_id: str, *, is_initial: bool) -> list[Track]:
+    async def fill(
+        self,
+        queue_id: str,
+        *,
+        is_initial: bool,
+        preceding_items: list[QueueItem] | None = None,
+    ) -> list[Track]:
         """
         Build (or top up) the managed pool and return the tracks to add.
 
         :param queue_id: The queue to fill.
         :param is_initial: True when seeding a fresh pool, False when topping up an existing one.
+        :param preceding_items: The queue items the tracks will be placed behind, which the batch
+            is sized and deduped against. Defaults to all of the queue's items.
         """
         if (queue_data := self.queues.queue_data_or_none(queue_id)) is None:
             # the queue was removed while this background refill was starting up
@@ -146,7 +156,7 @@ class ManagedPool:
         # recency, not permanent exclusion, decides when a track may return. Besides exact item
         # identity we also dedupe on fuzzy same-song keys (title + artist) so a different
         # release/version of an already-queued song is not pulled in as well.
-        items = queue_data.items
+        items = queue_data.items if preceding_items is None else preceding_items
         start = queue.current_index if queue.current_index is not None else 0
         pool_keys: set[Track] = set()
         pool_song_keys: set[tuple[str, str]] = set()
@@ -157,7 +167,7 @@ class ManagedPool:
         slots = (
             MANAGED_POOL_TARGET
             if is_initial
-            else max(MANAGED_POOL_TARGET - self._unplayed(queue), 0)
+            else max(MANAGED_POOL_TARGET - _unplayed(queue, items), 0)
         )
         # the batch is appended after the current tail, so keep its first track clear of the last
         # queued item's artist (the seam the listener actually hears)
@@ -274,7 +284,9 @@ class ManagedPool:
         """Fetch a TRACKS source's own (playable) tracks, honoring the user's selection prefs."""
         with suppress(MusicAssistantError):
             tracks = await self.queues.get_tracks_for_playback(media_item)
-            return [track for track in tracks if isinstance(track, Track) and track.available]
+            return [
+                track for track in tracks if isinstance(track, Track) and can_be_enqueued(track)
+            ]
         return []
 
     async def _materialize(
@@ -364,17 +376,6 @@ class ManagedPool:
             "Finite source(s) exhausted on queue %s; %d source(s) remain", queue_id, len(remaining)
         )
         self.queues.signal_update(queue_id)
-
-    def _unplayed(self, queue: PlayerQueue) -> int:
-        """Return how many not-yet-played items remain in the queue."""
-        items = (
-            queue_data.items
-            if (queue_data := self.queues.queue_data_or_none(queue.queue_id))
-            else []
-        )
-        if queue.current_index is None:
-            return len(items)
-        return max(len(items) - (queue.current_index + 1), 0)
 
 
 def allocate_refill(
@@ -573,6 +574,13 @@ def _space_tracks(tracks: list[Track], preceding: set[str] | None) -> list[Track
     """
     order = space_by_artist([_track_artist_set(track) for track in tracks], preceding=preceding)
     return [tracks[index] for index in order]
+
+
+def _unplayed(queue: PlayerQueue, items: list[QueueItem]) -> int:
+    """Return how many of the given queue items are not played yet."""
+    if queue.current_index is None:
+        return len(items)
+    return max(len(items) - (queue.current_index + 1), 0)
 
 
 def _track_artist_set(track: Track) -> set[str]:

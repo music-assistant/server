@@ -68,8 +68,8 @@ class SonosCloudQueue:
         path_parts = request.path.strip("/").split("/")
         if len(path_parts) != 4 or path_parts[0] != "sonos_queue":
             return web.Response(status=404)
-        player_id = path_parts[1]
-        if not (sonos_player := self.mass.players.get_player(player_id)):
+        protocol_id = path_parts[1]
+        if not (sonos_player := self.provider.get_protocol(protocol_id)):
             return web.Response(status=501)
         if TYPE_CHECKING:
             assert isinstance(sonos_player, SonosPlayer)
@@ -127,7 +127,7 @@ class SonosCloudQueue:
             "queueVersion=%s -> %s begin=%s end=%s items=%s"
         )
         args: list[object] = [
-            player.player_id,
+            player.protocol_id,
             request.query.get("reason"),
             wire_center,
             request.query.get("previousWindowSize"),
@@ -168,7 +168,7 @@ class SonosCloudQueue:
         context_version = request.query.get("contextVersion") or "1"
         self.logger.debug(
             "Cloud queue version poll from %s: queueVersion=%s -> %s",
-            player.player_id,
+            player.protocol_id,
             request.query.get("queueVersion"),
             player.cloud_queue_version,
         )

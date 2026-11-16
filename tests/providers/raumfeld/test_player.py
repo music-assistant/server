@@ -37,6 +37,24 @@ from tests.common import MockProvider
 BASE_URL = "http://mass.local:8097"
 
 
+def _attach(player: RaumfeldPlayer, player_id: str = "pl_bar") -> MagicMock:
+    """
+    Attach a room built without its constructor to a stand-in for its player.
+
+    :param player: The room's protocol.
+    :param player_id: The id of the player, which is the id of the room's queue.
+    """
+    owner = MagicMock(player_id=player_id, extra_data={})
+    owner.linked_foreign_protocol.return_value = None
+    player._player = owner
+    return owner
+
+
+def _owner(player: RaumfeldPlayer) -> MagicMock:
+    """Return the stand-in for the player a room is attached to."""
+    return cast("MagicMock", player.player)
+
+
 def _flow_player() -> RaumfeldPlayer:
     """Build a RaumfeldPlayer with just the state the position path touches."""
     player = RaumfeldPlayer.__new__(RaumfeldPlayer)
@@ -48,12 +66,14 @@ def _flow_player() -> RaumfeldPlayer:
     player._attr_supported_features = set()
     player._library_sources = {}
     player._upnp_actions = {}
-    player._extra_data = {}
+    player._protocol_id = "raumfeld_bar"
+    _attach(player)
     # no sample rate setting: the room plays the safe default
     player._config = MagicMock(get_value=MagicMock(return_value=None))
     mass = MagicMock()
     mass.streams.base_url = BASE_URL
     player.mass = mass
+    player._provider = MagicMock(get_protocol=lambda pid: player.mass.players.get_protocol(pid))
     return player
 
 
@@ -261,7 +281,8 @@ def _follower(leader_state: PlaybackState) -> RaumfeldPlayer:
     """Build a grouped follower whose leader reports the given playback state."""
     player = RaumfeldPlayer.__new__(RaumfeldPlayer)
     player.room = "Bank"
-    player._player_id = "raumfeld_follower"
+    player._protocol_id = "raumfeld_follower"
+    _attach(player, "pl_follower")
     player._attr_group_members = []
     player._attr_supported_features = set()
     player._attr_playback_state = PlaybackState.PLAYING
@@ -270,12 +291,13 @@ def _follower(leader_state: PlaybackState) -> RaumfeldPlayer:
     provider.host.power_state.return_value = "ACTIVE"
     provider.host.plays_spotify_connect.return_value = False
     provider.room_renderer_location.return_value = None
+    provider.get_protocol = lambda pid: player.mass.players.get_protocol(pid)
     player._provider = provider
     player._power_changed_at = 0.0
     leader = MagicMock()
     leader.playback_state = leader_state
     mass = MagicMock()
-    mass.players.get_player = MagicMock(return_value=leader)
+    mass.players.get_protocol = MagicMock(return_value=leader)
     player.mass = mass
     return player
 
@@ -313,28 +335,28 @@ async def test_follower_mirrors_a_playing_leader() -> None:
     assert player._attr_poll_interval == PLAYING_POLL_INTERVAL
 
 
-def test_player_id_to_room_ignores_other_providers() -> None:
+def test_protocol_id_to_room_ignores_other_providers() -> None:
     """Only a Raumfeld player resolves to a room, not any player with a room attribute."""
     player = RaumfeldPlayer.__new__(RaumfeldPlayer)
     foreign = MagicMock()
     foreign.room = "Kitchen"
     mass = MagicMock()
-    mass.players.get_player = MagicMock(return_value=foreign)
+    mass.players.get_protocol = MagicMock(return_value=foreign)
     player.mass = mass
-    assert player._player_id_to_room("dlna_kitchen") is None
+    player._provider = MagicMock(get_protocol=lambda pid: mass.players.get_protocol(pid))
+    assert player._protocol_id_to_room("dlna_kitchen") is None
 
 
-async def test_unload_cancels_its_timers() -> None:
-    """Unloading cancels the timers mass holds for this player, which would otherwise run."""
+async def test_detach_cancels_its_timers() -> None:
+    """Detaching cancels the timers mass holds for this room, which would otherwise run."""
     player, mass = _advancing_player()
-    player._player_id = "raumfeld_test"
-    player._on_unload_callbacks = []
+    player._protocol_id = "raumfeld_test"
+    player._on_detach_callbacks = []
 
-    await player.on_unload()
+    await player.on_detach()
 
     assert {call.args[0] for call in mass.cancel_timer.call_args_list} == {
         "raumfeld_advance_test",
-        "external_pause_raumfeld_test",
         "raumfeld_announce_next_raumfeld_test",
         "raumfeld_event_poll_raumfeld_test",
     }
@@ -352,6 +374,7 @@ def _host_room_player() -> RaumfeldPlayer:
     provider.room_model = MagicMock(  # type: ignore[attr-defined]
         return_value="Raumfeld Soundbar"
     )
+    provider.room_software_version = MagicMock(return_value="2.21.0")  # type: ignore[attr-defined]
     host = MagicMock()
     host.power_state.return_value = "MANUAL_STANDBY"
     provider.host = host  # type: ignore[attr-defined]
@@ -367,7 +390,19 @@ def test_room_on_the_host_gets_its_ip_identifier() -> None:
     player = _host_room_player()
     assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.41"
     assert player.device_info.model == "Raumfeld Soundbar"
+    assert player.device_info.software_version == "2.21.0"
     assert player.powered is False
+
+
+def test_a_software_version_read_later_is_shown() -> None:
+    """A version read after the player was made replaces the one shown; an unread one does not."""
+    player = _host_room_player()
+    with patch.object(player, "update_state") as update_state:
+        player.set_software_version("2.22.0")
+        player.set_software_version(None)
+        player.set_software_version("2.22.0")
+    assert player.device_info.software_version == "2.22.0"
+    update_state.assert_called_once()
 
 
 _RENDERER = "http://192.168.1.42:54730/renderer.xml"
@@ -841,6 +876,7 @@ def _external_player() -> tuple[RaumfeldPlayer, MagicMock]:
     provider.zone_location.return_value = _ZONE
     provider.room_renderer_location.return_value = _RENDERER
     provider.room_transport_url.return_value = "http://192.168.1.42:54730/AVTransport/ctrl"
+    provider.get_protocol = lambda pid: player.mass.players.get_protocol(pid)
     player._provider = provider
     return player, host
 
@@ -1074,9 +1110,8 @@ async def test_an_external_source_music_assistant_gave_up_on_is_dropped() -> Non
     host.async_zone_stop = AsyncMock()
     player._set_external(_RADIO_META, "Play", None, via_room=False)
     assert PlayerFeature.PAUSE in player.supported_features
-    # what the core's mark_external_source_ended leaves behind
-    player._attr_active_source = None
-    player._attr_playback_state = PlaybackState.IDLE
+    # what the core has the room do once it gave up on the source
+    player.on_external_source_ended()
     assert PlayerFeature.PAUSE not in player.supported_features
     with (
         patch.object(player, "update_state"),
@@ -1117,12 +1152,12 @@ async def test_line_in_started_from_the_raumfeld_app_is_shown() -> None:
 def test_a_follower_taken_by_spotify_connect_leaves_its_group() -> None:
     """Spotify Connect takes a room out of its zone, so it leaves the leader's group too."""
     player = _flow_player()
-    player._player_id = "raumfeld_follower"
+    player._protocol_id = "raumfeld_follower"
     leader = RaumfeldPlayer.__new__(RaumfeldPlayer)
-    leader._player_id = "raumfeld_leader"
+    leader._protocol_id = "raumfeld_leader"
     leader._attr_group_members = ["raumfeld_leader", "raumfeld_follower"]
     mass = MagicMock()
-    mass.players.get_player.return_value = leader
+    mass.players.get_protocol.return_value = leader
     player.mass = mass
     with (
         patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
@@ -1136,7 +1171,7 @@ def test_a_follower_taken_by_spotify_connect_leaves_its_group() -> None:
 async def test_a_leader_taken_by_spotify_connect_dissolves_its_group() -> None:
     """A leader Spotify Connect took out of its zone no longer leads the other rooms."""
     player = _follower(PlaybackState.PLAYING)
-    player._player_id = "raumfeld_leader"
+    player._protocol_id = "raumfeld_leader"
     player._attr_group_members = ["raumfeld_leader", "raumfeld_follower"]
     provider = MagicMock()
     provider.host.plays_spotify_connect.return_value = True
@@ -1283,7 +1318,7 @@ def test_a_zone_event_reads_the_room_soon() -> None:
     player, _ = _external_player()
     mass = MagicMock()
     player.mass = mass
-    player._player_id = "raumfeld_bar"
+    player._protocol_id = "raumfeld_bar"
     player.zone_event(_ZONE)
     assert player._zone_events == _ZONE
     delay, target = mass.call_later.call_args.args
@@ -1371,18 +1406,18 @@ async def test_spotify_connect_whose_events_come_in_is_read_seldom() -> None:
 async def test_a_leader_has_its_followers_read_after_an_event() -> None:
     """The rooms that follow the leader take over what it read on the zone's event."""
     player, _ = _external_player()
-    player._player_id = "raumfeld_bar"
+    player._protocol_id = "raumfeld_bar"
     player._attr_available = True
     player._attr_group_members = ["raumfeld_bar", "raumfeld_bank"]
     follower = RaumfeldPlayer.__new__(RaumfeldPlayer)
     player.mass = MagicMock()
-    player.mass.players.get_player.return_value = follower
+    player.mass.players.get_protocol.return_value = follower
     with (
         patch.object(player, "_poll_state", AsyncMock()),
         patch.object(follower, "_start_event_poll") as start,
     ):
         await player._event_poll()
-    player.mass.players.get_player.assert_called_once_with("raumfeld_bank")
+    player.mass.players.get_protocol.assert_called_once_with("raumfeld_bank")
     start.assert_called_once_with()
 
 
@@ -1390,7 +1425,7 @@ def test_a_room_reported_changed_is_read_soon() -> None:
     """A change of power or Spotify session the host reported has the room read soon."""
     player, _ = _external_player()
     player.mass = MagicMock()
-    player._player_id = "raumfeld_bar"
+    player._protocol_id = "raumfeld_bar"
     player.state_event()
     delay, target = player.mass.call_later.call_args.args
     assert (delay, target) == (EVENT_POLL_DELAY, player._start_event_poll)
@@ -1404,7 +1439,7 @@ def _flow_mode_on() -> Any:
 def _zone_player() -> tuple[RaumfeldPlayer, AsyncMock]:
     """Build a player whose zone is addressable, with its transport actions mocked."""
     player, _ = _external_player()
-    player._player_id = "raumfeld_bar"
+    player._protocol_id = "raumfeld_bar"
     player._attr_playback_state = PlaybackState.IDLE
     mass = MagicMock()
     mass.streams.base_url = BASE_URL
@@ -1428,6 +1463,18 @@ async def test_play_media_points_the_zone_at_the_stream() -> None:
     ]
     assert action.await_args_list[0].kwargs["CurrentURI"] == f"{BASE_URL}/flow/x.flac"
     assert player._attr_playback_state == PlaybackState.PLAYING
+
+
+async def test_a_room_playing_its_queue_names_the_queue_of_its_player() -> None:
+    """The stream is resolved for the room, the queue it plays is the one of its player."""
+    player, _ = _zone_player()
+    media = _media()
+    with patch.object(player, "update_state"), _flow_mode_on():
+        await player.play_media(media)
+    resolve = cast("MagicMock", player.mass.streams).resolve_stream_url
+    resolve.assert_awaited_once_with("raumfeld_bar", media)
+    assert player._attr_active_source == "pl_bar"
+    assert player.plays_own_queue
 
 
 async def test_a_rejected_play_is_reported_instead_of_shown_as_playing() -> None:
@@ -1516,11 +1563,11 @@ async def test_a_play_command_invalidates_polls_that_overlap_it() -> None:
 def _taken_leader(queue_state: PlaybackState) -> tuple[RaumfeldPlayer, MagicMock]:
     """Build a group leader whose own queue is in the given state."""
     player = _flow_player()
-    player._player_id = "raumfeld_bar"
+    player._protocol_id = "raumfeld_bar"
     player._attr_group_members = ["raumfeld_bar", "raumfeld_bank"]
-    queue = MagicMock(queue_id="raumfeld_bar", state=queue_state)
+    queue = MagicMock(queue_id="pl_bar", state=queue_state)
     mass = MagicMock()
-    mass.player_queues.get_active_queue.return_value = queue
+    mass.players.get_active_queue.return_value = queue
     player.mass = mass
     return player, mass
 
@@ -1536,7 +1583,7 @@ def test_a_leader_taken_by_spotify_connect_hands_its_queue_over() -> None:
         assert player._leave_group() is True
         # a later poll does not start a second handover
         assert player._leave_group() is True
-    mass.players.cmd_ungroup.assert_called_once_with("raumfeld_bar")
+    mass.players.cmd_ungroup.assert_called_once_with("pl_bar")
     assert player._attr_group_members == ["raumfeld_bar", "raumfeld_bank"]
 
 
@@ -1613,12 +1660,12 @@ def test_the_other_rooms_stay_grouped_when_spotify_takes_the_leader() -> None:
     player, mass = _taken_leader(PlaybackState.IDLE)
     player._attr_group_members = ["raumfeld_bar", "raumfeld_bank", "raumfeld_kitchen"]
     bank = RaumfeldPlayer.__new__(RaumfeldPlayer)
-    bank._player_id = "raumfeld_bank"
+    bank._protocol_id = "raumfeld_bank"
     bank._attr_group_members = []
     bank.mass = mass
     # leading rooms it did not lead before has its rate checked, which is not run here
     mass.create_task.side_effect = lambda coro: coro.close()
-    mass.players.get_player.return_value = bank
+    mass.players.get_protocol.return_value = bank
     with (
         patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
         patch.object(RaumfeldPlayer, "update_state"),
@@ -1732,7 +1779,7 @@ def test_a_paused_queue_is_handed_over_too() -> None:
     ):
         synced_to.return_value = None
         assert player._leave_group() is True
-    mass.players.cmd_ungroup.assert_called_once_with("raumfeld_bar")
+    mass.players.cmd_ungroup.assert_called_once_with("pl_bar")
 
 
 async def test_a_negative_seek_is_reported_as_the_start() -> None:
@@ -1770,7 +1817,7 @@ async def test_a_stop_for_an_announcement_reports_idle() -> None:
     player, host = _external_player()
     host.async_zone_stop = AsyncMock()
     player._set_external(_RADIO_META, "Stop", None, via_room=False)
-    player._extra_data = {"announcement_in_progress": True}
+    _owner(player).extra_data = {"announcement_in_progress": True}
     with (
         patch.object(player, "update_state"),
         patch.object(player, "_active_zone", return_value=["Bar"]),
@@ -1805,7 +1852,7 @@ async def _announce_and_resume(
     media = player._attr_current_media
     assert media is not None
     action = _zone_transport(media_info, position)
-    player._extra_data = {"announcement_in_progress": True}
+    _owner(player).extra_data = {"announcement_in_progress": True}
     with (
         patch.object(player, "update_state"),
         patch.object(player, "_active_zone", return_value=["Bar"]),
@@ -1816,7 +1863,7 @@ async def _announce_and_resume(
         await player.stop()
         # the announcement plays an MA stream on the zone, which ends the external source
         player._clear_external()
-        player._extra_data = {}
+        _owner(player).extra_data = {}
         action.reset_mock()
         await player.play_media(media)
     return player, action
@@ -1853,7 +1900,7 @@ async def test_spotify_connect_ended_by_an_announcement_is_not_replayed() -> Non
     player._set_external(_SPOTIFY_META, "Pause,Stop", 315, via_room=True)
     media = player._attr_current_media
     assert media is not None
-    player._extra_data = {"announcement_in_progress": True}
+    _owner(player).extra_data = {"announcement_in_progress": True}
     mass = MagicMock()
     mass.streams.resolve_stream_url = AsyncMock()
     player.mass = mass
@@ -1862,7 +1909,7 @@ async def test_spotify_connect_ended_by_an_announcement_is_not_replayed() -> Non
         patch.object(player, "_transport_action", AsyncMock()) as action,
     ):
         await player.stop()
-        player._extra_data = {}
+        _owner(player).extra_data = {}
         action.reset_mock()
         await player.play_media(media)
     action.assert_not_awaited()
@@ -2086,7 +2133,7 @@ async def _stop_a_playing_album_button(player: RaumfeldPlayer) -> AsyncMock:
         {"CurrentURI": album_uri, "CurrentURIMetaData": ""},
         {"Track": "3", "RelTime": "0:00:48", "TrackDuration": "0:04:00"},
     )
-    player._extra_data = {"announcement_in_progress": True}
+    _owner(player).extra_data = {"announcement_in_progress": True}
     with (
         patch.object(player, "update_state"),
         patch.object(player, "_active_zone", return_value=["Bar"]),
@@ -2126,7 +2173,7 @@ async def test_an_album_button_chosen_by_the_user_starts_afresh() -> None:
     host.media_server_udn = "uuid:media-server"
     cast("MagicMock", player._provider).browse_library = AsyncMock(return_value="<DIDL-Lite/>")
     action = await _stop_a_playing_album_button(player)
-    player._extra_data = {}
+    _owner(player).extra_data = {}
     with (
         patch.object(player, "update_state"),
         patch.object(player, "_ensure_playable_zone", AsyncMock(return_value=["Bar"])),
@@ -2344,17 +2391,17 @@ async def test_a_play_mode_change_after_ma_took_over_is_refused() -> None:
     external.assert_not_awaited()
 
 
-FLOW_URL = f"{BASE_URL}/flow/session1/raumfeld_bar/item1.flac"
+FLOW_URL = f"{BASE_URL}/flow/session1/pl_bar/item1/raumfeld_bar.flac"
 
 
 def _announcing_player(current_item_id: str = "q2") -> RaumfeldPlayer:
     """Build a player that plays its queue as a flow stream, settled on the zone."""
     player = _flow_player()
-    player._player_id = "raumfeld_bar"
+    player._protocol_id = "raumfeld_bar"
     player.room = "Bar"
     player.logger = MagicMock()
     player._flow_url = FLOW_URL
-    player._attr_active_source = "raumfeld_bar"
+    player._attr_active_source = "pl_bar"
     player._attr_playback_state = PlaybackState.PLAYING
     player._play_started_at = 0.0
     # a room in no other room's zone
@@ -2379,10 +2426,12 @@ def _announcing_player(current_item_id: str = "q2") -> RaumfeldPlayer:
 def test_a_flow_url_of_the_room_queue_is_recognised() -> None:
     """Only the room's own queue played as a flow stream counts as its flow."""
     player = _flow_player()
-    player._player_id = "raumfeld_bar"
+    player._protocol_id = "raumfeld_bar"
     assert player._is_queue_flow(FLOW_URL)
-    assert not player._is_queue_flow(f"{BASE_URL}/single/session1/raumfeld_bar/item1.flac")
-    assert not player._is_queue_flow(f"{BASE_URL}/flow/session1/raumfeld_bank/item1.flac")
+    assert not player._is_queue_flow(f"{BASE_URL}/single/session1/pl_bar/item1/raumfeld_bar.flac")
+    assert not player._is_queue_flow(f"{BASE_URL}/flow/session1/pl_bank/item1/raumfeld_bar.flac")
+    # the queue is the player's, whose id is not the room's own
+    assert not player._is_queue_flow(f"{BASE_URL}/flow/session1/raumfeld_bar/item1/x.flac")
     assert not player._is_queue_flow("http://radio.example.com/live.mp3")
 
 
@@ -2664,6 +2713,52 @@ async def test_the_announcement_describes_the_track_on_the_same_flow_url() -> No
     assert "cover.jpg" in didl
 
 
+def _seeked_media() -> PlayerMedia:
+    """Return a track started 4 s before its end."""
+    return PlayerMedia(
+        uri="library://track/1",
+        title="Buena",
+        duration=198,
+        stream_duration=4,
+        queue_item_id="q2",
+    )
+
+
+async def test_the_announcement_gives_the_whole_track_after_a_seek() -> None:
+    """A flow carries on past the track, so the seconds left are not what the zone gets."""
+    player = _announcing_player()
+    cast("MagicMock", player.mass.player_queues).player_media_from_queue_item = AsyncMock(
+        return_value=_seeked_media()
+    )
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_zone_command", AsyncMock()) as zone_command,
+    ):
+        await player._announce_flow_item(FLOW_URL, "q2", 0)
+
+    assert 'duration="00:03:18"' in zone_command.call_args.kwargs["CurrentURIMetaData"]
+
+
+@pytest.mark.parametrize(
+    ("url", "duration"),
+    [
+        (f"{BASE_URL}/flow/session1/pl_bar/item1/raumfeld_bar.flac", "00:03:18"),
+        (f"{BASE_URL}/single/session1/pl_bar/item1/raumfeld_bar.flac", "00:00:04"),
+    ],
+    ids=["flow", "single_item"],
+)
+async def test_only_a_flow_describes_the_whole_track_after_a_seek(url: str, duration: str) -> None:
+    """A stream of one item does end after the seconds left; a flow carries on."""
+    player, action = _zone_player()
+    cast("MagicMock", player.mass.streams).resolve_stream_url = AsyncMock(return_value=url)
+
+    with patch.object(player, "update_state"), _flow_mode_on():
+        await player.play_media(_seeked_media())
+
+    didl = action.await_args_list[0].kwargs["CurrentURIMetaData"]
+    assert f'duration="{duration}"' in didl
+
+
 async def test_a_refused_announcement_leaves_playback_alone() -> None:
     """A zone that refuses the announcement only costs the track description."""
     player = _announcing_player()
@@ -2852,3 +2947,20 @@ def test_the_timer_announces_the_first_track_of_a_repeated_queue() -> None:
     player._announce_upcoming("q1", "q3")
 
     assert player._announced_item_id == "q1"
+
+
+async def test_an_app_cast_past_the_host_is_not_read_from_the_room_renderer() -> None:
+    """A room still flagged for Spotify Connect plays nothing itself while an app is cast."""
+    player, _ = _external_player()
+    player._attr_playback_state = PlaybackState.PLAYING
+    with (
+        patch.object(_owner(player), "linked_foreign_protocol", return_value=MagicMock()),
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(player, "_update_poll_interval"),
+        patch.object(player, "update_state"),
+        patch.object(player, "_read_room_state", AsyncMock()) as read_state,
+    ):
+        await player._poll_room_playback()
+
+    read_state.assert_not_awaited()
+    assert player._attr_playback_state == PlaybackState.IDLE

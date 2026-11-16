@@ -58,20 +58,16 @@ from music_assistant_models.enums import (
     IdentifierType,
     PlayerFeature,
     PlayerType,
+    ProtocolRole,
     ProviderFeature,
 )
-from music_assistant_models.errors import (
-    AlreadyRegisteredError,
-    InvalidCommand,
-    SetupFailedError,
-)
+from music_assistant_models.errors import InvalidCommand, SetupFailedError
 
 from music_assistant.constants import (
-    CONF_ENABLED,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     CONF_LOG_LEVEL,
-    CONF_PLAYERS,
     CONF_PROVIDERS,
+    CONF_UNDERLYING_PLAYER_ID,
     SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
@@ -82,11 +78,17 @@ from music_assistant.helpers.guest_access import (
     credential_owners_for_user_id,
     is_session_scoped_owner,
 )
-from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
+from music_assistant.helpers.util import (
+    format_ip_for_url,
+    is_locally_administered_mac,
+    is_valid_mac_address,
+)
 from music_assistant.helpers.virtual_player import cleanup_virtual_player
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.player import Player
+from music_assistant.models.player import OWN_PROTOCOL_ROLES
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.sendspin.bridge_manager import evaluate_bridge_of
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
     BRIDGE_CHANNELS,
@@ -375,7 +377,7 @@ class SendspinProvider(PlayerProvider):
     unregister_cbs: list[Callable[[], None]]
     _pending_unregisters: dict[str, asyncio.Event]
     _bridge_identifiers: dict[str, dict[IdentifierType, str]]
-    _bridge_underlying_players: dict[str, str]
+    _bridge_underlying_protocols: dict[str, str]
     _bridge_static_delay_defaults: dict[str, int]
     _client_event_versions: dict[str, int]
     _client_event_task_counts: dict[str, int]
@@ -394,7 +396,7 @@ class SendspinProvider(PlayerProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize a new Sendspin player provider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, {ProviderFeature.SYNC_PLAYERS})
         # Handle config option for manual IP's. Read a default here: at construction the
         # config only carries the server defaults + stored raw values (the provider's typed
         # option entries are resolved and applied by the config controller right after this).
@@ -404,7 +406,7 @@ class SendspinProvider(PlayerProvider):
         self._manual_ip_config = tuple(address for address in manual_ip_config if address.strip())
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
-        self._bridge_underlying_players = {}
+        self._bridge_underlying_protocols = {}
         self._bridge_static_delay_defaults = {}
         self._bridge_player_types: dict[str, PlayerType] = {}
         self._client_event_versions = {}
@@ -560,18 +562,36 @@ class SendspinProvider(PlayerProvider):
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
 
-    def on_player_enabled(self, player_id: str) -> None:
-        """Call (by config manager) when a player gets enabled."""
-        # A client that connected while disabled has no player object;
-        # replay the add event so re-enabling takes effect immediately.
-        if (
-            self.server_api.get_client(player_id) is not None
-            and self.mass.players.get_player(player_id) is None
-        ):
-            event_version = self._begin_client_event(player_id)
-            self.mass.create_task(self._handle_client_added(player_id, event_version))
-            return
-        super().on_player_enabled(player_id)
+    async def discover_players(self) -> None:
+        """
+        Attach the clients that are here and have no attached protocol.
+
+        That is a connected client and a client registered in-process (a bridge, a light,
+        a virtual player), whose player was removed, enabled again or whose output was
+        switched on again. A bridge client that is not registered because its output is
+        switched off is set up again by the bridge manager of the protocol it rides on.
+        """
+        for client in self.server_api.clients:
+            client_id = client.client_id
+            if not (client.is_connected or self.server_api.is_external_player(client_id)):
+                continue
+            # a client whose add, update or removal is being handled is left to that
+            if self.get_protocol(client_id) is not None or client_id in self._client_event_versions:
+                continue
+            if not self.mass.players.wants_protocol(client_id):
+                continue
+            event_version = self._begin_client_event(client_id)
+            self.mass.create_task(self._handle_client_added(client_id, event_version))
+        for client_id in self.mass.config.get_protocol_ids_of_provider(self.instance_id):
+            underlying_id = self.mass.config.get_protocol_value(
+                client_id, CONF_UNDERLYING_PLAYER_ID
+            )
+            if (
+                isinstance(underlying_id, str)
+                and self.server_api.get_client(client_id) is None
+                and self.mass.players.wants_protocol(client_id)
+            ):
+                await evaluate_bridge_of(self.mass, underlying_id)
 
     def register_bridge_identifiers(
         self, client_id: str, identifiers: dict[IdentifierType, str]
@@ -580,26 +600,27 @@ class SendspinProvider(PlayerProvider):
         Pre-register extra identifiers for a bridge client.
 
         Called by bridge managers (Chromecast, AirPlay) before registering an
-        external player, so that the resulting SendspinPlayer carries the parent
-        player's protocol-specific identifiers for cross-protocol matching.
+        external player, so that the resulting SendspinPlayer carries the
+        protocol-specific identifiers of the device it bridges.
 
         :param client_id: The bridge client_id that will be used for registration.
         :param identifiers: Extra identifiers to attach to the SendspinPlayer.
         """
         self._bridge_identifiers[client_id] = identifiers
 
-    def register_bridge_underlying_player(self, client_id: str, underlying_player_id: str) -> None:
+    def register_bridge_underlying_protocol(
+        self, client_id: str, underlying_protocol_id: str
+    ) -> None:
         """
-        Pre-register the underlying player a bridge client runs on top of.
+        Pre-register the protocol a bridge client runs on top of.
 
         Called by bridge managers before registering an external player, so that
-        the resulting SendspinPlayer carries the derived-transport edge and the
-        protocol linking layer can resolve its parent deterministically.
+        the resulting SendspinPlayer is attached to the player of that protocol.
 
         :param client_id: The bridge client_id that will be used for registration.
-        :param underlying_player_id: The player_id of the player the bridge rides on.
+        :param underlying_protocol_id: The id of the protocol the bridge rides on.
         """
-        self._bridge_underlying_players[client_id] = underlying_player_id
+        self._bridge_underlying_protocols[client_id] = underlying_protocol_id
 
     def register_bridge_static_delay_default(self, client_id: str, default_ms: int) -> None:
         """
@@ -611,15 +632,12 @@ class SendspinProvider(PlayerProvider):
         :param client_id: The bridge client_id for which the default applies.
         :param default_ms: Model-specific default static delay in milliseconds.
         """
-        existing = self.mass.players.get_player(client_id)
+        existing = self.get_protocol(client_id)
         if isinstance(existing, SendspinPlayer):
             existing.static_delay_default_ms = default_ms
             # If no user-set value exists, push the new default to the device now
             # so already-connected clients pick it up without a config edit.
-            if (
-                self.mass.config.get_raw_player_config_value(client_id, CONF_SENDSPIN_STATIC_DELAY)
-                is None
-            ):
+            if self.mass.config.get_protocol_value(client_id, CONF_SENDSPIN_STATIC_DELAY) is None:
                 self.mass.create_task(existing._apply_static_delay())
             return
         self._bridge_static_delay_defaults[client_id] = default_ms
@@ -638,7 +656,7 @@ class SendspinProvider(PlayerProvider):
         client_id: str,
         identifiers: dict[IdentifierType, str],
         bridge_hello: ClientHelloPayload,
-        underlying_player_id: str | None = None,
+        underlying_protocol_id: str,
     ) -> bool:
         """
         Post-claim an already-registered SendspinPlayer as a bridge client.
@@ -656,17 +674,16 @@ class SendspinProvider(PlayerProvider):
         :param bridge_hello: The bridge's intended ClientHelloPayload. Its
             player_support.supported_commands gates which volume/mute features
             the player is allowed to expose.
-        :param underlying_player_id: The player_id of the player the bridge rides
-            on, establishing the derived-transport edge for protocol linking.
+        :param underlying_protocol_id: The id of the protocol the bridge rides on, whose
+            player the claimed client then belongs to.
         :return: True if a matching SendspinPlayer was found and updated.
         """
-        player = self.mass.players.get_player(client_id)
+        player = self.get_protocol(client_id)
         if not isinstance(player, SendspinPlayer):
             return False
         for id_type, id_value in identifiers.items():
             player.device_info.add_identifier(id_type, id_value)
-        if underlying_player_id is not None:
-            player._attr_underlying_player_id = underlying_player_id
+        moves = underlying_protocol_id != player.underlying_protocol_id
         bridge_supported_commands: list[PlayerCommand] = []
         if bridge_hello.player_support:
             bridge_supported_commands = list(bridge_hello.player_support.supported_commands or [])
@@ -681,19 +698,19 @@ class SendspinProvider(PlayerProvider):
             player._attr_supported_features.discard(PlayerFeature.VOLUME_MUTE)
         # Expose the claimed player as a protocol bridge, not a standalone web
         # player. A JS Cast receiver advertises product_name="Web Browser" and
-        # would otherwise be classified as is_web_player → PlayerType.PLAYER
-        # (hidden). Restore protocol semantics so UI links it under its native peer.
-        player.is_web_player = False
-        player._attr_hidden_by_default = False
-        player._attr_private = False
-        player._attr_expose_to_ha_by_default = True
-        player._attr_type = PlayerType.PROTOCOL
+        # would otherwise be classified as is_web_player (a hidden player of its
+        # own). As a bridge it is an output of the player of its Cast device.
+        player.ride_on(underlying_protocol_id)
+        player._attr_role = ProtocolRole.AUDIO
         self.logger.info(
             "Bridge claim applied to existing SendspinPlayer %s (client_id=%s)",
             player.display_name,
             client_id,
         )
-        await self.mass.players.register_or_update(player)
+        if moves:
+            # it belongs to another player now: the one of the protocol it rides on
+            await self.mass.players.unregister(client_id)
+        await self.mass.players.register(player)
         return True
 
     async def create_virtual_player(
@@ -757,9 +774,7 @@ class SendspinProvider(PlayerProvider):
                 raise
             raise SetupFailedError(f"Failed to create virtual player {player_id}") from err
         # persist the owner so orphaned configs can be swept after a restart
-        self.mass.config.set_raw_player_config_value(
-            player_id, CONF_VIRTUAL_PLAYER_OWNER, owner_instance_id
-        )
+        self.mass.config.set_protocol_value(player_id, CONF_VIRTUAL_PLAYER_OWNER, owner_instance_id)
         self.logger.info("Virtual player %s created for %s", player_id, owner_instance_id)
         return player_id
 
@@ -775,13 +790,11 @@ class SendspinProvider(PlayerProvider):
             and self._get_virtual_player_config_owner(player_id) is None
         ):
             raise ValueError(f"{player_id} is not a virtual player")
-        # unregister the player first so the client removed event handler
-        # can not race us with a non-permanent unregister
-        await self.mass.players.unregister(player_id, permanent=True)
+        # remove the protocol first so the client removed event handler only finds
+        # it gone, also its config when the player was never attached
+        await self.mass.players.remove_protocol(player_id)
         if self.server_api.get_client(player_id) is not None:
             await self.server_api.remove_client(player_id)
-        # the config may linger when the player was never registered
-        self.mass.players.delete_player_config(player_id)
         self._virtual_players.pop(player_id, None)
         self.logger.info("Virtual player %s removed", player_id)
 
@@ -1114,13 +1127,6 @@ class SendspinProvider(PlayerProvider):
         _check_management_result(result)
         await self.management_get_pairing_config(client_id)
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.SYNC_PLAYERS,
-        }
-
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
@@ -1137,7 +1143,7 @@ class SendspinProvider(PlayerProvider):
         self.unregister_cbs.append(
             self.mass.webserver.auth.subscribe_user_access_revoked(self._on_user_access_revoked)
         )
-        self._remove_orphan_virtual_player_configs()
+        await self._remove_orphan_virtual_player_configs()
         # Start server for handling incoming Sendspin connections from clients
         # and mDNS discovery of new clients
         try:
@@ -1192,7 +1198,6 @@ class SendspinProvider(PlayerProvider):
         self._hass_auto_pairer.close()
         if self._running_pairing_evictions:
             await asyncio.gather(*self._running_pairing_evictions, return_exceptions=True)
-        player_ids = [player.player_id for player in self.players]
         # Stop the Sendspin server. A failed start already cleaned up after itself,
         # and closing it then raises (aiosendspin keeps a stale site reference).
         if not self._server_start_failed:
@@ -1204,13 +1209,6 @@ class SendspinProvider(PlayerProvider):
         self._client_event_task_counts.clear()
         self._client_event_versions.clear()
         self._virtual_players.clear()
-        await asyncio.gather(
-            *(
-                self.mass.players.unregister(player_id, permanent=is_removed)
-                for player_id in player_ids
-            ),
-            return_exceptions=True,
-        )
 
     def _set_aiosendspin_log_level(self) -> None:
         """Keep aiosendspin's (very chatty) logging quiet unless verbose logging is enabled."""
@@ -1286,21 +1284,20 @@ class SendspinProvider(PlayerProvider):
         """Re-apply the HA enrichment to all registered players that report a MAC address (in place)."""
         players = [
             player
-            for player in self.players
+            for player in self.protocols
             if isinstance(player, SendspinBasePlayer) and _reported_mac_address(player)
         ]
         if not players:
             return
         await self._apply_hass_esphome_enrichment(players)
         for player in players:
-            if player.initialized.is_set():
-                player.update_state()
+            player.update_state()
 
     def _create_player(
         self,
         client_id: str,
         sendspin_client: SendspinClient,
-        existing_player: Player | None,
+        existing_player: PlayerProtocol | None,
         initial_hello: ClientHelloPayload | None = None,
     ) -> SendspinBasePlayer:
         """
@@ -1312,9 +1309,17 @@ class SendspinProvider(PlayerProvider):
         """
         extra_ids = self._bridge_identifiers.pop(client_id, None)
         bridge_player_type = self._bridge_player_types.pop(client_id, None)
-        underlying_player_id = self._bridge_underlying_players.pop(client_id, None)
-        if underlying_player_id is None and existing_player is not None:
-            underlying_player_id = existing_player.underlying_player_id
+        underlying_protocol_id = self._bridge_underlying_protocols.pop(client_id, None)
+        if underlying_protocol_id is None and existing_player is not None:
+            underlying_protocol_id = existing_player.underlying_protocol_id
+        if underlying_protocol_id is None:
+            # a bridge client that connects before its bridge is set up, such as a Cast
+            # receiver app that reconnects first after a restart
+            stored_underlying_id = self.mass.config.get_protocol_value(
+                client_id, CONF_UNDERLYING_PLAYER_ID
+            )
+            if isinstance(stored_underlying_id, str):
+                underlying_protocol_id = stored_underlying_id
         static_delay_default_ms = self._bridge_static_delay_defaults.pop(client_id, None)
         if static_delay_default_ms is None and isinstance(existing_player, SendspinPlayer):
             static_delay_default_ms = existing_player.static_delay_default_ms
@@ -1351,10 +1356,13 @@ class SendspinProvider(PlayerProvider):
         if extra_ids:
             for id_type, id_value in extra_ids.items():
                 player.device_info.add_identifier(id_type, id_value)
-        if underlying_player_id is not None:
-            player._attr_underlying_player_id = underlying_player_id
+        if underlying_protocol_id is not None:
+            player.ride_on(underlying_protocol_id)
         if static_delay_default_ms is not None and isinstance(player, SendspinPlayer):
             player.static_delay_default_ms = static_delay_default_ms
+        player._attr_role = (
+            ProtocolRole.NATIVE if player.session_only else self._device_role(player)
+        )
         return player
 
     @staticmethod
@@ -1564,15 +1572,13 @@ class SendspinProvider(PlayerProvider):
         """Re-evaluate a registered player after a pairing/trust change (in place)."""
         if client_id in self._held_elsewhere:
             await self._refresh_held_trust(client_id)
-        player = self.mass.players.get_player(client_id)
-        if not isinstance(player, SendspinBasePlayer) or not player.initialized.is_set():
+        player = self.get_protocol(client_id)
+        if not isinstance(player, SendspinBasePlayer) or player.player is None:
             return
         # A trust change (de)activates roles; role instances are recreated on activation,
         # so pushed config (preferred format, static delay) must be re-applied.
         await player.on_config_updated()
         player.update_state()
-        # The visible player derives state from the active roles too.
-        self.mass.players.trigger_player_update(player.protocol_parent_id or client_id)
 
     def _set_held_elsewhere(self, client_id: str, *, held: bool) -> None:
         # A legacy unencrypted client plays without any pairing or approval.
@@ -1605,8 +1611,8 @@ class SendspinProvider(PlayerProvider):
 
     def _refresh_player_state(self, client_id: str) -> None:
         """Recalculate a registered player's state for its client's new connection."""
-        player = self.mass.players.get_player(client_id)
-        if isinstance(player, SendspinBasePlayer) and player.initialized.is_set():
+        player = self.get_protocol(client_id)
+        if isinstance(player, SendspinBasePlayer):
             player.update_state()
 
     def _on_user_access_revoked(self, user: User) -> None:
@@ -1663,8 +1669,8 @@ class SendspinProvider(PlayerProvider):
             client = self.server_api.get_client(client_id)
             if client is None or not client.is_connected:
                 return None
-            player = self.mass.players.get_player(client_id)
-            if isinstance(player, SendspinBasePlayer) and player.initialized.is_set():
+            player = self.get_protocol(client_id)
+            if isinstance(player, SendspinBasePlayer) and player.player is not None:
                 return player
             return None
 
@@ -1673,7 +1679,7 @@ class SendspinProvider(PlayerProvider):
             raise InvalidCommand(f"Client {client_id} did not register")
         return player
 
-    async def _handle_client_added(self, client_id: str, event_version: int) -> None:  # noqa: PLR0915
+    async def _handle_client_added(self, client_id: str, event_version: int) -> None:
         """Handle a new client connection asynchronously."""
         try:
             if self._unloading:
@@ -1707,50 +1713,44 @@ class SendspinProvider(PlayerProvider):
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale add event for %s", client_id)
                 return
-            if not self.mass.config.get_raw_player_config_value(client_id, CONF_ENABLED, True):
-                self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
-                return
-            await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
-            existing_player = self.mass.players.get_player(client_id)
+            existing_player = self.get_protocol(client_id)
             preserved_identifiers = (
                 dict(existing_player.device_info.identifiers) if existing_player is not None else {}
             )
             if existing_player is not None:
+                # the new object takes the place of the attached one on its player
                 self.logger.debug("Refreshing existing player object for %s", client_id)
-                await self.mass.players.unregister(client_id)
-                if not self._is_current_client_event(client_id, event_version):
-                    self.logger.debug("Skipping stale add event for %s after unregister", client_id)
-                    return
-                sendspin_client = self.server_api.get_client(client_id)
-                if sendspin_client is None:
-                    self.logger.debug("Client %s disconnected after unregister", client_id)
-                    return
-
-            mac_player_id = await self._take_over_mac_player(client_id, sendspin_client)
             player = self._create_player(
                 client_id, sendspin_client, existing_player, bridge_hello_snapshot
             )
             for id_type, id_value in preserved_identifiers.items():
                 player.device_info.add_identifier(id_type, id_value)
-            self.logger.debug("Client %s connected", client_id)
-            await self._apply_hass_esphome_enrichment([player])
-            if not self._is_current_client_event(client_id, event_version):
-                self.logger.debug("Skipping stale add event for %s after HA enrichment", client_id)
-                player._unsubscribe_client_callbacks()
+            # asked with the object: a browser is no output of the player its config names
+            if not self.mass.players.wants_protocol(client_id, player):
+                # nothing is set up for a client of a disabled player or a switched off output
+                self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
                 return
+            # the client can report its state before the attach, while the protocol does not
+            # follow it yet, and a later connection of it may not report it again
+            if isinstance(player, SendspinPlayer):
+                player.take_volume_reports()
             try:
-                await self.mass.players.register(player)
-            except AlreadyRegisteredError:
-                self.logger.debug(
-                    "Client %s already registered while handling add event", client_id
-                )
-                player._unsubscribe_client_callbacks()
-            else:
-                # register skips a disabled player and any player during shutdown
-                if mac_player_id and self.mass.players.get_player(client_id) is player:
-                    self.mass.players.delete_player_config(
-                        mac_player_id, replacement_player_id=client_id
+                await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
+                self.logger.debug("Client %s connected", client_id)
+                await self._apply_hass_esphome_enrichment([player])
+                if not self._is_current_client_event(client_id, event_version):
+                    self.logger.debug(
+                        "Skipping stale add event for %s after HA enrichment", client_id
                     )
+                    return
+                await self.mass.players.register(player)
+            finally:
+                if (
+                    isinstance(player, SendspinPlayer)
+                    and self.mass.players.get_protocol(client_id) is not player
+                ):
+                    # neither attached nor held: no attach or detach of it ends this
+                    player.stop_taking_volume_reports()
         finally:
             self._finish_client_event(client_id)
 
@@ -1840,30 +1840,36 @@ class SendspinProvider(PlayerProvider):
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale update event for %s", client_id)
                 return
-            existing_player = self.mass.players.get_player(client_id)
+            existing_player = self.get_protocol(client_id)
             if not isinstance(existing_player, SendspinBasePlayer):
                 return
             previous_device_info = existing_player.device_info
-            previous_type = existing_player.type
+            was_session_only = existing_player.session_only
             existing_player._refresh_client_info(sendspin_client)
             await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
             if isinstance(existing_player, SendspinPlayer):
-                existing_player.restore_bridge_identity(previous_device_info, previous_type)
+                existing_player.restore_bridge_identity(previous_device_info)
             await self._apply_hass_esphome_enrichment([existing_player])
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale update event for %s after refresh", client_id)
                 return
-            if previous_type == PlayerType.PROTOCOL and existing_player.type != PlayerType.PROTOCOL:
-                existing_player.set_protocol_parent_id(None)
-                existing_player._attr_underlying_player_id = None
-            await self.mass.players.register_or_update(existing_player)
+            if was_session_only != existing_player.session_only:
+                # whether it is a player of its own while connected is fixed at attach
+                existing_player._attr_underlying_protocol_id = None
+                existing_player._attr_role = (
+                    ProtocolRole.NATIVE
+                    if existing_player.session_only
+                    else self._device_role(existing_player)
+                )
+                await self.mass.players.unregister(client_id)
+            await self.mass.players.register(existing_player)
         finally:
             self._finish_client_event(client_id)
 
     def _get_virtual_player_config_owner(self, player_id: str) -> str | None:
         """Return the owner instance id from a stored virtual player config, if any."""
-        raw_conf = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
-        if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+        raw_conf = self.mass.config.get_protocol_record(player_id)
+        if raw_conf is None or raw_conf.get("provider") != self.instance_id:
             return None
         values = raw_conf.get("values")
         if not isinstance(values, dict):
@@ -1974,67 +1980,58 @@ class SendspinProvider(PlayerProvider):
         """Forward a queue change to the Sendspin players, so repeat and shuffle stay current."""
         if (queue_id := event.object_id) is None:
             return
-        for player in self.players:
+        for player in self.protocols:
             if isinstance(player, SendspinPlayer):
                 player.on_queue_updated(queue_id)
 
-    def _remove_orphan_virtual_player_configs(self) -> None:
+    async def _remove_orphan_virtual_player_configs(self) -> None:
         """Delete stored configs of virtual players whose owner provider is gone."""
-        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
-        for player_id, raw_conf in list(all_player_configs.items()):
-            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
-                continue
-            values = raw_conf.get("values")
-            if not isinstance(values, dict):
-                values = {}
-            owner_instance_id = values.get(CONF_VIRTUAL_PLAYER_OWNER)
+        for player_id in self.mass.config.get_protocol_ids_of_provider(self.instance_id):
+            owner_instance_id = self._get_virtual_player_config_owner(player_id)
             if owner_instance_id is None:
                 continue
             if self.mass.config.get(f"{CONF_PROVIDERS}/{owner_instance_id}") is not None:
                 # owner still configured; it will recreate its virtual players
                 continue
             self.logger.debug("Removing orphan virtual player config %s", player_id)
-            self.mass.players.delete_player_config(player_id)
+            await self.mass.players.remove_protocol(player_id)
 
-    async def _take_over_mac_player(
-        self, client_id: str, sendspin_client: SendspinClient
-    ) -> str | None:
+    def _device_role(self, protocol: SendspinBasePlayer) -> ProtocolRole:
         """
-        Move a device's player from its MAC address id over to its encrypted client id.
+        Return the role the Sendspin protocol of a client that is no session of its own has.
 
-        :param client_id: The connected client.
-        :param sendspin_client: That client, for its connection and hello.
-        :return: The player id that was taken over, or None.
+        A bridge client rides on another protocol of its device, and a client of a device
+        whose player has a protocol of its own from another provider plays as an output of
+        that player: both are audio protocols. So is a client with a hardware MAC address
+        that is seen for the first time, which joins the player of its device when there is
+        one. Any other client is the native protocol of its player.
+
+        :param protocol: The protocol of the client.
         """
-        # anyone may already claim the MAC id unencrypted while that is allowed
-        if not self.server_api.allow_unencrypted:
-            return None
-        connection = sendspin_client.connection
-        info = sendspin_client.info_or_none
-        if connection is None or not connection.is_encrypted or info is None:
-            return None
-        mac_address = info.device_info.mac_address if info.device_info else None
-        if not mac_address or not is_valid_mac_address(mac_address):
-            return None
-        mac_player_id = mac_address.upper()
-        config = self.mass.config
-        if config.get_raw_player_config_value(mac_player_id, "provider") != self.instance_id:
-            return None
-        if not config.get_raw_player_config_value(mac_player_id, CONF_ENABLED, True):
-            return None
-        if (mac_client := self.server_api.get_client(mac_player_id)) and mac_client.is_connected:
-            return None
-        self.logger.info("Moving player %s over to client id %s", mac_player_id, client_id)
-        # frees the protocol slot on the parent player for the new client id
-        await self.mass.players.unregister(mac_player_id)
-        self.mass.players.carry_over_player_config(mac_player_id, client_id)
-        return mac_player_id
+        if protocol.underlying_protocol_id is not None:
+            return ProtocolRole.AUDIO
+        record = self.mass.config.get_protocol_record(protocol.protocol_id)
+        if record is None or not (player_id := record.get("player_id")):
+            # without a hardware MAC address nothing else can tie it to a device
+            mac_address = _reported_mac_address(protocol)
+            if mac_address is None or is_locally_administered_mac(mac_address):
+                return ProtocolRole.NATIVE
+            return ProtocolRole.AUDIO
+        for other_id in self.mass.config.get_protocol_ids_of_player(player_id):
+            other = self.mass.config.get_protocol_record(other_id) or {}
+            if (
+                other_id != protocol.protocol_id
+                and other.get("provider") != self.instance_id
+                and other.get("role") in OWN_PROTOCOL_ROLES
+            ):
+                return ProtocolRole.AUDIO
+        return ProtocolRole.NATIVE
 
 
 def _reported_mac_address(player: SendspinBasePlayer) -> str | None:
     """Return the lowercased MAC address a client uses as id or reports in its hello."""
-    if is_valid_mac_address(player.player_id):
-        return player.player_id.lower()
+    if is_valid_mac_address(player.protocol_id):
+        return player.protocol_id.lower()
     info = player.api.info_or_none
     mac_address = info.device_info.mac_address if info and info.device_info else None
     if not mac_address or not is_valid_mac_address(mac_address):

@@ -41,15 +41,14 @@ def _player(
     """Build a solo (or synced) player that resolves to its own queue."""
     player = MagicMock()
     player.player_id = player_id
-    player.display_name = player_id
-    player.type = PlayerType.PLAYER
+    player.name = player_id
     player.extra_data = {}
-    player.state.type = PlayerType.PLAYER
-    player.state.playback_state = playback_state
-    player.state.synced_to = synced_to
-    player.state.active_group = None
-    player.state.active_source = player_id
-    player.state.supported_features = set()
+    player.type = PlayerType.PLAYER
+    player.playback_state = playback_state
+    player.synced_to = synced_to
+    player.active_group = None
+    player.active_source = player_id
+    player.supported_features = set()
     return player
 
 
@@ -144,7 +143,7 @@ class TestDspChangeRestart:
     async def test_group_change_leaves_an_external_source_alone(self, mock_mass: MagicMock) -> None:
         """A leader playing a tv input or connect session has no stream of ours to rebuild."""
         player = _player()
-        player.state.active_source = "tv"
+        player.active_source = "tv"
         controller = _controller(mock_mass, player)
         controller.is_live_audio_source = MagicMock(return_value=False)  # type: ignore[method-assign]
         mock_mass.player_queues.get = MagicMock(return_value=None)
@@ -159,7 +158,7 @@ class TestDspChangeRestart:
     async def test_group_change_restarts_a_live_audio_source(self, mock_mass: MagicMock) -> None:
         """A live audio source is streamed by the server, so its DSP is rebuilt as before."""
         player = _player()
-        player.state.active_source = "audiosource-1"
+        player.active_source = "audiosource-1"
         controller = _controller(mock_mass, player)
         controller.is_live_audio_source = MagicMock(return_value=True)  # type: ignore[method-assign]
         mock_mass.player_queues.get = MagicMock(return_value=None)

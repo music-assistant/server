@@ -4,10 +4,10 @@ Unit tests for the Spotify Soloist playback backend.
 The backend plays a queue through one engine run per playback session: the item
 that follows the one being streamed is queued on the engine ahead of time, and
 the capture is cut where the engine moves on to it. These tests lock down the
-logic around that: lead-silence trimming, each item's cushion and the sink
-backpressure, tail-padding suppression, feeding the next item and cutting at
-the boundary, moving the running engine (seek, skip, jump), idling out, startup
-and event handling, delivery validation, item acquisition
+logic around that: the capture's pacing, lead-silence trimming, each item's
+cushion and the sink backpressure, tail-padding suppression, feeding the next
+item and cutting at the boundary, moving the running engine (seek, skip, jump),
+idling out, startup and event handling, delivery validation, item acquisition
 (busy/claimed/superseded), paired-session adoption and setup. No PulseAudio is
 involved, and a real child process stands in for the engine only where the
 run's teardown is under test.
@@ -40,6 +40,9 @@ from music_assistant.providers.spotify.backends.soloist import (
     _FRAME_BYTES,
     _MAX_LEAD_TRIM_S,
     _MAX_SWITCH_TRIM_S,
+    _PACE_BURST_S,
+    _PACE_RATE,
+    _READ_CHUNK_SIZE,
     _TAIL_PAD_GRACE_S,
     _TAIL_PAD_ZONE_S,
     SoloistBackend,
@@ -3209,3 +3212,154 @@ async def test_session_normalizes_leaves_a_toggled_switch_to_the_fresh_run(tmp_p
     # the player's switch was turned on while the run played
     run._engine_normalization_enabled = MagicMock(return_value=True)  # type: ignore[method-assign]
     assert backend.session_normalizes(_streamdetails_for(uri=TRACK_A)) is None
+
+
+_real_sleep = asyncio.sleep
+_CHUNK_S = _READ_CHUNK_SIZE / _BYTES_PER_SECOND
+
+
+class _VirtualFifo:
+    """
+    A capture FIFO on a virtual clock that only moves while the capture waits.
+
+    The pipe sink renders on demand, so a read returns a full chunk at once unless
+    the engine delivers slower than that; the consumer takes the audio as it comes.
+    """
+
+    def __init__(
+        self, run: _EngineRun, monkeypatch: pytest.MonkeyPatch, rate: float | None = None
+    ) -> None:
+        """
+        Have the run's capture read this FIFO and pace itself on its clock.
+
+        :param run: The run whose capture reads the FIFO.
+        :param monkeypatch: Patches the event loop's clock and the pacing sleep.
+        :param rate: How fast the engine delivers, relative to realtime; None renders on demand.
+        """
+        self.run = run
+        self.rate = rate
+        self.now = 0.0
+        # when the capture got to read again after a stalled loop or a held cushion
+        self.resumed_at = 0.0
+        self.reads: list[tuple[float, int]] = []
+        self.sleeps: list[float] = []
+        self._until = 0.0
+        self._total = 0
+        self._stall: tuple[float, float] | None = None
+        self._hold: tuple[float, float] | None = None
+        self._release: asyncio.Future[None] | None = None
+        run._reader = cast("asyncio.StreamReader", self)
+        monkeypatch.setattr(asyncio.get_running_loop(), "time", self.time)
+        monkeypatch.setattr(
+            "music_assistant.providers.spotify.backends.soloist.asyncio.sleep", self.sleep
+        )
+
+    def stall_loop(self, at: float, seconds: float) -> None:
+        """Stall the event loop once the given time is reached, with audio waiting in the FIFO."""
+        self._stall = (at, seconds)
+
+    def hold_cushion(self, at: float, seconds: float) -> None:
+        """Have the consumer stop taking audio for a while once the given time is reached."""
+        self._hold = (at, seconds)
+
+    async def read_until(self, until: float) -> None:
+        """Run the capture until the virtual clock reaches the given time."""
+        self._until = until
+        await self.run._read_capture()
+        if self._release is not None:
+            await self._release
+
+    def read_s(self, start: float, end: float) -> float:
+        """Return the seconds of audio the capture read from the given start until its end."""
+        read = sum(size for at, size in self.reads if start <= at < end)
+        return read / _BYTES_PER_SECOND
+
+    def time(self) -> float:
+        """Return the virtual time."""
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        """Move the virtual clock on instead of waiting."""
+        self.sleeps.append(delay)
+        self.now += delay
+        await _real_sleep(0)
+
+    async def read(self, size: int) -> bytes:
+        """Return a chunk once the engine delivered it; no read ever waits out a read slice."""
+        if self.now >= self._until:
+            self.run._stopped = True
+        if self.rate is not None:
+            self.now = max(self.now, (self._total + size) / (_BYTES_PER_SECOND * self.rate))
+        if self._stall is not None and self.now >= self._stall[0]:
+            self.now += self._stall[1]
+            self.resumed_at = self.now
+            self._stall = None
+        chunks = self.run.current_item.chunks
+        if self._hold is not None and self.now >= self._hold[0]:
+            # this chunk finds the cushion full and waits for room
+            while not chunks.full():
+                chunks.put_nowait(b"\x01")
+            self._release = asyncio.ensure_future(self._take_audio_after(self._hold[1]))
+            self._hold = None
+        else:
+            while not chunks.empty():
+                chunks.get_nowait()
+        self._total += size
+        self.reads.append((self.now, size))
+        return b"\x01" * size
+
+    async def _take_audio_after(self, seconds: float) -> None:
+        """Make room in the cushion again once the capture has waited the given time on it."""
+        # first runs when the capture waits on the full cushion: nothing yields before that
+        self.now += seconds
+        self.resumed_at = self.now
+        chunks = self.run.current_item.chunks
+        while not chunks.empty():
+            chunks.get_nowait()
+
+
+async def test_the_capture_reads_its_burst_and_then_its_pace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pipe sink rendering on demand is read at the pace, apart from the initial burst."""
+    run = _live_run(tmp_path)
+    fifo = _VirtualFifo(run, monkeypatch)
+    await fifo.read_until(10.0)
+    assert fifo.read_s(0.0, 10.0) == pytest.approx(
+        (_PACE_BURST_S + 10.0) * _PACE_RATE, abs=_CHUNK_S
+    )
+    assert fifo.read_s(5.0, 10.0) == pytest.approx(5.0 * _PACE_RATE, abs=_CHUNK_S)
+
+
+async def test_a_capture_behind_its_pace_never_waits_on_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An engine delivering below the pace is read as fast as it delivers, however long it plays."""
+    run = _live_run(tmp_path)
+    fifo = _VirtualFifo(run, monkeypatch, rate=1.08)
+    # long enough for the time it falls behind the pace to outgrow the burst
+    await fifo.read_until(120.0)
+    assert not fifo.sleeps
+    assert fifo.read_s(0.0, 120.0) == pytest.approx(120.0 * 1.08, abs=_CHUNK_S)
+
+
+@pytest.mark.parametrize("gap", ["stalled_loop", "full_cushion"])
+async def test_time_the_capture_could_not_read_is_not_made_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gap: str
+) -> None:
+    """Catching up would be an unpaced burst, which PulseAudio fills with silence."""
+    run = _live_run(tmp_path)
+    fifo = _VirtualFifo(run, monkeypatch)
+    if gap == "stalled_loop":
+        fifo.stall_loop(at=2.0, seconds=5.0)
+    else:
+        fifo.hold_cushion(at=2.0, seconds=5.0)
+    await fifo.read_until(10.0)
+    if gap == "full_cushion":
+        # the capture really waited on the full cushion
+        _sink(run).suspend.assert_awaited_once()
+    assert fifo.resumed_at == pytest.approx(7.0, abs=_CHUNK_S)
+    # the burst and the pace, as from a fresh start
+    assert fifo.read_s(fifo.resumed_at, fifo.resumed_at + 1.0) == pytest.approx(
+        (_PACE_BURST_S + 1.0) * _PACE_RATE, abs=2 * _CHUNK_S
+    )

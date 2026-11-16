@@ -167,6 +167,26 @@ def bridge_client_id_from_uuid(uuid: str) -> str:
     return f"{BRIDGE_PREFIX}{uuid.replace('-', '').lower()}"
 
 
+def bridge_client_id_variants(client_id: str) -> list[str]:
+    """
+    Return the Sendspin bridge client ids the bridges of one device can register under.
+
+    The protocols of a device do not all report the same form of its MAC address, so a
+    MAC based id comes with the id of that MAC with the locally administered bit toggled.
+
+    :param client_id: A Sendspin bridge client id.
+    :return: The client id itself, followed by its variant when it has one.
+    """
+    mac_hex = client_id[len(BRIDGE_PREFIX) :]
+    if len(mac_hex) != 12:
+        return [client_id]
+    try:
+        toggled = int(mac_hex[:2], 16) ^ 0x02
+    except ValueError:
+        return [client_id]
+    return [client_id, f"{BRIDGE_PREFIX}{toggled:02x}{mac_hex[2:]}"]
+
+
 def mac_from_bridge_client_id(client_id: str) -> str | None:
     """Extract a MAC address from a Sendspin bridge client ID."""
     if not client_id.startswith(BRIDGE_PREFIX):
