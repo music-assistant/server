@@ -64,6 +64,14 @@
       "label": "Power off when idle (minutes)",
       "description": "Turn this player off once it has been stopped for this many minutes. Set to 0 to never turn it off automatically.\n\nMusic Assistant only sees playback it knows about, so a device that is in use in another way, such as a TV or receiver on another input, may be turned off while in use."
     },
+    "power_control_cuts_power": {
+      "label": "Power control cuts the power of this player",
+      "description": "Turn this on when the power control, such as a smart plug, switches the player itself off completely. Music Assistant then treats the player as off while the control is off. When you play to it, Music Assistant switches the control on and waits for the start-up time before it plays. Cutting the power of a smart speaker is not recommended: it can take long before it is available again."
+    },
+    "power_on_startup_time": {
+      "label": "Start-up time (seconds)",
+      "description": "How long the player needs after its power comes on before it can play. Raise it when playback fails right after the player was switched on."
+    },
     "crossfade_different_sample_rates": {
       "label": "Allow crossfades between tracks of different sample rates",
       "description": "Enable this option to allow crossfades between tracks that have different sample rates (e.g. 44.1kHz to 48kHz). \n\n Disable this option if you experience audio glitches during transitions between tracks."
