@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import selectors
 import socket
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -46,11 +45,10 @@ async def _attached(
         await protocol.on_attach(MagicMock())
     client = cast("MagicMock", protocol.cc)
     client.socket_client.is_connected = connected
-    # pychromecast keeps a socket only while it is connected (or completing a connect)
     client.socket_client.socket = MagicMock() if connected else None
     protocol._attr_available = connected
     if answers is not None:
-        protocol._client_endpoint_answers = AsyncMock(  # type: ignore[method-assign]
+        protocol._services_answer = AsyncMock(  # type: ignore[method-assign]
             return_value=answers
         )
     protocol.update_state = MagicMock()  # type: ignore[misc, method-assign]
@@ -85,37 +83,22 @@ async def _check(protocol: ChromecastPlayer) -> tuple[bool | None, MagicMock | N
         "pychromecast.get_chromecast_from_cast_info", side_effect=_connect_client
     ) as connect:
         answered = await protocol.check_device()
+    assert connect.call_count <= 1
     return answered, cast("MagicMock", protocol.cc) if connect.called else None
 
 
-async def test_a_connected_device_that_answers_keeps_its_client() -> None:
-    """A device that answers on its cast port while the client is connected is left as it is."""
-    protocol, client = await _attached(connected=True, answers=True)
+async def test_a_connected_client_is_not_checked() -> None:
+    """A connected client tells itself when its device is gone: nothing is probed or changed."""
+    protocol, client = await _attached(connected=True, answers=None)
+    probe = AsyncMock(return_value=False)
+    protocol._services_answer = probe  # type: ignore[method-assign]
 
     answered, new_client = await _check(protocol)
 
-    assert answered is True
-    assert new_client is None
-    assert protocol.available is True
+    assert (answered, new_client, protocol.available) == (None, None, True)
+    probe.assert_not_awaited()
     client.disconnect.assert_not_called()
-
-
-async def test_a_connected_device_that_does_not_answer_reads_unavailable_at_once() -> None:
-    """A device that does not answer reads unavailable, and a new client waits for it."""
-    protocol, client = await _attached(connected=True, answers=False)
-    listener = protocol.status_listener
-    assert listener is not None
-
-    answered, new_client = await _check(protocol)
-
-    assert answered is False
-    assert protocol.available is False
-    cast("MagicMock", protocol.update_state).assert_called_once_with()
-    # the old client goes without waiting for its thread, and reports nothing any more
-    client.disconnect.assert_called_once_with(0)
-    assert listener._valid is False
-    assert new_client is not None
-    new_client.start.assert_called_once_with()
+    cast("MagicMock", protocol.update_state).assert_not_called()
 
 
 async def test_a_device_that_answers_again_is_connected_to_at_once() -> None:
@@ -138,9 +121,22 @@ async def test_a_device_that_is_not_back_keeps_its_client() -> None:
 
     answered, new_client = await _check(protocol)
 
-    assert answered is False
-    assert new_client is None
+    assert (answered, new_client, protocol.available) == (False, None, False)
     client.disconnect.assert_not_called()
+    cast("MagicMock", protocol.update_state).assert_not_called()
+
+
+async def test_a_client_in_its_retry_sleep_with_a_socket_is_connected_to_at_once() -> None:
+    """A client that keeps the socket of a failed attempt while it waits is replaced too."""
+    protocol, client = await _attached(connected=False, answers=True)
+    # pychromecast keeps the socket of an attempt whose first message failed until its next try
+    client.socket_client.socket = MagicMock()
+
+    answered, new_client = await _check(protocol)
+
+    assert answered is True
+    client.disconnect.assert_called_once_with(0)
+    assert new_client is not None
 
 
 async def test_a_handler_of_another_part_moves_to_the_new_client() -> None:
@@ -168,19 +164,6 @@ async def test_the_cast_port_is_probed_with_a_connection() -> None:
     assert await _port_answers("127.0.0.1", _closed_port()) is False
 
 
-async def test_a_connected_client_is_probed_where_it_is_connected() -> None:
-    """The device is probed on the endpoint its client talks to, not on a stale discovery record."""
-    async with _listening() as port:
-        protocol, _ = await _attached(connected=True, answers=None)
-        protocol.cast_info.host, protocol.cast_info.port = "127.0.0.1", _closed_port()
-        socket_client = protocol.cc.socket_client
-        socket_client.host, socket_client.port = "127.0.0.1", port
-
-        answered, new_client = await _check(protocol)
-
-    assert (answered, new_client, protocol.available) == (True, None, True)
-
-
 async def test_a_disconnected_client_is_probed_on_the_services_it_tries() -> None:
     """A device is probed where the services of its client resolve to, as the client does."""
     async with _listening() as port:
@@ -198,11 +181,11 @@ async def test_a_disconnected_client_is_probed_on_the_services_it_tries() -> Non
 
 async def test_a_cast_group_is_not_checked() -> None:
     """A cast group is no device of its own behind a power control: it can not be checked."""
-    protocol, client = await _attached(connected=True, answers=False, cast_type=CAST_TYPE_GROUP)
+    protocol, client = await _attached(connected=False, answers=True, cast_type=CAST_TYPE_GROUP)
 
     answered, new_client = await _check(protocol)
 
-    assert (answered, new_client, protocol.available) == (None, None, True)
+    assert (answered, new_client) == (None, None)
     client.disconnect.assert_not_called()
 
 
@@ -241,31 +224,22 @@ async def test_a_check_that_resumes_after_a_detach_changes_nothing(order: str) -
     cast("MagicMock", protocol.update_state).assert_not_called()
 
 
-def _real_socket_client(protocol: ChromecastPlayer, client: MagicMock, *, connected: bool) -> Any:
+def _real_socket_client(protocol: ChromecastPlayer, client: MagicMock, port: int) -> Any:
     """
-    Give a fake client a real pychromecast socket client, connected or not to a closed port.
+    Give a fake client a real pychromecast socket client that is not connected.
 
     :param protocol: The protocol, whose status listener follows the socket client.
     :param client: The fake client of the protocol.
-    :param connected: Whether the socket client reads connected, on a socket of its own.
+    :param port: The loopback port of the one service it tries.
     """
-    old_port = _closed_port()
     socket_client = SocketClient(
         cast_type=CAST_TYPE_AUDIO,
         tries=1,
         timeout=1,
         retry_wait=1,
-        services={HostServiceInfo("127.0.0.1", old_port)},
+        services={HostServiceInfo("127.0.0.1", port)},
         zconf=None,
     )
-    socket_client.host, socket_client.port = "127.0.0.1", old_port
-    socket_client.connecting = not connected
-    if connected:
-        # the socket of its connection, which a reconnect replaces
-        old_connection, old_peer = socket.socketpair()
-        old_peer.close()
-        socket_client.socket = cast("Any", old_connection)
-        socket_client.selector.register(old_connection, selectors.EVENT_READ)
     socket_client.register_connection_listener(cast("Any", protocol.status_listener))
     client.socket_client = socket_client
     mass: Any = protocol.mass
@@ -274,16 +248,14 @@ def _real_socket_client(protocol: ChromecastPlayer, client: MagicMock, *, connec
     return socket_client
 
 
-async def _reconnect_by_itself(socket_client: Any, port: int) -> None:
+async def _connect_by_itself(socket_client: Any) -> None:
     """
-    Let pychromecast's own connect find the device at another port, in a worker thread.
+    Let pychromecast's own connect reach the device, in a worker thread.
 
     Only TLS and the first messages are left out: the TCP connection is real.
 
     :param socket_client: The real socket client.
-    :param port: The port the device answers on now.
     """
-    socket_client.services = {HostServiceInfo("127.0.0.1", port)}
     tls = MagicMock()
     tls.wrap_socket.side_effect = lambda raw_socket: raw_socket
     with (
@@ -305,34 +277,30 @@ def _close_socket_client(socket_client: Any) -> None:
     socket_client.selector.close()
 
 
-@pytest.mark.parametrize("connected", [True, False])
-async def test_a_probe_made_before_the_client_reconnected_by_itself_changes_nothing(
-    connected: bool,
-) -> None:
+async def test_a_client_that_connected_by_itself_during_the_probe_is_kept() -> None:
     """
-    A probe that failed counts for nothing once the client reconnected by itself meanwhile.
+    A client that connected by itself while its device was probed is not replaced.
 
-    The client reconnects under the same status listener, on a new socket at another address,
-    with pychromecast's own connect in its worker thread. The device reads as the client says,
-    and the client is kept.
+    The device answers the probe, and before the check acts on that, pychromecast's own
+    connect in its worker thread reached the device.
     """
-    protocol, client = await _attached(connected=connected, answers=None)
-    socket_client = _real_socket_client(protocol, client, connected=connected)
-    probed = asyncio.Event()
-    deliver = asyncio.Event()
-
-    async def _probe_then_wait(host: str, port: int) -> bool:
-        answer = await _port_answers(host, port)
-        probed.set()
-        await deliver.wait()
-        return answer
-
     async with _listening() as port:
+        protocol, client = await _attached(connected=False, answers=None)
+        socket_client = _real_socket_client(protocol, client, port)
+        probed = asyncio.Event()
+        deliver = asyncio.Event()
+
+        async def _probe_then_wait(host: str, port: int) -> bool:
+            answer = await _port_answers(host, port)
+            probed.set()
+            await deliver.wait()
+            return answer
+
         try:
             with patch.object(cast_player_module, "_port_answers", _probe_then_wait):
                 checking = asyncio.create_task(protocol.check_device())
                 await probed.wait()
-                await _reconnect_by_itself(socket_client, port)
+                await _connect_by_itself(socket_client)
                 assert (socket_client.is_connected, protocol.available) == (True, True)
                 with patch(
                     "pychromecast.get_chromecast_from_cast_info", side_effect=_connect_client
@@ -344,31 +312,3 @@ async def test_a_probe_made_before_the_client_reconnected_by_itself_changes_noth
 
     assert (protocol.available, client.disconnect.call_count, connect.call_count) == (True, 0, 0)
     assert answered is True
-
-
-async def test_a_check_while_the_client_completes_a_connect_changes_nothing() -> None:
-    """A probe made while the client is completing its own connect does not replace it."""
-    protocol, client = await _attached(connected=False, answers=True)
-    # its new connection has a socket, and is not reported as connected yet
-    client.socket_client.socket = MagicMock()
-
-    answered, new_client = await _check(protocol)
-
-    assert (answered, new_client) == (False, None)
-    client.disconnect.assert_not_called()
-
-
-async def test_a_check_of_a_client_that_stopped_meanwhile_changes_nothing() -> None:
-    """A failed probe counts for nothing once the client stopped during it, on the same socket."""
-    protocol, client = await _attached(connected=True, answers=None)
-
-    async def _client_stops(*_args: Any) -> bool:
-        client.socket_client.is_connected = False
-        return False
-
-    protocol._client_endpoint_answers = AsyncMock(side_effect=_client_stops)  # type: ignore[method-assign]
-
-    answered, new_client = await _check(protocol)
-
-    assert (answered, new_client, protocol.available) == (False, None, True)
-    cast("MagicMock", protocol.update_state).assert_not_called()

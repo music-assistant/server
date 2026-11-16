@@ -382,36 +382,23 @@ class ChromecastPlayer(PlayerProtocol):
 
     async def check_device(self) -> bool | None:
         """
-        Probe the device where its client connects to it, and connect anew when that is behind.
+        Probe a device whose client is not connected, and connect anew at once when it answers.
 
-        None for a cast group, which is no device of its own.
+        None for a connected client, whose own heartbeat tells when the device is gone, and for
+        a cast group, which is no device of its own.
         """
         if self.cast_info.is_audio_group or (listener := self.status_listener) is None:
             return None
         socket_client = self.cc.socket_client
-        # the client reconnects by itself under the same listener, but on a new socket
-        connection, connected = socket_client.socket, socket_client.is_connected
-        answers = await self._client_endpoint_answers(socket_client, connected)
+        if socket_client.is_connected:
+            return None
+        answers = await self._services_answer(socket_client)
         if self.player is None or self.status_listener is not listener:
             # detached, or connected with another client, meanwhile
             return answers
-        if (
-            socket_client.socket is not connection
-            or socket_client.is_connected != connected
-            or (connection is not None and not connected)
-        ):
-            # the probe was made against a connection that is gone, or still being made
-            return socket_client.is_connected
-        if answers == connected:
-            return answers
-        if not answers:
-            # the client would only notice on its heartbeat
-            self.logger.debug("Cast device %s does not answer", self.display_name)
-            self._attr_available = False
-            self.update_state()
-        # a new client connects at once, where the old one waits out its backoff; it also
-        # reports the device as connected again, which the old one may never do
-        self._replace_client()
+        if answers and not socket_client.is_connected:
+            # a client that finished its own connect just now costs one more connect, no more
+            self._replace_client()
         return answers
 
     def register_client_handler(self, handler: BaseController) -> None:
@@ -1059,25 +1046,20 @@ class ChromecastPlayer(PlayerProtocol):
         disconnect_cast(old_client, 0)
         self._start_client()
 
-    async def _client_endpoint_answers(self, socket_client: SocketClient, connected: bool) -> bool:
+    async def _services_answer(self, socket_client: SocketClient) -> bool:
         """
-        Return whether the device accepts a connection where the given client connects to it.
+        Return whether the device accepts a connection at one of the services its client tries.
 
         :param socket_client: The socket client of the device.
-        :param connected: Whether that client is connected: the endpoint of its connection is
-            probed, else the services it tries.
         """
-        if connected:
-            endpoints = {(socket_client.host, socket_client.port)}
-        else:
-            # the services the client tries, resolved as it resolves them itself
-            resolved = await asyncio.gather(
-                *(
-                    asyncio.to_thread(get_host_from_service, service, socket_client.zconf)
-                    for service in socket_client.services.copy()
-                )
+        # resolved as the client resolves them itself
+        resolved = await asyncio.gather(
+            *(
+                asyncio.to_thread(get_host_from_service, service, socket_client.zconf)
+                for service in socket_client.services.copy()
             )
-            endpoints = {(host, port) for host, port, _ in resolved if host and port}
+        )
+        endpoints = {(host, port) for host, port, _ in resolved if host and port}
         return any(await asyncio.gather(*(_port_answers(*endpoint) for endpoint in endpoints)))
 
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
