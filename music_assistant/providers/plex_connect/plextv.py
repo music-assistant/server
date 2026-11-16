@@ -11,7 +11,6 @@ local-discovery path.
 from __future__ import annotations
 
 import platform
-import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import quote
@@ -29,25 +28,6 @@ PLEXTV_DEVICE_BASE_URL = "https://plex.tv/devices"
 PLEXTV_LINK_URL = "https://plex.tv/link"
 
 REQUEST_TIMEOUT = 15
-
-
-def compute_client_id(plex_provider_id: str, ma_player_id: str) -> str:
-    """
-    Return the stable Plex client identifier for a plugin player instance.
-
-    This is the identifier used as GDM Resource-Identifier, companion server
-    machineIdentifier and plex.tv X-Plex-Client-Identifier - they must all match
-    for Plex clients to treat them as one and the same device.
-
-    :param plex_provider_id: Instance id of the linked Plex music provider.
-    :param ma_player_id: The Music Assistant player id exposed by this instance.
-    """
-    return str(
-        uuid.uuid5(
-            uuid.NAMESPACE_DNS,
-            f"music-assistant-plex-{plex_provider_id}-{ma_player_id}",
-        )
-    )
 
 
 def build_version(mass_version: str) -> str:

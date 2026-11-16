@@ -47,6 +47,7 @@ from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
 )
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.builtin import BuiltinProvider
 from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
@@ -960,7 +961,7 @@ async def test_library_add_command_ignores_a_supplied_record(
     """Adding a playlist through the generic library command never sets its owner or sharing."""
     monkeypatch.setattr(music_mass_module.metadata, "update_metadata", AsyncMock())
     crafted = _playlist("Crafted", PlaylistAccess(owner=OWNER.user_id))
-    provider = MagicMock()
+    provider = MagicMock(spec=BuiltinProvider)
     provider.domain = provider.instance_id = "builtin"
     provider.available = True
     provider.library_add = AsyncMock()

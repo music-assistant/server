@@ -15,6 +15,7 @@ callbacks instead of a WebSocket connection.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from aiosendspin.models.core import ServerStateMessage
@@ -149,6 +150,13 @@ class BridgePlayerRole(Role):
 
     def get_audio_requirements(self) -> AudioRequirements | None:
         """Return audio requirements for PushStream."""
+        requirements = self._audio_requirements
+        if requirements is None:
+            return None
+        channel_id = self._client.group.get_channel_for_player(self._client.client_id)
+        if requirements.channel_id == channel_id:
+            return requirements
+        self._audio_requirements = replace(requirements, channel_id=channel_id)
         return self._audio_requirements
 
     def set_timing(self, *, required_lead_time_ms: int, min_buffer_ms: int) -> None:

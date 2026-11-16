@@ -162,7 +162,6 @@ class _SessionHarness:
             "_read_pipeline_config",
             lambda player_id: _PipelineConfig(
                 requires_transform=player_id in dsp_ids,
-                output_channels="stereo",
                 filter_params=("volume=1.0",) if player_id in dsp_ids else (),
             ),
         )

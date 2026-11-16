@@ -7,7 +7,7 @@ import logging
 import random
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -32,12 +32,14 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
 from music_assistant_models.favorite_update import FavoriteUpdate
 from music_assistant_models.helpers import create_safe_string, create_uri, get_global_cache_value
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     Audiobook,
     AudioFormat,
@@ -52,6 +54,7 @@ from music_assistant_models.media_items import (
     MediaItemSummaryType,
     MediaItemType,
     ProviderMapping,
+    Track,
     UniqueList,
 )
 
@@ -127,14 +130,22 @@ from music_assistant.helpers.provider_access import (
     visible_music_sources,
 )
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
+from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.providers.musicbrainz.provider import relation_urls
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
+    from collections.abc import (
+        AsyncGenerator,
+        Awaitable,
+        Callable,
+        Coroutine,
+        Iterator,
+        Mapping,
+        Sequence,
+    )
 
     from music_assistant import MusicAssistant
-    from music_assistant.models.media_capabilities import MediaCatalogMixin
     from music_assistant.models.music_provider import MusicProvider
     from music_assistant.providers.musicbrainz.models import (
         MusicBrainzArtist,
@@ -195,10 +206,19 @@ EXTERNAL_ID_LOOKUP_ERRORS: Final[tuple[type[Exception], ...]] = (
     *PROVIDER_FETCH_ERRORS,
 )
 # a provider or MusicBrainz that could not answer a lookup, which says nothing about
-# whether it has the item
+# whether it has the item; a lookup reports it as one of these
 TEMPORARY_LOOKUP_ERRORS: Final[tuple[type[MusicAssistantError], ...]] = (
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
+)
+# a source that timed out, or whose connection or response broke down, could not answer
+# either; a lookup reports it as ResourceTemporarilyUnavailable
+UNREACHABLE_SOURCE_ERRORS: Final[tuple[type[Exception], ...]] = (
+    TimeoutError,
+    aiohttp.ContentTypeError,
+    aiohttp.ClientConnectionError,
+    aiohttp.ClientPayloadError,
 )
 # expected failures of re-reading a library item from one of its providers. On top of the
 # fetch failures: a file that can not be read from a (network) share
@@ -820,6 +840,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :raises ResourceTemporarilyUnavailable: An external item was not found while a
             music provider or MusicBrainz could not answer.
         :raises RetriesExhausted: As above, after the retries ran out.
+        :raises ProviderUnavailableError: As above, for a source that is unavailable.
         """
         if provider_instance_id_or_domain == EXTERNAL_ID_PROVIDER:
             return await self._get_external_item(item_id, allow_update_metadata)
@@ -1181,6 +1202,58 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return list(result.values())
 
     @final
+    async def get_library_items_by_external_id_batch(
+        self,
+        external_id_type: ExternalID,
+        external_ids: Iterable[str],
+        in_library_only: bool = False,
+    ) -> dict[str, ItemCls]:
+        """
+        Return the library items on the user's sources that carry one of the external ids.
+
+        All ids are looked up in one query.
+
+        :param external_id_type: The type of the external ids.
+        :param external_ids: The external ids to look up.
+        :param in_library_only: Only an item with a provider mapping that is in that
+            provider's library counts.
+        :returns: The items by (canonical) external id; an id that several items carry names
+            the first.
+        """
+        lookup_values = tuple(
+            sorted(
+                {
+                    lookup_value
+                    for external_id in external_ids
+                    for lookup_value in external_id_lookup_values(external_id_type, external_id)
+                }
+            )
+        )
+        if not lookup_values:
+            return {}
+        items = await self.get_library_items_by_query(
+            limit=0,
+            extra_query_parts=[
+                f"{self.db_table}.item_id IN (SELECT item_id "
+                f"FROM {DB_TABLE_EXTERNAL_ID_LOOKUP} WHERE media_type = :ext_id_media_type "
+                "AND external_id_type = :external_id_type AND external_id IN :external_ids)"
+            ],
+            extra_query_params={
+                "ext_id_media_type": self.media_type.value,
+                "external_id_type": str(external_id_type),
+                "external_ids": lookup_values,
+            },
+            provider_filter=self._ensure_provider_filter(None),
+            in_library_only=in_library_only,
+        )
+        found: dict[str, ItemCls] = {}
+        for item in items:
+            for id_type, value in item.external_ids:
+                if id_type == external_id_type:
+                    found.setdefault(normalize_external_id(id_type, value), item)
+        return found
+
+    @final
     async def get_library_item_by_external_ids(
         self, external_ids: set[tuple[ExternalID, str]]
     ) -> ItemCls | None:
@@ -1202,6 +1275,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :raises ResourceTemporarilyUnavailable: The item was not found while a music
             provider or MusicBrainz could not answer.
         :raises RetriesExhausted: As above, after the retries ran out.
+        :raises ProviderUnavailableError: As above, for a source that is unavailable.
         """
         # an external id is not unique, so the first library item on the user's sources wins
         for library_item in await self.get_library_items_by_external_id(
@@ -1260,6 +1334,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         Return an item known only by an external id in the form it was last listed in.
 
         Nothing is looked up for it; None is returned for an item no listing was kept of.
+        The library items it names (an artist, an album) are left out when the current user
+        may not see them.
 
         :param item_id: Item id as external_item_id() builds it.
         :raises InvalidProviderID: The item id is no valid external item id.
@@ -1272,7 +1348,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             allow_bypass=False,
             base_class=self.item_cls,
         )
-        return listed
+        if listed is None or not self._hidden_sources():
+            return listed
+        # the form is kept once for everyone, as the user it was listed to could see it
+        return await self._without_hidden_library_items(listed)
 
     @final
     async def get_library_items_by_prov_id(
@@ -1409,19 +1488,23 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param fallback: Details to return if the provider no longer resolves the ID.
         :param allow_fallback: Allow fallback details after a provider miss.
         :param strict_provider_instance: Require this exact provider instance.
+        :raises ProviderUnavailableError: No provider the user may see serves items of its own
+            under this instance id or domain.
         """
         if provider_instance_id_or_domain == "library":
             return await self.get_library_item(item_id)
         provider = self.mass.music.resolve_visible_provider(
             provider_instance_id_or_domain, strict=strict_provider_instance
         )
-        catalog_prov = cast("MediaCatalogMixin", provider)
+        if not isinstance(provider, MediaCatalogMixin):
+            # a metadata or player provider has no items of its own to fetch
+            raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         with suppress(MediaNotFoundError):
             async with self.mass.cache.handle_refresh(force_refresh):
                 if self.media_type == MediaType.PLAYLIST:
-                    return cast("ItemCls", await catalog_prov.get_playlist(item_id))
+                    return cast("ItemCls", await provider.get_playlist(item_id))
                 if self.media_type == MediaType.RADIO:
-                    return cast("ItemCls", await catalog_prov.get_radio(item_id))
+                    return cast("ItemCls", await provider.get_radio(item_id))
                 music_prov = cast("MusicProvider", provider)
                 if self.media_type == MediaType.ARTIST:
                     return cast("ItemCls", await music_prov.get_artist(item_id))
@@ -2521,8 +2604,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     prov.domain,
                     err,
                 )
-                if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
-                    could_not_answer = err
+                if unanswered := self._unanswered_lookup_error(err, prov.name):
+                    could_not_answer = unanswered
                 continue
             if result:
                 return result
@@ -2577,8 +2660,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider.instance_id,
                 err,
             )
-            if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
-                raise
+            if unanswered := self._unanswered_lookup_error(err, provider.name):
+                raise unanswered
         return None
 
     @final
@@ -2605,6 +2688,67 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 category=CACHE_CATEGORY_EXTERNAL_IDS,
             )
             return
+
+    @final
+    def _unanswered_lookup_error(
+        self, err: Exception, source: str, named: bool = True
+    ) -> MusicAssistantError | None:
+        """
+        Return the error a lookup reports for a source that failed, if it could not answer.
+
+        A source that could not answer says nothing about whether it has the item.
+
+        :param err: The error the source failed with.
+        :param source: The source, for the error a timeout or a broken connection becomes.
+        :param named: Whether source is the name the user knows the source by; a source that
+            is only described gets the standard text for a temporarily unavailable resource.
+        :returns: The source's own error, or ResourceTemporarilyUnavailable for a timeout or a
+            broken connection; None when the failure means the source can not supply the item.
+        """
+        if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
+            return err
+        if isinstance(err, UNREACHABLE_SOURCE_ERRORS):
+            return self._unreachable_source_error(source, err, named)
+        return None
+
+    @final
+    @contextmanager
+    def _musicbrainz_request(self) -> Iterator[None]:
+        """
+        Run a request of a lookup to MusicBrainz.
+
+        :raises ResourceTemporarilyUnavailable: MusicBrainz timed out, could not be reached or
+            answered with a server error.
+        """
+        try:
+            yield
+        except UNREACHABLE_SOURCE_ERRORS as err:
+            raise self._unreachable_source_error("MusicBrainz", err) from err
+        except aiohttp.ClientResponseError as err:
+            if err.status < 500:
+                raise
+            raise self._unreachable_source_error("MusicBrainz", err) from err
+
+    @final
+    def _unreachable_source_error(
+        self, source: str, err: Exception, named: bool = True
+    ) -> ResourceTemporarilyUnavailable:
+        """
+        Return the error a lookup reports for a source that timed out or could not be reached.
+
+        :param source: The source.
+        :param err: The error the source failed with, which becomes the cause.
+        :param named: Whether source is the name the user knows the source by, which the
+            translated text then shows.
+        """
+        error = ResourceTemporarilyUnavailable(
+            f"Could not reach {source}",
+            translation_key="service_could_not_be_reached" if named else None,
+            translation_args=[source] if named else None,
+            translation_owner=self.translation_owner if named else None,
+        )
+        error.__cause__ = err
+        return error
 
     @final
     def _external_id_cache_key(self, external_id: str, external_id_type: ExternalID) -> str:
@@ -3542,6 +3686,25 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     def _has_visible_source(self, item: MediaItemType) -> bool:
         """Return whether the current user may see one of the item's sources."""
         return has_visible_source(self.mass, item.provider_mappings, get_current_user())
+
+    @final
+    async def _without_hidden_library_items(self, item: ItemCls) -> ItemCls:
+        """Leave the library artists and album the current user may not see out of an item."""
+
+        async def visible(reference: Artist | Album | ItemMapping) -> bool:
+            if reference.provider != "library":
+                return True
+            controller = self.mass.music.get_controller(reference.media_type)
+            library_item = await controller.get_visible_library_item_by_prov_id(
+                reference.item_id, "library"
+            )
+            return library_item is not None
+
+        if isinstance(item, (Album, Track)):
+            item.artists = UniqueList([artist for artist in item.artists if await visible(artist)])
+        if isinstance(item, Track) and item.album and not await visible(item.album):
+            item.album = None
+        return item
 
     @final
     async def _get_stored_metadata(self, db_id: int) -> MediaItemMetadata:

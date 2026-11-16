@@ -33,6 +33,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderID,
     InvalidProviderURI,
+    LoginFailed,
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
@@ -78,6 +79,7 @@ from music_assistant.controllers.music.bookmarks import BookmarksController
 from music_assistant.controllers.music.constants import (
     BROWSE_CACHE_EXPIRATION,
     CACHE_CATEGORY_SEARCH_RESULTS,
+    CONF_BOUND_ACCOUNT_ID,
     CONF_DELETED_PROVIDERS,
     CONF_KEEP_REMASTERS_APART,
     CONF_RESET_DB,
@@ -88,6 +90,7 @@ from music_assistant.controllers.music.constants import (
     INITIAL_SYNC_DELAY,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
+    RECOMMENDATIONS_BROWSE_SCHEME,
     SEARCH_CACHE_EXPIRATION_COMBINED,
     SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER,
     SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER,
@@ -539,6 +542,30 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         decides whether their persisted state is kept (reload) or cleared (removal).
         """
 
+    async def check_provider_account(self, provider: MusicProvider) -> None:
+        """
+        Refuse a provider instance that signed in to another account than it is bound to.
+
+        Called while the instance loads, before it goes live. The first load binds the
+        instance to the account it reports. Nothing is checked when the provider does not
+        report an account.
+
+        :param provider: The provider instance that was just initialized.
+        :raises LoginFailed: When the instance signed in to another account.
+        """
+        if (account_id := provider.account_id) is None:
+            return
+        instance_id = provider.instance_id
+        bound = self.mass.config.get_provider_setup_value(instance_id, CONF_BOUND_ACCOUNT_ID)
+        if bound is None:
+            provider._update_setup_data(CONF_BOUND_ACCOUNT_ID, account_id)
+        elif bound != account_id:
+            msg = (
+                "This is a different account than the one this provider was set up with. "
+                "To use another account, remove this provider and add it again."
+            )
+            raise LoginFailed(msg, translation_key="provider_account_changed")
+
     @property
     def providers(self) -> list[MusicProvider]:
         """
@@ -715,7 +742,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ):
             return cast("SearchResults", cache)
         # Check if the search query is a streaming provider public shareable URL
-        if (url_result := await self._search_shareable_url(search_query)) is not None:
+        if (
+            url_result := await self._search_shareable_url(
+                search_query, media_types, None if providers is None else search_providers
+            )
+        ) is not None:
             return url_result
         # handle normal global search by querying the library and all providers
         # the library (if included) is searched first: it is fast and its results are
@@ -1088,15 +1119,25 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         browse_prov = self.mass.get_provider(provider_instance)
         if browse_prov and not self._apply_user_provider_filter([browse_prov]):
             raise InsufficientPermissions(f"{browse_prov.name} is not a music source of this user")
+        is_recommendations = provider_instance == RECOMMENDATIONS_BROWSE_SCHEME
         # handle regular provider listing, always add back folder first
-        if not browse_prov or not sub_path:
+        if not (browse_prov or is_recommendations) or not sub_path:
             prepend_items.append(
                 BrowseFolder(item_id="root", provider="library", path="root", name="..")
             )
-            if not browse_prov:
+            if not (browse_prov or is_recommendations):
                 return _listed(prepend_items, [])
         else:
-            back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
+            if is_recommendations:
+                # a row id may carry slashes of its own, so only the provider ends a level
+                provider_level, _, row_id = sub_path.partition("/")
+                back_path = (
+                    f"{provider_instance}://{provider_level}"
+                    if row_id
+                    else f"{provider_instance}://"
+                )
+            else:
+                back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
             prepend_items.append(
                 BrowseFolder(
                     item_id="back",
@@ -1104,6 +1145,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     path=back_path,
                     name="..",
                 )
+            )
+        if is_recommendations:
+            return _listed(
+                prepend_items,
+                await self.recommendations.browse(sub_path, random_seed=random_seed),
             )
         # AudioSource providers don't implement browse(); list their initiable sources directly
         if (
@@ -1550,16 +1596,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 # ICY name or reports no duration
                 return await builtin_prov.get_track(item_id)
             return await builtin_prov.parse_item(item_id, requested_media_type=media_type)
-        if provider_instance_id_or_domain == "musicbrainz":
-            # a release group listed in an artist's discography is resolved, on demand, to
-            # the album on one of the music providers
-            if media_type == MediaType.ALBUM:
-                return await self.albums.resolve_musicbrainz_release_group(
-                    item_id, allow_update_metadata=allow_update_metadata
-                )
-            raise MediaNotFoundError(
-                f"MusicBrainz {media_type.value} {item_id} can not be resolved"
-            )
         if media_type == MediaType.PODCAST_EPISODE:
             # special case for podcast episodes
             return await self.podcasts.episode(item_id, provider_instance_id_or_domain)
@@ -3209,11 +3245,21 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     break
         return entries
 
-    async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
+    async def _search_shareable_url(
+        self,
+        search_query: str,
+        media_types: list[MediaType] = MediaType.ALL,
+        search_providers: list[str] | None = None,
+    ) -> SearchResults | None:
         """
         Handle a search query that is a streaming provider public shareable URL.
 
         Returns None if the query is not such a URL and a regular search must be done.
+
+        :param search_query: The search query that may hold a shareable URL.
+        :param media_types: Only return the item when it is one of these media types.
+        :param search_providers: The provider instances a scoped search targets;
+            the URL is only resolved when one of them serves it. None for an unscoped search.
         """
         try:
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(
@@ -3226,6 +3272,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return SearchResults()
         if provider_instance_id_or_domain not in PROVIDERS_WITH_SHAREABLE_URLS:
             return None
+        if media_type not in media_types:
+            return SearchResults()
+        if search_providers is not None:
+            # a scoped search only resolves the URL on the call that targets its service
+            matching = next(
+                (
+                    instance_id
+                    for instance_id in search_providers
+                    if (prov := self.mass.get_provider(instance_id))
+                    and prov.domain == provider_instance_id_or_domain
+                ),
+                None,
+            )
+            if matching is None:
+                return SearchResults()
+            provider_instance_id_or_domain = matching
         try:
             item = await self.get_item(
                 media_type=media_type,

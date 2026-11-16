@@ -19,8 +19,9 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Album, Artist, ItemMapping, ProviderMapping
 
-from music_assistant.constants import VARIOUS_ARTISTS_MBID
+from music_assistant.constants import EXTERNAL_ID_PROVIDER, VARIOUS_ARTISTS_MBID
 from music_assistant.controllers.music.media.artists import ArtistsController
+from music_assistant.helpers.external_ids import external_item_id
 from music_assistant.providers.musicbrainz.models import MusicBrainzArtist, MusicBrainzReleaseGroup
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
@@ -184,7 +185,7 @@ def _harness(
 # ---------------------------------------------------------------------------
 
 
-async def test_discography_lists_release_groups_the_library_lacks_as_musicbrainz_albums() -> None:
+async def test_discography_lists_release_groups_the_library_lacks_as_external_albums() -> None:
     """An album not in the library carries what MusicBrainz knows, ready to resolve on demand."""
     groups = [
         _release_group(RG_IN_RAINBOWS, "In Rainbows"),
@@ -206,9 +207,9 @@ async def test_discography_lists_release_groups_the_library_lacks_as_musicbrainz
         AlbumType.COMPILATION,
     ]
     in_rainbows = discography[0]
-    assert in_rainbows.provider == "musicbrainz"
-    assert in_rainbows.item_id == RG_IN_RAINBOWS
-    assert in_rainbows.uri == f"musicbrainz://album/{RG_IN_RAINBOWS}"
+    assert in_rainbows.provider == EXTERNAL_ID_PROVIDER
+    assert in_rainbows.item_id == external_item_id(ExternalID.MB_RELEASEGROUP, RG_IN_RAINBOWS)
+    assert in_rainbows.uri == f"external://album/musicbrainz_releasegroupid:{RG_IN_RAINBOWS}"
     assert in_rainbows.provider_mappings == set()
     assert in_rainbows.external_ids == {(ExternalID.MB_RELEASEGROUP, RG_IN_RAINBOWS)}
     assert [type(credit) for credit in in_rainbows.artists] == [ItemMapping]
@@ -235,7 +236,7 @@ async def test_discography_lists_a_musicbrainz_album_as_not_playable() -> None:
 
     assert ok_computer is library_album
     assert ok_computer.is_playable is True
-    assert in_rainbows.provider == "musicbrainz"
+    assert in_rainbows.provider == EXTERNAL_ID_PROVIDER
     assert in_rainbows.is_playable is False
 
 
@@ -299,7 +300,7 @@ async def test_discography_returns_the_artists_library_album_of_the_same_name() 
         discography = await harness.discography()
 
     assert discography[0] is library_album
-    assert discography[1].provider == "musicbrainz"
+    assert discography[1].provider == EXTERNAL_ID_PROVIDER
     assert discography[1].image is not None
     assert discography[1].image.path == RG_IN_RAINBOWS
 
@@ -320,8 +321,8 @@ async def test_discography_keeps_every_same_titled_release_group() -> None:
     assert discography[0] is library_album
     assert [album.uri for album in discography] == [
         "library://album/7",
-        f"musicbrainz://album/{RG_OK_COMPUTER_LIVE}",
-        f"musicbrainz://album/{RG_OK_COMPUTER_REISSUE}",
+        f"external://album/musicbrainz_releasegroupid:{RG_OK_COMPUTER_LIVE}",
+        f"external://album/musicbrainz_releasegroupid:{RG_OK_COMPUTER_REISSUE}",
     ]
     assert [album.album_type for album in discography[1:]] == [AlbumType.LIVE, AlbumType.ALBUM]
 
@@ -336,7 +337,10 @@ async def test_discography_name_matches_same_titled_release_groups_by_year() -> 
     with _harness(_artist(), release_groups=groups, artist_albums=[library_album]) as harness:
         discography = await harness.discography()
 
-    assert discography[0].uri == f"musicbrainz://album/{RG_OK_COMPUTER_REISSUE}"
+    assert (
+        discography[0].uri
+        == f"external://album/musicbrainz_releasegroupid:{RG_OK_COMPUTER_REISSUE}"
+    )
     assert discography[1] is library_album
 
 
@@ -351,8 +355,8 @@ async def test_discography_leaves_an_ambiguous_name_match_unresolved() -> None:
         discography = await harness.discography()
 
     assert [album.uri for album in discography] == [
-        f"musicbrainz://album/{RG_OK_COMPUTER_REISSUE}",
-        f"musicbrainz://album/{RG_OK_COMPUTER}",
+        f"external://album/musicbrainz_releasegroupid:{RG_OK_COMPUTER_REISSUE}",
+        f"external://album/musicbrainz_releasegroupid:{RG_OK_COMPUTER}",
     ]
 
 

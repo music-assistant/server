@@ -23,6 +23,7 @@ from music_assistant_models.errors import ActionUnavailable
 from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
 from music_assistant.helpers.util import format_ip_for_url, is_port_in_use, select_free_port
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.providers.plex.helpers import compute_client_id
 
 from .plextv import (
     PlexTvAuthError,
@@ -31,7 +32,6 @@ from .plextv import (
     PlexTvIdentity,
     PlexTvPinExpiredError,
     build_version,
-    compute_client_id,
 )
 from .server import PlayerRemoteInstance
 
