@@ -40,8 +40,8 @@ _BUCKET_MS = 2000
 _RTT_MARGIN_US = 300
 # the first mapping is made as soon as this many samples agree on the round trip, so a timed
 # start is possible within a second. Replies the player held up come back together, each with
-# a shorter round trip than the one before: only a round trip that repeats is the real one.
-# The margin stays well under the time between two requests.
+# a shorter round trip than the one before: round trips that agree show a player that answers
+# at once. The margin stays well under the time between two requests.
 _FIRST_SAMPLES = 3
 _FIRST_RTT_MARGIN_US = 20_000
 # the mapping is a line through the samples of this window, level until they span enough time
@@ -165,9 +165,11 @@ class PlayerClock:
 
     def _first_samples_agree(self) -> bool:
         """Return whether enough samples of the bucket agree on their round trip."""
-        best_rtt = min(sample[2] for sample in self._bucket)
-        agreeing = sum(rtt <= best_rtt + _FIRST_RTT_MARGIN_US for _, _, rtt in self._bucket)
-        return agreeing >= _FIRST_SAMPLES
+        round_trips = sorted(sample[2] for sample in self._bucket)
+        return any(
+            high - low <= _FIRST_RTT_MARGIN_US
+            for low, high in zip(round_trips, round_trips[_FIRST_SAMPLES - 1 :], strict=False)
+        )
 
     def _flush(self) -> None:
         """Move the samples of the bucket with the lowest round trip into the mapping."""
