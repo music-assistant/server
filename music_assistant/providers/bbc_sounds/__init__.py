@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant.providers.bbc_sounds.browse import BrowseManager
 from music_assistant.providers.bbc_sounds.now_playing import NowPlayingManager
-from music_assistant.providers.bbc_sounds.provider import BBCSoundsProvider
+from music_assistant.providers.bbc_sounds.provider import SUPPORTED_FEATURES, BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.streaming import StreamManager
 
 if TYPE_CHECKING:
@@ -23,4 +23,4 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Create new BBCSoundsProvider instance."""
-    return BBCSoundsProvider(mass, manifest, config)
+    return BBCSoundsProvider(mass, manifest, config, SUPPORTED_FEATURES)
