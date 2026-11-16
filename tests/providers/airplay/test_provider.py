@@ -131,6 +131,44 @@ async def test_unload_awaits_cancelled_ptp_stdout_reader() -> None:
     assert reader_task.cancelled()
 
 
+# --- DACP service ----------------------------------------------------------------
+
+
+def _dacp_provider() -> AirPlayProvider:
+    """Build a bare provider with a DACP id and a publish IP."""
+    prov = _make_provider()
+    prov.dacp_id = "AABBCCDD11223344"
+    prov.mass.streams.publish_ip = "192.168.1.10"
+    return prov
+
+
+async def test_dacp_service_is_announced_under_a_host_name_of_its_own() -> None:
+    """The DACP service points at a host name only MA answers for, carrying the publish IP."""
+    prov = _dacp_provider()
+
+    info = await prov._create_dacp_service_info(39831)
+
+    assert info.server == "ma-dacp-aabbccdd11223344.local."
+    assert info.parsed_addresses() == ["192.168.1.10"]
+    assert {record.name for record in info.dns_addresses()} == {info.server}
+
+
+async def test_dacp_service_keeps_its_name_port_and_txt_record() -> None:
+    """The DACP service is named after the DACP id and announces the DACP server port."""
+    prov = _dacp_provider()
+
+    info = await prov._create_dacp_service_info(39831)
+
+    assert info.name == "iTunes_Ctrl_AABBCCDD11223344._dacp._tcp.local."
+    assert info.port == 39831
+    assert info.decoded_properties == {
+        "txtvers": "1",
+        "Ver": "63B5E5C0C201542E",
+        "DbId": "63B5E5C0C201542E",
+        "OSsi": "0x1F5",
+    }
+
+
 # --- Shared PTP clock daemon: readiness signal ---------------------------------
 
 
