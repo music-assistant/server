@@ -12,6 +12,7 @@ from music_assistant_models.enums import CrossfadeMode, TaskScheduleType
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
     CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED,
     CONF_CORE,
     CONF_CROSSFADE_DURATION,
@@ -28,6 +29,7 @@ from music_assistant.constants import (
     CONF_PROVIDERS,
     CONF_RAUMFELD_ICY_BASIC_MIGRATED,
     CONF_SMART_FADES_MODE,
+    CONF_SYNC_ADJUST,
     CONF_VOLUME_NORMALIZATION,
 )
 from music_assistant.controllers.config.player_split import (
@@ -620,6 +622,13 @@ async def migrate(data: dict[str, Any]) -> bool:
     # It reads both trees, so it also reaches a config that was split before this step existed.
     # TODO: remove after 2.13 release
     if _migrate_drop_http_profile(data):
+        changed = True
+
+    # Negate the stored sync adjust of every AirPlay player, whose positive value now plays
+    # earlier like it does on every other protocol. It reads the split trees, so it runs
+    # after the split.
+    # TODO: remove after 2.13 release
+    if _migrate_airplay_sync_adjust_sign(data):
         changed = True
 
     # Remove the stored configs of the retired builtin providers, which the UI would
@@ -1537,6 +1546,43 @@ def _migrate_raumfeld_icy_basic(data: dict[str, Any]) -> bool:
         LOGGER.info("Moved %d Raumfeld player(s) from ICY metadata full to basic", migrated)
     # claim the marker even when nothing moved, so a "full" picked later is kept
     data[CONF_RAUMFELD_ICY_BASIC_MIGRATED] = True
+    return True
+
+
+def _migrate_airplay_sync_adjust_sign(data: dict[str, Any]) -> bool:
+    """
+    Negate the stored sync adjust of every AirPlay player and protocol, once.
+
+    AirPlay played later for a positive value, unlike every other protocol. Guarded by
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED, which is claimed even when nothing moved, so a
+    value stored afterwards keeps its sign. Returns True when the settings were modified,
+    including the first run's marker.
+    """
+    if data.get(CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED):
+        return False
+    migrated: list[str] = []
+    for tree in (CONF_PLAYERS, CONF_PLAYER_PROTOCOLS):
+        records = data.get(tree)
+        if not isinstance(records, dict):
+            continue
+        for record_id, record in records.items():
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("provider") or "").split("--", maxsplit=1)[0] != "airplay":
+                continue
+            values = record.get("values")
+            if not isinstance(values, dict):
+                continue
+            sync_adjust = values.get(CONF_SYNC_ADJUST)
+            if isinstance(sync_adjust, int) and sync_adjust:
+                values[CONF_SYNC_ADJUST] = -sync_adjust
+                migrated.append(f"{record_id} ({sync_adjust} -> {-sync_adjust})")
+    if migrated:
+        LOGGER.info(
+            "Negated the AirPlay sync adjust, a positive value now plays earlier: %s",
+            ", ".join(migrated),
+        )
+    data[CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED] = True
     return True
 
 

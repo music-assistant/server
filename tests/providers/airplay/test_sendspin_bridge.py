@@ -1686,17 +1686,18 @@ async def test_content_before_the_acked_instant_is_dropped_and_trimmed() -> None
 
 async def test_sync_adjust_shifts_the_command_but_not_the_content_mapping() -> None:
     """The device's own offset rides on the command; the group timeline stays untouched."""
-    adjust_ms = 300
-    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US, sync_adjust=adjust_ms)
+    sync_adjust = 300
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US, sync_adjust=sync_adjust)
     anchor_ms = UNIX_NOW_MS + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
-    stream = _make_anchor_stream(ack=anchor_ms + adjust_ms)
+    # a positive sync adjust plays earlier
+    stream = _make_anchor_stream(ack=anchor_ms - sync_adjust)
     _prepare_anchor(bridge, stream, first_chunk_lead_ms=250)
 
     assert await _anchor(bridge, stream) is True
 
-    assert _commanded_instant(stream) == anchor_ms + adjust_ms
+    assert _commanded_instant(stream) == anchor_ms - sync_adjust
     # Pacing tracks the real wall-clock instant of byte 0 (adjust included)...
-    assert bridge._start_unix_ms == anchor_ms + adjust_ms
+    assert bridge._start_unix_ms == anchor_ms - sync_adjust
     # ...while the content is placed on the group timeline, without it.
     assert bridge._drop_until_us == SENDSPIN_EPOCH_US + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS * 1_000
 
@@ -1966,26 +1967,26 @@ async def test_anchoring_clears_the_folded_shift_baseline() -> None:
 
 
 @pytest.mark.parametrize(
-    ("warm_lead_ms", "flushed_head_offset_ms", "adjust_ms", "expected_anchor_offset_ms"),
+    ("warm_lead_ms", "flushed_head_offset_ms", "sync_adjust", "expected_anchor_offset_ms"),
     [
         (4000, 0, 0, 4000 + AIRPLAY_SPLICE_LEAD_MARGIN_MS),
-        (4000, 0, -600, 4600 + AIRPLAY_SPLICE_LEAD_MARGIN_MS),
+        (4000, 0, 600, 4600 + AIRPLAY_SPLICE_LEAD_MARGIN_MS),
         (0, 5000, 0, 5000 + AIRPLAY_SPLICE_LEAD_MARGIN_MS),
     ],
 )
 async def test_warm_anchor_clears_the_receivers_queued_audio(
     warm_lead_ms: int,
     flushed_head_offset_ms: int,
-    adjust_ms: int,
+    sync_adjust: int,
     expected_anchor_offset_ms: int,
 ) -> None:
     """
     A warm re-anchor lands beyond the audio the receiver still has queued.
 
-    A negative sync_adjust moves the commanded instant earlier and eats into that
+    A positive sync_adjust moves the commanded instant earlier and eats into that
     lead, so it is added back to the requirement.
     """
-    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US, sync_adjust=adjust_ms)
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US, sync_adjust=sync_adjust)
     stream = _make_anchor_stream(
         warm_lead_ms=warm_lead_ms,
         flushed_head_unix_ms=UNIX_NOW_MS + flushed_head_offset_ms if flushed_head_offset_ms else 0,
@@ -1994,7 +1995,7 @@ async def test_warm_anchor_clears_the_receivers_queued_audio(
 
     assert await _anchor(bridge, stream, warm=True) is True
 
-    assert _commanded_instant(stream) == UNIX_NOW_MS + expected_anchor_offset_ms + adjust_ms
+    assert _commanded_instant(stream) == UNIX_NOW_MS + expected_anchor_offset_ms - sync_adjust
 
 
 async def test_superseded_during_the_ack_mutates_nothing() -> None:
