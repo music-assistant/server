@@ -82,7 +82,16 @@ def _mass(in_library: set[int], on_service: set[int]) -> Mock:
         domain="spotify",
         is_streaming_provider=True,
         available=True,
-        supported_features={ProviderFeature.LIBRARY_TRACKS, ProviderFeature.LIBRARY_ARTISTS},
+        supported_media_types={
+            MediaType.TRACK,
+            MediaType.ARTIST,
+            MediaType.ALBUM,
+        },
+        supported_features={
+            ProviderFeature.SEARCH,
+            ProviderFeature.LIBRARY_TRACKS,
+            ProviderFeature.LIBRARY_ARTISTS,
+        },
     )
     service.name = "Spotify"
 
@@ -113,13 +122,16 @@ def _mass(in_library: set[int], on_service: set[int]) -> Mock:
     mass.get_provider = Mock(return_value=None)
     mass.music.providers = [service]
     mass.config.get_provider_configs = AsyncMock(return_value=[Mock(status=ProviderStatus.LOADED)])
+
     for ctrl in (mass.music.tracks, mass.music.artists):
         ctrl.get_library_item_by_external_id = AsyncMock(return_value=None)
         ctrl.get_library_item_by_external_ids = AsyncMock(return_value=None)
+
     mass.music.tracks.library_items = AsyncMock(side_effect=_library_tracks)
     mass.music.tracks.search = AsyncMock(side_effect=_search_tracks)
     mass.music.artists.library_items = AsyncMock(side_effect=_library_artists)
     mass.music.artists.search = AsyncMock(side_effect=_search_artists)
+
     return mass
 
 

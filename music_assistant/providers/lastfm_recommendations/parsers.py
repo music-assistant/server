@@ -98,15 +98,8 @@ def _get_streaming_providers(
         if not p.is_streaming_provider:
             continue
 
-        if item_mapping.media_type == MediaType.ARTIST:
-            if ProviderFeature.LIBRARY_ARTISTS not in p.supported_features:
-                continue
-        elif item_mapping.media_type == MediaType.ALBUM:
-            if ProviderFeature.LIBRARY_ALBUMS not in p.supported_features:
-                continue
-        elif item_mapping.media_type == MediaType.TRACK:
-            if ProviderFeature.LIBRARY_TRACKS not in p.supported_features:
-                continue
+        if item_mapping.media_type not in p.supported_media_types:
+            continue
 
         streaming_providers.append(p)
     return streaming_providers
@@ -244,7 +237,10 @@ async def _resolve_item(
         ctrl, item_mapping, mass, streaming_providers, artist_name
     )
     if result is None:
-        result = await _search_providers(ctrl, item_mapping, streaming_providers, artist_name)
+        search_providers = [
+            p for p in streaming_providers if ProviderFeature.SEARCH in p.supported_features
+        ]
+        result = await _search_providers(ctrl, item_mapping, search_providers, artist_name)
     if result is None:
         if providers_loading or fetch_failed:
             # a provider that had not finished loading, or one that could not hand over

@@ -13,6 +13,7 @@ from music_assistant_models.media_items import ItemMapping, ProviderMapping, Tra
 
 from music_assistant.controllers.music.media.tracks import TracksController
 from music_assistant.providers.lastfm_recommendations import parsers
+from music_assistant.providers.lastfm_recommendations.constants import CACHE_CATEGORY_RESOLVED_ITEMS
 from music_assistant.providers.lastfm_recommendations.recommendations import (
     LastFMRecommendationManager,
 )
@@ -33,7 +34,10 @@ class _FakeCache:
         self.data: dict[str, Any] = {}
 
     async def get(self, key: str, **_kwargs: Any) -> Any:
-        return self.data.get(key)
+        data = self.data.get(key)
+        if isinstance(data, dict) and (base_class := _kwargs.get("base_class")):
+            return base_class.from_dict(data)
+        return data
 
     async def set(self, key: str, data: Any, **_kwargs: Any) -> None:
         self.data[key] = data
@@ -147,7 +151,9 @@ def _mass(provider_status: ProviderStatus) -> Mock:
         instance_id="apple_music--1",
         domain="apple_music",
         is_streaming_provider=True,
-        supported_features={ProviderFeature.LIBRARY_TRACKS},
+        available=True,
+        supported_features={ProviderFeature.SEARCH, ProviderFeature.LIBRARY_TRACKS},
+        supported_media_types={MediaType.TRACK},
     )
     mass = Mock()
     mass.music.providers = [streaming]
@@ -330,9 +336,12 @@ def _linked(mappings: list[ProviderMapping]) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_musicbrainz_link_is_fetched_instead_of_searched() -> None:
+@pytest.mark.parametrize("supports_search", [True, False])
+async def test_musicbrainz_link_is_fetched_instead_of_searched(supports_search: bool) -> None:
     """A track MusicBrainz links to the user's provider is fetched by id, never searched for."""
     mass = _mass_with_musicbrainz(_musicbrainz())
+    if not supports_search:
+        mass.music.providers[0].supported_features.remove(ProviderFeature.SEARCH)
     with _linked([APPLE_MUSIC_MAPPING]) as linked:
         resolved = await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
     assert resolved is not None
@@ -342,6 +351,77 @@ async def test_musicbrainz_link_is_fetched_instead_of_searched() -> None:
         "1", "apple_music--1", allow_fallback=False, strict_provider_instance=True
     )
     mass.music.tracks.search.assert_not_awaited()
+
+
+@pytest.mark.parametrize("available", [True, False])
+async def test_provider_without_search_is_a_definitive_miss(
+    manager: LastFMRecommendationManager, cache: _FakeCache, available: bool
+) -> None:
+    """Lacking catalog search is not a transient failure or a reason to query it."""
+    mass = _mass(ProviderStatus.LOADED)
+    mass.cache = cache
+    manager.mass = mass
+    mass.music.providers[0].supported_features.remove(ProviderFeature.SEARCH)
+    mass.music.providers[0].available = available
+
+    with patch.object(cache, "set", wraps=cache.set) as cache_set:
+        assert await manager.get_or_resolve_track(LASTFM_TRACK) is None
+    cache_set.assert_awaited_once_with(
+        "miss_track_Snow Patrol_Chasing Cars",
+        True,
+        category=CACHE_CATEGORY_RESOLVED_ITEMS,
+        provider=INSTANCE_ID,
+        expiration=86400,
+    )
+    assert cache.data["miss_track_Snow Patrol_Chasing Cars"] is True
+    mass.music.tracks.search.assert_not_awaited()
+
+
+async def test_search_error_retries_then_caches_success(
+    manager: LastFMRecommendationManager, cache: _FakeCache
+) -> None:
+    """A real resolver failure is retried, and success survives refresh and restart."""
+    mass = _mass(ProviderStatus.LOADED)
+    mass.cache = cache
+    manager.mass = mass
+    manager.provider.mass = mass
+    match = _track()
+    mass.music.tracks.search.side_effect = [RetriesExhausted("rate limited"), [match]]
+
+    assert await manager.get_or_resolve_track(LASTFM_TRACK) is None
+    assert cache.data == {}
+    with patch.object(cache, "set", wraps=cache.set) as cache_set:
+        assert await manager.get_or_resolve_track(LASTFM_TRACK) is match
+    cache_set.assert_awaited_once_with(
+        "track_Snow Patrol_Chasing Cars",
+        match.to_dict(),
+        category=CACHE_CATEGORY_RESOLVED_ITEMS,
+        provider=INSTANCE_ID,
+        expiration=7776000,
+    )
+    assert await manager.get_or_resolve_track(LASTFM_TRACK) is match
+    restarted = LastFMRecommendationManager(manager.provider)
+    assert await restarted.get_or_resolve_track(LASTFM_TRACK) == match
+    assert mass.music.tracks.search.await_count == 2
+    assert not any(key.startswith("miss_") for key in cache.data)
+
+
+async def test_absent_candidates_retry_without_negative_cache(
+    manager: LastFMRecommendationManager, cache: _FakeCache
+) -> None:
+    """An excluded provider can become eligible on the next attempt without a cached miss."""
+    mass = _mass(ProviderStatus.LOADED)
+    mass.cache = cache
+    manager.mass = mass
+    mass.music.providers[0].supported_media_types = set()
+
+    assert await manager.get_or_resolve_track(LASTFM_TRACK) is None
+    assert cache.data == {}
+    mass.music.tracks.search.assert_not_awaited()
+    mass.music.providers[0].supported_media_types = {MediaType.TRACK}
+    mass.music.tracks.search.return_value = [_track()]
+    assert await manager.get_or_resolve_track(LASTFM_TRACK) is not None
+    mass.music.tracks.search.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -415,13 +495,18 @@ async def test_linked_item_the_provider_no_longer_has_is_searched() -> None:
 
 
 @pytest.mark.asyncio
-async def test_linked_item_the_provider_could_not_hand_over_makes_a_miss_incomplete() -> None:
-    """A rate limited fetch of the linked item still runs the search, whose miss is not final."""
+@pytest.mark.parametrize("supports_search", [True, False])
+async def test_linked_item_the_provider_could_not_hand_over_makes_a_miss_incomplete(
+    supports_search: bool,
+) -> None:
+    """A failed linked fetch stays incomplete even when catalog search is unsupported."""
     mass = _mass_with_musicbrainz(_musicbrainz())
+    if not supports_search:
+        mass.music.providers[0].supported_features.remove(ProviderFeature.SEARCH)
     mass.music.tracks.get_provider_item = AsyncMock(side_effect=RetriesExhausted("rate limited"))
     with _linked([APPLE_MUSIC_MAPPING]), pytest.raises(parsers.SearchIncomplete):
         await parsers.parse_track(LASTFM_TRACK_WITH_MBID, mass, INSTANCE_ID)
-    mass.music.tracks.search.assert_awaited_once()
+    assert mass.music.tracks.search.await_count == int(supports_search)
 
 
 @pytest.mark.asyncio
