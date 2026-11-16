@@ -427,13 +427,9 @@ class PlaylistMetadataProvider(MetadataProvider):
         return str(self.config.get_value(CONF_FALLBACK_TEMPLATE) or TEMPLATE_ALBUM_GRID)
 
     def _own_image_file(self, img: MediaItemImage) -> Path | None:
-        """
-        Return the image's file in our images directory, or None if it lives elsewhere.
-
-        :param img: The image whose file to look up.
-        """
+        """Return the image's file in our images directory, or None if it lives elsewhere."""
         images_dir = Path(self._images_dir).resolve()
-        # Older versions stored absolute paths, newer ones a bare file name; resolving also
+        # Collages are stored by absolute path, AI covers by bare file name; resolving also
         # follows symlinks and '..' so a crafted path can never point outside our directory.
         file_path = (images_dir / img.path).resolve()
         return file_path if file_path.parent == images_dir else None
@@ -465,7 +461,7 @@ class PlaylistMetadataProvider(MetadataProvider):
         for img in images_to_remove:
             if img.path == keep_file:
                 continue
-            if (file_path := self._own_image_file(img)) is None:
+            if (file_path := await asyncio.to_thread(self._own_image_file, img)) is None:
                 continue
             with contextlib.suppress(OSError):
                 await asyncio.to_thread(file_path.unlink, missing_ok=True)
