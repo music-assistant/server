@@ -12,8 +12,10 @@ from uuid import UUID
 import pytest
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
+from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
+from aiosendspin.models.types import AudioCodec, PlayerCommand
 from aiosendspin.noise.trust_store import PskCategory
-from music_assistant_models.enums import EventType, IdentifierType, ProtocolRole
+from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature, ProtocolRole
 from pychromecast.const import CAST_TYPE_AUDIO
 
 from music_assistant.providers.airplay.player import GenericAirPlayPlayer
@@ -99,18 +101,33 @@ def _sendspin(scenario: Scenario) -> Any:
     return provider
 
 
-def _hello(product_name: str) -> ClientHelloPayload:
+def _hello(product_name: str, commands: list[PlayerCommand] | None = None) -> ClientHelloPayload:
     """
     Return the hello of the bridge client.
 
     :param product_name: What it reports as product: the bridge's, or the Cast receiver app's.
+    :param commands: The volume controls the hello lists, as a bridge's does; None lists none.
     """
+    player_support = (
+        None
+        if commands is None
+        else ClientHelloPlayerSupport(
+            supported_formats=[
+                SupportedAudioFormat(
+                    codec=AudioCodec.PCM, channels=2, sample_rate=44100, bit_depth=16
+                )
+            ],
+            buffer_capacity=1_000,
+            supported_commands=commands,
+        )
+    )
     return ClientHelloPayload(
         client_id=BRIDGE_ID,
         name="Speaker A",
         version=1,
         supported_roles=["player@v1"],
         device_info=SendspinDeviceInfo(product_name=product_name, manufacturer="Acme"),
+        player_support=player_support,
     )
 
 
@@ -186,13 +203,19 @@ def _carrier(scenario: Scenario, domain: str) -> PlayerProtocol:
     )
 
 
-async def _set_up_bridge(scenario: Scenario, sendspin: Any, carrier: PlayerProtocol) -> None:
+async def _set_up_bridge(
+    scenario: Scenario,
+    sendspin: Any,
+    carrier: PlayerProtocol,
+    hello: ClientHelloPayload | None = None,
+) -> None:
     """
     Register the bridge of an attached protocol, as its bridge manager does.
 
     :param scenario: The running server.
     :param sendspin: The Sendspin provider.
     :param carrier: The protocol the bridge rides on.
+    :param hello: The hello the bridge registers with; a plain bridge hello when None.
     """
     identifier = (
         (IdentifierType.CAST_UUID, str(CAST_UUID))
@@ -201,7 +224,7 @@ async def _set_up_bridge(scenario: Scenario, sendspin: Any, carrier: PlayerProto
     )
     sendspin.register_bridge_identifiers(BRIDGE_ID, dict([identifier]))
     sendspin.register_bridge_underlying_protocol(BRIDGE_ID, carrier.protocol_id)
-    await _connect(scenario, sendspin, _hello("Speaker Bridge"))
+    await _connect(scenario, sendspin, hello or _hello("Speaker Bridge"))
 
 
 async def _claim(scenario: Scenario, sendspin: Any, carrier: PlayerProtocol) -> None:
@@ -254,12 +277,15 @@ def _assert_the_only_player(scenario: Scenario, player_id: str, *, available: bo
     assert dict(players[0].outputs)["sendspin"] is available
 
 
-async def _bridged_device(scenario: Scenario, domain: str) -> tuple[str, dict[str, Any]]:
+async def _bridged_device(
+    scenario: Scenario, domain: str, hello: ClientHelloPayload | None = None
+) -> tuple[str, dict[str, Any]]:
     """
     Set up a device with its bridge; return the id of its player and the records of both.
 
     :param scenario: The running server.
     :param domain: The domain of the protocol the bridge rides on.
+    :param hello: The hello the bridge registers with; a plain bridge hello when None.
     """
     await scenario.add_provider(domain)
     await scenario.add_provider("sendspin")
@@ -270,7 +296,7 @@ async def _bridged_device(scenario: Scenario, domain: str) -> tuple[str, dict[st
     assert carrier.player is not None
     player_id = carrier.player.player_id
     await scenario.configure_player(player_id, name="Kitchen")
-    await _set_up_bridge(scenario, sendspin, carrier)
+    await _set_up_bridge(scenario, sendspin, carrier, hello)
     assert carrier.player.get_role(BRIDGE_ID) == ProtocolRole.AUDIO
     records = {
         protocol_id: deepcopy(scenario.mass.config.get_protocol_record(protocol_id))
@@ -437,3 +463,52 @@ async def test_a_client_refreshed_twice_rides_on_the_bridge_that_holds_it(
     record = scenario.mass.config.get_protocol_record(BRIDGE_ID)
     assert record is not None
     assert record["values"]["underlying_player_id"] == AIRPLAY_ID
+
+
+@pytest.mark.parametrize(
+    "previous_commands",
+    [[], [PlayerCommand.VOLUME]],
+    ids=["after a Cast bridge", "after a squeezelite bridge"],
+)
+async def test_a_client_another_bridge_takes_over_gets_the_controls_of_that_bridge(
+    scenario: Scenario, previous_commands: list[PlayerCommand]
+) -> None:
+    """AirPlay holding a client another bridge registered offers AirPlay's volume and mute."""
+    await _bridged_device(scenario, "chromecast", _hello("Speaker Bridge", previous_commands))
+    await scenario.add_provider("airplay")
+    airplay = _carrier(scenario, "airplay")
+    await scenario.mass.players.register(airplay)
+    await scenario.settle()
+    sendspin: Any = scenario.provider("sendspin")
+    # the AirPlay bridge registers the same client id with its own hello and holds it
+    hello = _hello("Speaker Bridge", [PlayerCommand.VOLUME, PlayerCommand.MUTE])
+    sendspin.clients[BRIDGE_ID].info = sendspin.clients[BRIDGE_ID].info_or_none = hello
+    sendspin.register_bridge_identifiers(BRIDGE_ID, {IdentifierType.AIRPLAY_ID: AIRPLAY_ID})
+    sendspin.register_bridge_underlying_protocol(BRIDGE_ID, AIRPLAY_ID)
+    sendspin.hold_bridge_client(BRIDGE_ID, AIRPLAY_ID)
+
+    sendspin.refresh_bridge_client(BRIDGE_ID)
+    await scenario.settle()
+
+    bridge = scenario.mass.players.get_protocol(BRIDGE_ID)
+    assert isinstance(bridge, SendspinPlayer)
+    assert bridge.underlying_protocol_id == AIRPLAY_ID
+    assert {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE} <= bridge.supported_features
+
+
+async def test_a_client_added_again_on_the_same_bridge_keeps_its_first_controls(
+    scenario: Scenario,
+) -> None:
+    """The controls the first registration of a Cast bridge listed outlast a new hello."""
+    await _bridged_device(scenario, "chromecast", _hello("Speaker Bridge", []))
+    sendspin: Any = scenario.provider("sendspin")
+    hello = _hello("Sendspin Cast Receiver", [PlayerCommand.VOLUME, PlayerCommand.MUTE])
+    sendspin.clients[BRIDGE_ID].info = sendspin.clients[BRIDGE_ID].info_or_none = hello
+
+    await sendspin._handle_client_added(BRIDGE_ID, sendspin._begin_client_event(BRIDGE_ID))
+    await scenario.settle()
+
+    bridge = scenario.mass.players.get_protocol(BRIDGE_ID)
+    assert isinstance(bridge, SendspinPlayer)
+    assert bridge.underlying_protocol_id != AIRPLAY_ID
+    assert not bridge.supported_features & {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}

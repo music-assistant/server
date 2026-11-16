@@ -1383,11 +1383,18 @@ class SendspinProvider(PlayerProvider):
         has_player_role = "player" in negotiated_families
         has_metadata_role = "metadata" in negotiated_families
         has_visualizer_role = "visualizer" in negotiated_families
+        # a bridge that takes over the client of another bridge brings its own controls
+        previous_player = (
+            existing_player
+            if isinstance(existing_player, SendspinPlayer)
+            and existing_player.underlying_protocol_id == underlying_protocol_id
+            else None
+        )
 
         if has_player_role:
             audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
-            if isinstance(existing_player, SendspinPlayer):
-                audio_player.preserve_control_features_from(existing_player)
+            if previous_player is not None:
+                audio_player.preserve_control_features_from(previous_player)
             player: SendspinBasePlayer = audio_player
         elif has_metadata_role or has_visualizer_role:
             default_type = PlayerType.DISPLAY if has_metadata_role else PlayerType.VISUALIZER
@@ -1400,8 +1407,8 @@ class SendspinProvider(PlayerProvider):
             player = SendspinSourcePlayer(self, client_id, initial_hello=initial_hello)
         else:
             audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
-            if isinstance(existing_player, SendspinPlayer):
-                audio_player.preserve_control_features_from(existing_player)
+            if previous_player is not None:
+                audio_player.preserve_control_features_from(previous_player)
             player = audio_player
 
         if extra_ids:
