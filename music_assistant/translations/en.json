@@ -1324,6 +1324,7 @@
   "provider.bbc_sounds.media.folder.schedules.name": "Station Schedules",
   "provider.bbc_sounds.media.folder.today.name": "Today",
   "provider.bbc_sounds.media.folder.yesterday.name": "Yesterday",
+  "provider.bbc_sounds.menu_actions.listen_from_start.label": "Listen from start",
   "provider.bluesound.manifest.description": "Send high-resolution audio to Bluesound (BluOS) speakers and multiroom systems.",
   "provider.bookorbit.config_entries.label.label": "Please provide the address of your BookOrbit server and your username and password.",
   "provider.bookorbit.config_entries.url.description": "The URL of the BookOrbit server to connect to. For example https://bookorbit.domain.tld/ or http://192.168.1.4:3000/",

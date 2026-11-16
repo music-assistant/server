@@ -14,5 +14,15 @@
   "requirements": [
     "auntie-sounds==3.0.1"
   ],
-  "multi_instance": false
+  "multi_instance": false,
+  "menu_actions": [
+    {
+      "id": "listen_from_start",
+      "label": "Listen from start",
+      "media_types": ["radio"],
+      "scope": "library.read",
+      "icon": "mdi-restart",
+      "requires_player": true
+    }
+  ]
 }

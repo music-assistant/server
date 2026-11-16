@@ -89,10 +89,13 @@ from music_assistant.providers.bbc_sounds.metadata import (
 
 if TYPE_CHECKING:
     from auntie_sounds.models import SoundsTypes
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigActionResult,
+        ConfigEntry,
+        ProviderConfig,
+    )
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.provider import ProviderManifest
-
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -422,6 +425,36 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         if streamdetails.buffer is own_buffer:
             # the programme is over: carry on with the station live, as the BBC players do
             self.mass.create_task(self._continue_with_station(streamdetails, programme_id))
+
+    async def handle_menu_action(
+        self, action_id: str, uri: str, player_id: str | None
+    ) -> ConfigActionResult | None:
+        """Handle a menu action from manifest's menu_actions."""
+        if action_id != "listen_from_start" or player_id is None:
+            return await super().handle_menu_action(action_id, uri, player_id)
+
+        # Just one action supported currently: 'Listen from start'
+        item = await self.mass.music.get_item_by_uri(uri)
+        if isinstance(item, BrowseFolder):
+            return None
+        provider_mapping = next(
+            (m for m in item.provider_mappings if m.provider_instance == self.instance_id), None
+        )
+        if provider_mapping is None:
+            raise MediaNotFoundError(f"Couldn't find station {item.name}")
+        try:
+            current_programme = await self.client.schedules.on_air(provider_mapping.item_id)
+            if current_programme is None:
+                raise MediaNotFoundError(f"Nothing is on air on {item.name}")
+            playable_version = await self.adaptor.new_live_programme(current_programme)
+        except (exceptions.SoundsException, ConversionError) as err:
+            raise MusicAssistantError(
+                f"Error when trying to play from start on {item.name}"
+            ) from err
+        await self.mass.player_queues.play_media(
+            player_id, playable_version, option=QueueOption.PLAY
+        )
+        return None
 
     @use_cache(expiration=Constants.DEFAULT_EXPIRATION)
     async def _get_vpid(self, pid: str) -> str | None:
