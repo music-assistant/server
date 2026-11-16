@@ -287,12 +287,12 @@ class AudioSourceMixin(_PlayerControllerBase):
         playback_session_id: str,
         stream_session_id: str | None,
         stream_metadata: StreamMetadata,
-    ) -> None:
+    ) -> bool:
         """
         Show what audio analysis recognised in the live source a session plays.
 
-        Ignored once the source's plugin has reported metadata itself, and for a stream
-        that no longer serves the session.
+        Returns whether it is shown: not once the source's plugin has reported metadata
+        itself, nor for a stream that no longer serves the session.
 
         :param session: The session the analysed stream serves.
         :param playback_session_id: The session's playback session id when the analysed
@@ -306,10 +306,11 @@ class AudioSourceMixin(_PlayerControllerBase):
             or session.stream_session_id != stream_session_id
             or session.stream_metadata_reported
         ):
-            return
+            return False
         session.stream_metadata = stream_metadata
         session.stream_metadata_last_updated = time.time()
         self.trigger_player_update(session.player_id)
+        return True
 
     def withdraw_analysis_metadata(
         self, session: AudioSourceSession, stream_metadata: StreamMetadata

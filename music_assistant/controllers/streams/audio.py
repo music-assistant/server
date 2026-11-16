@@ -661,6 +661,7 @@ class _SourceAnalysisTap:
         audio_analysis: AudioAnalysisController,
         logger: logging.Logger,
         source_session: AudioSourceSession,
+        stream_session_id: str,
         streamdetails: StreamDetails,
         pcm_format: AudioFormat,
     ) -> None:
@@ -670,7 +671,7 @@ class _SourceAnalysisTap:
         self._session_key: str | None = None
         try:
             self._session_key = audio_analysis.start_source_analysis(
-                source_session, streamdetails, pcm_format
+                source_session, stream_session_id, streamdetails, pcm_format
             )
         except Exception as err:
             self._log_failure(err)
@@ -1673,6 +1674,7 @@ class StreamsAudio:
         display_name: str | None = None,
         on_no_audio: Callable[[], None] | None = None,
         source_session: AudioSourceSession | None = None,
+        stream_session_id: str | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get the realtime PCM stream for a live AudioSource.
@@ -1697,6 +1699,8 @@ class StreamsAudio:
             audio, so the caller can mark its own copy of the source unplayable.
         :param source_session: The live source session this stream plays, whose audio the
             analysis providers that may analyse the source follow while it streams.
+        :param stream_session_id: Token of the stream request that claimed source_session
+            for this stream; its analysis follows only that claim.
         """
         logger = self.logger.getChild("audio_source_stream")
         name = display_name or streamdetails.uri
@@ -1706,10 +1710,11 @@ class StreamsAudio:
                 self.mass.streams.audio_analysis,
                 logger,
                 source_session,
+                stream_session_id,
                 streamdetails,
                 pcm_format,
             )
-            if source_session is not None
+            if source_session is not None and stream_session_id is not None
             else None
         )
         try:

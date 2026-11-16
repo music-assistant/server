@@ -31,6 +31,7 @@ def _aa_provider(
     prov.name = instance_id
     prov.domain = instance_id
     prov.available = True
+    prov.unloading = False
     prov.media_types = media_types
     prov.start_analysis = AsyncMock(return_value=True)
     prov.process_pcm_chunk = AsyncMock()

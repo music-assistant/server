@@ -325,6 +325,7 @@ class AudioSourceStream:
                 raise_on_error=False,
                 display_name=session.source.name,
                 source_session=session,
+                stream_session_id=self._stream_session_id,
             ):
                 if (
                     players.get_audio_source_session(session.player_id) is not session
@@ -1480,6 +1481,7 @@ class StreamsController(CoreController):
                 session=session,
                 streamdetails=streamdetails,
                 provider=prov,
+                stream_session_id=stream_session_id,
             )
             serving = True
             self._active_output_streams += 1
@@ -2181,6 +2183,7 @@ class StreamsController(CoreController):
         session: AudioSourceSession,
         streamdetails: StreamDetails,
         provider: PluginProvider,
+        stream_session_id: str,
     ) -> tuple[web.StreamResponse, AsyncGenerator[bytes]]:
         """
         Open the response for a live audio source and build the audio behind it.
@@ -2190,6 +2193,7 @@ class StreamsController(CoreController):
         :param session: The session whose source is being streamed.
         :param streamdetails: The stream details resolved for that source.
         :param provider: Plugin delivering the live source.
+        :param stream_session_id: Token of the stream request that claimed the session.
         :return: The prepared response and the encoded audio to write to it.
         """
         pcm_format = await self.audio.select_pcm_format(
@@ -2222,6 +2226,7 @@ class StreamsController(CoreController):
             raise_on_error=False,
             display_name=session.source.name,
             source_session=session,
+            stream_session_id=stream_session_id,
         )
         filter_params = self.audio.get_player_output_plan(
             protocol_id=player.protocol_id,

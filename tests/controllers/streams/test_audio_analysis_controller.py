@@ -48,6 +48,7 @@ def _create_mock_provider(
     prov.name = name
     prov.domain = domain
     prov.available = True
+    prov.unloading = False
     prov.media_types = frozenset(MediaType)
     prov.start_analysis = AsyncMock(return_value=True)
     prov.process_pcm_chunk = AsyncMock()

@@ -302,9 +302,7 @@ class AudioAnalysisProvider(Provider):
         """
         if session_id not in self._sessions:
             return
-        self.mass.streams.audio_analysis.show_source_metadata(
-            self.instance_id, session_id, stream_metadata
-        )
+        self.mass.streams.audio_analysis.show_source_metadata(self, session_id, stream_metadata)
 
     async def cancel(self, session_id: str) -> None:
         """Cancel an in-progress analysis session."""

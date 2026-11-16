@@ -15,12 +15,14 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.controllers.players.audio_sources import AudioSourceMixin, AudioSourceSession
 from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
+from music_assistant.controllers.streams import audio_analysis as audio_analysis_module
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_analysis import (
     LIVE_SOURCE_BACKLOG_SECONDS,
     AudioAnalysisController,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.controllers.streams.controller import AudioSourceStream
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.providers.acoustid_lookup.provider import AcoustidLookupProvider
@@ -36,6 +38,7 @@ PLAYER_ID = "living_room"
 SOURCE_PROVIDER_ID = "sendspin_source--abc"
 RADIO_ID = "tunein--abc"
 LIVE_ONLY = frozenset({MediaType.AUDIO_SOURCE})
+STREAM_TOKEN = "stream-1"
 
 
 class _RecognizingProvider(AudioAnalysisProvider):
@@ -97,6 +100,7 @@ def _aa_provider(instance_id: str, media_types: frozenset[MediaType]) -> MagicMo
     prov.name = instance_id
     prov.domain = instance_id
     prov.available = True
+    prov.unloading = False
     prov.media_types = media_types
     prov.start_analysis = AsyncMock(return_value=True)
     prov.process_pcm_chunk = AsyncMock()
@@ -169,7 +173,7 @@ def _source_session(
         source=_audio_source(allow_audio_analysis=allow_audio_analysis),
         provider_instance_id=SOURCE_PROVIDER_ID,
     )
-    session.stream_session_id = "stream-1"
+    session.stream_session_id = STREAM_TOKEN
     _players(controller)._source_sessions[PLAYER_ID] = session
     return session
 
@@ -188,21 +192,36 @@ def _recognizer(
     return provider
 
 
+async def _unload(provider: AudioAnalysisProvider) -> None:
+    """Unload a provider the way the server does, marked as unloading first."""
+    provider.unloading = True
+    await provider.unload()
+
+
 async def _until(condition: Any) -> None:
     async with asyncio.timeout(2):
         while not condition():
             await asyncio.sleep(0)
 
 
+def _start_analysis(
+    controller: AudioAnalysisController, source_session: AudioSourceSession
+) -> str | None:
+    """Start the analysis of a source session for the stream that claimed it."""
+    assert source_session.stream_session_id is not None
+    return controller.start_source_analysis(
+        source_session, source_session.stream_session_id, _source_streamdetails(), PCM_FORMAT
+    )
+
+
 async def _start_source(
     controller: AudioAnalysisController, source_session: AudioSourceSession
 ) -> str:
-    """Start a live source session and wait until its providers took it."""
-    session_key = controller.start_source_analysis(
-        source_session, _source_streamdetails(), PCM_FORMAT
-    )
+    """Start a live source session whose providers all start without waiting."""
+    session_key = _start_analysis(controller, source_session)
     assert session_key is not None
-    await _until(lambda: session_key in controller._active_sessions)
+    # the worker starts eagerly, so it already waits for audio here
+    assert controller._active_sessions[session_key]
     return session_key
 
 
@@ -258,10 +277,8 @@ async def test_source_that_does_not_allow_analysis_is_offered_to_no_provider(
     prov = _aa_provider("follower", LIVE_ONLY)
     registry["follower"] = prov
 
-    session_key = controller.start_source_analysis(
-        _source_session(controller, allow_audio_analysis=False),
-        _source_streamdetails(),
-        PCM_FORMAT,
+    session_key = _start_analysis(
+        controller, _source_session(controller, allow_audio_analysis=False)
     )
 
     assert session_key is None
@@ -276,9 +293,7 @@ async def test_provider_that_did_not_declare_live_sources_gets_nothing(
     prov = _aa_provider("tracks_only", AudioAnalysisProvider.media_types)
     registry["tracks_only"] = prov
 
-    session_key = controller.start_source_analysis(
-        _source_session(controller), _source_streamdetails(), PCM_FORMAT
-    )
+    session_key = _start_analysis(controller, _source_session(controller))
 
     assert session_key is None
     prov.start_analysis.assert_not_awaited()
@@ -303,9 +318,7 @@ async def test_builtin_provider_is_not_started_for_a_live_source(
     prov = _aa_provider("builtin", provider_cls.media_types)
     registry["builtin"] = prov
 
-    session_key = controller.start_source_analysis(
-        _source_session(controller), _source_streamdetails(), PCM_FORMAT
-    )
+    session_key = _start_analysis(controller, _source_session(controller))
 
     assert session_key is None
     prov.start_analysis.assert_not_awaited()
@@ -333,7 +346,10 @@ async def test_a_source_no_provider_follows_costs_nothing(
     received = [
         chunk
         async for chunk in audio.get_audio_source_stream(
-            _source_streamdetails(), PCM_FORMAT, source_session=_source_session(controller)
+            _source_streamdetails(),
+            PCM_FORMAT,
+            source_session=_source_session(controller),
+            stream_session_id=STREAM_TOKEN,
         )
     ]
 
@@ -374,7 +390,10 @@ async def test_slow_provider_never_holds_up_the_source(
     received = 0
     async with asyncio.timeout(2):
         async for pcm in audio.get_audio_source_stream(
-            _source_streamdetails(), PCM_FORMAT, source_session=source_session
+            _source_streamdetails(),
+            PCM_FORMAT,
+            source_session=source_session,
+            stream_session_id=STREAM_TOKEN,
         ):
             received += len(pcm)
             if received == len(chunk) * chunk_count // 2:
@@ -439,7 +458,10 @@ async def test_a_failing_analysis_tap_never_costs_playback(
         received = [
             chunk
             async for chunk in audio.get_audio_source_stream(
-                streamdetails, PCM_FORMAT, source_session=_source_session(controller)
+                streamdetails,
+                PCM_FORMAT,
+                source_session=_source_session(controller),
+                stream_session_id=STREAM_TOKEN,
             )
         ]
 
@@ -483,9 +505,7 @@ async def test_source_that_stops_while_a_provider_starts_leaves_nothing(
     provider = _recognizer(controller, registry)
     provider.start_gate = asyncio.Event()
 
-    session_key = controller.start_source_analysis(
-        _source_session(controller), _source_streamdetails(), PCM_FORMAT
-    )
+    session_key = _start_analysis(controller, _source_session(controller))
     assert session_key is not None
     await _until(provider.starting.is_set)
     assert session_key in provider._sessions
@@ -507,9 +527,7 @@ async def test_cancelled_start_releases_everything(
     starting = _recognizer(controller, registry, "starting")
     starting.start_gate = asyncio.Event()
 
-    session_key = controller.start_source_analysis(
-        _source_session(controller), _source_streamdetails(), PCM_FORMAT
-    )
+    session_key = _start_analysis(controller, _source_session(controller))
     assert session_key is not None
     await _until(starting.starting.is_set)
     assert session_key in accepted._sessions
@@ -532,9 +550,7 @@ async def test_close_during_the_start_leaves_nothing(
     running = await _start_source(controller, _source_session(controller))
     starting.start_gate = asyncio.Event()
     starting.starting.clear()
-    session_key = controller.start_source_analysis(
-        _source_session(controller), _source_streamdetails(), PCM_FORMAT
-    )
+    session_key = _start_analysis(controller, _source_session(controller))
     assert session_key is not None
     await _until(starting.starting.is_set)
     assert running in accepted._sessions
@@ -576,7 +592,7 @@ async def test_last_provider_leaving_while_the_worker_waits_leaves_nothing(
     session_key = await _start_source(controller, _source_session(controller))
     worker = controller._workers[session_key]
 
-    await provider.unload()
+    await _unload(provider)
     assert not worker.done()
     controller.stop_source_analysis(session_key)
     await _ended(worker)
@@ -595,9 +611,7 @@ async def test_every_provider_declining_or_failing_at_once_registers_nothing(
     failing.start_analysis = AsyncMock(side_effect=RuntimeError("boom"))
     registry.update(declining=declining, failing=failing)
 
-    session_key = controller.start_source_analysis(
-        _source_session(controller), _source_streamdetails(), PCM_FORMAT
-    )
+    session_key = _start_analysis(controller, _source_session(controller))
 
     assert session_key is None
     _assert_nothing_left(controller)
@@ -647,7 +661,10 @@ async def test_reported_metadata_is_withdrawn_when_its_analysis_ends(
     if ending == "stream_ends":
         await _stop_source(controller, session_key)
     else:
-        await provider.unload()
+        await _unload(provider)
+        # the worker withdraws it at its next step: the next second of audio
+        controller.feed_source_analysis(session_key, b"\x00" * ONE_SECOND)
+        await _until(lambda: source_session.stream_metadata is placeholder)
 
     assert source_session.stream_metadata is placeholder
     assert _players(controller).updated_players == [PLAYER_ID, PLAYER_ID]
@@ -738,4 +755,211 @@ async def test_metadata_reported_for_a_session_that_is_not_a_live_source_does_no
 
     assert streamdetails.stream_metadata is None
     cast("MagicMock", controller.mass).player_queues.signal_update.assert_not_called()
+    assert not _players(controller).updated_players
+
+
+@pytest.mark.asyncio
+async def test_a_hanging_or_failing_cancel_holds_up_no_other_provider(
+    controller: AudioAnalysisController,
+    registry: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One provider's cancel hangs, one raises: the next provider is released all the same."""
+    monkeypatch.setattr(
+        audio_analysis_module, "LIVE_SOURCE_CANCEL_TIMEOUT_SECONDS", 0.05, raising=False
+    )
+    hanging = _recognizer(controller, registry, "hanging")
+    raising = _aa_provider("raising", LIVE_ONLY)
+    raising.cancel = AsyncMock(side_effect=RuntimeError("boom"))
+    registry["raising"] = raising
+    released = _recognizer(controller, registry, "released")
+    session_key = await _start_source(controller, _source_session(controller))
+    hanging.cancel_gate = gate = asyncio.Event()
+    worker = controller._workers[session_key]
+
+    try:
+        controller.stop_source_analysis(session_key)
+        await _ended(worker)
+    finally:
+        gate.set()
+
+    assert not released._sessions
+    _assert_nothing_left(controller)
+    warnings = cast("MagicMock", controller.logger).warning.call_args_list
+    failed = [call.args[1] for call in warnings if "Failed to cancel" in call.args[0]]
+    assert failed == [hanging.name, raising.name]
+
+
+@pytest.mark.asyncio
+async def test_a_second_cancel_during_the_release_leaves_no_registry_entry(
+    controller: AudioAnalysisController, registry: dict[str, Any]
+) -> None:
+    """A worker cancelled again while it releases its providers still clears every registry."""
+    provider = _recognizer(controller, registry)
+    session_key = await _start_source(controller, _source_session(controller))
+    provider.cancel_gate = gate = asyncio.Event()
+    worker = controller._workers[session_key]
+
+    try:
+        controller.stop_source_analysis(session_key)
+        await _until(provider.cancelling.is_set)
+        worker.cancel()
+        await _ended(worker)
+    finally:
+        gate.set()
+
+    _assert_nothing_left(controller)
+
+
+@pytest.mark.parametrize("replaced", [False, True])
+@pytest.mark.asyncio
+async def test_a_provider_unloaded_during_its_start_takes_no_part(
+    controller: AudioAnalysisController, registry: dict[str, Any], replaced: bool
+) -> None:
+    """A provider unloaded, or reloaded under the same id, while it starts gets no audio."""
+    other = _aa_provider("other", LIVE_ONLY)
+    registry["other"] = other
+    starting = _recognizer(controller, registry, "starting")
+    starting.start_gate = gate = asyncio.Event()
+    session_key = _start_analysis(controller, _source_session(controller))
+    assert session_key is not None
+    await _until(starting.starting.is_set)
+
+    await _unload(starting)
+    del registry["starting"]
+    replacement_chunks = AsyncMock()
+    if replaced:
+        replacement = _recognizer(controller, registry, "starting")
+        replacement.process_pcm_chunk = replacement_chunks  # type: ignore[method-assign]
+    gate.set()
+    controller.feed_source_analysis(session_key, b"\x00" * ONE_SECOND)
+    await _until(lambda: other.process_pcm_chunk.await_count == 1)
+
+    assert controller._active_sessions[session_key] == {"other"}
+    replacement_chunks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_unloading_provider_gets_no_more_audio(
+    controller: AudioAnalysisController, registry: dict[str, Any]
+) -> None:
+    """A provider on its way out gets nothing more, even before it is released."""
+    leaving = _aa_provider("leaving", LIVE_ONLY)
+    staying = _aa_provider("staying", LIVE_ONLY)
+    registry.update(leaving=leaving, staying=staying)
+    session_key = await _start_source(controller, _source_session(controller))
+
+    leaving.unloading = True
+    controller.feed_source_analysis(session_key, b"\x00" * ONE_SECOND)
+    await _until(lambda: staying.process_pcm_chunk.await_count == 1)
+
+    leaving.process_pcm_chunk.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_close_leaves_a_live_session_to_its_worker(
+    controller: AudioAnalysisController, registry: dict[str, Any]
+) -> None:
+    """Shutting down cancels a live session on its provider once, by its worker."""
+    prov = _aa_provider("follower", LIVE_ONLY)
+    registry["follower"] = prov
+    await _start_source(controller, _source_session(controller))
+
+    await controller.close()
+
+    prov.cancel.assert_awaited_once()
+    _assert_nothing_left(controller)
+
+
+@pytest.mark.parametrize("superseded", [False, True])
+@pytest.mark.asyncio
+async def test_a_raw_stream_is_analysed_only_for_its_own_claim(
+    controller: AudioAnalysisController,
+    registry: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    superseded: bool,
+) -> None:
+    """A raw handle iterated after its source was selected again starts nothing."""
+    prov = _aa_provider("follower", LIVE_ONLY)
+    registry["follower"] = prov
+    players = _players(controller)
+    session = _source_session(controller)
+    streams = MagicMock()
+    streams.mass.players = players
+    streams.audio = _audio(controller)
+    streams._count_as_output_stream = lambda chunks: chunks
+    streams._close_audio_source = AsyncMock()
+
+    async def _source_pcm(*_args: Any) -> AsyncGenerator[bytes]:
+        for _ in range(3):
+            yield b"\x00" * ONE_SECOND
+
+    monkeypatch.setattr(streams.audio, "_iter_audio_source_pcm", _source_pcm)
+    handle = AudioSourceStream(
+        streams,
+        session,
+        MagicMock(),
+        _source_streamdetails(),
+        session.playback_session_id,
+        STREAM_TOKEN,
+    )
+    if superseded:
+        # the source is selected again and a new stream request claims it
+        players._start_audio_source_session(PLAYER_ID, session.source, SOURCE_PROVIDER_ID)
+        players.claim_audio_source_session(session, session.playback_session_id, "stream-2")
+
+    received = [chunk async for chunk in handle.stream(PCM_FORMAT)]
+
+    assert len(received) == (0 if superseded else 3)
+    assert prov.start_analysis.await_count == (0 if superseded else 1)
+    await _until(lambda: not controller._workers)
+    _assert_nothing_left(controller)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_report_does_not_replace_what_is_withdrawn(
+    controller: AudioAnalysisController, registry: dict[str, Any]
+) -> None:
+    """What the source shows is withdrawn at the end, even after a later report was refused."""
+    provider = _recognizer(controller, registry)
+    source_session = _source_session(controller)
+    session_key = await _start_source(controller, source_session)
+    provider.report_stream_metadata(session_key, StreamMetadata(title="Shown"))
+    # a reconnect claims the session for a new stream, which refuses this analysis' reports
+    source_session.stream_session_id = "stream-2"
+    provider.report_stream_metadata(session_key, StreamMetadata(title="Refused"))
+
+    await _stop_source(controller, session_key)
+
+    assert source_session.stream_metadata is None
+
+
+@pytest.mark.parametrize("leaving", ["unloading", "released", "evicted"])
+@pytest.mark.asyncio
+async def test_a_report_from_a_provider_no_longer_taking_part_is_ignored(
+    controller: AudioAnalysisController, registry: dict[str, Any], leaving: str
+) -> None:
+    """A late report from a provider on its way out never puts its title back."""
+    provider = _recognizer(controller, registry)
+    other = _aa_provider("other", LIVE_ONLY)
+    registry["other"] = other
+    source_session = _source_session(controller)
+    session_key = await _start_source(controller, source_session)
+    provider.cancel_gate = gate = asyncio.Event()
+
+    try:
+        if leaving == "unloading":
+            provider.unloading = True
+        elif leaving == "released":
+            controller.release_provider(provider.instance_id)
+        else:
+            provider.process_pcm_chunk = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+            controller.feed_source_analysis(session_key, b"\x00" * ONE_SECOND)
+            # evicted, and still releasing its session
+            await _until(provider.cancelling.is_set)
+        provider.report_stream_metadata(session_key, StreamMetadata(title="Too late"))
+    finally:
+        gate.set()
+
+    assert source_session.stream_metadata is None
     assert not _players(controller).updated_players
