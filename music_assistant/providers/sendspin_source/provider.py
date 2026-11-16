@@ -437,6 +437,8 @@ class SendspinSourceProvider(PluginProvider):
             exclusive=True,
             allow_external_trigger=True,
             can_initiate=True,
+            # the client does not say which kind of input it is, so a microphone allows it too
+            allow_audio_analysis=True,
         )
 
     async def _is_selectable(self, client: SendspinClient) -> bool:
