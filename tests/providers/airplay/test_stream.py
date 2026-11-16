@@ -2622,6 +2622,18 @@ def test_reanchor_status_prefers_line_sample_rate() -> None:
     assert stream.cumulative_shift_seconds == pytest.approx(1.0)
 
 
+def test_reanchor_status_is_reported_to_the_session() -> None:
+    """A shift reaches the stream session, which checks the group timeline after a stall."""
+    stream = AirPlayStream(_make_player())
+    stream.session = MagicMock()
+
+    stream._handle_status_line(
+        "[STATUS] REANCHOR shifted_frames=77534 total_shifted_frames=77534 sample_rate=44100"
+    )
+
+    stream.session.on_member_reanchored.assert_called_once_with()
+
+
 def test_reanchor_status_ignores_line_without_total() -> None:
     """A [STATUS] REANCHOR line missing the total leaves the shift unchanged."""
     stream = AirPlayStream(_make_player())

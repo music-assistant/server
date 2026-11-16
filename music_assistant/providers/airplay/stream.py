@@ -1717,7 +1717,7 @@ class AirPlayStream:
 
         The binary reports the shift cumulative since the last start/resume
         directly, so this SETS the tracked shift, using the sample rate carried
-        on the line when present.
+        on the line when present, and reports it to the stream session.
 
         :param line: The status line, e.g. ``[STATUS] REANCHOR shifted_frames=67870
             total_shifted_frames=135740 sample_rate=44100``.
@@ -1735,6 +1735,8 @@ class AirPlayStream:
             self.player.display_name,
             self.cumulative_shift_seconds,
         )
+        if self.session is not None:
+            self.session.on_member_reanchored()
 
     def _reanchor_sample_rate(self, reported: str | None) -> int:
         """Return the frame->seconds rate, preferring a valid rate reported on the line."""

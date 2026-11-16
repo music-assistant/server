@@ -22,6 +22,8 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_LATE_JOIN_RING_MAX_BYTES,
     AIRPLAY_LATE_JOIN_RING_MIN_SECONDS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+    AIRPLAY_STALL_RESYNC_HOLDOFF,
+    AIRPLAY_STALL_SETTLE_SECONDS,
     AIRPLAY_START_LEAD_MS,
     ClockReadiness,
     StreamingProtocol,
@@ -2472,3 +2474,152 @@ async def test_start_client_displaces_a_stopping_stream_under_the_spawn_lock() -
     assert steps == ["stop", "connect", "ffmpeg"]
     assert player.stream is new_stream
     assert new_stream.session is session
+
+
+def _make_group_session(*shifts: float) -> AirPlayStreamSession:
+    """
+    Create a playing group session whose members report the given starvation shifts.
+
+    :param shifts: Accumulated shift in seconds of each member, the leader first.
+    """
+    session = _make_session(time.time() - 60, 60.0)
+    leader: Any = session.sync_clients[0]
+    leader.display_name = "Leader"
+    leader.player.player_id = "leader_player"
+    leader.player.synced_to = None
+    for index in range(1, len(shifts)):
+        member = MagicMock()
+        member.protocol_id = f"member_{index}"
+        member.display_name = f"Member {index}"
+        member.player.player_id = f"member_{index}_player"
+        member.player.synced_to = "leader_player"
+        member.stream = _stream_defaults(MagicMock())
+        member.stream.running = True
+        session.sync_clients.append(member)
+    clients: list[Any] = list(session.sync_clients)
+    for client, shift in zip(clients, shifts, strict=True):
+        client.stream.cumulative_shift_seconds = shift
+    return session
+
+
+def test_stall_with_diverged_shifts_restarts_the_group_once() -> None:
+    """A realtime member that shifted next to a buffered one that did not restarts the group."""
+    # the reported case: the HomePods shifted 1.758 s, the buffered Beam kept its timeline
+    session = _make_group_session(1.758, 1.758, 0.0)
+    mass: Any = session.mass
+
+    session.on_member_reanchored()
+
+    mass.call_later.assert_called_once_with(
+        AIRPLAY_STALL_SETTLE_SECONDS,
+        session._check_member_shifts,
+        task_id=session._shift_check_task_id,
+    )
+    session._check_member_shifts()
+    # the restart goes to the leader, whose playback owns the group
+    mass.players.cmd_resume.assert_called_once_with("leader_player")
+    mass.create_task.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "shifts",
+    [
+        (1.758, 1.7585, 1.74),  # same queue depth: equal shifts within jitter
+        (0.0, 0.0),  # nobody shifted
+    ],
+)
+def test_stall_with_equal_shifts_keeps_playing(shifts: tuple[float, ...]) -> None:
+    """Members that shifted alike are still in sync, so nothing restarts."""
+    session = _make_group_session(*shifts)
+    mass: Any = session.mass
+
+    session._check_member_shifts()
+
+    mass.players.cmd_resume.assert_not_called()
+
+
+def test_stall_restart_backs_off_instead_of_looping() -> None:
+    """A source that stalls again right after a restart does not restart the group again."""
+    session = _make_group_session(1.758, 0.0)
+    mass: Any = session.mass
+    monotonic = "music_assistant.providers.airplay.stream_session.time.monotonic"
+
+    with patch(monotonic, return_value=1000.0):
+        session._check_member_shifts()
+    assert mass.players.cmd_resume.call_count == 1
+
+    # another stall pulls the members apart again 10 s later: the restart waits out the
+    # hold-off rather than following straight away
+    mass.call_later.reset_mock()
+    with patch(monotonic, return_value=1010.0):
+        session._check_member_shifts()
+    assert mass.players.cmd_resume.call_count == 1
+    mass.call_later.assert_called_once_with(
+        pytest.approx(AIRPLAY_STALL_RESYNC_HOLDOFF - 10),
+        session._check_member_shifts,
+        task_id=session._shift_check_task_id,
+    )
+
+    # still out of sync once it has passed: restarted, and the next hold-off is twice as long
+    with patch(monotonic, return_value=1000.0 + AIRPLAY_STALL_RESYNC_HOLDOFF):
+        session._check_member_shifts()
+    assert mass.players.cmd_resume.call_count == 2
+    assert session._resync_not_before == pytest.approx(1000.0 + 3 * AIRPLAY_STALL_RESYNC_HOLDOFF)
+
+
+def test_stall_check_skips_a_group_that_is_not_playing() -> None:
+    """A solo session needs no check, and a parked group has no timeline to restart."""
+    solo = _make_session(time.time() - 60, 60.0)
+    solo_mass: Any = solo.mass
+    solo.on_member_reanchored()
+    solo_mass.call_later.assert_not_called()
+
+    parked = _make_group_session(1.758, 0.0)
+    parked_mass: Any = parked.mass
+    leader: Any = parked.sync_clients[0]
+    leader.playback_state = PlaybackState.PAUSED
+    parked._check_member_shifts()
+    parked_mass.players.cmd_resume.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_a_pending_stall_check() -> None:
+    """A stopped session drops the comparison it scheduled after a stall."""
+    session = _make_group_session(1.758, 0.0)
+    mass: Any = session.mass
+    clients: list[Any] = list(session.sync_clients)
+    for client in clients:
+        client.stream.session = session
+        client.stream.stop = AsyncMock()
+
+    await session.stop()
+
+    mass.cancel_timer.assert_any_call(session._shift_check_task_id)
+
+
+@pytest.mark.asyncio
+async def test_late_joiner_counts_its_shift_from_the_group_timeline() -> None:
+    """A joiner mapped onto a shifted group stays in sync when everyone shifts alike again."""
+    now = 1_000_000.0
+    session = _make_session(now - 8.84, 10.0)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 10)
+    mass: Any = session.mass
+    reference: Any = session.sync_clients[0]
+    reference.stream.cumulative_shift_seconds = 1.758
+    player = _make_late_joiner()
+
+    with (
+        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
+    ):
+        mock_start.side_effect = _setup_stream(player)
+        await session.add_client(player)
+
+    assert player in session.sync_clients
+    # the next stall shifts both members by the same 1.758 s
+    reference.stream.cumulative_shift_seconds = 2 * 1.758
+    player.stream.cumulative_shift_seconds = 1.758
+    session._check_member_shifts()
+
+    mass.players.cmd_resume.assert_not_called()
