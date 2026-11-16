@@ -287,7 +287,9 @@ class TestMenuActionsListenFromStart:
         await provider.handle_menu_action("listen_from_start", "library://radio/1", "player")
 
         _mock(provider.client.schedules).on_air.assert_awaited_once_with(RADIO_FOUR_SERVICE_ID)
-        play_media.assert_awaited_once_with("player", ANY, option=QueueOption.PLAY)
+        play_media.assert_awaited_once_with(
+            "player", ANY, option=QueueOption.PLAY, start_position=0
+        )
         assert play_media.await_args is not None
         episode = play_media.await_args.args[1]
         assert isinstance(episode, PodcastEpisode)
