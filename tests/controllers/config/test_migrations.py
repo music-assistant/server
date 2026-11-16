@@ -30,6 +30,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_player_icons,
     _migrate_player_setup_data,
     _migrate_raumfeld_icy_basic,
+    _migrate_remove_retired_builtin_providers,
     _migrate_unrenamed_player_names,
     migrate,
     migrate_connected_player_plugins,
@@ -1584,3 +1585,54 @@ def test_migrate_provider_setup_data_moves_opensubsonic_legacy_auth() -> None:
     assert second["values"] == {}
     assert second["setup_data"]["enable_legacy_auth"] is True
     assert migrate_provider_setup_data(data, _fake_encrypt) is False
+
+
+async def test_migrate_removes_the_retired_builtin_provider_configs() -> None:
+    """The configs of the retired builtin providers go, every other provider config stays."""
+    data: dict[str, Any] = {
+        CONF_PLAYER_SPLIT_SESSION_ONLY: True,
+        CONF_PLAYER_SPLIT_TREE: True,
+        "providers": {
+            "builtin_player": {"domain": "builtin_player", "type": "player", "values": {}},
+            "universal_player": {"domain": "universal_player", "type": "player", "values": {}},
+            # a community provider that is not installed keeps its settings
+            "community_provider--a": {
+                "domain": "community_provider",
+                "type": "music",
+                "values": {"username": "me"},
+            },
+            "sonos": {"domain": "sonos", "type": "player", "values": {}},
+        },
+    }
+    kept = deepcopy({key: data["providers"][key] for key in ("community_provider--a", "sonos")})
+
+    await migrate(data)
+
+    assert data["providers"] == kept
+    # a second run has nothing left to remove
+    assert _migrate_remove_retired_builtin_providers(data) is False
+    assert await migrate(data) is False
+    assert data["providers"] == kept
+
+
+def test_migrate_remove_retired_builtin_providers_leaves_other_data_alone() -> None:
+    """Settings without a retired provider config, or with malformed ones, are left as they are."""
+    cases: list[dict[str, Any]] = [
+        {},
+        {"providers": "broken"},
+        {"providers": None},
+        {"providers": {}},
+        {
+            "providers": {
+                "sonos": {"domain": "sonos", "type": "player"},
+                "broken": "builtin_player",
+                "no_domain": {"type": "player", "values": {}},
+                "odd_domain": {"domain": ["universal_player"]},
+                "none_domain": {"domain": None},
+            }
+        },
+    ]
+    for data in cases:
+        before = deepcopy(data)
+        assert _migrate_remove_retired_builtin_providers(data) is False
+        assert data == before
