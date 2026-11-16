@@ -840,7 +840,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         super().__init__(provider)
         self._rebridge_unsubs: dict[str, Callable[[], None]] = {}
         self._claimed_clients: dict[str, str] = {}
-        self._blocklist_log_state: dict[str, tuple[str, str]] = {}
+        self._skip_log_state: dict[str, tuple[str, ...]] = {}
         self._pending_bridge_evaluations: set[str] = set()
         self._unsubs.append(
             self.mass.players.subscribe_player_state_update(self._on_player_state_updated)
@@ -917,7 +917,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                 unsub()
         self._rebridge_unsubs.clear()
         self._claimed_clients.clear()
-        self._blocklist_log_state.clear()
+        self._skip_log_state.clear()
         self._pending_bridge_evaluations.clear()
         await super().close()
 
@@ -973,22 +973,29 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             cast_player.player_id, CONF_SENDSPIN_UNSUPPORTED
         ):
             # the receiver told us it cannot run the Sendspin client, so do not offer it
+            if self._skip_log_state.get(cast_player.player_id) != ("unsupported",):
+                self.logger.info(
+                    "Skipping Sendspin Cast bridge for %s — device reported it cannot run "
+                    "Sendspin (AudioContext not available); remove the player to retry",
+                    cast_player.display_name,
+                )
+                self._skip_log_state[cast_player.player_id] = ("unsupported",)
             return False
 
         manufacturer = cast_player.device_info.manufacturer or ""
         model = cast_player.device_info.model or ""
         if is_sendspin_cast_blocked(manufacturer, model):
             blocklist_state = (manufacturer, model)
-            if self._blocklist_log_state.get(cast_player.player_id) != blocklist_state:
+            if self._skip_log_state.get(cast_player.player_id) != blocklist_state:
                 self.logger.debug(
                     "Skipping Sendspin Cast bridge for %s (%s / %s) — device is blocklisted",
                     cast_player.display_name,
                     manufacturer,
                     model,
                 )
-                self._blocklist_log_state[cast_player.player_id] = blocklist_state
+                self._skip_log_state[cast_player.player_id] = blocklist_state
             return False
-        self._blocklist_log_state.pop(cast_player.player_id, None)
+        self._skip_log_state.pop(cast_player.player_id, None)
 
         # Prefer the airplay bridge over the cast bridge: the Cast receiver
         # pipeline is fragile on many (especially 3rd-party) devices. Hard-deny
