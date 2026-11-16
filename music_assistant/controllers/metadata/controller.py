@@ -1200,8 +1200,11 @@ def _has_musicbrainz_id(item_id: str, media_type: MediaType, id_type: ExternalID
     :param media_type: Media type of the item.
     :param id_type: The MusicBrainz id type the item has to carry.
     """
+    # without table statistics sqlite reads the lookup through the unique index instead,
+    # which goes through all ids of the media type for every item
     return (
         f"EXISTS (SELECT 1 FROM {DB_TABLE_EXTERNAL_ID_LOOKUP} "
+        f"INDEXED BY {DB_TABLE_EXTERNAL_ID_LOOKUP}_item_id_idx "
         f"WHERE {DB_TABLE_EXTERNAL_ID_LOOKUP}.media_type = '{media_type.value}' "
         f"AND {DB_TABLE_EXTERNAL_ID_LOOKUP}.external_id_type = '{id_type.value}' "
         f"AND {DB_TABLE_EXTERNAL_ID_LOOKUP}.item_id = {item_id})"
