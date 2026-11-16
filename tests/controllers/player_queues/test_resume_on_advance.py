@@ -317,7 +317,9 @@ async def test_finished_audiobook_starts_at_its_fresh_resume_point(
     ]
     controller, _ = _controller([book])
     # re-listened part way in the provider's own app after it was finished in Music Assistant
-    controller.mass.music.get_resume_position = AsyncMock(return_value=(False, 450000))
+    cast("MagicMock", controller.mass).music.get_resume_position = AsyncMock(
+        return_value=(False, 450000)
+    )
     resolver = MediaResolver.__new__(MediaResolver)
     resolver.mass = controller.mass
     resolver.logger = MagicMock()
