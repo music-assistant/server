@@ -520,6 +520,7 @@ class MetaDataController(
                 return lyrics
 
         # prefer lyrics from the track's own provider
+        full_track = track
         track_provider = self.mass.music.get_visible_provider(track.provider)
         if (
             isinstance(track_provider, MusicProvider)
@@ -537,7 +538,7 @@ class MetaDataController(
             if ProviderFeature.LYRICS not in provider.supported_features:
                 continue
             try:
-                metadata = await provider.get_track_metadata(track)
+                metadata = await provider.get_track_metadata(full_track)
             except Exception as err:
                 # a provider failure must not abort the lookup — skip to the next provider
                 self.logger.warning(
