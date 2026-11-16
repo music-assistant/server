@@ -597,15 +597,8 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         """
         for client in self.server_api.clients:
             client_id = client.client_id
-            if not (client.is_connected or self.server_api.is_external_player(client_id)):
-                continue
-            # a client whose add, update or removal is being handled is left to that
-            if self.get_protocol(client_id) is not None or client_id in self._client_event_versions:
-                continue
-            if not self.mass.players.wants_protocol(client_id):
-                continue
-            event_version = self._begin_client_event(client_id)
-            self.mass.create_task(self._handle_client_added(client_id, event_version))
+            if client.is_connected or self.server_api.is_external_player(client_id):
+                self._add_client_without_protocol(client_id)
         for client_id in self.mass.config.get_protocol_ids_of_provider(self.instance_id):
             underlying_id = self.mass.config.get_protocol_value(
                 client_id, CONF_UNDERLYING_PLAYER_ID
@@ -1400,6 +1393,16 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             logging.getLogger("aiosendspin").setLevel(logging.DEBUG)
         else:
             logging.getLogger("aiosendspin").setLevel(self.logger.level + 10)
+
+    def _add_client_without_protocol(self, client_id: str) -> None:
+        """Add a client that has no protocol, unless its player does not want one."""
+        # a client whose add, update or removal is being handled is left to that
+        if self.get_protocol(client_id) is not None or client_id in self._client_event_versions:
+            return
+        if not self.mass.players.wants_protocol(client_id):
+            return
+        event_version = self._begin_client_event(client_id)
+        self.mass.create_task(self._handle_client_added(client_id, event_version))
 
     def _begin_client_event(self, client_id: str) -> int:
         """Increment version and in-flight task count for a client event."""
