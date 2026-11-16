@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
@@ -30,7 +31,11 @@ from pychromecast.controllers.media import (
 )
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.error import PyChromecastError
-from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
+from pychromecast.socket_client import (
+    CONNECTION_STATUS_CONNECTED,
+    CONNECTION_STATUS_DISCONNECTED,
+    ConnectionStatus,
+)
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.player import served_duration
@@ -66,9 +71,12 @@ if TYPE_CHECKING:
     from pychromecast.controllers import BaseController
     from pychromecast.controllers.media import MediaStatus
     from pychromecast.controllers.receiver import CastStatus
-    from pychromecast.socket_client import ConnectionStatus
 
     from .provider import ChromecastProvider
+
+# takes what a client that is stopped on purpose still logs
+_STOPPED_CLIENT_LOGGER = logging.getLogger(f"{__name__}.stopped_client")
+_STOPPED_CLIENT_LOGGER.disabled = True
 
 
 class ChromecastPlayer(PlayerProtocol):
@@ -359,6 +367,31 @@ class ChromecastPlayer(PlayerProtocol):
             disconnect_cast(self.cc, 0)
         else:
             await asyncio.to_thread(disconnect_cast, self.cc, 10)
+
+    async def on_power_cut(self) -> None:
+        """Stop the client of the device, whose power was cut: it reads unavailable."""
+        if self.cast_info.is_audio_group or self.status_listener is None:
+            # a cast group is no device of its own, and without a listener no client runs
+            return
+        self._stop_client()
+        # what a client reports that closed its connection itself
+        self._handle_connection_status(ConnectionStatus(CONNECTION_STATUS_DISCONNECTED, None, None))
+
+    async def on_power_restored(self) -> None:
+        """Connect to the device anew, now that its power is back and it has started up."""
+        if self.cast_info.is_audio_group or self.command_controller is None:
+            # a cast group is no device of its own, and a protocol that is not attached
+            # has no client
+            return
+        # from what a power cut leaves: a client that lost the device waits ever longer
+        # before it tries again, and one that did not notice yet reaches nothing
+        await self.on_power_cut()
+        self._start_client()
+        listener = self.status_listener
+        # until the new client reports its connection, in the time the players controller
+        # gives, unless that client is stopped or replaced meanwhile
+        while self.status_listener is listener and not self.available:
+            await asyncio.sleep(0.1)
 
     def register_client_handler(self, handler: BaseController) -> None:
         """
@@ -992,6 +1025,19 @@ class ChromecastPlayer(PlayerProtocol):
         for handler in self._client_handlers:
             self.cc.register_handler(handler)
         self.cc.start()
+
+    def _stop_client(self) -> None:
+        """Stop the client of the device without waiting for it, and follow it no longer."""
+        if self.status_listener is not None:
+            self.status_listener.invalidate()
+        self.status_listener = None
+        # off the client before it stops, which would tear its controllers down
+        for handler in (self.mz_controller, self.command_controller, *self._client_handlers):
+            if handler is not None:
+                self.cc.unregister_handler(handler)
+        # its worker logs the end of a connect that was stopped as an error
+        self.cc.socket_client.logger.logger = _STOPPED_CLIENT_LOGGER
+        disconnect_cast(self.cc, 0)
 
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""
