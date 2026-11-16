@@ -1,17 +1,21 @@
 """Tests for the request handling of a Spotify Web API session."""
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.errors import (
     MediaNotFoundError,
     RateLimited,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
+from orjson import JSONDecodeError
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.spotify.session import API_URL, SpotifySession
+
+QUOTA_BODY = {"error": {"status": 429, "message": "Quota exceeded", "reason": "QUOTA_EXCEEDED"}}
 
 
 def _make_session() -> SpotifySession:
@@ -22,6 +26,7 @@ def _make_session() -> SpotifySession:
         mass,
         MagicMock(),
         "global",
+        "shared client",
         ThrottlerManager(rate_limit=100, period=1),
         get_auth=AsyncMock(return_value={"access_token": "token"}),
         on_unauthorized=MagicMock(),
@@ -39,14 +44,18 @@ def _stub_response(
 
     :param session: The session whose requests to answer.
     :param status: HTTP status of the response.
-    :param payload: JSON body of the response.
+    :param payload: JSON body of the response, an exception when the body is not JSON.
     :param headers: Headers of the response.
     """
     response = MagicMock()
     response.status = status
     response.reason = "reason"
     response.headers = headers or {}
-    response.json = AsyncMock(return_value=payload)
+    response.json = (
+        AsyncMock(side_effect=payload)
+        if isinstance(payload, Exception)
+        else AsyncMock(return_value=payload)
+    )
     response.text = AsyncMock(return_value="")
     request = MagicMock(
         return_value=MagicMock(
@@ -132,3 +141,94 @@ async def test_post_without_result_returns_empty() -> None:
     assert await session.post("me/tracks", {"ids": ["abc"]}, want_result=False) == {}
     assert request.call_args.args[0] == "POST"
     assert request.call_args.kwargs["json"] == {"ids": ["abc"]}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        JSONDecodeError("Expected value", "Too many requests", 0),
+        "Too many requests",
+        {"error": {"status": 429, "message": "API rate limit exceeded"}},
+    ],
+)
+async def test_rate_limit_without_a_reason_is_retried_as_before(payload: Any) -> None:
+    """A 429 whose body is missing, not JSON or without a reason is retried after the wait."""
+    session = _make_session()
+    _stub_response(session, status=429, payload=payload, headers={"Retry-After": "42"})
+
+    with pytest.raises(RateLimited) as err:
+        async with session._request("GET", "me"):
+            pass
+    assert err.value.backoff_time == 42
+    assert str(err.value) == "Spotify rate limited the shared client"
+    assert session.throttler.cooldown_remaining == 0
+    assert session.get_diagnostics()["last_rate_limit_reason"] is None
+
+
+async def test_rate_limit_names_the_client_and_reason() -> None:
+    """The failed attempt is logged with the client and the reason Spotify gives."""
+    session = _make_session()
+    session.throttler.retry_attempts = 1
+    _stub_response(
+        session,
+        status=429,
+        payload={"error": {"reason": "SOME_REASON"}},
+        headers={"Retry-After": "2"},
+    )
+
+    with pytest.raises(RetriesExhausted):
+        await session.get("me")
+    logged = [call.args for call in session.logger.info.call_args_list]  # type: ignore[attr-defined]
+    assert logged[0][:3] == ("Attempt %s/%s failed: %s", 1, 1)
+    assert str(logged[0][3]) == "Spotify rate limited the shared client (SOME_REASON)"
+    diagnostics = session.get_diagnostics()
+    assert diagnostics["last_rate_limit_reason"] == "SOME_REASON"
+    assert diagnostics["last_rate_limit_at"] is not None
+
+
+@pytest.mark.parametrize(
+    ("headers", "cooldown", "how_long"),
+    [
+        ({"Retry-After": "3600"}, 3600, "requests on it are held back for 3600 seconds"),
+        ({}, 5, "Spotify did not say for how long"),
+    ],
+)
+async def test_quota_exceeded_is_not_retried_in_place(
+    headers: dict[str, str], cooldown: int, how_long: str
+) -> None:
+    """A used up quota arms the cooldown, gives up at once and logs one warning per block."""
+    session = _make_session()
+    request = _stub_response(session, status=429, payload=QUOTA_BODY, headers=headers)
+
+    with patch("music_assistant.helpers.throttle_retry.asyncio.sleep", AsyncMock()) as sleep:
+        with pytest.raises(RetriesExhausted) as err:
+            await session.get("me")
+        assert err.value.translation_key == RateLimited.translation_key
+        assert request.call_count == 1
+        sleep.assert_not_awaited()
+        assert cooldown - 1 < session.throttler.cooldown_remaining <= cooldown
+        # the block goes on: no second warning
+        session.throttler._cooldown_until = 0
+        with pytest.raises(RetriesExhausted):
+            await session.get("me")
+    session.logger.warning.assert_called_once_with(  # type: ignore[attr-defined]
+        "The %s has used up its Spotify quota, %s", "shared client", how_long
+    )
+    assert session.get_diagnostics()["last_rate_limit_reason"] == "QUOTA_EXCEEDED"
+
+
+async def test_quota_warning_returns_after_an_answer() -> None:
+    """A quota block that follows an answered request is warned about again."""
+    session = _make_session()
+    _stub_response(session, status=429, payload=QUOTA_BODY)
+    with pytest.raises(RetriesExhausted):
+        await session.get("me")
+    _stub_response(session, payload={})
+    session.throttler._cooldown_until = 0
+    await session.get("me")
+    _stub_response(session, status=429, payload=QUOTA_BODY)
+    session.throttler._cooldown_until = 0
+    with pytest.raises(RetriesExhausted):
+        await session.get("me")
+    assert session.logger.warning.call_count == 2  # type: ignore[attr-defined]
