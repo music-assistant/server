@@ -447,6 +447,20 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
         audio_buffer.register_cancel_callback(_on_cancel)
 
+    def release_provider(self, instance_id: str) -> None:
+        """
+        Remove an unloading provider from every running analysis session.
+
+        The running sessions send no further audio to this instance id, and do not finalize it.
+
+        :param instance_id: Instance id of the unloading audio analysis provider.
+        """
+        for session_key, provider_ids in list(self._active_sessions.items()):
+            provider_ids.discard(instance_id)
+            if not provider_ids:
+                # with no provider left, the session's reader stops at its next chunk
+                self._active_sessions.pop(session_key, None)
+
     async def set_audio_analysis(
         self,
         item_id: str,
@@ -1577,6 +1591,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         self._mark_analysis_activity()
         provider_ids: set[str] = set()
         for provider in providers:
+            if not self._is_offered(provider, streamdetails):
+                continue
             try:
                 if await provider.start_analysis(
                     session_id=session_key,
@@ -1591,6 +1607,16 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                     "Failed to start analysis on provider %s: %s", provider.name, err
                 )
         return provider_ids
+
+    @staticmethod
+    def _is_offered(provider: AudioAnalysisProvider, streamdetails: StreamDetails) -> bool:
+        """
+        Return whether a provider may analyze the given stream.
+
+        :param provider: The audio analysis provider.
+        :param streamdetails: Stream details of the item being analyzed.
+        """
+        return streamdetails.media_type in provider.media_types
 
     def _finalize_providers(self, session_key: str) -> None:
         """Finalize each provider in the session."""
