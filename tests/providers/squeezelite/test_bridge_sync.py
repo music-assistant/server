@@ -188,16 +188,28 @@ def test_clock_is_not_mapped_from_replies_the_player_held_up() -> None:
     assert abs(_mapped(clock, player.jiffies(now_us)) - now_us) <= 1000
 
 
-def test_clock_is_mapped_when_its_round_trips_never_agree() -> None:
-    """Without three replies near the lowest round trip, the first bucket maps the clock."""
+def test_clock_is_mapped_by_steady_replies_after_a_quick_one() -> None:
+    """One reply that is much quicker than the rest does not hold up the first mapping."""
     clock = PlayerClock()
     player = _Player()
-    # one quick reply, then replies 50 ms apart that take 60 to 68 ms on their way back
+    # one quick reply, then replies that take 62 to 66 ms on their way back
+    for poll in range(4):
+        assert clock.to_jiffies(1_000_000) is None
+        delay_us = 300 if poll == 0 else 60_000 + 2000 * poll
+        _sample(clock, player, 1_000_000 + poll * 50_000, to_server_us=delay_us)
+    # the mapping is made from the quick one, which has the lowest round trip
+    assert abs(_mapped(clock, player.jiffies(1_300_000)) - 1_300_000) <= 1000
+
+
+def test_clock_is_mapped_when_its_round_trips_never_agree() -> None:
+    """Without three replies that agree on the round trip, the first bucket maps the clock."""
+    clock = PlayerClock()
+    player = _Player()
+    # replies 50 ms apart, each 30 ms longer on its way back than the one before
     for poll in range(41):
         assert clock.to_jiffies(1_000_000) is None
-        delay_us = 300 if poll == 0 else 60_000 + 2000 * (poll % 5)
-        _sample(clock, player, 1_000_000 + poll * 50_000, to_server_us=delay_us)
-    # once two seconds of them are in, the quick one maps the clock
+        _sample(clock, player, 1_000_000 + poll * 50_000, to_server_us=300 + poll * 30_000)
+    # once two seconds of them are in, the one with the lowest round trip maps the clock
     assert abs(_mapped(clock, player.jiffies(3_000_000)) - 3_000_000) <= 1000
 
 
