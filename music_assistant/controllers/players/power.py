@@ -312,19 +312,25 @@ class PowerMixin(_PlayerControllerBase):
         self.logger.debug("The power of player %s is cut", player.name)
         self.mass.create_task(self._tell_protocols(player, power_is_back=False))
 
-    def _drop_power_state(self, player: Player) -> None:
+    def _drop_power_state(self, player: Player, *, release: bool = False) -> None:
         """
         Forget what is kept about the power of a player.
 
         For a player that goes away, or whose power control or the setting that says it
-        cuts the power of the player changed: what was kept belongs to the control it had.
-        Its start-up time ends, and the commands that wait for it fail as switched off.
+        cuts the power of the player changed or went away: what was kept belongs to the
+        control it had. Its start-up time ends, and the commands that wait for it fail as
+        switched off.
 
         :param player: The player.
+        :param release: Whether the player stays. Its protocols are then told that the power
+            is back when they were told that it was cut, or still wait to be told: nothing
+            else tells them any more, so they reach the device by themselves again.
         """
+        told = self._power_cuts.pop(player.player_id, None) or player.startup_ends_at is not None
         self._end_startup(player, called_off=True)
-        self._power_cuts.pop(player.player_id, None)
         self.mass.cancel_timer(f"power_cut_{player.player_id}")
+        if release and told and not self.mass.closing:
+            self.mass.create_task(self._tell_protocols(player, power_is_back=True))
 
     def _check_idle_power_off(self, player: Player) -> None:
         """

@@ -621,6 +621,54 @@ async def test_a_change_of_the_power_setting_during_the_startup_ends_the_play_th
     await _stop(scenario, player_id)
 
 
+@pytest.mark.parametrize("change", [*CHANGES, "the setting is switched off during the start-up"])
+async def test_protocols_told_of_a_power_cut_are_told_it_is_back_once_nothing_follows_it(
+    scenario: Scenario, change: str
+) -> None:
+    """
+    Protocols that were told of a power cut are told that the power is back once nothing says so.
+
+    Den's plug, which cuts its power, is off, and Den's protocols were told that its power
+    was cut. The user switches the setting off, sets the power control of Den to none or
+    picks another plug, or the plug goes with its provider: nothing tells the protocols any
+    more when the power is back, so they are told at once and reach Den by themselves
+    again. The same when the setting is switched off while Den starts up for a play, which
+    fails as switched off.
+
+    :param change: What happens after the power was cut.
+    """
+    (den, den_airplay), plug, player_id = await _den(
+        scenario, ("sonos", "native"), ("airplay", "audio")
+    )
+    await _cut(scenario, plug, den, den_airplay)
+    assert [kind for kind, _ in den.power_reports] == ["cut"]
+    play = None
+    if change == "the setting is switched off during the start-up":
+        play = await _play(scenario, player_id)
+        await scenario.advance(5)
+    changed_at = scenario.mass.loop.time()
+
+    if change.startswith("the setting is switched off"):
+        await scenario.configure_player(player_id, power_control_cuts_power=False)
+    elif change == "the power control is set to none":
+        await scenario.configure_player(player_id, power_control=PLAYER_CONTROL_NONE)
+    elif change == "another plug that is on is picked":
+        other_plug = await scenario.add_power_control("switch.other", "Other plug", powered=True)
+        await scenario.configure_player(player_id, power_control=other_plug.control_id)
+    else:
+        scenario.mass.players.remove_player_control(plug.control_id)
+        await scenario.settle()
+
+    assert den.power_reports[1:] == den_airplay.power_reports[1:] == [("restored", changed_at)]
+    if play is not None:
+        with pytest.raises(PlayerUnavailableError, match="is switched off"):
+            await play
+    # told once: nothing follows the power of Den any more
+    await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME + EXTERNAL_POWER_OFF_STOP_DELAY)
+    assert len(den.power_reports) == len(den_airplay.power_reports) == 2
+    await scenario.idle()
+
+
 @pytest.mark.parametrize("cut_by", ["the plug", "a power off of the player"])
 async def test_the_protocols_are_told_of_a_power_cut_and_of_the_power_being_back(
     scenario: Scenario, cut_by: str

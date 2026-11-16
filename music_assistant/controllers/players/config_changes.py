@@ -71,7 +71,7 @@ class ConfigChangesMixin(_PlayerControllerBase):
 
         if changed_keys & _POWER_CUT_KEYS:
             # what is kept about its power belongs to the control and the setting it had
-            self._drop_power_state(player)
+            self._drop_power_state(player, release=True)
         # ensure player state gets updated with any updated config
         player.set_config(await self.mass.config.get_player_object_config(player))
         if (own := player.own_protocol) is not None:

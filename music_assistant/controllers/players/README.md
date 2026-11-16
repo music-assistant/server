@@ -622,6 +622,9 @@ of it. A power off fails them too, switches the control off and ends the start-u
 change of the power control of the player, or of the setting that says it cuts its power: what
 the controller kept belongs to the control the player had (`_drop_power_state`), so a start-up
 time that runs ends, and a control that read off is no longer waited for to count as a cut.
+Protocols that were told of a power cut are then told that the power is back, as they are when
+the control itself goes away: nothing else tells them any more, so each `on_power_cut` is
+followed by an `on_power_restored`.
 
 Such a player is the one case of a player that is available and can not play yet. Code outside the
 controller reads the published `available` of another player to decide whether that player may

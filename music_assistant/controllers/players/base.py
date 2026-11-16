@@ -483,6 +483,10 @@ class _PlayerControllerBase(CoreController):
         if control is None:
             return
         self.logger.info("PlayerControl removed: %s", control.name)
+        for player in list(self._players.values()):
+            if player.power_control == control_id and self._power_cuts.get(player.player_id):
+                # nobody says when the power of this player is back any more
+                self._drop_power_state(player, release=True)
         # players configured to use this control still resolve to it until they are
         # refreshed, so let them fall back to their remaining options right away
         self.update_player_control(control_id)
@@ -799,7 +803,7 @@ class _PlayerControllerBase(CoreController):
             self, player: Player, changed_values: dict[str, tuple[Any, Any]]
         ) -> None: ...
         def _handle_external_power_on(self, player: Player) -> None: ...
-        def _drop_power_state(self, player: Player) -> None: ...
+        def _drop_power_state(self, player: Player, *, release: bool = False) -> None: ...
         def _check_idle_power_off(self, player: Player) -> None: ...
         def _restart_idle_count(
             self, player: Player, changed_values: dict[str, tuple[Any, Any]]
