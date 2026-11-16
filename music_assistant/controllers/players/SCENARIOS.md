@@ -1913,6 +1913,51 @@ it can group with for as long as that plays, keeps leading as well.
   - `test_grouping.py::test_a_member_that_leads_another_playing_group_does_not_take_a_sync_group`
   - `test_grouping.py::test_a_member_that_leads_players_of_its_own_does_not_replace_the_first_member`
   - `test_grouping.py::test_a_first_member_that_plays_an_input_of_its_own_keeps_leading_the_sync_group`
+### GROUP-53 · Adding to the queue of a switched-off speaker does not switch it on
+
+The user's default for tracks is to add them, or to play them next. A client plays a track
+without naming an option, on Den, a speaker switched off at its plug, or on Downstairs, a group
+with Den as a member. The track is only added: Den's plug stays off, the request does not wait,
+and nothing plays. With the default to play, the same request switches Den's plug on and waits
+for the device, as any start does.
+
+- End-to-end: **possible with** a power control the lab can switch, and a core setting for the
+  default enqueue option of tracks.
+- Proven by:
+  - `test_group_power_on.py::test_media_that_is_only_added_by_default_switches_nothing_on`
+  - `test_group_power_on.py::test_media_that_plays_by_default_switches_its_power_control_on`
+
+### GROUP-54 · BBC Sounds' seek back to the live edge switches no member on
+
+The user starts a BBC Sounds programme that is on air at a point past the live edge, on
+Downstairs, a group with Den, a speaker switched off at its plug, as a member. BBC Sounds seeks
+the queue back to where the stream really starts. That seek is no start of the group: Den's plug
+is not switched on, and nothing waits for Den.
+
+- End-to-end: **no**: it needs BBC Sounds' own stream of a live programme, which the lab does not
+  serve.
+- Proven by: `tests/providers/bbc_sounds/test_live_rewind.py::test_the_seek_back_to_the_live_edge_switches_no_member_of_a_group_on`
+
+### GROUP-55 · MusicCast's own step to the next item switches no member on
+
+Downstairs, a group with Den, a speaker switched off at its plug, plays the queue of Office, a
+MusicCast speaker. Office reads idle at the end of a track, and MusicCast steps its queue to the
+next item by itself. That step is no start of the group: Den's plug is not switched on, and
+nothing waits for Den.
+
+- End-to-end: **no**: it needs MusicCast's own player, which the lab does not run.
+- Proven by: `tests/providers/musiccast/test_player.py::test_end_of_track_advance_switches_no_member_of_a_group_on`
+
+### GROUP-51 · Members on the leader's own stream follow it onto AirPlay, or leave
+
+Kitchen plays with Office and Den on HEOS, which can not pass AirPlay on to its members. The
+user adds Office again and Patio, which only has AirPlay. Kitchen's playback moves to its AirPlay
+receiver, which takes Patio and Office in one call. Den has no AirPlay receiver: it leaves the
+group, and that is logged as a warning.
+
+- End-to-end: **possible with** two HEOS speakers with AirPlay, a HEOS speaker without it, and an
+  AirPlay receiver.
+- Proven by: `test_grouping.py::test_members_on_the_leaders_own_stream_follow_it_onto_airplay`
 
 ## Where playback goes
 

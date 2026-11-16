@@ -2486,3 +2486,71 @@ async def test_an_announcement_to_a_member_switches_no_other_member_on(
     assert den.commands == []
     assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
     await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("target", ["switched-off player", "group with a switched-off member"])
+@pytest.mark.parametrize("default", ["add", "next"])
+async def test_media_that_is_only_added_by_default_switches_nothing_on(
+    scenario: Scenario, target: str, default: str
+) -> None:
+    """
+    A play request without an option that only adds its media switches no power control on.
+
+    The user's default for tracks is to add or to play next. A track is played without an option
+    on Den, switched off at its plug, or on a group with Den as a member: nothing waits, Den's
+    plug stays off, and the track is in the queue.
+
+    :param target: Whether the request names Den or its group.
+    :param default: The user's default option for tracks.
+    """
+    await scenario.mass.config.save_core_config(
+        "player_queues", {"default_enqueue_option_track": default}
+    )
+    await scenario.settle()
+    group_id, speakers, player_ids = await _downstairs(
+        scenario, "universal group", "Kitchen", "Den"
+    )
+    plug = await _switch_off(scenario, speakers[1])
+    queue_id = player_ids[1] if target == "switched-off player" else group_id
+
+    request = await _play(scenario, queue_id)
+    await scenario.advance(5)
+
+    assert request.done(), "the request waits for the plug"
+    await request
+    assert plug.commands == []
+    queue = scenario.queue(queue_id)
+    assert queue is not None
+    assert queue.items == 1
+    assert _state(scenario, queue_id).playback_state != PlaybackState.PLAYING
+
+
+@pytest.mark.parametrize("target", ["switched-off player", "group with a switched-off member"])
+async def test_media_that_plays_by_default_switches_its_power_control_on(
+    scenario: Scenario, target: str
+) -> None:
+    """
+    A play request without an option that plays its media waits for the power control.
+
+    With the user's default for tracks to play, the track is played without an option on Den,
+    switched off at its plug, or on a group with Den as a member: Den's plug is switched on and
+    the request waits for its device.
+
+    :param target: Whether the request names Den or its group.
+    """
+    group_id, speakers, player_ids = await _downstairs(
+        scenario, "universal group", "Kitchen", "Den"
+    )
+    plug = await _switch_off(scenario, speakers[1])
+    queue_id = player_ids[1] if target == "switched-off player" else group_id
+
+    request = await _play(scenario, queue_id)
+    await scenario.advance(5)
+
+    assert not request.done(), request.exception()
+    assert plug.commands == [True]
+    await _come_back(scenario, speakers[1])
+    await request
+    await scenario.idle()
+    assert _state(scenario, queue_id).playback_state == PlaybackState.PLAYING
+    await _stop(scenario, queue_id)

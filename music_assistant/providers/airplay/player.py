@@ -236,10 +236,13 @@ class AirPlayPlayer(PlayerProtocol):
         """Return if 24-bit hi-res playback is possible and enabled for this player."""
         if not self._hires_route:
             return False
-        # the stored toggle is read raw: its parsed default dates from registration,
-        # before the receiver's formats were probed
-        stored = self.mass.config.get_protocol_value(self.protocol_id, CONF_ENABLE_HIRES)
-        return self._hires_default_enabled if stored is None else bool(stored)
+        # a stored toggle is the user's choice; without one it follows the probed formats,
+        # which the config parsed at registration predates
+        return bool(
+            self.mass.config.get_protocol_value(
+                self.protocol_id, CONF_ENABLE_HIRES, self._hires_default_enabled
+            )
+        )
 
     @property
     def supported_sample_rates(self) -> list[tuple[int, int]]:

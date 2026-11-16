@@ -631,6 +631,68 @@ async def test_an_airplay_speaker_gives_up_its_own_group_before_it_joins_another
     assert _state(scenario, attic_id).synced_to == hall_id
 
 
+async def test_members_on_the_leaders_own_stream_follow_it_onto_airplay(
+    scenario: Scenario,
+) -> None:
+    """
+    Members that play from their leader's own stream follow it onto AirPlay, or leave its group.
+
+    Kitchen plays with Office and Den on HEOS, which can not pass AirPlay on to its members.
+    The user adds Office again and Patio, which only has AirPlay: Office follows over its AirPlay
+    receiver in the same call, Den has none and leaves the group with a warning.
+    """
+    heos = await scenario.add_provider("heos")
+    airplay = await scenario.add_provider("airplay")
+    ids = ["heos_kitchen", "heos_office", "heos_den"]
+    kitchen, office, den = (
+        heos.protocol(
+            protocol_id,
+            protocol_id.removeprefix("heos_").title(),
+            identifiers=_device(number),
+            supported_features=set(GROUPING),
+            can_group_with={other for other in ids if other != protocol_id},
+            native_grouping_requires_own_stream=True,
+        )
+        for number, protocol_id in enumerate(ids, start=70)
+    )
+    kitchen_airplay = airplay.protocol(
+        "airplay_kitchen",
+        "Kitchen",
+        role="audio",
+        identifiers=_device(70),
+        supported_features=set(GROUPING),
+        can_group_with={"airplay_office", "airplay_patio"},
+    )
+    office_airplay = airplay.protocol(
+        "airplay_office", "Office", role="audio", identifiers=_device(71)
+    )
+    patio = airplay.protocol("airplay_patio", "Patio", identifiers=_device(73))
+    for protocol in (kitchen, office, den, kitchen_airplay, office_airplay, patio):
+        await scenario.register(protocol)
+    await scenario.idle()
+    kitchen_id, office_id = _player_id(scenario, kitchen), _player_id(scenario, office)
+    den_id, patio_id = _player_id(scenario, den), _player_id(scenario, patio)
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[office_id, den_id])
+    await scenario.idle()
+    await scenario.play(kitchen_id)
+    assert _state(scenario, office_id).synced_to == kitchen_id
+    scenario.expect_log("Cannot group Den with Kitchen")
+
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[office_id, patio_id])
+    await scenario.idle()
+
+    assert _grouping_commands(kitchen_airplay) == [
+        ("set_members", ["airplay_patio", "airplay_office"], None)
+    ]
+    assert _grouping_commands(kitchen)[-1] == ("set_members", None, ["heos_office", "heos_den"])
+    assert _state(scenario, office_id).synced_to == kitchen_id
+    assert _state(scenario, patio_id).synced_to == kitchen_id
+    assert _state(scenario, den_id).synced_to is None
+    assert _active_output(scenario, office_id) == "airplay_office"
+    assert _active_output(scenario, kitchen_id) == "airplay_kitchen"
+    assert _state(scenario, kitchen_id).playback_state == PlaybackState.PLAYING
+
+
 async def test_a_protocol_switch_that_would_silence_a_member_is_refused(
     scenario: Scenario,
 ) -> None:
