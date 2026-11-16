@@ -809,6 +809,62 @@ def test_start_error_is_measured_whenever_the_player_first_reports() -> None:
     assert loop.start_error_ms == pytest.approx(40.0)
 
 
+def test_start_error_leaves_out_reports_that_put_the_start_before_it_was_told() -> None:
+    """A player does not start before it is told to: such a report is no position of this stream."""
+    # a player with a start offset of 180 ms: it is told that much before its start instant
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US, told_us=START_US - 180_000)
+    # as logged on a player: 5.6 s played, a quarter of a second after it started
+    for elapsed_ms in (5568, 5618, 5668):
+        assert _report(loop, elapsed_ms, -5368.0) is None
+    assert loop.start_reports == 0
+    assert loop.start_error_ms is None
+    assert loop.pending_jump == 0
+    # the reports of what it plays, 20 ms late, are the start
+    for elapsed_ms in (350, 400):
+        _report(loop, elapsed_ms, 20.0)
+    assert loop.start_reports == 2
+    _report(loop, 450, 20.0)
+    assert loop.start_error_ms == pytest.approx(20.0)
+    assert loop.pending_jump == 960
+
+    # a loop that is not told when the player was told to start takes every report
+    unbound = SyncLoop(RATE, FRAME_SIZE, START_US)
+    for elapsed_ms in (5568, 5618, 5668):
+        _report(unbound, elapsed_ms, -5368.0)
+    assert unbound.start_error_ms == pytest.approx(-5368.0)
+
+
+def test_start_error_of_a_player_that_starts_before_its_instant_counts() -> None:
+    """A player that needs less than its start offset starts early, not before it was told."""
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US, told_us=START_US - 180_000)
+    for elapsed_ms in (200, 250, 300):
+        _report(loop, elapsed_ms, -150.0)
+    assert loop.start_error_ms == pytest.approx(-150.0)
+
+    # with 20 ms to spare for what a report can be off
+    edge = SyncLoop(RATE, FRAME_SIZE, START_US, told_us=START_US - 180_000)
+    _report(edge, 200, -200.1)
+    assert edge.start_reports == 0
+    _report(edge, 250, -200.0)
+    assert edge.start_reports == 1
+
+
+def test_reports_that_put_the_start_before_it_was_told_do_not_count_for_the_error() -> None:
+    """Until the start is measured such a report says nothing about the stream at all."""
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US, told_us=START_US)
+    # settled, but no position of this stream
+    assert _report(loop, 6400, -5368.0) is None
+    assert loop.error_ms is None
+    next_ms = _reports(loop, 3.0, first_ms=1100)
+    assert loop.start_error_ms == pytest.approx(3.0)
+    assert loop.error_ms == pytest.approx(3.0)
+
+    # once the start is measured the bound is gone: a player that plays fast for long
+    # enough is that early without its corrections
+    assert _report(loop, next_ms, -300.0) == pytest.approx(-300.0)
+    assert loop.error_ms == pytest.approx(3.0 - 303.0 / 6)
+
+
 def test_start_error_in_silence_is_jumped_from_a_lower_threshold() -> None:
     """The threshold of the jump can be lowered for as long as the stream is silence."""
     loop = SyncLoop(RATE, FRAME_SIZE, START_US, start_jump_ms=1.0)

@@ -929,7 +929,11 @@ class SendspinSqueezeliteBridge:
         # the player starts a little later than it is told to, which was learned before
         session.command_us = start_us - offset_us
         session.loop = SyncLoop(
-            session.sample_rate, session.frame_size, start_us, start_jump_ms=ALIGN_JUMP_MS
+            session.sample_rate,
+            session.frame_size,
+            start_us,
+            start_jump_ms=ALIGN_JUMP_MS,
+            told_us=session.command_us,
         )
         # the preroll went out before the timeline was known: it holds frame 0 and on
         session.loop.process(session.preroll)
@@ -1070,9 +1074,21 @@ class SendspinSqueezeliteBridge:
             return
         if (server_us := self._player_clock.to_server_us(status.jiffies)) is None:
             return
+        counted = loop.start_reports
         report_ms = loop.on_report(
             server_us, status.elapsed_milliseconds, self._player_clock.generation
         )
+        if session.aligning and server_us >= session.command_us:
+            since_start_ms = (server_us - session.start_us) / 1000
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "%s reports %d ms played %+.0f ms after its start instant: %+.1f ms off, %s",
+                self.protocol.display_name,
+                status.elapsed_milliseconds,
+                since_start_ms,
+                since_start_ms - status.elapsed_milliseconds - 0.5,
+                "counted" if loop.start_reports > counted else "not counted",
+            )
         self._reports += 1
         if self._reports % 40 == 0 and (error_ms := loop.error_ms) is not None:
             self.logger.log(

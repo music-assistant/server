@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Collection
-from math import sqrt
+from math import inf, sqrt
 
 # defaults of the SyncLoop tunables
 GAIN_PPM_PER_MS = 100.0
@@ -58,6 +58,9 @@ _JUMP_SAMPLES = 3
 # stream: until then a player reports up to tens of milliseconds off what it settles on
 _START_REPORTS = 3
 _START_SKIP_MS = 200
+# a report may put the start this much (ms) before the instant the player was told to start:
+# what the first mapping of its clock and the whole milliseconds of a report can be off
+_START_TOLERANCE_MS = 20
 # reports needed before the loop acts on the filtered error
 _MIN_REPORTS = 5
 # a report with the elapsed time of the previous one and this close to it is the same reading
@@ -239,6 +242,7 @@ class SyncLoop:
         min_span_s: float = MIN_SPAN_S,
         settle_s: float = SETTLE_S,
         start_jump_ms: float = START_JUMP_MS,
+        told_us: int | None = None,
     ) -> None:
         """
         Initialize the loop for a new session.
@@ -253,6 +257,9 @@ class SyncLoop:
         :param settle_s: Time after the start during which reports do not count for the
             filtered error.
         :param start_jump_ms: Start error above which it is corrected in one jump.
+        :param told_us: Server time at which the player is told to start, when that is
+            known: until the start error is measured, a report that puts the start of the
+            stream before it is ignored.
         """
         self._sample_rate = sample_rate
         self._frame_size = frame_size
@@ -264,6 +271,10 @@ class SyncLoop:
         self._settled_us = start_us + round(settle_s * 1_000_000)
         # may be set until the start error is measured: a jump in silence is not heard
         self.start_jump_ms = start_jump_ms
+        # lowest error a report of this stream can show while nothing is corrected yet
+        self._earliest_ms = -inf
+        if told_us is not None:
+            self._earliest_ms = (told_us - start_us) / 1000 - _START_TOLERANCE_MS
         # stream frame p carries source frame p + offset. The ledger holds the offset per
         # stream position, (position, offset from there on), for what is not played yet.
         self._ledger: deque[tuple[int, int]] = deque([(0, 0)])
@@ -308,6 +319,11 @@ class SyncLoop:
         return self._start_error_ms
 
     @property
+    def start_reports(self) -> int:
+        """Return the number of reports the start error was taken from so far."""
+        return len(self._start_reports)
+
+    @property
     def pending_jump(self) -> int:
         """Return the frames of the start jump ``process`` has yet to drop, negative to insert."""
         return self._pending_jump
@@ -330,6 +346,9 @@ class SyncLoop:
         For the error after it a report is ignored while the player settles after the
         start, when nothing was played yet and when it repeats the previous report. The
         elapsed time may start over when the frame counter of the player wraps.
+
+        Until the start error is measured, a report that puts the start of the stream
+        before the instant the player was told to start is ignored altogether.
 
         :param server_us: Server time of the report, from ``PlayerClock.to_server_us``.
         :param elapsed_ms: Elapsed milliseconds of the stream as reported by the player.
@@ -360,6 +379,11 @@ class SyncLoop:
         # the error with every correction taken out again is the start error plus the
         # drift: a straight line whatever the loop did, which is what the filter fits
         raw_ms = (server_us - self._start_us) / 1000 - elapsed
+        if self._start_error_ms is None and raw_ms < self._earliest_ms:
+            # A player does not start before it is told to: this is no position of this
+            # stream. Once the start is measured the bound is gone, as the error without
+            # corrections of a player that plays fast falls below it in time.
+            return None
         if self._start_error_ms is None and elapsed >= _START_SKIP_MS:
             # nothing was corrected yet, so this is the error of the start itself
             self._start_reports.append(raw_ms)

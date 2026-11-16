@@ -35,6 +35,7 @@ from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.providers.sendspin.bridge_role import BRIDGE_SAMPLE_RATE
 from music_assistant.providers.squeezelite.bridge_role import (
     SLIMPROTO_BRIDGE_ROLE_ID,
@@ -1821,6 +1822,8 @@ async def test_a_delay_the_silence_does_not_cover_takes_the_first_audio(
 
 async def test_an_early_player_plays_its_first_audio_on_its_timeline(rig: _Rig) -> None:
     """A player that starts ahead of its instant gets that much more silence."""
+    # ahead of its instant is not ahead of the instant it was told to start
+    rig.knows_start_offset(110_000)
     session = await rig.start_playing()
     assert session.loop is not None
 
@@ -1831,6 +1834,87 @@ async def test_an_early_player_plays_its_first_audio_on_its_timeline(rig: _Rig) 
     assert first == 0
     assert late_us == pytest.approx(500, abs=25)
     assert _frames(sent).index(0) == LEAD_IN_FRAMES - PREROLL_FRAMES + round(40.5 * 44.1)
+
+
+async def test_positions_of_before_the_start_do_not_count_for_it(
+    rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """As logged on a player: its first reports of a stream show 5.6 s played after 0.25 s."""
+    caplog.set_level(VERBOSE_LOG_LEVEL, logger="test.squeezelite")
+    rig.knows_start_offset(180_000)
+    session = await rig.start_playing()
+    loop = session.loop
+    assert loop is not None
+    sent = rig.drain(session)
+    rig.clock.advance_us(session.start_us - rig.now_us + 150_000)
+
+    for _ in range(3):
+        rig.clock.advance_us(50_000)
+        played_ms = (rig.now_us - session.start_us) // 1000
+        rig.bridge.handle_slim_event(rig.status(elapsed_ms=played_ms + 5368))
+        sent += rig.drain(session)
+    await _settle()
+
+    # no start that is 5.4 s off, and no restart for it
+    assert loop.start_error_ms is None
+    assert rig.aligning()
+    assert rig.session is session
+    # the reports of what it plays, 20 ms late, are its start
+    sent += rig.align(session, late_ms=20) + rig.drain(session)
+    await _settle()
+    assert loop.start_error_ms == pytest.approx(19.5)
+    assert rig.session is session
+    assert rig.client.play_url.await_count == 1
+    first, late_us = rig.first_audio(session, sent, late_ms=20)
+    assert first == 0
+    assert late_us == pytest.approx(500, abs=25)
+    assert rig.manager.get_start_offset_us(PLAYER_ID) == 180_000 + 19_500 // 8
+    told = "Kitchen reports 5568 ms played +200 ms after its start instant: -5368.5 ms off, not counted"
+    assert told in caplog.text
+
+
+async def test_every_report_is_logged_while_a_start_is_measured(
+    rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A verbose log shows what a player reported from when it was told to start."""
+    caplog.set_level(VERBOSE_LOG_LEVEL, logger="test.squeezelite")
+    rig.knows_start_offset(110_000)
+    session = await rig.start_playing()
+
+    def _logged() -> list[tuple[int, str]]:
+        return [
+            (record.levelno, record.getMessage().removeprefix("Kitchen reports "))
+            for record in caplog.records
+            if "after its start instant" in record.getMessage()
+        ]
+
+    # not before it is told to start
+    rig.clock.advance_us(session.command_us - rig.now_us - 1000)
+    rig.bridge.handle_slim_event(rig.status())
+    assert _logged() == []
+    rig.clock.advance_us(51_000)
+    rig.bridge.handle_slim_event(rig.status())
+    rig.align(session, late_ms=30)
+
+    assert _logged() == [
+        (
+            VERBOSE_LOG_LEVEL,
+            f"{played} ms played {at:+d} ms after its start instant: {off} ms off, {counted}",
+        )
+        for played, at, off, counted in (
+            (0, -60, "-60.5", "not counted"),
+            (20, 50, "+29.5", "not counted"),
+            (70, 100, "+29.5", "not counted"),
+            (120, 150, "+29.5", "not counted"),
+            (170, 200, "+29.5", "not counted"),
+            (220, 250, "+29.5", "counted"),
+            (270, 300, "+29.5", "counted"),
+            (320, 350, "+29.5", "counted"),
+        )
+    ]
+    # nor once its start is corrected
+    rig.play(session, 1.0, late_ms=30)
+    assert len(_logged()) == 8
 
 
 @pytest.mark.parametrize(("late_ms", "corrected_ms"), [(3, 2.5), (1, 0.0), (-2, -2.5)])
