@@ -156,6 +156,63 @@ def test_clock_knows_nothing_before_three_samples() -> None:
     assert clock.generation == 0
 
 
+def test_clock_maps_from_replies_that_differ_by_a_few_milliseconds() -> None:
+    """Three replies whose round trips are within a few milliseconds map the clock at once."""
+    clock = PlayerClock()
+    player = _Player()
+    for poll, rtt_us in enumerate((2100, 6800, 3500)):
+        assert clock.to_jiffies(1_000_000) is None
+        sent_us, half_us = 1_000_000 + poll * 50_000, rtt_us // 2
+        _sample(clock, player, sent_us, to_player_us=half_us, to_server_us=half_us)
+    now_us = 1_200_000
+    assert abs(_mapped(clock, player.jiffies(now_us)) - now_us) <= 1000
+
+
+def test_clock_is_not_mapped_from_replies_the_player_held_up() -> None:
+    """
+    Replies the player answers all at once after a while do not map its clock.
+
+    Their round trips fall by the spacing of the requests and each of them is off by half
+    of its round trip: the prompt replies after them are the ones the mapping is made from.
+    """
+    clock = PlayerClock()
+    player = _Player()
+    from_us = 1_000_000
+    released_us = from_us + 830_000
+    for sent_us in range(from_us, released_us, 50_000):
+        _sample(clock, player, sent_us, to_player_us=released_us - sent_us)
+    for poll in range(3):
+        assert clock.to_jiffies(released_us) is None
+        _sample(clock, player, released_us + 20_000 + poll * 50_000)
+    now_us = released_us + 200_000
+    assert abs(_mapped(clock, player.jiffies(now_us)) - now_us) <= 1000
+
+
+def test_clock_is_mapped_by_steady_replies_after_a_quick_one() -> None:
+    """One reply that is much quicker than the rest does not hold up the first mapping."""
+    clock = PlayerClock()
+    player = _Player()
+    # one quick reply, then replies that take 62 to 66 ms on their way back
+    for poll in range(4):
+        assert clock.to_jiffies(1_000_000) is None
+        delay_us = 300 if poll == 0 else 60_000 + 2000 * poll
+        _sample(clock, player, 1_000_000 + poll * 50_000, to_server_us=delay_us)
+    # the mapping is made from the quick one, which has the lowest round trip
+    assert abs(_mapped(clock, player.jiffies(1_300_000)) - 1_300_000) <= 1000
+
+
+def test_clock_is_mapped_when_its_round_trips_never_agree() -> None:
+    """Without three replies that agree on the round trip, the first bucket maps the clock."""
+    clock = PlayerClock()
+    player = _Player()
+    # replies 50 ms apart, each 30 ms longer on its way back than the one before
+    for poll in range(41):
+        assert clock.to_jiffies(1_000_000) is None
+        _sample(clock, player, 1_000_000 + poll * 50_000, to_server_us=300 + poll * 30_000)
+    # once two seconds of them are in, the one with the lowest round trip maps the clock
+    assert abs(_mapped(clock, player.jiffies(3_000_000)) - 3_000_000) <= 1000
+
+
 def test_clock_maps_both_ways() -> None:
     """A jiffies reading maps to its server time and back, within the millisecond it covers."""
     clock = PlayerClock()
