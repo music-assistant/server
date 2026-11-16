@@ -116,6 +116,7 @@ Supporting modules in `helpers/`:
 - `AudioBuffer.get_raw_stream()` - Get unprocessed raw PCM audio (playback consumer)
 - `AudioBuffer.read_chunk_for_analysis()` - Read one chunk for a passive analysis reader without mutating the buffer; raises when the chunk has been evicted (reader fell behind)
 - `AudioBuffer.fill()` - Start filling from an async generator of PCM chunks
+- `StreamsAudio.register_pcm_transform()` - Lets a provider rewrite the decoded audio of selected queue items before it is buffered (the Party plugin removes vocals this way). A transformed buffer is kept out of audio analysis
 - `AudioBuffer.ready` - Event set when enough chunks are buffered past the seek point (threshold-based)
 
 ### Buffer Lifecycle

@@ -2163,6 +2163,8 @@
   "provider.party.config_entries.prevent_duplicate_tracks.label": "Prevent Duplicate Tracks",
   "provider.party.config_entries.qr_text.description": "Custom text to display alongside the QR code. Leave blank to not show a text at all.",
   "provider.party.config_entries.qr_text.label": "QR Code Text",
+  "provider.party.config_entries.remove_vocals.description": "When enabled, the vocals are removed from the tracks that play on the party player, so guests can sing along to the instrumental. The change applies from the next track. The audio is processed on this server while it plays: this needs a fast multi-core CPU, delays the start of a track by a few seconds, and downloads the Demucs model on first use.",
+  "provider.party.config_entries.remove_vocals.label": "Remove Vocals",
   "provider.party.config_entries.request_badge_color.description": "Color for the 'Request' badge shown on guest-added queue items.",
   "provider.party.config_entries.request_badge_color.label": "Request Badge Color",
   "provider.party.config_entries.show_progress_bar.description": "When enabled, a progress bar will be displayed on the current playing song in the track list, visually indicating the progress of the currently playing song. ",

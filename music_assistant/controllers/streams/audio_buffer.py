@@ -71,6 +71,13 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_buffer")
 
+# Rewrites the decoded PCM of a queue item on its way into the buffer. It receives the
+# source generator and the PCM format of its 1-second chunks, and must yield chunks of
+# that same format and length so buffered positions keep matching the source.
+type PCMTransform = Callable[[AsyncGenerator[bytes], AudioFormat], AsyncGenerator[bytes]]
+# Decides per queue item whether a transform applies, returning None when it does not.
+type PCMTransformResolver = Callable[[StreamDetails], PCMTransform | None]
+
 # Callback signature for cancel observers: invoked when the buffer is cancelled/cleared.
 CancelCallback = Callable[[], None]
 
@@ -144,6 +151,8 @@ class AudioBuffer:
         self.ready = asyncio.Event()
         self._cancel_callbacks: list[CancelCallback] = []
         self._ready_wait_lock = asyncio.Lock()
+        # whether a pcm transform rewrote the audio, so the buffer no longer holds the source's
+        self.transformed = False
         # media second currently heard from this buffer (None if unknown),
         # so played audio is retained relative to what the listener hears
         self.playback_position: Callable[[AudioBuffer], float | None] | None = None
@@ -452,6 +461,7 @@ class AudioBuffer:
         reason: str = "",
         source_wait_timeout: float | None = STREAM_SLOT_WAIT_TIMEOUT,
         on_complete: Callable[[], None] | None = None,
+        pcm_transform: PCMTransform | None = None,
     ) -> AudioBuffer:
         """
         Get or create an AudioBuffer for the given streamdetails.
@@ -469,6 +479,9 @@ class AudioBuffer:
             without a timeout.
         :param on_complete: Called once the source of a newly created buffer has delivered
             all of its audio. Not called when an existing buffer is reused.
+        :param pcm_transform: Rewrites the decoded audio before a newly created buffer
+            stores it. Such a buffer no longer holds the audio of the source, so it is
+            kept out of audio analysis. Ignored when an existing buffer is reused.
         :raises AudioError: If the buffer does not become ready, wrapping the typed
             producer error (e.g. ProviderStreamLimitError) when there is one.
         :raises ProviderStreamLimitError: If a source in an unknown format can not get a
@@ -482,7 +495,11 @@ class AudioBuffer:
         # reuse existing valid buffer
         existing_buffer: AudioBuffer | None = streamdetails.buffer
         if existing_buffer is not None:
-            if existing_buffer.has_error or not existing_buffer.is_valid(seek_position_ms):
+            if (
+                existing_buffer.has_error
+                or not existing_buffer.is_valid(seek_position_ms)
+                or existing_buffer.transformed != (pcm_transform is not None)
+            ):
                 LOGGER.debug(
                     "%s: Existing buffer invalid for %s (seek_ms: %s, discarded: %s)",
                     log_prefix,
@@ -523,7 +540,12 @@ class AudioBuffer:
         if _needs_format_probe(streamdetails):
             await _probe_source_format(mass, streamdetails, source_wait_timeout)
         audio_buffer, buffer_seek_seconds = _new_buffer(
-            mass, streamdetails, seek_position_ms, log_prefix, session_start=reason == "prepare"
+            mass,
+            streamdetails,
+            seek_position_ms,
+            log_prefix,
+            session_start=reason == "prepare",
+            analyze=pcm_transform is None,
         )
 
         # start filling from the media stream (seek in seconds for FFmpeg)
@@ -534,6 +556,9 @@ class AudioBuffer:
             filter_params=None,
             source_wait_timeout=source_wait_timeout,
         )
+        if pcm_transform is not None:
+            audio_source = pcm_transform(audio_source, audio_buffer.pcm_format)
+            audio_buffer.transformed = True
 
         audio_buffer.fill(audio_source, source_name=streamdetails.uri, on_complete=on_complete)
 
@@ -840,6 +865,7 @@ def _new_buffer(
     log_prefix: str,
     *,
     session_start: bool = False,
+    analyze: bool = True,
 ) -> tuple[AudioBuffer, int]:
     """
     Create the buffer for the given stream details and attach it to them.
@@ -850,6 +876,8 @@ def _new_buffer(
     :param log_prefix: Caller context for logging.
     :param session_start: Whether this buffer starts a playback session rather than
         preparing the next item of one.
+    :param analyze: Whether the buffered audio is that of the source and may feed the
+        audio analysis providers.
     :return: The buffer and the position (in seconds) its producer should start at.
     """
     # determine buffer size from config
@@ -955,9 +983,14 @@ def _new_buffer(
     # attach analyze jobs for ahead-of-time processing
     # skip AudioSource and SoundEffect — they should not feed the long-running analyzer flow
     # (radio still runs analysis; the analyzer caps it at 10 minutes)
-    if seek_position_ms == 0 and streamdetails.media_type not in (
-        MediaType.AUDIO_SOURCE,
-        MediaType.SOUND_EFFECT,
+    if (
+        analyze
+        and seek_position_ms == 0
+        and streamdetails.media_type
+        not in (
+            MediaType.AUDIO_SOURCE,
+            MediaType.SOUND_EFFECT,
+        )
     ):
         # audio analysis providers (loudness, beat tracking, key detection, etc.).
         # Fire-and-forget: analysis setup — including a possible model (re)load — must never

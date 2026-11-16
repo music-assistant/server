@@ -98,7 +98,11 @@ from music_assistant.constants import (
 from music_assistant.controllers.streams.audio_analysis import (
     LOUDNESS_PROVIDER_PRIORITY,
 )
-from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.controllers.streams.audio_buffer import (
+    AudioBuffer,
+    PCMTransform,
+    PCMTransformResolver,
+)
 from music_assistant.controllers.streams.audio_processing import (
     AudioOutputPlan,
     get_normalization_details,
@@ -683,6 +687,7 @@ class StreamsAudio:
         self._better_copy_searched: WeakValueDictionary[tuple[str, str], QueueItem] = (
             WeakValueDictionary()
         )
+        self._pcm_transform_resolvers: list[PCMTransformResolver] = []
 
     def setup(self) -> None:
         """Set up the audio sub-controller (called after all core controllers are created)."""
@@ -695,6 +700,44 @@ class StreamsAudio:
         return self._smart_fades_mixer
 
     # --- Public methods ---
+
+    def register_pcm_transform(self, resolver: PCMTransformResolver) -> Callable[[], None]:
+        """
+        Register a transform for the decoded audio of queue items.
+
+        The resolver is asked once for every audio buffer that is created. The transform
+        it returns rewrites the audio before it is buffered, so seeking, crossfades and
+        every player of the queue get the rewritten audio. Such a buffer is kept out of
+        audio analysis.
+
+        :param resolver: Returns the transform for the given stream details, or None
+            to leave their audio untouched.
+        :return: A callback that removes the registration.
+        """
+        self._pcm_transform_resolvers.append(resolver)
+
+        def _unregister() -> None:
+            with suppress(ValueError):
+                self._pcm_transform_resolvers.remove(resolver)
+
+        return _unregister
+
+    def resolve_pcm_transform(self, streamdetails: StreamDetails) -> PCMTransform | None:
+        """
+        Return the registered transform that applies to the given stream details.
+
+        The first resolver that returns a transform wins. A failing resolver is skipped:
+        the item then plays untouched rather than not at all.
+
+        :param streamdetails: The stream details a buffer is about to be created for.
+        """
+        for resolver in self._pcm_transform_resolvers:
+            try:
+                if (transform := resolver(streamdetails)) is not None:
+                    return transform
+            except Exception:
+                self.logger.exception("PCM transform resolver failed for %s", streamdetails.uri)
+        return None
 
     async def get_stream_details(
         self,
@@ -4113,6 +4156,7 @@ class StreamsAudio:
                         queue_item.queue_id,
                         queue_item.queue_item_id,
                     ),
+                    pcm_transform=self.resolve_pcm_transform(streamdetails),
                 )
             except ProviderStreamLimitError as err:
                 last_capacity_error = err

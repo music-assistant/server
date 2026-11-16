@@ -683,6 +683,85 @@ async def test_get_buffer_skips_analysis_for_non_analyzed_types(media_type: Medi
 
 
 @pytest.mark.asyncio
+async def test_get_buffer_applies_pcm_transform_and_skips_analysis() -> None:
+    """A transformed buffer stores the rewritten audio and is kept out of analysis."""
+    mass, start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    streamdetails = _make_stream_details(
+        MediaType.TRACK, duration=180, allow_seek=True, queue_id="queue_a"
+    )
+    seen_formats: list[AudioFormat] = []
+
+    async def _transform(
+        source: AsyncGenerator[bytes], pcm_format: AudioFormat
+    ) -> AsyncGenerator[bytes]:
+        seen_formats.append(pcm_format)
+        async for chunk in source:
+            yield bytes(len(chunk))
+
+    buffer = await AudioBuffer.get_buffer(
+        mass, streamdetails, reason="test", wait_ready=True, pcm_transform=_transform
+    )
+    await asyncio.sleep(0.1)
+
+    assert buffer.eof
+    assert seen_formats == [buffer.pcm_format]
+    assert await buffer.read_chunk_for_analysis(0) == bytes(TEST_PCM_FORMAT.pcm_sample_size)
+    assert scheduled_tasks == []
+    start_analysis.assert_not_called()
+    await buffer.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_buffer_replaces_a_buffer_in_the_other_transform_state() -> None:
+    """A buffer is only reused while the audio it holds is in the state that is asked for."""
+    mass, _start_analysis, _scheduled_tasks = _make_mass_for_get_buffer()
+    streamdetails = _make_stream_details(
+        MediaType.TRACK, duration=180, allow_seek=True, queue_id="queue_a"
+    )
+
+    async def _transform(
+        source: AsyncGenerator[bytes], _pcm_format: AudioFormat
+    ) -> AsyncGenerator[bytes]:
+        async for chunk in source:
+            yield bytes(len(chunk))
+
+    plain = await AudioBuffer.get_buffer(mass, streamdetails, reason="test", wait_ready=True)
+    assert await AudioBuffer.get_buffer(mass, streamdetails, reason="test") is plain
+
+    transformed = await AudioBuffer.get_buffer(
+        mass, streamdetails, reason="test", wait_ready=True, pcm_transform=_transform
+    )
+    assert transformed is not plain
+    assert transformed.transformed
+    assert (
+        await AudioBuffer.get_buffer(mass, streamdetails, reason="test", pcm_transform=_transform)
+        is transformed
+    )
+
+    restored = await AudioBuffer.get_buffer(mass, streamdetails, reason="test", wait_ready=True)
+    assert restored is not transformed
+    assert not restored.transformed
+    for buffer in (plain, transformed, restored):
+        await buffer.clear()
+
+
+def test_pcm_transform_registration_resolves_and_unregisters() -> None:
+    """The first resolver with a transform wins, a failing one is skipped."""
+    audio = StreamsAudio(MagicMock())
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=180, allow_seek=True)
+    transform = MagicMock()
+    unregister_failing = audio.register_pcm_transform(MagicMock(side_effect=RuntimeError))
+    audio.register_pcm_transform(lambda _details: None)
+    unregister = audio.register_pcm_transform(lambda _details: transform)
+
+    assert audio.resolve_pcm_transform(streamdetails) is transform
+
+    unregister()
+    unregister_failing()
+    assert audio.resolve_pcm_transform(streamdetails) is None
+
+
+@pytest.mark.asyncio
 async def test_get_buffer_signals_when_the_fill_completes() -> None:
     """The completion callback runs once the source has delivered all of its audio."""
     mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()

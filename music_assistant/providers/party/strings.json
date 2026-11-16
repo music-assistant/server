@@ -48,6 +48,10 @@
       "label": "Karaoke Mode",
       "description": "When enabled, lyrics are displayed prominently in the center of the screen with the track list minimized to current and next song at the bottom."
     },
+    "remove_vocals": {
+      "label": "Remove Vocals",
+      "description": "When enabled, the vocals are removed from the tracks that play on the party player, so guests can sing along to the instrumental. The change applies from the next track. The audio is processed on this server while it plays: this needs a fast multi-core CPU, delays the start of a track by a few seconds, and downloads the Demucs model on first use."
+    },
     "highlight_ahead": {
       "label": "Highlight Lyrics Ahead of Time",
       "description": "When enabled, the lyric line highlight transition finishes exactly when the line's timestamp arrives, giving a smooth anticipation effect. When disabled, the transition starts at the timestamp instead."

@@ -14,6 +14,7 @@ from music_assistant_models.errors import InsufficientPermissions
 from music_assistant.helpers.shared_playback import SharedPlaybackSession
 from music_assistant.providers.party import (
     CONF_ENABLE_GUEST_ACCESS,
+    CONF_PARTY_KARAOKE_MODE,
     CONF_PARTY_MODE,
     PartyPlugin,
 )
@@ -44,8 +45,10 @@ async def plugin() -> PartyPlugin:
     plugin.config.get_value.side_effect = {
         CONF_ENABLE_GUEST_ACCESS: True,
         CONF_PARTY_MODE: "venue",
+        CONF_PARTY_KARAOKE_MODE: False,
     }.__getitem__
     plugin._unregister_handles = []
+    plugin._vocal_separator = None
     plugin._session = await SharedPlaybackSession.create_venue(plugin.mass, "v")
     plugin._session_lock = asyncio.Lock()
     plugin._get_or_create_session_locked = AsyncMock(  # type: ignore[method-assign]
