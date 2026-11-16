@@ -54,6 +54,10 @@ _CLOCK_MIN_SLOPE_POINTS = 5
 _JUMP_THRESHOLD_US = 5000
 _JUMP_SAMPLES = 3
 
+# the start error is the mean of this many reports, the first ones from this far (ms) into the
+# stream: until then a player reports up to tens of milliseconds off what it settles on
+_START_REPORTS = 3
+_START_SKIP_MS = 200
 # reports needed before the loop acts on the filtered error
 _MIN_REPORTS = 5
 # a report with the elapsed time of the previous one and this close to it is the same reading
@@ -244,7 +248,8 @@ class SyncLoop:
         :param max_rate_ppm: Highest correction rate.
         :param window_s: Length of the window over which the error is filtered.
         :param min_span_s: Time the reports have to span before their drift is trusted.
-        :param settle_s: Time after the start during which reports are ignored.
+        :param settle_s: Time after the start during which reports do not count for the
+            filtered error.
         :param start_jump_ms: Start error above which it is corrected in one jump.
         """
         self._sample_rate = sample_rate
@@ -255,7 +260,8 @@ class SyncLoop:
         self._window_s = window_s
         self._min_span_s = min_span_s
         self._settled_us = start_us + round(settle_s * 1_000_000)
-        self._start_jump_ms = start_jump_ms
+        # may be set until the start error is measured: a jump in silence is not heard
+        self.start_jump_ms = start_jump_ms
         # stream frame p carries source frame p + offset. The ledger holds the offset per
         # stream position, (position, offset from there on), for what is not played yet.
         self._ledger: deque[tuple[int, int]] = deque([(0, 0)])
@@ -266,6 +272,8 @@ class SyncLoop:
         self._residual = 0.0
         # reports in the filter window: (seconds since the start, error without corrections)
         self._points: deque[tuple[float, float]] = deque()
+        # errors of the reports the start error is taken from
+        self._start_reports: list[float] = []
         self._last_report: tuple[int, int] | None = None
         # elapsed time the player loses when its frame counter wraps, and lost that way so far
         self._wrap_ms = _FRAME_COUNTER_WRAP * 1000 / sample_rate
@@ -298,6 +306,11 @@ class SyncLoop:
         return self._start_error_ms
 
     @property
+    def pending_jump(self) -> int:
+        """Return the frames of the start jump ``process`` has yet to drop, negative to insert."""
+        return self._pending_jump
+
+    @property
     def frames_sent(self) -> int:
         """Return the number of stream frames returned by ``process`` so far."""
         return self._frames_sent
@@ -311,9 +324,10 @@ class SyncLoop:
         """
         Take in a status report of the player.
 
-        A report is ignored while the player settles after the start, when nothing was
-        played yet and when it repeats the previous report. The elapsed time may start
-        over when the frame counter of the player wraps.
+        The start error is taken from the first reports that show the stream playing.
+        For the error after it a report is ignored while the player settles after the
+        start, when nothing was played yet and when it repeats the previous report. The
+        elapsed time may start over when the frame counter of the player wraps.
 
         :param server_us: Server time of the report, from ``PlayerClock.to_server_us``.
         :param elapsed_ms: Elapsed milliseconds of the stream as reported by the player.
@@ -324,12 +338,13 @@ class SyncLoop:
             # report times from before a clock jump do not compare with the ones after it
             self._clock_generation = clock_generation
             self._points.clear()
+            self._start_reports.clear()
             self._rate_ppm = self._drift_ppm = 0.0
             self._error_ms = self._predicted_ms = None
         previous, self._last_report = self._last_report, (server_us, elapsed_ms)
         if previous is not None and elapsed_ms < previous[1] - self._wrap_ms / 2:
             self._wrapped_ms += self._wrap_ms
-        if elapsed_ms <= 0 or server_us < self._settled_us:
+        if elapsed_ms <= 0:
             return None
         if (
             previous is not None
@@ -340,15 +355,25 @@ class SyncLoop:
 
         # elapsed is truncated to whole milliseconds: half a millisecond removes the bias
         elapsed = elapsed_ms + self._wrapped_ms + 0.5
+        # the error with every correction taken out again is the start error plus the
+        # drift: a straight line whatever the loop did, which is what the filter fits
+        raw_ms = (server_us - self._start_us) / 1000 - elapsed
+        if self._start_error_ms is None and elapsed >= _START_SKIP_MS:
+            # nothing was corrected yet, so this is the error of the start itself
+            self._start_reports.append(raw_ms)
+            if len(self._start_reports) == _START_REPORTS:
+                self._start_error_ms = start_error_ms = sum(self._start_reports) / _START_REPORTS
+                if self.start_jump_ms < abs(start_error_ms) <= MAX_START_JUMP_MS:
+                    self._pending_jump = round(start_error_ms * self._sample_rate / 1000)
+        if server_us < self._settled_us:
+            return None
+
         position = int(elapsed * self._sample_rate / 1000)
         ledger = self._ledger
         while len(ledger) > 1 and ledger[1][0] <= position:
             ledger.popleft()
         played_ms = self._to_ms(ledger[0][1])
 
-        # the error with every correction taken out again is the start error plus the
-        # drift: a straight line whatever the loop did, which is what the filter fits
-        raw_ms = (server_us - self._start_us) / 1000 - elapsed
         seconds = (server_us - self._start_us) / 1_000_000
         points = self._points
         points.append((seconds, raw_ms))
@@ -359,11 +384,6 @@ class SyncLoop:
         self._drift_ppm = slope * 1000
 
         if len(points) >= _MIN_REPORTS:
-            if self._start_error_ms is None:
-                # nothing was corrected yet, so this is the error of the start itself
-                self._start_error_ms = raw_now
-                if self._start_jump_ms < abs(raw_now) <= MAX_START_JUMP_MS:
-                    self._pending_jump = round(raw_now * self._sample_rate / 1000)
             # what is left of the error once everything that was sent has been played
             self._predicted_ms = raw_now - self._to_ms(self._offset + self._pending_jump)
             rate_ppm = self._drift_ppm + self._gain_ppm_per_ms * self._predicted_ms

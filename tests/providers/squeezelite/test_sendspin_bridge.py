@@ -40,15 +40,19 @@ from music_assistant.providers.squeezelite.bridge_role import (
     SLIMPROTO_BRIDGE_ROLE_ID,
     SlimprotoBridgeRole,
 )
-from music_assistant.providers.squeezelite.bridge_sync import MAX_START_JUMP_MS
+from music_assistant.providers.squeezelite.bridge_sync import MAX_START_JUMP_MS, START_JUMP_MS
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer
 from music_assistant.providers.squeezelite.provider import SqueezelitePlayerProvider
 from music_assistant.providers.squeezelite.sendspin_bridge import (
+    ALIGN_JUMP_MS,
+    ALIGN_LEAD_US,
+    ALIGN_TIMEOUT_US,
     BRIDGE_MIN_BUFFER_MS,
     BRIDGE_REQUIRED_LEAD_MS,
     BRIDGE_STREAM_PATH,
     CACHE_CATEGORY_START_OFFSET,
     CLOCK_MAX_AGE_US,
+    LEAD_IN_US,
     MAX_BLOCK_US,
     MAX_PENDING_AUDIO_US,
     MAX_PENDING_CHUNKS,
@@ -61,7 +65,7 @@ from music_assistant.providers.squeezelite.sendspin_bridge import (
     RECOVERY_GUARD_US,
     STARVED_LEAD_US,
     STATUS_POLL_INTERVAL,
-    STATUS_POLL_INTERVAL_UNMAPPED,
+    STATUS_POLL_INTERVAL_FAST,
     STATUS_TOKEN_BIT,
     STREAM_LEAD_US,
     STREAM_THRESHOLD_KB,
@@ -96,6 +100,8 @@ TEN_MS = BRIDGE_SAMPLE_RATE // 100
 # what the player is sent of a second of audio
 SECOND = BRIDGE_SAMPLE_RATE
 PREROLL_FRAMES = SECOND * PREROLL_US // 1_000_000
+LEAD_IN_FRAMES = SECOND * LEAD_IN_US // 1_000_000
+ALIGN_LEAD_FRAMES = SECOND * ALIGN_LEAD_US // 1_000_000
 STREAM_LEAD_FRAMES = SECOND * STREAM_LEAD_US // 1_000_000
 STARVED_LEAD_FRAMES = SECOND * STARVED_LEAD_US // 1_000_000
 MAX_BLOCK_FRAMES = SECOND * MAX_BLOCK_US // 1_000_000
@@ -408,6 +414,10 @@ class _Rig:
         """Return whether the stream on the player is that of the bridge."""
         return self.bridge.owns_stream
 
+    def aligning(self) -> bool:
+        """Return whether the start of the current session is still to be corrected."""
+        return self.session.aligning
+
     def jiffies(self, server_us: int | None = None) -> int:
         """Return the player's clock at a server time, now by default."""
         server_us = self.now_us if server_us is None else server_us
@@ -486,6 +496,10 @@ class _Rig:
         await _settle()
         return session
 
+    def knows_start_offset(self, offset_us: int) -> None:
+        """Let the bridge manager know how much later than told the player starts."""
+        self.manager._start_offsets_us[PLAYER_ID] = offset_us
+
     async def start_hires(self) -> None:
         """Register the bridge of a player that plays up to 48 kHz / 24 bit, which Sendspin picks."""
         self.protocol.get_supported_sample_rates.return_value = [
@@ -503,18 +517,51 @@ class _Rig:
         session.claimed = True
         session.preroll_sent = True
 
-    def play(self, session: BridgeSession, seconds: float, *, late_ms: int = 0) -> None:
+    def play(
+        self, session: BridgeSession, seconds: float, *, late_ms: int = 0, every_us: int = 250_000
+    ) -> None:
         """
         Let the player play for a while and report four times a second.
 
         :param session: The session it plays.
         :param seconds: How long it plays.
         :param late_ms: How far behind its timeline it plays.
+        :param every_us: The time between two reports, when it is asked more often.
         """
-        for _ in range(round(seconds * 4)):
-            self.clock.advance_us(250_000)
+        for _ in range(round(seconds * 1_000_000 / every_us)):
+            self.clock.advance_us(every_us)
             elapsed_ms = (self.now_us - session.start_us) // 1000 - late_ms
             self.bridge.handle_slim_event(self.status(elapsed_ms=max(0, elapsed_ms)))
+
+    def align(self, session: BridgeSession, *, late_ms: int = 0) -> bytes:
+        """
+        Let the player start and report every 50 ms, until the writer has its start corrected.
+
+        :param session: The session it plays.
+        :param late_ms: How much later than its start instant the player starts.
+        :return: What the writer sent to the player meanwhile, one block per report.
+        """
+        blocks = [self.bridge._next_block(session)]
+        self.clock.advance_us(max(0, session.start_us - self.now_us))
+        while session.aligning:
+            self.play(session, 0.05, late_ms=late_ms, every_us=50_000)
+            blocks.append(self.bridge._next_block(session))
+        return b"".join(blocks)
+
+    def first_audio(
+        self, session: BridgeSession, sent: bytes, *, late_ms: int = 0
+    ) -> tuple[int, int]:
+        """
+        Return the first source frame a player hears, and how much later than due (us).
+
+        :param session: The session it plays.
+        :param sent: Everything the player was sent after the preroll.
+        :param late_ms: How much later than its start instant the player started.
+        """
+        frames = _frames(sent)
+        index = next(index for index, frame in enumerate(frames) if frame >= 0)
+        heard_us = session.start_us + late_ms * 1000 + _frame_us(PREROLL_FRAMES + index)
+        return frames[index], heard_us - self.origin_us - _frame_us(frames[index])
 
     def drain(self, session: BridgeSession) -> bytes:
         """Return everything the writer may send to the player now."""
@@ -568,7 +615,7 @@ def _timing() -> Any:
     with (
         patch(f"{MODULE}.WRITE_INTERVAL", 0),
         patch(f"{MODULE}.STATUS_POLL_INTERVAL", 60),
-        patch(f"{MODULE}.STATUS_POLL_INTERVAL_UNMAPPED", 60),
+        patch(f"{MODULE}.STATUS_POLL_INTERVAL_FAST", 60),
     ):
         yield
 
@@ -968,7 +1015,7 @@ async def test_the_role_starts_a_stream_that_came_without_a_request(rig: _Rig) -
 
 
 async def test_the_stream_is_served_to_the_player_that_asks_for_the_session(rig: _Rig) -> None:
-    """The player gets the preroll at once and its audio as far as it is allowed."""
+    """The player gets the preroll at once, and what it is allowed as it plays."""
     session = await rig.start_playing()
     session.claimed = session.preroll_sent = False
     response = _Response()
@@ -977,9 +1024,16 @@ async def test_the_stream_is_served_to_the_player_that_asks_for_the_session(rig:
     await _settle()
 
     assert response.prepare.await_count == 1
-    preroll, audio = response.body[: PREROLL_FRAMES * 4], response.body[PREROLL_FRAMES * 4 :]
-    assert _frames(bytes(preroll)) == [-1] * PREROLL_FRAMES
-    assert _frames(bytes(audio)) == list(range(STREAM_LEAD_FRAMES - PREROLL_FRAMES))
+    # nothing more until it is told to start: the preroll is more than the short lead
+    assert _frames(bytes(response.body)) == [-1] * PREROLL_FRAMES
+    rig.clock.advance_us(session.start_us - rig.now_us)
+    while session.aligning:
+        rig.play(session, 0.05, every_us=50_000)
+        await _settle()
+    # then the rest of the lead-in and its audio, the lead ahead of the 300 ms it played
+    audio = response.body[LEAD_IN_FRAMES * 4 :]
+    assert _frames(bytes(response.body[: LEAD_IN_FRAMES * 4])) == [-1] * LEAD_IN_FRAMES
+    assert _frames(bytes(audio)) == list(range(13230 + STREAM_LEAD_FRAMES - LEAD_IN_FRAMES))
     rig.bridge._on_stream_end()
     await serving
 
@@ -1067,6 +1121,13 @@ async def test_the_stream_is_a_plain_http_body(rig: _Rig) -> None:
         rig.map_clock()
         rig.bridge._on_audio_chunk(_chunk(rig.now_us + 2_000_000, 0, SECOND))
         rig.event(SlimEventType.PLAYER_BUFFER_READY)
+        # the player starts, shows where it is and plays for a second more
+        rig.clock.advance_us(session.start_us - rig.now_us)
+        while session.aligning:
+            rig.play(session, 0.05, every_us=50_000)
+            await _settle()
+        rig.clock.advance_us(1_000_000)
+        lead_in = await reader.readexactly((LEAD_IN_FRAMES - PREROLL_FRAMES) * FRAME_SIZE)
         audio = await reader.readexactly(SECOND * FRAME_SIZE)
         rig.bridge._on_stream_end()
         rest = await reader.read()
@@ -1077,19 +1138,22 @@ async def test_the_stream_is_a_plain_http_body(rig: _Rig) -> None:
     assert "transfer-encoding" not in head
     assert "content-length" not in head
     assert preroll == bytes(PREROLL_FRAMES * FRAME_SIZE)
+    assert lead_in == bytes((LEAD_IN_FRAMES - PREROLL_FRAMES) * FRAME_SIZE)
     assert _frames(audio) == list(range(SECOND))
     assert _frames(rest) == [-1] * (len(rest) // FRAME_SIZE)
 
 
 async def test_the_first_chunk_is_heard_at_its_timestamp(rig: _Rig) -> None:
-    """The stream starts one preroll before the first chunk, so that chunk is on time."""
+    """The stream starts a lead-in of silence before the first chunk, so that chunk is on time."""
     session = await rig.start_playing()
 
-    assert session.start_us == rig.origin_us - PREROLL_US
+    assert session.start_us == rig.origin_us - LEAD_IN_US
     assert rig.session.loop is not None
     # the preroll is frame 0 and on of the stream
     assert rig.session.loop.frames_sent == PREROLL_FRAMES
-    assert _frames(rig.bridge._next_block(session))[:3] == [0, 1, 2]
+    sent = _frames(rig.align(session) + rig.drain(session))
+    assert sent[: LEAD_IN_FRAMES - PREROLL_FRAMES] == [-1] * (LEAD_IN_FRAMES - PREROLL_FRAMES)
+    assert sent[LEAD_IN_FRAMES - PREROLL_FRAMES :][:3] == [0, 1, 2]
 
 
 @pytest.mark.parametrize(("sync_adjust", "shift_us"), [(0, 0), (100, -100_000), (-80, 80_000)])
@@ -1099,9 +1163,10 @@ async def test_a_positive_sync_delay_plays_earlier(sync_adjust: int, shift_us: i
     try:
         session = await rig.start_playing()
 
-        assert session.start_us == rig.origin_us + shift_us - PREROLL_US
+        assert session.start_us == rig.origin_us + shift_us - LEAD_IN_US
         rig.client.unpause_at.assert_awaited_once_with(rig.jiffies(session.start_us))
-        assert _frames(rig.bridge._next_block(session))[0] == 0
+        sent = _frames(rig.align(session) + rig.drain(session))
+        assert sent[LEAD_IN_FRAMES - PREROLL_FRAMES - 1 :][:2] == [-1, 0]
     finally:
         await rig.close()
 
@@ -1214,16 +1279,17 @@ async def test_24_bit_audio_reaches_the_player_in_3_bytes_per_sample(rig: _Rig) 
 
     session = await rig.start_playing(frames=4 * 48000, chunk=_chunk_24)
 
-    # on the timeline as any stream: its first frame a preroll after its start
-    assert session.start_us == rig.origin_us - PREROLL_US
+    # on the timeline as any stream: its first frame a lead-in after its start
+    assert session.start_us == rig.origin_us - LEAD_IN_US
     assert session.loop is not None
     assert session.loop.frames_sent == 12000
-    # the lead of a second and a half in frames of this stream, less the preroll
-    lead = rig.drain(session)
-    assert _frames_24(lead) == list(range(72000 - 12000))
+    # the lead-in of 1.35 seconds in frames of this stream, less the preroll, and then the
+    # lead of a second and a half ahead of the 300 ms it played
+    lead = rig.align(session) + rig.drain(session)
+    assert _frames_24(lead) == [-1] * (64800 - 12000) + list(range(14400 + 72000 - 64800))
     # and a second more for every second that it plays
-    rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
-    assert _frames_24(rig.drain(session)) == list(range(60000, 108000))
+    rig.clock.advance_us(1_000_000)
+    assert _frames_24(rig.drain(session)) == list(range(21600, 69600))
 
 
 async def test_corrections_are_frames_of_the_format_of_the_stream(rig: _Rig) -> None:
@@ -1234,8 +1300,8 @@ async def test_corrections_are_frames_of_the_format_of_the_stream(rig: _Rig) -> 
 
     rig.play(session, 1.5, late_ms=50)
 
-    assert rig.manager.get_start_offset_us(PLAYER_ID) == 49_500
     assert session.loop is not None
+    assert session.loop.start_error_ms == pytest.approx(49.5)
     session.loop.process(bytes(48000 * 6))
     assert session.loop.frames_consumed - session.loop.frames_sent == round(49.5 * 48)
     assert session.loop.frames_sent == 12000 + 48000 - round(49.5 * 48)
@@ -1269,6 +1335,8 @@ async def test_a_backlog_is_only_converted_as_it_is_sent(rig: _Rig) -> None:
     """A late joiner is handed half a minute at once: none of it is converted on arrival."""
     await rig.start_hires()
     session = await rig.start_playing(frames=48000, chunk=_chunk_24)
+    # a second of the lead-in went out by the time the start is corrected
+    rig.align(session)
     with patch(f"{MODULE}._pack_24_bit", wraps=_pack_24_bit) as pack:
         backlog = [_chunk_24(rig.origin_us, second * 48000, 48000) for second in range(1, 30)]
         for chunk in backlog:
@@ -1281,7 +1349,7 @@ async def test_a_backlog_is_only_converted_as_it_is_sent(rig: _Rig) -> None:
     # one block of half a second, in 3 bytes per sample
     assert len(block) == 24000 * 6
     assert [len(converted.args[0]) for converted in pack.call_args_list] == [24000 * 8]
-    assert _frames_24(block) == list(range(24000))
+    assert _frames_24(block) == [-1] * 16800 + list(range(7200))
 
 
 async def test_a_stream_keeps_its_format_when_it_is_restarted(rig: _Rig) -> None:
@@ -1442,47 +1510,75 @@ def test_the_audio_that_waits_is_capped() -> None:
 async def test_a_late_join_backlog_is_paced(rig: _Rig) -> None:
     """Sendspin hands a late joiner up to 30 seconds at once: the player gets a lead of it."""
     session = await rig.start_playing(frames=SECOND)
+    assert session.loop is not None
     for second in range(1, 30):
         rig.bridge._on_audio_chunk(_chunk(rig.origin_us, second * SECOND, SECOND))
+    sent = rig.align(session)
 
     block = rig.bridge._next_block(session)
     assert len(block) == MAX_BLOCK_FRAMES * FRAME_SIZE
-    sent = block + rig.drain(session)
+    sent += block + rig.drain(session)
 
-    # the preroll counts: with it the player holds the lead, and no more
-    assert len(sent) == (STREAM_LEAD_FRAMES - PREROLL_FRAMES) * FRAME_SIZE
-    assert len(session.chunks) == 29
-    # a second into the stream it is given a second more
-    rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
+    # the preroll counts: with it the player holds the lead ahead of the 300 ms it played,
+    # and no more
+    assert len(sent) == (13230 + STREAM_LEAD_FRAMES - PREROLL_FRAMES) * FRAME_SIZE
+    assert _frames(sent)[-1] == 13230 + STREAM_LEAD_FRAMES - LEAD_IN_FRAMES - 1
+    assert len(session.chunks) == 30
+    # a second later it is given a second more
+    rig.clock.advance_us(1_000_000)
     assert len(rig.drain(session)) == SECOND * FRAME_SIZE
+    assert len(session.chunks) == 29
 
 
 # ---------------------------------------------------------------- pacing
 
 
-async def test_before_its_start_the_player_gets_the_lead(rig: _Rig) -> None:
-    """Up to the start the stream is filled to the lead once, whatever the time."""
+async def test_before_its_start_the_player_gets_no_more_than_its_preroll(rig: _Rig) -> None:
+    """Up to the start the player holds its preroll, which is more than the short lead."""
     session = await rig.start_playing()
     assert session.loop is not None
+    assert ALIGN_LEAD_FRAMES < PREROLL_FRAMES
 
-    assert len(rig.drain(session)) == (STREAM_LEAD_FRAMES - PREROLL_FRAMES) * FRAME_SIZE
-    assert session.loop.frames_sent == STREAM_LEAD_FRAMES
+    assert rig.drain(session) == b""
     rig.clock.advance_us(session.start_us - rig.now_us)
     assert rig.drain(session) == b""
+    assert session.loop.frames_sent == PREROLL_FRAMES
+
+
+async def test_a_player_is_kept_a_short_lead_of_silence_from_when_it_is_told_to_start(
+    rig: _Rig,
+) -> None:
+    """A player takes from its stream from that instant on, whatever it reports as played."""
+    rig.knows_start_offset(110_000)
+    session = await rig.start_playing()
+    assert session.loop is not None
+    assert session.command_us == session.start_us - 110_000
+
+    rig.clock.advance_us(session.command_us - rig.now_us + 100_000)
+    assert rig.drain(session) == bytes((SECOND * 3 // 10 - PREROLL_FRAMES) * FRAME_SIZE)
+    # a late player holds what it was sent: what it reports does not hold the stream back
+    rig.clock.advance_us(10_000)
+    assert rig.drain(session) == bytes(SECOND // 100 * FRAME_SIZE)
+    for _ in range(8):
+        rig.play(session, 0.05, late_ms=1000, every_us=50_000)
+        assert rig.drain(session) == bytes(SECOND // 20 * FRAME_SIZE)
+    assert session.aligning
+    assert session.loop.frames_sent == round(0.51 * SECOND) + ALIGN_LEAD_FRAMES
 
 
 async def test_after_its_start_the_player_is_kept_the_lead_ahead(rig: _Rig) -> None:
     """The stream follows the timeline: what was played is replaced."""
     session = await rig.start_playing(frames=10 * SECOND)
     assert session.loop is not None
+    rig.align(session)
     rig.drain(session)
 
-    rig.clock.advance_us(session.start_us - rig.now_us + 20_000)
+    rig.clock.advance_us(20_000)
     assert len(rig.drain(session)) == 882 * FRAME_SIZE
     rig.clock.advance_us(3_000_000)
     rig.drain(session)
 
-    assert session.loop.frames_sent == round(3.02 * SECOND) + STREAM_LEAD_FRAMES
+    assert session.loop.frames_sent == round(3.32 * SECOND) + STREAM_LEAD_FRAMES
 
 
 async def test_corrections_count_in_what_the_player_is_allowed(rig: _Rig) -> None:
@@ -1490,6 +1586,7 @@ async def test_corrections_count_in_what_the_player_is_allowed(rig: _Rig) -> Non
     session = await rig.start_playing(frames=40 * SECOND)
     loop = session.loop
     assert loop is not None
+    rig.align(session)
     rig.drain(session)
     # a player that is 3 ms late is sent less than the timeline: frames are dropped
     for _ in range(40):
@@ -1508,41 +1605,47 @@ async def test_silence_keeps_a_player_fed_that_sendspin_has_nothing_for(rig: _Ri
     session = await rig.start_playing(frames=SECOND)
     loop = session.loop
     assert loop is not None
-    assert _frames(rig.drain(session)) == list(range(SECOND))
+    sent = rig.align(session)
+    rig.clock.advance_us(session.start_us - rig.now_us + 900_000)
+    sent += rig.drain(session)
+    assert _frames(sent) == [-1] * (LEAD_IN_FRAMES - PREROLL_FRAMES) + list(range(SECOND))
 
     # everything was sent: nothing more while the player still holds enough
-    rig.clock.advance_us(session.start_us - rig.now_us + 700_000)
+    rig.clock.advance_us(900_000)
     assert rig.drain(session) == b""
     rig.clock.advance_us(300_000)
     starved = rig.drain(session)
 
     assert _frames(starved) == [-1] * (len(starved) // FRAME_SIZE)
-    assert loop.frames_consumed == SECOND + STARVED_LEAD_FRAMES
+    assert loop.frames_consumed == round(2.1 * SECOND) + STARVED_LEAD_FRAMES
     # audio that arrives late is played from where the stream is by then
-    late_from = loop.frames_consumed - PREROLL_FRAMES
+    late_from = loop.frames_consumed - LEAD_IN_FRAMES
     rig.bridge._on_audio_chunk(_chunk(rig.origin_us, SECOND, SECOND))
     assert _frames(rig.drain(session))[0] == late_from
 
 
-async def test_audio_that_arrives_before_the_start_is_not_replaced_by_silence(rig: _Rig) -> None:
-    """A player that waits for its start gets no silence in the place of audio still to come."""
+async def test_audio_that_is_still_to_arrive_is_not_replaced_by_silence(rig: _Rig) -> None:
+    """A player that holds more than it needs gets no silence in the place of audio to come."""
     tenth = SECOND // 10
     session = await rig.start_playing(frames=tenth)
     loop = session.loop
     assert loop is not None
-    assert session.start_us - rig.now_us == 1_750_000
+    assert session.start_us - rig.now_us == 650_000
 
     # all there is of the stream so far, and no silence behind it
-    assert _frames(rig.drain(session)) == list(range(tenth))
+    sent = _frames(rig.align(session) + rig.drain(session))
+    assert sent == [-1] * (LEAD_IN_FRAMES - PREROLL_FRAMES) + list(range(tenth))
     rig.bridge._on_audio_chunk(_chunk(rig.origin_us, tenth, tenth))
     assert _frames(rig.drain(session)) == list(range(tenth, 2 * tenth))
 
-    # close to its start the player is kept fed, as it is while it plays
-    rig.clock.advance_us(session.start_us - rig.now_us)
+    # close to the end of what it holds the player is kept fed
+    rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
+    assert rig.drain(session) == b""
+    rig.clock.advance_us(100_000)
     starved = rig.drain(session)
     assert starved
     assert _frames(starved) == [-1] * (len(starved) // FRAME_SIZE)
-    assert loop.frames_consumed == STARVED_LEAD_FRAMES
+    assert loop.frames_consumed == round(1.1 * SECOND) + STARVED_LEAD_FRAMES
 
 
 # ---------------------------------------------------------------- start
@@ -1553,8 +1656,8 @@ async def test_the_player_is_told_when_to_start_on_its_own_clock(rig: _Rig) -> N
     session = await rig.start_playing()
 
     assert session.started
-    rig.client.unpause_at.assert_awaited_once_with(rig.jiffies(rig.origin_us - PREROLL_US))
-    rig.client.unpause_at.assert_awaited_once_with(JIFFIES_AT_EPOCH + 1750)
+    rig.client.unpause_at.assert_awaited_once_with(rig.jiffies(rig.origin_us - LEAD_IN_US))
+    rig.client.unpause_at.assert_awaited_once_with(JIFFIES_AT_EPOCH + 650)
 
 
 async def test_a_start_is_at_least_300_ms_ahead(rig: _Rig) -> None:
@@ -1564,10 +1667,11 @@ async def test_a_start_is_at_least_300_ms_ahead(rig: _Rig) -> None:
     assert MIN_START_AHEAD_US == 300_000
     assert session.start_us == rig.now_us + MIN_START_AHEAD_US
     rig.client.unpause_at.assert_awaited_once_with(rig.jiffies() + 300)
-    # the stream is 450 ms late for the first chunk: that much of it is left out
-    skipped = (session.start_us + PREROLL_US - rig.origin_us) * BRIDGE_SAMPLE_RATE // 1_000_000
-    assert skipped == 19845
-    assert _frames(rig.bridge._next_block(session))[:2] == [skipped, skipped + 1]
+    # the stream starts 200 ms into its audio and its start takes 500 ms of it to correct:
+    # that much is left out, and what follows is on the timeline
+    first, late_us = rig.first_audio(session, rig.align(session))
+    assert first == round(0.7 * SECOND)
+    assert late_us == 0
 
 
 async def test_a_start_that_is_past_starts_as_soon_as_it_can(rig: _Rig) -> None:
@@ -1575,7 +1679,9 @@ async def test_a_start_that_is_past_starts_as_soon_as_it_can(rig: _Rig) -> None:
     session = await rig.start_playing(first_chunk_ahead_us=-1_000_000)
 
     assert session.start_us == rig.now_us + MIN_START_AHEAD_US
-    assert _frames(rig.bridge._next_block(session))[0] == round(1.55 * SECOND)
+    first, late_us = rig.first_audio(session, rig.align(session))
+    assert first == round(1.8 * SECOND)
+    assert late_us == 0
 
 
 async def test_a_start_is_at_most_5_seconds_ahead(rig: _Rig) -> None:
@@ -1596,7 +1702,7 @@ async def test_a_start_is_at_most_5_seconds_ahead(rig: _Rig) -> None:
 
     rig.client.unpause_at.side_effect = lambda _jiffies: told_at.append(rig.now_us)
     with patch("asyncio.sleep", new=_sleep):
-        session = await rig.start_playing(first_chunk_ahead_us=8_250_000)
+        session = await rig.start_playing(first_chunk_ahead_us=8_000_000 + LEAD_IN_US)
         for _ in range(10):
             await real_sleep(0)
 
@@ -1607,22 +1713,198 @@ async def test_a_start_is_at_most_5_seconds_ahead(rig: _Rig) -> None:
 
 async def test_a_learned_start_offset_tells_the_player_earlier(rig: _Rig) -> None:
     """A player that starts late is told to start that much earlier."""
-    rig.manager.learn_start_offset(PLAYER_ID, 420.0)
+    rig.knows_start_offset(300_000)
 
     session = await rig.start_playing()
 
-    assert session.start_us == rig.origin_us - PREROLL_US
-    rig.client.unpause_at.assert_awaited_once_with(rig.jiffies(session.start_us) - 420)
+    assert session.start_us == rig.origin_us - LEAD_IN_US
+    rig.client.unpause_at.assert_awaited_once_with(rig.jiffies(session.start_us) - 300)
 
 
 async def test_a_learned_start_offset_counts_in_the_earliest_start(rig: _Rig) -> None:
     """The command has to be 300 ms ahead, so the start itself is the offset later."""
-    rig.manager.learn_start_offset(PLAYER_ID, 420.0)
+    rig.knows_start_offset(420_000)
 
     session = await rig.start_playing(first_chunk_ahead_us=100_000)
 
     assert session.start_us == rig.now_us + MIN_START_AHEAD_US + 420_000
     rig.client.unpause_at.assert_awaited_once_with(rig.jiffies() + 300)
+
+
+# ---------------------------------------------------------------- start in silence
+
+
+async def test_a_late_player_plays_its_first_audio_on_its_timeline(
+    rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Silence a late player was not sent yet is left out: its audio is on time, all of it."""
+    caplog.set_level(logging.DEBUG, logger="test.squeezelite")
+    session = await rig.start_playing()
+    assert session.loop is not None
+    assert session.first_audible_us is not None
+    assert session.first_audible_us - session.start_us == LEAD_IN_US
+
+    sent = rig.align(session, late_ms=280) + rig.drain(session)
+
+    assert session.loop.start_error_ms == pytest.approx(279.5)
+    first, late_us = rig.first_audio(session, sent, late_ms=280)
+    assert first == 0
+    # half a millisecond is what an elapsed time in whole milliseconds hides
+    assert late_us == pytest.approx(500, abs=25)
+    # the lead-in of the player is that much shorter
+    assert _frames(sent).index(0) == LEAD_IN_FRAMES - PREROLL_FRAMES - round(279.5 * 44.1)
+    assert "its start was +279.5 ms off" in caplog.text
+    assert "silence before it, 0 ms of its first audio left out" in caplog.text
+
+
+async def test_a_delay_the_silence_does_not_cover_takes_the_first_audio(
+    rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With too little silence left for it, a late player comes in later, on its timeline."""
+    caplog.set_level(logging.DEBUG, logger="test.squeezelite")
+    # a start that can only be 700 ms ahead of its audio
+    session = await rig.start_playing(first_chunk_ahead_us=1_000_000)
+    assert session.first_audible_us is not None
+    assert session.start_us == rig.now_us + MIN_START_AHEAD_US
+    assert session.first_audible_us - session.start_us == 700_000
+
+    sent = rig.align(session, late_ms=280) + rig.drain(session)
+
+    # the player was sent 800 ms of its stream by the time its start was measured, which
+    # is 600 ms after it: the 280 ms left out on top of that end 380 ms into the audio
+    first, late_us = rig.first_audio(session, sent, late_ms=280)
+    assert first == round(0.8 * SECOND) + round(279.5 * 44.1) - round(0.7 * SECOND)
+    assert late_us == pytest.approx(500, abs=25)
+    assert "silence before it, 380 ms of its first audio left out" in caplog.text
+
+
+async def test_an_early_player_plays_its_first_audio_on_its_timeline(rig: _Rig) -> None:
+    """A player that starts ahead of its instant gets that much more silence."""
+    session = await rig.start_playing()
+    assert session.loop is not None
+
+    sent = rig.align(session, late_ms=-40) + rig.drain(session)
+
+    assert session.loop.start_error_ms == pytest.approx(-40.5)
+    first, late_us = rig.first_audio(session, sent, late_ms=-40)
+    assert first == 0
+    assert late_us == pytest.approx(500, abs=25)
+    assert _frames(sent).index(0) == LEAD_IN_FRAMES - PREROLL_FRAMES + round(40.5 * 44.1)
+
+
+@pytest.mark.parametrize(("late_ms", "corrected_ms"), [(3, 2.5), (1, 0.0), (-2, -2.5)])
+async def test_a_small_start_error_is_corrected_in_the_silence_too(
+    rig: _Rig, late_ms: int, corrected_ms: float
+) -> None:
+    """A jump in silence is not heard, so a start that is a millisecond off gets one."""
+    assert ALIGN_JUMP_MS == 1.0 < START_JUMP_MS
+    session = await rig.start_playing()
+
+    sent = rig.align(session, late_ms=late_ms) + rig.drain(session)
+
+    lead_in = LEAD_IN_FRAMES - PREROLL_FRAMES - round(corrected_ms * 44.1)
+    assert _frames(sent)[lead_in - 1 :][:2] == [-1, 0]
+
+
+async def test_no_audio_goes_out_until_the_start_is_corrected(rig: _Rig) -> None:
+    """A player that is not on its timeline yet gets silence, also when its audio is due."""
+    session = await rig.start_playing(first_chunk_ahead_us=800_000)
+    loop = session.loop
+    assert loop is not None
+    pending_us = session.pending_us
+    blocks = [rig.bridge._next_block(session)]
+    rig.clock.advance_us(session.start_us - rig.now_us)
+
+    # a player that starts 400 ms late, with its audio due 500 ms after its start instant
+    while loop.start_error_ms is None:
+        blocks.append(rig.bridge._next_block(session))
+        rig.play(session, 0.05, late_ms=400, every_us=50_000)
+
+    assert rig.now_us - rig.origin_us == 200_000
+    assert session.aligning
+    assert not any(b"".join(blocks))
+    assert session.pending_us == pending_us
+    # what is left out of its audio is what the player holds by then, and the correction
+    sent = b"".join(blocks) + rig.align(session, late_ms=400) + rig.drain(session)
+    first, late_us = rig.first_audio(session, sent, late_ms=400)
+    assert first == round(0.9 * SECOND) + round(399.5 * 44.1) - SECOND // 2
+    assert late_us == pytest.approx(500, abs=25)
+
+
+async def test_a_player_that_does_not_report_gets_its_audio_after_two_seconds(
+    rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Without reports the stream follows the timeline, in silence for as long as it waits."""
+    caplog.set_level(logging.DEBUG, logger="test.squeezelite")
+    assert ALIGN_TIMEOUT_US == 2_000_000
+    session = await rig.start_playing()
+    loop = session.loop
+    assert loop is not None
+    sent = rig.drain(session)
+    rig.clock.advance_us(session.start_us - rig.now_us)
+    for _ in range(100):
+        rig.clock.advance_us(20_000)
+        sent += rig.drain(session)
+    assert rig.aligning()
+    assert not any(sent)
+    assert loop.frames_sent == 2 * SECOND + ALIGN_LEAD_FRAMES
+
+    rig.clock.advance_us(20_000)
+    sent += rig.drain(session)
+
+    assert not rig.aligning()
+    assert loop.frames_sent == round(2.02 * SECOND) + STREAM_LEAD_FRAMES
+    # on the timeline as far as is known: 2.22 s into the stream is 0.87 s into its audio
+    assert rig.first_audio(session, sent) == (round(0.87 * SECOND), 0)
+    assert "its start not corrected, 870 ms of it left out" in caplog.text
+    # once the player shows where it is, its start is corrected in the audio
+    assert loop.start_jump_ms == START_JUMP_MS
+    rig.play(session, 1.0, late_ms=5)
+    assert loop.start_error_ms == pytest.approx(4.5)
+    assert loop.pending_jump == 0
+    assert rig.manager.get_start_offset_us(PLAYER_ID) == 4500 // 8
+
+
+async def test_the_player_is_asked_more_often_until_its_start_is_corrected(rig: _Rig) -> None:
+    """The start is measured from a few reports in a row, which are asked for every 50 ms."""
+    slow, fast = STATUS_POLL_INTERVAL, STATUS_POLL_INTERVAL_FAST
+    assert (slow, fast) == (0.25, 0.05)
+    real_sleep = asyncio.sleep
+    intervals: list[float] = []
+    asked = asyncio.Event()
+
+    async def _sleep(delay: float) -> None:
+        if delay not in (slow, fast):
+            await real_sleep(delay)
+            return
+        intervals.append(delay)
+        asked.clear()
+        await asked.wait()
+
+    async def _next_interval() -> float:
+        asked.set()
+        await _settle()
+        return intervals[-1]
+
+    with (
+        patch(f"{MODULE}.STATUS_POLL_INTERVAL", slow),
+        patch(f"{MODULE}.STATUS_POLL_INTERVAL_FAST", fast),
+        patch("asyncio.sleep", new=_sleep),
+    ):
+        session = await rig.start_stream()
+        rig.fetched(session)
+        # with its clock mapped, a player that waits for its stream to start is not hurried
+        assert await _next_interval() == slow
+        rig.bridge._on_audio_chunk(_chunk(rig.now_us + 2_000_000, 0, SECOND))
+        assert await _next_interval() == slow
+        rig.event(SlimEventType.PLAYER_BUFFER_READY)
+        await _settle()
+        assert session.started
+        assert await _next_interval() == fast
+        assert await _next_interval() == fast
+        rig.align(session)
+        assert await _next_interval() == slow
+        assert await _next_interval() == slow
 
 
 async def test_the_start_waits_for_the_clock_of_the_player(rig: _Rig) -> None:
@@ -1755,7 +2037,7 @@ async def test_a_player_that_answers_late_while_it_sets_a_stream_up_starts_on_ti
     rig.client.play_url.side_effect = lambda **_kwargs: requested_at.append(rig.now_us)
     with (
         patch(f"{MODULE}.STATUS_POLL_INTERVAL", STATUS_POLL_INTERVAL),
-        patch(f"{MODULE}.STATUS_POLL_INTERVAL_UNMAPPED", STATUS_POLL_INTERVAL_UNMAPPED),
+        patch(f"{MODULE}.STATUS_POLL_INTERVAL_FAST", STATUS_POLL_INTERVAL_FAST),
         patch("asyncio.sleep", new=_sleep),
     ):
         session = await rig.start_stream(answers=False)
@@ -1773,7 +2055,10 @@ async def test_a_player_that_answers_late_while_it_sets_a_stream_up_starts_on_ti
     rig.client.unpause_at.assert_awaited_once()
     told = rig.client.unpause_at.await_args.args[0]
     assert abs(told - rig.jiffies(session.command_us)) <= 2
-    assert session.start_us + PREROLL_US == session.first_audible_us
+    # as early as a start can be, and ahead of its audio
+    assert session.start_us == rig.now_us + MIN_START_AHEAD_US
+    assert session.first_audible_us is not None
+    assert session.start_us + PREROLL_US <= session.first_audible_us
 
 
 async def test_a_player_busy_with_another_stream_has_its_clock_mapped_from_prompt_replies(
@@ -1811,7 +2096,7 @@ async def test_a_player_busy_with_another_stream_has_its_clock_mapped_from_promp
     rig.client.play_url.side_effect = lambda **_kwargs: requested_at.append(rig.now_us)
     with (
         patch(f"{MODULE}.STATUS_POLL_INTERVAL", STATUS_POLL_INTERVAL),
-        patch(f"{MODULE}.STATUS_POLL_INTERVAL_UNMAPPED", STATUS_POLL_INTERVAL_UNMAPPED),
+        patch(f"{MODULE}.STATUS_POLL_INTERVAL_FAST", STATUS_POLL_INTERVAL_FAST),
         patch("asyncio.sleep", new=_sleep),
     ):
         session = await rig.start_stream(answers=False)
@@ -1846,7 +2131,10 @@ async def test_a_player_busy_with_another_stream_has_its_clock_mapped_from_promp
     rig.client.unpause_at.assert_awaited_once()
     told = rig.client.unpause_at.await_args.args[0]
     assert abs(told - rig.jiffies(session.command_us)) <= 2
-    assert session.start_us + PREROLL_US == session.first_audible_us
+    # as early as a start can be, and ahead of its audio
+    assert session.start_us == rig.now_us + MIN_START_AHEAD_US
+    assert session.first_audible_us is not None
+    assert session.start_us + PREROLL_US <= session.first_audible_us
 
 
 async def test_the_start_waits_for_the_first_chunk(rig: _Rig) -> None:
@@ -1896,7 +2184,7 @@ async def test_a_player_that_does_not_get_ready_has_its_stream_restarted(rig: _R
 
 async def test_the_player_is_asked_for_its_status_with_tokens_of_its_own(rig: _Rig) -> None:
     """The tokens can not be those of the heartbeat of aioslimproto, which counts up from 1."""
-    with patch(f"{MODULE}.STATUS_POLL_INTERVAL_UNMAPPED", 0):
+    with patch(f"{MODULE}.STATUS_POLL_INTERVAL_FAST", 0):
         await rig.start_stream(answers=False)
         await _settle()
 
@@ -1911,7 +2199,7 @@ async def test_the_player_is_asked_for_its_status_with_tokens_of_its_own(rig: _R
 async def test_the_status_is_polled_while_a_session_lasts(rig: _Rig) -> None:
     """Polling starts with the stream and stops when it ends."""
     rig.client.request_status.assert_not_called()
-    with patch(f"{MODULE}.STATUS_POLL_INTERVAL_UNMAPPED", 0):
+    with patch(f"{MODULE}.STATUS_POLL_INTERVAL_FAST", 0):
         session = await rig.start_stream()
         tasks = list(session.tasks)
         await _settle()
@@ -1975,19 +2263,21 @@ async def test_reports_reach_the_sync_loop(rig: _Rig) -> None:
     """Every status of the player during a session tells the loop where it is."""
     session = await rig.start_playing()
     assert session.loop is not None
+    rig.align(session)
     rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
 
     rig.play(session, 1.5, late_ms=3)
 
     # elapsed is truncated to whole milliseconds, which the loop takes for half of one
+    assert session.loop.start_error_ms == pytest.approx(-0.5)
     assert session.loop.error_ms == pytest.approx(2.5)
-    assert session.loop.start_error_ms == pytest.approx(2.5)
     assert session.loop.rate_ppm == pytest.approx(250.0)
 
 
 async def test_corrections_of_the_loop_are_in_the_stream(rig: _Rig) -> None:
     """A late player is sent audio with frames taken out."""
     session = await rig.start_playing(frames=20 * SECOND)
+    rig.align(session)
     rig.drain(session)
     rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
     before = rig.drain(session)
@@ -2002,13 +2292,13 @@ async def test_corrections_of_the_loop_are_in_the_stream(rig: _Rig) -> None:
 
 
 async def test_a_start_error_is_learned_for_the_next_start(rig: _Rig) -> None:
-    """How late a player starts is taken off the instant it is told the next time."""
+    """Some of how late a player starts is taken off the instant it is told the next time."""
     session = await rig.start_playing()
     rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
 
     rig.play(session, 1.5, late_ms=50)
 
-    assert rig.manager.get_start_offset_us(PLAYER_ID) == 49_500
+    assert rig.manager.get_start_offset_us(PLAYER_ID) == 49_500 // 8
     # corrected in this session by one jump
     assert session.loop is not None
     session.loop.process(bytes(SECOND * FRAME_SIZE))
@@ -2019,17 +2309,31 @@ async def test_a_start_error_is_learned_for_the_next_start(rig: _Rig) -> None:
     rig.bridge, old = later, rig.bridge
     await old.stop()
     session = await rig.start_playing()
-    rig.client.unpause_at.assert_awaited_once_with(rig.jiffies(session.start_us - 49_500))
+    assert session.command_us == session.start_us - 49_500 // 8
+    rig.client.unpause_at.assert_awaited_once_with(rig.jiffies(session.start_us) - 6)
 
 
-async def test_a_start_offset_settles_on_what_the_player_does(rig: _Rig) -> None:
-    """The first start error is taken whole, the next ones for half."""
+async def test_a_start_offset_settles_on_the_shortest_the_player_takes(rig: _Rig) -> None:
+    """A start that was early is taken whole at once, a late one for an eighth."""
     assert rig.manager.get_start_offset_us(PLAYER_ID) == 0
-    assert rig.manager.learn_start_offset(PLAYER_ID, 420.0) == 420_000
-    assert rig.manager.learn_start_offset(PLAYER_ID, 10.0) == 425_000
-    assert rig.manager.learn_start_offset(PLAYER_ID, -6.0) == 422_000
-    assert rig.manager.get_start_offset_us(PLAYER_ID) == 422_000
+    assert rig.manager.learn_start_offset(PLAYER_ID, 80.0) == 10_000
+    assert rig.manager.learn_start_offset(PLAYER_ID, 8.0) == 11_000
+    assert rig.manager.learn_start_offset(PLAYER_ID, -6.0) == 5_000
+    assert rig.manager.get_start_offset_us(PLAYER_ID) == 5_000
     assert rig.manager.get_start_offset_us("other") == 0
+
+
+async def test_a_slow_start_hardly_moves_the_next_one(rig: _Rig) -> None:
+    """After a start that took far longer than usual, the next one is early by little."""
+    # a player that usually starts 110 ms late, and 436 ms after a change of sample rate
+    rig.knows_start_offset(110_000)
+
+    assert rig.manager.learn_start_offset(PLAYER_ID, 436.0 - 110.0) == 150_750
+    # its next start is early by an eighth of that, well within the audio it holds
+    early_us = 150_750 - 110_000
+    assert early_us < ALIGN_LEAD_US // 4
+    # and takes the offset back to what the player usually does
+    assert rig.manager.learn_start_offset(PLAYER_ID, -early_us / 1000) == 110_000
 
 
 async def test_a_start_offset_is_kept_in_the_cache_when_it_changes(rig: _Rig) -> None:
@@ -2039,17 +2343,17 @@ async def test_a_start_offset_is_kept_in_the_cache_when_it_changes(rig: _Rig) ->
 
     rig.mass.cache.set.assert_awaited_once_with(
         key=PLAYER_ID,
-        data=420_000,
+        data=52_500,
         provider="squeezelite",
         category=CACHE_CATEGORY_START_OFFSET,
     )
     rig.manager.learn_start_offset(PLAYER_ID, 0.0)
     await _settle()
     assert rig.mass.cache.set.await_count == 1
-    rig.manager.learn_start_offset(PLAYER_ID, 10.0)
+    rig.manager.learn_start_offset(PLAYER_ID, -10.0)
     await _settle()
     assert rig.mass.cache.set.await_count == 2
-    assert rig.mass.cache.set.await_args.kwargs["data"] == 425_000
+    assert rig.mass.cache.set.await_args.kwargs["data"] == 42_500
 
 
 async def test_the_start_offset_of_a_player_is_restored_before_its_bridge(rig: _Rig) -> None:
@@ -2068,14 +2372,14 @@ async def test_the_start_offset_of_a_player_is_restored_before_its_bridge(rig: _
     assert rig.manager.get_start_offset_us(PLAYER_ID) == 420_000
     session = await rig.start_playing()
     rig.client.unpause_at.assert_awaited_once_with(rig.jiffies(session.start_us - 420_000))
-    # what the player does from here on moves it by halves, as an offset that was learned
-    assert rig.manager.learn_start_offset(PLAYER_ID, 10.0) == 425_000
+    # what the player does from here on moves it, as an offset that was learned
+    assert rig.manager.learn_start_offset(PLAYER_ID, -10.0) == 410_000
 
 
 async def test_a_start_offset_that_is_known_is_not_restored(rig: _Rig) -> None:
     """The cache is read once for a player: what was learned since is newer."""
     rig.mass.cache.get.return_value = 420_000
-    rig.manager.learn_start_offset(PLAYER_ID, 30.0)
+    rig.manager.learn_start_offset(PLAYER_ID, 240.0)
 
     await rig.manager.evaluate_bridge(rig.protocol)
 
@@ -2092,8 +2396,8 @@ async def test_a_cache_without_a_start_offset_leaves_none(rig: _Rig, cached: Any
 
     assert rig.manager.get_bridge(PLAYER_ID) is not None
     assert rig.manager.get_start_offset_us(PLAYER_ID) == 0
-    # so its first start error is taken whole
-    assert rig.manager.learn_start_offset(PLAYER_ID, 50.0) == 50_000
+    # and learns from its first start as from any other
+    assert rig.manager.learn_start_offset(PLAYER_ID, 80.0) == 10_000
 
 
 async def test_a_start_that_is_far_off_restarts_the_stream(rig: _Rig) -> None:
@@ -2519,8 +2823,8 @@ async def test_an_underrun_restarts_the_stream_on_the_timeline(rig: _Rig) -> Non
     first = await rig.start_playing(frames=SECOND)
     for second in range(1, 6):
         rig.bridge._on_audio_chunk(_chunk(rig.origin_us, second * SECOND, SECOND))
-    rig.drain(first)
-    rig.clock.advance_us(first.start_us - rig.now_us + 2_000_000)
+    rig.align(first)
+    rig.clock.advance_us(first.start_us - rig.now_us + 1_850_000)
     rig.drain(first)
 
     rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
@@ -2532,13 +2836,20 @@ async def test_an_underrun_restarts_the_stream_on_the_timeline(rig: _Rig) -> Non
     assert rig.client.play_url.await_count == 2
     rig.client.stop.assert_not_called()
     # the audio that was not played out yet goes on in the new stream, at its own time:
-    # the first stream was 3.25 seconds into its audio
-    assert len(second_session.chunks) == 3
+    # the first stream was 2 seconds into its audio
+    assert len(second_session.chunks) == 4
     rig.fetched(second_session)
     rig.event(SlimEventType.PLAYER_BUFFER_READY)
     await _settle()
-    assert second_session.start_us == rig.origin_us + 3_000_000 - PREROLL_US
-    assert _frames(rig.bridge._next_block(second_session))[0] == 3 * SECOND
+    # as soon as it can, which leaves it 1.2 seconds of silence to correct its start in
+    offset_us = rig.manager.get_start_offset_us(PLAYER_ID)
+    assert second_session.start_us == rig.now_us + MIN_START_AHEAD_US + offset_us
+    assert second_session.first_audible_us == rig.origin_us + 2_000_000
+    sent = rig.align(second_session) + rig.drain(second_session)
+    first_frame, late_us = rig.first_audio(second_session, sent)
+    assert first_frame == 2 * SECOND
+    # within a frame: this start is not at a whole frame of the stream before it
+    assert abs(late_us) < _frame_us(1)
 
 
 async def test_an_underrun_is_answered_before_the_stream_is_restarted(rig: _Rig) -> None:
@@ -2750,6 +3061,7 @@ async def test_a_lost_stream_connection_restarts_the_stream(rig: _Rig) -> None:
     """A player that closes its stream mid-session gets a new one."""
     session = await rig.start_playing()
     session.claimed = session.preroll_sent = False
+    rig.clock.advance_us(session.start_us - rig.now_us + 100_000)
 
     await rig.serve(session, _Response(fail_after=1))
     await _settle()
