@@ -7,6 +7,9 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp.client_ws import DEFAULT_WS_CLIENT_TIMEOUT, ClientWebSocketResponse
+from aiosonos.api.websockets import SonosLocalWebSocketsApi
+from aiosonos.client import SonosLocalApiClient
 from aiosonos.exceptions import CannotConnect
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import PlayerUnavailableError
@@ -242,6 +245,102 @@ async def test_a_speaker_whose_connect_is_ended_before_it_answers_is_tried_again
     assert speaker.connected is False
     retry = timer_mass._tracked_timers[RECONNECT]
     assert retry.when() - timer_mass.loop.time() == pytest.approx(5, abs=0.5)
+
+
+async def test_a_restore_that_is_ended_while_the_old_connection_closes_leaves_a_retry(
+    timer_mass: MusicAssistant,
+) -> None:
+    """
+    A restore that runs out of time while the old connection closes leaves a retry behind.
+
+    A play right after a power cut finds the speaker still connected. Closing that
+    connection waits for an answer of the speaker, which is not up yet, for as long as the
+    players controller gives the restore: aiosonos and its websocket close for real here.
+    The speaker then reads unavailable, and is tried again a few seconds later.
+    """
+    speaker, client, published = _speaker(timer_mass)
+    await _connect_player(speaker, client)
+    closing = asyncio.Event()
+
+    async def _no_answer() -> None:
+        closing.set()
+        await asyncio.sleep(30)
+
+    websocket: Any = ClientWebSocketResponse(
+        MagicMock(read=AsyncMock(side_effect=_no_answer)),
+        MagicMock(close=AsyncMock()),
+        None,
+        MagicMock(),
+        DEFAULT_WS_CLIENT_TIMEOUT,
+        True,
+        True,
+        asyncio.get_running_loop(),
+    )
+    real_client = SonosLocalApiClient("127.0.0.1", MagicMock())
+    real_client.api = SonosLocalWebSocketsApi("wss://127.0.0.1:1443", MagicMock())
+    real_client.api._ws_client = websocket
+    client.disconnect = real_client.disconnect
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(POWER_RESTORE_TIMEOUT):
+            await speaker.on_power_restored()
+
+    assert closing.is_set()
+    # connected, reads available, a retry is left behind
+    assert (speaker.connected, speaker.available, RECONNECT in timer_mass._tracked_timers) == (
+        False,
+        False,
+        True,
+    )
+    assert published[-1] == (False, False)
+    retry = timer_mass._tracked_timers[RECONNECT]
+    assert retry.when() - timer_mass.loop.time() == pytest.approx(5, abs=0.5)
+
+
+async def test_a_power_cut_that_ends_after_a_restore_leaves_the_speaker_available(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A slow power cut that finishes once the speaker is connected to anew changes nothing."""
+    speaker, client, published = _speaker(timer_mass)
+    await _connect_player(speaker, client)
+    closing = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def _slow_first_close() -> None:
+        if not closing.is_set():
+            closing.set()
+            await closed.wait()
+
+    client.disconnect = AsyncMock(side_effect=_slow_first_close)
+    cutting = asyncio.create_task(speaker.on_power_cut())
+    await closing.wait()
+    await speaker.on_power_restored()
+    closed.set()
+    await cutting
+
+    # (connected, available) at each state it published
+    assert published == [(False, False), (True, True)]
+    assert timer_mass._tracked_timers == {}
+    await speaker.on_detach()
+
+
+async def test_a_speaker_that_is_not_attached_is_left_alone(timer_mass: MusicAssistant) -> None:
+    """A speaker taken off its player is not touched when it is told of its power."""
+    speaker, client, published = _speaker(timer_mass)
+    await _connect_player(speaker, client)
+    listener = speaker._listen_task
+    speaker._player = None
+
+    await speaker.on_power_cut()
+    await asyncio.wait_for(speaker.on_power_restored(), 1)
+
+    client.disconnect.assert_not_awaited()
+    cast("AsyncMock", speaker._is_reachable).assert_not_awaited()
+    assert speaker.connected is True
+    assert listener is not None
+    assert not listener.done()
+    assert published == []
+    await speaker.on_detach()
 
 
 async def test_a_speaker_detached_while_it_is_probed_is_not_connected_to(
