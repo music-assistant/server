@@ -241,6 +241,8 @@ The bridge managers (`SendspinBridgeManagerBase` in `bridge_manager.py`, subclas
 
 A device gets one Sendspin output, carried by the first of its bridges in the order AirPlay, squeezelite, Chromecast. A protocol the user switched off as an output, or whose provider is disabled, lets the next bridge take the output over. An AirPlay protocol that is merely away keeps its place, while a squeezelite protocol that is away leaves the output to Chromecast until it returns. The managers settle this when the outputs of the player change, so a protocol switched on or off while its device is away on it takes effect at the next change of those outputs or at a restart.
 
+Bridges that share a client id (their protocols report the same MAC address) share one output and its record. Its static delay is kept per bridge: at a take-over the delay set for the bridge before is put aside in the record (`sendspin_bridge_static_delays`, by protocol id), and the one set while the new bridge carried the output before comes back; without one, the default of the new bridge applies.
+
 ### Implemented Bridges
 
 | Provider | Bridge Location | Identifier |

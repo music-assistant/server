@@ -112,6 +112,7 @@ AUTOMATIC_VALUE_KEYS: Final = frozenset(
         CONF_PROTOCOL_DEFAULTS,
         CONF_SESSION_ONLY,
         "sendspin_static_delay",
+        "sendspin_bridge_static_delays",
         "sendspin_opt_out_pending",
         "sendspin_unsupported",
         "stored_volume",
