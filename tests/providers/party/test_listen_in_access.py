@@ -48,7 +48,7 @@ async def plugin() -> PartyPlugin:
         CONF_PARTY_KARAOKE_MODE: False,
     }.__getitem__
     plugin._unregister_handles = []
-    plugin._vocal_separator = None
+    plugin._stem_separator = None
     plugin._session = await SharedPlaybackSession.create_venue(plugin.mass, "v")
     plugin._session_lock = asyncio.Lock()
     plugin._get_or_create_session_locked = AsyncMock(  # type: ignore[method-assign]

@@ -1,4 +1,4 @@
-"""Tests for the vocal removal of the Party plugin's karaoke mode."""
+"""Tests for the audio stems of the Party plugin and the vocal removal built on them."""
 
 from __future__ import annotations
 
@@ -22,11 +22,12 @@ from music_assistant.providers.party import (
     CONF_PARTY_VOCAL_VOLUME,
     PartyPlugin,
 )
-from music_assistant.providers.party.vocal_removal import (
-    VocalRemoval,
+from music_assistant.providers.party.audio_stems import (
+    STEM_VOCALS,
+    StemAttenuation,
+    attenuate_stem,
     float_to_pcm,
     pcm_to_float,
-    remove_vocals,
     supports_pcm_format,
 )
 
@@ -51,8 +52,9 @@ class _FakeSeparator:
         self.fail_after = fail_after
         self.segment_lengths: list[int] = []
 
-    async def extract_vocals(self, audio: FloatAudio, sample_rate: int) -> FloatAudio:
+    async def extract_stem(self, audio: FloatAudio, sample_rate: int, stem: str) -> FloatAudio:
         assert sample_rate == SAMPLE_RATE
+        assert stem == STEM_VOCALS
         if self.fail_after is not None and len(self.segment_lengths) >= self.fail_after:
             msg = "model failure"
             raise RuntimeError(msg)
@@ -80,7 +82,7 @@ async def _source(data: bytes, chunk_size: int) -> AsyncGenerator[bytes]:
 async def _run(data: bytes, separator: Any, chunk_size: int | None = None) -> list[bytes]:
     """Return the chunks vocal removal yields for the given audio."""
     source = _source(data, chunk_size or PCM_FORMAT.pcm_sample_size)
-    return [chunk async for chunk in remove_vocals(source, PCM_FORMAT, separator, MagicMock())]
+    return [chunk async for chunk in attenuate_stem(source, PCM_FORMAT, separator, MagicMock())]
 
 
 @pytest.mark.parametrize(
@@ -176,7 +178,7 @@ def _create_plugin(config_values: dict[str, Any], *, ready: bool = True) -> Part
     plugin.config = MagicMock()
     plugin.config.get_value.side_effect = config_values.get
     plugin._session = None
-    plugin._vocal_separator = MagicMock(ready=ready)
+    plugin._stem_separator = MagicMock(ready=ready)
     return plugin
 
 
@@ -251,7 +253,7 @@ async def test_vocal_volume_keeps_a_share_of_the_vocals() -> None:
     data = _make_pcm(9.3)
     separator = _FakeSeparator(vocal_share=0.8)
     source = _source(data, PCM_FORMAT.pcm_sample_size)
-    removal = VocalRemoval(cast("Any", separator), MagicMock(), vocal_volume=0.25)
+    removal = StemAttenuation(cast("Any", separator), MagicMock(), volume=0.25)
 
     output = b"".join([chunk async for chunk in removal(source, PCM_FORMAT)])
 
@@ -260,21 +262,20 @@ async def test_vocal_volume_keeps_a_share_of_the_vocals() -> None:
     np.testing.assert_allclose(pcm_to_float(output, PCM_FORMAT), expected, atol=2**-14)
 
 
-def test_vocal_removals_compare_by_the_audio_they_give() -> None:
-    """A reloaded plugin's removal equals the old one unless the vocal volume differs."""
-    assert VocalRemoval(MagicMock(), MagicMock(), 0.2) == VocalRemoval(
-        MagicMock(), MagicMock(), 0.2
-    )
-    assert VocalRemoval(MagicMock(), MagicMock(), 0.2) != VocalRemoval(
-        MagicMock(), MagicMock(), 0.0
-    )
+def test_stem_attenuations_compare_by_the_audio_they_give() -> None:
+    """A reloaded plugin's transform equals the old one unless stem or volume differ."""
+    guide = StemAttenuation(MagicMock(), MagicMock(), STEM_VOCALS, 0.2)
+
+    assert guide == StemAttenuation(MagicMock(), MagicMock(), STEM_VOCALS, 0.2)
+    assert guide != StemAttenuation(MagicMock(), MagicMock(), STEM_VOCALS, 0.0)
+    assert guide != StemAttenuation(MagicMock(), MagicMock(), "drums", 0.2)
 
 
 def _playing_queue(streamdetails: StreamDetails, buffered_volume: float | None) -> MagicMock:
     """Build a queue that plays an item buffered with the given vocal volume, or untouched."""
     transform = None
     if buffered_volume is not None:
-        transform = VocalRemoval(MagicMock(), MagicMock(), buffered_volume)
+        transform = StemAttenuation(MagicMock(), MagicMock(), volume=buffered_volume)
     streamdetails.buffer = MagicMock(pcm_transform=transform)
     queue = MagicMock(
         queue_id=streamdetails.queue_id,
@@ -312,7 +313,7 @@ async def test_playing_track_restarts_only_when_the_settings_ask_for_other_audio
         }
     )
     if wanted_volume is None:
-        plugin._vocal_separator = None
+        plugin._stem_separator = None
     other = _playing_queue(_stream_details("other_player"), None)
     party = _playing_queue(_stream_details("party_player"), buffered_volume)
     player_queues = cast("MagicMock", plugin.mass.player_queues)

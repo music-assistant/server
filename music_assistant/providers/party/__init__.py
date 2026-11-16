@@ -45,7 +45,7 @@ from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
 
-from .vocal_removal import DemucsVocalSeparator, VocalRemoval, supports_pcm_format
+from .audio_stems import STEM_VOCALS, DemucsStemSeparator, StemAttenuation, supports_pcm_format
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -439,7 +439,7 @@ class PartyPlugin(PluginProvider):
         self._queue_lock = asyncio.Lock()
         self._session: SharedPlaybackSession | None = None
         self._session_lock = asyncio.Lock()
-        self._vocal_separator: DemucsVocalSeparator | None = None
+        self._stem_separator: DemucsStemSeparator | None = None
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -495,8 +495,8 @@ class PartyPlugin(PluginProvider):
             )
         )
         if self._vocal_removal_enabled():
-            self._vocal_separator = DemucsVocalSeparator(self.logger)
-            self.mass.create_task(self._load_vocal_separator(self._vocal_separator))
+            self._stem_separator = DemucsStemSeparator(self.logger)
+            self.mass.create_task(self._load_stem_separator(self._stem_separator))
             self._unregister_handles.append(
                 self.mass.streams.audio.register_pcm_transform(self._resolve_vocal_removal)
             )
@@ -513,9 +513,9 @@ class PartyPlugin(PluginProvider):
         for unregister in self._unregister_handles:
             unregister()
         self._unregister_handles.clear()
-        if self._vocal_separator is not None:
-            self._vocal_separator.close()
-            self._vocal_separator = None
+        if self._stem_separator is not None:
+            self._stem_separator.close()
+            self._stem_separator = None
             switched_off = (
                 is_removed or not self.config.enabled or not self._vocal_removal_enabled()
             )
@@ -1197,7 +1197,7 @@ class PartyPlugin(PluginProvider):
                 PARTY_GUEST_USER,
             )
 
-    async def _load_vocal_separator(self, separator: DemucsVocalSeparator) -> None:
+    async def _load_stem_separator(self, separator: DemucsStemSeparator) -> None:
         """
         Load the vocal removal model; tracks play with their vocals until it is ready.
 
@@ -1237,7 +1237,7 @@ class PartyPlugin(PluginProvider):
             wanted = self._resolve_vocal_removal(streamdetails)
             if buffer.pcm_transform == wanted:
                 continue
-            if wanted is None and not isinstance(buffer.pcm_transform, VocalRemoval):
+            if wanted is None and not isinstance(buffer.pcm_transform, StemAttenuation):
                 continue
             try:
                 await self.mass.player_queues.seek(
@@ -1253,7 +1253,7 @@ class PartyPlugin(PluginProvider):
 
         :param streamdetails: The stream details an audio buffer is created for.
         """
-        separator = self._vocal_separator
+        separator = self._stem_separator
         if (
             separator is None
             or not separator.ready
@@ -1264,7 +1264,7 @@ class PartyPlugin(PluginProvider):
         ):
             return None
         vocal_volume = cast("int", self.config.get_value(CONF_PARTY_VOCAL_VOLUME) or 0)
-        return VocalRemoval(separator, self.logger, vocal_volume / 100)
+        return StemAttenuation(separator, self.logger, STEM_VOCALS, vocal_volume / 100)
 
     def _is_party_queue(self, queue_id: str) -> bool:
         """

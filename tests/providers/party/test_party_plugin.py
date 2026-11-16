@@ -50,7 +50,7 @@ def _create_party_plugin() -> PartyPlugin:
     plugin._queue_lock = asyncio.Lock()
     plugin._session = None
     plugin._session_lock = asyncio.Lock()
-    plugin._vocal_separator = None
+    plugin._stem_separator = None
     plugin.get_party_player = AsyncMock(return_value="party_queue")  # type: ignore[method-assign]
     config_values = {
         CONF_PARTY_KARAOKE_MODE: False,
@@ -575,7 +575,7 @@ def _create_unload_plugin(*, guest_access_enabled: bool) -> PartyPlugin:
     plugin._unregister_handles = []
     plugin._session = None
     plugin._session_lock = asyncio.Lock()
-    plugin._vocal_separator = None
+    plugin._stem_separator = None
     plugin._revoke_guest_tokens = AsyncMock()  # type: ignore[method-assign]
     return plugin
 
