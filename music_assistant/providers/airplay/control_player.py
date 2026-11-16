@@ -1282,6 +1282,12 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if not self._disconnecting and not self._unloading:
             self._schedule_connection()
 
+    def _device_back(self) -> None:
+        """Read available again, and reach the control services of the device now."""
+        super()._device_back()
+        # a control service that lost the device may wait out a reconnect backoff of minutes
+        self._schedule_connection()
+
     def _handle_push_error(self, device: AppleTV, exception: Exception) -> None:
         """Restart MRP playback monitoring after a push update error."""
         if self._mrp_device is not device:

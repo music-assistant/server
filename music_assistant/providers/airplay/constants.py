@@ -284,6 +284,16 @@ AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 # the whole schedule is abandoned as soon as either no longer holds.
 AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5, 15, 30, 60, 120)
 
+# How long a device check (PlayerProtocol.check_device) waits for the port the stream
+# connects to. A device that streams answers within milliseconds; a false "gone" ends the
+# stream to it, so the margin is generous.
+DEVICE_CHECK_TIMEOUT: Final[float] = 3.0
+# A device that a check found gone is probed again after this pause, which doubles up to
+# DEVICE_PROBE_MAX_PAUSE: its power may be switched on outside Music Assistant, with nothing
+# else to tell that it is back.
+DEVICE_PROBE_PAUSE: Final[float] = 5.0
+DEVICE_PROBE_MAX_PAUSE: Final[float] = 30.0
+
 # Shared audible instant for a native announcement over a live stream: now +
 # the largest member span + this margin. A member can only mix the clip into
 # audio it has not delivered yet, and its span (warm_lead_ms on the splice

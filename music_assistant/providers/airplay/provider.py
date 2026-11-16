@@ -333,6 +333,7 @@ class AirPlayProvider(PlayerProvider):
         if player := cast("AirPlayPlayer | None", self.get_protocol(protocol_id)):
             # update the latest discovery info for existing player
             player.set_discovery_info(info, display_name)
+            player.on_device_announced()
             # only control players can ever be dashboard endpoints
             if isinstance(player, AirPlayControlPlayer):
                 self.dashboards.reconcile(protocol_id)

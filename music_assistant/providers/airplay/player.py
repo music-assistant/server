@@ -24,7 +24,11 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_PASSWORD
 from music_assistant.controllers.streams.audio import overlay_active
-from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
+from music_assistant.helpers.util import (
+    get_primary_ip_address_from_zeroconf,
+    is_valid_mac_address,
+    port_accepts_connection,
+)
 from music_assistant.models.player import (
     DeviceInfo,
     PlayerMedia,
@@ -56,6 +60,9 @@ from .constants import (
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
     CONF_STREAMING_MODE,
+    DEVICE_CHECK_TIMEOUT,
+    DEVICE_PROBE_MAX_PAUSE,
+    DEVICE_PROBE_PAUSE,
     FALLBACK_VOLUME,
     LEGACY_PAIRING_BIT,
     PAIRING_PIN_FORMAT,
@@ -135,6 +142,8 @@ class AirPlayPlayer(PlayerProtocol):
         self._lock = asyncio.Lock()
         self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
         self._rejoin_task: asyncio.Task[None] | None = None
+        # probes the device while a check found it gone
+        self._device_probe: asyncio.Task[None] | None = None
         # Set (static) player attributes
         self._attr_name = display_name
         self._attr_available = True
@@ -1008,6 +1017,10 @@ class AirPlayPlayer(PlayerProtocol):
         """Handle logic when the protocol is detached from its player."""
         await super().on_detach()
         self.cancel_group_rejoin()
+        # a check holds for the player it was made for: attached again, the protocol reads
+        # available as when it was found
+        self._cancel_device_probe()
+        self._attr_available = True
         if self.stream:
             # remove this player from the stream session if it is running
             if self.stream.running and self.stream.session:
@@ -1065,6 +1078,31 @@ class AirPlayPlayer(PlayerProtocol):
             return
         progress = int(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
+
+    async def check_device(self) -> bool:
+        """
+        Check whether the device answers on the port the stream connects to.
+
+        A device that does not answer reads unavailable, loses the stream it played, and is
+        probed again until it answers.
+        """
+        endpoint = self._stream_endpoint
+        answers = await port_accepts_connection(*endpoint, DEVICE_CHECK_TIMEOUT)
+        if self.player is None or self._stream_endpoint != endpoint:
+            # detached, or another record of the device meanwhile
+            return answers
+        if answers:
+            self._cancel_device_probe()
+            if not self._attr_available:
+                self._device_back()
+        else:
+            self._device_gone()
+        return answers
+
+    def on_device_announced(self) -> None:
+        """Probe a device that a check found gone at once, as it announced itself."""
+        if self._device_probe is not None:
+            self._start_device_probe(0)
 
     async def _adopt_device_volume(self, volume: int) -> None:
         """
@@ -1585,6 +1623,78 @@ class AirPlayPlayer(PlayerProtocol):
         return bool(self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS) and (
             default_hires_enabled(self.device_info.manufacturer or "", self.device_info.model or "")
         )
+
+    @property
+    def _stream_endpoint(self) -> tuple[str, int]:
+        """Return the address and port the stream connects to, as AirPlayStream picks them."""
+        if (self.protocol_override or self.protocol) == StreamingProtocol.AIRPLAY2 and (
+            airplay_info := self.airplay_discovery_info
+        ):
+            return self.address, airplay_info.port or AIRPLAY_DEFAULT_PORT
+        if raop_info := self.raop_discovery_info:
+            return self.address, raop_info.port or RAOP_DEFAULT_PORT
+        return self.address, AIRPLAY_DEFAULT_PORT
+
+    def _device_gone(self) -> None:
+        """Read unavailable, stop the stream to the device, and probe it until it answers."""
+        if self._device_probe is None:
+            self._start_device_probe(DEVICE_PROBE_PAUSE)
+        if not self._attr_available:
+            return
+        self._attr_available = False
+        self.logger.debug("AirPlay device %s does not answer", self.display_name)
+        self.update_state()
+        # nothing else stops it: the server sends no stop to a player that is switched off at
+        # its power control
+        self.mass.create_task(self._leave_stream())
+
+    def _device_back(self) -> None:
+        """Read available again: the device answers after a check found it gone."""
+        self._attr_available = True
+        self.logger.debug("AirPlay device %s answers again", self.display_name)
+        self.update_state()
+
+    def _start_device_probe(self, pause: float) -> None:
+        """
+        Probe the device until it answers, instead of a probe that runs already.
+
+        :param pause: The pause before the first probe.
+        """
+        self._cancel_device_probe()
+        self._device_probe = self.mass.create_task(self._probe_device(pause))
+
+    def _cancel_device_probe(self) -> None:
+        """Stop probing the device."""
+        probe, self._device_probe = self._device_probe, None
+        if probe is not None:
+            probe.cancel()
+
+    async def _probe_device(self, pause: float) -> None:
+        """
+        Probe the device until it answers, with a pause that grows every time it does not.
+
+        :param pause: The pause before the first probe.
+        """
+        while True:
+            await asyncio.sleep(pause)
+            endpoint = self._stream_endpoint
+            answers = await port_accepts_connection(*endpoint, DEVICE_CHECK_TIMEOUT)
+            if answers and self.player is not None and self._stream_endpoint == endpoint:
+                break
+            pause = min(max(pause * 2, DEVICE_PROBE_PAUSE), DEVICE_PROBE_MAX_PAUSE)
+        self._device_probe = None
+        self._device_back()
+
+    async def _leave_stream(self) -> None:
+        """Stop the stream to the device, leaving a group it plays in to the other members."""
+        async with self._lock:
+            if (stream := self.stream) and stream.running and stream.session:
+                await stream.session.remove_client(self, reason="device does not answer")
+            else:
+                # a Sendspin bridge that feeds the device lets go of it
+                cast("AirPlayProvider", self.provider).bridge_manager.stop_streaming(
+                    self.protocol_id
+                )
 
 
 class GenericAirPlayPlayer(AirPlayPlayer):
