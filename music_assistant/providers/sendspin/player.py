@@ -361,6 +361,8 @@ class SendspinBasePlayer(PlayerProtocol):
     unsub_event_cb: Callable[[], None] | None = None
     unsub_group_event_cb: Callable[[], None] | None = None
     is_web_player: bool = False
+    # set when a device check found the client away, until the client connects again
+    _away_on_check: bool = False
     # transient alert produced by the most recent security action, surfaced on the next
     # config-entries render (the settings page re-renders after invoking an action)
     _pending_security_alert: AlertText | None = None
@@ -446,6 +448,24 @@ class SendspinBasePlayer(PlayerProtocol):
         await super().on_detach()
         self._unsubscribe_client_callbacks()
 
+    async def check_device(self) -> bool | None:
+        """
+        Return whether the client is connected; None for a client that runs in the server.
+
+        A client that is not connected reads unavailable from then on, until it connects again.
+        """
+        if self._connects_when_it_plays:
+            return None
+        away = self.api.connection is None
+        if away != self._away_on_check:
+            self._away_on_check = away
+            self.update_state()
+        return not away
+
+    def on_client_connected(self) -> None:
+        """Handle the client connecting (again): it reads available after a check found it away."""
+        self._away_on_check = False
+
     def ride_on(self, underlying_protocol_id: str) -> None:
         """
         Make this client the bridge of another protocol of its device.
@@ -462,6 +482,15 @@ class SendspinBasePlayer(PlayerProtocol):
         self._attr_private = False
         self._attr_expose_to_ha_by_default = True
         self._attr_session_only = False
+
+    @property
+    def available(self) -> bool:
+        """
+        Return if the player is available.
+
+        Not once a device check found its client away, until the client connects again.
+        """
+        return super().available and not self._away_on_check
 
     @property
     def needs_setup(self) -> bool:
@@ -682,6 +711,12 @@ class SendspinBasePlayer(PlayerProtocol):
     def _is_bridge_or_web_player(self) -> bool:
         """Whether this is a protocol bridge or built-in web/app player (skips pairing setup)."""
         return self.protocol_id.startswith(BRIDGE_PREFIX) or self.is_web_player
+
+    @property
+    def _connects_when_it_plays(self) -> bool:
+        """Whether the client runs in the server, as a bridge or a virtual player does."""
+        provider = cast("SendspinProvider", self.provider)
+        return provider.server_api.is_external_player(self.protocol_id)
 
     @property
     def _offers_unpaired_consent(self) -> bool:
