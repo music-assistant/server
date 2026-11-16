@@ -337,7 +337,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 f"Error when trying to play from start on {item.name}"
             ) from err
         await self.mass.player_queues.play_media(
-            player_id, playable_version, option=QueueOption.PLAY
+            player_id, playable_version, option=QueueOption.PLAY, start_position=0
         )
         return None
 
