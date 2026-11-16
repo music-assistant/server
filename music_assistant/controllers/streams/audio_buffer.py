@@ -895,8 +895,11 @@ def _new_buffer(
 
     # for large seeks without existing buffer, start at seek position.
     # A realtime source can not produce the skipped audio any faster than playback,
-    # so it always seeks at the source instead of buffering up to the seek point.
-    buffer_seek_seconds = seek_seconds if streamdetails.is_realtime or seek_seconds > 60 else 0
+    # and neither may transformed audio, so those always seek at the source instead
+    # of buffering up to the seek point.
+    buffer_seek_seconds = (
+        seek_seconds if streamdetails.is_realtime or not analyze or seek_seconds > 60 else 0
+    )
 
     pcm_format = _buffer_pcm_format(streamdetails)
 

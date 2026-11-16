@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import AsyncGenerator
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -24,6 +25,7 @@ from music_assistant.providers.party import (
 )
 from music_assistant.providers.party.audio_stems import (
     STEM_VOCALS,
+    DemucsStemSeparator,
     StemAttenuation,
     attenuate_stem,
     float_to_pcm,
@@ -262,20 +264,40 @@ async def test_vocal_volume_keeps_a_share_of_the_vocals() -> None:
     np.testing.assert_allclose(pcm_to_float(output, PCM_FORMAT), expected, atol=2**-14)
 
 
-def test_stem_attenuations_compare_by_the_audio_they_give() -> None:
-    """A reloaded plugin's transform equals the old one unless stem or volume differ."""
-    guide = StemAttenuation(MagicMock(), MagicMock(), STEM_VOCALS, 0.2)
+def test_stem_attenuations_compare_by_separator_and_the_audio_they_give() -> None:
+    """A transform equals another one of the same separator, stem and volume only."""
+    separator = MagicMock()
+    guide = StemAttenuation(separator, MagicMock(), STEM_VOCALS, 0.2)
 
-    assert guide == StemAttenuation(MagicMock(), MagicMock(), STEM_VOCALS, 0.2)
-    assert guide != StemAttenuation(MagicMock(), MagicMock(), STEM_VOCALS, 0.0)
-    assert guide != StemAttenuation(MagicMock(), MagicMock(), "drums", 0.2)
+    assert guide == StemAttenuation(separator, MagicMock(), STEM_VOCALS, 0.2)
+    assert guide != StemAttenuation(separator, MagicMock(), STEM_VOCALS, 0.0)
+    assert guide != StemAttenuation(separator, MagicMock(), "drums", 0.2)
+    # the separator of a reloaded plugin: the one that made the buffer is closed
+    assert guide != StemAttenuation(MagicMock(), MagicMock(), STEM_VOCALS, 0.2)
 
 
-def _playing_queue(streamdetails: StreamDetails, buffered_volume: float | None) -> MagicMock:
+async def test_closing_the_separator_fails_its_queued_segments() -> None:
+    """A segment dropped by closing the separator raises an error the fallback handles."""
+    separator = DemucsStemSeparator(MagicMock())
+    release = threading.Event()
+    separator._executor.submit(release.wait)
+    queued = asyncio.create_task(separator.extract_stem(np.zeros((2, 8), np.float32), 44100, "x"))
+    await asyncio.sleep(0)
+
+    separator.close()
+    release.set()
+
+    with pytest.raises(RuntimeError):
+        await queued
+
+
+def _playing_queue(
+    streamdetails: StreamDetails, buffered_volume: float | None, separator: Any = None
+) -> MagicMock:
     """Build a queue that plays an item buffered with the given vocal volume, or untouched."""
     transform = None
     if buffered_volume is not None:
-        transform = StemAttenuation(MagicMock(), MagicMock(), volume=buffered_volume)
+        transform = StemAttenuation(separator or MagicMock(), MagicMock(), volume=buffered_volume)
     streamdetails.buffer = MagicMock(pcm_transform=transform)
     queue = MagicMock(
         queue_id=streamdetails.queue_id,
@@ -312,10 +334,11 @@ async def test_playing_track_restarts_only_when_the_settings_ask_for_other_audio
             CONF_PARTY_VOCAL_VOLUME: wanted_volume,
         }
     )
+    separator = plugin._stem_separator
     if wanted_volume is None:
         plugin._stem_separator = None
     other = _playing_queue(_stream_details("other_player"), None)
-    party = _playing_queue(_stream_details("party_player"), buffered_volume)
+    party = _playing_queue(_stream_details("party_player"), buffered_volume, separator)
     player_queues = cast("MagicMock", plugin.mass.player_queues)
     player_queues.__iter__.side_effect = lambda: iter([other, party])
     player_queues.seek = AsyncMock()

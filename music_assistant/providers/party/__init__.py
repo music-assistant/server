@@ -517,7 +517,11 @@ class PartyPlugin(PluginProvider):
             self._stem_separator.close()
             self._stem_separator = None
             switched_off = (
-                is_removed or not self.config.enabled or not self._vocal_removal_enabled()
+                is_removed
+                or not self.mass.config.get_raw_provider_config_value(
+                    self.instance_id, CONF_ENABLED, default=True
+                )
+                or not self._vocal_removal_enabled()
             )
             if switched_off and not self.mass.closing:
                 self.mass.create_task(self._sync_playing_track())

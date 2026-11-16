@@ -168,6 +168,20 @@ async def test_dsd_buffer_retention_is_bounded_by_bytes(
         await buffer.clear()
 
 
+@pytest.mark.parametrize(("analyze", "source_seek"), [(True, 0), (False, 30)])
+async def test_transformed_audio_seeks_at_the_source(analyze: bool, source_seek: int) -> None:
+    """A short seek skips at the source when the skipped audio would have to be transformed."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    details = _make_stream_details(MediaType.TRACK, duration=600, allow_seek=True)
+
+    buffer, buffer_seek_seconds = _new_buffer(mass, details, 30_000, "test", analyze=analyze)
+    try:
+        assert buffer_seek_seconds == source_seek
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
+
+
 @pytest.mark.parametrize("seek_position_ms", [0, 1500, 5000])
 async def test_dsd_byte_limit_allows_startup_seek_and_continued_playback(
     seek_position_ms: int,

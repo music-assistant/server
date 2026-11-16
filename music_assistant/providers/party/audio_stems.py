@@ -248,11 +248,11 @@ class StemAttenuation:
     """
     Turning one stem down, as a transform of the audio of a stream.
 
-    Two of them are equal when they give the same audio, whichever model instance runs
-    them, so buffered audio stays valid across a reload of the plugin.
+    Two of them are equal when the same separator gives the same audio. A buffer made
+    with another separator, such as the one of the plugin before a reload, is replaced.
     """
 
-    separator: StemSeparator = field(compare=False)
+    separator: StemSeparator
     logger: logging.Logger = field(compare=False)
     stem: str = STEM_VOCALS
     volume: float = 0.0
@@ -282,6 +282,7 @@ class DemucsStemSeparator:
         """
         self.logger = logger
         self._model: Any = None
+        self._closed = False
         self._segment_seconds = DEFAULT_SEGMENT_SECONDS
         # one worker: segments of the playing and the next track take turns
         self._executor = ThreadPoolExecutor(
@@ -312,12 +313,20 @@ class DemucsStemSeparator:
         :param stem: Name of the stem, one of the sources of the model.
         :return: The stem, in the shape and sample rate of the given audio.
         """
-        return await asyncio.get_running_loop().run_in_executor(
-            self._executor, self._extract_stem, audio, sample_rate, stem
-        )
+        try:
+            return await asyncio.get_running_loop().run_in_executor(
+                self._executor, self._extract_stem, audio, sample_rate, stem
+            )
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if not self._closed or (task is not None and task.cancelling()):
+                raise
+            # closing dropped the queued segment: fail like any other separation error
+            raise RuntimeError("The stem separator was closed") from None
 
     def close(self) -> None:
         """Release the model and stop the worker once its current segment is done."""
+        self._closed = True
         self._model = None
         self._executor.shutdown(wait=False, cancel_futures=True)
 
