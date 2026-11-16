@@ -1813,6 +1813,14 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             self._running_pairing_evictions.add(task)
             task.add_done_callback(self._running_pairing_evictions.discard)
 
+    async def _drop_pairing(self, client_id: str) -> None:
+        """Drop the pairing of a client, and its own half too when it is connected."""
+        try:
+            await self.server_api.unpair(client_id)
+        except ValueError:
+            # Not connected: there is no client half to notify, drop only our record.
+            await self.server_api.pairing_store.remove_record(client_id)
+
     async def _evict_pairings_for_owner(self, owner: str) -> None:
         """Drop every pairing bound to ``owner``, unpairing connected clients in-band."""
         if self._unloading:
@@ -1823,11 +1831,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             current = await pairing_store.record_by_client_id(record.client_id)
             if current is None or current.owner != owner:
                 continue
-            try:
-                await self.server_api.unpair(record.client_id)
-            except ValueError:
-                # Not connected: there is no client half to notify, drop only our record.
-                await pairing_store.remove_record(record.client_id)
+            await self._drop_pairing(record.client_id)
             self.logger.info(
                 "Removed the pairing of client %s: its owner's access was revoked",
                 record.client_id,
