@@ -692,8 +692,8 @@ class Scenario:
         """
         Start a command in the background and settle; await the task once it is done.
 
-        Run every server call that may wait for the clock (a timeout, a delay, a device to come
-        online) this way: the clock only moves through advance(), so awaiting such a call
+        Run every server call that may wait for the clock (a timeout, a delay, a player that
+        starts up) this way: the clock only moves through advance(), so awaiting such a call
         directly never returns. A failure of a command that is never awaited fails the scenario.
 
         :param command: The command, e.g. ``scenario.mass.players.cmd_power(player_id, True)``.
