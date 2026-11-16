@@ -8,11 +8,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.event import MassEvent
 
 from music_assistant.providers.sendspin_source.provider import SendspinSourceProvider
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from music_assistant_models.enums import EventType
 
     from music_assistant.mass import MusicAssistant
 
@@ -189,6 +192,8 @@ class _FakePlayers:
         self.source_sessions: dict[str, Any] = {}
         self.deselected: list[str] = []
         self.updated: list[str] = []
+        # the rebuilt sources handed to a session, with the player it plays on
+        self.refreshed: list[tuple[str, Any]] = []
 
     def get_player(self, player_id: str, *args: Any, **kwargs: Any) -> _FakePlayer | None:
         return self.players.get(player_id)
@@ -204,6 +209,9 @@ class _FakePlayers:
 
     def trigger_player_update(self, player_id: str, **_: Any) -> None:
         self.updated.append(player_id)
+
+    def refresh_source(self, player_id: str, source: Any) -> None:
+        self.refreshed.append((player_id, source))
 
     async def deselect_source(
         self,
@@ -285,6 +293,19 @@ class _FakeMass:
         self._sendspin_provider = sendspin_provider
         self._timers: dict[str, asyncio.TimerHandle] = {}
         self._tasks: dict[str, asyncio.Task[Any]] = {}
+        self._subscribers: list[tuple[Callable[[MassEvent], None], EventType]] = []
+
+    def subscribe(
+        self, cb_func: Callable[[MassEvent], None], event_filter: EventType
+    ) -> Callable[[], None]:
+        subscriber = (cb_func, event_filter)
+        self._subscribers.append(subscriber)
+        return lambda: self._subscribers.remove(subscriber)
+
+    def signal_event(self, event: EventType, object_id: str | None = None) -> None:
+        for cb_func, event_filter in list(self._subscribers):
+            if event_filter == event:
+                cb_func(MassEvent(event=event, object_id=object_id))
 
     def get_provider(self, domain: str) -> Any:
         if domain == "sendspin":

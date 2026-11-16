@@ -2183,7 +2183,9 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         providers: list[AudioAnalysisProvider],
     ) -> None:
         """
-        Run the analysis of a live source until its stream ends or no provider is left.
+        Run the analysis of a live source until it may no longer be analysed.
+
+        That is when its stream ends, no provider is left or the source stops allowing it.
 
         Owns everything of the session: on its way out it releases it at whatever stage
         it was in.
@@ -2204,6 +2206,9 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
             provider_ids.intersection_update(accepted)
             while provider_ids and session_key in self._active_sessions:
                 block = await live.blocks.get()
+                if not live.source_session.source.allow_audio_analysis:
+                    # the plugin handed the session a source that no longer allows it
+                    break
                 await self._distribute_chunk(session_key, block)
                 if live.reported_by is not None and not self._takes_part(
                     session_key, live.reported_by
