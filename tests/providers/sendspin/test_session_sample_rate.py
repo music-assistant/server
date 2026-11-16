@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
-from typing import cast
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
+from uuid import uuid4
 
+import numpy as np
 from aiosendspin.models import AudioCodec
 from aiosendspin.models.player import SupportedAudioFormat
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
+from aiosendspin.server.push_stream import (
+    _create_resampler_state,
+    _processing_format_for_roles,
+    _resample_pcm_standalone,
+    _ResamplerKey,
+)
 from aiosendspin.server.roles.player.v1 import PlayerPersistentState, PlayerV1Role
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
@@ -15,6 +24,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
 from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
 from music_assistant.providers.sendspin.player import (
@@ -23,10 +33,14 @@ from music_assistant.providers.sendspin.player import (
     SendspinPlayer,
 )
 
+if TYPE_CHECKING:
+    import pytest
+
 PLAYER_ID = "client-1"
 MEMBER_ID = "client-2"
 FLAC_48K = SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=48000, bit_depth=16)
 FLAC_44K = SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=44100, bit_depth=16)
+FLAC_96K = SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=96000, bit_depth=24)
 OPUS_48K = SupportedAudioFormat(codec=AudioCodec.OPUS, channels=2, sample_rate=48000, bit_depth=16)
 
 
@@ -114,6 +128,160 @@ async def test_late_joining_member_follows_session_rate() -> None:
     assert member_role.preferred_format == SendspinAudioFormat(44100, 16, 2)
 
 
+async def test_group_session_takes_the_source_rate_a_member_plays() -> None:
+    """A 96 kHz track in a group led by a 48 kHz player runs at 96 kHz for its 96 kHz member."""
+    leader, leader_role = _player([FLAC_48K])
+    member, member_role = _player([FLAC_48K, FLAC_96K], player_id=MEMBER_ID)
+    _group(leader, member)
+    session = _session(leader, sample_rate=96000)
+
+    await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
+    pcm_format, sendspin_format = session._select_session_pcm_formats()
+
+    assert pcm_format.sample_rate == 96000
+    assert sendspin_format.sample_rate == 96000
+    assert member_role.preferred_format == SendspinAudioFormat(96000, 24, 2)
+    assert leader_role.preferred_format == SendspinAudioFormat(48000, 16, 2)
+
+
+async def test_group_session_follows_a_44k_track_a_member_plays() -> None:
+    """A 44.1 kHz track in a group led by a 48 kHz player runs at 44.1 kHz for its 44.1 kHz member."""
+    leader, _ = _player([FLAC_48K])
+    member, member_role = _player([FLAC_48K, FLAC_44K], player_id=MEMBER_ID)
+    _group(leader, member)
+    session = _session(leader, sample_rate=44100)
+
+    await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
+    pcm_format, _ = session._select_session_pcm_formats()
+
+    assert pcm_format.sample_rate == 44100
+    assert member_role.preferred_format == SendspinAudioFormat(44100, 16, 2)
+
+
+async def test_group_of_48k_members_stays_at_48k() -> None:
+    """A group whose members only play 48 kHz runs at 48 kHz for 44.1 and 96 kHz tracks."""
+    for track_rate in (44100, 96000):
+        leader, _ = _player([FLAC_48K])
+        member, _ = _player([OPUS_48K], player_id=MEMBER_ID)
+        _group(leader, member)
+        session = _session(leader, sample_rate=track_rate)
+
+        await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
+        pcm_format, _ = session._select_session_pcm_formats()
+
+        assert pcm_format.sample_rate == 48000
+
+
+async def test_group_session_does_not_go_above_the_track_rate() -> None:
+    """A member with a configured 96 kHz format does not lift a 44.1 kHz track above 48 kHz."""
+    leader, _ = _player([FLAC_48K])
+    member, member_role = _player(
+        [FLAC_48K, FLAC_96K], player_id=MEMBER_ID, preferred_format="flac:96000:24:2"
+    )
+    _group(leader, member)
+    session = _session(leader, sample_rate=44100)
+
+    await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
+    pcm_format, _ = session._select_session_pcm_formats()
+
+    assert member_role.preferred_format == SendspinAudioFormat(96000, 24, 2)
+    assert pcm_format.sample_rate == 48000
+
+
+async def test_lossy_leader_does_not_cap_the_group() -> None:
+    """A leader that plays a lossy codec does not hold a 96 kHz member at 48 kHz."""
+    leader, leader_role = _player([OPUS_48K])
+    member, _ = _player([FLAC_48K, FLAC_96K], player_id=MEMBER_ID)
+    _group(leader, member)
+    session = _session(leader, sample_rate=96000)
+
+    await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
+    pcm_format, _ = session._select_session_pcm_formats()
+
+    assert leader_role.preferred_codec == AudioCodec.OPUS
+    assert pcm_format.sample_rate == 96000
+
+
+async def test_lossy_member_counts_with_at_most_48k(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A member with a lossy codec counts with 48 kHz, whatever rate it plays."""
+    leader, _ = _player([FLAC_48K])
+    member, _ = _player([FLAC_48K], player_id=MEMBER_ID)
+    _group(leader, member)
+    session = _session(leader, sample_rate=96000)
+    formats = {
+        PLAYER_ID: AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=44100),
+        MEMBER_ID: AudioFormat(content_type=ContentType.OPUS, sample_rate=96000),
+    }
+    monkeypatch.setattr(session, "_get_member_preferred_format", formats.get)
+
+    pcm_format, _ = session._select_session_pcm_formats()
+
+    assert pcm_format.sample_rate == 48000
+
+
+async def test_hand_picked_leader_format_does_not_cap_the_group() -> None:
+    """A leader with a configured 48 kHz format keeps it, while the group runs at 96 kHz."""
+    leader, leader_role = _player([FLAC_48K, FLAC_96K], preferred_format="flac:48000:16:2")
+    member, _ = _player([FLAC_48K, FLAC_96K], player_id=MEMBER_ID)
+    _group(leader, member)
+    session = _session(leader, sample_rate=96000)
+
+    await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
+    pcm_format, _ = session._select_session_pcm_formats()
+
+    assert leader_role.preferred_format == SendspinAudioFormat(48000, 16, 2)
+    assert pcm_format.sample_rate == 96000
+
+
+async def test_group_session_without_first_item_keeps_leader_rate() -> None:
+    """Without a first item to follow, the group runs at the leader's rate."""
+    leader, _ = _player([FLAC_96K, FLAC_48K])
+    member, _ = _player([FLAC_48K], player_id=MEMBER_ID)
+    _group(leader, member)
+    session = _session(leader, sample_rate=44100)
+    session._start_streamdetails = None
+
+    await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
+    pcm_format, _ = session._select_session_pcm_formats()
+
+    assert pcm_format.sample_rate == 96000
+
+
+async def test_group_client_without_player_role_does_not_count() -> None:
+    """A group client that plays no audio leaves the session rate to the members that do."""
+    leader, _ = _player([FLAC_48K])
+    controller, _ = _player([], player_id=MEMBER_ID)
+    cast("MagicMock", controller.api).roles_by_family.return_value = []
+    _group(leader, controller)
+    session = _session(leader, sample_rate=96000)
+    session._pcm_format = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=96000)
+
+    await session._follow_session_sample_rate([PLAYER_ID])
+    pcm_format, _ = session._select_session_pcm_formats()
+
+    assert pcm_format.sample_rate == 48000
+
+
+async def test_tone_above_24khz_reaches_a_96k_member() -> None:
+    """A 30 kHz tone in a 96 kHz track reaches a 96 kHz member of a group led by a 48 kHz player."""
+    leader, _ = _player([FLAC_48K])
+    member, _ = _player([FLAC_48K, FLAC_96K], player_id=MEMBER_ID)
+    _group(leader, member)
+    session = _session(leader, sample_rate=96000)
+    await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
+    pcm_format, _ = session._select_session_pcm_formats()
+    member_rate = session._get_member_sample_rate(MEMBER_ID)
+    leader_rate = session._get_member_sample_rate(PLAYER_ID)
+    assert member_rate == 96000
+    assert leader_rate == 48000
+
+    with_group_rate = await _tone_level_at_member(pcm_format.sample_rate, member_rate)
+    with_leader_rate = await _tone_level_at_member(leader_rate, member_rate)
+
+    assert with_group_rate > 0.9
+    assert with_leader_rate < 0.001
+
+
 def _player(
     formats: list[SupportedAudioFormat],
     *,
@@ -152,6 +320,67 @@ def _player(
     player.mass.streams.audio = audio
     player.mass.players.get_player.return_value = player
     return player, role
+
+
+def _group(*players: SendspinPlayer) -> None:
+    """Put the given players in one Sendspin group, led by the first."""
+    clients = {player.protocol_id: player.api for player in players}
+    players_by_id = {player.protocol_id: player for player in players}
+    for player in players:
+        cast("MagicMock", player.api).group.clients = list(clients.values())
+        cast("MagicMock", player.provider).server_api.get_client.side_effect = clients.get
+        cast("MagicMock", player.mass).players.get_player.side_effect = players_by_id.get
+
+
+async def _tone_level_at_member(session_rate: int, member_rate: int) -> float:
+    """
+    Return the level of a 30 kHz tone in a 96 kHz source as a 96 kHz-rate member receives it.
+
+    The source is converted to the session rate by ffmpeg as the stream pipeline does, then to
+    the member rate by the resampler of the Sendspin library.
+
+    :param session_rate: The sample rate of the session.
+    :param member_rate: The sample rate the member plays.
+    """
+    source_rate, tone_hz, amplitude = 96000, 30000, 0.5
+    samples = amplitude * np.sin(2 * np.pi * tone_hz * np.arange(source_rate) / source_rate)
+    source_pcm = np.repeat(samples, 2).astype("<f4").tobytes()
+
+    async def _source() -> AsyncGenerator[bytes]:
+        yield source_pcm
+
+    session_pcm = b"".join(
+        [
+            chunk
+            async for chunk in get_ffmpeg_stream(
+                _source(),
+                AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=source_rate),
+                AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=session_rate),
+            )
+        ]
+    )
+    session_format = SendspinAudioFormat(session_rate, 32, 2, sample_type="float")
+    member_format = _processing_format_for_roles(
+        session_format, target_sample_rate=member_rate, target_bit_depth=24, target_channels=2
+    )
+    key = _ResamplerKey(
+        channel_id=uuid4(),
+        source_format=session_format,
+        target_sample_rate=member_rate,
+        target_channels=2,
+        target_bit_depth=member_format.bit_depth,
+        target_sample_type=member_format.sample_type,
+    )
+    state = _create_resampler_state(key, session_format, member_format)
+    member_pcm = _resample_pcm_standalone(state, session_pcm, session_format, 0).pcm_data
+
+    # the middle half second, clear of the resamplers' start and end transients
+    left = np.frombuffer(member_pcm, dtype="<f4")[::2]
+    middle = left[len(left) // 4 : len(left) // 4 + member_rate // 2]
+    spectrum = np.abs(np.fft.rfft(middle * np.hanning(len(middle))))
+    tone_bin = round(tone_hz * len(middle) / member_rate)
+    # the hann window halves the peak of a sine that falls on a bin
+    return float(spectrum[tone_bin - 2 : tone_bin + 3].max() / (amplitude * len(middle) / 4))
 
 
 def _session(player: SendspinPlayer, *, sample_rate: int) -> SendspinPlaybackSession:
