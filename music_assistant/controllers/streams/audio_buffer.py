@@ -15,8 +15,8 @@ import logging
 import os
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Callable
-from contextlib import aclosing, nullcontext, suppress
+from collections.abc import AsyncGenerator, Callable, Iterator
+from contextlib import aclosing, contextmanager, nullcontext, suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
@@ -91,6 +91,42 @@ class AudioBufferDiscarded(Exception):
     """
 
 
+class BufferUser:
+    """
+    A party that waits for the audio of an AudioBuffer or reads it.
+
+    A buffer keeps its source for as long as it has a user.
+    """
+
+    def __init__(self, name: str) -> None:
+        """
+        Initialize BufferUser.
+
+        :param name: Who this is, for log lines.
+        """
+        self.name = name
+        self._buffer: AudioBuffer | None = None
+
+    def attach(self, buffer: AudioBuffer) -> None:
+        """
+        Start using the given buffer, in place of the one used until now.
+
+        :param buffer: The buffer this party waits for or reads from here on.
+        """
+        if buffer is self._buffer:
+            return
+        previous, self._buffer = self._buffer, buffer
+        buffer._add_user(self)
+        if previous is not None:
+            previous._drop_user(self)
+
+    def release(self) -> None:
+        """Stop using the buffer. Safe to call more than once."""
+        previous, self._buffer = self._buffer, None
+        if previous is not None:
+            previous._drop_user(self)
+
+
 class AudioBuffer:
     """
     Raw PCM audio buffer with seek support and optional filter processing.
@@ -147,6 +183,10 @@ class AudioBuffer:
         # media second currently heard from this buffer (None if unknown),
         # so played audio is retained relative to what the listener hears
         self.playback_position: Callable[[AudioBuffer], float | None] | None = None
+        self._users: list[BufferUser] = []
+        self._release_task: asyncio.Task[None] | None = None
+        # whether this buffer may give up its source once it has no user; None means never
+        self.may_release: Callable[[AudioBuffer], bool] | None = None
 
     # -- Properties --
 
@@ -202,7 +242,38 @@ class AudioBuffer:
         """Return the chunk number of the oldest chunk still retained in the buffer."""
         return self._discarded_chunks
 
+    @property
+    def source_name(self) -> str:
+        """Return the name of the source that fills this buffer, for log lines."""
+        return self._source_name
+
+    @property
+    def users(self) -> tuple[str, ...]:
+        """Return the names of the parties that wait for this buffer's audio or read it."""
+        return tuple(user.name for user in self._users)
+
     # -- Public methods --
+
+    def release_if_unneeded(self) -> asyncio.Task[None] | None:
+        """
+        Stop the source of this buffer when it still fills and nothing needs it.
+
+        A buffer with a user is needed. One without is kept or given up as ``may_release``
+        says.
+
+        :return: The task that stops the source, or None when the buffer keeps it.
+        """
+        if self._release_task is not None and not self._release_task.done():
+            return self._release_task
+        producer = self._producer_task
+        if self._users or producer is None or producer.done() or producer.cancelling():
+            # in use, or no source left that is not being stopped already
+            return None
+        if self.may_release is None or not self.may_release(self):
+            return None
+        LOGGER.debug("Releasing the source of %s, which nothing needs", self._source_name)
+        self._release_task = asyncio.get_running_loop().create_task(self.clear())
+        return self._release_task
 
     def register_cancel_callback(self, callback: CancelCallback) -> None:
         """
@@ -262,17 +333,22 @@ class AudioBuffer:
             bytes_per_sample = (self.pcm_format.bit_depth // 8) * self.pcm_format.channels
             trim_bytes = samples_to_trim * bytes_per_sample
 
-        while True:
-            try:
-                self._last_access_time = time.time()
-                chunk = await self._get(chunk_number=chunk_number)
-                if trim_bytes > 0:
-                    chunk = chunk[trim_bytes:]
-                    trim_bytes = 0
-                yield chunk
-                chunk_number += 1
-            except AudioBufferEOF:
-                break
+        reader = BufferUser("reader")
+        reader.attach(self)
+        try:
+            while True:
+                try:
+                    self._last_access_time = time.time()
+                    chunk = await self._get(chunk_number=chunk_number)
+                    if trim_bytes > 0:
+                        chunk = chunk[trim_bytes:]
+                        trim_bytes = 0
+                    yield chunk
+                    chunk_number += 1
+                except AudioBufferEOF:
+                    break
+        finally:
+            reader.release()
 
     async def read_chunk_for_analysis(self, chunk_number: int) -> bytes:
         """
@@ -321,23 +397,18 @@ class AudioBuffer:
         :param exact_seek: Preserve millisecond precision for the input buffer position.
         """
         needs_ffmpeg = bool(filter_params) or self.pcm_format != output_format
-
-        if not needs_ffmpeg:
-            async for chunk in self.get_raw_stream(
-                seek_position_ms=seek_position_ms, exact_seek=exact_seek
-            ):
+        stream = self.get_raw_stream(seek_position_ms=seek_position_ms, exact_seek=exact_seek)
+        if needs_ffmpeg:
+            stream = get_ffmpeg_stream(
+                audio_input=stream,
+                input_format=self.pcm_format,
+                output_format=output_format,
+                filter_params=filter_params,
+            )
+        # closed together with this stream, so its reader leaves the buffer right away
+        async with aclosing(stream):
+            async for chunk in stream:
                 yield chunk
-            return
-
-        async for chunk in get_ffmpeg_stream(
-            audio_input=self.get_raw_stream(
-                seek_position_ms=seek_position_ms, exact_seek=exact_seek
-            ),
-            input_format=self.pcm_format,
-            output_format=output_format,
-            filter_params=filter_params,
-        ):
-            yield chunk
 
     def fill(
         self,
@@ -452,6 +523,8 @@ class AudioBuffer:
         reason: str = "",
         source_wait_timeout: float | None = STREAM_SLOT_WAIT_TIMEOUT,
         on_complete: Callable[[], None] | None = None,
+        user: BufferUser | None = None,
+        may_release: Callable[[AudioBuffer], bool] | None = None,
     ) -> AudioBuffer:
         """
         Get or create an AudioBuffer for the given streamdetails.
@@ -469,6 +542,10 @@ class AudioBuffer:
             without a timeout.
         :param on_complete: Called once the source of a newly created buffer has delivered
             all of its audio. Not called when an existing buffer is reused.
+        :param user: The party the buffer is for, which uses it from here until it calls
+            ``release``. Without one the buffer only counts as used while this call waits.
+        :param may_release: Tells whether a newly created buffer may give up its source
+            once it has no user. Not applied when an existing buffer is reused.
         :raises AudioError: If the buffer does not become ready, wrapping the typed
             producer error (e.g. ProviderStreamLimitError) when there is one.
         :raises ProviderStreamLimitError: If a source in an unknown format can not get a
@@ -514,10 +591,11 @@ class AudioBuffer:
                     seek_position_ms,
                     existing_buffer._discarded_chunks,
                 )
-                if wait_ready:
-                    await existing_buffer._wait_until_ready(
-                        streamdetails, ready_timeout, log_prefix
-                    )
+                with existing_buffer._used_by(user, reason):
+                    if wait_ready:
+                        await existing_buffer._wait_until_ready(
+                            streamdetails, ready_timeout, log_prefix
+                        )
                 return existing_buffer
 
         if _needs_format_probe(streamdetails):
@@ -533,16 +611,47 @@ class AudioBuffer:
             seek_position=buffer_seek_seconds,
             filter_params=None,
             source_wait_timeout=source_wait_timeout,
+            slot_holder=audio_buffer,
         )
 
-        audio_buffer.fill(audio_source, source_name=streamdetails.uri, on_complete=on_complete)
-
-        if wait_ready:
-            await audio_buffer._wait_until_ready(streamdetails, ready_timeout, log_prefix)
+        audio_buffer.may_release = may_release
+        with audio_buffer._used_by(user, reason):
+            audio_buffer.fill(audio_source, source_name=streamdetails.uri, on_complete=on_complete)
+            if wait_ready:
+                await audio_buffer._wait_until_ready(streamdetails, ready_timeout, log_prefix)
 
         return audio_buffer
 
     # -- Private methods --
+
+    def _add_user(self, user: BufferUser) -> None:
+        """Add a party that waits for this buffer's audio or reads it."""
+        self._users.append(user)
+
+    def _drop_user(self, user: BufferUser) -> None:
+        """Remove a user, which gives the source up when nothing needs it any more."""
+        self._users.remove(user)
+        self.release_if_unneeded()
+
+    @contextmanager
+    def _used_by(self, user: BufferUser | None, reason: str) -> Iterator[None]:
+        """
+        Count this buffer as used for the duration of the context.
+
+        :param user: The party the buffer is for, which goes on using it afterwards.
+            Without one, a user of its own stands in until the context ends.
+        :param reason: Caller context, which names that stand-in.
+        """
+        if user is not None:
+            user.attach(self)
+            yield
+            return
+        waiter = BufferUser(reason or "waiting")
+        waiter.attach(self)
+        try:
+            yield
+        finally:
+            waiter.release()
 
     async def _wait_until_ready(
         self, streamdetails: StreamDetails, ready_timeout: float, log_prefix: str

@@ -234,6 +234,21 @@ else goes, including what sessions that ended earlier left behind: sessions rota
 so a claim that is no longer current marks audio nobody will come back for. A clear or a replace
 drops the items themselves, so all of their audio goes with them.
 
+A buffer that still fills holds one of its provider's stream slots, and it knows who uses it:
+whoever waits for its first audio and every stream that is open on it (a speaker's request, a
+direct PCM consumer, the flow stream and the fade-in it collects ahead of time, a fade into the next
+track). A flow stream also claims the track it selected to play next, before it has read any of it.
+A buffer is needed while it has a user, or while its queue plays its item now or next
+(`plays_now_or_next`: the item the queue is on, the item its player has started fetching, and the
+item that follows either of them). A buffer that is not needed gives its source up at two moments:
+when a track asks the provider for a slot and none is free, and when its last user leaves. It does so
+whenever nothing reaches it any more (its item left the queue, its queue has no session, or another
+buffer took its place on the item); a buffer whose item only waits further down the queue gives way
+when its provider has no free slot. So a prepared track that a queue change moved away from the head
+or took off the queue hands its slot to the track that plays next, while a track that is in use or
+about to play keeps it. The releases of a stop, a clear, a replace and the start of an item do not
+ask for users.
+
 A paused queue keeps its session and its buffers until the pause watcher stops it once the
 configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread
 buffer releases its audio).
