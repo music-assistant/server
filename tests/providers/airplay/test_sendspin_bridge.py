@@ -1495,7 +1495,7 @@ async def test_anchor_follows_the_clock_ready_projection() -> None:
 
 async def test_anchor_still_starts_a_receiver_whose_clock_stalled() -> None:
     """
-    A stalled receiver is anchored anyway, unlike a late joiner, and warned about.
+    A stalled receiver is anchored anyway, unlike a late joiner.
 
     A joiner is dropped because the session plays on without it, while here
     dropping would stop the speaker, and the binary's stall report is a
@@ -1506,12 +1506,30 @@ async def test_anchor_still_starts_a_receiver_whose_clock_stalled() -> None:
     stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.STALLED, 0))
     _prepare_anchor(bridge, stream, first_chunk_lead_ms=250)
 
-    with patch.object(bridge.logger, "warning") as warning:
-        assert await _anchor(bridge, stream) is True
+    assert await _anchor(bridge, stream) is True
 
     assert _commanded_instant(stream) == UNIX_NOW_MS + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
     assert bridge._started is True
-    assert len([call for call in warning.call_args_list if "PTP clock" in call.args[0]]) == 1
+
+
+async def test_warm_reanchors_leave_a_latched_stall_to_the_streams_own_warning() -> None:
+    """
+    Track changes on a kept stream do not repeat the stall warning.
+
+    The stall stays latched on the stream across warm re-anchors, and the stream
+    already warned about it once when the binary reported it.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    stream = _make_anchor_stream()
+    stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.STALLED, 0))
+
+    with patch.object(bridge.logger, "warning") as warning:
+        for _ in range(3):
+            _prepare_anchor(bridge, stream, first_chunk_lead_ms=WARM_LEAD_MS)
+            assert await _anchor(bridge, stream, warm=True) is True
+
+    assert stream.start.await_count == 3
+    assert not [call for call in warning.call_args_list if "PTP clock" in call.args[0]]
 
 
 async def test_anchor_never_precedes_content_already_scheduled() -> None:
