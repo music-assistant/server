@@ -85,10 +85,12 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.provider_access import (
+    EXPLICIT_FLAGGED_MEDIA_TYPES,
     ensure_explicit_allowed,
     playback_sources,
     resolve_playback_user,
     resolve_playback_user_or_stand_in,
+    restricts_explicit,
     without_disallowed_explicit,
 )
 from music_assistant.helpers.throttle_retry import (
@@ -150,6 +152,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # the queue keeps the item and stops for an unavailable source, as it does
                 # for one that asks to back off
                 raise ResourceTemporarilyUnavailable(str(err)) from err
+        # the item had no explicit flag to judge until its track was found
+        await ensure_explicit_allowed(self.mass, track, user)
         if queue_item.media_item is not external_track:
             # the load that shared this lookup already put the track in place
             return
@@ -1274,7 +1278,18 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # never enqueue what this user has no music source for; failing here keeps
         # the caller from finding out only when the item is about to be streamed
         self.mass.music.check_item_playable_for_user(media_item, user)
-        await ensure_explicit_allowed(self.mass, media_item, user)
+        stored_item = media_item
+        if (
+            media_item is entry
+            and restricts_explicit(user)
+            and media_item.media_type in {*EXPLICIT_FLAGGED_MEDIA_TYPES, MediaType.PODCAST_EPISODE}
+        ):
+            # an item object the caller sent is not reloaded above, so its explicit flag is
+            # only the caller's word: the stored item is checked instead
+            if media_item.uri is None:
+                raise InvalidDataError("Media item has no URI")
+            stored_item = await self._item_by_uri(media_item.uri)
+        await ensure_explicit_allowed(self.mass, stored_item, user)
         return media_item
 
     @guard_single_request

@@ -95,6 +95,7 @@ from music_assistant.helpers.playlists import (
     parse_m3u_playlist_name,
     sanitize_playlist_filename,
 )
+from music_assistant.helpers.provider_access import restricts_explicit
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.track_filter import filter_tracks, get_track_filter
@@ -1622,8 +1623,17 @@ class BuiltinProvider(MusicProvider):
             result.append(item)
         return result
 
-    @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_tracks(self) -> list[Track]:
+        return await self._random_tracks(restricts_explicit(get_current_user()))
+
+    @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
+    async def _random_tracks(self, without_explicit: bool) -> list[Track]:
+        """
+        Return random library tracks, cached apart for a user kept from explicit content.
+
+        :param without_explicit: Only shapes the cache key: the query narrows the tracks for
+            the calling user.
+        """
         result: list[Track] = []
         res = await self.mass.music.tracks.library_items(
             limit=500, sort_field=SortField.RANDOM_PLAY_COUNT, summary=False
@@ -1633,8 +1643,17 @@ class BuiltinProvider(MusicProvider):
             result.append(item)
         return result
 
-    @use_cache(expiration=3600, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_album(self) -> list[Track]:
+        return await self._random_album_tracks(restricts_explicit(get_current_user()))
+
+    @use_cache(expiration=3600, category=CACHE_CATEGORY_PLAYLISTS)
+    async def _random_album_tracks(self, without_explicit: bool) -> list[Track]:
+        """
+        Return the tracks of a random library album, cached apart for a user kept from explicit content.
+
+        :param without_explicit: Only shapes the cache key: the tracks are narrowed for the
+            calling user.
+        """
         for random_album in await self.mass.music.albums.get_library_items_by_query(
             limit=1,
             sort_field=SortField.RANDOM,
@@ -1649,8 +1668,17 @@ class BuiltinProvider(MusicProvider):
             return tracks
         return []
 
-    @use_cache(expiration=3600, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_artist(self) -> list[Track]:
+        return await self._random_artist_tracks(restricts_explicit(get_current_user()))
+
+    @use_cache(expiration=3600, category=CACHE_CATEGORY_PLAYLISTS)
+    async def _random_artist_tracks(self, without_explicit: bool) -> list[Track]:
+        """
+        Return the tracks of a random library artist, cached apart for a user kept from explicit content.
+
+        :param without_explicit: Only shapes the cache key: the tracks are narrowed for the
+            calling user.
+        """
         for source in ("library", "top"):
             for min_tracks_required in (25, 10, 5, 1):
                 for random_artist in await self.mass.music.artists.library_items(
@@ -1713,8 +1741,17 @@ class BuiltinProvider(MusicProvider):
             result.append(track)
         return result
 
-    @use_cache(expiration=60, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_recently_added_tracks(self) -> list[Track]:
+        return await self._recently_added_tracks(restricts_explicit(get_current_user()))
+
+    @use_cache(expiration=60, category=CACHE_CATEGORY_PLAYLISTS)
+    async def _recently_added_tracks(self, without_explicit: bool) -> list[Track]:
+        """
+        Return the tracks added to the library last, cached apart for a user kept from explicit content.
+
+        :param without_explicit: Only shapes the cache key: the tracks are narrowed for the
+            calling user.
+        """
         result: list[Track] = []
         recent_tracks = await self.mass.music.recently_added_tracks(100)
         for idx, track in enumerate(recent_tracks, 1):

@@ -71,7 +71,11 @@ from music_assistant.helpers.plugin_engines import (
     create_ai_engine_config_entries,
     resolve_ai_engine_setting,
 )
-from music_assistant.helpers.provider_access import visible_music_sources
+from music_assistant.helpers.provider_access import (
+    restricts_explicit,
+    visible_music_sources,
+    without_disallowed_explicit,
+)
 from music_assistant.helpers.track_filter import filter_tracks
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
@@ -391,13 +395,16 @@ class SmartPlaylistProvider(PluginProvider):
         user_provider_filter = tuple(sorted(visible)) if visible is not None else ()
         # Filter the cached sample at the boundary (not inside the cached evaluation) so a
         # recency-filtered batch from a queue refill never gets cached and served to browse.
+        sample_key: dict[str, Any] = {}
         if (rules.favorites_only or rules.exclude_favorites) and user:
             # favorites are personal, so this sample is keyed on (and evaluated as) the user
-            sample = await self._cached_dynamic_sample(
-                resolved_id, user_provider_filter, favorites_user_id=user.user_id
-            )
-        else:
-            sample = await self._cached_dynamic_sample(resolved_id, user_provider_filter)
+            sample_key["favorites_user_id"] = user.user_id
+        if restricts_explicit(user):
+            # a user kept from explicit content gets a sample of their own, and a background
+            # refresh (which runs without them) is narrowed after the read
+            sample_key["without_explicit"] = True
+        sample = await self._cached_dynamic_sample(resolved_id, user_provider_filter, **sample_key)
+        sample = await without_disallowed_explicit(self.mass, sample, user)
         # a cached sample carries the favorite state of whoever filled it
         sample = await with_user_favorites(self.mass, user, sample)
         if rules.exclude_favorites:
@@ -415,6 +422,7 @@ class SmartPlaylistProvider(PluginProvider):
         prov_playlist_id: str,
         user_provider_filter: tuple[str, ...] = (),
         favorites_user_id: str | None = None,
+        without_explicit: bool = False,
     ) -> list[Track]:
         """
         Evaluate a fresh sample for a dynamic playlist (wrapped in SWR cache).
@@ -423,6 +431,8 @@ class SmartPlaylistProvider(PluginProvider):
         :param user_provider_filter: The music sources the sample is limited to.
         :param favorites_user_id: The user whose favorites the sample filters on; a
             background refresh has no session, so the user is restored from it.
+        :param without_explicit: Only shapes the cache key: the sample is narrowed for the
+            calling user.
         """
         rules = self._rules_store.get(prov_playlist_id)
         if rules is None:

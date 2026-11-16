@@ -8,6 +8,7 @@ and recently played as they are handed out.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -36,6 +37,7 @@ from music_assistant.controllers.music.recommendations.controller import (
 )
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.builtin import BuiltinProvider
 from tests.common import set_music_source_access
 
 PROVIDER = "qobuz_1"
@@ -49,6 +51,7 @@ CURRENT_USER_LOOKUPS = (
     "music_assistant.controllers.music.listing_cache.get_current_user",
     "music_assistant.controllers.music.controller.get_current_user",
     "music_assistant.controllers.music.recommendations.controller.get_current_user",
+    "music_assistant.providers.builtin.get_current_user",
 )
 
 
@@ -343,3 +346,35 @@ async def test_the_search_cache_is_kept_apart_per_explicit_setting(mass: MusicAs
 
     assert [track.name for track in before.tracks] == ["explicit"]
     assert after.tracks == []
+
+
+async def test_a_library_of_explicit_items_only_is_still_found(mass: MusicAssistant) -> None:
+    """Browsing reads a library holding only explicit items, rather than the live provider."""
+    artist = await _artist(mass)
+    track = _track("explicit", True)
+    track.artists = UniqueList([artist])
+    await mass.music.tracks.add_item_to_library(track)
+    provider = MagicMock(instance_id=PROVIDER)
+
+    with _as(KID):
+        assert await mass.music._library_holds_items_of(provider, MediaType.TRACK)
+
+
+async def test_a_builtin_playlist_is_cached_apart_for_a_restricted_member(
+    mass: MusicAssistant,
+) -> None:
+    """The random tracks a restricted member was given aren't served to everyone else."""
+    await _add_library_tracks(mass)
+    builtin = BuiltinProvider.__new__(BuiltinProvider)
+    builtin.mass = mass
+    builtin.config = MagicMock(instance_id="builtin")
+    builtin.manifest = MagicMock(domain="builtin")
+
+    with _as(KID):
+        restricted = await builtin._get_builtin_playlist_random_tracks()
+    await asyncio.sleep(0.05)  # let the cache store what the member was given
+    with _as(PARENT):
+        everything = await builtin._get_builtin_playlist_random_tracks()
+
+    assert sorted(track.name for track in restricted) == ALLOWED
+    assert sorted(track.name for track in everything) == EVERYTHING

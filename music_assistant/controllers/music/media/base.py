@@ -740,15 +740,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
         return items
 
-    def listing_filter(self, query_params: dict[str, Any]) -> list[str]:
+    def listing_filter(self, query_params: dict[str, Any], *, explicit: bool = True) -> list[str]:
         """
         Return the SQL conditions that narrow listings of this type for the calling user.
 
         For callers that build their own listing query with `get_library_items_by_query`.
 
         :param query_params: Query params dict; the conditions' bound params are added to it.
+        :param explicit: Also leave out the explicit items a restricted user may not see.
         """
-        clauses = [self._listing_filter_clause(query_params), self._explicit_filter_clause()]
+        clauses = [
+            self._listing_filter_clause(query_params),
+            self._explicit_filter_clause() if explicit else None,
+        ]
         return [clause for clause in clauses if clause]
 
     @final

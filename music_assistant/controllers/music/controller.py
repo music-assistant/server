@@ -3128,12 +3128,31 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             summary=False,
             random_seed=random_seed,
         )
-        if not items and not await controller.library_items(
-            provider=provider.instance_id, limit=1, random_seed=random_seed
-        ):
+        if not items and not await self._library_holds_items_of(provider, media_type):
             return None
         page.extend(items)
         return page
+
+    async def _library_holds_items_of(self, provider: MusicProvider, media_type: MediaType) -> bool:
+        """
+        Return whether the library holds any of a provider's items of a media type.
+
+        :param provider: The provider whose library items to look for.
+        :param media_type: The media type to look for.
+        """
+        controller = self.get_controller(media_type)
+        # a library of nothing but explicit items is still synced, so this asks whether the
+        # items are there rather than whether the user may see them
+        query_params: dict[str, Any] = {}
+        return bool(
+            await controller.get_library_items_by_query(
+                limit=1,
+                provider_filter=[provider.instance_id],
+                extra_query_parts=controller.listing_filter(query_params, explicit=False) or None,
+                extra_query_params=query_params,
+                in_library_only=True,
+            )
+        )
 
     async def _get_provider_audio_sources(
         self, provider: AudioSourceMixin, player_id: str | None
