@@ -68,7 +68,7 @@ from music_assistant.providers.squeezelite.sendspin_bridge import (
     SendspinSqueezeliteBridge,
     _pack_24_bit,
 )
-from tests.common import use_real_create_task
+from tests.common import use_real_bridge_holders, use_real_create_task
 
 if TYPE_CHECKING:
     from aiosendspin.models.core import ClientHelloPayload
@@ -347,6 +347,7 @@ class _Rig:
         mass.cache.set = AsyncMock()
         # the Sendspin provider and its server
         self.sendspin = MagicMock()
+        use_real_bridge_holders(self.sendspin)
         self.server = server = self.sendspin.server_api
         server.clock = self.clock
         server.remove_client = AsyncMock()
@@ -2099,6 +2100,8 @@ async def test_chunks_of_a_stream_that_ended_are_dropped(rig: _Rig) -> None:
 async def test_stopping_the_bridge_twice_ends_everything_once(rig: _Rig) -> None:
     """A bridge that is stopped leaves no task, client or reference behind."""
     await rig.bridge.start()
+    # as its manager records once the bridge registered
+    rig.sendspin.hold_bridge_client(CLIENT_ID, PLAYER_ID)
     session = await rig.start_playing()
     tasks = list(session.tasks)
     rig.bridge.return_to_group(MagicMock())

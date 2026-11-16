@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.config_entries import ProviderConfig, ProviderError
+from music_assistant_models.config_entries import UI_ONLY, ProviderConfig, ProviderError
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import ProviderStatus
 from music_assistant_models.errors import (
@@ -24,7 +24,7 @@ from music_assistant.constants import ENCRYPT_SUFFIX
 from music_assistant.helpers.security import contains_encrypted_value
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.config_entries import Config, ConfigEntry, ConfigValueType
 
 
 def _with_translation_owner(
@@ -39,6 +39,35 @@ def _with_translation_owner(
         # its origin provider, not the host player) keeps it; everything else gets the passed owner.
         result.append(replace(entry, translation_owner=entry.translation_owner or owner))
     return result
+
+
+def _raw_config_to_store(
+    config: Config,
+    stored_values: dict[str, Any],
+    submitted_values: dict[str, ConfigValueType],
+) -> dict[str, Any]:
+    """
+    Return the raw config to store for a saved config, keeping the values the user chose.
+
+    A value submitted as None is unset, so it follows its default again. A value that is
+    stored already stays stored, also when it equals its default; any other value is only
+    stored when it differs from its default. Stored values without a config entry are kept.
+
+    :param config: The config, with the submitted values applied.
+    :param stored_values: The values stored for the config before this save.
+    :param submitted_values: The submitted values, by key.
+    """
+    raw_conf = config.to_raw()
+    values: dict[str, Any] = raw_conf["values"]
+    for key, entry in config.values.items():
+        if key in submitted_values and submitted_values[key] is None:
+            values.pop(key, None)
+        elif key not in values and stored_values.get(key) is not None and entry.type not in UI_ONLY:
+            values[key] = entry.value
+    # values without an entry in the current context, e.g. state a provider or controller
+    # writes at runtime: to_raw() only rebuilds the values of the declared entries
+    values.update({k: v for k, v in stored_values.items() if k not in config.values})
+    return raw_conf
 
 
 _AUTH_ERROR_CODES = frozenset(

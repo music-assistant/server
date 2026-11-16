@@ -7,6 +7,7 @@ from contextlib import ExitStack
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
@@ -22,8 +23,10 @@ from music_assistant_models.errors import (
     InvalidProviderID,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderPermissionDenied,
     ProviderUnavailableError,
     RateLimited,
+    ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
 from music_assistant_models.media_items import Album, Track
@@ -37,9 +40,11 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
     MusicBrainzArtistCredit,
+    MusicBrainzBarcodeRelease,
     MusicBrainzRecording,
     MusicBrainzRelation,
     MusicBrainzRelease,
+    MusicBrainzReleaseGroup,
     MusicBrainzUrl,
 )
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
@@ -74,12 +79,29 @@ MEMBER = User(user_id="user-member", username="member", role=UserRole.USER)
 COULD_NOT_ANSWER = [
     RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
     RateLimited("slow down", backoff_time=3600),
+    ProviderUnavailableError("Qobuz is temporarily unavailable"),
 ]
+# a source that timed out or whose connection broke down could not answer either, and is
+# reported by name
+UNREACHABLE = [
+    TimeoutError(),
+    aiohttp.ClientConnectionError("Connection reset by peer"),
+    aiohttp.ClientPayloadError("Response payload is not completed"),
+    aiohttp.ContentTypeError(MagicMock(), (), message="unexpected mimetype: text/html"),
+]
+# a MusicBrainz that answered with a server error could not answer either
+SERVER_ERRORS = [
+    pytest.param(aiohttp.ClientResponseError(MagicMock(), (), status=500), id="500"),
+    pytest.param(aiohttp.ClientResponseError(MagicMock(), (), status=504), id="504"),
+]
+# the requests to MusicBrainz a lookup by a MusicBrainz id makes
+MUSICBRAINZ_ROUTES = ["recording", "release", "release group", "edition"]
 # a provider that answered, or can not be asked: it does not have the item
 TRUE_MISSES = [
     MediaNotFoundError("gone"),
     NotImplementedError("no lookup by this id"),
     InvalidDataError("not a usable answer"),
+    ProviderPermissionDenied("no access"),
 ]
 
 # every request a music provider can be sent on the way
@@ -1057,6 +1079,187 @@ async def test_release_barcode_keeps_what_could_not_answer_past_a_failed_fetch(
 
     assert excinfo.value is error
     tidal.get_album.assert_awaited_once_with(TIDAL_ALBUM_ID)
+
+
+def _error_id(error: Exception) -> str:
+    """Return the test id of an error a source fails with."""
+    return type(error).__name__
+
+
+def _assert_unreachable(
+    reported: ResourceTemporarilyUnavailable, error: Exception, source: str
+) -> None:
+    """Assert that a lookup reported a source that could not be reached, by name."""
+    assert str(reported) == f"Could not reach {source}"
+    assert reported.translation_key == "service_could_not_be_reached"
+    assert reported.translation_args == [source]
+    assert reported.translation_owner == "core.music"
+    assert reported.__cause__ is error
+
+
+def _musicbrainz_failing_with(music: MusicController, error: Exception, route: str) -> MagicMock:
+    """
+    Load a music provider and a MusicBrainz whose request of a route fails; return the provider.
+
+    :param music: The music controller under test.
+    :param error: The error the request fails with.
+    :param route: One of MUSICBRAINZ_ROUTES.
+    """
+    spotify = _provider(
+        "spotify_1", ProviderFeature.TRACK_BY_EXTERNAL_ID, ProviderFeature.ALBUM_BY_EXTERNAL_ID
+    )
+    musicbrainz = _load(music, spotify)
+    musicbrainz.get_recording_details = AsyncMock(side_effect=error)
+    musicbrainz.get_release_details = AsyncMock(side_effect=error)
+    # an edition the barcode lookup could find, which MusicBrainz then can not be asked for
+    edition = MusicBrainzBarcodeRelease(
+        id=RELEASE_ID,
+        release_group=MusicBrainzReleaseGroup(id=RELEASE_GROUP_ID, title="Test Album"),
+        status="Official",
+        barcode=BARCODE,
+    )
+    musicbrainz.browse_releases_by_release_group = AsyncMock(
+        return_value=[edition], side_effect=None if route == "edition" else error
+    )
+    return spotify
+
+
+async def _look_up_by_musicbrainz_id(music: MusicController, route: str) -> Track | Album | None:
+    """Look the item of one of MUSICBRAINZ_ROUTES up by its MusicBrainz id."""
+    if route == "recording":
+        return await _resolve_recording(music)
+    if route == "release":
+        return await _resolve_release(music)
+    return await music.albums.get_item_by_external_id(RELEASE_GROUP_ID, ExternalID.MB_RELEASEGROUP)
+
+
+@pytest.mark.parametrize("error", UNREACHABLE, ids=_error_id)
+async def test_provider_that_could_not_be_reached_is_reported_by_name(
+    music: MusicController, error: Exception
+) -> None:
+    """A track no provider has, while one of them could not be reached, is not a miss."""
+    spotify, tidal = _track_provider("spotify_1"), _track_provider("tidal_1")
+    spotify.get_track_by_external_id = AsyncMock(side_effect=error)
+    _load(music, spotify, tidal, recording=_recording())
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as excinfo:
+        await _resolve_recording(music)
+    _assert_unreachable(excinfo.value, error, "Spotify")
+    tidal.get_track_by_external_id.assert_awaited_once()
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await music.get_item(MediaType.TRACK, RECORDING_ITEM_ID, EXTERNAL_ID_PROVIDER)
+    assert await _remembered(music) is None
+
+    # a provider that has the track settles it while the other still can not be reached
+    tidal_track = create_track("tidal_1", "t9")
+    tidal.get_track_by_external_id = _has(tidal_track)
+    assert await _resolve_recording(music) is tidal_track
+
+
+@pytest.mark.parametrize("error", UNREACHABLE, ids=_error_id)
+async def test_linked_provider_that_could_not_be_reached_is_reported(
+    music: MusicController, error: Exception
+) -> None:
+    """A linked provider that could not be reached is reported unless the ISRC finds the track."""
+    spotify, tidal = _track_provider("spotify_1"), _track_provider("tidal_1")
+    spotify.get_track = AsyncMock(side_effect=error)
+    _load(music, spotify, tidal, recording=_recording(urls=[SPOTIFY_TRACK_URL]))
+
+    # which linked provider failed is not known, so no name is shown for it
+    with pytest.raises(ResourceTemporarilyUnavailable) as excinfo:
+        await _resolve_recording(music)
+    assert str(excinfo.value) == "Could not reach the linked music provider"
+    assert excinfo.value.translation_key == ResourceTemporarilyUnavailable.translation_key
+    assert excinfo.value.translation_args == []
+    assert excinfo.value.__cause__ is error
+    tidal.get_track_by_external_id.assert_awaited_once()
+    assert await _remembered(music) is None
+
+    tidal_track = create_track("tidal_1", "t9")
+    tidal.get_track_by_external_id = _has(tidal_track)
+    assert await _resolve_recording(music) is tidal_track
+
+
+@pytest.mark.parametrize("error", UNREACHABLE, ids=_error_id)
+async def test_remembered_provider_that_could_not_be_reached_is_reported(
+    music: MusicController, error: Exception
+) -> None:
+    """A remembered item its service could not be reached for is reported, and kept."""
+    spotify, tidal = _track_provider("spotify_1"), _track_provider("tidal_1")
+    tidal_track = create_track("tidal_1", "t9")
+    tidal.get_track_by_external_id = _has(tidal_track)
+    _load(music, spotify, tidal, recording=_recording())
+    assert await _resolve_recording(music) is tidal_track
+    kept = await _remembered(music)
+
+    tidal.get_track = AsyncMock(side_effect=error)
+    tidal.get_track_by_external_id = AsyncMock(return_value=None)
+    with pytest.raises(ResourceTemporarilyUnavailable) as excinfo:
+        await _resolve_recording(music)
+    _assert_unreachable(excinfo.value, error, "Tidal")
+    assert await _remembered(music) == kept
+
+    spotify_track = create_track("spotify_1", "s9")
+    spotify.get_track_by_external_id = _has(spotify_track)
+    assert await _resolve_recording(music) is spotify_track
+
+
+@pytest.mark.parametrize("error", UNREACHABLE, ids=_error_id)
+async def test_release_provider_that_could_not_be_reached_is_reported(
+    music: MusicController, error: Exception
+) -> None:
+    """A release no provider has, while one of them could not be reached, is not a miss."""
+    spotify, tidal = _album_provider("spotify_1"), _album_provider("tidal_1")
+    spotify.get_album = AsyncMock(side_effect=error)
+    _load(music, spotify, tidal, release=_release(urls=[SPOTIFY_ALBUM_URL]))
+
+    # the linked album could not be fetched and the barcode finds nothing
+    with pytest.raises(ResourceTemporarilyUnavailable) as excinfo:
+        await _resolve_release(music)
+    _assert_unreachable(excinfo.value, error, "Spotify")
+
+    # the barcode could not be looked up
+    spotify.get_album = AsyncMock(side_effect=MediaNotFoundError("gone"))
+    spotify.get_album_by_external_id = AsyncMock(side_effect=error)
+    with pytest.raises(ResourceTemporarilyUnavailable) as excinfo:
+        await _resolve_release(music)
+    _assert_unreachable(excinfo.value, error, "Spotify")
+
+    tidal_album = create_album("tidal_1", TIDAL_ALBUM_ID)
+    tidal.get_album_by_external_id = _has(tidal_album)
+    tidal.get_album = AsyncMock(return_value=tidal_album)
+    found = await _resolve_release(music)
+    assert found is not None
+    assert (found.provider, found.item_id) == ("tidal_1", TIDAL_ALBUM_ID)
+
+
+@pytest.mark.parametrize("error", [*UNREACHABLE, *SERVER_ERRORS], ids=_error_id)
+@pytest.mark.parametrize("route", MUSICBRAINZ_ROUTES)
+async def test_musicbrainz_that_could_not_be_reached_is_reported_by_name(
+    music: MusicController, error: Exception, route: str
+) -> None:
+    """A MusicBrainz that could not be reached is reported by name, and no provider is asked."""
+    spotify = _musicbrainz_failing_with(music, error, route)
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as excinfo:
+        await _look_up_by_musicbrainz_id(music, route)
+
+    _assert_unreachable(excinfo.value, error, "MusicBrainz")
+    assert _requests(spotify) == 0
+
+
+@pytest.mark.parametrize("route", MUSICBRAINZ_ROUTES)
+async def test_musicbrainz_that_refused_the_request_is_not_reported_as_unreachable(
+    music: MusicController, route: str
+) -> None:
+    """A client error of MusicBrainz is not taken for a MusicBrainz that could not answer."""
+    error = aiohttp.ClientResponseError(MagicMock(), (), status=403)
+    _musicbrainz_failing_with(music, error, route)
+
+    with pytest.raises(aiohttp.ClientResponseError) as excinfo:
+        await _look_up_by_musicbrainz_id(music, route)
+
+    assert excinfo.value is error
 
 
 # ---------------------------------------------------------------------------

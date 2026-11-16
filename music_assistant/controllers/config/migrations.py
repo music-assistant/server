@@ -63,6 +63,9 @@ LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX = "spb_msx_"
 # removed player HTTP profile config key, only referenced by its migrations
 LEGACY_HTTP_PROFILE_KEY = "http_profile"
 
+# domains of the removed builtin providers, whose stored configs nothing can load anymore
+RETIRED_BUILTIN_PROVIDER_DOMAINS = ("builtin_player", "universal_player")
+
 
 # Canonical ids of the shared icon set (music-assistant/shared-icons v0.3.0);
 # stored icon values already in this set are never touched by the icon migration.
@@ -617,6 +620,12 @@ async def migrate(data: dict[str, Any]) -> bool:
     # It reads both trees, so it also reaches a config that was split before this step existed.
     # TODO: remove after 2.13 release
     if _migrate_drop_http_profile(data):
+        changed = True
+
+    # Remove the stored configs of the retired builtin providers, which the UI would
+    # otherwise list as unavailable providers forever.
+    # TODO: remove after 2.13 release
+    if _migrate_remove_retired_builtin_providers(data):
         changed = True
 
     return changed
@@ -1546,3 +1555,20 @@ def _migrate_artist_catalogue_selection(data: dict[str, Any]) -> bool:
     queue_values[CONF_DEFAULT_ENQUEUE_SELECT_ARTIST] = "library_album_tracks"
     LOGGER.info("Moved the artist playback selection to the tracks of the library albums")
     return True
+
+
+def _migrate_remove_retired_builtin_providers(data: dict[str, Any]) -> bool:
+    """Remove the stored configs of the retired builtin providers."""
+    all_provider_configs = data.get(CONF_PROVIDERS)
+    if not isinstance(all_provider_configs, dict):
+        return False
+    retired = [
+        instance_id
+        for instance_id, provider_cfg in all_provider_configs.items()
+        if isinstance(provider_cfg, dict)
+        and provider_cfg.get("domain") in RETIRED_BUILTIN_PROVIDER_DOMAINS
+    ]
+    for instance_id in retired:
+        del all_provider_configs[instance_id]
+        LOGGER.info("Removed the config of the retired provider %s", instance_id)
+    return bool(retired)

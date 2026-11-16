@@ -21,8 +21,11 @@ tests of the harness itself.
   one protocol per domain), with as many instances as the real domain allows.
 - **Devices**: `provider.protocol(...)` creates a device and its `FakeProtocol`. The scenario
   sets what it reports; its commands are recorded in `protocol.commands` and applied to its
-  state. A device that a leader adds to its group (`set_members`) leaves the group it was in,
-  as a real one does; `native_grouping_requires_own_stream` is reported like any other state. `role="native"`, `"audio"`, `"control"` or `"virtual"` (a group) stands for the role of
+  state. A check of its device by the server (`check_device`) is recorded in
+  `protocol.device_checks` and answers as `protocol.device_answers` says: None (the default)
+  for a protocol that can not check, else whether the device answers, which the protocol then
+  reads as available or not. A device that a leader adds to its group (`set_members`) leaves the group it was in,
+  as a real one does, and a device told to play media reports its position from 0 at that moment; `native_grouping_requires_own_stream` is reported like any other state. `role="native"`, `"audio"`, `"control"` or `"virtual"` (a group) stands for the role of
   the protocol on its device, `session_only=True` for a protocol that reports it exists only
   while attached (a browser session). Every fake protocol has one config entry of its own,
   `FAKE_SETTING`, like a provider setting of the device. A device is present from `register()`

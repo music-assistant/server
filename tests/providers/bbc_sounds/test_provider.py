@@ -90,7 +90,7 @@ class TestStationBrowsing:
         """Test a station opens a folder for each date, starting from today."""
         path = f"bbc_sounds://{menu_id}/{RADIO_FOUR_SERVICE_ID}"
 
-        folders = await provider.browse(path)
+        folders = await provider.browse_manager.browse(path)
 
         assert all(isinstance(folder, BrowseFolder) for folder in folders)
         paths = [folder.path for folder in folders if isinstance(folder, BrowseFolder)]
@@ -104,7 +104,9 @@ class TestStationBrowsing:
         """Test a station's date folder opens that day's schedule."""
         _mock(provider.client.schedules).get_schedule.return_value = None
 
-        await provider.browse(f"bbc_sounds://{menu_id}/{RADIO_FOUR_SERVICE_ID}/2000-01-01")
+        await provider.browse_manager.browse(
+            f"bbc_sounds://{menu_id}/{RADIO_FOUR_SERVICE_ID}/2000-01-01"
+        )
 
         _mock(provider.client.schedules).get_schedule.assert_awaited_once_with(
             station_id=RADIO_FOUR_SERVICE_ID, date="2000-01-01"
@@ -118,7 +120,7 @@ class TestMenuPlaylists:
     async def test_playlist_in_a_rail_is_filled_in(self, provider: BBCSoundsProvider) -> None:
         """Test a playlist inside a menu rail lists the playlist's contents."""
         playlist = Playlist(id="playlist_pid", title="Playlist")
-        provider.menu = Menu(
+        provider.browse_manager.menu = Menu(
             sub_items=[
                 MenuItem(
                     id="explore",
@@ -130,7 +132,7 @@ class TestMenuPlaylists:
         clip = RadioClip(id="vpid", pid="clip_pid", titles=Titles(entity_title="Clip"))
         _mock(provider.client.content).get_playlist_contents.return_value = [clip]
 
-        items = await provider.browse("bbc_sounds://explore/podcasts/playlist_pid")
+        items = await provider.browse_manager.browse("bbc_sounds://explore/podcasts/playlist_pid")
 
         _mock(provider.client.content).get_playlist_contents.assert_awaited_once_with(
             pid="playlist_pid"
@@ -188,7 +190,7 @@ class TestProgrammeSegments:
         provider.mass.cache.get = AsyncMock(return_value=False)  # type: ignore[method-assign]
         provider.mass.cache.set = cache_set  # type: ignore[method-assign]
 
-        assert await provider._get_programme_segments("vpid") == segments
+        assert await provider.stream_manager.now_playing._get_programme_segments("vpid") == segments
         assert cache_set.await_args is not None
         cached = cache_set.await_args.kwargs["data"]
         assert [Segment.from_dict(item) for item in cached] == segments
@@ -202,7 +204,9 @@ class TestProgrammeSegments:
         stream_details.data = {"vpid": "vpid", "pid": "pid"}
         stream_details.stream_metadata = StreamMetadata(title="Programme")
 
-        await provider._update_on_demand_stream_metadata(stream_details, elapsed_time=30)
+        await provider.stream_manager.now_playing._update_on_demand_stream_metadata(
+            stream_details, elapsed_time=30
+        )
 
         assert stream_details.stream_metadata.title == "Song"
         assert stream_details.stream_metadata.artist == "Artist"
@@ -219,8 +223,12 @@ class TestProgrammeSegments:
         stream_details.data = {"vpid": "vpid", "pid": "pid"}
         stream_details.stream_metadata = StreamMetadata(title="Programme")
 
-        await provider._update_on_demand_stream_metadata(stream_details, elapsed_time=30)
-        await provider._update_on_demand_stream_metadata(stream_details, elapsed_time=35)
+        await provider.stream_manager.now_playing._update_on_demand_stream_metadata(
+            stream_details, elapsed_time=30
+        )
+        await provider.stream_manager.now_playing._update_on_demand_stream_metadata(
+            stream_details, elapsed_time=35
+        )
 
         _mock(provider.client.content).get_show_segments.assert_awaited_once()
         cache_set.assert_not_awaited()

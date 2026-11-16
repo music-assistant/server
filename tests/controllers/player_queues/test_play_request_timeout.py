@@ -16,7 +16,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, QueueOption
+from music_assistant_models.enums import MediaType, PlayerType, QueueOption
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
@@ -321,3 +321,79 @@ async def test_a_quick_resolution_plays_for_the_requesting_user() -> None:
         await ctrl.play_media("q1", _track("new"), QueueOption.REPLACE)
 
     assert data.userid == "user-b"
+
+
+def _lookup(ctrl: Any, track: Track | None = None) -> AsyncMock:
+    """
+    Make the lookup of a requested uri block, or answer with the given track.
+
+    :param ctrl: The controller built by ``_controller``.
+    :param track: The track the uri names; the lookup never finishes when omitted.
+    """
+
+    async def _get_item(_uri: str) -> Track:
+        if track is None:
+            await asyncio.Event().wait()
+        assert track is not None
+        return track
+
+    ctrl.mass.music.get_item_by_uri = lookup = AsyncMock(side_effect=_get_item)
+    return lookup
+
+
+@pytest.mark.parametrize("switched_off", [False, True], ids=["reachable", "switched off"])
+async def test_a_slow_lookup_of_a_request_without_an_option_runs_out_at_the_deadline(
+    switched_off: bool,
+) -> None:
+    """A request that names no option fails at the deadline, and switches nothing on first."""
+    ctrl, _lock = _controller()
+    ctrl.mass.players.get_player.return_value.offline_by_power_control = switched_off
+    ctrl.mass.players._power_on_switched_off_player = AsyncMock()
+    _lookup(ctrl)
+
+    with pytest.raises(PlayerCommandFailed) as exc_info:
+        async with asyncio.timeout(DEADLINE * 10):
+            await ctrl.play_media("q1", "test://track/slow")
+
+    assert exc_info.value.translation_key == "play_request_timeout"
+    ctrl.mass.players._power_on_switched_off_player.assert_not_awaited()
+
+
+async def test_a_request_without_an_option_on_a_reachable_player_looks_the_media_up_once() -> None:
+    """Only the queue loader looks the media up when no power control is involved."""
+    ctrl, _lock = _controller()
+    lookup = _lookup(ctrl, _track("new"))
+
+    await ctrl.play_media("q1", "test://track/new")
+
+    lookup.assert_awaited_once()
+
+
+@pytest.mark.parametrize("member_switched_off", [False, True], ids=["members on", "member off"])
+async def test_a_request_without_an_option_on_a_group_looks_the_default_up_for_a_switched_off_member(
+    member_switched_off: bool,
+) -> None:
+    """Only a group that a start would power a member of on needs the lookup of the default."""
+    ctrl, _lock = _controller()
+    group = Mock(
+        extra_data={},
+        type=PlayerType.GROUP,
+        offline_by_power_control=False,
+        group_members=["m1"],
+        static_group_members=[],
+    )
+    member = Mock(offline_by_power_control=member_switched_off, available=True)
+    players = bare_player_controller()
+    players._players = {"m1": member}
+    players._controls = {}
+    ctrl.mass.players.get_player.return_value = group
+    ctrl.mass.players._members_to_power_on = players._members_to_power_on
+    ctrl.mass.players._power_on_members = AsyncMock()
+    lookup = _lookup(ctrl, _track("new"))
+    ctrl.get_config_value = Mock(return_value=QueueOption.ADD.value)
+
+    await ctrl.play_media("q1", "test://track/new")
+
+    # the loader looks the media up too; the default decides that nothing is powered on
+    assert lookup.await_count == (2 if member_switched_off else 1)
+    ctrl.mass.players._power_on_members.assert_not_awaited()

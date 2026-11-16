@@ -63,7 +63,6 @@ from music_assistant_models.player_queue import PlayerQueue
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
-    EXTERNAL_ID_PROVIDER,
     MASS_LOGO_ONLINE,
     PLAYLIST_MEDIA_TYPES,
 )
@@ -97,6 +96,7 @@ from music_assistant.controllers.player_queues.helpers import (
     handle_play_action,
     is_dynamic_source,
     is_finite_radio,
+    play_request_deadline,
 )
 from music_assistant.controllers.player_queues.managed_pool import ManagedPool
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
@@ -814,10 +814,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._drop_pending_step(queue_id)
             # powered on before the play action takes its locks, and so are the switched-off
             # members of a group; media that is only enqueued leaves the player switched off
-            if player.offline_by_power_control:
-                await self.mass.players._power_on_switched_off_player(queue_id)
-            elif player.type == PlayerType.GROUP:
-                await self.mass.players._power_on_members(player)
+            if (
+                player.offline_by_power_control
+                or (
+                    player.type == PlayerType.GROUP
+                    and self.mass.players._members_to_power_on(player)
+                )
+            ) and not await self._only_enqueues_by_default(media, option, radio_mode):
+                if player.offline_by_power_control:
+                    await self.mass.players._power_on_switched_off_player(queue_id)
+                else:
+                    await self.mass.players._power_on_members(player)
         # Lock is acquired by the @handle_play_action decorator on the internal handler
         await self._handle_play_media(
             queue_id,
@@ -1641,6 +1648,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_id = player.player_id
         if (queue := self.get(queue_id)) is None:
             return
+        if player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            # an announcement's position is not the music's; keep the music's resume state
+            return
         # queue.active still holds the source from the last update. Requiring it and the
         # live source both skips the position jump of joining or leaving a group.
         if not queue.active or player.active_source not in (queue_id, None):
@@ -1659,7 +1669,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue.flow_mode:
             # _get_flow_queue_stream_index returns media-time in the current item
             # using each playlog entry's recorded speed.
-            _, elapsed_time = self._get_flow_queue_stream_index(queue, player)
+            current_index, elapsed_time = self._get_flow_queue_stream_index(queue, player)
+            if current_index != queue.current_index:
+                # the jump crossed a track boundary: the elapsed time is in that track
+                queue.current_index = current_index
+                queue.current_item = current_item = self.get_item(queue_id, current_index)
+                queue.next_item = (
+                    self.get_next_item(queue_id, current_index)
+                    if current_item and current_index is not None
+                    else None
+                )
+                speed = get_current_playback_speed(queue)
         else:
             elapsed_time = player_elapsed * speed
             if queue.current_item and queue.current_item.streamdetails:
@@ -1668,6 +1688,26 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.elapsed_time = elapsed_time
         queue.elapsed_time_last_updated = now
         queue.playback_speed = speed
+        # In flow mode the position was mapped to its item above; a normal player can
+        # report the next track's position before the queue moved to that track.
+        position_in_current_item = queue.current_item is not None and (
+            queue.flow_mode
+            or self._parse_player_current_item_id(queue_id, player)
+            == queue.current_item.queue_item_id
+        )
+        if position_in_current_item and self._position_is_reliable(player):
+            # The corrected position is where the item really is, also when it is behind
+            # positions saved from the clock estimate; resuming from those would skip
+            # unheard audio. An unreliable paused position changes nothing here.
+            prev_state = self._queue_data[queue_id].prev_state
+            if (
+                prev_state
+                and queue.current_item
+                and prev_state["current_item_id"] == queue.current_item.queue_item_id
+            ):
+                prev_state["last_playing_elapsed_time"] = int(elapsed_time)
+            if queue.resume_pos:
+                queue.resume_pos = int(elapsed_time)
         self.mass.signal_event(
             EventType.QUEUE_TIME_UPDATED,
             object_id=queue_id,
@@ -3194,6 +3234,31 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         finally:
             self._set_transitioning(queue_id, False)
 
+    async def _only_enqueues_by_default(
+        self,
+        media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
+        option: QueueOption | None,
+        radio_mode: bool,
+    ) -> bool:
+        """
+        Return whether a request without an option only adds its media, as the user's default says.
+
+        :param media: The media of the play request.
+        :param option: The enqueue option of the play request.
+        :param radio_mode: The deprecated radio mode of the play request.
+        :raises PlayerCommandFailed: When looking up the media takes longer than the deadline
+            of a play request.
+        """
+        if option is not None:
+            return False
+        default: QueueOption | None
+        if radio_mode:
+            default = self._default_enqueue_option(MediaType.PLAYLIST)
+        else:
+            async with play_request_deadline(self.translation_owner):
+                default = await self._get_default_play_option(media)
+        return default in (QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT)
+
     def _resolve_queue_id(self, queue_id: str) -> str:
         """
         Return the id of the queue an id finds: its own id, also for a legacy id of its player.
@@ -3212,14 +3277,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
         if not queue_items:
             raise QueueEmpty("Cannot save an empty queue as a playlist.")
-        if any(item.uri.startswith(f"{EXTERNAL_ID_PROVIDER}://") for item in queue_items):
-            # such a track names no track on a music source, and a playlist would have
-            # every one of them looked up
-            raise InvalidDataError(
-                "The queue holds tracks that have not been looked up on a music service yet.",
-                translation_key="queue_holds_tracks_not_looked_up",
-                translation_owner=self.translation_owner,
-            )
         uris = [
             item.uri for item in queue_items if item.uri and item.media_type in PLAYLIST_MEDIA_TYPES
         ]

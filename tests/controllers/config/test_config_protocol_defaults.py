@@ -214,12 +214,23 @@ async def test_protocol_prefixed_reset_to_default_sticks(mass_minimal: MusicAssi
     )
     assert PREFIXED_KEY not in _parent_stored_values(mass_minimal)
 
-    # reset the prefixed value back to its default
+    # set the prefixed value back to its default: the child keeps it as the user's choice
     await mass_minimal.config.save_player_config(
         PARENT_ID, {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_SMART}
     )
 
-    # the child drops the now-default value, and the parent retains no shadowing copy
+    assert (
+        mass_minimal.config.get_protocol_value(CHILD_ID, CONF_FLOW_MODE_SAMPLE_RATE)
+        == FLOW_MODE_SAMPLE_RATE_SMART
+    )
+    assert PREFIXED_KEY not in _parent_stored_values(mass_minimal)
+    config = await mass_minimal.config.get_player_config(PARENT_ID)
+    assert config.values[PREFIXED_KEY].value == FLOW_MODE_SAMPLE_RATE_SMART
+
+    # reset the prefixed value to its default
+    await mass_minimal.config.save_player_config(PARENT_ID, {PREFIXED_KEY: None})
+
+    # the child drops the value, and the parent retains no shadowing copy
     assert mass_minimal.config.get_protocol_value(CHILD_ID, CONF_FLOW_MODE_SAMPLE_RATE) is None
     assert PREFIXED_KEY not in _parent_stored_values(mass_minimal)
     config = await mass_minimal.config.get_player_config(PARENT_ID)
