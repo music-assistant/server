@@ -5,7 +5,7 @@ import copy
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiosonos.client import SonosLocalApiClient
@@ -14,7 +14,7 @@ from aiosonos.const import GroupEvent
 from aiosonos.exceptions import FailedCommand
 from aiosonos.group import SonosGroup as AiosonosGroup
 from aiosonos.player import SonosPlayer as AiosonosPlayer
-from music_assistant_models.player import OutputProtocol
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.sonos.player import SonosPlayer
@@ -26,8 +26,8 @@ MEMBER = "RINCON_54200000000201400"
 NAMES = {LEADER: "Kantoor", MEMBER: "Speelkamer"}
 GROUP = f"{LEADER}:400"
 MEMBER_GROUP = f"{MEMBER}:401"
-AIRPLAY = OutputProtocol(output_protocol_id="ap_kantoor", name="AirPlay", protocol_domain="airplay")
 RESTORE_TASK = f"restore_airplay_group_{LEADER}"
+AIRPLAY_ID = "ap_kantoor"
 
 
 def _groups(*groups: tuple[str, str, list[str]]) -> dict[str, Any]:
@@ -63,7 +63,15 @@ GONE = _groups((GROUP, LEADER, [LEADER]))
 class _Household:
     """A Sonos speaker that leads a group with a second one, around real aiosonos clients."""
 
-    def __init__(self, mass: MusicAssistant) -> None:
+    def __init__(self, mass: MusicAssistant, airplay_renders: bool = False) -> None:
+        """
+        Set up the household.
+
+        :param mass: The MusicAssistant instance.
+        :param airplay_renders: Whether an AirPlay session already renders on the leader, so
+            that a start absorbs the new media; Sonos still drops the members on a cold
+            restart of that session.
+        """
         self.mass = mass
         self.apis = {player_id: AsyncMock() for player_id in NAMES}
         self.players = {player_id: self._player(player_id) for player_id in NAMES}
@@ -73,6 +81,17 @@ class _Household:
         self.member_known = True
         # the loop times at which the leader was asked to add the member
         self.adds: list[float] = []
+        # the loop times at which the leader was asked to remove the member
+        self.removes: list[float] = []
+        # the AirPlay protocol the leader plays over; IDLE until a session renders
+        self.airplay: MagicMock | None = MagicMock(
+            protocol_id=AIRPLAY_ID,
+            playback_state=PlaybackState.PLAYING if airplay_renders else PlaybackState.IDLE,
+        )
+        self.leader._airplay_output = lambda: self.airplay  # type: ignore[method-assign]
+        # the leader plays over the AirPlay protocol itself
+        self.leader._player = MagicMock(active_output_protocol=AIRPLAY_ID, attached_protocols={})
+        self.leader._player.name = NAMES[LEADER]
 
         async def _get_groups(*_args: object) -> dict[str, Any]:
             return copy.deepcopy(self.current)
@@ -91,6 +110,18 @@ class _Household:
         """The speaker Sonos takes out of the group."""
         return self.players[MEMBER]
 
+    def play_natively(self, state: str = "PLAYBACK_STATE_PLAYING", own: bool = True) -> None:
+        """
+        Let the native group report a playback state, of our queue or of another source.
+
+        :param state: The playback state the group reports.
+        :param own: Whether the group plays our queue.
+        """
+        self.leader.cloud_queue_id = "queue" if own else None
+        group = self.leader.client.player.group
+        assert group is not None
+        group._playback_status_data["playbackState"] = cast("Any", state)
+
     @property
     def grouped(self) -> list[str]:
         """The members of the leader's group, as the leader reports them."""
@@ -107,7 +138,6 @@ class _Household:
         async with self.leader.prepare_play_media():
             if during_start is not None:
                 await during_start()
-            await self.leader.on_protocol_playback(AIRPLAY)
 
     def report(self, groups: dict[str, Any]) -> None:
         """Change the household, and deliver the groups event of the leader about it."""
@@ -129,10 +159,13 @@ class _Household:
         )
 
     async def _modify_group_members(
-        self, group_id: str, player_ids_to_add: list[str], _player_ids_to_remove: list[str]
+        self, group_id: str, player_ids_to_add: list[str], player_ids_to_remove: list[str]
     ) -> dict[str, Any]:
         """Answer a group command the way the leader does: with the resulting group."""
         assert group_id == GROUP
+        if MEMBER in player_ids_to_remove:
+            self.removes.append(asyncio.get_running_loop().time())
+            self.current = DROPPED
         if MEMBER in player_ids_to_add:
             self.adds.append(asyncio.get_running_loop().time())
             if not self.member_known:
@@ -151,8 +184,9 @@ class _Household:
         player._attr_name = NAMES[player_id]
         player._player = None
         player.connected = True
-        player._members_before_play = set()
         player._airplay_rejoin_members = set()
+        player.cloud_queue_id = None
+        player._flow_queue_id = None
         player.client = self._client(player_id)
         player.update_attributes = MagicMock()  # type: ignore[method-assign]
         player.update_state = MagicMock()  # type: ignore[method-assign, misc]
@@ -180,7 +214,7 @@ async def test_a_member_that_stays_online_is_restored_right_away(
     timer_mass: MusicAssistant, drop_reported_during_start: bool
 ) -> None:
     """A member Sonos drops from the group is added back as soon as the drop is reported."""
-    home = _Household(timer_mass)
+    home = _Household(timer_mass, airplay_renders=True)
     loop = asyncio.get_running_loop()
     dropped_at = 0.0
 
@@ -214,7 +248,7 @@ async def test_a_member_that_returns_after_eight_seconds_is_restored(
     timer_mass: MusicAssistant,
 ) -> None:
     """A member that is offline for seconds is added back once it is back, refused or not."""
-    home = _Household(timer_mass)
+    home = _Household(timer_mass, airplay_renders=True)
 
     with virtual_loop_clock():
         # the leader still reports its member as AirPlay starts: its groups event lags behind
@@ -240,7 +274,7 @@ async def test_a_member_that_never_returns_is_reported_once(
     timer_mass: MusicAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A member that stays offline gets no command and one warning, and the restore ends."""
-    home = _Household(timer_mass)
+    home = _Household(timer_mass, airplay_renders=True)
 
     with virtual_loop_clock(), caplog.at_level(logging.WARNING):
         await home.start_airplay()
@@ -265,7 +299,7 @@ async def test_a_member_that_never_returns_is_reported_once(
 @pytest.mark.asyncio
 async def test_a_member_removed_meanwhile_is_not_restored(timer_mass: MusicAssistant) -> None:
     """A member removed from the group on purpose while it was away stays out of it."""
-    home = _Household(timer_mass)
+    home = _Household(timer_mass, airplay_renders=True)
 
     with virtual_loop_clock():
         await home.start_airplay()
@@ -287,7 +321,7 @@ async def test_a_member_grouped_on_the_airplay_route_meanwhile_is_left_there(
     timer_mass: MusicAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A member Music Assistant added to the AirPlay session while it was away keeps playing there."""
-    home = _Household(timer_mass)
+    home = _Household(timer_mass, airplay_renders=True)
     airplay_group = ["ap_kantoor"]
     leader_player = MagicMock(
         active_output_protocol="ap_kantoor",
@@ -318,3 +352,237 @@ async def test_a_member_grouped_on_the_airplay_route_meanwhile_is_left_there(
     assert home.adds == []
     assert home.grouped == [LEADER]
     assert caplog.records == []
+
+
+@pytest.mark.asyncio
+async def test_members_are_taken_out_before_airplay_starts_and_added_back_after(
+    timer_mass: MusicAssistant,
+) -> None:
+    """The members leave the group before a new AirPlay session starts, and rejoin once it plays."""
+    home = _Household(timer_mass)
+    home.play_natively()
+    loop = asyncio.get_running_loop()
+    during_start: list[str] = []
+
+    async def _connect_airplay() -> None:
+        during_start.extend(home.grouped)
+        await asyncio.sleep(4)
+
+    with virtual_loop_clock(), patch.object(AiosonosGroup, "stop", new_callable=AsyncMock) as stop:
+        await home.start_airplay(_connect_airplay)
+        started_at = loop.time()
+        await asyncio.sleep(1)
+
+    assert during_start == [LEADER]
+    stop.assert_awaited_once()
+    assert home.leader.cloud_queue_id is None
+    assert home.grouped == [LEADER, MEMBER]
+    assert len(home.removes) == 1
+    assert len(home.adds) == 1
+    assert home.adds[0] - started_at < 0.1
+    assert RESTORE_TASK not in timer_mass._tracked_tasks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("own_queue", "state", "left"),
+    [
+        (True, "PLAYBACK_STATE_PLAYING", True),
+        (True, "PLAYBACK_STATE_PAUSED", True),
+        (True, "PLAYBACK_STATE_IDLE", False),
+        (False, "PLAYBACK_STATE_PLAYING", False),
+    ],
+)
+async def test_the_native_session_is_left_only_when_it_is_ours_and_live(
+    timer_mass: MusicAssistant, own_queue: bool, state: str, left: bool
+) -> None:
+    """Only our own playing or paused session is left; the members are taken out either way."""
+    home = _Household(timer_mass)
+    home.play_natively(state, own=own_queue)
+
+    with virtual_loop_clock(), patch.object(AiosonosGroup, "stop", new_callable=AsyncMock) as stop:
+        await home.start_airplay()
+        await asyncio.sleep(1)
+
+    assert stop.await_count == (1 if left else 0)
+    assert len(home.removes) == 1
+    assert home.grouped == [LEADER, MEMBER]
+
+
+@pytest.mark.asyncio
+async def test_members_stay_when_the_airplay_session_already_renders(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A start that an AirPlay session already rendering absorbs leaves the group as it is."""
+    home = _Household(timer_mass, airplay_renders=True)
+    home.play_natively()
+
+    with virtual_loop_clock(), patch.object(AiosonosGroup, "stop", new_callable=AsyncMock) as stop:
+        await home.start_airplay()
+        await asyncio.sleep(60)
+
+    stop.assert_not_awaited()
+    assert home.removes == []
+    assert home.adds == []
+    assert home.grouped == [LEADER, MEMBER]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["native", "no_members", "not_coordinator"])
+async def test_nothing_happens_without_native_members_to_keep(
+    timer_mass: MusicAssistant, case: str
+) -> None:
+    """Native playback, a speaker on its own and a group member are left alone."""
+    home = _Household(timer_mass)
+    speaker = home.leader
+    if case == "native":
+        home.airplay = None
+    elif case == "no_members":
+        home.report(DROPPED)
+    else:
+        speaker = home.member
+        speaker._airplay_output = lambda: home.airplay  # type: ignore[method-assign]
+
+    with virtual_loop_clock(), patch.object(AiosonosGroup, "stop", new_callable=AsyncMock) as stop:
+        async with speaker.prepare_play_media():
+            assert f"restore_airplay_group_{speaker.protocol_id}" not in timer_mass._tracked_tasks
+        restoring = f"restore_airplay_group_{speaker.protocol_id}" in timer_mass._tracked_tasks
+
+    stop.assert_not_awaited()
+    assert not restoring
+    for api in home.apis.values():
+        api.groups.modify_group_members.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_members_return_when_playback_fails_after_they_were_taken_out(
+    timer_mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The members rejoin the group when AirPlay playback fails to start."""
+    home = _Household(timer_mass)
+
+    async def _fail() -> None:
+        await asyncio.sleep(2)
+        raise RuntimeError("AirPlay did not start")
+
+    with virtual_loop_clock(), caplog.at_level(logging.WARNING):
+        with pytest.raises(RuntimeError):
+            await home.start_airplay(_fail)
+        await asyncio.sleep(1)
+
+    assert len(home.removes) == 1
+    assert len(home.adds) == 1
+    assert home.grouped == [LEADER, MEMBER]
+    assert caplog.records == []
+
+
+@pytest.mark.asyncio
+async def test_a_member_removed_during_the_start_is_not_added_back(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A member removed on purpose while AirPlay starts stays out of the group."""
+    home = _Household(timer_mass)
+
+    async def _remove_member() -> None:
+        await home.leader.set_members(player_ids_to_remove=[MEMBER])
+
+    with virtual_loop_clock():
+        await home.start_airplay(_remove_member)
+        await asyncio.sleep(60)
+
+    assert home.adds == []
+    assert home.grouped == [LEADER]
+
+
+@pytest.mark.asyncio
+async def test_members_a_running_restore_still_waits_for_are_carried_over(
+    timer_mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A new start takes over the members the previous restore did not bring back yet."""
+    home = _Household(timer_mass, airplay_renders=True)
+
+    with virtual_loop_clock(), caplog.at_level(logging.WARNING):
+        await home.start_airplay()
+        await asyncio.sleep(0.9)
+        home.take_member_offline()
+        await asyncio.sleep(20)
+        # the next track starts a new AirPlay session while the member is still away
+        assert home.airplay is not None
+        home.airplay.playback_state = PlaybackState.IDLE
+        await home.start_airplay()
+        await asyncio.sleep(20)
+        home.member_known = True
+        home.reconnect_member()
+        home.report(DROPPED)
+        await asyncio.sleep(1)
+
+    assert home.removes == []
+    assert home.grouped == [LEADER, MEMBER]
+    assert caplog.records == []
+
+
+@pytest.mark.asyncio
+async def test_a_derived_transport_leaves_the_session_and_keeps_the_members(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Over a derived transport the members stay in, and rejoin once Sonos dropped them."""
+    home = _Household(timer_mass)
+    home.play_natively()
+    leader_player = home.leader.player
+    assert leader_player is not None
+    # a Sendspin bridge, which starts the AirPlay session from its first audio chunk
+    leader_player.active_output_protocol = "sendspin_kantoor"  # type: ignore[misc]
+    during_start: list[str] = []
+
+    async def _start_bridge() -> None:
+        during_start.extend(home.grouped)
+
+    with virtual_loop_clock(), patch.object(AiosonosGroup, "stop", new_callable=AsyncMock) as stop:
+        await home.start_airplay(_start_bridge)
+        await asyncio.sleep(1)
+        restoring = RESTORE_TASK in timer_mass._tracked_tasks
+        # the bridge started AirPlay, and Sonos dropped the member
+        home.report(DROPPED)
+        await asyncio.sleep(1)
+
+    stop.assert_awaited_once()
+    assert during_start == [LEADER, MEMBER]
+    assert home.removes == []
+    assert restoring
+    assert len(home.adds) == 1
+    assert home.grouped == [LEADER, MEMBER]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing", ["leave", "remove"])
+async def test_a_failing_step_skips_neither_the_other_nor_the_start(
+    timer_mass: MusicAssistant, failing: str
+) -> None:
+    """A failed session leave or member removal leaves the rest of the start as it is."""
+    home = _Household(timer_mass)
+    home.play_natively()
+    modify = home.apis[LEADER].groups.modify_group_members
+    if failing == "remove":
+        modify.side_effect = FailedCommand("the speaker refused")
+    started = False
+
+    async def _start() -> None:
+        nonlocal started
+        started = True
+
+    with (
+        virtual_loop_clock(),
+        patch.object(
+            AiosonosGroup,
+            "stop",
+            new_callable=AsyncMock,
+            side_effect=FailedCommand("no session") if failing == "leave" else None,
+        ) as stop,
+    ):
+        await home.start_airplay(_start)
+
+    assert started
+    stop.assert_awaited_once()
+    # the first group command is the removal, whatever the restore sends after it
+    assert modify.call_args_list[0].args[2] == [MEMBER]
+    assert home.leader.cloud_queue_id == (None if failing == "remove" else "queue")
