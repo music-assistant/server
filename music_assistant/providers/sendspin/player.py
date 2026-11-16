@@ -94,6 +94,7 @@ from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
 from music_assistant.constants import (
+    CONF_ALLOW_AUDIO_ANALYSIS,
     CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
     CONF_PLAYER_PROTOCOLS,
     CONF_UNDERLYING_PLAYER_ID,
@@ -528,6 +529,14 @@ class SendspinBasePlayer(PlayerProtocol):
         entries.extend(await self._get_security_config_entries())
         entries.extend(self._get_source_autostart_config_entries())
         if "source" in self._negotiated_families():
+            entries.append(
+                ConfigEntry(
+                    key=CONF_ALLOW_AUDIO_ANALYSIS,
+                    type=ConfigEntryType.BOOLEAN,
+                    default_value=True,
+                    required=False,
+                )
+            )
             # an entry for the decline keeps it in the config of a client nothing is stored
             # for yet, so it is stored once the user declines the input
             entries.append(

@@ -38,6 +38,8 @@
   "common.config_entries.ai_engine.description": "The AI engine used for this feature.",
   "common.config_entries.ai_engine.label": "AI engine",
   "common.config_entries.ai_engine_unavailable.label": "No AI engine is available. Set up a plugin that provides AI, for example the Home Assistant plugin with an AI task entity.",
+  "common.config_entries.allow_audio_analysis.description": "Lets the audio analysis you added in the settings listen to this input while it plays, for example to recognize the song that is playing. Nothing it hears is stored. Disable this for an input that should not be listened to, such as a microphone.",
+  "common.config_entries.allow_audio_analysis.label": "Allow analysis of the audio input",
   "common.config_entries.announce_volume.description": "The percentual, relative or absolute volume level, used with the strategy for announcements.",
   "common.config_entries.announce_volume.label": "Volume for Announcements",
   "common.config_entries.announce_volume_max.description": "The volume (adjustment) of announcements should not go above this level.",

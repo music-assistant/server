@@ -203,6 +203,7 @@ CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_MIN_VOLUME: Final[str] = "min_volume"
 CONF_MAX_VOLUME: Final[str] = "max_volume"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
+CONF_ALLOW_AUDIO_ANALYSIS: Final[str] = "allow_audio_analysis"
 CONF_LEGACY_IDS: Final[str] = "legacy_ids"  # ids a player is also known under
 # the player the user took a protocol off, which it is not merged back into by itself
 CONF_UNLINKED_FROM: Final[str] = "unlinked_from"

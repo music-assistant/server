@@ -1,10 +1,10 @@
-"""Tests for the line-in autostart config entries on a Sendspin player."""
+"""Tests for the line-in config entries on a Sendspin player."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
@@ -12,6 +12,8 @@ from aiosendspin.models.source import ClientHelloSourceFeatures, ClientHelloSour
 from aiosendspin.noise.trust_store import PskCategory
 from music_assistant_models.enums import ConfigEntryType, PlayerType
 
+from music_assistant.constants import CONF_ALLOW_AUDIO_ANALYSIS
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.sendspin.constants import (
     CONF_SOURCE_AUTOSTART_TARGET,
     SOURCE_AUTOSTART_OFF,
@@ -92,6 +94,33 @@ def test_no_autostart_entries_for_a_client_without_a_source_role() -> None:
     """A plain speaker never shows line-in settings."""
     player = _player(negotiated_role_ids=["player@v1"], line_sense=True, known_players=["speaker"])
     assert player._get_source_autostart_config_entries() == []
+
+
+async def _all_entries(player: SendspinBasePlayer) -> list[ConfigEntry]:
+    with (
+        patch.object(PlayerProtocol, "get_config_entries", AsyncMock(return_value=[])),
+        patch.object(
+            SendspinBasePlayer, "_get_security_config_entries", AsyncMock(return_value=[])
+        ),
+    ):
+        return await player.get_config_entries()
+
+
+async def test_a_source_offers_the_analysis_switch_enabled() -> None:
+    """An input may be analysed until the user disables it, such as for a microphone."""
+    player = _player(negotiated_role_ids=["source@v1"], line_sense=False, known_players=[])
+    entries = await _all_entries(player)
+    entry = next((e for e in entries if e.key == CONF_ALLOW_AUDIO_ANALYSIS), None)
+    assert entry is not None
+    assert entry.type == ConfigEntryType.BOOLEAN
+    assert entry.default_value is True
+    assert not entry.hidden
+
+
+async def test_no_analysis_switch_for_a_client_without_a_source_role() -> None:
+    """A plain speaker has no input to analyse."""
+    player = _player(negotiated_role_ids=["player@v1"], line_sense=False, known_players=[])
+    assert CONF_ALLOW_AUDIO_ANALYSIS not in {e.key for e in await _all_entries(player)}
 
 
 def test_capture_only_source_defaults_to_off() -> None:

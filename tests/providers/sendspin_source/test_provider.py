@@ -28,7 +28,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 import music_assistant.providers.sendspin_source.provider as provider_module
-from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
+from music_assistant.constants import CONF_ALLOW_AUDIO_ANALYSIS, CONF_ENTRY_WARN_PREVIEW
 from music_assistant.providers.sendspin.constants import CONF_SOURCE_AUTOSTART_TARGET
 from music_assistant.providers.sendspin_source import get_config_entries
 from music_assistant.providers.sendspin_source.constants import (
@@ -125,6 +125,18 @@ async def test_audio_sources_follow_role_activation() -> None:
     assert sources[0].can_initiate is True
     # a live input the user feeds in, so analysis providers may follow it
     assert sources[0].allow_audio_analysis is True
+
+
+async def test_analysis_follows_the_setting_of_the_device() -> None:
+    """The user disables analysis per device, such as for a microphone; the default allows it."""
+    provider = await make_provider([_FakeClient("client-1", name="Cast Pro", has_player_role=True)])
+    get_config(provider).defaults[("client-1", CONF_ALLOW_AUDIO_ANALYSIS)] = True
+    assert [s.allow_audio_analysis for s in await provider.get_audio_sources()] == [True]
+    get_config(provider).values[("client-1", CONF_ALLOW_AUDIO_ANALYSIS)] = False
+    assert [s.allow_audio_analysis for s in await provider.get_audio_sources()] == [False]
+    assert [s.allow_audio_analysis for s in provider.get_player_input_sources("client-1")] == [
+        False
+    ]
 
 
 async def test_source_name_follows_a_player_rename(fake_client: _FakeClient) -> None:
