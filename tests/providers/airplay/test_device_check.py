@@ -498,6 +498,196 @@ async def test_a_check_that_fails_stops_the_sendspin_bridge_that_feeds_the_devic
         await receiver.on_detach()
 
 
+@pytest.mark.parametrize("eager", [False, True], ids=["tasks start later", "tasks start at once"])
+async def test_a_start_while_the_device_came_back_keeps_its_stream(eager: bool) -> None:
+    """
+    A start that holds the lock while a check fails and the device answers again keeps its stream.
+
+    The teardown of the failed check waits for the lock, which the start holds until its
+    stream runs. By then the probe found the device, so the new stream is left alone.
+    """
+    receiver = _receiver(airplay_port=7000)
+    cast("MagicMock", receiver.mass).create_task.side_effect = lambda coro, **_kwargs: asyncio.Task(
+        coro, loop=asyncio.get_running_loop(), eager_start=eager
+    )
+    starting = asyncio.Event()
+    finish_start = asyncio.Event()
+    run_probe = asyncio.Event()
+    session = MagicMock(remove_client=AsyncMock())
+    new_stream = MagicMock(running=True, session=session)
+
+    async def _start(_audio_source: object) -> None:
+        starting.set()
+        await finish_start.wait()
+        receiver.stream = new_stream
+
+    async def _sleep(delay: float) -> None:
+        if delay:
+            await run_probe.wait()
+        await _SLEEP(0)
+
+    session.start = AsyncMock(side_effect=_start)
+    with (
+        patch.object(airplay_player_module, "port_accepts_connection", _Device(False, True).probe),
+        patch.object(airplay_player_module, "AirPlayStreamSession", return_value=session),
+        patch.object(receiver, "_get_sync_clients", return_value=[receiver]),
+        patch.object(receiver, "_get_session_pcm_format", AsyncMock()),
+        patch.object(asyncio, "sleep", _sleep),
+    ):
+        playing = asyncio.create_task(receiver.play_media(MagicMock()))
+        await starting.wait()
+        await _gone(receiver)
+        await _settle()
+        assert receiver._lock.locked()
+        run_probe.set()
+        await _probe_ended(receiver)
+        assert receiver.available is True
+        finish_start.set()
+        await playing
+        await _settle()
+
+    assert receiver.stream is new_stream
+    session.remove_client.assert_not_awaited()
+    cast("MagicMock", receiver.provider).bridge_manager.stop_streaming.assert_not_called()
+    await receiver.on_detach()
+
+
+@pytest.mark.parametrize("fed_by", ["a session", "a Sendspin bridge"])
+async def test_a_teardown_changes_nothing_once_detached(fed_by: str) -> None:
+    """The teardown of a failed check that waited for the lock leaves a detached protocol alone."""
+    receiver = _receiver(airplay_port=7000)
+    session = MagicMock(remove_client=AsyncMock())
+    if fed_by == "a session":
+        receiver.stream = MagicMock(running=True, session=session)
+    bridge_manager = cast("MagicMock", receiver.provider).bridge_manager
+
+    with (
+        patch.object(airplay_player_module, "port_accepts_connection", _Device(False).probe),
+        _pauses(wait=True),
+    ):
+        await receiver._lock.acquire()
+        await _gone(receiver)
+        await _settle()
+        receiver.set_player(None)
+        receiver._lock.release()
+        await _settle()
+
+        # only the detach sets the teardown aside: the device still reads unavailable
+        assert receiver._attr_available is False
+        session.remove_client.assert_not_awaited()
+        bridge_manager.stop_streaming.assert_not_called()
+        await receiver.on_detach()
+
+
+async def test_a_teardown_changes_nothing_once_the_device_answers_again() -> None:
+    """The teardown of a failed check that waited for the lock leaves a device that is back."""
+    receiver = _receiver(airplay_port=7000)
+    session = MagicMock(remove_client=AsyncMock())
+    stream = MagicMock(running=True, session=session)
+    receiver.stream = stream
+
+    with (
+        patch.object(airplay_player_module, "port_accepts_connection", _Device(False, True).probe),
+        _pauses(wait=True),
+    ):
+        await receiver._lock.acquire()
+        await _gone(receiver)
+        await _settle()
+        receiver.on_device_announced()
+        await _probe_ended(receiver)
+        receiver._lock.release()
+        await _settle()
+
+    assert receiver.available is True
+    assert receiver.stream is stream
+    session.remove_client.assert_not_awaited()
+    await receiver.on_detach()
+
+
+@pytest.mark.parametrize("before", ["a session stream", "no session stream"])
+async def test_a_teardown_leaves_a_stream_that_started_meanwhile(before: str) -> None:
+    """
+    The teardown of a failed check leaves a stream that started while it waited for the lock.
+
+    The device still reads unavailable: only the stream that ran when the check failed is
+    stopped, and a Sendspin bridge is only let go while no stream of a session runs.
+    """
+    receiver = _receiver(airplay_port=7000)
+    old_session = MagicMock(remove_client=AsyncMock())
+    if before == "a session stream":
+        receiver.stream = MagicMock(running=True, session=old_session)
+    new_session = MagicMock(remove_client=AsyncMock())
+    bridge_manager = cast("MagicMock", receiver.provider).bridge_manager
+
+    with (
+        patch.object(airplay_player_module, "port_accepts_connection", _Device(False).probe),
+        _pauses(wait=True),
+    ):
+        await receiver._lock.acquire()
+        await _gone(receiver)
+        await _settle()
+        receiver.stream = MagicMock(running=True, session=new_session)
+        receiver._lock.release()
+        await _settle()
+
+        assert receiver.available is False
+        old_session.remove_client.assert_not_awaited()
+        new_session.remove_client.assert_not_awaited()
+        bridge_manager.stop_streaming.assert_not_called()
+        await receiver.on_detach()
+
+
+async def test_a_check_that_fails_after_the_probe_found_the_device_changes_nothing() -> None:
+    """
+    A check that the device did not answer leaves a device that the probe found meanwhile.
+
+    While a power on waits, the server asks every few seconds next to the probe. A check that
+    went out before the device was up does not take back what the probe found, nor end a
+    stream that started on the device since.
+    """
+    receiver = _receiver(airplay_port=7000)
+    session = MagicMock(remove_client=AsyncMock())
+    checking = asyncio.Event()
+    deliver = asyncio.Event()
+    calls = 0
+
+    async def _probe(_host: str, _port: int, _timeout: float) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # the check that finds the device gone
+            return False
+        if calls == 2:
+            # the check that went out before the device was up
+            checking.set()
+            await deliver.wait()
+            return False
+        return True
+
+    with (
+        patch.object(airplay_player_module, "port_accepts_connection", _probe),
+        _pauses(wait=True),
+    ):
+        await _gone(receiver)
+        late_check = asyncio.create_task(receiver.check_device())
+        await checking.wait()
+        receiver.on_device_announced()
+        await _probe_ended(receiver)
+        assert receiver.available is True
+        receiver.stream = MagicMock(running=True, session=session)
+        cast("MagicMock", receiver.update_state).reset_mock()
+        deliver.set()
+
+        assert await late_check is False
+        await _settle()
+
+    assert receiver.available is True
+    assert receiver._device_probe is None
+    cast("MagicMock", receiver.update_state).assert_not_called()
+    session.remove_client.assert_not_awaited()
+    await receiver.on_detach()
+
+
 async def test_an_apple_device_that_is_back_reaches_its_control_services_at_once() -> None:
     """
     An Apple device that a check found gone reconnects its control services as it is back.

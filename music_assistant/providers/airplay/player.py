@@ -1086,10 +1086,14 @@ class AirPlayPlayer(PlayerProtocol):
         A device that does not answer reads unavailable, loses the stream it played, and is
         probed again until it answers.
         """
+        was_available = self._attr_available
         endpoint = self._stream_endpoint
         answers = await port_accepts_connection(*endpoint, DEVICE_CHECK_TIMEOUT)
         if self.player is None or self._stream_endpoint != endpoint:
             # detached, or another record of the device meanwhile
+            return answers
+        if not answers and not was_available and self._attr_available:
+            # the probe found the device while this check waited for it
             return answers
         if answers:
             self._cancel_device_probe()
@@ -1646,7 +1650,7 @@ class AirPlayPlayer(PlayerProtocol):
         self.update_state()
         # nothing else stops it: the server sends no stop to a player that is switched off at
         # its power control
-        self.mass.create_task(self._leave_stream())
+        self.mass.create_task(self._leave_stream(self._session_stream))
 
     def _device_back(self) -> None:
         """Read available again: the device answers after a check found it gone."""
@@ -1685,12 +1689,33 @@ class AirPlayPlayer(PlayerProtocol):
         self._device_probe = None
         self._device_back()
 
-    async def _leave_stream(self) -> None:
-        """Stop the stream to the device, leaving a group it plays in to the other members."""
+    @property
+    def _session_stream(self) -> AirPlayStream | None:
+        """Return the stream of a session that runs to the device, if any."""
+        stream = self.stream
+        return stream if stream is not None and stream.running and stream.session else None
+
+    async def _leave_stream(self, session_stream: AirPlayStream | None) -> None:
+        """
+        Stop the stream to a device that a check found gone, leaving a group it plays in.
+
+        Changes nothing once the protocol is detached, its device answers again, or another
+        stream started meanwhile.
+
+        :param session_stream: The stream of a session that ran when the check failed, None
+            when there was none and a Sendspin bridge may feed the device.
+        """
         async with self._lock:
-            if (stream := self.stream) and stream.running and stream.session:
-                await stream.session.remove_client(self, reason="device does not answer")
-            else:
+            # a start holds the lock until its stream runs, which can be after the device
+            # answered again
+            if self.player is None or self._attr_available:
+                return
+            if session_stream is not None:
+                if self.stream is session_stream and session_stream.session is not None:
+                    await session_stream.session.remove_client(
+                        self, reason="device does not answer"
+                    )
+            elif self._session_stream is None:
                 # a Sendspin bridge that feeds the device lets go of it
                 cast("AirPlayProvider", self.provider).bridge_manager.stop_streaming(
                     self.protocol_id
