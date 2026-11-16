@@ -20,7 +20,10 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
+    ItemMapping,
     MediaItemMetadata,
+    Podcast,
+    PodcastEpisode,
     ProviderMapping,
     RecommendationFolder,
     SearchResults,
@@ -49,6 +52,7 @@ CURRENT_USER_LOOKUPS = (
     "music_assistant.controllers.music.media.base.get_current_user",
     "music_assistant.controllers.music.listing.get_current_user",
     "music_assistant.controllers.music.listing_cache.get_current_user",
+    "music_assistant.controllers.music.media.playlists.get_current_user",
     "music_assistant.controllers.music.controller.get_current_user",
     "music_assistant.controllers.music.recommendations.controller.get_current_user",
     "music_assistant.providers.builtin.get_current_user",
@@ -360,15 +364,21 @@ async def test_a_library_of_explicit_items_only_is_still_found(mass: MusicAssist
         assert await mass.music._library_holds_items_of(provider, MediaType.TRACK)
 
 
+def _builtin(mass: MusicAssistant) -> BuiltinProvider:
+    """Return the builtin provider, running on the given instance."""
+    builtin = BuiltinProvider.__new__(BuiltinProvider)
+    builtin.mass = mass
+    builtin.config = MagicMock(instance_id="builtin")
+    builtin.manifest = MagicMock(domain="builtin")
+    return builtin
+
+
 async def test_a_builtin_playlist_is_cached_apart_for_a_restricted_member(
     mass: MusicAssistant,
 ) -> None:
     """The random tracks a restricted member was given aren't served to everyone else."""
     await _add_library_tracks(mass)
-    builtin = BuiltinProvider.__new__(BuiltinProvider)
-    builtin.mass = mass
-    builtin.config = MagicMock(instance_id="builtin")
-    builtin.manifest = MagicMock(domain="builtin")
+    builtin = _builtin(mass)
 
     with _as(KID):
         restricted = await builtin._get_builtin_playlist_random_tracks()
@@ -378,3 +388,103 @@ async def test_a_builtin_playlist_is_cached_apart_for_a_restricted_member(
 
     assert sorted(track.name for track in restricted) == ALLOWED
     assert sorted(track.name for track in everything) == EVERYTHING
+
+
+async def test_the_random_album_playlist_picks_an_album_the_member_may_see(
+    mass: MusicAssistant,
+) -> None:
+    """The random album is picked from the albums a restricted member may see."""
+    artist = await _artist(mass)
+    album = _album("explicit album", True)
+    album.artists = UniqueList([artist])
+    track = _track("clean", False)
+    track.artists = UniqueList([artist])
+    track.album = album
+    await mass.music.tracks.add_item_to_library(track)
+
+    with _as(KID):
+        tracks = await _builtin(mass)._get_builtin_playlist_random_album()
+
+    assert tracks == []
+
+
+@pytest.mark.parametrize(("user", "expected"), [(PARENT, (4, 2, 1)), (KID, (3, 1, 0))])
+async def test_an_artists_counts_match_what_the_member_is_listed(
+    mass: MusicAssistant, user: User, expected: tuple[int, int, int]
+) -> None:
+    """An artist's track, album and appears-on counts leave the explicit items out."""
+    await _add_library_tracks(mass)
+    artist = await _artist(mass)
+    for album in (_album("clean album", False), _album("explicit album", True)):
+        album.artists = UniqueList([artist])
+        await mass.music.albums.add_item_to_library(album)
+    other = await mass.music.artists.add_item_to_library(
+        Artist(item_id="other", provider=PROVIDER, name="Other", provider_mappings={_mapping("o")})
+    )
+    compilation = _album("compilation", True)
+    compilation.artists = UniqueList([other])
+    guest = _track("guest", False)
+    guest.artists = UniqueList([artist])
+    guest.album = compilation
+    await mass.music.tracks.add_item_to_library(guest)
+
+    with _as(user):
+        counts = (
+            await mass.music.artists.tracks_count(artist.item_id, "library"),
+            await mass.music.artists.albums_count(artist.item_id, "library"),
+            await mass.music.artists.appears_on_count(artist.item_id, "library"),
+        )
+        listed = (
+            len(await mass.music.artists.tracks(artist.item_id, "library", limit=0)),
+            len(await mass.music.artists.albums(artist.item_id, "library", limit=0)),
+            len(await mass.music.artists.appears_on(artist.item_id, "library", limit=0)),
+        )
+
+    assert counts == listed == expected
+
+
+async def test_a_composed_playlist_leaves_out_the_episodes_of_an_explicit_podcast(
+    mass: MusicAssistant,
+) -> None:
+    """An episode saved in a builtin playlist is judged by its podcast, even by reference."""
+    podcast = ItemMapping(
+        media_type=MediaType.PODCAST, item_id="show", provider=PROVIDER, name="Show"
+    )
+    episode = PodcastEpisode(
+        item_id="episode",
+        provider=PROVIDER,
+        name="episode",
+        podcast=podcast,
+        position=1,
+        duration=600,
+        provider_mappings={_mapping("episode")},
+    )
+    builtin = MagicMock(domain="builtin", instance_id="builtin")
+    with (
+        patch.object(
+            mass.music.playlists, "_playlist_source", AsyncMock(return_value=("1", "builtin", None))
+        ),
+        patch.object(mass.music.playlists, "_playlist_provider", return_value=builtin),
+        patch.object(
+            mass.music.playlists,
+            "_list_provider_playlist",
+            AsyncMock(return_value=Listing([episode, _track("clean", False)])),
+        ),
+        patch.object(
+            mass.music.podcasts,
+            "get",
+            AsyncMock(
+                return_value=Podcast(
+                    item_id="show",
+                    provider=PROVIDER,
+                    name="Show",
+                    metadata=MediaItemMetadata(explicit=True),
+                    provider_mappings={_mapping("show")},
+                )
+            ),
+        ),
+        _as(KID),
+    ):
+        items = await mass.music.playlists.tracks("1", "builtin")
+
+    assert [item.name for item in items] == ["clean"]

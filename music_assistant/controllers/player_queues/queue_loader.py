@@ -87,6 +87,7 @@ from music_assistant.helpers.audio import get_probed_duration, store_probed_dura
 from music_assistant.helpers.provider_access import (
     EXPLICIT_FLAGGED_MEDIA_TYPES,
     ensure_explicit_allowed,
+    explicit_allowed,
     playback_sources,
     resolve_playback_user,
     resolve_playback_user_or_stand_in,
@@ -790,7 +791,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 "Autoplay failed to fetch the item following %s: %s", last_item.name, err
             )
             return
-        if next_item is None or not next_item.available:
+        if (
+            next_item is None
+            or not next_item.available
+            or not await explicit_allowed(self.mass, next_item, get_current_user())
+        ):
             self.logger.debug("Autoplay found nothing to play after %s", last_item.name)
             return
         if any(
