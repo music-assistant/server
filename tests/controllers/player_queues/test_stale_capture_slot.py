@@ -288,6 +288,33 @@ async def test_a_request_under_way_is_not_handed_a_source_that_is_being_released
     assert rig.opened["track 1"] == 2
 
 
+async def test_a_request_that_waits_for_the_preparation_keeps_the_track_it_asked_for(
+    rig: SlotRig,
+) -> None:
+    """
+    A speaker's request holds its track from the moment it arrives.
+
+    The speaker asks for the next track while its preparation still waits for the first audio.
+    A "play next" lands, so the track is no longer next by the time its audio is there.
+    """
+    playing, prepared, _later = rig.play("track 0", "track 1", "track 2")
+    first_audio = asyncio.Event()
+    rig.sources["track 1"] = partial(source, 0, 3, first_audio)
+    rig.queues.prepare_next_audio_buffer(QUEUE_ID, playing.queue_item_id)
+    assert prepared.streamdetails is not None
+    while prepared.streamdetails.buffer is None:
+        await asyncio.sleep(0)
+    request = asyncio.ensure_future(drain(rig.audio.get_queue_item_stream(prepared, PCM_FORMAT)))
+    await asyncio.sleep(0.05)
+
+    await rig.queues._enqueue_with_option(QUEUE_ID, [rig.track("track 5")], QueueOption.NEXT)
+    first_audio.set()
+
+    # all of the track, from the source the preparation opened
+    assert await request == 3 * PCM_FORMAT.pcm_sample_size
+    assert rig.opened["track 1"] == 1
+
+
 # --- a flow stream keeps the track it selected
 
 
@@ -320,6 +347,46 @@ async def test_a_track_the_flow_stream_took_plays_in_full_when_another_track_nee
     # all of both tracks, 30 seconds each
     assert emitted == 60 * PCM_FORMAT.pcm_sample_size
     assert not rig.buffer(incoming).cancelled
+
+
+async def test_a_track_the_flow_stream_selected_before_it_was_prepared_is_opened_once(
+    rig: SlotRig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A flow stream's claim on its next track also holds a buffer that is created afterwards.
+
+    The flow stream selects its next track before that track is prepared, and plays the tail of
+    the playing track out while the preparation waits for audio. A "play next" lands in between,
+    so the selected track is no longer next when its audio arrives.
+    """
+    outgoing, incoming = rig.play("track 0", "track 1", realtime=False)
+    queue = rig.queues._queue_data[QUEUE_ID].queue
+    first_audio = asyncio.Event()
+    rig.sources["track 0"] = partial(source, 12)
+    rig.sources["track 1"] = partial(source, 0, 30, first_audio)
+    install_mixer(rig, monkeypatch)
+    await rig.capture(outgoing)
+    await rig.delivered(outgoing)
+    flow = asyncio.ensure_future(
+        drain(rig.audio.get_queue_flow_stream(queue, outgoing, PCM_FORMAT, SESSION_ID))
+    )
+
+    # the preparation of the selected track waits for its first audio
+    assert incoming.streamdetails is not None
+    while incoming.streamdetails.buffer is None:
+        await asyncio.sleep(0)
+    prepared_buffer = rig.buffer(incoming)
+    assert list(prepared_buffer.users) == ["prepare_next"]
+    await rig.queues._enqueue_with_option(
+        QUEUE_ID, [rig.track("track 5", realtime=False)], QueueOption.NEXT
+    )
+    first_audio.set()
+    emitted = await flow
+
+    assert not prepared_buffer.cancelled
+    assert rig.opened["track 1"] == 1
+    # all of both tracks
+    assert emitted == 42 * PCM_FORMAT.pcm_sample_size
 
 
 async def test_a_superseded_flow_stream_leaves_the_track_of_the_active_one_alone(
@@ -429,6 +496,8 @@ async def test_a_second_flow_stream_of_the_same_session_leaves_the_active_ones_t
 
     assert emitted == 60 * PCM_FORMAT.pcm_sample_size
     assert not rig.buffer(incoming).cancelled
+    # each stream took its own claim away again
+    assert rig.audio._item_claims == set()
 
 
 async def test_a_flow_stream_that_ends_lets_go_of_the_removed_track_it_held(
@@ -455,7 +524,9 @@ async def test_a_flow_stream_that_ends_lets_go_of_the_removed_track_it_held(
     await removed.wait()
     capture = rig.buffer(incoming)
     assert rig.fills(capture)
-    assert list(capture.users) == ["flow stream of Queue A"]
+    # nobody reads it yet: the flow stream's claim on the track is what holds it
+    assert list(capture.users) == []
+    assert rig.audio._users_of(capture) == ["flow stream of Queue A (claims it)"]
 
     # the speaker disconnects while the fade is still being built
     flow.cancel()
@@ -510,6 +581,49 @@ async def test_a_track_a_fade_is_mixed_into_keeps_its_source_when_the_queue_chan
     assert emitted >= 30 * PCM_FORMAT.pcm_sample_size
     assert rig.audio._crossfade_handover[QUEUE_ID].queue_item_id == incoming.queue_item_id
     assert not rig.buffer(incoming).cancelled
+    rig.audio.clear_crossfade_handover(QUEUE_ID)
+    await rig.settle()
+
+
+async def test_a_track_a_fade_was_decided_on_before_it_was_prepared_is_opened_once(
+    rig: SlotRig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Outside flow mode the track a stream fades into is held by the queue's position.
+
+    The playing track's stream decides on the next track before it is prepared, and a "play
+    next" lands while the preparation waits for audio: it goes in behind that track.
+    """
+    playing, incoming, _later = rig.play("track 0", "track 1", "track 2", realtime=False)
+    first_audio = asyncio.Event()
+    rig.sources["track 0"] = partial(source, 12)
+    rig.sources["track 1"] = partial(source, 0, 30, first_audio)
+    install_mixer(rig, monkeypatch)
+    rig.audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    rig.audio.select_pcm_format = AsyncMock(return_value=PCM_FORMAT)  # type: ignore[method-assign]
+    await rig.capture(playing)
+    await rig.delivered(playing)
+    stream = asyncio.ensure_future(
+        drain(
+            rig.audio.get_queue_item_stream_with_smartfade(
+                MagicMock(), playing, PCM_FORMAT, CrossfadeMode.STANDARD_CROSSFADE, 8, SESSION_ID
+            )
+        )
+    )
+
+    assert incoming.streamdetails is not None
+    while incoming.streamdetails.buffer is None:
+        await asyncio.sleep(0)
+    prepared_buffer = rig.buffer(incoming)
+    new_next = rig.track("track 5", realtime=False)
+    await rig.queues._enqueue_with_option(QUEUE_ID, [new_next], QueueOption.NEXT)
+    assert rig.queues.get_next_item(QUEUE_ID, incoming.queue_item_id) is new_next
+    first_audio.set()
+    await stream
+
+    assert not prepared_buffer.cancelled
+    assert rig.opened["track 1"] == 1
+    assert rig.audio._crossfade_handover[QUEUE_ID].queue_item_id == incoming.queue_item_id
     rig.audio.clear_crossfade_handover(QUEUE_ID)
     await rig.settle()
 

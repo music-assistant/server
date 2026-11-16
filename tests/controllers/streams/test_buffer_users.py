@@ -436,6 +436,7 @@ async def test_a_speakers_request_uses_the_buffer_until_the_request_ends(
         await request
 
     assert list(buffer.users) == []
+    assert rig.audio._item_claims == set()
 
 
 @pytest.mark.parametrize("ending", ENDINGS)
@@ -454,6 +455,7 @@ async def test_a_direct_pcm_consumer_uses_the_buffer_until_its_stream_ends(
     await _end(stream, ending, gate)
 
     assert list(buffer.users) == []
+    assert rig.audio._item_claims == set()
 
 
 @pytest.mark.parametrize("ending", ENDINGS)
@@ -471,10 +473,16 @@ async def test_a_flow_stream_uses_the_buffer_of_the_track_it_plays_until_it_ends
     stream = rig.audio.get_queue_flow_stream(queue, playing, PCM_FORMAT, SESSION_ID)
 
     await anext(stream)
-    assert list(buffer.users) == ["flow stream of Queue A", "stream of track 0", "reader"]
+    assert list(buffer.users) == ["stream of track 0", "reader"]
+    assert rig.audio._users_of(buffer) == [
+        "stream of track 0",
+        "reader",
+        "flow stream of Queue A (claims it)",
+    ]
     await _end(stream, ending, gate)
 
     assert list(buffer.users) == []
+    assert rig.audio._item_claims == set()
 
 
 @pytest.mark.parametrize("ending", ENDINGS)
@@ -501,6 +509,7 @@ async def test_a_flow_prefetch_uses_the_buffer_of_the_next_track_until_it_ends(
     await _end(stream, ending, gate)
 
     assert list(buffer.users) == []
+    assert rig.audio._item_claims == set()
 
 
 @pytest.mark.parametrize("ending", ENDINGS)
@@ -539,6 +548,7 @@ async def test_a_fade_outside_flow_mode_uses_the_buffer_of_the_next_track_until_
         await _end(_fading_stream(rig, upcoming), ending, gate)
 
     assert list(buffer.users) == []
+    assert rig.audio._item_claims == set()
 
 
 class _Connection:
