@@ -6,7 +6,6 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
@@ -31,7 +30,6 @@ from pychromecast.controllers.media import (
     STREAM_TYPE_LIVE,
 )
 from pychromecast.controllers.multizone import MultizoneController
-from pychromecast.dial import get_host_from_service
 from pychromecast.error import PyChromecastError
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
@@ -53,7 +51,6 @@ from .constants import (
     CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
     CONF_USE_MASS_APP,
     DASHBOARD_KEEPALIVE_SUFFIXES,
-    DEVICE_CHECK_TIMEOUT,
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
 )
@@ -70,31 +67,13 @@ if TYPE_CHECKING:
     from pychromecast.controllers import BaseController
     from pychromecast.controllers.media import MediaStatus
     from pychromecast.controllers.receiver import CastStatus
-    from pychromecast.socket_client import ConnectionStatus, SocketClient
+    from pychromecast.socket_client import ConnectionStatus
 
     from .provider import ChromecastProvider
 
 # takes what a client that is stopped on purpose still logs
 _STOPPED_CLIENT_LOGGER = logging.getLogger(f"{__name__}.stopped_client")
 _STOPPED_CLIENT_LOGGER.disabled = True
-
-
-async def _port_answers(host: str, port: int) -> bool:
-    """
-    Return whether a port accepts a connection within DEVICE_CHECK_TIMEOUT.
-
-    :param host: The host to connect to.
-    :param port: The port to connect to.
-    """
-    try:
-        async with asyncio.timeout(DEVICE_CHECK_TIMEOUT):
-            _, writer = await asyncio.open_connection(host, port)
-    except OSError, TimeoutError:
-        return False
-    writer.close()
-    with suppress(OSError):
-        await writer.wait_closed()
-    return True
 
 
 class ChromecastPlayer(PlayerProtocol):
@@ -385,27 +364,6 @@ class ChromecastPlayer(PlayerProtocol):
             disconnect_cast(self.cc, 0)
         else:
             await asyncio.to_thread(disconnect_cast, self.cc, 10)
-
-    async def check_device(self) -> bool | None:
-        """
-        Probe a device whose client is not connected, and connect anew at once when it answers.
-
-        None for a connected client, whose own heartbeat tells when the device is gone, and for
-        a cast group, which is no device of its own.
-        """
-        if self.cast_info.is_audio_group or (listener := self.status_listener) is None:
-            return None
-        socket_client = self.cc.socket_client
-        if socket_client.is_connected:
-            return None
-        answers = await self._services_answer(socket_client)
-        if self.player is None or self.status_listener is not listener:
-            # detached, or connected with another client, meanwhile
-            return answers
-        if answers and not socket_client.is_connected:
-            # a client that finished its own connect just now costs one more connect, no more
-            self._replace_client()
-        return answers
 
     def register_client_handler(self, handler: BaseController) -> None:
         """
@@ -1053,22 +1011,6 @@ class ChromecastPlayer(PlayerProtocol):
         old_client.socket_client.logger.logger = _STOPPED_CLIENT_LOGGER
         disconnect_cast(old_client, 0)
         self._start_client()
-
-    async def _services_answer(self, socket_client: SocketClient) -> bool:
-        """
-        Return whether the device accepts a connection at one of the services its client tries.
-
-        :param socket_client: The socket client of the device.
-        """
-        # resolved as the client resolves them itself
-        resolved = await asyncio.gather(
-            *(
-                asyncio.to_thread(get_host_from_service, service, socket_client.zconf)
-                for service in socket_client.services.copy()
-            )
-        )
-        endpoints = {(host, port) for host, port, _ in resolved if host and port}
-        return any(await asyncio.gather(*(_port_answers(*endpoint) for endpoint in endpoints)))
 
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""

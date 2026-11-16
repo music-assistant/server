@@ -367,7 +367,7 @@ class SendspinBasePlayer(PlayerProtocol):
     unsub_event_cb: Callable[[], None] | None = None
     unsub_group_event_cb: Callable[[], None] | None = None
     is_web_player: bool = False
-    # set when a device check found the client away, until the client connects again
+    # set while the client counts as away, until the client connects again
     _away_on_check: bool = False
     # transient alert produced by the most recent security action, surfaced on the next
     # config-entries render (the settings page re-renders after invoking an action)
@@ -454,22 +454,8 @@ class SendspinBasePlayer(PlayerProtocol):
         await super().on_detach()
         self._unsubscribe_client_callbacks()
 
-    async def check_device(self) -> bool | None:
-        """
-        Return whether the client is connected; None for a client that runs in the server.
-
-        A client that is not connected reads unavailable from then on, until it connects again.
-        """
-        if self._connects_when_it_plays:
-            return None
-        away = self.api.connection is None
-        if away != self._away_on_check:
-            self._away_on_check = away
-            self.update_state()
-        return not away
-
     def on_client_connected(self) -> None:
-        """Handle the client connecting (again): it reads available after a check found it away."""
+        """Handle the client connecting (again): it no longer counts as away."""
         self._away_on_check = False
 
     def ride_on(self, underlying_protocol_id: str) -> None:
@@ -494,7 +480,7 @@ class SendspinBasePlayer(PlayerProtocol):
         """
         Return if the player is available.
 
-        Not once a device check found its client away, until the client connects again.
+        Not while its client counts as away, until the client connects again.
         """
         return super().available and not self._away_on_check
 
