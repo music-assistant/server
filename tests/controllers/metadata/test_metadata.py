@@ -253,6 +253,43 @@ async def test_track_lyrics_prefers_lrc_from_later_provider(
     assert track.metadata.lyrics == "track plain"
 
 
+async def test_track_lyrics_passes_full_track_to_metadata_providers(
+    metadata_controller: MetaDataController,
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Metadata providers receive the full track fetched from its own provider."""
+    owner = User(user_id="user-owner", username="owner", role=UserRole.USER)
+    mass_minimal.music = MusicController(mass_minimal)
+    own_provider = MagicMock(spec=MusicProvider)
+    own_provider.instance_id = "spotify_theirs"
+    own_provider.domain = "spotify"
+    own_provider.type = ProviderType.MUSIC
+    own_provider.available = True
+    own_provider.is_streaming_provider = True
+    own_provider.supported_features = {ProviderFeature.LYRICS}
+    own_provider.initialized = MagicMock(is_set=MagicMock(return_value=True))
+    full_track = create_track("spotify_theirs", "t1")
+    full_track.metadata.lyrics = "own provider plain"
+    own_provider.get_track = AsyncMock(return_value=full_track)
+    mass_minimal._providers = {"spotify_theirs": own_provider}
+    set_music_source_access(
+        mass_minimal,
+        {"spotify_theirs": ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+    track = create_track("spotify_theirs", "t1")
+    metadata_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
+    user_token = current_user.set(owner)
+    try:
+        with patch.object(mass_minimal, "get_providers", return_value=[metadata_provider]):
+            result = await metadata_controller.get_track_lyrics(track)
+    finally:
+        current_user.reset(user_token)
+
+    assert result == ("own provider plain", "[00:01.00]sync")
+    metadata_provider.get_track_metadata.assert_awaited_once()
+    assert metadata_provider.get_track_metadata.await_args.args[0] is full_track
+
+
 async def test_track_lyrics_returns_first_plain_result_after_searching_providers(
     metadata_controller: MetaDataController,
     mass_minimal: MusicAssistant,
