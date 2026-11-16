@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -17,6 +18,7 @@ from music_assistant.constants import EXTERNAL_ID_PROVIDER
 from music_assistant.controllers.cache import CacheController
 from music_assistant.helpers.external_ids import external_item_id
 from music_assistant.providers.listenbrainz import ListenBrainzProvider
+from music_assistant.providers.listenbrainz.models import ListenBrainzPlaylist, ListenBrainzTrack
 from music_assistant.providers.listenbrainz.playlists import (
     ListenBrainzPlaylistManager,
 )
@@ -30,18 +32,21 @@ if TYPE_CHECKING:
 RECORDING_MBID = "11111111-1111-4111-8111-111111111111"
 
 
-def _playlist_data(playlist_mbid: str, title: str, source_patch: str) -> dict[str, Any]:
-    """Return synthetic ListenBrainz playlist metadata."""
-    return {
-        "extension": {
-            "https://musicbrainz.org/doc/jspf#playlist": {
-                "additional_metadata": {"algorithm_metadata": {"source_patch": source_patch}},
-                "last_modified_at": f"2026-01-01T00:00:{(hash(playlist_mbid) % 60):02d}.000000+00:00",
-            }
-        },
-        "identifier": f"https://listenbrainz.org/playlist/{playlist_mbid}",
-        "title": title,
-    }
+def _playlist_data(playlist_mbid: str, title: str, source_patch: str) -> ListenBrainzPlaylist:
+    """Return synthetic decoded ListenBrainz playlist metadata."""
+    return ListenBrainzPlaylist(
+        playlist_id=playlist_mbid,
+        title=title,
+        source_patch=source_patch,
+        modified_at="2026-01-01T00:00:00.000000+00:00",
+    )
+
+
+def _playlist_details(*tracks: ListenBrainzTrack) -> ListenBrainzPlaylist:
+    """Return a decoded detail response, including an explicitly fetched track tuple."""
+    return ListenBrainzPlaylist(
+        playlist_id=RECORDING_MBID, title="Synthetic Playlist", tracks=tracks
+    )
 
 
 def _manager() -> ListenBrainzPlaylistManager:
@@ -69,17 +74,14 @@ def _manager() -> ListenBrainzPlaylistManager:
     return ListenBrainzPlaylistManager(provider)
 
 
-def _track_data() -> dict[str, Any]:
-    """Return a fresh synthetic JSPF track entry."""
-    return {
-        "identifier": [f"https://musicbrainz.org/recording/{RECORDING_MBID}"],
-        "title": "Synthetic Track",
-        "duration": 120000,
-        "album": "Synthetic Album",
-        "extension": {
-            "https://musicbrainz.org/doc/jspf#track": {"additional_metadata": {"artists": []}}
-        },
-    }
+def _track_data() -> ListenBrainzTrack:
+    """Return a synthetic decoded recording."""
+    return ListenBrainzTrack(
+        recording_mbid=RECORDING_MBID,
+        title="Synthetic Track",
+        duration_ms=120000,
+        album_name="Synthetic Album",
+    )
 
 
 @pytest.mark.parametrize(
@@ -128,7 +130,7 @@ async def test_refresh_only_loads_enabled_playlist_types(
     get_createdfor_playlists = cast("AsyncMock", manager.api.get_createdfor_playlists)
     get_createdfor_playlists.return_value = playlist_data
     get_playlist = cast("AsyncMock", manager.api.get_playlist)
-    get_playlist.return_value = {"track": []}
+    get_playlist.return_value = _playlist_details()
     enabled = {
         "enable_weekly_jams": True,
         "enable_weekly_exploration": True,
@@ -166,9 +168,9 @@ async def test_refresh_publishes_completed_playlist_before_loading_next(
     ]
     raw_track = _track_data()
 
-    async def get_playlist(playlist_id: str) -> dict[str, Any]:
+    async def get_playlist(playlist_id: str) -> ListenBrainzPlaylist:
         if playlist_id == first_id:
-            return {"track": [raw_track]}
+            return _playlist_details(raw_track)
         assert (await manager.get_playlist(first_id)).name == "Synthetic Playlist One"
         tracks = await manager.get_playlist_tracks(first_id)
         assert len(tracks) == 1
@@ -177,7 +179,7 @@ async def test_refresh_publishes_completed_playlist_before_loading_next(
         assert [playlist.item_id for playlist in await manager.browse()] == [first_id]
         if later_playlist_fails:
             raise MusicAssistantError("Synthetic playlist fetch failure")
-        return {"track": []}
+        return _playlist_details()
 
     cast("AsyncMock", manager.api.get_playlist).side_effect = get_playlist
     if later_playlist_fails:
@@ -200,14 +202,14 @@ async def test_playlist_lists_all_source_entries_without_resolving() -> None:
     cast("AsyncMock", manager.api.get_createdfor_playlists).return_value = [
         _playlist_data(RECORDING_MBID, "Synthetic Playlist", "weekly-jams")
     ]
-    second = _track_data()
-    second["identifier"] = [
-        "https://musicbrainz.org/recording/22222222-2222-4222-8222-222222222222"
-    ]
-    second["title"] = "Synthetic Second Track"
-    cast("AsyncMock", manager.api.get_playlist).return_value = {
-        "track": [_track_data(), second, _track_data()]
-    }
+    second = replace(
+        _track_data(),
+        recording_mbid="22222222-2222-4222-8222-222222222222",
+        title="Synthetic Second Track",
+    )
+    cast("AsyncMock", manager.api.get_playlist).return_value = _playlist_details(
+        _track_data(), second, _track_data()
+    )
 
     await manager.refresh()
     tracks = await manager.get_playlist_tracks(RECORDING_MBID)
@@ -232,6 +234,22 @@ async def test_playlist_lists_all_source_entries_without_resolving() -> None:
     assert await manager.get_playlist_tracks(RECORDING_MBID, page=1) == []
 
 
+async def test_detail_without_track_contents_is_not_published() -> None:
+    """A listing-shaped detail response is not published as an empty playlist."""
+    manager = _manager()
+    manager.provider.username = "synthetic-user"
+    cast("MagicMock", manager.provider.config.get_value).return_value = True
+    metadata = _playlist_data(RECORDING_MBID, "Synthetic Playlist", "weekly-jams")
+    cast("AsyncMock", manager.api.get_createdfor_playlists).return_value = [metadata]
+    cast("AsyncMock", manager.api.get_playlist).return_value = metadata
+
+    with pytest.raises(ValueError, match="no track listing"):
+        await manager.refresh()
+
+    assert await manager.browse() == []
+    cast("AsyncMock", manager.provider.mass.cache.set).assert_not_awaited()
+
+
 async def test_failed_fetch_does_not_publish_source_version() -> None:
     """A failed playlist rebuild retains its old snapshot and refetches the unbuilt version."""
     manager = _manager()
@@ -241,16 +259,16 @@ async def test_failed_fetch_does_not_publish_source_version() -> None:
     metadata = _playlist_data(playlist_id, "Synthetic Original", "weekly-jams")
     cast("AsyncMock", manager.api.get_createdfor_playlists).return_value = [metadata]
     get_playlist = cast("AsyncMock", manager.api.get_playlist)
-    get_playlist.return_value = {"track": []}
+    get_playlist.return_value = _playlist_details()
     await manager.refresh()
     original = await manager.get_playlist(playlist_id)
 
-    metadata["title"] = "Synthetic Replacement"
-    metadata["extension"]["https://musicbrainz.org/doc/jspf#playlist"]["last_modified_at"] = (
-        "2026-06-01T12:00:00.000000+00:00"
+    metadata = replace(
+        metadata, title="Synthetic Replacement", modified_at="2026-06-01T12:00:00.000000+00:00"
     )
+    cast("AsyncMock", manager.api.get_createdfor_playlists).return_value = [metadata]
 
-    async def failed_fetch(_playlist_id: str) -> dict[str, Any]:
+    async def failed_fetch(_playlist_id: str) -> ListenBrainzPlaylist:
         assert await manager.get_playlist(playlist_id) is original
         assert await manager.get_playlist_tracks(playlist_id) == []
         raise MusicAssistantError("Synthetic failure")
@@ -263,7 +281,7 @@ async def test_failed_fetch_does_not_publish_source_version() -> None:
     assert await manager.get_playlist_tracks(playlist_id) == []
     get_playlist.reset_mock()
     get_playlist.side_effect = None
-    get_playlist.return_value = {"track": [_track_data()]}
+    get_playlist.return_value = _playlist_details(_track_data())
     await manager.refresh()
 
     get_playlist.assert_awaited_once_with(playlist_id)
@@ -283,7 +301,9 @@ async def test_published_playlists_survive_manager_restart(mass_minimal: MusicAs
         _playlist_data(playlist_id, "Synthetic Persisted Playlist", "weekly-jams")
     ]
     raw_track = _track_data()
-    cast("AsyncMock", manager.api.get_playlist).return_value = {"track": [raw_track, raw_track]}
+    cast("AsyncMock", manager.api.get_playlist).return_value = _playlist_details(
+        raw_track, raw_track
+    )
     await manager.refresh()
 
     await mass_minimal.cache.close()
@@ -324,7 +344,7 @@ async def test_snapshot_cache_is_scoped_to_provider_configuration(
     cast("AsyncMock", manager.api.get_createdfor_playlists).return_value = [
         _playlist_data(RECORDING_MBID, "Synthetic Playlist", "weekly-jams")
     ]
-    cast("AsyncMock", manager.api.get_playlist).return_value = {"track": []}
+    cast("AsyncMock", manager.api.get_playlist).return_value = _playlist_details()
     await manager.refresh()
 
     if changed_scope == "username":
@@ -363,7 +383,7 @@ async def test_cached_playlists_are_filtered_without_invalidating_enabled_playli
         _playlist_data(first_id, "Synthetic Jams", "weekly-jams"),
         _playlist_data(second_id, "Synthetic Disabled Playlist", source_patch),
     ]
-    cast("AsyncMock", manager.api.get_playlist).return_value = {"track": []}
+    cast("AsyncMock", manager.api.get_playlist).return_value = _playlist_details()
     await manager.refresh()
     get_createdfor = cast("AsyncMock", manager.api.get_createdfor_playlists)
     get_playlist = cast("AsyncMock", manager.api.get_playlist)
@@ -396,7 +416,7 @@ async def test_removed_playlists_are_not_restored_from_persistent_cache(
     get_createdfor.return_value = [
         _playlist_data(RECORDING_MBID, "Synthetic Playlist", "weekly-jams")
     ]
-    cast("AsyncMock", manager.api.get_playlist).return_value = {"track": []}
+    cast("AsyncMock", manager.api.get_playlist).return_value = _playlist_details()
     await manager.refresh()
     assert len(await manager.browse()) == 1
 
@@ -446,7 +466,7 @@ async def test_refresh_keeps_one_playlist_per_id_in_source_order() -> None:
         _playlist_data(second_id, "Synthetic Second", "weekly-exploration"),
         _playlist_data(first_id, "Synthetic Replacement", "weekly-jams"),
     ]
-    cast("AsyncMock", manager.api.get_playlist).return_value = {"track": []}
+    cast("AsyncMock", manager.api.get_playlist).return_value = _playlist_details()
 
     await manager.refresh()
 
@@ -474,7 +494,7 @@ async def test_unchanged_playlists_skip_get_playlist_on_refresh() -> None:
         ),
     ]
     cast("AsyncMock", manager.api.get_createdfor_playlists).return_value = playlist_data
-    cast("AsyncMock", manager.api.get_playlist).return_value = {"track": []}
+    cast("AsyncMock", manager.api.get_playlist).return_value = _playlist_details()
 
     await manager.refresh()
     get_playlist = cast("AsyncMock", manager.api.get_playlist)
@@ -497,7 +517,7 @@ async def test_changed_playlists_trigger_get_playlist_on_refresh() -> None:
         _playlist_data(playlist_mbid, "Playlist One", "weekly-jams"),
     ]
     cast("AsyncMock", manager.api.get_createdfor_playlists).return_value = first_page
-    cast("AsyncMock", manager.api.get_playlist).return_value = {"track": []}
+    cast("AsyncMock", manager.api.get_playlist).return_value = _playlist_details()
 
     await manager.refresh()
     get_playlist = cast("AsyncMock", manager.api.get_playlist)
@@ -506,9 +526,7 @@ async def test_changed_playlists_trigger_get_playlist_on_refresh() -> None:
     changed_page = [
         _playlist_data(playlist_mbid, "Playlist One", "weekly-jams"),
     ]
-    # Override the last_modified_at to something different
-    ext_key = "https://musicbrainz.org/doc/jspf#playlist"
-    changed_page[0]["extension"][ext_key]["last_modified_at"] = "2026-06-01T12:00:00.000000+00:00"
+    changed_page[0] = replace(changed_page[0], modified_at="2026-06-01T12:00:00.000000+00:00")
     cast("AsyncMock", manager.api.get_createdfor_playlists).return_value = changed_page
 
     get_playlist.reset_mock()
@@ -530,7 +548,7 @@ async def test_removed_playlists_are_evicted_from_cache() -> None:
         _playlist_data(mbid_one, "Playlist One", "weekly-jams"),
         _playlist_data(mbid_two, "Playlist Two", "weekly-exploration"),
     ]
-    cast("AsyncMock", manager.api.get_playlist).return_value = {"track": []}
+    cast("AsyncMock", manager.api.get_playlist).return_value = _playlist_details()
     await manager.refresh()
 
     assert manager._playlists[mbid_one].tracks == ()

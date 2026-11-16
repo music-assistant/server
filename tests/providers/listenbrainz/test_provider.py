@@ -72,6 +72,7 @@ async def test_provider_initializes_and_schedules_playlist_refreshes() -> None:
 
     async def load_cache() -> None:
         assert isinstance(provider.api, ListenBrainzAPIClient)
+        assert provider.api.mass is provider.mass
         assert isinstance(provider.playlists_manager, ListenBrainzPlaylistManager)
         assert provider.username == "synthetic-user"
         cast("MagicMock", provider.mass.tasks.register_scheduled_task).assert_not_called()

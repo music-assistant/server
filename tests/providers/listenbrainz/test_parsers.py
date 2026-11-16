@@ -1,169 +1,84 @@
-"""Tests for ListenBrainz response parsers."""
-
-from typing import Any
+"""Tests for converting ListenBrainz response models to Music Assistant items."""
 
 import pytest
 from music_assistant_models.enums import ExternalID
 
 from music_assistant.constants import EXTERNAL_ID_PROVIDER
 from music_assistant.helpers.external_ids import external_item_id
+from music_assistant.providers.listenbrainz.models import (
+    ListenBrainzArtist,
+    ListenBrainzPlaylist,
+    ListenBrainzTrack,
+)
 from music_assistant.providers.listenbrainz.parsers import (
     parse_artists,
     parse_playlist,
-    parse_playlist_last_modified,
-    parse_playlist_source_patch,
     parse_track,
 )
 
+PLAYLIST_MBID = "88888888-8888-4888-8888-888888888888"
+RECORDING_MBID = "77777777-7777-4777-8777-777777777777"
+ARTIST_MBID = "55555555-5555-4555-8555-555555555555"
 
-def test_parse_playlist_from_jspf_response() -> None:
-    """A JSPF playlist response becomes a provider-owned playlist."""
-    playlist_mbid = "88888888-8888-4888-8888-888888888888"
-    playlist_data = {
-        "identifier": f"https://listenbrainz.org/playlist/{playlist_mbid}",
-        "title": "Synthetic Playlist",
-    }
 
-    playlist = parse_playlist(playlist_data, "listenbrainz--test", "listenbrainz")
+def test_parse_playlist() -> None:
+    """A response model becomes a provider-owned playlist with a sanitized description."""
+    data = ListenBrainzPlaylist(
+        playlist_id=PLAYLIST_MBID,
+        title="Synthetic Playlist",
+        annotation="<p>Synthetic &amp; descriptive</p>\n text",
+    )
 
-    assert playlist.item_id == playlist_mbid
+    playlist = parse_playlist(data, "listenbrainz--test", "listenbrainz")
+
+    assert playlist.item_id == PLAYLIST_MBID
     assert playlist.name == "Synthetic Playlist"
     assert playlist.owner == "listenbrainz"
     assert playlist.is_editable is False
     assert playlist.provider == "listenbrainz--test"
+    assert playlist.metadata.description == "Synthetic & descriptive text"
     assert playlist.available is True
 
 
-def test_parse_playlist_source_patch_from_algorithm_metadata() -> None:
-    """The playlist algorithm source is read from its JSPF extension."""
-    playlist_data = {
-        "extension": {
-            "https://musicbrainz.org/doc/jspf#playlist": {
-                "additional_metadata": {
-                    "algorithm_metadata": {"source_patch": "synthetic-playlist-type"}
-                }
-            }
-        }
-    }
-
-    assert parse_playlist_source_patch(playlist_data) == "synthetic-playlist-type"
-
-
-def test_parse_playlist_source_patch_returns_none_when_metadata_is_missing() -> None:
-    """A playlist without algorithm metadata has no supported source patch."""
-    assert parse_playlist_source_patch({}) is None
-
-
-def test_parse_playlist_last_modified_from_extension() -> None:
-    """The playlist modification timestamp is read from its JSPF extension."""
-    playlist_data = {
-        "extension": {
-            "https://musicbrainz.org/doc/jspf#playlist": {
-                "last_modified_at": "2026-10-20T22:18:49.794546+00:00"
-            }
-        }
-    }
-
-    assert parse_playlist_last_modified(playlist_data) == "2026-10-20T22:18:49.794546+00:00"
-
-
-def test_parse_playlist_last_modified_returns_none_when_missing() -> None:
-    """A playlist without a last_modified_at timestamp returns None."""
-    assert parse_playlist_last_modified({}) is None
-    assert (
-        parse_playlist_last_modified(
-            {"extension": {"https://musicbrainz.org/doc/jspf#playlist": {}}}
-        )
-        is None
+def test_parse_artists() -> None:
+    """Artist credits retain names, IDs and credit order without becoming provider tracks."""
+    artist_credits = (
+        ListenBrainzArtist(artist_mbid=ARTIST_MBID, name="Synthetic Artist One"),
+        ListenBrainzArtist(
+            artist_mbid="66666666-6666-4666-8666-666666666666", name="Synthetic Artist Two"
+        ),
     )
 
+    artists = parse_artists(artist_credits, "listenbrainz--test", "listenbrainz")
 
-def test_parse_artists_from_jspf_track_extension() -> None:
-    """Structured JSPF artist credits become MBID-backed artists."""
-    track_data = {
-        "extension": {
-            "https://musicbrainz.org/doc/jspf#track": {
-                "additional_metadata": {
-                    "artists": [
-                        {
-                            "artist_credit_name": "Artist One",
-                            "artist_mbid": "55555555-5555-4555-8555-555555555555",
-                            "join_phrase": " feat. ",
-                        },
-                        {
-                            "artist_credit_name": "Artist Two",
-                            "artist_mbid": "66666666-6666-4666-8666-666666666666",
-                            "join_phrase": "",
-                        },
-                    ]
-                }
-            }
-        }
-    }
-
-    artists = parse_artists(track_data, "listenbrainz--test", "listenbrainz")
-
-    assert [artist.name for artist in artists] == ["Artist One", "Artist Two"]
-    assert artists[0].get_external_id(ExternalID.MB_ARTIST) == (
-        "55555555-5555-4555-8555-555555555555"
-    )
+    assert [artist.name for artist in artists] == ["Synthetic Artist One", "Synthetic Artist Two"]
+    assert artists[0].get_external_id(ExternalID.MB_ARTIST) == ARTIST_MBID
     assert all(artist.available is False for artist in artists)
 
 
-@pytest.mark.parametrize("explicit_null", [False, True])
-def test_parse_track_without_optional_metadata(explicit_null: bool) -> None:
-    """Missing display metadata does not discard a recording's resolvable identity."""
-    recording_mbid = "77777777-7777-4777-8777-777777777777"
-    track_data: dict[str, Any] = {
-        "identifier": [f"https://musicbrainz.org/recording/{recording_mbid}"],
-        "extension": {
-            "https://musicbrainz.org/doc/jspf#track": {"additional_metadata": {"artists": []}}
-        },
-    }
-    if explicit_null:
-        track_data.update(title=None, duration=None, album=None)
+@pytest.mark.parametrize("populated", [False, True])
+def test_parse_track(populated: bool) -> None:
+    """Source metadata becomes an external track; absent display fields have safe defaults."""
+    data = ListenBrainzTrack(
+        recording_mbid=RECORDING_MBID,
+        title="Synthetic Track" if populated else None,
+        duration_ms=185000 if populated else None,
+        album_name="Synthetic Album" if populated else None,
+        artists=(ListenBrainzArtist(artist_mbid=ARTIST_MBID, name="Synthetic Artist"),),
+    )
 
-    track = parse_track(track_data, "listenbrainz--test", "listenbrainz")
+    track = parse_track(data, "listenbrainz--test", "listenbrainz")
 
-    assert track.name == recording_mbid
-    assert track.duration == 0
-    assert track.album is None
-    assert track.get_external_id(ExternalID.MB_RECORDING) == recording_mbid
-    assert track.is_playable is True
-
-
-def test_parse_track_from_jspf_playlist_entry() -> None:
-    """A JSPF playlist entry carries display metadata and an external playback identity."""
-    recording_mbid = "77777777-7777-4777-8777-777777777777"
-    track_data = {
-        "album": "Synthetic Album",
-        "duration": 185000,
-        "extension": {
-            "https://musicbrainz.org/doc/jspf#track": {
-                "additional_metadata": {
-                    "artists": [
-                        {
-                            "artist_credit_name": "Synthetic Artist",
-                            "artist_mbid": "55555555-5555-4555-8555-555555555555",
-                            "join_phrase": "",
-                        }
-                    ]
-                }
-            }
-        },
-        "identifier": [f"https://musicbrainz.org/recording/{recording_mbid}"],
-        "title": "Synthetic Track",
-    }
-
-    track = parse_track(track_data, "listenbrainz--test", "listenbrainz")
-
-    assert track.item_id == external_item_id(ExternalID.MB_RECORDING, recording_mbid)
+    assert track.item_id == external_item_id(ExternalID.MB_RECORDING, RECORDING_MBID)
     assert track.provider == EXTERNAL_ID_PROVIDER
     assert track.provider_mappings == set()
-    assert track.name == "Synthetic Track"
-    assert track.duration == 185
-    assert track.album is not None
-    assert track.album.name == "Synthetic Album"
+    assert track.name == ("Synthetic Track" if populated else RECORDING_MBID)
+    assert track.duration == (185 if populated else 0)
+    if populated:
+        assert track.album is not None
+        assert track.album.name == "Synthetic Album"
+    else:
+        assert track.album is None
     assert [artist.name for artist in track.artists] == ["Synthetic Artist"]
-    assert track.get_external_id(ExternalID.MB_RECORDING) == recording_mbid
+    assert track.get_external_id(ExternalID.MB_RECORDING) == RECORDING_MBID
     assert track.is_playable is True

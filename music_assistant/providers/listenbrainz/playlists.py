@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from copy import copy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from mashumaro.exceptions import MissingField
 from music_assistant_models.errors import MediaNotFoundError
@@ -23,13 +23,12 @@ from music_assistant.providers.listenbrainz.constants import (
 )
 from music_assistant.providers.listenbrainz.parsers import (
     parse_playlist,
-    parse_playlist_last_modified,
-    parse_playlist_source_patch,
     parse_track,
 )
 
 if TYPE_CHECKING:
     from music_assistant.providers.listenbrainz import ListenBrainzProvider
+    from music_assistant.providers.listenbrainz.models import ListenBrainzPlaylist
 
 CACHE_CATEGORY_PLAYLISTS = 2
 CACHE_EXPIRATION_SECONDS = 60 * 60 * 24 * 30
@@ -99,7 +98,7 @@ class ListenBrainzPlaylistManager:
         refreshed: dict[str, PlaylistState] = {}
 
         for item in playlists:
-            if not self._is_playlist_enabled(item):
+            if not self._is_source_patch_enabled(item.source_patch):
                 continue
             state = await self._refresh_playlist(item)
             refreshed[state.playlist.item_id] = state
@@ -134,10 +133,10 @@ class ListenBrainzPlaylistManager:
             return list(state.tracks)
         return []
 
-    async def _refresh_playlist(self, item: dict[str, Any]) -> PlaylistState:
+    async def _refresh_playlist(self, item: ListenBrainzPlaylist) -> PlaylistState:
         """Refresh and publish one playlist with all its source entries."""
         playlist = parse_playlist(item, self.provider.instance_id, self.provider.domain)
-        last_modified = parse_playlist_last_modified(item)
+        last_modified = item.modified_at
         previous = self._playlists.get(playlist.item_id)
         if (
             previous is not None
@@ -147,8 +146,10 @@ class ListenBrainzPlaylistManager:
             tracks = previous.tracks
         else:
             playlist_data = await self.api.get_playlist(playlist.item_id)
+            if playlist_data.tracks is None:
+                raise ValueError("ListenBrainz playlist detail response has no track listing")
             parsed_tracks: list[Track] = []
-            for position, track_data in enumerate(playlist_data["track"], 1):
+            for position, track_data in enumerate(playlist_data.tracks, 1):
                 track = parse_track(track_data, self.provider.instance_id, self.provider.domain)
                 track.position = position
                 parsed_tracks.append(track)
@@ -157,7 +158,7 @@ class ListenBrainzPlaylistManager:
         state = PlaylistState(
             playlist=playlist,
             tracks=tracks,
-            source_patch=parse_playlist_source_patch(item),
+            source_patch=item.source_patch,
             modified_at=last_modified,
         )
 
@@ -183,10 +184,6 @@ class ListenBrainzPlaylistManager:
             checksum=self.provider.username,
             expiration=CACHE_EXPIRATION_SECONDS,
         )
-
-    def _is_playlist_enabled(self, playlist_data: dict[str, Any]) -> bool:
-        """Return whether the ListenBrainz playlist type is enabled."""
-        return self._is_source_patch_enabled(parse_playlist_source_patch(playlist_data))
 
     def _is_source_patch_enabled(self, source_patch: str | None) -> bool:
         """Return whether the ListenBrainz algorithm source patch is enabled."""

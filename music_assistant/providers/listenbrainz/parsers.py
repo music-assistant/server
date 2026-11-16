@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 import re
-from typing import Any
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.media_items import (
@@ -20,16 +20,20 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import EXTERNAL_ID_PROVIDER
 from music_assistant.helpers.external_ids import external_item_id
 
-JSPF_PLAYLIST_EXTENSION = "https://musicbrainz.org/doc/jspf#playlist"
-JSPF_TRACK_EXTENSION = "https://musicbrainz.org/doc/jspf#track"
+if TYPE_CHECKING:
+    from music_assistant.providers.listenbrainz.models import (
+        ListenBrainzArtist,
+        ListenBrainzPlaylist,
+        ListenBrainzTrack,
+    )
 
 
 def parse_playlist(
-    playlist_data: dict[str, Any], provider_instance: str, provider_domain: str
+    playlist_data: ListenBrainzPlaylist, provider_instance: str, provider_domain: str
 ) -> Playlist:
     """Parse a ListenBrainz JSPF playlist."""
-    playlist_id = playlist_data["identifier"].rsplit("/", 1)[-1]
-    annotation = playlist_data.get("annotation")
+    playlist_id = playlist_data.playlist_id
+    annotation = playlist_data.annotation
     if isinstance(annotation, str):
         annotation = html.unescape(annotation)
         annotation = re.sub(r"<[^>]+>", " ", annotation)
@@ -39,7 +43,7 @@ def parse_playlist(
     return Playlist(
         item_id=playlist_id,
         provider=provider_instance,
-        name=playlist_data["title"],
+        name=playlist_data.title,
         owner="listenbrainz",
         is_editable=False,
         metadata=MediaItemMetadata(description=annotation) if annotation else MediaItemMetadata(),
@@ -54,36 +58,18 @@ def parse_playlist(
     )
 
 
-def parse_playlist_source_patch(playlist_data: dict[str, Any]) -> str | None:
-    """Return the ListenBrainz algorithm source patch for a JSPF playlist."""
-    try:
-        source_patch = playlist_data["extension"][JSPF_PLAYLIST_EXTENSION]["additional_metadata"][
-            "algorithm_metadata"
-        ]["source_patch"]
-    except KeyError, TypeError:
-        return None
-    return source_patch if isinstance(source_patch, str) else None
-
-
-def parse_playlist_last_modified(playlist_data: dict[str, Any]) -> str | None:
-    """Return the ``last_modified_at`` timestamp for a JSPF playlist, if present."""
-    try:
-        last_modified = playlist_data["extension"][JSPF_PLAYLIST_EXTENSION]["last_modified_at"]
-    except KeyError, TypeError:
-        return None
-    return last_modified if isinstance(last_modified, str) else None
-
-
-def parse_track(track_data: dict[str, Any], provider_instance: str, provider_domain: str) -> Track:
+def parse_track(
+    track_data: ListenBrainzTrack, provider_instance: str, provider_domain: str
+) -> Track:
     """Parse a JSPF playlist entry into a track resolved by the core when opened or played."""
-    recording_mbid = track_data["identifier"][0].rsplit("/", 1)[-1]
-    album_name = track_data.get("album")
+    recording_mbid = track_data.recording_mbid
+    album_name = track_data.album_name
     return Track(
         item_id=external_item_id(ExternalID.MB_RECORDING, recording_mbid),
         provider=EXTERNAL_ID_PROVIDER,
-        name=track_data.get("title") or recording_mbid,
-        duration=(track_data.get("duration") or 0) // 1000,
-        artists=UniqueList(parse_artists(track_data, provider_instance, provider_domain)),
+        name=track_data.title or recording_mbid,
+        duration=(track_data.duration_ms or 0) // 1000,
+        artists=UniqueList(parse_artists(track_data.artists, provider_instance, provider_domain)),
         album=(
             ItemMapping(
                 item_id=album_name,
@@ -100,24 +86,23 @@ def parse_track(track_data: dict[str, Any], provider_instance: str, provider_dom
 
 
 def parse_artists(
-    track_data: dict[str, Any], provider_instance: str, provider_domain: str
+    artist_data: tuple[ListenBrainzArtist, ...], provider_instance: str, provider_domain: str
 ) -> UniqueList[Artist]:
     """Parse the artist credits from a JSPF track."""
-    artist_data = track_data["extension"][JSPF_TRACK_EXTENSION]["additional_metadata"]["artists"]
     return UniqueList(
         parse_artist(item, provider_instance, provider_domain) for item in artist_data
     )
 
 
 def parse_artist(
-    artist_data: dict[str, Any], provider_instance: str, provider_domain: str
+    artist_data: ListenBrainzArtist, provider_instance: str, provider_domain: str
 ) -> Artist:
     """Parse a ListenBrainz artist credit."""
-    mbid = artist_data["artist_mbid"]
+    mbid = artist_data.artist_mbid
     return Artist(
         item_id=mbid,
         provider=provider_instance,
-        name=artist_data["artist_credit_name"],
+        name=artist_data.name,
         provider_mappings={
             ProviderMapping(
                 item_id=mbid,

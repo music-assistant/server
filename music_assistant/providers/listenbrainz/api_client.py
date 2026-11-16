@@ -1,57 +1,39 @@
-"""ListenBrainz API client for playlist data."""
+"""ListenBrainz playlist endpoints using the server's shared API transport."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any
 
-if TYPE_CHECKING:
-    import logging
-
-    from aiohttp import ClientSession
-
-    from music_assistant.providers.listenbrainz import ListenBrainzProvider
-from music_assistant.helpers.throttle_retry import ThrottlerManager
+from music_assistant.providers.listenbrainz.models import ListenBrainzPlaylist
+from music_assistant.providers.musicbrainz.listenbrainz import ListenBrainzClient
 
 
-class ListenBrainzAPIClient:
-    """Client for the ListenBrainz playlist API."""
+class ListenBrainzAPIClient(ListenBrainzClient):
+    """Extend the built-in client with the playlist endpoints used by this provider."""
 
-    BASE_URL = "https://api.listenbrainz.org"
-    throttler = ThrottlerManager(rate_limit=1, period=1)  # 1 request per second
-
-    def __init__(self, provider: ListenBrainzProvider) -> None:
-        """
-        Initialize the ListenBrainz API client.
-
-        :param provider: The ListenBrainz provider instance.
-        """
-        self.provider = provider
-        self.http_session: ClientSession = provider.mass.http_session
-
-    @property
-    def logger(self) -> logging.Logger:
-        """Return the provider's active logger."""
-        return self.provider.logger
-
-    async def get_createdfor_playlists(self, username: str) -> list[dict[str, Any]]:
+    async def get_createdfor_playlists(self, username: str) -> list[ListenBrainzPlaylist]:
         """
         Get all system-generated playlists for a user.
 
         :param username: ListenBrainz username.
         """
         self.logger.debug("Fetching ListenBrainz playlists for user %s", username)
-        path = f"/1/user/{username}/playlists/createdfor"
-        playlists: list[dict[str, Any]] = []
+        path = f"/user/{username}/playlists/createdfor"
+        playlists: list[ListenBrainzPlaylist] = []
         offset = 0
         try:
             while True:
-                data = await self._get_data(path if offset == 0 else f"{path}?offset={offset}")
+                data: dict[str, Any] = await self._get_data(
+                    path if offset == 0 else f"{path}?offset={offset}"
+                )
                 page_playlists = data.get("playlists", [])
-                playlists.extend(item["playlist"] for item in page_playlists)
+                playlists.extend(
+                    ListenBrainzPlaylist.from_jspf(item["playlist"]) for item in page_playlists
+                )
 
-                page_count = cast("int", data["count"])
-                page_offset = cast("int", data["offset"])
-                playlist_count = cast("int", data["playlist_count"])
+                page_count: int = data["count"]
+                page_offset: int = data["offset"]
+                playlist_count: int = data["playlist_count"]
                 offset = page_offset + page_count
 
                 self.logger.debug(
@@ -70,24 +52,11 @@ class ListenBrainzAPIClient:
             )
             raise
 
-    async def get_playlist(self, playlist_mbid: str) -> dict[str, Any]:
+    async def get_playlist(self, playlist_mbid: str) -> ListenBrainzPlaylist:
         """
         Return one playlist, including its recordings.
 
         :param playlist_mbid: ListenBrainz playlist MusicBrainz ID.
         """
-        data = await self._get_data(f"/1/playlist/{playlist_mbid}")
-        return cast("dict[str, Any]", data["playlist"])
-
-    async def _get_data(self, path: str) -> dict[str, Any]:
-        """
-        Make a request to the ListenBrainz API and return the response data.
-
-        :param path: API path relative to :attr:`BASE_URL`.
-        """
-        async with (
-            self.throttler.acquire(),
-            self.http_session.get(f"{self.BASE_URL}{path}") as response,
-        ):
-            response.raise_for_status()
-            return cast("dict[str, Any]", await response.json())
+        data: dict[str, Any] = await self._get_data(f"/playlist/{playlist_mbid}")
+        return ListenBrainzPlaylist.from_jspf(data["playlist"])

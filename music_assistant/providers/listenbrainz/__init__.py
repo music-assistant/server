@@ -78,7 +78,7 @@ class ListenBrainzProvider(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Initialize the ListenBrainz API client."""
-        self.api = ListenBrainzAPIClient(self)
+        self.api = ListenBrainzAPIClient(self.mass)
         self.username = str(self.get_setup_value(CONF_USERNAME) or "")
         self.playlists_manager = ListenBrainzPlaylistManager(self)
         await self.playlists_manager.load_cache()
