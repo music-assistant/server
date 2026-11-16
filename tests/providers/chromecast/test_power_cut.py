@@ -255,6 +255,65 @@ async def test_a_device_detached_while_its_new_client_connects_ends_the_wait() -
     connect.assert_not_called()
 
 
+async def test_a_restore_that_runs_while_the_device_is_detached_starts_no_client() -> None:
+    """
+    A restore that runs while its device is being detached leaves the detach its client.
+
+    The detach has stopped following the client and waits for the bridge of the device,
+    before it disconnects the client. A restore that was queued before the detach runs
+    then: it starts no client, so the detach disconnects the one the device had.
+    """
+    protocol, client = await _attached()
+    bridge_ends = asyncio.Event()
+
+    async def _bridge() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await bridge_ends.wait()
+            raise
+
+    protocol._bridge_task = asyncio.create_task(_bridge())
+    await asyncio.sleep(0)
+    protocol.set_player(None)
+    detaching = asyncio.create_task(protocol.on_detach())
+    await asyncio.sleep(0.01)
+    assert protocol.status_listener is None
+    assert not detaching.done()
+
+    with patch(
+        "pychromecast.get_chromecast_from_cast_info", side_effect=_connect_client
+    ) as connect:
+        restoring = asyncio.create_task(protocol.on_power_restored())
+        await asyncio.sleep(0.01)
+        bridge_ends.set()
+        await detaching
+    try:
+        # how often the client the device had was disconnected
+        assert client.disconnect.call_count == 1
+        client.disconnect.assert_called_once_with(10)
+        connect.assert_not_called()
+        assert protocol.status_listener is None
+        assert restoring.done()
+    finally:
+        restoring.cancel()
+        await asyncio.gather(restoring, return_exceptions=True)
+
+
+async def test_a_device_that_is_not_attached_keeps_its_client_when_the_power_is_cut() -> None:
+    """A device taken off its player, and not detached yet, is not touched by a power cut."""
+    protocol, client = await _attached()
+    listener = protocol.status_listener
+    protocol.set_player(None)
+
+    await protocol.on_power_cut()
+
+    client.disconnect.assert_not_called()
+    assert protocol.status_listener is listener
+    await protocol.on_detach()
+    client.disconnect.assert_called_once_with(10)
+
+
 async def test_a_cast_group_is_left_alone() -> None:
     """A cast group, which is no device of its own, keeps its client when the power is cut."""
     protocol, client = await _attached(_cast_info(cast_type=CAST_TYPE_GROUP))

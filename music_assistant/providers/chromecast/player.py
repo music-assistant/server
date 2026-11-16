@@ -370,8 +370,9 @@ class ChromecastPlayer(PlayerProtocol):
 
     async def on_power_cut(self) -> None:
         """Stop the client of the device, whose power was cut: it reads unavailable."""
-        if self.cast_info.is_audio_group or self.status_listener is None:
-            # a cast group is no device of its own, and without a listener no client runs
+        if self.player is None or self.cast_info.is_audio_group or self.status_listener is None:
+            # not attached, a cast group, which is no device of its own, or no client that
+            # runs: that has no listener
             return
         self._stop_client()
         # what a client reports that closed its connection itself
@@ -379,13 +380,16 @@ class ChromecastPlayer(PlayerProtocol):
 
     async def on_power_restored(self) -> None:
         """Connect to the device anew, now that its power is back and it has started up."""
-        if self.cast_info.is_audio_group or self.command_controller is None:
-            # a cast group is no device of its own, and a protocol that is not attached
-            # has no client
+        if self.player is None or self.cast_info.is_audio_group or self.command_controller is None:
+            # not attached, a cast group, which is no device of its own, or no client yet:
+            # the attach that is still to run starts one
             return
         # from what a power cut leaves: a client that lost the device waits ever longer
         # before it tries again, and one that did not notice yet reaches nothing
         await self.on_power_cut()
+        if self.player is None:
+            # detached meanwhile, which stops the client itself
+            return  # type: ignore[unreachable]
         self._start_client()
         listener = self.status_listener
         # until the new client reports its connection, in the time the players controller
