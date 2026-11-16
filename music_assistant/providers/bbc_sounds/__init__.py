@@ -8,14 +8,9 @@ from music_assistant.providers.bbc_sounds.provider import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.streaming import StreamManager
 
 if TYPE_CHECKING:
-    from auntie_sounds.models import SoundsTypes
     from music_assistant_models.config_entries import (
-        ConfigActionResult,
-        ConfigEntry,
         ProviderConfig,
     )
-    from music_assistant_models.player_queue import PlayerQueue
-    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
