@@ -46,6 +46,7 @@ def _controller(
     queue_data.items = [item]
     ctrl._queue_data = {QUEUE_ID: queue_data}
     ctrl.mass = MagicMock()
+    ctrl.mass.players._needs_power_on = lambda player: player.offline_by_power_control
     ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     # a MagicMock satisfies `async with` but serializes nothing, so the tests that care about
     # overlapping presses ask for the real lock instead

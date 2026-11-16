@@ -134,7 +134,8 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
         the group that its playback goes to.
     :param starts_unless_playing: The action makes a queue that does not play start playing
         (a seek), so on such a queue it waits for the switched-off members of a group player
-        as well. A queue whose player itself is switched off is handled as switched_off says.
+        as well, and for a player whose device still boots after a power on that was called
+        off. A queue whose player itself is switched off is handled as switched_off says.
     """  # noqa: D401
 
     def decorator(
@@ -159,12 +160,8 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                 # the action takes the place of a step (next, previous) that has not played
                 # yet, from the moment it arrives
                 self._drop_pending_step(queue_id)
-            if (player := self.mass.players.get_player(queue_id)) is not None and (
-                # a start also waits again for a device that still boots after a power on
-                self.mass.players._needs_power_on(player)
-                if switched_off == SwitchedOffAction.POWER_ON
-                else player.offline_by_power_control
-            ):
+            player = self.mass.players.get_player(queue_id)
+            if player is not None and player.offline_by_power_control:
                 if switched_off == SwitchedOffAction.REFUSE:
                     msg = f"Player {player.name} is switched off"
                     raise PlayerUnavailableError(msg)
@@ -182,9 +179,14 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                     and queue_data.queue.state != PlaybackState.PLAYING
                 )
             ):
-                # the group player itself, or the group that the playback of a member goes to
-                target = self.mass.players._resolve_play_media_target(player)
-                if target.type == PlayerType.GROUP:
+                if self.mass.players._needs_power_on(player):
+                    # a start also waits again for a device that still boots after a power on
+                    await self.mass.players._power_on_switched_off_player(queue_id)
+                    queue_data = self._queue_data[queue_id]
+                elif (
+                    target := self.mass.players._resolve_play_media_target(player)
+                ).type == PlayerType.GROUP:
+                    # the group player itself, or the group that the playback of a member goes to
                     await self.mass.players._power_on_members(target)
             queue = queue_data.queue
             # a play action on the queue of a player captured by a (sync)group releases the

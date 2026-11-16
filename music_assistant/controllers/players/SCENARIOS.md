@@ -423,13 +423,16 @@ unavailable, with an AirPlay receiver that never noticed the cut as available an
 user starts Den again before the device is back: play media, a resume, a play, a transfer of the
 queue of Kitchen, or, with the receiver, a selection of Den's HDMI input. That waits for Den's Sonos protocol and holds
 no lock meanwhile, the plug is not switched a second time, and Den plays through its Sonos
-protocol once that is back, as a group does for such a member (GROUP-33).
+protocol once that is back, as a group does for such a member (GROUP-33). A seek or a skip in the
+item of its queue does the same: it holds no lock while it waits, so a stop of the queue sent
+meanwhile returns at once and calls it off.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
 - Proven by:
   - `test_power_control.py::test_a_play_after_a_stop_waits_again_for_a_speaker_that_still_boots`
   - `test_power_control.py::test_a_source_selected_after_a_stop_waits_again_for_a_speaker_that_still_boots`
+  - `test_power_control.py::test_a_seek_after_a_stop_waits_for_a_speaker_that_still_boots_without_a_lock`
 
 ### AWAY-25 · A speaker whose own protocol is detached is off until that protocol is back
 

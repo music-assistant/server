@@ -135,6 +135,20 @@ def _start(
     return scenario.mass.players.cmd_play(player_id)
 
 
+def _seek(scenario: Scenario, player_id: str, command: str) -> Coroutine[Any, Any, None]:
+    """
+    Return a request that moves 10 s into the current item of a player, which may wait.
+
+    :param command: ``"queue seek"`` and ``"players cmd_seek"`` seek to 10 s, ``"queue skip"``
+        skips 10 s ahead.
+    """
+    if command == "queue seek":
+        return scenario.mass.player_queues.seek(player_id, 10)
+    if command == "queue skip":
+        return scenario.mass.player_queues.skip(player_id, 10)
+    return scenario.mass.players.cmd_seek(player_id, 10)
+
+
 @pytest.mark.parametrize("receiver", ["never noticed the cut", "is back first"])
 async def test_a_speaker_is_off_and_back_when_its_own_protocol_says_so(
     scenario: Scenario, receiver: str
@@ -288,6 +302,59 @@ async def test_a_play_after_a_stop_waits_again_for_a_speaker_that_still_boots(
 
     assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
     assert [_starts(speaker) for speaker in speakers] == [2] + [0] * (len(speakers) - 1)
+    assert plug.commands == [True]
+    await _stop(scenario, player_id)
+
+
+@pytest.mark.parametrize("command", ["queue seek", "queue skip", "players cmd_seek"])
+async def test_a_seek_after_a_stop_waits_for_a_speaker_that_still_boots_without_a_lock(
+    scenario: Scenario, command: str
+) -> None:
+    """
+    A seek or a skip on a speaker that still boots after a stop waits for it, holding no lock.
+
+    As in AWAY-24, Den played a track, its plug was cut, a play switched the plug on and a stop
+    called that off, so the device still boots while its AirPlay receiver reads available. A
+    seek (or a skip) in the item waits for Den's Sonos protocol and holds no lock meanwhile: a
+    stop of the queue sent then returns at once and calls it off. A seek after that waits again,
+    and Den plays through its Sonos protocol once that is back. The plug is switched once.
+    """
+    (den, den_airplay), plug, player_id = await _den(
+        scenario, ("sonos", "native"), ("airplay", "audio")
+    )
+    await scenario.play(player_id)
+    await _stop(scenario, player_id)
+    await _cut(scenario, plug, den)
+    play = await _play(scenario, player_id)
+    await _stop(scenario, player_id)
+    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+        await play
+
+    seek = await scenario.command(_seek(scenario, player_id, command))
+
+    assert not seek.done(), seek.exception()
+    assert not any(
+        lock.locked() for lock in scenario.mass.players._player_command_locks.values()
+    ), "the seek waits for the device while it holds a player lock"
+    stop = await scenario.command(scenario.mass.player_queues.stop(player_id))
+    await scenario.advance(1)
+    assert stop.done(), "the stop waits for the lock the seek holds"
+    await stop
+    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+        await seek
+
+    seek = await scenario.command(_seek(scenario, player_id, command))
+
+    assert not seek.done(), seek.exception()
+    await scenario.advance(10)
+    assert not seek.done(), seek.exception()
+    assert (_starts(den), _starts(den_airplay)) == (1, 0)
+    await _reach(scenario, den)
+    await seek
+    await scenario.idle()
+
+    assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
+    assert (_starts(den), _starts(den_airplay)) == (2, 0)
     assert plug.commands == [True]
     await _stop(scenario, player_id)
 
