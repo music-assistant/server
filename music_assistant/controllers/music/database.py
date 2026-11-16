@@ -173,11 +173,13 @@ class MusicDatabaseSetupMixin:
             )
             await self.mass.music.database.delete_where_query(DB_TABLE_FAVORITES, query)
         # Bookmarks of an audiobook copy, or of an episode of a podcast copy, that is no longer
-        # in the library; episodes have no mappings of their own
+        # in the library; episodes have no mappings of their own, and a mapping kept for a
+        # dislike or for metadata only is not in the library
         await self.database.delete_where_query(
             DB_TABLE_BOOKMARKS,
             f"NOT EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} AS pm "
             f"WHERE pm.provider_instance = {DB_TABLE_BOOKMARKS}.provider_instance "
+            "AND pm.in_library = 1 "
             f"AND ((pm.media_type = {DB_TABLE_BOOKMARKS}.media_type "
             f"AND pm.provider_item_id = {DB_TABLE_BOOKMARKS}.provider_item_id) "
             f"OR (pm.media_type = '{self.podcasts.media_type}' "
