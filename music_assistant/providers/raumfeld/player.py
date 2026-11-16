@@ -1671,7 +1671,7 @@ class RaumfeldPlayer(PlayerProtocol):
         Wait until the given rooms' own renderers play, for at most JOIN_SETTLE_TIME.
 
         The wait ends early when a room shows it cannot hook into the running stream.
-        Return the protocol ids of the rooms that showed that.
+        Return the protocol ids of the rooms that showed that or did not play in time.
 
         :param protocol_ids: The protocol ids of the rooms to wait for.
         """
@@ -1713,7 +1713,12 @@ class RaumfeldPlayer(PlayerProtocol):
                             waiting.discard(url)
                             stuck.add(rooms_by_url[url])
         except TimeoutError:
+            # A room that cannot keep up keeps trying, and between its tries it reports
+            # TRANSITIONING for seconds (measured on a 2nd generation Stereo M at 192 kHz:
+            # first underrun 5.7 s after the join), while a room that hooks in plays within
+            # a few seconds. A room still not playing now is taken as one that cannot.
             self.logger.debug("Rooms that joined %s did not report playing in time", self.room)
+            stuck.update(rooms_by_url[url] for url in waiting)
         return stuck
 
     async def _restart_for_group_rates(

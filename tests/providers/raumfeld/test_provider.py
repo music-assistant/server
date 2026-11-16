@@ -2081,6 +2081,31 @@ async def test_the_wait_reports_the_room_that_cannot_hook_in() -> None:
     assert stuck == {"raumfeld_sofa"}
 
 
+async def test_a_room_still_not_playing_after_the_wait_counts_as_stuck() -> None:
+    """A room that is still hooking in when the wait ends gets the restart as well."""
+    bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    rooms = {"raumfeld_sofa": _player("Sofa"), "raumfeld_kitchen": _player("Kitchen")}
+    for room in rooms.values():
+        room._provider = bar.provider
+    states = {
+        "http://sofa/ctrl": {"TransportState": "TRANSITIONING", "TransportStatus": "OK"},
+        "http://kitchen/ctrl": {"TransportState": "PLAYING", "TransportStatus": "OK"},
+    }
+    with (
+        patch.object(bar.mass.players, "get_protocol", side_effect=rooms.get),
+        patch.object(
+            bar.raumfeld,
+            "room_transport_url",
+            side_effect=lambda room: f"http://{room.lower()}/ctrl",
+        ),
+        patch("music_assistant.providers.raumfeld.player.JOIN_SETTLE_INTERVAL", 0.01),
+        patch("music_assistant.providers.raumfeld.player.JOIN_SETTLE_TIME", 0.05),
+        patch.object(bar, "_read_room_state", AsyncMock(side_effect=states.get)),
+    ):
+        stuck = await bar._wait_for_rooms_playing(list(rooms))
+    assert stuck == {"raumfeld_sofa"}
+
+
 def test_restart_on_join_is_off_by_default() -> None:
     """Only a user who hears the offset of a joining room switches the restart on."""
     entry = next(e for e in PLAYER_CONFIG_ENTRIES if e.key == CONF_RESTART_ON_JOIN)
