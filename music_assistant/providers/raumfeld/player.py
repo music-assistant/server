@@ -55,7 +55,7 @@ from .helpers import (
 from .upnp import SERVICE_AV_TRANSPORT, SERVICE_RENDERING_CONTROL, get_action
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Callable, Coroutine, Iterable
     from typing import Any, Concatenate
 
     from async_upnp_client.client import UpnpAction
@@ -206,6 +206,19 @@ def _near_track_end(pos: dict[str, str]) -> bool:
     return not duration or elapsed >= duration - NEAR_END_WINDOW
 
 
+def _newest_generations(rooms: Iterable[tuple[str, int]]) -> dict[str, int]:
+    """
+    Return each room with the newest playback generation it is listed with.
+
+    :param rooms: Pairs of a room's protocol id and the generation of a stream it joined.
+    """
+    # a room that joined more than once counts with the newest stream it joined
+    newest: dict[str, int] = {}
+    for pid, generation in rooms:
+        newest[pid] = max(generation, newest.get(pid, generation))
+    return newest
+
+
 class RaumfeldPlayer(PlayerProtocol):
     """A single Raumfeld room, exposed to Music Assistant as a player."""
 
@@ -241,6 +254,8 @@ class RaumfeldPlayer(PlayerProtocol):
     # generation of the stream each one joined (see _check_join); replaced, never changed
     _joins_settling = 0
     _rooms_to_restart_for: tuple[tuple[str, int], ...] = ()
+    # the rooms among those that could not hook into the stream they joined
+    _rooms_stuck: tuple[tuple[str, int], ...] = ()
     # until when a stop is taken as MA ending this room's queue during a handover
     _handover_until = 0.0
     # what a zone source was playing when it was stopped, to start it again later:
@@ -1623,12 +1638,11 @@ class RaumfeldPlayer(PlayerProtocol):
         """
         Restart the stream for rooms that joined, once they play, if it has to or is asked to.
 
+        A room that cannot hook into the running stream gets the restart in any case.
+
         :param joined: The protocol ids of the rooms that joined.
         """
         if self._stream_rates is None:
-            return
-        rates_fit = set(self._stream_rates) <= set(self.get_supported_sample_rates())
-        if rates_fit and not self._group_restarts_on_join():
             return
         # the stream the rooms joined; a restart or seek meanwhile replaces it
         generation = self._playback_generation
@@ -1637,37 +1651,40 @@ class RaumfeldPlayer(PlayerProtocol):
         self._joins_settling += 1
         try:
             # a restart while the host still hooks the rooms in drops them for a while
-            await self._wait_for_rooms_playing(joined)
+            stuck = await self._wait_for_rooms_playing(joined)
         finally:
             self._joins_settling -= 1
         self._rooms_to_restart_for += tuple((pid, generation) for pid in joined)
+        self._rooms_stuck += tuple((pid, generation) for pid in joined if pid in stuck)
         if self._joins_settling:
             # rooms of another join are still being hooked in; that join's check restarts
             # once they play, for these rooms as well
             return
         rooms_joined, self._rooms_to_restart_for = self._rooms_to_restart_for, ()
-        # a room that joined more than once counts with the newest stream it joined
-        newest: dict[str, int] = {}
-        for pid, joined_generation in rooms_joined:
-            newest[pid] = max(joined_generation, newest.get(pid, joined_generation))
-        await self._restart_for_group_rates(joined=newest)
+        rooms_stuck, self._rooms_stuck = self._rooms_stuck, ()
+        await self._restart_for_group_rates(
+            joined=_newest_generations(rooms_joined), stuck=_newest_generations(rooms_stuck)
+        )
 
-    async def _wait_for_rooms_playing(self, protocol_ids: list[str]) -> None:
+    async def _wait_for_rooms_playing(self, protocol_ids: list[str]) -> set[str]:
         """
         Wait until the given rooms' own renderers play, for at most JOIN_SETTLE_TIME.
 
         The wait ends early when a room shows it cannot hook into the running stream.
+        Return the protocol ids of the rooms that showed that.
 
         :param protocol_ids: The protocol ids of the rooms to wait for.
         """
-        waiting = {
-            url
+        rooms_by_url = {
+            url: pid
             for pid in protocol_ids
             if isinstance(room := self.provider.get_protocol(pid), RaumfeldPlayer)
             and (url := self.raumfeld.room_transport_url(room.room)) is not None
         }
+        waiting = set(rooms_by_url)
+        stuck: set[str] = set()
         if not waiting:
-            return
+            return stuck
         try:
             # one budget for all of it, so slow reads cannot stretch it
             async with asyncio.timeout(JOIN_SETTLE_TIME):
@@ -1694,15 +1711,20 @@ class RaumfeldPlayer(PlayerProtocol):
                             )
                             # the other rooms that joined may still be hooking in
                             waiting.discard(url)
+                            stuck.add(rooms_by_url[url])
         except TimeoutError:
             self.logger.debug("Rooms that joined %s did not report playing in time", self.room)
+        return stuck
 
-    async def _restart_for_group_rates(self, joined: dict[str, int] | None = None) -> None:
+    async def _restart_for_group_rates(
+        self, joined: dict[str, int] | None = None, stuck: dict[str, int] | None = None
+    ) -> None:
         """
         Restart this room's queue where it is, if a room that joined cannot play its stream.
 
         :param joined: The protocol ids of the rooms that joined, with the playback generation
             of the stream each one joined, if known.
+        :param stuck: The rooms among ``joined`` that could not hook into that stream.
         """
         # the host pulls a joining room into the running stream as it is; a room that
         # cannot play its format drops out after a moment (measured). The stream can be at
@@ -1719,14 +1741,17 @@ class RaumfeldPlayer(PlayerProtocol):
                     # a room joined while this waited for the lock and is still being hooked
                     # in; that join's check restarts once it plays, for these rooms as well
                     self._rooms_to_restart_for += tuple(joined.items())
+                    self._rooms_stuck += tuple((stuck or {}).items())
                     return
                 if not (self.leads_group and self.plays_own_queue):
                     return
                 if self._stream_rates is None:
                     return
                 rates_fit = set(self._stream_rates) <= set(self.get_supported_sample_rates())
-                # a room that joins hooks in a little behind the others; a restart aligns them
-                if rates_fit and not self._group_restarts_on_join():
+                # a room that joins hooks in a little behind the others; a restart aligns them.
+                # Without that setting only a room that could not hook in at all needs one.
+                restarts_on_join = self._group_restarts_on_join()
+                if rates_fit and not restarts_on_join and not stuck:
                     return
                 if rates_fit and joined is not None:
                     # only a room still in the group that joined the stream playing now lags:
@@ -1734,7 +1759,7 @@ class RaumfeldPlayer(PlayerProtocol):
                     # a seek) joined that one with all the others at once
                     lagging = [
                         pid
-                        for pid, generation in joined.items()
+                        for pid, generation in (joined if restarts_on_join else stuck or {}).items()
                         if generation == self._playback_generation
                         and pid in self._attr_group_members
                     ]
