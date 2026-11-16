@@ -326,7 +326,7 @@
     },
     "power_control": {
       "label": "Power Control",
-      "description": "A Home Assistant entity chosen here, such as a smart plug, is also used to turn on this player when it is offline.",
+      "description": "A Home Assistant entity chosen here, such as a smart plug, is used to turn this player on and off. To also turn the player on while it is offline, tell Music Assistant below that this control cuts the power of the player.",
       "options": {
         "native": "Native power control",
         "none": "None",

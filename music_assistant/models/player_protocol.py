@@ -1091,6 +1091,32 @@ class PlayerProtocol(ABC):
         """
         return
 
+    async def on_power_cut(self) -> None:
+        """
+        Handle the power of the device being cut at its external power control.
+
+        Called for a player whose power control (a smart plug) is set to cut the power of
+        the player itself: once that control has read off for a while, or right after a
+        power off through it. The device is gone, so drop what the protocol holds of it,
+        stop trying to reach it and read unavailable. Override this when the provider
+        would otherwise keep a dead connection, or read available for long.
+        """
+        return
+
+    async def on_power_restored(self) -> None:
+        """
+        Handle the power of the device being back, once its start-up time is over.
+
+        Called when the start-up time of the player has passed since its power control
+        came on, also when on_power_cut was not called before that. Connect to the device
+        now, without relying on what the protocol still holds of it, and return once it is
+        reached or can not be: the players controller waits at most 10 seconds before the
+        playback that waited for the start-up goes to the protocols that read available.
+        Override this when the provider would otherwise only reach the device again on a
+        reconnect of its own, which can be minutes away.
+        """
+        return
+
     def on_external_source_ended(self) -> None:
         """
         Stop reporting the external source the device has loaded.

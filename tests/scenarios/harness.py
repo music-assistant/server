@@ -181,11 +181,12 @@ class FakeProtocol(PlayerProtocol):
         super().__init__(provider, protocol_id)
         # every command received, as a tuple of the command name and its arguments
         self.commands: list[tuple[Any, ...]] = []
-        # whether its device answers a check (check_device), None for a protocol that can not
-        # check; a test sets it as the power of the device changes
-        self.device_answers: bool | None = None
-        # the clock time of every check of its device the server asked for
-        self.device_checks: list[float] = []
+        # every time the server told that the power of the device was cut ("cut") or is back
+        # ("restored"), with the clock time
+        self.power_reports: list[tuple[str, float]] = []
+        # whether the protocol reaches its device once it is told that the power is back, as
+        # one does that only reconnects by itself minutes later; a test sets it
+        self.connects_when_power_is_back = False
         # whether the protocol exists only while attached, like a browser session
         self._attr_session_only = device.session_only
         self._device = device
@@ -212,13 +213,16 @@ class FakeProtocol(PlayerProtocol):
             ),
         ]
 
-    async def check_device(self) -> bool | None:
-        """Check the device: it reads available as it answers (device_answers)."""
-        self.device_checks.append(self.mass.loop.time())
-        if self.device_answers is not None:
-            self._set_reported(available=self.device_answers)
+    async def on_power_cut(self) -> None:
+        """Record that the power of the device was cut."""
+        self.power_reports.append(("cut", self.mass.loop.time()))
+
+    async def on_power_restored(self) -> None:
+        """Record that the power of the device is back, and reach it when set to."""
+        self.power_reports.append(("restored", self.mass.loop.time()))
+        if self.connects_when_power_is_back:
+            self._set_reported(available=True)
             self.update_state()
-        return self.device_answers
 
     async def power(self, powered: bool) -> None:
         """Handle a power command."""

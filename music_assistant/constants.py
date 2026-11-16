@@ -504,15 +504,15 @@ CONF_ENTRY_POWER_CONTROL_CUTS_POWER = ConfigEntry(
 )
 
 # The start-up time (in seconds) of a player whose power control cuts its power: what a
-# player gets unless the user sets it, and the longest that can be set.
+# player gets unless the user sets it, and the shortest and longest that can be set.
 DEFAULT_POWER_ON_STARTUP_TIME: Final[int] = 30
-MAX_POWER_ON_STARTUP_TIME: Final[int] = 300
+POWER_ON_STARTUP_TIME_RANGE: Final[tuple[int, int]] = (5, 300)
 
 CONF_ENTRY_POWER_ON_STARTUP_TIME = ConfigEntry(
     key=CONF_POWER_ON_STARTUP_TIME,
     type=ConfigEntryType.INTEGER,
     default_value=DEFAULT_POWER_ON_STARTUP_TIME,
-    range=(5, MAX_POWER_ON_STARTUP_TIME),
+    range=POWER_ON_STARTUP_TIME_RANGE,
     depends_on=CONF_POWER_CONTROL_CUTS_POWER,
     category="player_controls",
     advanced=True,
@@ -1026,7 +1026,6 @@ ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
 ATTR_IDLE_SINCE: Final[str] = "idle_since"
-ATTR_POWER_ON_DEADLINE: Final[str] = "power_on_deadline"
 
 # Album type detection patterns
 LIVE_INDICATORS = [

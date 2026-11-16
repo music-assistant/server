@@ -45,6 +45,7 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_POWER_CONTROL,
+    CONF_POWER_CONTROL_CUTS_POWER,
     CONF_REQUIRES_FIXED_CONTENT_LENGTH,
 )
 from music_assistant.controllers.player_queues.helpers import handle_play_action
@@ -204,8 +205,9 @@ def _switched_off_member(mass: MagicMock, player_id: str) -> Player:
         supports_power=True,
         power_state=False,
     )
+    on_the_plug = {CONF_POWER_CONTROL: plug.id, CONF_POWER_CONTROL_CUTS_POWER: True}
     mass.config.get_player_value.side_effect = lambda member_id, key, default=None: (
-        plug.id if (member_id, key) == (player_id, CONF_POWER_CONTROL) else default
+        on_the_plug.get(key, default) if member_id == player_id else default
     )
     mass.players.get_player_control.side_effect = {plug.id: plug}.get
     member._cache.clear()

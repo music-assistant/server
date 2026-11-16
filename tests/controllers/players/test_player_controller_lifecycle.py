@@ -16,8 +16,14 @@ from music_assistant_models.enums import (
     PlayerType,
 )
 
-from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAYER_PROTOCOLS, CONF_PLAYERS
+from music_assistant.constants import (
+    CONF_GROUP_MEMBERS,
+    CONF_PLAYER_PROTOCOLS,
+    CONF_PLAYERS,
+    DEFAULT_POWER_ON_STARTUP_TIME,
+)
 from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.controllers.players.power import EXTERNAL_POWER_OFF_STOP_DELAY
 from tests.scenarios.harness import FAKE_SETTING, Event, FakeProtocol, Scenario
 
 if TYPE_CHECKING:
@@ -712,20 +718,26 @@ class TestGroupMemberships:
 
 
 class TestPowerOnOfAReturningDevice:
-    """A device that is switched on at its power control is played to once it is back."""
+    """A device that is switched on at its power control is played to once it started up."""
 
     async def test_power_on_returns_once_the_returning_protocol_finished_its_attach(
         self, scenario: Scenario
     ) -> None:
-        """A protocol that is still setting up the returning device is not played to yet."""
+        """
+        A protocol that is still setting up the returning device is not played to yet.
+
+        The power on waits for it for a moment after the start-up time of the player.
+        """
         squeezelite = await scenario.add_provider("squeezelite")
         pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=KITCHEN)
         await scenario.register(pi)
         player_id = scenario.single_player(pi).player_id
         plug = await scenario.add_power_control("switch.plug", "Plug", powered=True)
         await scenario.configure_player(player_id, power_control=plug.control_id)
+        await scenario.configure_player(player_id, power_control_cuts_power=True)
         await scenario.switch(plug, False)
         await scenario.unregister(pi)
+        await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY)
         await scenario.idle()
         players = scenario.mass.players
         release = asyncio.Event()
@@ -740,8 +752,7 @@ class TestPowerOnOfAReturningDevice:
         power_on = await scenario.command(players.cmd_power(player_id, True))
         assert plug.commands == [True]
         attach = await scenario.command(players.register(pi))
-        # the power on looks for the device every 0.5 s
-        await scenario.advance(1)
+        await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME + 1)
 
         assert not power_on.done()
 
