@@ -412,6 +412,7 @@ class MediaResolver:
                     fully_played,
                     resume_position_ms,
                 ) = await self.mass.music.get_resume_position(resolved_episode, userid=userid)
+                resolved_episode.fully_played = fully_played
                 resolved_episode.resume_position_ms = 0 if fully_played else resume_position_ms
         elif isinstance(episode, str):
             resolved_episode = next(
@@ -423,6 +424,7 @@ class MediaResolver:
                     fully_played,
                     resume_position_ms,
                 ) = await self.mass.music.get_resume_position(resolved_episode, userid=userid)
+                resolved_episode.fully_played = fully_played
                 resolved_episode.resume_position_ms = 0 if fully_played else resume_position_ms
         else:
             # get first episode that is not fully played
@@ -635,6 +637,7 @@ class MediaResolver:
             )
             if fully_played:
                 continue
+            candidate.fully_played = False
             candidate.resume_position_ms = resume_position_ms
             return candidate
         return None
@@ -690,7 +693,7 @@ class MediaResolver:
                 tracks.extend(result)
         return tracks
 
-    async def _resolve_media_items(
+    async def _resolve_media_items(  # noqa: PLR0915
         self,
         media_item: MediaItemType | ItemMapping | BrowseFolder,
         start_item: str | None = None,
@@ -755,6 +758,8 @@ class MediaResolver:
             return list(genre_tracks)
         if media_item.media_type == MediaType.AUDIOBOOK:
             media_item = cast("Audiobook", media_item)
+            # the resume point set below already starts a finished book over
+            media_item.fully_played = False
             # ensure we grab the correct/latest resume point info
             media_item.resume_position_ms = await self.get_audiobook_resume_point(
                 media_item, start_item, userid=userid
@@ -778,6 +783,7 @@ class MediaResolver:
                     item, userid=userid
                 )
                 if not fully_played:
+                    item.fully_played = False
                     item.resume_position_ms = resume_position_ms
                     book = item
                     break

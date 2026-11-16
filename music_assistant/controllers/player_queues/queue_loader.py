@@ -453,6 +453,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
     async def _get_resume_position(self, queue_item: QueueItem) -> int:
         """Return the position (in seconds) to resume an audiobook/episode from, 0 to start over."""
+        if getattr(queue_item.media_item, "fully_played", False):
+            return 0
         if not (resume_position_ms := getattr(queue_item.media_item, "resume_position_ms", 0)):
             return 0
         # the client may have fetched the item before its duration was known
