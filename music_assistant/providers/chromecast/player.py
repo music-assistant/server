@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
@@ -70,10 +69,6 @@ if TYPE_CHECKING:
     from pychromecast.socket_client import ConnectionStatus
 
     from .provider import ChromecastProvider
-
-# takes what a client that is stopped on purpose still logs
-_STOPPED_CLIENT_LOGGER = logging.getLogger(f"{__name__}.stopped_client")
-_STOPPED_CLIENT_LOGGER.disabled = True
 
 
 class ChromecastPlayer(PlayerProtocol):
@@ -997,20 +992,6 @@ class ChromecastPlayer(PlayerProtocol):
         for handler in self._client_handlers:
             self.cc.register_handler(handler)
         self.cc.start()
-
-    def _replace_client(self) -> None:
-        """Stop the client of the device and start a new one, which connects at once."""
-        old_client = self.cc
-        if self.status_listener is not None:
-            self.status_listener.invalidate()
-        # off the old client before it stops, which would tear its controllers down
-        for handler in (self.mz_controller, self.command_controller, *self._client_handlers):
-            if handler is not None:
-                old_client.unregister_handler(handler)
-        # its worker logs the end of a connect that was stopped as an error
-        old_client.socket_client.logger.logger = _STOPPED_CLIENT_LOGGER
-        disconnect_cast(old_client, 0)
-        self._start_client()
 
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""
