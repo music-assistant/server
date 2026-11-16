@@ -284,11 +284,18 @@ class PowerMixin(_PlayerControllerBase):
         """
         Take the power of a player as cut, unless its power control came on again meanwhile.
 
+        Neither when that control no longer cuts the power of the player: the setting or
+        the power control of the player changed, or the control is gone.
+
         :param player_id: The player whose power control reported off a while ago.
         """
         player = self._players.get(player_id)
-        if player is not None and self._power_cuts.get(player_id) is False:
+        if player is None or self._power_cuts.get(player_id) is not False:
+            return
+        if player.offline_by_power_control:
             self._confirm_power_cut(player)
+        else:
+            del self._power_cuts[player_id]
 
     def _confirm_power_cut(self, player: Player) -> None:
         """
@@ -307,11 +314,13 @@ class PowerMixin(_PlayerControllerBase):
 
     def _drop_power_state(self, player: Player) -> None:
         """
-        Forget what is kept about the power of a player that goes away.
+        Forget what is kept about the power of a player.
 
-        The commands that wait for it to start up fail as switched off.
+        For a player that goes away, or whose power control or the setting that says it
+        cuts the power of the player changed: what was kept belongs to the control it had.
+        Its start-up time ends, and the commands that wait for it fail as switched off.
 
-        :param player: The player that is taken out of the registry.
+        :param player: The player.
         """
         self._end_startup(player, called_off=True)
         self._power_cuts.pop(player.player_id, None)
@@ -618,7 +627,8 @@ class PowerMixin(_PlayerControllerBase):
         if wait.called_off or player.offline_by_power_control:
             msg = f"Player {player.name} is switched off"
             raise _PowerOnCalledOff(msg)
-        if not player.available_for_playback:
+        # a protocol that is still attaching may not be played to yet
+        if not player.available_for_playback or self._is_attaching(player):
             seconds = self._get_startup_time(player)
             msg = f"Player {player.name} could not be reached {seconds}s after it was switched on"
             raise PlayerUnavailableError(
@@ -662,8 +672,7 @@ class PowerMixin(_PlayerControllerBase):
         await self._tell_protocols(player, power_is_back=True)
         with suppress(TimeoutError):
             async with asyncio.timeout_at(deadline):
-                # a protocol that is still attaching may not be played to yet
-                while not self._attaching.keys().isdisjoint(player.attached_protocols):
+                while self._is_attaching(player):
                     await asyncio.sleep(0.1)
         self._end_startup(player, called_off=False)
         player.refresh_state()
@@ -716,6 +725,14 @@ class PowerMixin(_PlayerControllerBase):
         if (wait := self._power_on_waits.pop(player.player_id, None)) is not None:
             wait.called_off = called_off
             wait.over.set()
+
+    def _is_attaching(self, player: Player) -> bool:
+        """
+        Return whether a protocol of a player is still attaching, so it may not be played to yet.
+
+        :param player: The player.
+        """
+        return not self._attaching.keys().isdisjoint(player.attached_protocols)
 
     def _get_startup_time(self, player: Player) -> int:
         """

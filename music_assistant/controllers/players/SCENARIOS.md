@@ -416,6 +416,22 @@ before a play starts.
 - End-to-end: **possible with** a power control the lab can switch while the server is down.
 - Proven by: `test_power_control.py::test_a_server_start_takes_a_plug_that_is_off_as_a_power_cut`
 
+### AWAY-32 · A change of the power setting ends what was kept about the power of the speaker
+
+Den's plug, which cuts its power, is switched off. Five seconds later, before its power counts as
+cut, the user switches the setting off, sets Den's power control to none or picks another plug
+that is on, or the plug goes with its provider: Den's protocols are not told that its power was
+cut, and a cut at the other plug counts from the moment that plug goes off. The same change while
+Den starts up for a play ends that play as switched off and leaves nothing of the start-up: with
+the setting off a new play starts at once, and with another plug, which is off, a new play
+switches that plug on and waits for a whole start-up time.
+
+- End-to-end: **possible with** two power controls the lab can switch and a change of the player
+  settings within the first seconds after the power is cut.
+- Proven by:
+  - `test_power_control.py::test_a_plug_that_no_longer_cuts_the_power_of_a_speaker_confirms_no_power_cut`
+  - `test_power_control.py::test_a_change_of_the_power_setting_during_the_startup_ends_the_play_that_waits`
+
 ## Several devices on one host
 
 One host, such as a Raspberry Pi, can run several players behind one MAC and one IP address.

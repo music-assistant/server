@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerUnavailableError
 
@@ -511,6 +512,111 @@ async def test_a_plug_switched_off_during_the_startup_ends_the_play_that_waits(
     await scenario.advance(2)
     await play
     await scenario.idle()
+    assert plug.commands == [True]
+    await _stop(scenario, player_id)
+
+
+CHANGES = [
+    "the setting is switched off",
+    "the power control is set to none",
+    "another plug that is on is picked",
+    "the plug goes with its provider",
+]
+
+
+@pytest.mark.parametrize("change", CHANGES)
+async def test_a_plug_that_no_longer_cuts_the_power_of_a_speaker_confirms_no_power_cut(
+    scenario: Scenario, change: str
+) -> None:
+    """
+    A plug that reads off confirms no power cut once it is not the plug that cuts the power.
+
+    Den's plug, which cuts its power, is switched off. Five seconds later, before its power
+    counts as cut, the user switches the setting off, sets the power control of Den to none
+    or picks another plug, which is on, or the plug goes with its provider. Den's protocols
+    are not told that its power was cut. When the other plug is switched off after that,
+    they are told 15 s after that plug went off.
+
+    :param change: What happens before the power counts as cut.
+    """
+    (den, den_airplay), plug, player_id = await _den(
+        scenario, ("sonos", "native"), ("airplay", "audio")
+    )
+    await scenario.switch(plug, False)
+    await scenario.advance(5)
+
+    other_plug_off_at = None
+    if change == "the setting is switched off":
+        await scenario.configure_player(player_id, power_control_cuts_power=False)
+    elif change == "the power control is set to none":
+        await scenario.configure_player(player_id, power_control=PLAYER_CONTROL_NONE)
+    elif change == "another plug that is on is picked":
+        other_plug = await scenario.add_power_control("switch.other", "Other plug", powered=True)
+        await scenario.configure_player(player_id, power_control=other_plug.control_id)
+        await scenario.advance(3)
+        other_plug_off_at = scenario.mass.loop.time()
+        await scenario.switch(other_plug, False)
+    else:
+        scenario.mass.players.remove_player_control(plug.control_id)
+        await scenario.settle()
+    await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY - 4)
+
+    assert den.power_reports == den_airplay.power_reports == []
+    await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY)
+    if other_plug_off_at is None:
+        assert den.power_reports == den_airplay.power_reports == []
+    else:
+        told_at = other_plug_off_at + EXTERNAL_POWER_OFF_STOP_DELAY
+        assert den.power_reports == den_airplay.power_reports == [("cut", told_at)]
+    await scenario.idle()
+
+
+@pytest.mark.parametrize("change", ["the setting is switched off", "another plug is picked"])
+async def test_a_change_of_the_power_setting_during_the_startup_ends_the_play_that_waits(
+    scenario: Scenario, change: str
+) -> None:
+    """
+    A change of the power setting while a speaker starts up ends the play that waits.
+
+    Den's plug, which cuts its power, is off. A play switches it on and waits for the
+    start-up time. The user switches the setting off, or picks another plug, which is off:
+    the play fails as switched off, and nothing is left of the start-up. With the setting
+    off, Den is a speaker on a plain switch that is on: a new play starts at once. With the
+    other plug, a new play switches that plug on and waits for a whole start-up time.
+
+    :param change: What the user changes while Den starts up.
+    """
+    (den, den_airplay), plug, player_id = await _den(
+        scenario, ("sonos", "native"), ("airplay", "audio")
+    )
+    await _cut(scenario, plug, den, den_airplay)
+    play = await _play(scenario, player_id)
+    await scenario.advance(5)
+    await _reach(scenario, den, den_airplay)
+
+    other_plug = None
+    if change == "the setting is switched off":
+        await scenario.configure_player(player_id, power_control_cuts_power=False)
+    else:
+        other_plug = await scenario.add_power_control("switch.other", "Other plug")
+        await scenario.configure_player(player_id, power_control=other_plug.control_id)
+
+    assert play.done()
+    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+        await play
+    assert den.commands == den_airplay.commands == []
+    if other_plug is None:
+        await scenario.play(player_id)
+    else:
+        play = await _play(scenario, player_id)
+        assert other_plug.commands == [True]
+        await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME - 1)
+        assert not play.done(), play.exception()
+        assert den.commands == den_airplay.commands == []
+        await scenario.advance(2)
+        await play
+        await scenario.idle()
+    assert (_starts(den), _starts(den_airplay)) == (1, 0)
     assert plug.commands == [True]
     await _stop(scenario, player_id)
 

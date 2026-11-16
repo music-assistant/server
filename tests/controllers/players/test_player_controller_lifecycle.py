@@ -15,6 +15,8 @@ from music_assistant_models.enums import (
     IdentifierType,
     PlayerType,
 )
+from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
@@ -22,9 +24,18 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     DEFAULT_POWER_ON_STARTUP_TIME,
 )
-from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.controllers.players.constants import (
+    POWER_RESTORE_TIMEOUT,
+    PlayerLockPurpose,
+)
 from music_assistant.controllers.players.power import EXTERNAL_POWER_OFF_STOP_DELAY
-from tests.scenarios.harness import FAKE_SETTING, Event, FakeProtocol, Scenario
+from tests.scenarios.harness import (
+    FAKE_SETTING,
+    Event,
+    FakePowerControl,
+    FakeProtocol,
+    Scenario,
+)
 
 if TYPE_CHECKING:
     from music_assistant.models.player import Player
@@ -37,6 +48,7 @@ LIVING = {
     IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B0",
     IdentifierType.IP_ADDRESS: "192.168.1.21",
 }
+MEDIA = PlayerMedia(uri="http://ma.local/stream/track.flac")
 # the key of the allow-list of the group providers
 CONF_ALLOWED_MEMBERS = "allowed_members"
 LIFECYCLE_EVENTS = (
@@ -720,13 +732,14 @@ class TestGroupMemberships:
 class TestPowerOnOfAReturningDevice:
     """A device that is switched on at its power control is played to once it started up."""
 
-    async def test_power_on_returns_once_the_returning_protocol_finished_its_attach(
+    async def _returning_device(
         self, scenario: Scenario
-    ) -> None:
+    ) -> tuple[FakeProtocol, FakePowerControl, str, asyncio.Event]:
         """
-        A protocol that is still setting up the returning device is not played to yet.
+        Return a switched-off device whose protocol takes its time to attach when it is back.
 
-        The power on waits for it for a moment after the start-up time of the player.
+        :return: The protocol, the plug that cuts its power, the id of its player and the
+            event that lets the attach of the protocol finish.
         """
         squeezelite = await scenario.add_provider("squeezelite")
         pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=KITCHEN)
@@ -739,7 +752,6 @@ class TestPowerOnOfAReturningDevice:
         await scenario.unregister(pi)
         await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY)
         await scenario.idle()
-        players = scenario.mass.players
         release = asyncio.Event()
         on_attach = pi.on_attach
 
@@ -748,6 +760,18 @@ class TestPowerOnOfAReturningDevice:
             await on_attach(player)
 
         pi.on_attach = _attach_later  # type: ignore[method-assign]
+        return pi, plug, player_id, release
+
+    async def test_power_on_returns_once_the_returning_protocol_finished_its_attach(
+        self, scenario: Scenario
+    ) -> None:
+        """
+        A protocol that is still setting up the returning device is not played to yet.
+
+        The power on waits for it for a moment after the start-up time of the player.
+        """
+        pi, plug, player_id, release = await self._returning_device(scenario)
+        players = scenario.mass.players
 
         power_on = await scenario.command(players.cmd_power(player_id, True))
         assert plug.commands == [True]
@@ -764,3 +788,33 @@ class TestPowerOnOfAReturningDevice:
         state = scenario.player(player_id)
         assert state is not None
         assert state.powered is True
+
+    async def test_a_play_fails_when_the_returning_protocol_is_still_attaching_after_the_wait(
+        self, scenario: Scenario
+    ) -> None:
+        """
+        A protocol that still sets up the device when the wait for it is over is not played to.
+
+        The play that waited fails with the hint to raise the start-up time, and the player
+        plays once the protocol is attached.
+        """
+        pi, plug, player_id, release = await self._returning_device(scenario)
+        players = scenario.mass.players
+
+        play = await scenario.command(players.play_media(player_id, MEDIA))
+        assert plug.commands == [True]
+        attach = await scenario.command(players.register(pi))
+        await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME + POWER_RESTORE_TIMEOUT + 1)
+
+        assert play.done()
+        with pytest.raises(PlayerUnavailableError, match="could not be reached 30s after"):
+            await play
+        assert pi.commands == []
+
+        release.set()
+        await scenario.settle()
+        await attach
+        await players.play_media(player_id, MEDIA)
+        await scenario.settle()
+        assert pi.commands == [("play_media", MEDIA)]
+        assert plug.commands == [True]

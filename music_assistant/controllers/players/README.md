@@ -614,11 +614,14 @@ resume, play media and select source power it on first; stop and pause call off 
 way and otherwise do nothing; volume, mute and ungroup do nothing; power, play/pause and
 announcements handle it themselves; every other command is refused. A power on
 (`_power_on_switched_off_player`) switches the control on, unless the player starts up already,
-and waits for the rest of the start-up time. When no protocol can play by then, the command fails
-with the hint to raise the start-up time, and the player reads unavailable until a protocol
-reaches its device. A stop or a pause fails the commands that wait and leaves the control on: the
-start-up time runs on, and a later command waits for what is left of it. A power off fails them
-too, switches the control off and ends the start-up.
+and waits for the rest of the start-up time. When no protocol can play by then, or one is still
+attaching, the command fails with the hint to raise the start-up time, and the player reads
+unavailable until a protocol reaches its device. A stop or a pause fails the commands that wait
+and leaves the control on: the start-up time runs on, and a later command waits for what is left
+of it. A power off fails them too, switches the control off and ends the start-up. So does a
+change of the power control of the player, or of the setting that says it cuts its power: what
+the controller kept belongs to the control the player had (`_drop_power_state`), so a start-up
+time that runs ends, and a control that read off is no longer waited for to count as a cut.
 
 Such a player is the one case of a player that is available and can not play yet. Code outside the
 controller reads the published `available` of another player to decide whether that player may
