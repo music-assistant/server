@@ -12,14 +12,17 @@ from uuid import UUID
 import pytest
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
+from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
+from aiosendspin.models.types import AudioCodec, PlayerCommand
 from aiosendspin.noise.trust_store import PskCategory
-from music_assistant_models.enums import EventType, IdentifierType, ProtocolRole
+from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature, ProtocolRole
 from pychromecast.const import CAST_TYPE_AUDIO
 
 from music_assistant.providers.airplay.player import GenericAirPlayPlayer
 from music_assistant.providers.chromecast.helpers import ChromecastInfo
 from music_assistant.providers.chromecast.player import ChromecastPlayer
 from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
+from music_assistant.providers.sendspin.constants import DEFAULT_SENDSPIN_STATIC_DELAY
 from music_assistant.providers.sendspin.player import SendspinPlayer
 from music_assistant.providers.sendspin.provider import SendspinProvider
 
@@ -44,6 +47,10 @@ _CLIENT_CODE = (
     "register_bridge_identifiers",
     "register_bridge_underlying_protocol",
     "register_bridge_static_delay_default",
+    "hold_bridge_client",
+    "get_bridge_holder",
+    "release_bridge_client",
+    "refresh_bridge_client",
     "_begin_client_event",
     "_finish_client_event",
     "_is_current_client_event",
@@ -91,21 +98,37 @@ def _sendspin(scenario: Scenario) -> Any:
     provider._bridge_underlying_protocols = {}
     provider._bridge_static_delay_defaults = {}
     provider._bridge_player_types = {}
+    provider._bridge_holders = {}
     return provider
 
 
-def _hello(product_name: str) -> ClientHelloPayload:
+def _hello(product_name: str, commands: list[PlayerCommand] | None = None) -> ClientHelloPayload:
     """
     Return the hello of the bridge client.
 
     :param product_name: What it reports as product: the bridge's, or the Cast receiver app's.
+    :param commands: The volume controls the hello lists, as a bridge's does; None lists none.
     """
+    player_support = (
+        None
+        if commands is None
+        else ClientHelloPlayerSupport(
+            supported_formats=[
+                SupportedAudioFormat(
+                    codec=AudioCodec.PCM, channels=2, sample_rate=44100, bit_depth=16
+                )
+            ],
+            buffer_capacity=1_000,
+            supported_commands=commands,
+        )
+    )
     return ClientHelloPayload(
         client_id=BRIDGE_ID,
         name="Speaker A",
         version=1,
         supported_roles=["player@v1"],
         device_info=SendspinDeviceInfo(product_name=product_name, manufacturer="Acme"),
+        player_support=player_support,
     )
 
 
@@ -181,13 +204,19 @@ def _carrier(scenario: Scenario, domain: str) -> PlayerProtocol:
     )
 
 
-async def _set_up_bridge(scenario: Scenario, sendspin: Any, carrier: PlayerProtocol) -> None:
+async def _set_up_bridge(
+    scenario: Scenario,
+    sendspin: Any,
+    carrier: PlayerProtocol,
+    hello: ClientHelloPayload | None = None,
+) -> None:
     """
     Register the bridge of an attached protocol, as its bridge manager does.
 
     :param scenario: The running server.
     :param sendspin: The Sendspin provider.
     :param carrier: The protocol the bridge rides on.
+    :param hello: The hello the bridge registers with; a plain bridge hello when None.
     """
     identifier = (
         (IdentifierType.CAST_UUID, str(CAST_UUID))
@@ -196,7 +225,7 @@ async def _set_up_bridge(scenario: Scenario, sendspin: Any, carrier: PlayerProto
     )
     sendspin.register_bridge_identifiers(BRIDGE_ID, dict([identifier]))
     sendspin.register_bridge_underlying_protocol(BRIDGE_ID, carrier.protocol_id)
-    await _connect(scenario, sendspin, _hello("Speaker Bridge"))
+    await _connect(scenario, sendspin, hello or _hello("Speaker Bridge"))
 
 
 async def _claim(scenario: Scenario, sendspin: Any, carrier: PlayerProtocol) -> None:
@@ -249,12 +278,15 @@ def _assert_the_only_player(scenario: Scenario, player_id: str, *, available: bo
     assert dict(players[0].outputs)["sendspin"] is available
 
 
-async def _bridged_device(scenario: Scenario, domain: str) -> tuple[str, dict[str, Any]]:
+async def _bridged_device(
+    scenario: Scenario, domain: str, hello: ClientHelloPayload | None = None
+) -> tuple[str, dict[str, Any]]:
     """
     Set up a device with its bridge; return the id of its player and the records of both.
 
     :param scenario: The running server.
     :param domain: The domain of the protocol the bridge rides on.
+    :param hello: The hello the bridge registers with; a plain bridge hello when None.
     """
     await scenario.add_provider(domain)
     await scenario.add_provider("sendspin")
@@ -265,7 +297,7 @@ async def _bridged_device(scenario: Scenario, domain: str) -> tuple[str, dict[st
     assert carrier.player is not None
     player_id = carrier.player.player_id
     await scenario.configure_player(player_id, name="Kitchen")
-    await _set_up_bridge(scenario, sendspin, carrier)
+    await _set_up_bridge(scenario, sendspin, carrier, hello)
     assert carrier.player.get_role(BRIDGE_ID) == ProtocolRole.AUDIO
     records = {
         protocol_id: deepcopy(scenario.mass.config.get_protocol_record(protocol_id))
@@ -365,3 +397,124 @@ async def test_a_cast_device_claims_the_receiver_app_that_connected_before_it(
     other = (await scenario.add_provider("sonos")).protocol("RINCON_OTHER", "Speaker B")
     await _register_or_fail(scenario, other)
     assert scenario.player_of(other) is not None
+
+
+async def test_a_client_another_bridge_registered_rides_on_that_bridge_once_refreshed(
+    scenario: Scenario,
+) -> None:
+    """A client the AirPlay bridge registered again moves its output over to AirPlay."""
+    player_id, _records = await _bridged_device(scenario, "chromecast")
+    await scenario.add_provider("airplay")
+    airplay = _carrier(scenario, "airplay")
+    await scenario.mass.players.register(airplay)
+    await scenario.settle()
+    assert airplay.player is not None
+    assert airplay.player.player_id == player_id
+    # the provider _bridged_device prepared, with the client it connected
+    sendspin: Any = scenario.provider("sendspin")
+    scenario.mass.config.set_protocol_value(BRIDGE_ID, "static_delay", 120)
+    # an add of the client that started before the AirPlay bridge registered it
+    stale_add = sendspin._begin_client_event(BRIDGE_ID)
+    # the AirPlay bridge registers the same client id, which Sendspin reports no event for
+    sendspin.register_bridge_identifiers(BRIDGE_ID, {IdentifierType.AIRPLAY_ID: AIRPLAY_ID})
+    sendspin.register_bridge_underlying_protocol(BRIDGE_ID, AIRPLAY_ID)
+
+    sendspin.refresh_bridge_client(BRIDGE_ID)
+    await scenario.settle()
+
+    bridge = scenario.mass.players.get_protocol(BRIDGE_ID)
+    assert bridge is not None
+    assert bridge.underlying_protocol_id == AIRPLAY_ID
+    assert bridge.player is airplay.player
+    record = scenario.mass.config.get_protocol_record(BRIDGE_ID)
+    assert record is not None
+    assert record["values"]["underlying_player_id"] == AIRPLAY_ID
+    assert record["values"]["static_delay"] == 120
+
+    await sendspin._handle_client_added(BRIDGE_ID, stale_add)
+    await scenario.settle()
+
+    assert scenario.mass.players.get_protocol(BRIDGE_ID) is bridge, "the stale add replaced it"
+
+
+async def test_a_client_refreshed_twice_rides_on_the_bridge_that_holds_it(
+    scenario: Scenario,
+) -> None:
+    """A refresh that follows one still waiting to register leaves the output on the holder."""
+    await _bridged_device(scenario, "chromecast")
+    await scenario.add_provider("airplay")
+    airplay = _carrier(scenario, "airplay")
+    await scenario.mass.players.register(airplay)
+    await scenario.settle()
+    sendspin: Any = scenario.provider("sendspin")
+    # the AirPlay bridge registered the same client id and holds it from then on
+    sendspin.register_bridge_identifiers(BRIDGE_ID, {IdentifierType.AIRPLAY_ID: AIRPLAY_ID})
+    sendspin.register_bridge_underlying_protocol(BRIDGE_ID, AIRPLAY_ID)
+    sendspin.hold_bridge_client(BRIDGE_ID, AIRPLAY_ID)
+
+    async with scenario.mass.players._register_lock:
+        # the first refresh waits to register its protocol when the second one starts
+        sendspin.refresh_bridge_client(BRIDGE_ID)
+        sendspin.refresh_bridge_client(BRIDGE_ID)
+    await scenario.settle()
+
+    bridge = scenario.mass.players.get_protocol(BRIDGE_ID)
+    assert bridge is not None
+    assert bridge.underlying_protocol_id == AIRPLAY_ID
+    record = scenario.mass.config.get_protocol_record(BRIDGE_ID)
+    assert record is not None
+    assert record["values"]["underlying_player_id"] == AIRPLAY_ID
+
+
+@pytest.mark.parametrize(
+    "previous_commands",
+    [[], [PlayerCommand.VOLUME]],
+    ids=["after a Cast bridge", "after a squeezelite bridge"],
+)
+async def test_a_client_another_bridge_takes_over_gets_the_settings_of_that_bridge(
+    scenario: Scenario, previous_commands: list[PlayerCommand]
+) -> None:
+    """AirPlay holding a client another bridge registered has AirPlay's controls and delay."""
+    await _bridged_device(scenario, "chromecast", _hello("Speaker Bridge", previous_commands))
+    sendspin: Any = scenario.provider("sendspin")
+    # the Cast bridge sets the default delay of its speaker model
+    sendspin.register_bridge_static_delay_default(BRIDGE_ID, 330)
+    await scenario.add_provider("airplay")
+    airplay = _carrier(scenario, "airplay")
+    await scenario.mass.players.register(airplay)
+    await scenario.settle()
+    # the AirPlay bridge registers the same client id with its own hello and holds it
+    hello = _hello("Speaker Bridge", [PlayerCommand.VOLUME, PlayerCommand.MUTE])
+    sendspin.clients[BRIDGE_ID].info = sendspin.clients[BRIDGE_ID].info_or_none = hello
+    sendspin.register_bridge_identifiers(BRIDGE_ID, {IdentifierType.AIRPLAY_ID: AIRPLAY_ID})
+    sendspin.register_bridge_underlying_protocol(BRIDGE_ID, AIRPLAY_ID)
+    sendspin.hold_bridge_client(BRIDGE_ID, AIRPLAY_ID)
+
+    sendspin.refresh_bridge_client(BRIDGE_ID)
+    await scenario.settle()
+
+    bridge = scenario.mass.players.get_protocol(BRIDGE_ID)
+    assert isinstance(bridge, SendspinPlayer)
+    assert bridge.underlying_protocol_id == AIRPLAY_ID
+    assert {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE} <= bridge.supported_features
+    assert bridge.static_delay_default_ms == DEFAULT_SENDSPIN_STATIC_DELAY
+
+
+async def test_a_client_added_again_on_the_same_bridge_keeps_its_first_settings(
+    scenario: Scenario,
+) -> None:
+    """The controls and default delay of a Cast bridge outlast a new hello on its client."""
+    await _bridged_device(scenario, "chromecast", _hello("Speaker Bridge", []))
+    sendspin: Any = scenario.provider("sendspin")
+    sendspin.register_bridge_static_delay_default(BRIDGE_ID, 330)
+    hello = _hello("Sendspin Cast Receiver", [PlayerCommand.VOLUME, PlayerCommand.MUTE])
+    sendspin.clients[BRIDGE_ID].info = sendspin.clients[BRIDGE_ID].info_or_none = hello
+
+    await sendspin._handle_client_added(BRIDGE_ID, sendspin._begin_client_event(BRIDGE_ID))
+    await scenario.settle()
+
+    bridge = scenario.mass.players.get_protocol(BRIDGE_ID)
+    assert isinstance(bridge, SendspinPlayer)
+    assert bridge.underlying_protocol_id != AIRPLAY_ID
+    assert not bridge.supported_features & {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
+    assert bridge.static_delay_default_ms == 330

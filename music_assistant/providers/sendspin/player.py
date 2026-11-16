@@ -2218,9 +2218,13 @@ class SendspinPlayer(SendspinBasePlayer):
         self.stop_taking_volume_reports()
         await self.playback_session.close()
         await super().on_detach()
-        if self.underlying_protocol_id and not self.mass.players.wants_protocol(self.protocol_id):
-            # the user switched this output off: the bridge it rides on goes with it
-            self.mass.create_task(evaluate_bridge_of(self.mass, self.underlying_protocol_id))
+        if (underlying_id := self.underlying_protocol_id) and not (
+            self.mass.players.wants_protocol(self.protocol_id)
+            and self.mass.config.is_protocol_switched_on(underlying_id)
+        ):
+            # this output was switched off: the bridge it rides on goes with it
+            # the protocol it rides on was switched off: another bridge may take the device
+            self.mass.create_task(evaluate_bridge_of(self.mass, underlying_id))
 
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""
