@@ -317,6 +317,26 @@ async def test_a_member_removed_meanwhile_is_not_restored(timer_mass: MusicAssis
 
 
 @pytest.mark.asyncio
+async def test_a_member_of_an_ungrouped_leader_is_not_restored(timer_mass: MusicAssistant) -> None:
+    """A member stays out of the group when its leader was ungrouped while it was away."""
+    home = _Household(timer_mass, airplay_renders=True)
+
+    with virtual_loop_clock():
+        await home.start_airplay()
+        await asyncio.sleep(0.9)
+        home.take_member_offline()
+        await home.leader.ungroup()
+        await asyncio.sleep(5)
+        home.member_known = True
+        home.reconnect_member()
+        home.report(DROPPED)
+        await asyncio.sleep(5)
+
+    assert home.adds == []
+    assert home.grouped == [LEADER]
+
+
+@pytest.mark.asyncio
 async def test_a_member_grouped_on_the_airplay_route_meanwhile_is_left_there(
     timer_mass: MusicAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
