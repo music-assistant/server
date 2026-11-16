@@ -34,6 +34,7 @@ from music_assistant.providers.musicbrainz.models import (
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
+RELEASE_ID = "5d9c6e8a-1c3b-4f2e-9a7d-2b8c4e6f0a11"
 RECORDING_ID = "0c1d2e3f-4a5b-4c6d-9e8f-7a6b5c4d3e22"
 OTHER_RECORDING_ID = "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c33"
 SPOTIFY_ALBUM_URL = "https://open.spotify.com/album/7eyQXxuf2nGj9d2367Gi5f"
@@ -131,7 +132,7 @@ def _recording(
 def _release(*media: Sequence[MusicBrainzRecording]) -> MusicBrainzRelease:
     """Return a MusicBrainz release with the given recordings, one sequence per medium."""
     return MusicBrainzRelease(
-        id="5d9c6e8a-1c3b-4f2e-9a7d-2b8c4e6f0a11",
+        id=RELEASE_ID,
         title="In Rainbows",
         media=[
             MusicBrainzMedia(
@@ -184,6 +185,7 @@ def _harness(
     *,
     loaded: dict[str, list[str]],
     owners: dict[tuple[str, str], str] | None = None,
+    owner_mbids: dict[str, str] | None = None,
     provider_errors: dict[str, Exception] | None = None,
     provider_items: dict[str, Track] | None = None,
 ) -> Iterator[_Harness]:
@@ -193,6 +195,7 @@ def _harness(
     :param db_item: The library item under test; also what the controller loads by id.
     :param loaded: Provider instance ids per loaded provider domain.
     :param owners: Library item id per (provider instance, provider item id) already held.
+    :param owner_mbids: MusicBrainz release id per holding library item id.
     :param provider_errors: Error the provider raises per provider item id.
     :param provider_items: Track the provider returns per provider item id.
     """
@@ -212,7 +215,10 @@ def _harness(
 
     async def _owner(item_id: str, instance: str) -> Album | None:
         if owner_id := (owners or {}).get((instance, item_id)):
-            return _library_album(owner_id)
+            owner = _library_album(owner_id)
+            if mbid := (owner_mbids or {}).get(owner_id):
+                owner.mbid = mbid
+            return owner
         return None
 
     async def _provider_item(item_id: str, _instance: str, **_kwargs: object) -> Album | Track:
@@ -272,6 +278,57 @@ async def test_linker_drops_a_link_another_library_item_holds() -> None:
 
     assert [m.provider_domain for m in added] == ["tidal"]
     assert harness.stored_mappings() == set(added)
+    harness.merge.assert_not_awaited()
+
+
+@pytest.mark.parametrize("owner_mbid", [None, RELEASE_ID])
+async def test_linker_merges_the_album_holding_a_link_of_its_release(
+    owner_mbid: str | None,
+) -> None:
+    """An identified album takes in the album holding a linked album of the same release."""
+    album = _library_album("1")
+    album.mbid = RELEASE_ID
+    tidal = ProviderMapping(
+        item_id="79280548", provider_domain="tidal", provider_instance="tidal_1"
+    )
+    with _harness(
+        album,
+        loaded={"tidal": ["tidal_1"]},
+        owners={("tidal_1", "79280548"): "99"},
+        owner_mbids={"99": owner_mbid} if owner_mbid else None,
+    ) as harness:
+        harness.merge.return_value = _library_album("1", tidal)
+        added = await harness.ctrl.link_musicbrainz_mappings(album, [TIDAL_ALBUM_URL])
+
+    harness.merge.assert_awaited_once_with(1, 99)
+    assert [m.provider_domain for m in added] == ["tidal"]
+    assert tidal in album.provider_mappings
+
+
+async def test_linker_keeps_apart_the_album_holding_a_link_of_another_release() -> None:
+    """An album identified as another release keeps the linked album, as does any track."""
+    album = _library_album("1")
+    album.mbid = RELEASE_ID
+    with _harness(
+        album,
+        loaded={"tidal": ["tidal_1"]},
+        owners={("tidal_1", "79280548"): "99"},
+        owner_mbids={"99": "0f1e2d3c-4b5a-4968-8776-5a4b3c2d1e00"},
+    ) as harness:
+        added = await harness.ctrl.link_musicbrainz_mappings(album, [TIDAL_ALBUM_URL])
+
+    assert added == []
+    harness.merge.assert_not_awaited()
+
+    track = _library_track("1", 1, mbid=RECORDING_ID)
+    with _harness(
+        track,
+        loaded={"spotify": ["spotify_1"]},
+        owners={("spotify_1", "2Ex8hBvUhZjXjJpZjJZ0aA"): "99"},
+    ) as harness:
+        added = await harness.ctrl.link_musicbrainz_mappings(track, [SPOTIFY_TRACK_URL])
+
+    assert added == []
     harness.merge.assert_not_awaited()
 
 
