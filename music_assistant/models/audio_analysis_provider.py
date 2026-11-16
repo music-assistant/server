@@ -11,6 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
+from music_assistant_models.enums import MediaType
+
 from music_assistant.helpers.util import join_task
 from music_assistant.models.audio_analysis import AudioAnalysisError
 
@@ -94,6 +96,9 @@ class AudioAnalysisProvider(Provider):
     # their algorithm changes significantly. The base class compares this against
     # the stored version to decide whether to re-analyze a track.
     analysis_version: int = 1
+
+    # The media types this provider is offered.
+    media_types: frozenset[MediaType] = frozenset({MediaType.TRACK})
 
     # Maximum track duration (seconds) this provider will analyze; longer tracks are skipped by
     # start_analysis. None means no limit. Providers that accumulate whole-track state set it.
@@ -304,6 +309,8 @@ class AudioAnalysisProvider(Provider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload, cancelling in-flight analysis work and freeing models."""
+        # an instance loaded later under the same id must not inherit the running sessions
+        self.mass.streams.audio_analysis.release_provider(self.instance_id)
         for session_id in list(self._sessions):
             await self.cancel(session_id)
         # Cancelled, not awaited: inference runs for minutes and records no failure, so the

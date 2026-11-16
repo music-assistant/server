@@ -188,7 +188,9 @@ Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
 
 ## Audio Analysis
 
-When a buffer starts from the beginning of an item (not for audio sources or sound effects), `audio_buffer.py` hands it to `AudioAnalysisController.start_analysis()`. Every audio analysis provider can accept the session and reads the same retained PCM at low priority, so a track is analysed while it plays without a second fetch. Results are stored in `audio_analysis.db`.
+When a buffer starts from the beginning of an item (not for audio sources or sound effects), `audio_buffer.py` hands it to `AudioAnalysisController.start_analysis()`. Every audio analysis provider that is offered the session can accept it and reads the same retained PCM at low priority, so a track is analysed while it plays without a second fetch. Results are stored in `audio_analysis.db`.
+
+A provider declares the media types it is offered in `media_types` (tracks only by default). `_start_analysis_on_providers()` offers a session, live or background, only to the providers that declared its media type.
 
 ### Loudness Measurement
 - Produced by the `loudness_analysis` provider (`providers/loudness_analysis/`): FFmpeg `ebur128` over up to 10 minutes of PCM
