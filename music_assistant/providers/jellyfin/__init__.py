@@ -115,7 +115,7 @@ class JellyfinProvider(MusicProvider):
         ) as response:
             await response.read()
         # Cached track, album and playlist reads include Jellyfin's per-user Favorite flag.
-        await self.mass.cache.delete(None, provider=self.instance_id)
+        await self.mass.cache.delete(None, category=0, provider=self.instance_id)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""

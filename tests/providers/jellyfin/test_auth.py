@@ -9,6 +9,7 @@ from aiojellyfin.session import SessionConfiguration
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
 
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.music_provider import CACHE_CATEGORY_PREV_LIBRARY_IDS
 from music_assistant.providers.jellyfin import JellyfinProvider
 from music_assistant.providers.jellyfin.const import (
     ITEM_KEY_ID,
@@ -146,7 +147,7 @@ async def test_set_favorite(
         raise_for_status=True,
     )
     response.read.assert_awaited_once_with()
-    delete.assert_awaited_once_with(None, provider=jellyfin_provider.instance_id)
+    delete.assert_awaited_once_with(None, category=0, provider=jellyfin_provider.instance_id)
     assert ProviderFeature.FAVORITE_TRACKS_EDIT in jellyfin_provider.supported_features
 
 
@@ -168,6 +169,30 @@ async def test_set_favorite_unsupported_media(jellyfin_provider: JellyfinProvide
     client = cast("mock.Mock", jellyfin_provider._client)
     await jellyfin_provider.set_favorite("album-1", MediaType.ALBUM, True)
     client._session_config.session.request.assert_not_called()
+
+
+@pytest.mark.parametrize("favorite", [True, False, None])
+async def test_set_favorite_preserves_sync_cache(
+    jellyfin_provider: JellyfinProvider, favorite: bool | None
+) -> None:
+    """Invalidate Favorite reads while keeping sync IDs and another source's reads."""
+    client = cast("mock.Mock", jellyfin_provider._client)
+    client._session_config.session.request = mock.MagicMock()
+    cache = jellyfin_provider.mass.cache
+    provider = jellyfin_provider.instance_id
+    await cache.set("playlist", {"favorite": False}, provider=provider, category=0)
+    await cache.set(
+        "tracks", ["removed-track"], provider=provider, category=CACHE_CATEGORY_PREV_LIBRARY_IDS
+    )
+    await cache.set("playlist", {"favorite": True}, provider="other-source", category=0)
+
+    await jellyfin_provider.set_favorite("track-1", MediaType.TRACK, favorite)
+
+    assert await cache.get("playlist", provider=provider, category=0) is None
+    assert await cache.get(
+        "tracks", provider=provider, category=CACHE_CATEGORY_PREV_LIBRARY_IDS
+    ) == ["removed-track"]
+    assert await cache.get("playlist", provider="other-source", category=0) == {"favorite": True}
 
 
 def _track_payload(track_id: str) -> dict[str, object]:
