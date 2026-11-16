@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
 
-from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.datetime import from_iso_string, utc
 
 from .constants import BASE_URL
 
@@ -94,21 +93,8 @@ def _elapsed_time(started_at: Any, station_at: Any) -> int | None:
     :param started_at: When the current item began, an ISO 8601 string.
     :param station_at: When the feed was written, an ISO 8601 string.
     """
-    started = _to_datetime(started_at)
-    if started is None:
+    if not started_at:
         return None
-    now = _to_datetime(station_at) or utc()
+    started = from_iso_string(str(started_at))
+    now = from_iso_string(str(station_at)) if station_at else utc()
     return max(0, int((now - started).total_seconds()))
-
-
-def _to_datetime(value: Any) -> datetime | None:
-    """Return the parsed timestamp, treated as UTC when it carries no offset."""
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed

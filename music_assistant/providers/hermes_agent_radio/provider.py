@@ -170,12 +170,15 @@ class HermesAgentRadio(MusicProvider):
             # the feed answered that nothing is on the air; show no title rather than a stale one
             streamdetails.stream_metadata = None
             return
+        # players stop following the queue's own time once a duration is set, so only
+        # advertise a duration together with the position the feed lets us compute
+        has_progress = current.elapsed_time is not None
         streamdetails.stream_metadata = StreamMetadata(
             title=current.title,
             artist=current.artist,
-            duration=current.duration,
+            duration=current.duration if has_progress else None,
             elapsed_time=current.elapsed_time,
-            elapsed_time_last_updated=time.time() if current.elapsed_time is not None else None,
+            elapsed_time_last_updated=time.time() if has_progress else None,
         )
 
     def _parse_radio(self, station: Station) -> Radio:

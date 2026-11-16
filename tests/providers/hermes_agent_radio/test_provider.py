@@ -293,12 +293,18 @@ async def test_metadata_callback_computes_elapsed_time_from_the_feed() -> None:
 
 
 async def test_metadata_callback_without_a_start_shows_no_progress() -> None:
-    """A feed answer without started_at keeps duration only, without a position."""
+    """
+    A feed answer without started_at offers neither a position nor a duration.
+
+    Players stop using the queue's own elapsed time once a duration is set, so a
+    duration without a position would leave speakers showing a length that never moves.
+    """
     provider = _provider(now_playing={"now": {"title": "No Start", "duration_s": 100.0}})
     streamdetails = await provider.get_stream_details("main", MediaType.RADIO)
     await provider._update_stream_metadata(streamdetails, 0)
     meta = streamdetails.stream_metadata
     assert meta is not None
+    assert meta.duration is None
     assert meta.elapsed_time is None
     assert meta.elapsed_time_last_updated is None
 
