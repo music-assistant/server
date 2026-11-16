@@ -39,7 +39,10 @@ from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_SAMPLE_RATE,
     BridgePlayerRole,
 )
-from music_assistant.providers.sendspin.helpers import bridge_client_id_from_mac
+from music_assistant.providers.sendspin.helpers import (
+    bridge_client_id_from_mac,
+    holds_bridge_client,
+)
 
 from .constants import (
     AIRPLAY_CLOCK_READY_LEAD_MS,
@@ -143,6 +146,9 @@ BRIDGE_REJOIN_ATTEMPT_DELAYS: tuple[int, ...] = (5, 30)
 # Player state fields that mean the volume or the mute of a player moved, so the bridge
 # roles of its AirPlay protocols have to follow what those report.
 _VOLUME_STATE_FIELDS: frozenset[str] = frozenset({"volume_level", "volume_muted"})
+# Player state fields the bridge policy depends on: the outputs of the player, which are the
+# bridges of the device that come before this one or hold a client of the device.
+_BRIDGE_POLICY_STATE_FIELDS: frozenset[str] = frozenset({"output_protocols"})
 
 
 def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
@@ -453,7 +459,11 @@ class SendspinAirPlayBridge:
         async with self._lock:
             await self._stop_streaming()
             if self._sendspin_client and self._bridge_client_id:
-                await self.sendspin_server.remove_client(self._bridge_client_id)
+                # another bridge of the device can have registered the same client since
+                if holds_bridge_client(
+                    self.mass, self._bridge_client_id, self.airplay_player.protocol_id
+                ):
+                    await self.sendspin_server.remove_client(self._bridge_client_id)
                 self._sendspin_client = None
                 self._bridge_role = None
 
@@ -1806,13 +1816,20 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
 
     def _should_have_bridge(self, player: PlayerProtocol) -> bool:
         """Return whether an AirPlay player should have a Sendspin bridge."""
-        return get_bridge_client_id(cast("AirPlayPlayer", player)) is not None
+        bridge_client_id = get_bridge_client_id(cast("AirPlayPlayer", player))
+        if bridge_client_id is None:
+            return False
+        return not self._leaves_output_to_another_bridge(player, bridge_client_id)
 
     def _on_player_state_updated(
         self, updated_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
-        """Feed a volume/mute change of a player back into the bridge roles of its protocols."""
-        if not changed_values.keys() & _VOLUME_STATE_FIELDS:
+        """Follow a player with the bridges of its AirPlay protocols: its volume and its outputs."""
+        if changed_values.keys() & _VOLUME_STATE_FIELDS:
+            for protocol_id in updated_player.attached_protocols:
+                self.sync_volume(protocol_id)
+        if not changed_values.keys() & _BRIDGE_POLICY_STATE_FIELDS:
             return
-        for protocol_id in updated_player.attached_protocols:
-            self.sync_volume(protocol_id)
+        for protocol in list(updated_player.attached_protocols.values()):
+            if protocol.provider is self.provider:
+                self.mass.create_task(self.evaluate_bridge(protocol))

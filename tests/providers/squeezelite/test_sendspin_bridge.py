@@ -797,13 +797,11 @@ async def test_only_a_device_with_a_timed_start_gets_a_bridge(
     assert rig.manager._should_have_bridge(rig.protocol) is bridged
 
 
-async def test_a_player_with_an_airplay_output_gets_no_bridge(rig: _Rig) -> None:
-    """A device with AirPlay gets its Sendspin support over AirPlay."""
-    outputs = rig.protocol.player.get_output_protocol_by_domain
-    outputs.return_value = MagicMock()
+async def test_a_player_with_an_airplay_output_gets_a_bridge(rig: _Rig) -> None:
+    """A device with AirPlay gets its Sendspin support over squeezelite, the first bridge."""
+    rig.protocol.player.get_output_protocol_by_domain.return_value = MagicMock()
 
-    assert rig.manager._should_have_bridge(rig.protocol) is False
-    outputs.assert_called_once_with("airplay")
+    assert rig.manager._should_have_bridge(rig.protocol) is True
 
 
 @pytest.mark.parametrize(
@@ -832,24 +830,18 @@ async def test_its_own_client_does_not_deny_the_bridge(rig: _Rig) -> None:
     assert rig.manager._should_have_bridge(rig.protocol) is True
 
 
-async def test_the_bridge_goes_when_airplay_shows_up_and_returns_when_it_goes(rig: _Rig) -> None:
-    """The bridge follows the outputs of its player."""
+async def test_the_bridge_stays_when_airplay_shows_up(rig: _Rig) -> None:
+    """An AirPlay output that joins the player leaves the bridge in place."""
     await rig.manager.evaluate_bridge(rig.protocol)
-    assert rig.manager.get_bridge(PLAYER_ID) is not None
-    # the Sendspin protocol of the bridge client, which rides on the squeezelite protocol
-    rig.mass.players.get_protocol.return_value = MagicMock(underlying_protocol_id=PLAYER_ID)
+    bridge = rig.manager.get_bridge(PLAYER_ID)
+    assert bridge is not None
 
     rig.protocol.player.get_output_protocol_by_domain.return_value = MagicMock()
     await rig.manager.evaluate_bridge(rig.protocol)
 
-    assert rig.manager.get_bridge(PLAYER_ID) is None
-    rig.server.remove_client.assert_awaited_once_with(CLIENT_ID)
-    rig.mass.players.remove_protocol.assert_awaited_once_with(CLIENT_ID)
-
-    rig.protocol.player.get_output_protocol_by_domain.return_value = None
-    await rig.manager.evaluate_bridge(rig.protocol)
-
-    assert rig.manager.get_bridge(PLAYER_ID) is not None
+    assert rig.manager.get_bridge(PLAYER_ID) is bridge
+    rig.server.remove_client.assert_not_awaited()
+    rig.mass.players.remove_protocol.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -859,7 +851,7 @@ async def test_the_bridge_goes_when_airplay_shows_up_and_returns_when_it_goes(ri
 async def test_a_change_of_outputs_evaluates_the_bridge_again(
     rig: _Rig, changed: str, evaluated: bool
 ) -> None:
-    """A player whose outputs change may have gained or lost its AirPlay output."""
+    """A player whose outputs change may have gained or lost another bridge of its device."""
     other = MagicMock(provider=MagicMock())
     player = MagicMock(attached_protocols={PLAYER_ID: rig.protocol, "other": other})
 
@@ -901,11 +893,11 @@ async def test_a_client_another_bridge_registered_leaves_the_player_bridgeable(
     assert rig.manager.is_bridgeable(rig.protocol) is True
 
 
-async def test_a_player_with_an_airplay_output_is_not_bridgeable(rig: _Rig) -> None:
-    """AirPlay takes the device ahead of every other bridge."""
+async def test_a_player_with_an_airplay_output_is_bridgeable(rig: _Rig) -> None:
+    """Whether the player qualifies does not depend on the other outputs of its device."""
     rig.protocol.player.get_output_protocol_by_domain.return_value = MagicMock()
 
-    assert rig.manager.is_bridgeable(rig.protocol) is False
+    assert rig.manager.is_bridgeable(rig.protocol) is True
 
 
 # ---------------------------------------------------------------- registration

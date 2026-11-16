@@ -1,8 +1,8 @@
 """
 Shared lifecycle management for Sendspin bridges.
 
-A Sendspin bridge exposes a protocol of another provider (AirPlay, Chromecast)
-as an external Sendspin client, so the device can take part in Sendspin
+A Sendspin bridge exposes a protocol of another provider (squeezelite, AirPlay,
+Chromecast) as an external Sendspin client, so the device can take part in Sendspin
 synchronized playback. The bridge is a derived transport: its Sendspin protocol
 rides on the protocol it bridges (its underlying protocol) and belongs to the
 player of that protocol. It only exists while that protocol is attached to its
@@ -26,6 +26,8 @@ from music_assistant_models.enums import EventType
 
 from music_assistant.constants import CONF_PLAYERS, CONF_UNDERLYING_PLAYER_ID
 
+from .helpers import bridge_client_id_variants
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
@@ -38,6 +40,11 @@ if TYPE_CHECKING:
     from music_assistant.models.player_provider import PlayerProvider
 
     from .provider import SendspinProvider
+
+
+# The providers whose bridges carry the Sendspin output of a device, by domain, in the order
+# in which they get it: a bridge leaves the output to an earlier one that carries the player.
+BRIDGE_ORDER: tuple[str, ...] = ("squeezelite", "airplay", "chromecast")
 
 
 class SendspinBridge(Protocol):
@@ -258,6 +265,18 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         self._unsubs.clear()
         await self.stop_all()
 
+    def carries_sendspin_output(self, player: Player) -> bool:
+        """
+        Return whether the bridge of this provider carries the Sendspin output of a player.
+
+        The bridges after this one in BRIDGE_ORDER leave the output to it while it does. By
+        default that is while the player has an output of this provider the user switched on,
+        also while it is away.
+
+        :param player: The player to look at.
+        """
+        return self._has_switched_on_output(player, self.provider.domain)
+
     @abstractmethod
     def _bridge_client_id(self, protocol: PlayerProtocol) -> str | None:
         """
@@ -328,6 +347,54 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             sendspin_provider := self.sendspin_provider
         ):
             sendspin_provider.release_bridge_client(client_id, protocol.protocol_id)
+
+    def _leaves_output_to_another_bridge(self, protocol: PlayerProtocol, client_id: str) -> bool:
+        """
+        Return whether the bridge of a protocol leaves the Sendspin output of its device to another.
+
+        That is while a bridge before it in BRIDGE_ORDER carries the player, or while the bridge
+        of a protocol on another player holds a client of the device, as the protocols of a
+        device are on players of their own until they are linked. A client that the bridge of
+        a protocol of the same player holds is taken over.
+
+        :param protocol: The protocol to evaluate.
+        :param client_id: The client id the bridge of the protocol registers under.
+        """
+        player = protocol.player
+        if player is not None and self._earlier_bridge_carries(player):
+            return True
+        sendspin_provider = self.sendspin_provider
+        if sendspin_provider is None or self._has_bridge(protocol.protocol_id):
+            return False
+        for other_id in bridge_client_id_variants(client_id):
+            if not sendspin_provider.server_api.is_external_player(other_id):
+                continue
+            holder_id = sendspin_provider.get_bridge_holder(other_id)
+            if (
+                player is None
+                or holder_id is None
+                or self.mass.players.get_player_id_of_protocol(holder_id) != player.player_id
+            ):
+                return True
+        return False
+
+    def _earlier_bridge_carries(self, player: Player) -> bool:
+        """
+        Return whether a bridge before this one in BRIDGE_ORDER carries the Sendspin output.
+
+        A provider that is not loaded carries nothing.
+
+        :param player: The player to look at.
+        """
+        for domain in BRIDGE_ORDER:
+            if domain == self.provider.domain:
+                return False
+            manager = getattr(self.mass.get_provider(domain), "bridge_manager", None)
+            if isinstance(manager, SendspinBridgeManagerBase) and (
+                manager.carries_sendspin_output(player)
+            ):
+                return True
+        return False
 
     def _has_switched_on_output(self, player: Player, protocol_domain: str) -> bool:
         """

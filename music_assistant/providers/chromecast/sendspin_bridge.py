@@ -53,7 +53,6 @@ from music_assistant.providers.sendspin.constants import CONF_SENDSPIN_STATIC_DE
 from music_assistant.providers.sendspin.helpers import (
     bridge_client_id_from_mac,
     bridge_client_id_from_uuid,
-    bridge_client_id_variants,
     holds_bridge_client,
 )
 
@@ -94,8 +93,8 @@ _CAST_LOG_LEVEL_MAP: dict[str, int] = {
 }
 
 # Player state fields the bridge policy of its Cast protocol depends on: its device, its
-# other outputs (an AirPlay output that is switched on or a bridgeable squeezelite output
-# denies the Cast bridge) and its availability.
+# other outputs (a bridge before the Cast bridge that carries the device denies it) and its
+# availability.
 _BRIDGE_POLICY_STATE_FIELDS = {
     "available",
     "device_info.identifiers",
@@ -854,9 +853,9 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         await super().evaluate_bridge(protocol)
         if not client_id:
             return
-        if (player := protocol.player) and self._squeezelite_takes_bridge(player):
+        if (player := protocol.player) and self._earlier_bridge_carries(player):
             # also the Sendspin output of a Cast bridge that is switched off goes, so the
-            # squeezelite bridge registers the output of the device afresh
+            # bridge that carries the device registers its output afresh
             await self._remove_client_protocol(protocol.protocol_id, client_id)
             return
         if not self._has_bridge(protocol.protocol_id):
@@ -983,20 +982,9 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             return False
         self._skip_log_state.pop(cast_player.protocol_id, None)
 
-        # Prefer the airplay bridge over the cast bridge: the Cast receiver
-        # pipeline is fragile on many (especially 3rd-party) devices. Deny the
-        # cast bridge whenever the device is known to also support AirPlay,
-        # also while its AirPlay protocol is away - a device with AirPlay gets
-        # its Sendspin support over AirPlay, unless the user switched that off.
-        if (player := cast_player.player) and self._has_switched_on_output(player, "airplay"):
-            return False
-        # The squeezelite bridge is preferred as well, while its protocol is attached: the
-        # Cast bridge comes back for a squeezelite player that disconnects.
-        if player and self._squeezelite_takes_bridge(player):
-            return False
-        # Same deny before the AirPlay protocol joined the player: another bridge
-        # (AirPlay) already registered a client for this device.
-        return not self._has_foreign_bridge_client(cast_player.protocol_id, bridge_client_id)
+        # The Cast bridge comes last in BRIDGE_ORDER: the Cast receiver pipeline is
+        # fragile on many (especially 3rd-party) devices.
+        return not self._leaves_output_to_another_bridge(cast_player, bridge_client_id)
 
     async def _try_claim_existing(self, protocol: PlayerProtocol) -> bool:
         """
@@ -1046,21 +1034,6 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         self._claimed_clients[cast_player.protocol_id] = bridge_client_id
         self._subscribe_rebridge_on_disconnect(cast_player, bridge_client_id)
         return True
-
-    def _has_foreign_bridge_client(self, protocol_id: str, bridge_client_id: str) -> bool:
-        """
-        Return whether another bridge registered a Sendspin client for this device.
-
-        :param protocol_id: The id of the Chromecast protocol being evaluated.
-        :param bridge_client_id: The Sendspin client_id the Cast bridge would use.
-        """
-        if protocol_id in self._bridges or not (sendspin_server := self.sendspin_server):
-            return False
-        # AirPlay usually registers under the locally-administered form of the MAC
-        return any(
-            sendspin_server.is_external_player(client_id)
-            for client_id in bridge_client_id_variants(bridge_client_id)
-        )
 
     def _subscribe_rebridge_on_disconnect(
         self, cast_player: ChromecastPlayer, client_id: str
@@ -1224,17 +1197,4 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             "its output is left as it is and retried on the next evaluation",
             client_id,
         )
-        return False
-
-    def _squeezelite_takes_bridge(self, player: Player) -> bool:
-        """
-        Return whether the attached squeezelite protocol of a player qualifies for a bridge.
-
-        :param player: The player of the Chromecast protocol.
-        """
-        for protocol in player.attached_protocols.values():
-            if protocol.provider.domain != "squeezelite":
-                continue
-            manager = getattr(protocol.provider, "bridge_manager", None)
-            return manager is not None and bool(manager.is_bridgeable(protocol))
         return False

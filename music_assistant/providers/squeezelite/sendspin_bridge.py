@@ -50,7 +50,6 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.helpers import (
     bridge_client_id_from_mac,
-    bridge_client_id_variants,
     holds_bridge_client,
 )
 
@@ -199,8 +198,8 @@ RECONNECT_REJOIN_WINDOW: float = 60.0
 # The cache category of what was learned about the start of a player, by protocol id.
 CACHE_CATEGORY_START_OFFSET = 2
 
-# Player state fields the bridge policy depends on: an AirPlay output that is switched on
-# denies the bridge, and the Sendspin output of another bridge does while it is there.
+# Player state fields the bridge policy depends on: the outputs of the player, which are
+# the bridges of the device that come before this one or hold a client of the device.
 _BRIDGE_POLICY_STATE_FIELDS: frozenset[str] = frozenset({"output_protocols"})
 
 
@@ -1553,12 +1552,23 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
             )
         return offset_us
 
+    def carries_sendspin_output(self, player: Player) -> bool:
+        """
+        Return whether the bridge of a squeezelite protocol carries the Sendspin output of a player.
+
+        That is while a squeezelite protocol of the player is attached and qualifies for a
+        bridge; one the user switched off, or whose provider is disabled, is detached.
+
+        :param player: The player to look at.
+        """
+        for protocol in player.attached_protocols.values():
+            if protocol.provider is self.provider:
+                return self.is_bridgeable(protocol)
+        return False
+
     def is_bridgeable(self, protocol: PlayerProtocol) -> bool:
         """
         Return whether a squeezelite player qualifies for a Sendspin bridge.
-
-        A bridge another provider registered for the device does not count, so the answer
-        tells another provider whether this bridge takes precedence over its own.
 
         :param protocol: The squeezelite protocol to evaluate.
         """
@@ -1570,12 +1580,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
         if squeezelite_player.client.device_type not in SQUEEZEBOX2_PLAYER_TYPES:
             return False
         # a bridge tool plays to a device of another protocol, which is bridged over that
-        if is_bridge_tool(squeezelite_player.client.device_model):
-            return False
-        # a device with AirPlay gets its Sendspin support over AirPlay, while the user has
-        # that switched on
-        player = protocol.player
-        return not (player and self._has_switched_on_output(player, "airplay"))
+        return not is_bridge_tool(squeezelite_player.client.device_model)
 
     async def _restore_start_offset(self, protocol_id: str) -> None:
         """
@@ -1612,24 +1617,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
         bridge_client_id = self._bridge_client_id(protocol)
         if bridge_client_id is None or not self.is_bridgeable(protocol):
             return False
-        # Same deny before the AirPlay protocol joined the player: another bridge
-        # already registered a client for this device. A Cast bridge steps back for
-        # this one and its Sendspin output leaves the player, which evaluates it again.
-        return not self._has_foreign_bridge_client(protocol.protocol_id, bridge_client_id)
-
-    def _has_foreign_bridge_client(self, protocol_id: str, bridge_client_id: str) -> bool:
-        """
-        Return whether another bridge registered a Sendspin client for this device.
-
-        :param protocol_id: The id of the squeezelite protocol being evaluated.
-        :param bridge_client_id: The Sendspin client_id its bridge would use.
-        """
-        if protocol_id in self._bridges or not (sendspin_server := self.sendspin_server):
-            return False
-        return any(
-            sendspin_server.is_external_player(client_id)
-            for client_id in bridge_client_id_variants(bridge_client_id)
-        )
+        return not self._leaves_output_to_another_bridge(protocol, bridge_client_id)
 
     def _on_player_state_updated(
         self, updated_player: Player, changed_values: dict[str, tuple[Any, Any]]

@@ -14,6 +14,9 @@ import pytest
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_PROTOCOL_EXPERIMENTAL_NOTE, CONF_UNDERLYING_PLAYER_ID
+from music_assistant.providers.airplay.sendspin_bridge import (
+    SendspinBridgeManager as AirPlaySendspinBridgeManager,
+)
 from music_assistant.providers.chromecast import sendspin_bridge as bridge_module
 from music_assistant.providers.chromecast.constants import (
     CONF_SENDSPIN_OPT_OUT_PENDING,
@@ -63,11 +66,14 @@ def _make_cast_environment() -> tuple[CastSendspinBridgeManager, MagicMock, Magi
     mass.create_task = MagicMock()
     mass.config.get_protocol_value = MagicMock(return_value=None)
     use_real_bridge_holders(mass.get_provider.return_value)
+    # the loaded providers, by domain
+    mass.providers = {"sendspin": mass.get_provider.return_value}
+    mass.get_provider.side_effect = lambda domain, *_, **__: mass.providers.get(domain)
     external_clients: set[str] = set()
     sendspin_server = mass.get_provider.return_value.server_api
     sendspin_server.is_external_player = MagicMock(side_effect=external_clients.__contains__)
     mass.external_clients = external_clients
-    provider = MagicMock()
+    provider = MagicMock(domain="chromecast")
     provider.mass = mass
     provider.logger = logging.getLogger("test.cast_bridge_manager")
 
@@ -90,12 +96,25 @@ def _make_cast_environment() -> tuple[CastSendspinBridgeManager, MagicMock, Magi
     return manager, mass, cast_protocol
 
 
+def _load_airplay(mass: MagicMock) -> None:
+    """
+    Load the AirPlay provider, with its real bridge manager.
+
+    :param mass: The mocked Music Assistant of the Cast environment.
+    """
+    provider = MagicMock(mass=mass, domain="airplay")
+    provider.logger = logging.getLogger("test.airplay_bridge_manager")
+    provider.bridge_manager = AirPlaySendspinBridgeManager(provider)
+    mass.providers["airplay"] = provider
+
+
 class TestCastBridgePolicy:
     """Tests for the Chromecast-specific bridge policy."""
 
     def test_hard_deny_when_device_has_airplay(self) -> None:
         """Test the cast bridge is denied when the device has AirPlay at all."""
-        manager, _, cast_protocol = _make_cast_environment()
+        manager, mass, cast_protocol = _make_cast_environment()
+        _load_airplay(mass)
         airplay_output = MagicMock()
         # AirPlay output listed but NOT available (e.g. its device is away)
         airplay_output.available = False
@@ -103,14 +122,13 @@ class TestCastBridgePolicy:
 
         assert manager._should_have_bridge(cast_protocol) is False
 
-    def test_hard_deny_when_airplay_provider_not_loaded(self) -> None:
-        """Test the deny also applies while the airplay provider itself is not loaded."""
-        manager, mass, cast_protocol = _make_cast_environment()
+    def test_allowed_while_the_airplay_provider_is_not_loaded(self) -> None:
+        """Test an AirPlay output whose provider is not loaded carries nothing."""
+        manager, _, cast_protocol = _make_cast_environment()
         # the AirPlay output of the player, from its stored protocol record
         cast_protocol.player = _player(airplay=MagicMock())
-        mass.get_provider = MagicMock(return_value=None)
 
-        assert manager._should_have_bridge(cast_protocol) is False
+        assert manager._should_have_bridge(cast_protocol) is True
 
     def test_allowed_when_device_has_no_airplay(self) -> None:
         """Test the cast bridge is allowed when the device has no AirPlay protocol."""
@@ -313,6 +331,7 @@ def _attach_squeezelite(
     provider = MagicMock(mass=mass, domain="squeezelite")
     provider.logger = logging.getLogger("test.squeezelite_bridge_manager")
     provider.bridge_manager = SqueezeliteSendspinBridgeManager(provider)
+    mass.providers["squeezelite"] = provider
     protocol = MagicMock(protocol_id=protocol_id, provider=provider, player=cast_protocol.player)
     protocol.client.device_type = device_type
     protocol.client.device_model = device_model
@@ -432,14 +451,15 @@ class TestCastBridgeYieldsToSqueezelite:
 
         assert manager._should_have_bridge(cast_protocol) is True
 
-    def test_airplay_wins_over_both(self) -> None:
-        """Test a device with AirPlay gets neither the Cast nor the squeezelite bridge."""
+    def test_squeezelite_wins_over_airplay_and_cast(self) -> None:
+        """Test a device with AirPlay gets the squeezelite bridge, not the Cast one."""
         manager, mass, cast_protocol = _make_cast_environment()
+        _load_airplay(mass)
         cast_protocol.player = _player(airplay=MagicMock())
         squeezelite = _attach_squeezelite(mass, cast_protocol)
 
         assert manager._should_have_bridge(cast_protocol) is False
-        assert squeezelite.provider.bridge_manager.is_bridgeable(squeezelite) is False
+        assert squeezelite.provider.bridge_manager._should_have_bridge(squeezelite) is True
 
 
 class _DualDevice:
