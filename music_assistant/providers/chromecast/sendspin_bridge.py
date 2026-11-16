@@ -1184,6 +1184,9 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                 client_id,
             )
             await self.mass.config.save_protocol_config(client_id, {CONF_ENABLED: False})
+            if not self.mass.config.get_protocol_record(client_id):
+                # the bridge was removed permanently during the save
+                return
         # written last: a missing note is what makes the next evaluation retry all of this
         self.mass.config.set_protocol_value(
             client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE, SENDSPIN_CAST_EXPERIMENTAL_NOTE
