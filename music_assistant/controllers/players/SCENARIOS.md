@@ -1382,7 +1382,7 @@ speakers of one make that can all group with each other (Kitchen, Office, Den), 
 two makes that share an AirPlay receiver (Lounge, Study). A speaker that is switched off at a
 power control that cuts its power is switched on first: the group that is started, or the leader
 or group it is added to, waits until it has started up (GROUP-22 and on). In those examples
-Den's plug is set to cut its power, and Den needs 10 s to start up.
+Den's plug is set to cut its power.
 
 ### GROUP-1 · Speakers of one make group through their own protocol
 
@@ -1631,7 +1631,7 @@ all three once Den has started up.
 The user plays Downstairs, which switches Den's plug on and waits. The user stops Downstairs,
 pauses it or powers it off, through the player or its queue; Downstairs itself still reads as
 off. The play fails as unavailable and nothing starts, also not on Kitchen and Office. Den's plug
-stays on: when its start-up time is over and its device is back, Den is idle and in no group.
+stays on and Den keeps starting up: once it has started up, Den is idle and in no group.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
@@ -1694,9 +1694,9 @@ stays off.
 
 Den has an idle power off of one minute and its plug is switched off. The user plays Downstairs:
 it starts as soon as Den has started up, so Den plays and is not powered off. Neither is a
-member that has started up within seconds while the play waits more than a minute for another
-one, which needs longer. When the user stops Downstairs while it still waits for Den, Den's plug
-stays on and Den starts up idle: a minute later Den is powered off, as any idle player is.
+member that has started up while the play waits more than a minute for another one, which needs
+two minutes. When the user stops Downstairs while it still waits for Den, Den's plug stays on
+and Den starts up idle: a minute later Den is powered off, as any idle player is.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
@@ -2017,6 +2017,24 @@ plug on and returns at once.
 
 - End-to-end: **possible with** a power control the lab can switch, selected for a group player.
 - Proven by: `test_power_control.py::test_a_group_player_on_a_power_control_has_no_startup_time`
+
+### GROUP-59 · The pause timeout does not end a paused group whose play waits for a member
+
+Downstairs, a sync group with a fixed member list, is paused on Kitchen and Office: Den's plug
+did not answer when it started, and works again. Ten seconds later the user presses play: Den's
+plug is switched on and the play waits for Den to start up, for longer than what is left of the
+pause timeout. Downstairs is not stopped when that timeout ends: it stays paused, and once Den
+has started up it starts once, on all three. Without a play, Downstairs is stopped when the pause
+timeout ends, and Den's plug stays off. When the user stops Downstairs while the play waits, the
+play fails and Downstairs is stopped; when the user pauses it instead, the play fails, Downstairs
+is still paused, and it is stopped when the pause timeout has passed since that pause.
+
+- End-to-end: **possible with** a power control the lab can switch and can make refuse, and a
+  speaker behind it that needs longer to start up than the pause timeout lasts.
+- Proven by:
+  - `test_group_power_on.py::test_a_play_of_a_paused_group_that_waits_for_a_member_outlasts_the_pause_timeout`
+  - `test_group_power_on.py::test_a_paused_group_that_nobody_plays_is_stopped_at_the_pause_timeout`
+  - `test_group_power_on.py::test_a_play_of_a_paused_group_that_is_called_off_leaves_the_pause_timeout_in_force`
 
 ## Where playback goes
 

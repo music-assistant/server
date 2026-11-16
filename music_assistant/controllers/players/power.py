@@ -233,6 +233,10 @@ class PowerMixin(_PlayerControllerBase):
 
         :param player_id: The player whose power was turned off outside of MA.
         """
+        # a start of the player that waits for players to start up is not called off by
+        # this stop: it switches the power on or fails, and then this looks again
+        while (player := self.get_player(player_id)) and self._has_waiting_start(player):
+            await asyncio.sleep(1)
         # hold the playback lock across the checks: a power on that overlaps the wait
         # holds it while it resumes the queue, and reading the power state before that
         # completes would stop the playback it just started (the lock is re-entrant per
@@ -867,4 +871,17 @@ class PowerMixin(_PlayerControllerBase):
         """
         return any(
             player.player_id in member_ids for _, member_ids in self._member_power_ons.values()
+        )
+
+    def _has_waiting_start(self, player: Player) -> bool:
+        """
+        Return whether a command still waits for players to start up before it acts on this one.
+
+        That is a start of the player, or an addition to it, that waits for the switched-off
+        players it powered on, or a command that waits for the player itself.
+
+        :param player: The player to check.
+        """
+        return player.player_id in self._power_on_waits or any(
+            owner_id == player.player_id for owner_id, _ in self._member_power_ons.values()
         )

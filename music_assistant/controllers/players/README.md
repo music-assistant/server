@@ -660,9 +660,13 @@ afterwards stays idle (a sync group with a fixed member list that is formed take
 member back, as it does without this). Stopping the leader or group that a player is added to ends
 the addition the same way, and removing that player from it ends the wait for that player alone. A
 new start right after that waits for what is left of the start-up time of such a member, without
-switching its control once more. The stop that ends a queue which stayed paused for its pause
-timeout counts as well: a start of a paused group that still waits for a member at that moment is
-called off.
+switching its control once more.
+
+A stop the server sends by itself does not call a wait off. While a command still waits for
+players to start up before it acts on a player (`_has_waiting_start`), the pause timeout of a
+queue does not stop the paused queue of that player and counts again from the end of the wait,
+and the stop that follows a power off outside of Music Assistant looks again once the wait is
+over. A sleep timer that ends is a stop the user asked for, and calls the wait off.
 
 Only such a command switches a member on; nothing does because a state changed. A play on a group
 player that plays already is ignored, as on any player, and switches nothing on. Neither does a

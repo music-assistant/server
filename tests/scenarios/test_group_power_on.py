@@ -23,6 +23,7 @@ from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
+from music_assistant.controllers.player_queues.constants import DEFAULT_PAUSE_TIMEOUT
 from music_assistant.controllers.players.audio_sources import AUDIO_SOURCE_CLAIM_TIMEOUT
 from music_assistant.controllers.players.config_changes import CONFIG_CHANGE_RESUME_DELAY
 from music_assistant.controllers.streams.announcements import (
@@ -215,7 +216,7 @@ async def test_a_member_that_does_not_come_online_is_left_out(
 
     assert _warnings_about(caplog, "Den") == [
         "Player Den is left out of Downstairs: "
-        "Player Den could not be reached 10s after it was switched on"
+        f"Player Den could not be reached {STARTUP_TIME}s after it was switched on"
     ]
     assert [_plays_along(scenario, group_id, player_id) for player_id in player_ids] == [
         True,
@@ -301,9 +302,8 @@ async def test_a_stop_of_the_group_calls_off_the_start_that_waits(
     A stop, a pause or a power off of a group ends the start that waits for its members.
 
     The play that waits fails, and nothing starts, also not on the members that are on. Den,
-    whose plug stays on, shows as unavailable once its start-up time is over without its
-    device, and stays idle and gets no command when the device is back. A group that is
-    powered off reads as off itself while it waits.
+    whose plug stays on, keeps starting up, and stays idle and gets no command once it has
+    started up. A group that is powered off reads as off itself while it waits.
     """
     group_id, speakers, player_ids = await _downstairs(scenario, group, "Kitchen", "Office", "Den")
     den, den_id = speakers[2], player_ids[2]
@@ -329,7 +329,8 @@ async def test_a_stop_of_the_group_calls_off_the_start_that_waits(
 
     with pytest.raises(PlayerUnavailableError, match="was called off"):
         await play
-    assert _state(scenario, den_id).available is False
+    state = _state(scenario, den_id)
+    assert (state.available, state.powered) == (True, True)
     await _come_back(scenario, den)
     await scenario.idle()
 
@@ -1128,7 +1129,7 @@ async def test_a_stop_during_the_wait_of_a_seek_ends_the_seek_and_starts_nothing
     assert not command.done(), command.exception()
     assert plug.commands == [True]
 
-    await _stop(scenario, group_id)
+    await _stop(scenario, group_id, idle=False)
 
     with pytest.raises(PlayerUnavailableError, match="was called off"):
         await command
@@ -2140,7 +2141,7 @@ async def test_a_speaker_that_is_added_and_does_not_come_online_is_left_out(
 
     assert _warnings_about(caplog, "Den") == [
         f"Player Den is left out of {_state(scenario, owner_id).name}: "
-        "Player Den could not be reached 10s after it was switched on"
+        f"Player Den could not be reached {STARTUP_TIME}s after it was switched on"
     ]
     assert den_id not in _state(scenario, owner_id).group_members
     assert [_grouping_commands(speaker) for speaker in speakers] == [[], [], []]
@@ -2172,7 +2173,7 @@ async def test_an_addition_that_waits_for_a_speaker_can_be_ended(
         await scenario.settle()
         await add
     else:
-        await _stop(scenario, owner_id)
+        await _stop(scenario, owner_id, idle=False)
         with pytest.raises(PlayerUnavailableError, match="was called off"):
             await add
     await _come_back(scenario, den)
@@ -2289,14 +2290,14 @@ async def test_a_member_that_is_back_early_is_not_powered_off_while_its_group_wa
     A member that started up before another one is not switched off as idle while the start waits.
 
     Office and Den are switched off, and Office is powered off after one idle minute. Office
-    has started up within seconds, Den needs a minute and a half. Office stays on meanwhile,
+    has started up after half a minute, Den needs two minutes. Office stays on meanwhile,
     and the group starts on all three when Den has started up.
     """
     group_id, speakers, player_ids = await _downstairs(scenario, group, "Kitchen", "Office", "Den")
     await scenario.configure_player(player_ids[1], idle_power_off=1)
     office_plug = await _switch_off(scenario, speakers[1])
     den_plug = await _switch_off(scenario, speakers[2])
-    await scenario.configure_player(player_ids[2], power_on_startup_time=90)
+    await scenario.configure_player(player_ids[2], power_on_startup_time=120)
     play = await _play(scenario, group_id)
     await scenario.advance(3)
     await _come_back(scenario, speakers[1])
@@ -2328,7 +2329,7 @@ async def test_a_member_its_group_never_started_is_powered_off_as_idle(
     await scenario.configure_player(player_ids[2], idle_power_off=1)
     plug = await _switch_off(scenario, speakers[2])
     play = await _play(scenario, group_id)
-    await _stop(scenario, group_id)
+    await _stop(scenario, group_id, idle=False)
     with pytest.raises(PlayerUnavailableError, match="was called off"):
         await play
 
@@ -2380,6 +2381,126 @@ async def test_a_new_start_after_a_stop_waits_for_what_is_left_of_the_startup(
     assert plug.commands == [True]
     assert [_plays_along(scenario, group_id, player_id) for player_id in player_ids] == [True] * 3
     await _stop(scenario, group_id)
+
+
+async def _paused_without_den(
+    scenario: Scenario,
+) -> tuple[str, list[FakeProtocol], list[str], FakePowerControl]:
+    """
+    Let the sync group Downstairs be paused on Kitchen and Office, with Den switched off.
+
+    The group, which has a fixed member list, played on Kitchen and Office: the plug of Den
+    refused to switch on when it started, and works again by now. Den needs the default time
+    to start up, and the queue has the default pause timeout. Two seconds have passed since
+    the pause.
+
+    :return: The id of the group, the speakers, the ids of their players and the plug of Den.
+    """
+    group_id, speakers, player_ids, plug = await _playing_without_den(scenario, "fixed sync group")
+    await _halt(scenario, group_id, "paused")
+    assert _state(scenario, group_id).playback_state == PlaybackState.PAUSED
+    for speaker in speakers:
+        speaker.commands.clear()
+    return group_id, speakers, player_ids, plug
+
+
+async def test_a_play_of_a_paused_group_that_waits_for_a_member_outlasts_the_pause_timeout(
+    scenario: Scenario,
+) -> None:
+    """
+    A play of a paused group waits for its member past the pause timeout, and then starts.
+
+    The sync group is paused on Kitchen and Office, without Den. Ten seconds later the user
+    presses play: Den's plug is switched on and the play waits for Den to start up, which
+    takes longer than what is left of the pause timeout. The group is not stopped when that
+    timeout ends: it stays paused and the play keeps waiting. Once Den has started up the
+    group starts once, on all three, and it is not stopped afterwards either.
+    """
+    group_id, speakers, player_ids, plug = await _paused_without_den(scenario)
+    await scenario.advance(8)
+
+    play = await scenario.command(scenario.mass.players.cmd_play(group_id))
+
+    assert plug.commands == [True]
+    await scenario.register(speakers[2])
+    await scenario.advance(DEFAULT_PAUSE_TIMEOUT - 10 + 5)
+    assert not play.done(), play.exception()
+    assert _state(scenario, group_id).playback_state == PlaybackState.PAUSED
+    assert [speaker.commands for speaker in speakers] == [[], [], []]
+    await _start_up(scenario, player_ids[2])
+    await play
+    await scenario.advance(DEFAULT_PAUSE_TIMEOUT)
+    await scenario.idle()
+
+    assert [_plays_along(scenario, group_id, player_id) for player_id in player_ids] == [True] * 3
+    assert _streams("fixed sync group", speakers)
+    assert [command[0] for speaker in speakers for command in speaker.commands].count("stop") == 0
+    assert plug.commands == [True]
+    await _stop(scenario, group_id)
+
+
+async def test_a_paused_group_that_nobody_plays_is_stopped_at_the_pause_timeout(
+    scenario: Scenario,
+) -> None:
+    """
+    A paused group that gets no play is stopped when the pause timeout ends.
+
+    The sync group is paused on Kitchen and Office, without Den. Nobody plays it: it is
+    still paused a second before the pause timeout ends and stopped after it, and Den's plug
+    stays off.
+    """
+    group_id, _, _, plug = await _paused_without_den(scenario)
+
+    await scenario.advance(DEFAULT_PAUSE_TIMEOUT - 3)
+    assert _state(scenario, group_id).playback_state == PlaybackState.PAUSED
+    await scenario.advance(10)
+
+    assert _state(scenario, group_id).playback_state == PlaybackState.IDLE
+    assert plug.commands == []
+    await scenario.idle()
+
+
+@pytest.mark.parametrize("call_off", ["stop", "pause"])
+async def test_a_play_of_a_paused_group_that_is_called_off_leaves_the_pause_timeout_in_force(
+    scenario: Scenario, call_off: str
+) -> None:
+    """
+    A play that waits and is called off leaves a paused group that the pause timeout still stops.
+
+    The sync group is paused on Kitchen and Office, without Den. The user presses play,
+    which switches Den's plug on and waits, and ten seconds later stops or pauses the group:
+    the play fails as called off. After the stop the group is stopped. After the pause it is
+    still paused, and it is stopped when the pause timeout has passed since that pause.
+    Nothing starts once Den has started up, and its plug stays on.
+
+    :param call_off: The command the group gets while the play waits.
+    """
+    group_id, speakers, _, plug = await _paused_without_den(scenario)
+    players = scenario.mass.players
+    await scenario.advance(8)
+    play = await scenario.command(players.cmd_play(group_id))
+    await scenario.advance(10)
+    assert not play.done(), play.exception()
+
+    command = await scenario.command(
+        players.cmd_stop(group_id) if call_off == "stop" else players.cmd_pause(group_id)
+    )
+    await scenario.advance(2)
+    await command
+
+    with pytest.raises(PlayerUnavailableError, match="was called off"):
+        await play
+    if call_off == "pause":
+        assert _state(scenario, group_id).playback_state == PlaybackState.PAUSED
+        await scenario.advance(DEFAULT_PAUSE_TIMEOUT - 3)
+        assert _state(scenario, group_id).playback_state == PlaybackState.PAUSED
+        await scenario.advance(10)
+    assert _state(scenario, group_id).playback_state == PlaybackState.IDLE
+    await _come_back(scenario, speakers[2])
+    await scenario.idle()
+    assert [_starts(speaker) for speaker in speakers] == [0, 0, 0]
+    assert _state(scenario, group_id).playback_state == PlaybackState.IDLE
+    assert plug.commands == [True]
 
 
 async def _rendered_clip(render: AnnouncementRender) -> None:

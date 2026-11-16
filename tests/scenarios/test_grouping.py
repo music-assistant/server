@@ -13,6 +13,7 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from music_assistant.constants import DEFAULT_POWER_ON_STARTUP_TIME
 from music_assistant.controllers.players.power import EXTERNAL_POWER_OFF_STOP_DELAY
 from tests.common import as_user
 
@@ -31,9 +32,8 @@ if TYPE_CHECKING:
 
 GROUPING = frozenset({*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS})
 
-# the start-up time (in seconds) of a speaker on a smart plug that cuts its power: short
-# enough to be over before a paused queue is stopped
-STARTUP_TIME = 10
+# the start-up time (in seconds) of a speaker on a smart plug that cuts its power
+STARTUP_TIME = DEFAULT_POWER_ON_STARTUP_TIME
 
 
 def _device(number: int) -> dict[IdentifierType, str]:
@@ -450,12 +450,19 @@ async def _sync_group(scenario: Scenario, *member_ids: str) -> str:
     return group.player_id
 
 
-async def _stop(scenario: Scenario, player_id: str) -> None:
-    """Stop what a player plays, letting the clock run for the stop to settle."""
+async def _stop(scenario: Scenario, player_id: str, *, idle: bool = True) -> None:
+    """
+    Stop what a player plays, letting the clock run for the stop to settle.
+
+    :param player_id: The player to stop.
+    :param idle: Whether the server has nothing left to do afterwards; False while a player
+        still starts up, which ends on a timer of the server.
+    """
     stop = await scenario.command(scenario.mass.players.cmd_stop(player_id))
     await scenario.advance(10)
     await stop
-    await scenario.idle()
+    if idle:
+        await scenario.idle()
 
 
 async def _switch_off(scenario: Scenario, speaker: FakeProtocol) -> FakePowerControl:
@@ -463,7 +470,8 @@ async def _switch_off(scenario: Scenario, speaker: FakeProtocol) -> FakePowerCon
     Put a speaker on a smart plug that cuts its power, and switch the plug off.
 
     That takes its device off the network. Its player then shows as available and powered
-    off, and its power counts as cut. The speaker needs STARTUP_TIME to start up.
+    off, and its power counts as cut. The speaker needs STARTUP_TIME to start up, as any
+    player does unless the user sets another time.
 
     :param speaker: The speaker, which is registered.
     :return: The plug.
@@ -473,10 +481,8 @@ async def _switch_off(scenario: Scenario, speaker: FakeProtocol) -> FakePowerCon
     )
     player_id = _player_id(scenario, speaker)
     await scenario.configure_player(player_id, power_control=plug.control_id)
-    # these settings are offered once the plug is the power control of the player
-    await scenario.configure_player(
-        player_id, power_control_cuts_power=True, power_on_startup_time=STARTUP_TIME
-    )
+    # this setting is offered once the plug is the power control of the player
+    await scenario.configure_player(player_id, power_control_cuts_power=True)
     await scenario.switch(plug, False)
     await scenario.unregister(speaker)
     await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY)

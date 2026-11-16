@@ -2055,6 +2055,37 @@ class TestExternalPowerOffEndsTheQueue:
         queue_stop.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("start", ["switches the power on", "is called off"])
+    async def test_the_stop_waits_for_a_start_that_waits_for_players_to_start_up(
+        self, mock_mass: MagicMock, start: str
+    ) -> None:
+        """
+        A start of the player that still waits is not called off by the stop of its queue.
+
+        The stop looks again once that wait is over: the queue plays on when the start
+        switched the power on, and is ended when the player is still off.
+        """
+        controller, player, protocol, queue_stop = self._standalone_playing_player(mock_mass)
+        protocol._attr_powered = False
+        _refresh(player)
+        wait: asyncio.Future[list[bool]] = asyncio.get_running_loop().create_future()
+        controller._member_power_ons[wait] = ("p1", frozenset({"member"}))
+        assert controller._has_waiting_start(player)
+
+        with virtual_loop_clock():
+            stopper = asyncio.create_task(controller._stop_queue_on_external_power_off("p1"))
+            await asyncio.sleep(5)
+            queue_stop.assert_not_awaited()
+            # the wait is over
+            del controller._member_power_ons[wait]
+            if start == "switches the power on":
+                protocol._attr_powered = True
+                _refresh(player)
+            await stopper
+
+        assert queue_stop.await_count == (0 if start == "switches the power on" else 1)
+
+    @pytest.mark.asyncio
     async def test_another_players_queue_is_left_alone(self, mock_mass: MagicMock) -> None:
         """A player hearing someone else's audio must not end that queue."""
         controller, player, protocol, queue_stop = self._standalone_playing_player(mock_mass)
@@ -3548,6 +3579,7 @@ class TestOfflinePowerControl:
         pending = asyncio.create_task(getattr(controller, command)("player_1", *arguments[command]))
         await asyncio.sleep(0.1)
         assert player.startup_ends_at is not None
+        assert controller._has_waiting_start(player)
         waits = record_lock_waits(controller)
 
         async with controller.get_group_and_player_lock("player_1"):
@@ -3558,6 +3590,7 @@ class TestOfflinePowerControl:
         protocol._attr_available = True
         await pending
         cast("AsyncMock", control.power_on).assert_awaited_once()
+        assert not controller._has_waiting_start(player)
 
     async def test_power_off_while_starting_up_aborts_the_pending_play(
         self, mock_mass: MagicMock
