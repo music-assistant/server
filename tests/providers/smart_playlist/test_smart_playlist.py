@@ -2240,7 +2240,7 @@ async def test_enrich_tracks_with_db_genres_only_queries_library_tracks() -> Non
     )
 
     mass.music.genres.get_genres_for_media_item = AsyncMock()
-    mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    mass.music.tracks.get_library_items_by_prov_id = AsyncMock(return_value=[])
 
     await plugin._enrich_tracks_with_db_genres([streaming_track])
 
@@ -2266,8 +2266,8 @@ async def test_enrich_tracks_with_db_genres_handles_empty_list() -> None:
 
 
 @pytest.mark.asyncio
-async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
-    """Seed mode should enrich genres when excluded_genre_ids or excluded_genre_names are set."""
+async def test_seed_exclusions_do_not_require_genre_enrichment() -> None:
+    """Genre exclusions use batch membership without fetching each track's genre metadata."""
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
@@ -2288,7 +2288,7 @@ async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
     # Mock _tracks_from_seeds to return our test track
     cast("Any", plugin)._tracks_from_seeds = AsyncMock(return_value=[track])
 
-    # Mock _enrich_tracks_with_db_genres to verify it gets called
+    # Exclusion-only rules no longer need per-track genre enrichment.
     enrich_mock = AsyncMock()
     cast("Any", plugin)._enrich_tracks_with_db_genres = enrich_mock
 
@@ -2297,6 +2297,7 @@ async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
     cast("Any", plugin)._get_album_ids_for_types = AsyncMock(return_value=[])
     cast("Any", plugin)._apply_exclusions = MagicMock(return_value=[track])
     cast("Any", plugin)._deduplicate_tracks = MagicMock(return_value=[track])
+    mass.music.genres.get_track_ids_for_genres = AsyncMock(return_value=set())
 
     # Test with excluded_genre_ids only (no included genres)
     rules = SmartPlaylistRules(
@@ -2306,8 +2307,8 @@ async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
     )
     await plugin._evaluate_rules(rules)
 
-    # Verify enrichment was called in seed mode
-    enrich_mock.assert_called_once()
+    enrich_mock.assert_not_called()
+    mass.music.genres.get_track_ids_for_genres.assert_awaited_once_with([1], track_ids=[123])
 
 
 @pytest.mark.asyncio
@@ -2323,8 +2324,8 @@ async def test_enrich_tracks_with_db_genres_handles_duplicate_item_ids() -> None
     # Create two different Track objects with the same library item_id
     mapping1 = ProviderMapping(
         item_id="123",
-        provider_domain="library",
-        provider_instance="library",
+        provider_domain="spotify",
+        provider_instance="spotify--1",
         available=True,
     )
     track1 = Track(
@@ -2339,8 +2340,8 @@ async def test_enrich_tracks_with_db_genres_handles_duplicate_item_ids() -> None
 
     mapping2 = ProviderMapping(
         item_id="123",
-        provider_domain="library",
-        provider_instance="library",
+        provider_domain="spotify",
+        provider_instance="spotify--1",
         available=True,
     )
     track2 = Track(
@@ -2363,7 +2364,8 @@ async def test_enrich_tracks_with_db_genres_handles_duplicate_item_ids() -> None
     )
     library_track = MagicMock()
     library_track.item_id = "123"
-    mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=library_track)
+    library_track.provider_mappings = {mapping1}
+    mass.music.tracks.get_library_items_by_prov_id = AsyncMock(return_value=[library_track])
 
     await plugin._enrich_tracks_with_db_genres([track1, track2])
 
@@ -3062,21 +3064,23 @@ async def test_filter_tracks_with_all_genres_filters_correctly() -> None:  # noq
 
     tracks = [track_1, track_2, track_3]
 
-    # Mock get_library_item_by_prov_id to resolve provider items to library items
+    # Resolve provider items to their distinct library IDs in batches.
     async def mock_get_library_item(
-        item_id: str, provider_instance_id_or_domain: str
-    ) -> MagicMock | None:
-        if provider_instance_id_or_domain == "spotify" and item_id == "abc":
+        provider_item_ids: list[str], provider_instance_id_or_domain: str, **_kwargs: Any
+    ) -> list[MagicMock]:
+        if provider_instance_id_or_domain == "spotify" and "abc" in provider_item_ids:
             lib_track = MagicMock()
             lib_track.item_id = "102"  # Library DB ID
-            return lib_track
-        if provider_instance_id_or_domain == "apple_music" and item_id == "xyz":
+            lib_track.provider_mappings = [track_2_mapping]
+            return [lib_track]
+        if provider_instance_id_or_domain == "apple_music" and "xyz" in provider_item_ids:
             lib_track = MagicMock()
             lib_track.item_id = "103"  # Library DB ID
-            return lib_track
-        return None
+            lib_track.provider_mappings = [track_3_mapping]
+            return [lib_track]
+        return []
 
-    cast("Any", plugin.mass.music.tracks).get_library_item_by_prov_id = mock_get_library_item
+    cast("Any", plugin.mass.music.tracks).get_library_items_by_prov_id = mock_get_library_item
 
     # Mock genres for each track:
     # Track 101: has genres 10 and 20 (matches requirement)
@@ -3146,21 +3150,23 @@ async def test_filter_tracks_with_all_genres_preserves_order() -> None:
 
     tracks = [track_3, track_1, track_2]
 
-    # Mock get_library_item_by_prov_id to resolve provider items to library items
+    # Resolve provider items to their distinct library IDs in batches.
     async def mock_get_library_item(
-        item_id: str, provider_instance_id_or_domain: str
-    ) -> MagicMock | None:
-        if provider_instance_id_or_domain == "spotify" and item_id == "abc":
+        provider_item_ids: list[str], provider_instance_id_or_domain: str, **_kwargs: Any
+    ) -> list[MagicMock]:
+        if provider_instance_id_or_domain == "spotify" and "abc" in provider_item_ids:
             lib_track = MagicMock()
             lib_track.item_id = "101"  # Library DB ID
-            return lib_track
-        if provider_instance_id_or_domain == "apple_music" and item_id == "xyz":
+            lib_track.provider_mappings = [track_1_mapping]
+            return [lib_track]
+        if provider_instance_id_or_domain == "apple_music" and "xyz" in provider_item_ids:
             lib_track = MagicMock()
             lib_track.item_id = "102"  # Library DB ID
-            return lib_track
-        return None
+            lib_track.provider_mappings = [track_2_mapping]
+            return [lib_track]
+        return []
 
-    cast("Any", plugin.mass.music.tracks).get_library_item_by_prov_id = mock_get_library_item
+    cast("Any", plugin.mass.music.tracks).get_library_items_by_prov_id = mock_get_library_item
 
     # All three tracks have both required genres
     async def mock_get_genres(_media_type: Any, _media_id: int) -> list[MagicMock]:

@@ -561,6 +561,33 @@ class GenreController(MediaControllerBase[Genre]):
             },
         )
 
+    async def get_track_ids_for_genres(
+        self, genre_ids: list[int], *, track_ids: list[int]
+    ) -> set[int]:
+        """
+        Return candidate track IDs mapped to any of the selected genres.
+
+        :param genre_ids: Genre database IDs to match.
+        :param track_ids: Candidate track database IDs to check.
+        """
+        if not genre_ids or not track_ids:
+            return set()
+        result: set[int] = set()
+        for start in range(0, len(track_ids), 500):
+            rows = await self.mass.music.database.get_rows_from_query(
+                f"SELECT DISTINCT media_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+                "WHERE media_type = :media_type "
+                "AND genre_id IN :genre_ids AND media_id IN :track_ids",
+                {
+                    "media_type": MediaType.TRACK.value,
+                    "genre_ids": genre_ids,
+                    "track_ids": track_ids[start : start + 500],
+                },
+                limit=0,
+            )
+            result.update(row["media_id"] for row in rows)
+        return result
+
     async def get_genre_exclusions_for_media_item(
         self, media_type: MediaType, media_id: str | int
     ) -> list[Genre]:
