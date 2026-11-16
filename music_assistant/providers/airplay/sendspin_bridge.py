@@ -47,7 +47,6 @@ from .constants import (
     AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
-    ClockReadiness,
     StreamingProtocol,
 )
 from .helpers import cli_clock_time, player_id_to_mac_address
@@ -899,22 +898,14 @@ class SendspinAirPlayBridge:
             queued audio the new anchor has to clear.
         :return: True when the stream is anchored, False when superseded.
         """
-        readiness, ready_at_unix_ms = await stream.wait_clock_ready(
+        # A stalled receiver is anchored anyway, like a group start and unlike a
+        # late joiner: a joiner is dropped because the session plays on without
+        # it, while here it would stop the speaker - and a stall is not evidence
+        # enough for that (a receiver that begins probing late still comes
+        # good). The stream itself warns about the stall once.
+        _, ready_at_unix_ms = await stream.wait_clock_ready(
             timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
         )
-        if readiness is ClockReadiness.STALLED:
-            # Anchored anyway, like a group start and unlike a late joiner: a
-            # joiner is dropped because the session plays on without it, while
-            # here it would stop the speaker - and a stall is not evidence
-            # enough for that. The binary reports it as a diagnosis rather than
-            # a verdict (a receiver that begins probing late still comes good)
-            # and re-arms that reporting per cycle, so a warm re-anchor is
-            # reading the cycle before it.
-            self.logger.warning(
-                "%s never answered the server's PTP clock, so this stream will be silent "
-                "until it does; anchoring anyway",
-                self.airplay_player.display_name,
-            )
         sendspin_now_us = self.sendspin_server.clock.now_us()
         unix_now = cli_clock_time()
         now_ms = int(unix_now * 1000)

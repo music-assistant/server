@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from aiosendspin.models.types import PairAbortReason, PairingCodeFormat, PairMethod
 from aiosendspin.noise.driver import HandshakeAbortedError
@@ -20,6 +20,10 @@ if TYPE_CHECKING:
         PairMethodDescriptor,
     )
     from aiosendspin.models.management import ManagementResultData
+
+    from music_assistant.mass import MusicAssistant
+
+    from .provider import SendspinProvider
 
 
 class SecurityActionError(Exception):
@@ -185,6 +189,24 @@ def bridge_client_id_variants(client_id: str) -> list[str]:
     except ValueError:
         return [client_id]
     return [client_id, f"{BRIDGE_PREFIX}{toggled:02x}{mac_hex[2:]}"]
+
+
+def holds_bridge_client(mass: MusicAssistant, client_id: str, protocol_id: str) -> bool:
+    """
+    Return whether the bridge of a protocol holds a bridge client: it registered it last.
+
+    Another bridge of the device can register the same client id while it is registered, and
+    holds it from then on. A bridge that stops only removes a client it holds.
+
+    :param mass: The Music Assistant instance.
+    :param client_id: The bridge client id.
+    :param protocol_id: The id of the protocol the bridge rides on.
+    """
+    sendspin_provider = cast("SendspinProvider | None", mass.get_provider("sendspin"))
+    return (
+        sendspin_provider is not None
+        and sendspin_provider.get_bridge_holder(client_id) == protocol_id
+    )
 
 
 def mac_from_bridge_client_id(client_id: str) -> str | None:

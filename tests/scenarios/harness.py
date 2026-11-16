@@ -164,6 +164,7 @@ class FakeProtocol(PlayerProtocol):
 
     Commands are applied to the reported state the way a well-behaved device reports them
     back (power, volume, playback), so the server never waits for a device that stays silent.
+    A device that is told to play media reports its position from 0, as a stream starts there.
     It has one config entry of its own (FAKE_SETTING), like a provider setting of the device.
     An object belongs to the server and provider instance it was created on; after a restart
     or a provider reload, Scenario.protocol() returns the current one.
@@ -232,7 +233,14 @@ class FakeProtocol(PlayerProtocol):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle a play media command."""
-        self._apply("play_media", media, playback_state=PlaybackState.PLAYING, current_media=media)
+        self._apply(
+            "play_media",
+            media,
+            playback_state=PlaybackState.PLAYING,
+            current_media=media,
+            elapsed_time=0,
+            elapsed_time_last_updated=cast("FakePlayerProvider", self.provider).wall_time(),
+        )
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle the enqueue of the next media."""
@@ -333,6 +341,7 @@ class FakePlayerProvider(PlayerProvider):
         config: ProviderConfig,
         devices: dict[str, _Device],
         timeline: list[tuple[str, tuple[Any, ...]]],
+        wall_time: Callable[[], float],
     ) -> None:
         """
         Initialize the provider.
@@ -342,8 +351,10 @@ class FakePlayerProvider(PlayerProvider):
         :param config: The provider instance config.
         :param devices: The devices of the scenario, by protocol id.
         :param timeline: The commands the devices of the scenario received, in order.
+        :param wall_time: Returns the wall clock time as the server reads it.
         """
         super().__init__(mass, manifest, config)
+        self.wall_time = wall_time
         self._devices = devices
         self._timeline = timeline
         self._protocols: dict[str, FakeProtocol] = {}
@@ -1161,7 +1172,9 @@ class Scenario:
         async def _setup_provider(
             mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
         ) -> FakePlayerProvider:
-            return FakePlayerProvider(mass, manifest, config, self._devices, self.timeline)
+            return FakePlayerProvider(
+                mass, manifest, config, self._devices, self.timeline, self.wall_time
+            )
 
         async def _load_module(manifest: ProviderManifest) -> Any:
             if manifest.domain in fake_domains:

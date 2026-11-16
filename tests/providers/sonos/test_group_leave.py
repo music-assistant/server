@@ -2,9 +2,8 @@
 
 import asyncio
 import logging
-import time
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiosonos.client import SonosLocalApiClient
@@ -135,6 +134,41 @@ async def _never_answers(*_args: object) -> None:
     await asyncio.Event().wait()
 
 
+async def _settle() -> None:
+    """Let everything that is ready to run, run."""
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+class _FrozenClock:
+    """The clock of the event loop, standing still until the test moves it."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """
+        Freeze the clock of the running event loop.
+
+        :param monkeypatch: The fixture that restores the loop's clock after the test.
+        """
+        loop = asyncio.get_running_loop()
+        self._now = loop.time()
+        monkeypatch.setattr(loop, "time", lambda: self._now)
+
+    async def advance(self, seconds: float) -> None:
+        """
+        Move the clock forward and run everything that falls due on the way.
+
+        :param seconds: How far to move the clock.
+        """
+        await _settle()
+        self._now += seconds
+        await _settle()
+
+
+def _remove(home: _Household, *player_ids: str) -> asyncio.Task[None]:
+    """Start the removal of speakers from the group of the leader."""
+    return asyncio.ensure_future(home.leader.set_members(player_ids_to_remove=list(player_ids)))
+
+
 @pytest.mark.asyncio
 async def test_a_removed_member_is_no_longer_synced_once_the_removal_returns() -> None:
     """A speaker that already knows it left is asked, ahead of its own late groups event."""
@@ -190,55 +224,69 @@ async def test_a_member_added_back_right_away_is_synced_again() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_removal_returns_as_soon_as_the_leader_answers() -> None:
+async def test_a_removal_returns_as_soon_as_the_leader_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The leader's answer to the command carries the new group, ahead of its late groups event."""
     home = _Household()
     home.answer_groups(MEMBER, LEFT)
+    # the clock never moves: a removal that waited on a timer would not have returned
+    _FrozenClock(monkeypatch)
 
-    start = time.monotonic()
-    await home.leader.set_members(player_ids_to_remove=[MEMBER])
-    elapsed = time.monotonic() - start
-    await asyncio.sleep(0)
+    removal = _remove(home, MEMBER)
+    await _settle()
 
-    assert elapsed < 1
+    assert removal.done()
+    await removal
     assert home.leader.client.player.group_members == [LEADER, OTHER]
     assert home.member.synced_to is None
 
 
 @pytest.mark.asyncio
-async def test_an_answer_without_the_group_waits_for_the_leaders_groups_event() -> None:
+async def test_an_answer_without_the_group_waits_for_the_leaders_groups_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Without the group in the answer, the change waits for the leader to report it."""
     home = _Household()
     home.apis[LEADER].groups.modify_group_members.side_effect = None
     home.apis[LEADER].groups.modify_group_members.return_value = {"_objectType": "groupInfo"}
     home.answer_groups(MEMBER, LEFT)
-    asyncio.get_running_loop().call_later(0.3, home.deliver_own_event, LEADER, LEFT)
+    clock = _FrozenClock(monkeypatch)
 
-    start = time.monotonic()
-    await home.leader.set_members(player_ids_to_remove=[MEMBER])
-    elapsed = time.monotonic() - start
-    await asyncio.sleep(0)
+    removal = _remove(home, MEMBER)
+    await clock.advance(0.5)
+    returned_before_the_event = removal.done()
+    home.deliver_own_event(LEADER, LEFT)
+    await clock.advance(0.1)
 
-    assert 0.3 <= elapsed < 1
+    assert not returned_before_the_event
+    assert removal.done()
+    await removal
     assert home.leader.client.player.group_members == [LEADER, OTHER]
     assert home.member.synced_to is None
 
 
 @pytest.mark.asyncio
-async def test_a_member_that_never_answers_does_not_hold_up_the_removal() -> None:
+async def test_a_member_that_never_answers_does_not_hold_up_the_removal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A speaker without power costs the removal no more than the bound, and no failure."""
     home = _Household()
     home.next_groups = BOTH_LEFT
     home.apis[MEMBER].groups.get_groups.side_effect = _never_answers
     home.answer_groups(OTHER, BOTH_LEFT)
 
-    start = time.monotonic()
-    with patch.object(player_module, "GROUPS_REFRESH_TIMEOUT", 0.2):
-        await home.leader.set_members(player_ids_to_remove=[MEMBER, OTHER])
-    elapsed = time.monotonic() - start
-    await asyncio.sleep(0)
+    clock = _FrozenClock(monkeypatch)
+    bound = player_module.GROUPS_REFRESH_TIMEOUT
 
-    assert elapsed < 1
+    removal = _remove(home, MEMBER, OTHER)
+    await clock.advance(bound - 0.5)
+    waiting_for_the_member = not removal.done()
+    await clock.advance(0.5)
+
+    assert waiting_for_the_member
+    assert removal.done()
+    await removal
     assert home.leader.client.player.group_members == [LEADER]
     # the speaker that answers is refreshed alongside the one that does not
     assert home.players[OTHER].synced_to is None
@@ -264,18 +312,23 @@ async def test_a_connection_error_on_a_refresh_does_not_fail_the_removal() -> No
 
 
 @pytest.mark.asyncio
-async def test_members_that_never_answer_cost_the_bound_once() -> None:
+async def test_members_that_never_answer_cost_the_bound_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The members of one change are asked at the same time, not one after the other."""
     home = _Household()
     home.next_groups = BOTH_LEFT
     for player_id in (MEMBER, OTHER):
         home.apis[player_id].groups.get_groups.side_effect = _never_answers
 
-    start = time.monotonic()
-    with patch.object(player_module, "GROUPS_REFRESH_TIMEOUT", 0.3):
-        await home.leader.set_members(player_ids_to_remove=[MEMBER, OTHER])
+    clock = _FrozenClock(monkeypatch)
 
-    assert time.monotonic() - start < 0.5
+    removal = _remove(home, MEMBER, OTHER)
+    # asked one after the other, the second would still be waiting once the first reached the bound
+    await clock.advance(player_module.GROUPS_REFRESH_TIMEOUT)
+
+    assert removal.done()
+    await removal
 
 
 @pytest.mark.asyncio
@@ -300,7 +353,7 @@ async def test_a_cancelled_refresh_is_still_cancelled() -> None:
     home = _Household()
     home.apis[MEMBER].groups.get_groups.side_effect = _never_answers
     refresh = asyncio.ensure_future(home.member._refresh_groups())
-    await asyncio.sleep(0.05)
+    await _settle()
 
     refresh.cancel()
 

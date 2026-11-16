@@ -257,8 +257,8 @@ async def test_saving_stores_each_value_with_who_declared_its_entry(
     assert mass.config.get_protocol_value(PROTOCOL_ID, PROTOCOL_SETTING) == "on"
     assert await mass.config.get_player_config_value(PLAYER_ID, PROTOCOL_SETTING) == "on"
 
-    # a value set back to its default leaves the config it was stored on
-    await mass.config.save_player_config(PLAYER_ID, {PROTOCOL_SETTING: "off"})
+    # a value reset to its default leaves the config it was stored on
+    await mass.config.save_player_config(PLAYER_ID, {PROTOCOL_SETTING: None})
 
     assert _stored_values(mass, CONF_PLAYERS, PLAYER_ID) == {CONF_HIDE_IN_UI: True}
     assert _stored_values(mass, CONF_PLAYER_PROTOCOLS, PROTOCOL_ID) == {

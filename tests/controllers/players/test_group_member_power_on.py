@@ -611,3 +611,52 @@ async def test_a_stop_of_a_group_that_plays_no_queue_calls_the_wait_off(
     with pytest.raises(PlayerUnavailableError, match="was called off"):
         await waiting
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("switched off", ["den"]),
+        ("still boots", ["den"]),
+        ("all fine", []),
+        ("without a power control", []),
+    ],
+)
+async def test_the_question_whether_a_start_powers_on_agrees_with_the_members_it_powers_on(
+    mock_mass: MagicMock, case: str, expected: list[str]
+) -> None:
+    """A group counts as powering on exactly when a start powers a member on, and which."""
+    setup = _setup(
+        mock_mass,
+        "kitchen",
+        "den",
+        switched_off=("den",) if case in ("switched off", "still boots") else (),
+    )
+    controller = setup.controller
+    member_ids = ["kitchen", "den"]
+    if case == "still boots":
+        await _call_off(setup, after=BOOT_TIME / 4)
+        await asyncio.sleep(BOOT_TIME / 4)
+    if case == "without a power control":
+        porch, protocol = attach_mock(
+            MockProvider("test_provider", instance_id="test", mass=mock_mass),
+            "proto_porch",
+            "Porch",
+            player_id="porch",
+        )
+        protocol._attr_available = False
+        porch.update_state(signal_event=False, force_update=True)
+        member_ids.append("porch")
+    switched_on_before = _power_ons(setup)
+
+    selected = controller._members_to_power_on(setup.group, member_ids)
+    selected_of_group = controller._members_to_power_on(setup.group)
+    await controller._power_on_members(setup.group, member_ids)
+
+    assert [member.player_id for member in selected] == expected
+    assert bool(selected_of_group) is bool(expected)
+    # a start switches the control on of a member that is off, and only waits for one that boots
+    switched_on = {
+        name for name, count in _power_ons(setup).items() if count > switched_on_before[name]
+    }
+    assert switched_on == (set(expected) if case == "switched off" else set())

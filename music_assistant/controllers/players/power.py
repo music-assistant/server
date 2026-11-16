@@ -559,14 +559,7 @@ class PowerMixin(_PlayerControllerBase):
         if _CONTINUES_PLAYBACK.get() or self.holds_player_lock(owner.player_id):
             return set()
         owner_members = (*owner.group_members, *owner.static_group_members)
-        members = [
-            member
-            for member_id in dict.fromkeys(owner_members if member_ids is None else member_ids)
-            if (member := self.get_player(member_id)) is not None
-            and (
-                (member.available and member.offline_by_power_control) or self._still_boots(member)
-            )
-        ]
+        members = self._members_to_power_on(owner, member_ids)
         if not members:
             return set()
         current_user = get_current_user()
@@ -622,6 +615,28 @@ class PowerMixin(_PlayerControllerBase):
             )
             return False
         return True
+
+    def _members_to_power_on(
+        self, owner: Player, member_ids: Iterable[str] | None = None
+    ) -> list[Player]:
+        """
+        Return the players a start of a group player or leader powers on or waits for.
+
+        A player that is switched off at its power control with its device not there, or
+        whose device still boots.
+
+        :param owner: The group player or leader that is about to play.
+        :param member_ids: The players to select from. The members of the owner when omitted.
+        """
+        owner_members = (*owner.group_members, *owner.static_group_members)
+        return [
+            member
+            for member_id in dict.fromkeys(owner_members if member_ids is None else member_ids)
+            if (member := self.get_player(member_id)) is not None
+            and (
+                (member.available and member.offline_by_power_control) or self._still_boots(member)
+            )
+        ]
 
     def _still_boots(self, player: Player) -> bool:
         """

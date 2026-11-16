@@ -70,6 +70,11 @@ class HeosPlayer(PlayerProtocol):
         """Return if the player requires flow mode."""
         return True
 
+    @property
+    def native_grouping_requires_own_stream(self) -> bool:
+        """Return True: HEOS can not pass an AirPlay input on to its group members."""
+        return True
+
     def __init__(self, provider: HeosPlayerProvider, device: PyHeosPlayer) -> None:
         """Initialize the Player."""
         super().__init__(provider, str(device.player_id))

@@ -337,3 +337,10 @@ def test_missing_progress_stays_none() -> None:
     assert protocol._attr_current_media.elapsed_time is None
     assert protocol._attr_current_media.duration is None
     assert protocol._attr_elapsed_time is None
+
+
+def test_group_members_need_the_stream_of_their_leader() -> None:
+    """Members are moved along when their leader renders through another protocol."""
+    player = HeosPlayer.__new__(HeosPlayer)
+
+    assert player.native_grouping_requires_own_stream is True
