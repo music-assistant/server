@@ -2948,8 +2948,14 @@ def _media(title: str) -> PlayerMedia:
     )
 
 
-def _metadata(title: str) -> dict[str, Any]:
-    """Return the metadata a slimproto player gets for that media."""
+def _metadata(title: str, *, samplerate: str = "44100", samplesize: str = "16") -> dict[str, Any]:
+    """
+    Return the metadata a slimproto player gets for that media.
+
+    :param title: The title of the media.
+    :param samplerate: The sample rate of the stream of the bridge, in Hz.
+    :param samplesize: The bit depth of that stream.
+    """
     return {
         "item_id": f"library://track/{title}",
         "title": title,
@@ -2957,6 +2963,8 @@ def _metadata(title: str) -> dict[str, Any]:
         "artist": "The Band",
         "image_url": f"http://192.168.1.10:8095/imageproxy?title={title}",
         "duration": 240,
+        "samplerate": samplerate,
+        "samplesize": samplesize,
     }
 
 
@@ -3001,6 +3009,24 @@ async def test_a_track_change_while_the_stream_is_requested_reaches_the_player(r
 
     assert rig.client.play_url.await_args.kwargs["metadata"] == _metadata("One")
     rig.client.update_metadata.assert_awaited_once_with(_metadata("Two"))
+
+
+async def test_the_player_shows_the_format_of_the_stream_of_the_bridge(rig: _Rig) -> None:
+    """Clients of the player show the format of the PCM stream the bridge plays on it."""
+    await rig.start_hires()
+    rig.protocol.player.current_media = _media("One")
+
+    await rig.start_stream()
+    rig.protocol.player.current_media = _media("Two")
+    rig.bridge.update_now_playing()
+    await _settle()
+
+    assert rig.client.play_url.await_args.kwargs["metadata"] == _metadata(
+        "One", samplerate="48000", samplesize="24"
+    )
+    rig.client.update_metadata.assert_awaited_once_with(
+        _metadata("Two", samplerate="48000", samplesize="24")
+    )
 
 
 async def test_a_bridge_that_does_not_play_shows_nothing(rig: _Rig) -> None:
