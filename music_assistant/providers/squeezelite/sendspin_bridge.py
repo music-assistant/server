@@ -869,7 +869,7 @@ class SendspinSqueezeliteBridge:
             return cast("MediaMetadata", {})
         # as for a stream of the protocol itself, less the queue item: that one is not
         # played by this protocol
-        return cast(
+        metadata = cast(
             "MediaMetadata",
             {
                 "item_id": media.uri,
@@ -880,6 +880,11 @@ class SendspinSqueezeliteBridge:
                 "duration": media.duration,
             },
         )
+        if (session := self._session) is not None:
+            # the format the player gets, which need not be that of the source
+            metadata["samplerate"] = str(session.audio_format.sample_rate)
+            metadata["samplesize"] = str(session.audio_format.bit_depth)
+        return metadata
 
     def _decide_start(self, session: BridgeSession) -> None:
         """Decide when the stream of a session starts, once everything that takes is known."""
