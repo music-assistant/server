@@ -2360,6 +2360,8 @@ def test_clock_stall_on_a_stream_being_torn_down_stays_silent(teardown_flag: str
     player = _make_player()
     stream = AirPlayStream(player)
     player.stream = stream
+    stream.session = MagicMock()
+    stream._start_was_join = True
     setattr(stream, teardown_flag, True)
 
     stream._handle_status_line(
@@ -2369,6 +2371,75 @@ def test_clock_stall_on_a_stream_being_torn_down_stays_silent(teardown_flag: str
 
     # the one-shot is still there for a stall that does describe the device
     assert stream._clock_stall_warned is False
+    stream.session.remove_stalled_joiner.assert_not_called()
+
+
+@pytest.mark.parametrize("already_warned", [False, True], ids=["first-stall", "warned-before"])
+def test_clock_stall_on_a_late_join_removes_the_joiner_from_its_session(
+    already_warned: bool,
+) -> None:
+    """
+    A late joiner whose clock stalls is handed to its session for removal.
+
+    The binary reports the stall seconds after the join is in place, so this is
+    where the joiner is taken out, also when the stall was warned about before.
+
+    :param already_warned: Whether the stream already warned about a stall.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    player.stream = stream
+    stream.session = MagicMock()
+    stream._start_was_join = True
+    stream._clock_stall_warned = already_warned
+
+    stream._handle_status_line(
+        "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
+        "ready_in_ms=0 ready_at_unix_ms=0"
+    )
+
+    stream.session.remove_stalled_joiner.assert_called_once_with(player)
+    player.provider.mass.create_task.assert_called_once_with(
+        stream.session.remove_stalled_joiner.return_value
+    )
+
+
+@pytest.mark.parametrize(
+    ("join", "in_session", "state"),
+    [
+        (False, True, "stalled"),
+        (True, False, "stalled"),
+        (True, True, "probing"),
+    ],
+    ids=["origin-start", "sessionless-bridge", "probing"],
+)
+def test_clock_stall_keeps_anything_but_a_late_joiner_in_place(
+    join: bool, in_session: bool, state: str
+) -> None:
+    """
+    Only a stall on a session's late join removes the player.
+
+    An origin member is only warned about, a Sendspin bridge stream has no
+    session to leave, and a receiver that probes is not stalled.
+
+    :param join: Whether the last START was a late join.
+    :param in_session: Whether the stream belongs to a stream session.
+    :param state: The clock_ready state the binary reports.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    player.stream = stream
+    session = MagicMock()
+    stream.session = session if in_session else None
+    stream._start_was_join = join
+
+    stream._handle_status_line(
+        f"[STATUS] clock_ready mode=ptp state={state} streak_ms=0 exchanges=1 "
+        "ready_in_ms=2000 ready_at_unix_ms=1750000002000"
+    )
+
+    session.remove_stalled_joiner.assert_not_called()
+    player.provider.mass.create_task.assert_not_called()
 
 
 @pytest.mark.parametrize("teardown_flag", ["superseded", "_stopping"])

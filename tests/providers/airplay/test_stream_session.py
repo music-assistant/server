@@ -1931,28 +1931,51 @@ async def test_late_join_without_a_projection_still_joins(readiness: ClockReadin
 
 
 @pytest.mark.asyncio
-async def test_late_joiner_with_a_stalled_clock_is_not_added() -> None:
-    """A receiver that never answered our clock renders silence, so keep it out of the group."""
-    now = 1_000_000.0
-    session = _make_session(now - 5.0, 5.0)
-    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
+async def test_stalled_late_joiner_is_removed_while_the_group_plays_on(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A joiner whose receiver never answered our clock renders silence, so it leaves the group."""
+    session = _make_session(time.time() - 5.0, 5.0)
+    session.prov.logger = logging.getLogger("test.airplay.session")
+    leader = session.sync_clients[0]
     player = _make_late_joiner()
-
-    def setup_stalled(*_args: Any, **_kwargs: Any) -> None:
-        _setup_stream(player)()
-        player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.STALLED, 0))
+    player.display_name = "Late Joiner"
+    _setup_stream(player)()
+    player.stream.session = session
+    session.sync_clients.append(player)
 
     with (
-        patch.object(session, "_start_client", side_effect=setup_stalled),
-        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
         patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client,
-        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
+        patch.object(session, "stop", new_callable=AsyncMock) as stop_session,
+        caplog.at_level(logging.WARNING),
     ):
-        await session.add_client(player)
+        await session.remove_stalled_joiner(player)
 
-    player.stream.start.assert_not_awaited()
-    assert player not in session.sync_clients
+    assert session.sync_clients == [leader]
     stop_client.assert_awaited_once_with(player, reason="receiver clock stalled")
+    player.set_state_from_stream.assert_called_once_with(PlaybackState.IDLE, stream=player.stream)
+    stop_session.assert_not_awaited()
+    assert len(caplog.records) == 1
+    assert "Removed late joiner Late Joiner from the group" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_stall_of_a_player_no_longer_in_the_session_changes_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A stall reported after the joiner already left the session neither warns nor tears down."""
+    session = _make_session(time.time() - 5.0, 5.0)
+    session.prov.logger = logging.getLogger("test.airplay.session")
+    player = _make_late_joiner()
+
+    with (
+        patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client,
+        caplog.at_level(logging.WARNING),
+    ):
+        await session.remove_stalled_joiner(player)
+
+    stop_client.assert_not_awaited()
+    assert not caplog.records
 
 
 @pytest.mark.asyncio

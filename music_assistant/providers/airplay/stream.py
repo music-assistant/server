@@ -2241,7 +2241,8 @@ class AirPlayStream:
         Parse a [STATUS] clock_ready line into the receiver's readiness projection.
 
         A ``stalled`` state means the receiver never answered our clock and will
-        render silence, which is warned about once per stream session.
+        render silence, which is warned about once per stream session. On a late
+        join it also takes the joiner out of its session.
 
         :param line: The status line, e.g. ``[STATUS] clock_ready mode=ptp
             state=probing streak_ms=0 exchanges=1 ready_in_ms=2300
@@ -2280,6 +2281,10 @@ class AirPlayStream:
                 fields.get("exchanges", "?"),
                 fields.get("streak_ms", "?"),
             )
+        if stalled and self._start_was_join and self.session and self._describes_the_device():
+            # The binary reaches its stall verdict seconds after the join is in
+            # place, so the session is told here rather than at the join.
+            self.mass.create_task(self.session.remove_stalled_joiner(self.player))
         # NTP timing has no receiver clock to wait for, and a state without a
         # projection resolves the wait with nothing so a caller falls back
         # instead of blocking on evidence that will not arrive. A stalled clock
