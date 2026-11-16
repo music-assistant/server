@@ -14,7 +14,17 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.mass import MusicAssistant
 
+BOOK_PROVIDER = "filesystem_local--cleanup"
 PODCAST_PROVIDER = "podcastfeed--cleanup"
+
+
+def _mapping(item_id: str, provider_instance: str, in_library: bool) -> ProviderMapping:
+    return ProviderMapping(
+        item_id=item_id,
+        provider_domain=provider_instance.split("--", maxsplit=1)[0],
+        provider_instance=provider_instance,
+        in_library=in_library,
+    )
 
 
 def _episode(item_id: str, podcast_item_id: str) -> PodcastEpisode:
@@ -30,53 +40,48 @@ def _episode(item_id: str, podcast_item_id: str) -> PodcastEpisode:
             name=podcast_item_id,
             media_type=MediaType.PODCAST,
         ),
-        provider_mappings={
-            ProviderMapping(
-                item_id=item_id,
-                provider_domain="podcastfeed",
-                provider_instance=PODCAST_PROVIDER,
-            )
-        },
+        provider_mappings={_mapping(item_id, PODCAST_PROVIDER, in_library=False)},
     )
 
 
 async def test_cleanup_keeps_library_progress(mass: MusicAssistant) -> None:
-    """Old rows are removed, unless they hold the progress of a library audiobook or podcast."""
+    """
+    Old rows are removed, unless they hold the progress of a library audiobook or podcast.
+
+    A library row that only holds a dislike does not count as in the library.
+    """
     user = await mass.webserver.auth.create_user("cleanup")
-    audiobook = await mass.music.audiobooks.add_item_to_library(
-        Audiobook(
-            item_id="book_1",
-            provider="filesystem_local--cleanup",
-            name="Book",
-            provider_mappings={
-                ProviderMapping(
-                    item_id="book_1",
-                    provider_domain="filesystem_local",
-                    provider_instance="filesystem_local--cleanup",
-                )
-            },
+    book_ids = {}
+    for item_id, in_library in (("book_1", True), ("book_disliked", False)):
+        book = await mass.music.audiobooks.add_item_to_library(
+            Audiobook(
+                item_id=item_id,
+                provider=BOOK_PROVIDER,
+                name=item_id,
+                provider_mappings={_mapping(item_id, BOOK_PROVIDER, in_library)},
+            )
         )
-    )
-    await mass.music.podcasts.add_item_to_library(
-        Podcast(
-            item_id="podcast_1",
-            provider=PODCAST_PROVIDER,
-            name="Podcast",
-            provider_mappings={
-                ProviderMapping(
-                    item_id="podcast_1",
-                    provider_domain="podcastfeed",
-                    provider_instance=PODCAST_PROVIDER,
-                )
-            },
+        book_ids[item_id] = book.item_id
+    for item_id, in_library in (("podcast_1", True), ("podcast_disliked", False)):
+        await mass.music.podcasts.add_item_to_library(
+            Podcast(
+                item_id=item_id,
+                provider=PODCAST_PROVIDER,
+                name=item_id,
+                provider_mappings={_mapping(item_id, PODCAST_PROVIDER, in_library)},
+            )
         )
-    )
-    for episode in (_episode("episode_1", "podcast_1"), _episode("episode_2", "podcast_2")):
+    for episode in (
+        _episode("episode_1", "podcast_1"),
+        _episode("episode_2", "podcast_2"),
+        _episode("episode_disliked", "podcast_disliked"),
+    ):
         await mass.music.mark_item_played(
             episode, fully_played=False, seconds_played=60, userid=user.user_id
         )
     for item_id, provider, media_type in (
-        (audiobook.item_id, "library", "audiobook"),
+        (book_ids["book_1"], "library", "audiobook"),
+        (book_ids["book_disliked"], "library", "audiobook"),
         ("removed_book", "library", "audiobook"),
         ("track_1", "library", "track"),
     ):
@@ -100,4 +105,4 @@ async def test_cleanup_keeps_library_progress(mass: MusicAssistant) -> None:
     await mass.music._cleanup_database()
 
     rows = await mass.music.database.get_rows(DB_TABLE_MEDIA_PROGRESS, {"userid": user.user_id})
-    assert sorted(row["item_id"] for row in rows) == sorted([audiobook.item_id, "episode_1"])
+    assert sorted(row["item_id"] for row in rows) == sorted([book_ids["book_1"], "episode_1"])

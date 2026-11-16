@@ -28,6 +28,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     PlayerUnavailableError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
@@ -141,7 +142,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # another load of the item found its track in the meantime
             return
         with user_auth_context(user):
-            track = await self._external_track_on_a_provider(external_track.item_id)
+            try:
+                track = await self._external_track_on_a_provider(external_track.item_id)
+            except ProviderUnavailableError as err:
+                # the queue keeps the item and stops for an unavailable source, as it does
+                # for one that asks to back off
+                raise ResourceTemporarilyUnavailable(str(err)) from err
         if queue_item.media_item is not external_track:
             # the load that shared this lookup already put the track in place
             return
@@ -892,7 +898,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             queue_items = [
                 build_queue_item(queue_id, track, origin=origin_for(artist, track, pin=False))
                 for track in tracks
-                if track.available
+                if can_be_enqueued(track)
             ]
             if queue_items:
                 break

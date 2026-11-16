@@ -1867,6 +1867,97 @@ protocol reaches it again, and the plug is not switched a second time.
   two protocols, one of which reads available for a while after the power is cut.
 - Proven by: `test_power_control.py::test_a_new_start_waits_again_for_a_member_whose_own_protocol_is_not_back`
 
+### GROUP-48 · A sync group is not led by a member that can group with none of the others
+
+Downstairs is a sync group of Garden, Kitchen and Office, in that order, and Garden shares no
+output with the other two. The user plays Downstairs: Kitchen leads, Office follows it, and Garden
+is left out, which is logged. A first member that can group with some of the others keeps leading,
+whoever could lead more: when Garden can group with Office only, Garden leads Office and the rest
+is left out. When no member can group with any other, Downstairs plays on its first member alone.
+
+- End-to-end: **possible with** two Squeezelite players and a third player that has no output in
+  common with them, listed first.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_is_not_led_by_a_member_that_can_group_with_none_of_the_others`
+  - `test_grouping.py::test_a_first_member_that_can_group_with_some_of_the_others_leads_the_sync_group`
+  - `test_grouping.py::test_a_sync_group_whose_members_can_not_group_plays_on_its_first_member`
+
+### GROUP-49 · A new leader of a sync group is one that can group with the others
+
+Downstairs plays with Kitchen leading Office and Den. Garden, the next member in its list, was off
+the network when it started and came back without an output it shares with them. When Kitchen
+leaves the group, Office leads it, Den follows Office, and Garden is left out. A player the user
+adds to Downstairs while it does not play is checked against the member that will lead it, not
+against a first member that can not lead the others.
+
+- End-to-end: **possible with** three Squeezelite players and a fourth player that loses its
+  shared output while it is away.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_whose_leader_leaves_is_led_by_a_member_that_can_group_with_the_others`
+  - `test_grouping.py::test_a_player_added_to_an_idle_sync_group_is_checked_against_the_member_that_leads`
+
+### GROUP-50 · What a member does elsewhere does not cost it its place in a sync group
+
+Downstairs is a sync group of Kitchen, Office and Den, in that order. Members that follow a
+leader outside the group when Downstairs plays are released and play in it, with its first
+member leading as it would have. A member that plays as the leader of a group of its own does
+not take Downstairs over: the first member leads, and that member is left out and keeps playing
+with its own group. That also holds when the first member can group with none of the others: it
+plays Downstairs alone then. A first member that plays an input of its own, which narrows what
+it can group with for as long as that plays, keeps leading as well.
+
+- End-to-end: **possible with** three Squeezelite players and a fourth player outside the group.
+- Proven by:
+  - `test_grouping.py::test_members_that_follow_a_leader_outside_a_sync_group_are_not_passed_over`
+  - `test_grouping.py::test_a_member_that_leads_another_playing_group_does_not_take_a_sync_group`
+  - `test_grouping.py::test_a_member_that_leads_players_of_its_own_does_not_replace_the_first_member`
+  - `test_grouping.py::test_a_first_member_that_plays_an_input_of_its_own_keeps_leading_the_sync_group`
+### GROUP-53 · Adding to the queue of a switched-off speaker does not switch it on
+
+The user's default for tracks is to add them, or to play them next. A client plays a track
+without naming an option, on Den, a speaker switched off at its plug, or on Downstairs, a group
+with Den as a member. The track is only added: Den's plug stays off, the request does not wait,
+and nothing plays. With the default to play, the same request switches Den's plug on and waits
+for the device, as any start does.
+
+- End-to-end: **possible with** a power control the lab can switch, and a core setting for the
+  default enqueue option of tracks.
+- Proven by:
+  - `test_group_power_on.py::test_media_that_is_only_added_by_default_switches_nothing_on`
+  - `test_group_power_on.py::test_media_that_plays_by_default_switches_its_power_control_on`
+
+### GROUP-54 · BBC Sounds' seek back to the live edge switches no member on
+
+The user starts a BBC Sounds programme that is on air at a point past the live edge, on
+Downstairs, a group with Den, a speaker switched off at its plug, as a member. BBC Sounds seeks
+the queue back to where the stream really starts. That seek is no start of the group: Den's plug
+is not switched on, and nothing waits for Den.
+
+- End-to-end: **no**: it needs BBC Sounds' own stream of a live programme, which the lab does not
+  serve.
+- Proven by: `tests/providers/bbc_sounds/test_live_rewind.py::test_the_seek_back_to_the_live_edge_switches_no_member_of_a_group_on`
+
+### GROUP-55 · MusicCast's own step to the next item switches no member on
+
+Downstairs, a group with Den, a speaker switched off at its plug, plays the queue of Office, a
+MusicCast speaker. Office reads idle at the end of a track, and MusicCast steps its queue to the
+next item by itself. That step is no start of the group: Den's plug is not switched on, and
+nothing waits for Den.
+
+- End-to-end: **no**: it needs MusicCast's own player, which the lab does not run.
+- Proven by: `tests/providers/musiccast/test_player.py::test_end_of_track_advance_switches_no_member_of_a_group_on`
+
+### GROUP-51 · Members on the leader's own stream follow it onto AirPlay, or leave
+
+Kitchen plays with Office and Den on HEOS, which can not pass AirPlay on to its members. The
+user adds Office again and Patio, which only has AirPlay. Kitchen's playback moves to its AirPlay
+receiver, which takes Patio and Office in one call. Den has no AirPlay receiver: it leaves the
+group, and that is logged as a warning.
+
+- End-to-end: **possible with** two HEOS speakers with AirPlay, a HEOS speaker without it, and an
+  AirPlay receiver.
+- Proven by: `test_grouping.py::test_members_on_the_leaders_own_stream_follow_it_onto_airplay`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered

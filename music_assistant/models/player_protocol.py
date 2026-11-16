@@ -151,6 +151,7 @@ class PlayerProtocol(ABC):
     # on its own source list counts as a takeover of the remembered MA queue. Leave at
     # False for devices that also list the transport our own stream arrives on.
     _attr_trusts_reported_source: bool = False
+    _attr_paused_position_reliable: bool = False
 
     def __init__(self, provider: PlayerProvider, protocol_id: str) -> None:
         """Initialize the protocol object."""
@@ -435,6 +436,17 @@ class PlayerProtocol(ABC):
         in, so a service Music Assistant has no name of its own for is recognised too.
         """
         return self._attr_trusts_reported_source
+
+    @property
+    def paused_position_reliable(self) -> bool:
+        """
+        Return if the paused player's elapsed time is the device's own report of its position.
+
+        A paused player's position is not trusted by default, as many players reset or
+        freeze it. Set this only while the elapsed time comes from the device itself,
+        so the queue (also in flow mode) follows it while paused.
+        """
+        return self._attr_paused_position_reliable
 
     @property
     def group_members(self) -> list[str]:

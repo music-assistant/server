@@ -560,8 +560,10 @@ class SetupFlowMixin:
             self.set(f"{conf_key}/setup_data", snapshot)
             raise
         except Exception as err:
-            # reloading with the new values failed: restore the previous setup_data
+            # reloading with the new values failed: restore the previous setup_data and bring
+            # the instance back up on it before the flow can retry
             self.set(f"{conf_key}/setup_data", snapshot)
+            await self.mass.load_provider(instance_id)
             raise SetupFlowError(
                 str(err) or err.__class__.__name__,
                 translation_key=getattr(err, "translation_key", None),

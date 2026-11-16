@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tarfile
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -208,9 +208,7 @@ def determine_auto_release(
 
     if channel == "stable":
         # during an RC window the stable branch already carries next-minor content
-        if latest_rc is not None and (
-            latest_stable is None or compare_release_versions(latest_rc, latest_stable) == "newer"
-        ):
+        if _in_rc_window(latest_rc, latest_stable):
             msg = (
                 f"An RC newer than the latest stable release exists ({latest_rc}); "
                 "create the next stable release manually via the Create Release workflow"
@@ -252,6 +250,39 @@ def determine_auto_release(
         previous_tag=previous_tag,
         commits_since=commits_since,
     )
+
+
+def next_release_line(branch: str, tags: Iterable[str]) -> str:
+    """
+    Return the ``<major>.<minor>`` line of the next release from a branch, as auto-release names it.
+
+    For ``dev`` that is the line of the next beta; for ``stable`` the line of the next stable
+    release, which in an RC window is the line of the release candidate.
+
+    :param branch: ``dev`` or ``stable``.
+    :param tags: The tags of the repository.
+    """
+    tags = list(tags)
+    latest = {
+        channel: max(
+            (tag for tag in tags if pattern.fullmatch(tag)), key=_release_version_key, default=None
+        )
+        for channel, pattern in CHANNEL_PATTERNS.items()
+    }
+    if branch == channel_branch("stable"):
+        if _in_rc_window(latest["rc"], latest["stable"]):
+            version = _next_rc(latest["rc"], latest["beta"])
+        else:
+            version = _next_stable(latest["stable"])
+    else:
+        version = _next_beta(latest["beta"], latest["stable"])
+    base = next(
+        match.group("base")
+        for pattern in CHANNEL_PATTERNS.values()
+        if (match := pattern.fullmatch(version))
+    )
+    major, minor, _patch = _version_tuple(base)
+    return f"{major}.{minor}"
 
 
 def previous_release_tag(
@@ -624,6 +655,12 @@ def set_addon_version(config_path: Path, version: str) -> None:
     if replacements != 1:
         raise ReleaseWorkflowError(f"Expected one version field in {config_path}")
     config_path.write_text(config, encoding="utf-8")
+
+
+def _in_rc_window(latest_rc: str | None, latest_stable: str | None) -> bool:
+    return latest_rc is not None and (
+        latest_stable is None or compare_release_versions(latest_rc, latest_stable) == "newer"
+    )
 
 
 def _next_stable(latest_stable: str | None) -> str:
