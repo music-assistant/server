@@ -140,6 +140,7 @@ class AudioSourceMixin(_PlayerControllerBase):
     - Committing a source's move between players once its stream is claimed
     - Resolving that source (and its owning plugin) for command proxying
     - Receiving the live metadata the owning plugin pushes about the source
+    - Showing what audio analysis recognised in the source while the plugin reports nothing
     - Selecting a source on a player, and handing a command on to the source playing on it
     """
 
@@ -279,6 +280,56 @@ class AudioSourceMixin(_PlayerControllerBase):
         session.stream_metadata_last_updated = time.time()
         session.stream_metadata_reported = True
         self.trigger_player_update(player_id)
+
+    def show_analysis_metadata(
+        self,
+        session: AudioSourceSession,
+        playback_session_id: str,
+        stream_session_id: str | None,
+        stream_metadata: StreamMetadata,
+    ) -> None:
+        """
+        Show what audio analysis recognised in the live source a session plays.
+
+        Ignored once the source's plugin has reported metadata itself, and for a stream
+        that no longer serves the session.
+
+        :param session: The session the analysed stream serves.
+        :param playback_session_id: The session's playback session id when the analysed
+            stream started.
+        :param stream_session_id: The session's stream token when the analysed stream started.
+        :param stream_metadata: What the analysis recognised.
+        """
+        if (
+            self._source_sessions.get(session.player_id) is not session
+            or session.playback_session_id != playback_session_id
+            or session.stream_session_id != stream_session_id
+            or session.stream_metadata_reported
+        ):
+            return
+        session.stream_metadata = stream_metadata
+        session.stream_metadata_last_updated = time.time()
+        self.trigger_player_update(session.player_id)
+
+    def withdraw_analysis_metadata(
+        self, session: AudioSourceSession, stream_metadata: StreamMetadata
+    ) -> None:
+        """
+        Withdraw metadata shown with show_analysis_metadata, if the session still shows it.
+
+        The session falls back to the metadata of its stream details.
+
+        :param session: The session the metadata was shown on.
+        :param stream_metadata: The metadata that was shown.
+        """
+        if session.stream_metadata is not stream_metadata:
+            return
+        session.stream_metadata = (
+            session.streamdetails.stream_metadata if session.streamdetails else None
+        )
+        session.stream_metadata_last_updated = time.time()
+        if self._source_sessions.get(session.player_id) is session:
+            self.trigger_player_update(session.player_id)
 
     def refresh_source(self, player_id: str, source: AudioSource) -> None:
         """

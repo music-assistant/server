@@ -294,16 +294,16 @@ class AudioAnalysisProvider(Provider):
         """
         Report what plays right now in the stream of an analysis session, such as a recognised song.
 
-        Players show it for a radio stream or a live source, as long as that stream or the
-        plugin of that source reports no metadata of its own. It is never stored.
+        Reported metadata is shown for a live source, while the source's plugin reports none
+        itself, until the session ends. It is never stored.
 
         :param session_id: The analysis session ID.
         :param stream_metadata: What plays right now.
         """
-        if (session := self._sessions.get(session_id)) is None:
+        if session_id not in self._sessions:
             return
-        self.mass.streams.audio_analysis.show_stream_metadata(
-            session_id, session.streamdetails, stream_metadata
+        self.mass.streams.audio_analysis.show_source_metadata(
+            self.instance_id, session_id, stream_metadata
         )
 
     async def cancel(self, session_id: str) -> None:

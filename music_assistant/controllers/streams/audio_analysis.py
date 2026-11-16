@@ -260,6 +260,9 @@ class _LiveSourceAnalysis:
     """The audio of a live source on its way to the analysis providers."""
 
     source_session: AudioSourceSession
+    # the stream this analysis follows: what it recognises is shown for that stream only
+    playback_session_id: str
+    stream_session_id: str | None
     # one second of audio per block, as the providers get it from a buffer
     block_size: int
     blocks: asyncio.Queue[bytes] = dataclasses.field(
@@ -267,6 +270,9 @@ class _LiveSourceAnalysis:
     )
     pending: bytearray = dataclasses.field(default_factory=bytearray)
     dropped_seconds: int = 0
+    # the metadata last reported for the source, and the provider that reported it
+    reported: StreamMetadata | None = None
+    reported_by: str | None = None
 
 
 class AudioAnalysisController(AudioAnalysisDatabaseMixin):
@@ -302,10 +308,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         self._idle_unload_task: asyncio.Task[None] | None = None
         # In-flight provider finalizes: their session is already gone, but the models are not.
         self._finalize_tasks: set[asyncio.Task[None]] = set()
-        # Live source sessions by session key, alive from their start until their stream ends.
+        # Live source sessions by session key, from their start until their worker ends.
         self._live_sources: dict[str, _LiveSourceAnalysis] = {}
-        # The metadata a provider last reported per session, to tell it from the stream's own.
-        self._reported_metadata: dict[str, StreamMetadata] = {}
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -328,7 +332,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 tasks.append(self._idle_unload_task)
                 self._idle_unload_task = None
             for task in tasks:
-                if not task.done():
+                # a stopped live source worker is already releasing its session
+                if not task.done() and not task.cancelling():
                     task.cancel()
             for session_key in list(self._active_sessions):
                 self._cancel_providers(session_key)
@@ -481,7 +486,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         Start offering the audio of a live source to the providers that may analyse it.
 
         Returns the session key to pass to feed_source_analysis and stop_source_analysis, or
-        None when no provider is offered this source. Nothing of the session is stored.
+        None when no provider analyses this source. Nothing of the session is stored.
 
         :param source_session: The live source session the stream plays.
         :param streamdetails: The stream details of the source.
@@ -497,14 +502,20 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         # one session per stream: the key of a buffer session (the uri) is not unique here,
         # as a reconnect can open the next stream of a source before the last one ends
         session_key = f"{streamdetails.uri}#{uuid4().hex[:8]}"
-        self._live_sources[session_key] = _LiveSourceAnalysis(
-            source_session=source_session, block_size=pcm_format.pcm_sample_size
+        live = _LiveSourceAnalysis(
+            source_session=source_session,
+            playback_session_id=source_session.playback_session_id,
+            stream_session_id=source_session.stream_session_id,
+            block_size=pcm_format.pcm_sample_size,
         )
-        self._workers[session_key] = self.mass.create_task(
-            self._source_analysis_worker(
-                session_key, streamdetails, pcm_format, providers, source_session.source
-            )
+        self._live_sources[session_key] = live
+        worker = self.mass.create_task(
+            self._source_analysis_worker(session_key, live, streamdetails, pcm_format, providers)
         )
+        if worker.done():
+            # every provider declined before the worker had to wait for anything
+            return None
+        self._workers[session_key] = worker
         return session_key
 
     def feed_source_analysis(self, session_key: str, pcm_chunk: bytes) -> None:
@@ -539,51 +550,31 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         :param session_key: The key start_source_analysis returned.
         """
         if self._live_sources.pop(session_key, None) is None:
+            # the worker already ended, or is releasing the session
             return
-        if session_key not in self._active_sessions:
-            # still starting: the worker cancels the providers it started once it sees this
-            return
-        worker = self._workers.pop(session_key, None)
-        if worker is not None and not worker.done():
+        if (worker := self._workers.get(session_key)) is not None:
             worker.cancel()
-        self._cancel_providers(session_key)
 
-    def show_stream_metadata(
-        self, session_key: str, streamdetails: StreamDetails, stream_metadata: StreamMetadata
+    def show_source_metadata(
+        self, instance_id: str, session_key: str, stream_metadata: StreamMetadata
     ) -> None:
         """
-        Show the metadata an analysis provider reported for what plays in a session's stream.
+        Show the metadata an analysis provider reported for the live source of a session.
 
-        Called by AudioAnalysisProvider.report_stream_metadata. A radio stream shows it while
-        the stream reports no metadata itself, a live source while its plugin reports none.
+        Called by AudioAnalysisProvider.report_stream_metadata; a report about any other
+        session is ignored. It is withdrawn when the session ends or the provider leaves it.
 
+        :param instance_id: Instance id of the reporting provider.
         :param session_key: The analysis session the metadata is about.
-        :param streamdetails: The stream details of that session.
         :param stream_metadata: What plays right now.
         """
-        if session_key not in self._active_sessions:
+        if (live := self._live_sources.get(session_key)) is None:
             return
-        if streamdetails.media_type == MediaType.AUDIO_SOURCE:
-            if (live := self._live_sources.get(session_key)) is None:
-                return
-            source_session = live.source_session
-            if (
-                self.mass.players.get_audio_source_session(source_session.player_id)
-                is not source_session
-                or source_session.stream_metadata_reported
-            ):
-                return
-            source_session.stream_metadata = stream_metadata
-            source_session.stream_metadata_last_updated = time.time()
-            self.mass.players.trigger_player_update(source_session.player_id)
-        elif streamdetails.media_type == MediaType.RADIO:
-            current = streamdetails.stream_metadata
-            if current is not None and current is not self._reported_metadata.get(session_key):
-                return
-            self._reported_metadata[session_key] = stream_metadata
-            streamdetails.stream_metadata = stream_metadata
-            if streamdetails.queue_id:
-                self.mass.player_queues.signal_update(streamdetails.queue_id)
+        live.reported = stream_metadata
+        live.reported_by = instance_id
+        self.mass.players.show_analysis_metadata(
+            live.source_session, live.playback_session_id, live.stream_session_id, stream_metadata
+        )
 
     def release_provider(self, instance_id: str) -> None:
         """
@@ -598,6 +589,9 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
             if not provider_ids:
                 # with no provider left, the session's reader stops at its next chunk
                 self._active_sessions.pop(session_key, None)
+        for live in self._live_sources.values():
+            if live.reported_by == instance_id:
+                self._withdraw_source_metadata(live)
 
     async def set_audio_analysis(
         self,
@@ -1768,7 +1762,6 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
     def _finalize_providers(self, session_key: str) -> None:
         """Finalize each provider in the session."""
-        self._reported_metadata.pop(session_key, None)
         provider_ids = self._active_sessions.pop(session_key, None)
         if not provider_ids:
             return
@@ -1783,7 +1776,6 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
     def _cancel_providers(self, session_key: str) -> None:
         """Cancel each provider in the session."""
-        self._reported_metadata.pop(session_key, None)
         provider_ids = self._active_sessions.pop(session_key, None)
         if not provider_ids:
             return
@@ -1980,45 +1972,61 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
     async def _source_analysis_worker(
         self,
         session_key: str,
+        live: _LiveSourceAnalysis,
         streamdetails: StreamDetails,
         pcm_format: AudioFormat,
         providers: list[AudioAnalysisProvider],
-        source: AudioSource,
     ) -> None:
         """
-        Start the providers on a live source and hand them its audio until its stream ends.
+        Run the analysis of a live source until its stream ends or no provider is left.
+
+        Owns everything of the session: on its way out it releases it at whatever stage
+        it was in.
 
         :param session_key: Key of the live source session.
+        :param live: The live source session.
         :param streamdetails: The stream details of the source.
         :param pcm_format: PCM format of the fed audio.
         :param providers: The providers offered this source.
-        :param source: The live source the stream plays.
         """
-        provider_ids = await self._start_analysis_on_providers(
-            session_key, streamdetails, pcm_format, providers, source
-        )
-        self._active_sessions[session_key] = provider_ids
-        live = self._live_sources.get(session_key)
-        if live is None or not provider_ids:
-            # the stream ended while the providers started, or none accepted
-            self._workers.pop(session_key, None)
-            self._live_sources.pop(session_key, None)
-            self._cancel_providers(session_key)
-            return
         try:
+            provider_ids = await self._start_analysis_on_providers(
+                session_key, streamdetails, pcm_format, providers, live.source_session.source
+            )
+            if not provider_ids:
+                return
+            self._active_sessions[session_key] = provider_ids
             while session_key in self._active_sessions:
                 block = await live.blocks.get()
                 await self._distribute_chunk(session_key, block)
+                if live.reported_by is not None and live.reported_by not in provider_ids:
+                    self._withdraw_source_metadata(live)
         finally:
-            self._workers.pop(session_key, None)
-            # no provider is left, or the stream ended: either way nothing is fed any more
             self._live_sources.pop(session_key, None)
+            self._active_sessions.pop(session_key, None)
+            self._withdraw_source_metadata(live)
+            # every offered provider, as one whose start was interrupted holds part of a session
+            for provider in providers:
+                try:
+                    await provider.cancel(session_key)
+                except Exception as err:
+                    self.logger.warning(
+                        "Failed to cancel analysis on provider %s: %s", provider.name, err
+                    )
+            self._workers.pop(session_key, None)
             if live.dropped_seconds:
                 self.logger.debug(
                     "Analysis of %s dropped %ds of the live source",
                     session_key,
                     live.dropped_seconds,
                 )
+
+    def _withdraw_source_metadata(self, live: _LiveSourceAnalysis) -> None:
+        """Withdraw what the analysis of a live source reported, if the source still shows it."""
+        if live.reported is None:
+            return
+        self.mass.players.withdraw_analysis_metadata(live.source_session, live.reported)
+        live.reported = live.reported_by = None
 
     def _cpu_count(self) -> int:
         """Return the CPU core count available to this process (fallback 4 when unknown)."""

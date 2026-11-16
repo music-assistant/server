@@ -205,6 +205,7 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.players.audio_sources import AudioSourceSession
+    from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player_protocol import PlayerProtocol
     from music_assistant.models.provider import Provider
@@ -645,6 +646,59 @@ def _segments_for_seconds(durations: list[float], seconds: float) -> int:
         if covered >= seconds:
             return count
     return len(durations)
+
+
+class _SourceAnalysisTap:
+    """
+    Hand the audio of a live source to the analysis providers that follow it.
+
+    A failure of the analysis switches the tap off for the rest of the stream: it is logged
+    once and never reaches the source's own audio.
+    """
+
+    def __init__(
+        self,
+        audio_analysis: AudioAnalysisController,
+        logger: logging.Logger,
+        source_session: AudioSourceSession,
+        streamdetails: StreamDetails,
+        pcm_format: AudioFormat,
+    ) -> None:
+        """Start the analysis of the source, if any provider follows it."""
+        self._audio_analysis = audio_analysis
+        self._logger = logger
+        self._session_key: str | None = None
+        try:
+            self._session_key = audio_analysis.start_source_analysis(
+                source_session, streamdetails, pcm_format
+            )
+        except Exception as err:
+            self._log_failure(err)
+
+    def feed(self, chunk: bytes) -> None:
+        """Hand the next audio of the source to its analysis."""
+        if self._session_key is None:
+            return
+        try:
+            self._audio_analysis.feed_source_analysis(self._session_key, chunk)
+        except Exception as err:
+            self._log_failure(err)
+            self.stop()
+
+    def stop(self) -> None:
+        """End the analysis of the source."""
+        session_key, self._session_key = self._session_key, None
+        if session_key is None:
+            return
+        try:
+            self._audio_analysis.stop_source_analysis(session_key)
+        except Exception as err:
+            self._log_failure(err)
+
+    def _log_failure(self, err: Exception) -> None:
+        self._logger.warning(
+            "Audio analysis of this source failed, it plays on without it: %s", err, exc_info=err
+        )
 
 
 class StreamsAudio:
@@ -1647,17 +1701,22 @@ class StreamsAudio:
         logger = self.logger.getChild("audio_source_stream")
         name = display_name or streamdetails.uri
         bytes_received = 0
-        audio_analysis = self.mass.streams.audio_analysis
-        analysis_key = (
-            audio_analysis.start_source_analysis(source_session, streamdetails, pcm_format)
+        analysis_tap = (
+            _SourceAnalysisTap(
+                self.mass.streams.audio_analysis,
+                logger,
+                source_session,
+                streamdetails,
+                pcm_format,
+            )
             if source_session is not None
             else None
         )
         try:
             async for chunk in self._iter_audio_source_pcm(streamdetails, pcm_format):
                 bytes_received += len(chunk)
-                if analysis_key is not None:
-                    audio_analysis.feed_source_analysis(analysis_key, chunk)
+                if analysis_tap is not None:
+                    analysis_tap.feed(chunk)
                 yield chunk
         except AudioError as err:
             streamdetails.stream_error = True
@@ -1684,8 +1743,8 @@ class StreamsAudio:
                 streamdetails.uri,
             )
         finally:
-            if analysis_key is not None:
-                audio_analysis.stop_source_analysis(analysis_key)
+            if analysis_tap is not None:
+                analysis_tap.stop()
             streamdetails.seconds_streamed = bytes_received / pcm_format.pcm_sample_size
 
     async def get_queue_item_stream(  # noqa: C901, PLR0912

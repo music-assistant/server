@@ -83,9 +83,9 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
     - If you have other conditions that determine whether to skip an analysis,
       implement them in _start_analysis and return False to reject the session.
     - Return AudioAnalysisData from _finalize; the base class persists it.
-    - To report what plays in a radio stream or live source (for example a recognised
-      song), call self.report_stream_metadata(session_id, StreamMetadata(...)). Players
-      show it while the stream or the plugin of the source reports nothing itself; it is
+    - To report what plays in a live source (for example a recognised song), call
+      self.report_stream_metadata(session_id, StreamMetadata(...)). Players show it while
+      the plugin of the source reports nothing itself, until the session ends; it is
       never stored.
     """
 
