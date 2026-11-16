@@ -334,11 +334,12 @@ class _Device:
         if not enabled and protocol.protocol_id in self.player.attached_protocols:
             await self.detach(protocol)
 
-    async def detach(self, protocol: Any) -> None:
+    async def detach(self, protocol: Any, *, settle: bool = True) -> None:
         """
         Detach a protocol from the player, as a disconnect or switching it off does.
 
         :param protocol: The protocol that is detached.
+        :param settle: Whether to let what the detach started finish before returning.
         """
         del self.player.attached_protocols[protocol.protocol_id]
         protocol.player = None
@@ -346,7 +347,8 @@ class _Device:
         for callback in callbacks:
             callback()
         self._outputs_changed()
-        await self.settle()
+        if settle:
+            await self.settle()
 
     def sendspin_output(self) -> str | None:
         """Return the client id of the Sendspin output attached to the player, if any."""
@@ -943,3 +945,21 @@ async def test_a_speaker_with_two_interfaces_hands_the_output_over_both_ways() -
 
     assert SQUEEZELITE_CLIENT not in device.configs
     _assert_carried_by(device, OTHER_INTERFACE_AIRPLAY_CLIENT, OTHER_INTERFACE_AIRPLAY_ID)
+
+
+async def test_airplay_switched_on_while_the_cast_bridge_stops_carries_the_output() -> None:
+    """AirPlay switched on while the Cast protocol goes away moves the output over at once."""
+    device = _Device(
+        airplay_id=SAME_ID_AIRPLAY_ID, cast=True, squeezelite=False, slow_teardown=True
+    )
+    await _airplay_bridged(device, CAST_CLIENT)
+    await device.switch(device.airplay, False)
+    _assert_carried_by(device, CAST_CLIENT, CAST_ID)
+
+    # the Cast bridge is still stopping when AirPlay registers the client of the same id
+    await device.detach(device.cast, settle=False)
+    await device.switch(device.airplay, True)
+    await device.attach(device.airplay)
+
+    assert device.manager_of(device.cast).get_bridge(CAST_ID) is None
+    _assert_carried_by(device, CAST_CLIENT, SAME_ID_AIRPLAY_ID)

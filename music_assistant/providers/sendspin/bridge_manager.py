@@ -190,7 +190,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
                 if bridge is not None:
                     if bridge.is_registered:
                         # it registered its client before it failed, and takes it along
-                        self._hold_client(protocol)
+                        self._hold_client(protocol, takes_output=False)
                     with suppress(Exception):
                         await bridge.stop()
                     self._release_client(protocol)
@@ -303,16 +303,20 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         """Return whether a bridge is currently in place for the protocol."""
         return protocol_id in self._bridges
 
-    def _hold_client(self, protocol: PlayerProtocol) -> None:
+    def _hold_client(self, protocol: PlayerProtocol, *, takes_output: bool = True) -> None:
         """
         Record that the bridge of a protocol registered or claimed its client last.
 
         :param protocol: The bridged protocol.
+        :param takes_output: Whether the Sendspin output of the client moves over to this
+            protocol when it rode on another one.
         """
         if (client_id := self._bridge_client_id(protocol)) and (
             sendspin_provider := self.sendspin_provider
         ):
-            sendspin_provider.hold_bridge_client(client_id, protocol.protocol_id)
+            sendspin_provider.hold_bridge_client(
+                client_id, protocol.protocol_id, takes_output=takes_output
+            )
 
     def _release_client(self, protocol: PlayerProtocol) -> None:
         """

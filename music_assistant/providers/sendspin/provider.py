@@ -625,7 +625,9 @@ class SendspinProvider(PlayerProvider):
         """
         self._bridge_underlying_protocols[client_id] = underlying_protocol_id
 
-    def hold_bridge_client(self, client_id: str, protocol_id: str) -> None:
+    def hold_bridge_client(
+        self, client_id: str, protocol_id: str, *, takes_output: bool = True
+    ) -> None:
         """
         Record the protocol whose bridge registered or claimed a bridge client last.
 
@@ -634,8 +636,20 @@ class SendspinProvider(PlayerProvider):
 
         :param client_id: The bridge client id.
         :param protocol_id: The id of the protocol the bridge rides on.
+        :param takes_output: Whether the Sendspin output of the client moves over to this
+            protocol, when another protocol held the client or the output still rides on one.
         """
+        previous_holder = self._bridge_holders.get(client_id)
         self._bridge_holders[client_id] = protocol_id
+        if not takes_output:
+            return
+        output = self.mass.players.get_protocol(client_id)
+        rides_elsewhere = output is not None and output.underlying_protocol_id not in (
+            None,
+            protocol_id,
+        )
+        if previous_holder not in (None, protocol_id) or rides_elsewhere:
+            self.refresh_bridge_client(client_id)
 
     def get_bridge_holder(self, client_id: str) -> str | None:
         """
@@ -1371,9 +1385,17 @@ class SendspinProvider(PlayerProvider):
             )
             if isinstance(stored_underlying_id, str):
                 underlying_protocol_id = stored_underlying_id
+        # a bridge that takes over the client of another bridge brings its own controls and
+        # default delay
+        previous_player = (
+            existing_player
+            if isinstance(existing_player, SendspinPlayer)
+            and existing_player.underlying_protocol_id == underlying_protocol_id
+            else None
+        )
         static_delay_default_ms = self._bridge_static_delay_defaults.pop(client_id, None)
-        if static_delay_default_ms is None and isinstance(existing_player, SendspinPlayer):
-            static_delay_default_ms = existing_player.static_delay_default_ms
+        if static_delay_default_ms is None and previous_player is not None:
+            static_delay_default_ms = previous_player.static_delay_default_ms
 
         # Select on negotiated (not active) roles: activation follows pairing/trust state,
         # which must not change the player class.
@@ -1383,13 +1405,6 @@ class SendspinProvider(PlayerProvider):
         has_player_role = "player" in negotiated_families
         has_metadata_role = "metadata" in negotiated_families
         has_visualizer_role = "visualizer" in negotiated_families
-        # a bridge that takes over the client of another bridge brings its own controls
-        previous_player = (
-            existing_player
-            if isinstance(existing_player, SendspinPlayer)
-            and existing_player.underlying_protocol_id == underlying_protocol_id
-            else None
-        )
 
         if has_player_role:
             audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
