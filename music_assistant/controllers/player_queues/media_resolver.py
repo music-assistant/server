@@ -1001,6 +1001,9 @@ class MediaResolver:
             return self._played_from(media_item, genre_tracks, pin=False)
         if media_item.media_type == MediaType.AUDIOBOOK:
             media_item = cast("Audiobook", media_item)
+            if start_position is not None or start_item is not None:
+                # a picked position or chapter plays from there, even in a finished book
+                media_item.fully_played = False
             if start_position is not None:
                 media_item.resume_position_ms = int(start_position * 1000)
             else:

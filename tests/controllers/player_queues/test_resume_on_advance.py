@@ -9,12 +9,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, RepeatMode
-from music_assistant_models.media_items import Audiobook, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    Audiobook,
+    MediaItemChapter,
+    ProviderMapping,
+    Track,
+)
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import CompareState
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 QUEUE_ID = "queue-1"
@@ -30,7 +36,7 @@ def _mappings(item_id: str) -> set[ProviderMapping]:
     }
 
 
-def _book(item_id: str, resume_position_ms: int = 0) -> QueueItem:
+def _book(item_id: str, resume_position_ms: int = 0, fully_played: bool = False) -> QueueItem:
     return QueueItem(
         queue_id=QUEUE_ID,
         queue_item_id=item_id,
@@ -42,6 +48,7 @@ def _book(item_id: str, resume_position_ms: int = 0) -> QueueItem:
             name=item_id,
             duration=120,
             resume_position_ms=resume_position_ms,
+            fully_played=fully_played,
             provider_mappings=_mappings(item_id),
         ),
     )
@@ -148,6 +155,27 @@ async def test_next_audiobook_starts_at_its_resume_point() -> None:
     await controller.load_next_queue_item(QUEUE_ID, "book-a")
 
     assert get_stream_details.call_args.kwargs["seek_position"] == 59
+
+
+async def test_next_fully_played_audiobook_starts_from_the_beginning() -> None:
+    """A finished audiobook plays from 0:00, not just before its end."""
+    items = [_book("book-a"), _book("book-b", resume_position_ms=119000, fully_played=True)]
+    controller, get_stream_details = _controller(items)
+
+    await controller.load_next_queue_item(QUEUE_ID, "book-a")
+
+    assert get_stream_details.call_args.kwargs["seek_position"] == 0
+
+
+async def test_finished_audiobook_left_part_way_this_time_resumes_there() -> None:
+    """A finished audiobook replayed part way during this queue resumes where it was left."""
+    items = [_book("book-a"), _book("book-b", resume_position_ms=119000, fully_played=True)]
+    controller, get_stream_details = _controller(items)
+    _report_played(controller, items[1], seconds_played=40, now=items[0])
+
+    await controller.load_next_queue_item(QUEUE_ID, "book-a")
+
+    assert get_stream_details.call_args.kwargs["seek_position"] == 39
 
 
 async def test_repeated_audiobook_starts_from_the_beginning() -> None:
@@ -269,3 +297,31 @@ async def test_next_track_starts_from_the_beginning() -> None:
     await controller.load_next_queue_item(QUEUE_ID, "book-a")
 
     assert get_stream_details.call_args.kwargs["seek_position"] == 0
+
+
+@pytest.mark.parametrize(
+    ("start_position", "start_item", "seek_position"),
+    [(600, None, 599), (None, "2", 299)],
+    ids=["start position", "chapter"],
+)
+async def test_finished_audiobook_starts_at_the_picked_position(
+    start_position: int | None, start_item: str | None, seek_position: int
+) -> None:
+    """A finished audiobook played from a picked position or chapter starts there, not at 0:00."""
+    book = _book("book-a", resume_position_ms=119000, fully_played=True)
+    media_item = cast("Audiobook", book.media_item)
+    media_item.duration = book.duration = 1200
+    media_item.metadata.chapters = [
+        MediaItemChapter(position=1, name="1", start=0),
+        MediaItemChapter(position=2, name="2", start=300),
+    ]
+    controller, _ = _controller([book])
+    resolver = MediaResolver.__new__(MediaResolver)
+    resolver.mass = controller.mass
+    resolver.logger = MagicMock()
+
+    await resolver._resolve_media_items(
+        media_item, start_item=start_item, start_position=start_position
+    )
+
+    assert await controller._get_resume_position(book) == seek_position
