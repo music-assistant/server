@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
-from aiosendspin.server import ClientConnectedEvent
+from aiosendspin.server import ClientConnectedEvent, ClientUpdatedEvent
 
 import music_assistant.providers.sendspin.provider as provider_module
 from music_assistant.constants import CONF_UNDERLYING_PLAYER_ID
@@ -75,7 +75,11 @@ async def test_a_connected_client_without_a_protocol_is_added_again() -> None:
 
 
 def _connect(
-    client_ids: list[str], *, attached: tuple[str, ...] = (), announced: tuple[str, ...] = ()
+    client_ids: list[str],
+    *,
+    attached: tuple[str, ...] = (),
+    announced: tuple[str, ...] = (),
+    hello_changed: bool = False,
 ) -> list[str]:
     """
     Signal a connect of each given client and return the ids the provider adds.
@@ -83,11 +87,12 @@ def _connect(
     :param client_ids: The clients that connect.
     :param attached: Ids of the clients whose protocol is attached.
     :param announced: Ids of the clients aiosendspin announced before.
+    :param hello_changed: Whether each client connects with a hello that differs from its last.
     """
     clients = [_client(client_id) for client_id in client_ids]
     for client in clients:
         client.connection_security = None
-    provider, added = _provider(clients, attached=attached)
+    provider, _ = _provider(clients, attached=attached)
     provider._unencrypted_clients = set()
     provider._held_elsewhere = set()
     provider._held_unapproved = set()
@@ -97,7 +102,10 @@ def _connect(
     provider._announced_clients = set(announced)
     for client_id in client_ids:
         provider.event_cb(provider.server_api, ClientConnectedEvent(client_id=client_id))
-    return added
+        if hello_changed:
+            provider.event_cb(provider.server_api, ClientUpdatedEvent(client_id=client_id))
+    add_calls = cast("MagicMock", provider._handle_client_added).call_args_list
+    return [call.args[0] for call in add_calls if provider._is_current_client_event(*call.args)]
 
 
 async def test_a_reconnecting_client_without_a_protocol_is_added_again() -> None:
@@ -107,6 +115,11 @@ async def test_a_reconnecting_client_without_a_protocol_is_added_again() -> None
     )
 
     assert added == ["removed"]
+
+
+async def test_a_reconnect_with_a_changed_hello_still_adds_the_client() -> None:
+    """An update signaled right after the connect does not cancel the add it scheduled."""
+    assert _connect(["removed"], announced=("removed",), hello_changed=True) == ["removed"]
 
 
 async def test_a_first_connect_is_left_to_the_announcement() -> None:

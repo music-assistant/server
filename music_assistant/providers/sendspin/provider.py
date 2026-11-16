@@ -554,6 +554,9 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_removed(client_id, event_version))
             case ClientUpdatedEvent(client_id):
+                # a client without a protocol is set up by its add, which reads the latest hello
+                if self.get_protocol(client_id) is None:
+                    return
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_updated(client_id, event_version))
             case ClientCredentialMismatchEvent(client_id):
