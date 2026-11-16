@@ -1118,6 +1118,16 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             await self.server_api.untrust_unpaired(client_id)
         await self._refresh_player(client_id)
 
+    async def on_protocol_removed(self, protocol_id: str) -> None:
+        """Drop the pairing and guest approval of a removed player's device."""
+        if await self.server_api.pairing_store.record_by_client_id(protocol_id) is not None:
+            await self._drop_pairing(protocol_id)
+            self.logger.info(
+                "Removed the pairing of client %s: its player was removed", protocol_id
+            )
+        await self.server_api.untrust_unpaired(protocol_id)
+        await self._refresh_player(protocol_id)
+
     async def pair_web_player(self, pairing_token: str) -> None:
         """
         Pair the built-in web player that minted the given pairing token.
