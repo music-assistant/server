@@ -208,6 +208,7 @@ class _Device:
         # client id -> the protocol the Sendspin protocol of the client rides on
         self.sendspin_protocols: dict[str, str] = {}
         sendspin = mass.get_provider.return_value
+        sendspin.mass = mass
         sendspin.server_api = self.server
         sendspin.instance_id = "sendspin"
         sendspin.register_bridge_underlying_protocol = self._underlying_ids.__setitem__
