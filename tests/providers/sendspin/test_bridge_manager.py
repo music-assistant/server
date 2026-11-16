@@ -402,6 +402,25 @@ class TestCastBridgePolicy:
 
         assert manager._should_have_bridge(cast_player) is False
 
+    def test_unsupported_skip_is_logged_once_at_info(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Test a device flagged unsupported logs why its bridge is skipped, once."""
+        manager, mass, cast_player = self._make_cast_environment()
+        mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda _player_id, key, default=None: (
+                True if key == CONF_SENDSPIN_UNSUPPORTED else default
+            )
+        )
+
+        with caplog.at_level(logging.INFO, logger=manager.logger.name):
+            assert manager._should_have_bridge(cast_player) is False
+            assert manager._should_have_bridge(cast_player) is False
+
+        records = [r for r in caplog.records if "cannot run Sendspin" in r.message]
+        assert len(records) == 1
+        assert records[0].levelno == logging.INFO
+
     def test_blocklist_message_only_repeats_after_policy_change(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
