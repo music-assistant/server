@@ -2052,7 +2052,8 @@ async def _realtime_controller(provider: MagicMock) -> AsyncGenerator[AudioAnaly
     tasks: list[asyncio.Future[Any]] = []
 
     def _create_task(coro: Coroutine[Any, Any, Any]) -> asyncio.Future[Any]:
-        task = asyncio.ensure_future(coro)
+        # tasks start eagerly, as mass.create_task does
+        task = asyncio.Task(coro, loop=asyncio.get_running_loop(), eager_start=True)
         tasks.append(task)
         return task
 
@@ -2229,6 +2230,37 @@ async def test_radio_restart_gets_a_session_of_its_own() -> None:
         assert first_key != second_key
         provider.cancel.assert_called_once_with(first_key)
         assert second_key in controller._active_sessions
+
+
+@pytest.mark.asyncio
+async def test_radio_stopped_while_its_providers_start_leaves_nothing_behind() -> None:
+    """A station whose only buffer goes while the providers start ends its session cleanly."""
+    starting = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_start(**_: Any) -> bool:
+        starting.set()
+        await release.wait()
+        return True
+
+    provider = _make_realtime_provider()
+    provider.start_analysis = AsyncMock(side_effect=_slow_start)
+    async with _realtime_controller(provider) as controller:
+        audio_buffer = _rolling_buffer()
+        start = asyncio.create_task(
+            controller.start_analysis(audio_buffer, _make_stream("queue-a"))
+        )
+        await starting.wait()
+        await audio_buffer.clear()
+        release.set()
+        await start
+        await _settle()
+
+        (session_key,) = _session_keys(provider)
+        assert not controller._workers
+        assert not controller._active_sessions
+        assert not controller._radio_analyses
+        provider.cancel.assert_called_once_with(session_key)
 
 
 @pytest.mark.asyncio

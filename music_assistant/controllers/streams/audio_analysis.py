@@ -1863,7 +1863,10 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
             return
         # radio sessions are not capped per queue: they last as long as their buffers
         self._active_sessions[session_key] = provider_ids
-        self._workers[session_key] = self.mass.create_task(self._radio_reader_worker(uri, radio))
+        worker = self.mass.create_task(self._radio_reader_worker(uri, radio))
+        if not worker.done():
+            # a station stopped while its providers started has nothing left to read
+            self._workers[session_key] = worker
 
     def _leave_radio_analysis(
         self, uri: str, radio: _RadioAnalysis, audio_buffer: AudioBuffer
