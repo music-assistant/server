@@ -7,8 +7,12 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant_models.enums import ExternalID, ProviderFeature
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import ProviderMapping, Track
 
 from music_assistant.controllers.cache import CacheController
@@ -56,9 +60,8 @@ def _manager() -> ListenBrainzPlaylistManager:
     provider.logger = logging.getLogger("listenbrainz")
 
     mass = MagicMock()
-    mass.music.tracks.get_library_item_by_external_id = AsyncMock(return_value=None)
-    mass.music.tracks.search = AsyncMock()
-    mass.music.tracks.get_provider_item = AsyncMock()
+    mass.music.tracks.get_item_by_external_id = AsyncMock(return_value=None)
+    mass.music.tracks.search = AsyncMock(return_value=[])
     mass.music.providers = []  # no streaming providers by default
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
@@ -652,96 +655,50 @@ async def test_removed_playlists_are_evicted_from_cache() -> None:
     assert mbid_two not in manager._playlists
 
 
-async def test_musicbrainz_links_resolve_via_provider_item() -> None:
-    """MusicBrainz links fetch the linked provider's actual playable track."""
+async def test_lookup_match_is_cached_without_text_search() -> None:
+    """ListenBrainz attaches its recording MBID and reuses a successful lookup result."""
     manager = _manager()
-    musicbrainz = MagicMock()
-    musicbrainz.get_recording_details = AsyncMock(return_value=MagicMock(relations=[MagicMock()]))
-    cast("MagicMock", manager.provider.mass.get_provider).return_value = musicbrainz
-    mapping = ProviderMapping(
-        item_id="synthetic-track-id",
-        provider_domain="synthetic_music",
-        provider_instance="synthetic_music--test",
-    )
+    controllers = cast("Any", manager.provider.mass.music.tracks)
     provider_track = Track(
         item_id="synthetic-track-id",
         provider="synthetic_music--test",
         name="Synthetic Track",
         provider_mappings=set(),
-        external_ids=set(),
     )
-    cast("Any", manager.provider.mass.music.tracks).get_provider_item.return_value = provider_track
+    controllers.get_item_by_external_id.return_value = provider_track
     cast("Any", manager.provider.mass.music).providers = [_streaming_provider()]
 
-    with (
-        patch(
-            "music_assistant.providers.listenbrainz.playlists.relation_urls",
-            return_value=["https://synthetic.invalid/track/synthetic-track-id"],
-        ) as get_relation_urls,
-        patch(
-            "music_assistant.providers.listenbrainz.playlists.provider_mappings_from_urls",
-            AsyncMock(return_value=[mapping]),
-        ) as get_mappings,
-    ):
-        resolved = await manager._get_or_resolve_track(_track())
+    resolved = await manager._get_or_resolve_track(_track())
+    repeated = await manager._get_or_resolve_track(_track())
 
     assert resolved is not None
-    assert resolved.provider == "synthetic_music--test"
-    assert resolved.item_id == "synthetic-track-id"
-    assert resolved.provider_mappings == {mapping}
-    assert resolved.get_external_id(ExternalID.MB_RECORDING) == RECORDING_MBID
-    musicbrainz.get_recording_details.assert_awaited_once_with(RECORDING_MBID)
-    get_relation_urls.assert_called_once_with(
-        musicbrainz.get_recording_details.return_value.relations
+    assert resolved is provider_track
+    assert repeated is provider_track
+    assert resolved.mbid == RECORDING_MBID
+    controllers.get_item_by_external_id.assert_awaited_once_with(
+        RECORDING_MBID, ExternalID.MB_RECORDING
     )
-    get_mappings.assert_awaited_once_with(
-        manager.provider.mass,
-        ["https://synthetic.invalid/track/synthetic-track-id"],
-        MediaType.TRACK,
-        exclude_domains=set(),
-    )
-    cast("Any", manager.provider.mass.music.tracks).get_provider_item.assert_awaited_once_with(
-        "synthetic-track-id",
-        "synthetic_music--test",
-        allow_fallback=False,
-        strict_provider_instance=True,
-    )
-    cast("AsyncMock", manager.provider.mass.music.tracks.search).assert_not_awaited()
+    controllers.search.assert_not_awaited()
+    cast("AsyncMock", manager.provider.mass.cache.set).assert_awaited_once()
 
 
-async def test_track_without_musicbrainz_provider_mapping_stays_unresolved() -> None:
-    """A recording without a link to a loaded provider remains eligible for a later retry."""
+async def test_unresolved_track_is_not_cached() -> None:
+    """A definitive miss is not stored in the positive resolution cache."""
     manager = _manager()
-    musicbrainz = MagicMock()
-    musicbrainz.get_recording_details = AsyncMock(return_value=MagicMock(relations=[]))
-    cast("MagicMock", manager.provider.mass.get_provider).return_value = musicbrainz
 
-    relation_url = "https://catalog.synthetic.invalid/track/synthetic-track-id"
-    with (
-        patch(
-            "music_assistant.providers.listenbrainz.playlists.relation_urls",
-            return_value=[relation_url],
-        ),
-        patch(
-            "music_assistant.providers.listenbrainz.playlists.provider_mappings_from_urls",
-            AsyncMock(return_value=[]),
-        ),
-    ):
-        resolved = await manager._get_or_resolve_track(_track())
+    assert await manager._get_or_resolve_track(_track()) is None
+    assert await manager._get_or_resolve_track(_track()) is None
 
-    assert resolved is None
     assert RECORDING_MBID not in manager._resolved_tracks
     cast("AsyncMock", manager.provider.mass.cache.set).assert_not_awaited()
-    cast("AsyncMock", manager.provider.mass.music.tracks.search).assert_not_awaited()
+    lookup = cast("AsyncMock", manager.provider.mass.music.tracks.get_item_by_external_id)
+    assert lookup.await_count == 2
 
 
 async def test_resolved_track_from_search_carries_recording_mbid() -> None:
     """A track found via streaming-service search retains the recording MBID in external_ids."""
     manager = _manager()
     cast("Any", manager.provider.mass.music).providers = [_streaming_provider()]
-    musicbrainz = MagicMock()
-    musicbrainz.get_recording_details = AsyncMock(return_value=MagicMock(relations=[]))
-    cast("MagicMock", manager.provider.mass.get_provider).return_value = musicbrainz
 
     streaming_track = Track(
         item_id="synthetic-streaming-id",
@@ -754,14 +711,16 @@ async def test_resolved_track_from_search_carries_recording_mbid() -> None:
         return_value=[streaming_track]
     )
 
-    with patch(
-        "music_assistant.providers.listenbrainz.playlists.provider_mappings_from_urls",
-        AsyncMock(return_value=[]),
-    ):
-        resolved = await manager._get_or_resolve_track(_track())
+    resolved = await manager._get_or_resolve_track(_track())
 
     assert resolved is not None
     assert resolved.get_external_id(ExternalID.MB_RECORDING) == RECORDING_MBID
+    cast(
+        "AsyncMock", manager.provider.mass.music.tracks.get_item_by_external_id
+    ).assert_awaited_once_with(RECORDING_MBID, ExternalID.MB_RECORDING)
+    cast("AsyncMock", manager.provider.mass.music.tracks.search).assert_awaited_once_with(
+        "Synthetic Track", "synthetic_music--test", limit=5
+    )
 
 
 async def test_cached_track_gets_recording_mbid_added() -> None:
@@ -782,60 +741,25 @@ async def test_cached_track_gets_recording_mbid_added() -> None:
     assert resolved.get_external_id(ExternalID.MB_RECORDING) == RECORDING_MBID
 
 
-@pytest.mark.parametrize("provider_error", [MediaNotFoundError, MusicAssistantError])
-async def test_musicbrainz_link_provider_failure_falls_through_to_search(
-    provider_error: type[MusicAssistantError],
-) -> None:
-    """Missing items and provider failures both fall through to playable search results."""
+async def test_lookup_failure_propagates_without_text_search() -> None:
+    """ListenBrainz does not turn an incomplete lookup into a text-search fallback."""
     manager = _manager()
-    musicbrainz = MagicMock()
-    musicbrainz.get_recording_details = AsyncMock(return_value=MagicMock(relations=[MagicMock()]))
-    cast("MagicMock", manager.provider.mass.get_provider).return_value = musicbrainz
-    mapping = ProviderMapping(
-        item_id="synthetic-track-id",
-        provider_domain="synthetic_music",
-        provider_instance="synthetic_music--test",
-    )
-    cast(
-        "AsyncMock", manager.provider.mass.music.tracks.get_provider_item
-    ).side_effect = provider_error("Synthetic provider failure")
-    # The name-based search still finds a playable match
-    search_track = Track(
-        item_id="synthetic-search-id",
-        provider="synthetic_music--test",
-        name="Synthetic Track",
-        provider_mappings=set(),
-        external_ids=set(),
-    )
     cast("Any", manager.provider.mass.music).providers = [_streaming_provider()]
-    cast("Any", manager.provider.mass.music.tracks).search = AsyncMock(return_value=[search_track])
+    lookup = cast("AsyncMock", manager.provider.mass.music.tracks.get_item_by_external_id)
+    error = ResourceTemporarilyUnavailable("Synthetic lookup failure")
+    lookup.side_effect = error
 
-    with (
-        patch(
-            "music_assistant.providers.listenbrainz.playlists.relation_urls",
-            return_value=["https://synthetic.invalid/track/synthetic-track-id"],
-        ),
-        patch(
-            "music_assistant.providers.listenbrainz.playlists.provider_mappings_from_urls",
-            AsyncMock(return_value=[mapping]),
-        ),
-    ):
-        resolved = await manager._get_or_resolve_track(_track())
+    with pytest.raises(ResourceTemporarilyUnavailable) as raised:
+        await manager._get_or_resolve_track(_track())
 
-    assert resolved is not None
-    # The search track is returned, not the MusicBrainz-linked placeholder
-    assert resolved.item_id == "synthetic-search-id"
-    assert resolved.get_external_id(ExternalID.MB_RECORDING) == RECORDING_MBID
-    cast("AsyncMock", manager.provider.mass.music.tracks.get_provider_item).assert_awaited_once()
-    cast("Any", manager.provider.mass.music.tracks).search.assert_awaited_once()
+    assert raised.value is error
+    cast("AsyncMock", manager.provider.mass.music.tracks.search).assert_not_awaited()
+    cast("AsyncMock", manager.provider.mass.cache.set).assert_not_awaited()
 
 
 async def test_search_skips_non_matching_results() -> None:
     """A search result whose name doesn't match is skipped in favor of a matching one."""
     manager = _manager()
-    musicbrainz = MagicMock()
-    musicbrainz.get_recording_details = AsyncMock(return_value=MagicMock(relations=[]))
-    cast("MagicMock", manager.provider.mass.get_provider).return_value = musicbrainz
 
     # First result is a same-titled cover by a different artist with a different title;
     # second is the real match. With no artist on the source track, name is the only
@@ -859,11 +783,7 @@ async def test_search_skips_non_matching_results() -> None:
         return_value=[cover_track, matching_track]
     )
 
-    with patch(
-        "music_assistant.providers.listenbrainz.playlists.provider_mappings_from_urls",
-        AsyncMock(return_value=[]),
-    ):
-        resolved = await manager._get_or_resolve_track(_track())
+    resolved = await manager._get_or_resolve_track(_track())
 
     assert resolved is not None
     assert resolved.item_id == "synthetic-match-id"
@@ -873,9 +793,6 @@ async def test_search_skips_non_matching_results() -> None:
 async def test_search_with_no_matching_results_returns_none() -> None:
     """When no search result matches by name, resolution returns None."""
     manager = _manager()
-    musicbrainz = MagicMock()
-    musicbrainz.get_recording_details = AsyncMock(return_value=MagicMock(relations=[]))
-    cast("MagicMock", manager.provider.mass.get_provider).return_value = musicbrainz
 
     nonmatching_track = Track(
         item_id="synthetic-other-id",
@@ -889,11 +806,7 @@ async def test_search_with_no_matching_results_returns_none() -> None:
         return_value=[nonmatching_track]
     )
 
-    with patch(
-        "music_assistant.providers.listenbrainz.playlists.provider_mappings_from_urls",
-        AsyncMock(return_value=[]),
-    ):
-        resolved = await manager._get_or_resolve_track(_track())
+    resolved = await manager._get_or_resolve_track(_track())
 
     assert resolved is None
     assert RECORDING_MBID not in manager._resolved_tracks

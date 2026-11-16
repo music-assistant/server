@@ -5,15 +5,13 @@ from __future__ import annotations
 import logging
 from copy import copy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
-import aiohttp
 from mashumaro.exceptions import MissingField
-from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import ExternalID, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import Playlist, Track
 
-from music_assistant.controllers.music.helpers import provider_mappings_from_urls
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.providers.listenbrainz.constants import (
     CONF_ENABLE_WEEKLY_EXPLORATION,
@@ -31,11 +29,9 @@ from music_assistant.providers.listenbrainz.parsers import (
     parse_playlist_source_patch,
     parse_track,
 )
-from music_assistant.providers.musicbrainz.provider import relation_urls
 
 if TYPE_CHECKING:
     from music_assistant.providers.listenbrainz import ListenBrainzProvider
-    from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
 CACHE_CATEGORY_RESOLVED_TRACKS = 1
 CACHE_CATEGORY_PLAYLISTS = 2
@@ -281,13 +277,11 @@ class ListenBrainzPlaylistManager:
         return None
 
     async def _resolve_track(self, track: Track, recording_mbid: str) -> Track | None:
-        """Resolve a track from the library or via MusicBrainz when it is not cached."""
-        if library_track := await self.provider.mass.music.tracks.get_library_item_by_external_id(
+        """Resolve a recording through the core, then search providers on a definite miss."""
+        if resolved := await self.provider.mass.music.tracks.get_item_by_external_id(
             recording_mbid, ExternalID.MB_RECORDING
         ):
-            return library_track
-        if provider_track := await self._resolve_track_via_musicbrainz(track, recording_mbid):
-            return provider_track
+            return resolved
         artist_name = track.artists[0].name if getattr(track, "artists", None) else ""
         query = f"{artist_name} - {track.name}".strip(" -")
         if query:
@@ -346,85 +340,6 @@ class ListenBrainzPlaylistManager:
             and p.is_streaming_provider
             and ProviderFeature.LIBRARY_TRACKS in p.supported_features
         ]
-
-    async def _resolve_track_via_musicbrainz(
-        self, track: Track, recording_mbid: str
-    ) -> Track | None:
-        """Add playable provider mappings from a MusicBrainz recording's streaming links."""
-        musicbrainz = cast(
-            "MusicbrainzProvider | None", self.provider.mass.get_provider("musicbrainz")
-        )
-        if musicbrainz is None:
-            self.logger.debug(
-                "MusicBrainz provider not loaded — cannot resolve %s (%s) via relations",
-                track.name,
-                recording_mbid,
-            )
-            return None
-        try:
-            recording = await musicbrainz.get_recording_details(recording_mbid)
-        except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
-            self.logger.debug(
-                "MusicBrainz get_recording_details failed for %s (%s): %s",
-                track.name,
-                recording_mbid,
-                err,
-            )
-            return None
-        recording_relation_urls = list(relation_urls(recording.relations))
-        self.logger.debug(
-            "MusicBrainz recording %s (%s) has %d relation URLs: %s",
-            track.name,
-            recording_mbid,
-            len(recording_relation_urls),
-            recording_relation_urls,
-        )
-        mappings = await provider_mappings_from_urls(
-            self.provider.mass,
-            recording_relation_urls,
-            MediaType.TRACK,
-            exclude_domains=set(),
-        )
-        if not mappings:
-            self.logger.debug(
-                "provider_mappings_from_urls returned no playable mappings for %s (%s)",
-                track.name,
-                recording_mbid,
-            )
-            return None
-        # MusicBrainz links are authoritative. Fetch the actual playable track from
-        # the first linked provider (no fallback) so the UI gets the provider's real
-        # metadata and item_id rather than the ListenBrainz source placeholder.
-        linked_mapping = mappings[0]
-        try:
-            provider_track = await self.provider.mass.music.tracks.get_provider_item(
-                linked_mapping.item_id,
-                linked_mapping.provider_instance,
-                allow_fallback=False,
-                strict_provider_instance=True,
-            )
-        except MediaNotFoundError:
-            self.logger.debug(
-                "%s no longer has the track MusicBrainz links to for %s (%s)",
-                linked_mapping.provider_domain,
-                track.name,
-                recording_mbid,
-            )
-            return None
-        except MusicAssistantError as err:
-            self.logger.debug(
-                "Linked %s on %s could not be fetched for %s (%s): %s",
-                linked_mapping.provider_domain,
-                linked_mapping.provider_instance,
-                track.name,
-                recording_mbid,
-                err,
-            )
-            return None
-        # Keep the streaming provider's track data and attach the MusicBrainz link
-        # mappings so the MA core can trace the link back.
-        provider_track.provider_mappings = set(mappings) | provider_track.provider_mappings
-        return provider_track
 
     def _is_playlist_enabled(self, playlist_data: dict[str, Any]) -> bool:
         """Return whether the ListenBrainz playlist type is enabled."""
