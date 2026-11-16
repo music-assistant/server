@@ -67,6 +67,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import PlaybackState
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
@@ -936,6 +938,26 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         media_item is the full media item details of the played/playing track.
 
         is_playing is True when the track is currently playing.
+        """
+
+    async def on_playback_progress(
+        self,
+        report: MediaItemPlaybackProgressReport,
+        prov_item_id: str,
+        state: PlaybackState,
+    ) -> None:
+        """
+        Handle callback when the playback of an item this provider streamed progresses.
+
+        Meant for reporting playback back to the provider's own service, such as the device
+        and position a service shows as playing now. Called only on the provider instance
+        that streamed the item, and only once a player received audio of it: when it starts,
+        pauses, resumes or stops, when the next item starts and every 30s while it plays.
+
+        :param report: The playback progress report; ``player_id`` names the playing player.
+        :param prov_item_id: The provider-specific id of the streamed item.
+        :param state: PLAYING or PAUSED while the item is current, IDLE once it stopped,
+            ended or was skipped.
         """
 
     async def on_item_updated(self, item: MediaItemType) -> None:
