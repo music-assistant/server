@@ -93,8 +93,9 @@ options: every selected player gets its own daemon with its own credentials/cach
 directory (keyed by `{instance_id}_{safe_player_id}`), its own zeroconf advertisement and
 its own AudioSource (`item_id` = player id). The advertised device name follows the
 connected player's name through a template setting, so a rename restarts that daemon with
-the new name. Players register after plugins load: daemons start (and stop) from player
-lifecycle events through a lock-serialized reconcile. All daemons share the Soloist
+the new name. A connected player usually becomes available only after the plugin loaded, once its device is
+found: daemons start (and stop) from the players' availability and removal events through a
+lock-serialized reconcile. All daemons share the Soloist
 managed binary install and API key.
 
 ## Related documentation

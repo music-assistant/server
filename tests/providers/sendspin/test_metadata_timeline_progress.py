@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
 from aiosendspin.server.roles.metadata.state import Metadata
-from music_assistant_models.enums import PlaybackState, PlayerType
 from music_assistant_models.player_queue import PlayLogEntry
 
 from music_assistant.providers.sendspin.player import SendspinPlayer
@@ -203,35 +202,28 @@ def test_without_a_timeline_the_queue_position_stays(monkeypatch: pytest.MonkeyP
     assert timestamp_us is None
 
 
-def test_first_audio_heard_rebases_the_queue_of_the_protocol_parent(
+def test_first_audio_heard_rebases_the_queue_of_the_attached_player(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     The heard correction is below the jump threshold, so the queue is re-based explicitly.
 
-    A Sendspin player usually runs as the protocol player of a universal player that owns the
-    queue, and whose state only follows on a deferred update.
+    The queue belongs to the player this protocol is attached to, whose state only follows
+    on a deferred update.
     """
     player = SendspinPlayer.__new__(SendspinPlayer)
-    parent = MagicMock()
+    attached = MagicMock()
     mass = MagicMock()
-    mass.players.get_player.return_value = parent
     player.mass = mass
     monkeypatch.setattr(SendspinPlayer, "synced_to", property(lambda _self: None), raising=False)
-    monkeypatch.setattr(SendspinPlayer, "player_id", "sendspin-1", raising=False)
-    monkeypatch.setattr(
-        SendspinPlayer, "type", property(lambda _self: PlayerType.PROTOCOL), raising=False
-    )
-    monkeypatch.setattr(
-        SendspinPlayer, "protocol_parent_id", property(lambda _self: "universal-1"), raising=False
-    )
+    monkeypatch.setattr(SendspinPlayer, "player", property(lambda _self: attached), raising=False)
+    monkeypatch.setattr(SendspinPlayer, "protocol_id", "sendspin-1", raising=False)
     monkeypatch.setattr(SendspinPlayer, "_republish_position", MagicMock())
 
     player.on_first_audio_heard()
 
-    mass.players.get_player.assert_called_once_with("universal-1")
-    parent.update_state.assert_called_once_with(force_update=True)
-    mass.players.on_player_position_jumped.assert_called_once_with(parent)
+    attached.update_state.assert_called_once_with(force_update=True)
+    mass.players.on_player_position_jumped.assert_called_once_with(attached)
     mass.create_task.assert_called_once()
 
 
@@ -249,9 +241,9 @@ def _republishing_player(
     player._published_metadata = published
     monkeypatch.setattr(SendspinPlayer, "_metadata_role", property(lambda _self: role))
     media = SimpleNamespace(uri="track-uri", queue_item_id=_QUEUE_ITEM_ID, source_id="queue-1")
-    state = SimpleNamespace(current_media=media, playback_state=PlaybackState.PLAYING)
-    monkeypatch.setattr(SendspinPlayer, "state", property(lambda _self: state), raising=False)
-    monkeypatch.setattr(SendspinPlayer, "player_id", "sendspin-1", raising=False)
+    monkeypatch.setattr(SendspinPlayer, "_player_media", property(lambda _self: media))
+    monkeypatch.setattr(SendspinPlayer, "_player_playing", property(lambda _self: True))
+    monkeypatch.setattr(SendspinPlayer, "protocol_id", "sendspin-1", raising=False)
     player._published_item = published_item
     player._metadata_generation = 0
     player._content_takeover_pending = False

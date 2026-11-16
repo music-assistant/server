@@ -128,11 +128,15 @@ async def test_a_line_in_session_follows_the_source_format(monkeypatch: pytest.M
         followed.append(session._start_streamdetails)
 
     monkeypatch.setattr(session, "_follow_session_sample_rate", follow)
+    media = _line_in()
 
     with pytest.raises(RuntimeError):
-        await session._run_playback(_line_in())
+        await session._run_playback(media)
 
     assert followed == [source_stream.streamdetails]
+    # the source is selected for the protocol that consumes it, as get_stream is
+    open_source = cast("AsyncMock", session.player.mass.streams.open_audio_source_stream)
+    open_source.assert_awaited_once_with(media, session.player.protocol_id)
 
 
 async def test_a_line_in_cancelled_during_setup_is_released(

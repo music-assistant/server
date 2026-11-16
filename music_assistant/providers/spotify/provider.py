@@ -72,7 +72,11 @@ from music_assistant.helpers.throttle_retry import (
     current_priority,
 )
 from music_assistant.helpers.util import lock
-from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
+from music_assistant.models.music_provider import (
+    ARTIST_ALBUMS_LIMIT,
+    MusicProvider,
+    ProviderStreamLimitError,
+)
 from music_assistant.providers.spotify_connect.base import (
     AUDIO_QUALITY_LOSSLESS,
     AUDIO_QUALITY_OPTIONS,
@@ -783,9 +787,10 @@ class SpotifyProvider(MusicProvider):
     @use_cache(86400 * 365, allow_expired_cache=True)  # 1 year - album track listings are immutable
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
+        # the result cache outlives the page cache, which would only add a request
         return [
             parse_track(item, self)
-            async for item in self._get_all_items(f"albums/{prov_album_id}/tracks")
+            async for item in self._get_all_items(f"albums/{prov_album_id}/tracks", use_cache=False)
             if item["id"]
         ]
 
@@ -860,19 +865,22 @@ class SpotifyProvider(MusicProvider):
 
     @use_cache(86400 * 14, allow_expired_cache=True)  # 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist."""
+        """Get a list of albums for the given artist."""
+        albums: list[Album] = []
         try:
-            return [
-                parse_album(item, self)
-                async for item in self._get_all_items(
-                    f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation",
-                    limit=10,
-                )
-                if (item and item["id"])
-            ]
+            async for item in self._get_all_items(
+                f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation",
+                # Spotify's maximum page size for this endpoint
+                limit=10,
+            ):
+                if item and item["id"]:
+                    albums.append(parse_album(item, self))
+                if len(albums) >= ARTIST_ALBUMS_LIMIT:
+                    break
         except MediaNotFoundError:
             self.logger.warning("Unable to fetch albums for artist %s", prov_artist_id)
             return []
+        return albums
 
     @use_cache(
         86400 * 14,  # 14 days
@@ -1798,8 +1806,9 @@ class SpotifyProvider(MusicProvider):
         chapters_data: list[dict[str, Any]] = []
 
         try:
+            # the result cache lasts as long as the page cache, which would only add a request
             async for item in self._get_all_items(
-                f"audiobooks/{prov_audiobook_id}/chapters", market="from_token"
+                f"audiobooks/{prov_audiobook_id}/chapters", use_cache=False, market="from_token"
             ):
                 if item and item.get("id"):
                     chapters_data.append(item)
@@ -1828,8 +1837,8 @@ class SpotifyProvider(MusicProvider):
         :param endpoint: API endpoint of the paged list.
         :param key: Key of the items in each page.
         :param limit: Number of items to request per page.
-        :param use_cache: Serve pages from the page cache; when False, every page is requested
-            from the API.
+        :param use_cache: Serve pages from the page cache, at the cost of one extra request that
+            checks the list for changes; when False, every page is requested from the API.
         """
         offset = 0
         cache_checksum: str | None = None

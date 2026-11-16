@@ -5,8 +5,9 @@ from typing import Any
 
 import pytest
 
-from music_assistant.constants import CONF_LINKED_PROTOCOL_IDS
+from music_assistant.constants import CONF_PLAYER_SPLIT_SESSION_ONLY, CONF_PLAYER_SPLIT_TREE
 from music_assistant.controllers.config.migrations import _migrate_msx_bridge_settings, migrate
+from music_assistant.controllers.config.player_split import LEGACY_LINKED_PROTOCOL_IDS
 
 
 @pytest.mark.parametrize("enabled", [True, False])
@@ -35,7 +36,10 @@ async def test_msx_bridge_retired_settings_migrate(
                     "group_stream_mode": "shared",
                 },
             },
-        }
+        },
+        # the player configs are split already
+        CONF_PLAYER_SPLIT_SESSION_ONLY: True,
+        CONF_PLAYER_SPLIT_TREE: True,
     }
     expected = deepcopy(data)
     expected["providers"]["msx_bridge_instance"]["values"] = {
@@ -65,20 +69,20 @@ def test_msx_bridge_sendspin_players_removed() -> None:
         "players": {
             "msx_livingroom": {
                 "player_id": "msx_livingroom",
-                "values": {CONF_LINKED_PROTOCOL_IDS: ["spb_msx_livingroom", "ap_tv"]},
+                "values": {LEGACY_LINKED_PROTOCOL_IDS: ["spb_msx_livingroom", "ap_tv"]},
             },
             "spb_msx_livingroom": {"player_id": "spb_msx_livingroom", "values": {}},
             "spb_msx_bedroom": {"player_id": "spb_msx_bedroom", "enabled": False},
             "spb_kitchen": {
                 "player_id": "spb_kitchen",
-                "values": {CONF_LINKED_PROTOCOL_IDS: []},
+                "values": {LEGACY_LINKED_PROTOCOL_IDS: []},
             },
         },
         "player_dsp": {"spb_msx_livingroom": {"enabled": True}, "spb_kitchen": {"enabled": True}},
     }
     assert _migrate_msx_bridge_settings(data) is True
     assert set(data["players"]) == {"msx_livingroom", "spb_kitchen"}
-    assert data["players"]["msx_livingroom"]["values"][CONF_LINKED_PROTOCOL_IDS] == ["ap_tv"]
+    assert data["players"]["msx_livingroom"]["values"][LEGACY_LINKED_PROTOCOL_IDS] == ["ap_tv"]
     assert data["player_dsp"] == {"spb_kitchen": {"enabled": True}}
     assert _migrate_msx_bridge_settings(data) is False
 
@@ -87,11 +91,11 @@ def test_msx_bridge_stale_link_without_player_removed() -> None:
     """A cached link to a bridge player without a stored config is removed as well."""
     data: dict[str, Any] = {
         "players": {
-            "msx_tv": {"values": {CONF_LINKED_PROTOCOL_IDS: ["spb_msx_tv"]}},
+            "msx_tv": {"values": {LEGACY_LINKED_PROTOCOL_IDS: ["spb_msx_tv"]}},
         }
     }
     assert _migrate_msx_bridge_settings(data) is True
-    assert data["players"]["msx_tv"]["values"][CONF_LINKED_PROTOCOL_IDS] == []
+    assert data["players"]["msx_tv"]["values"][LEGACY_LINKED_PROTOCOL_IDS] == []
 
 
 @pytest.mark.parametrize(
@@ -104,8 +108,8 @@ def test_msx_bridge_stale_link_without_player_removed() -> None:
         {"providers": {"msx": {"domain": "msx_bridge"}}},
         {"providers": {"msx": {"domain": "msx_bridge", "values": ["shared"]}}},
         {"players": {"p1": {"values": None}}, "player_dsp": None},
-        {"players": {"p1": {"values": {CONF_LINKED_PROTOCOL_IDS: "spb_msx_tv"}}}},
-        {"players": {"p1": {"values": {CONF_LINKED_PROTOCOL_IDS: [None, 1, "ap_tv"]}}}},
+        {"players": {"p1": {"values": {LEGACY_LINKED_PROTOCOL_IDS: "spb_msx_tv"}}}},
+        {"players": {"p1": {"values": {LEGACY_LINKED_PROTOCOL_IDS: [None, 1, "ap_tv"]}}}},
     ],
 )
 def test_msx_bridge_malformed_shapes_do_not_raise(data: dict[str, Any]) -> None:

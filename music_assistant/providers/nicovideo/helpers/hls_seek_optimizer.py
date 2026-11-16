@@ -14,7 +14,6 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from music_assistant.helpers.ffmpeg import get_ffmpeg_hls_cmaf_input_args
 from music_assistant.helpers.hls import HLSMediaPlaylist
 from music_assistant.providers.nicovideo.constants import (
     DOMAND_BID_COOKIE_NAME,
@@ -182,8 +181,7 @@ class HLSSeekOptimizer:
             f"User-Agent: {NICOVIDEO_USER_AGENT}\r\n"
             f"Cookie: {DOMAND_BID_COOKIE_NAME}={self.domand_bid}\r\n"
         )
-        # nicovideo serves CMAF (.cmfa) audio segments, which some FFmpeg builds reject
-        extra_input_args = ["-headers", headers, *get_ffmpeg_hls_cmaf_input_args()]
+        extra_input_args = ["-headers", headers]
 
         # Stage 2: Apply input-side -ss for fine-tuning within the segment
         if offset_within_segment > 0:

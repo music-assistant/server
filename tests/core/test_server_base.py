@@ -16,7 +16,7 @@ from music_assistant.controllers.player_queues.constants import (
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.storage import StorageController
 from music_assistant.mass import MusicAssistant
-from tests.conftest import full_mass_context
+from music_assistant.testing import full_mass_context
 
 if TYPE_CHECKING:
     import pytest

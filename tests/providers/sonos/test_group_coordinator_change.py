@@ -14,6 +14,7 @@ from aiosonos.const import GroupCoordinatorChangedEvent, SessionErrorEvent
 from aiosonos.exceptions import FailedCommand
 from music_assistant_models.enums import MediaType, PlaybackState
 
+from music_assistant.models.player import Player
 from music_assistant.providers.sonos import player as player_module
 from music_assistant.providers.sonos.player import SonosPlayer
 
@@ -22,6 +23,9 @@ if TYPE_CHECKING:
 
 OFFICE = "RINCON_F0F6C1CC8D0401400"
 BATHROOM = "RINCON_48A6B86DD3F101400"
+# the players of the two speakers, first seen after the player split: their queues have these ids
+OFFICE_QUEUE = "plf0f6c1cc8d04"
+BATHROOM_QUEUE = "pl48a6b86dd3f1"
 OFFICE_GROUP = "RINCON_F0F6C1CC8D0401400:140007645"
 SYNC_GROUP = "syncgroup_upstairs"
 
@@ -100,28 +104,32 @@ class _Household:
         self.mass.create_task.side_effect = _create_task
         self.mass.subscribe.side_effect = _subscribe
         self.mass.player_queues.get.side_effect = {
-            OFFICE: self.queue,
+            OFFICE_QUEUE: self.queue,
             SYNC_GROUP: self.queue,
-            BATHROOM: self.target_queue,
+            BATHROOM_QUEUE: self.target_queue,
         }.get
         self.mass.player_queues.transfer_queue = AsyncMock()
         self.mass.player_queues.play_index = AsyncMock()
-        self.office = self._player(OFFICE, _subscribe)
-        self.office.cloud_queue_id = OFFICE
-        self.bathroom = self._player(BATHROOM, _subscribe)
+        self.office = self._player(OFFICE, OFFICE_QUEUE, _subscribe)
+        self.office.cloud_queue_id = OFFICE_QUEUE
+        self.bathroom = self._player(BATHROOM, BATHROOM_QUEUE, _subscribe)
         self.report_coordinator(True)
         # what moved: the copy of Office's cloud queue, as the speaker reports its container
-        self.serve(f"mass:{OFFICE}")
+        self.serve(f"mass:{OFFICE_QUEUE}")
         players = {OFFICE: self.office, BATHROOM: self.bathroom}
-        self.mass.players.get_player.side_effect = players.get
+        self.mass.players.get_protocol.side_effect = players.get
 
-    def _player(self, player_id: str, subscribe: Callable[..., MagicMock]) -> SonosPlayer:
-        """Create a connected SonosPlayer with a mocked client."""
+    def _player(
+        self, protocol_id: str, player_id: str, subscribe: Callable[..., MagicMock]
+    ) -> SonosPlayer:
+        """Create a connected SonosPlayer with a mocked client, attached to a player."""
         player = SonosPlayer.__new__(SonosPlayer)
         player.mass = self.mass
+        player._provider = MagicMock(get_protocol=player.mass.players.get_protocol)
         player.logger = logging.getLogger("test.sonos.player")
-        player._player_id = player_id
-        player._attr_name = player_id
+        player._protocol_id = protocol_id
+        player._player = MagicMock(spec=Player, player_id=player_id)
+        player._attr_name = protocol_id
         player._cache = {}
         player._config = MagicMock()
         player._config.name = None
@@ -184,10 +192,10 @@ async def test_a_moved_group_hands_our_queue_to_the_new_coordinator() -> None:
     home.office._on_group_coordinator_changed(_moved())
     await home.scheduled.pop()
 
-    home.transfer.assert_awaited_once_with(OFFICE, BATHROOM, auto_play=False)
+    home.transfer.assert_awaited_once_with(OFFICE_QUEUE, BATHROOM_QUEUE, auto_play=False)
     # started at the transferred position: core's resume would read the clock of the new
     # coordinator's queue, which reads as playing while its speaker plays the moved copy
-    home.play_index.assert_awaited_once_with(BATHROOM, "track0", 25)
+    home.play_index.assert_awaited_once_with(BATHROOM_QUEUE, "track0", 25)
     cast("AsyncMock", home.bathroom.stop).assert_not_awaited()
     assert home.office.cloud_queue_id is None
 
@@ -202,7 +210,7 @@ async def test_a_paused_group_hands_over_its_queue_without_playing() -> None:
     home.office._on_group_coordinator_changed(_moved())
     await home.scheduled.pop()
 
-    home.transfer.assert_awaited_once_with(OFFICE, BATHROOM, auto_play=False)
+    home.transfer.assert_awaited_once_with(OFFICE_QUEUE, BATHROOM_QUEUE, auto_play=False)
     home.play_index.assert_not_awaited()
 
 
@@ -215,7 +223,7 @@ async def test_a_moved_radio_stream_starts_from_the_live_edge() -> None:
     home.office._on_group_coordinator_changed(_moved())
     await home.scheduled.pop()
 
-    home.play_index.assert_awaited_once_with(BATHROOM, "track0", 0)
+    home.play_index.assert_awaited_once_with(BATHROOM_QUEUE, "track0", 0)
 
 
 @pytest.mark.asyncio
@@ -296,7 +304,7 @@ async def test_a_queue_that_keeps_playing_here_is_not_handed_over() -> None:
         await home.scheduled.pop()
 
     home.transfer.assert_not_awaited()
-    assert home.office.cloud_queue_id == OFFICE
+    assert home.office.cloud_queue_id == OFFICE_QUEUE
 
 
 @pytest.mark.asyncio
@@ -311,7 +319,7 @@ async def test_nothing_is_handed_over_when_the_new_coordinator_never_takes_the_r
 
     home.transfer.assert_not_awaited()
     cast("AsyncMock", home.bathroom.stop).assert_not_awaited()
-    assert home.office.cloud_queue_id == OFFICE
+    assert home.office.cloud_queue_id == OFFICE_QUEUE
 
 
 @pytest.mark.parametrize("lost", ["role", "status", "connection"])
@@ -336,7 +344,7 @@ async def test_a_role_given_up_again_before_the_hand_over_runs_is_left_alone(los
 
     home.transfer.assert_not_awaited()
     cast("AsyncMock", home.bathroom.stop).assert_not_awaited()
-    assert home.office.cloud_queue_id == OFFICE
+    assert home.office.cloud_queue_id == OFFICE_QUEUE
 
 
 @pytest.mark.asyncio
@@ -370,7 +378,7 @@ async def test_the_same_queue_played_again_in_the_meantime_is_left_alone() -> No
     await hand_over
 
     home.transfer.assert_not_awaited()
-    assert home.office.cloud_queue_id == OFFICE
+    assert home.office.cloud_queue_id == OFFICE_QUEUE
 
 
 @pytest.mark.asyncio
@@ -446,14 +454,14 @@ async def test_a_flow_mode_queue_is_handed_over_too() -> None:
     """A queue played as one stream moves with the group like a cloud queue."""
     home = _Household()
     home.office.cloud_queue_id = None
-    home.office._flow_queue_id = OFFICE
+    home.office._flow_queue_id = OFFICE_QUEUE
     # a stream reports the container it was loaded with: mass:<queue>:<item>
-    home.serve(f"mass:{OFFICE}:track0")
+    home.serve(f"mass:{OFFICE_QUEUE}:track0")
 
     home.office._on_group_coordinator_changed(_moved())
     await home.scheduled.pop()
 
-    home.transfer.assert_awaited_once_with(OFFICE, BATHROOM, auto_play=False)
+    home.transfer.assert_awaited_once_with(OFFICE_QUEUE, BATHROOM_QUEUE, auto_play=False)
     assert home.office._flow_queue_id is None
 
 
@@ -475,7 +483,7 @@ async def test_a_queue_this_player_no_longer_plays_is_not_handed_over() -> None:
 async def test_a_queue_whose_id_only_starts_like_ours_is_not_ours() -> None:
     """The queue id is matched whole, up to the item separator of a stream."""
     home = _Household()
-    home.serve(f"mass:{OFFICE}_party")
+    home.serve(f"mass:{OFFICE_QUEUE}_party")
 
     home.office._on_group_coordinator_changed(_moved())
     await home.scheduled.pop()
@@ -500,7 +508,7 @@ def test_a_membership_change_is_not_a_move() -> None:
     home.office._on_group_coordinator_changed(_updated())
 
     assert home.scheduled == []
-    assert home.office.cloud_queue_id == OFFICE
+    assert home.office.cloud_queue_id == OFFICE_QUEUE
 
 
 def test_a_move_naming_this_player_is_not_handed_over() -> None:
@@ -510,7 +518,7 @@ def test_a_move_naming_this_player_is_not_handed_over() -> None:
     home.office._on_group_coordinator_changed(_moved(OFFICE))
 
     assert home.scheduled == []
-    assert home.office.cloud_queue_id == OFFICE
+    assert home.office.cloud_queue_id == OFFICE_QUEUE
 
 
 @pytest.mark.parametrize("known", [False, True], ids=["unknown", "disconnected"])
@@ -525,7 +533,7 @@ def test_a_move_to_a_speaker_we_do_not_control_is_only_logged(known: bool) -> No
     assert home.scheduled == []
     home.transfer.assert_not_awaited()
     cast("AsyncMock", home.bathroom.stop).assert_not_awaited()
-    assert home.office.cloud_queue_id == OFFICE
+    assert home.office.cloud_queue_id == OFFICE_QUEUE
 
 
 def test_each_move_gets_its_own_hand_over() -> None:
@@ -552,7 +560,7 @@ async def test_a_move_right_after_an_eviction_still_hands_over_our_queue() -> No
     home.office._on_group_coordinator_changed(_moved())
     await home.scheduled.pop()
 
-    home.transfer.assert_awaited_once_with(OFFICE, BATHROOM, auto_play=False)
+    home.transfer.assert_awaited_once_with(OFFICE_QUEUE, BATHROOM_QUEUE, auto_play=False)
     assert home.office._evicted_cloud_queue is None
 
 
@@ -561,10 +569,21 @@ def test_a_move_long_after_an_eviction_is_left_alone() -> None:
     home = _Household()
     home.office._on_session_error(_evicted())
     home.office._evicted_cloud_queue = (
-        OFFICE,
+        OFFICE_QUEUE,
         time.monotonic() - player_module.EVICTED_QUEUE_GRACE - 1,
     )
 
     home.office._on_group_coordinator_changed(_moved())
 
     assert home.scheduled == []
+
+
+def test_a_move_to_a_speaker_waiting_for_its_player_is_only_logged() -> None:
+    """A speaker that is not attached to a player yet has no queue to take ours."""
+    home = _Household()
+    home.bathroom._player = None
+
+    home.office._on_group_coordinator_changed(_moved())
+
+    assert home.scheduled == []
+    assert home.office.cloud_queue_id == OFFICE_QUEUE

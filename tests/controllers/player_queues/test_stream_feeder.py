@@ -17,7 +17,7 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
-from music_assistant.controllers.players import controller as players_controller
+from music_assistant.controllers.players import locks as players_locks
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
@@ -47,11 +47,10 @@ async def test_enqueue_next_item_waits_for_playing_player_update(index_in_buffer
         await release_wait.wait()
         yield
 
-    player_state = SimpleNamespace(
+    player = SimpleNamespace(
         playback_state=PlaybackState.IDLE,
         active_source="q1",
     )
-    player = SimpleNamespace(state=player_state)
 
     mass = MagicMock()
     mass.players = MagicMock()
@@ -91,7 +90,7 @@ async def test_enqueue_next_item_waits_for_playing_player_update(index_in_buffer
     assert wait_entered.is_set()
     mass.players.enqueue_next_media.assert_not_awaited()
 
-    player_state.playback_state = PlaybackState.PLAYING
+    player.playback_state = PlaybackState.PLAYING
     release_wait.set()
     await enqueue_task
 
@@ -122,9 +121,7 @@ def _handover_controller() -> tuple[
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
     controller.logger = MagicMock()
     players = bare_player_controller()
-    player = SimpleNamespace(
-        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, active_source="q1")
-    )
+    player = SimpleNamespace(playback_state=PlaybackState.PLAYING, active_source="q1")
     mass = MagicMock()
     mass.players.wait_for_player_update = MagicMock(side_effect=_already_playing)
     mass.players.get_player = MagicMock(return_value=player)
@@ -195,9 +192,8 @@ async def test_enqueue_next_item_gives_up_on_a_player_that_stays_busy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A handover that cannot get the lock in time is dropped quietly."""
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.02)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.05)
+    monkeypatch.setattr(players_locks, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+    monkeypatch.setattr(players_locks, "PLAYER_LOCK_TIMEOUT", 0.05)
     controller, mass, players, items = _handover_controller()
 
     async with players.get_player_lock("q1", PlayerLockPurpose.PLAYBACK):

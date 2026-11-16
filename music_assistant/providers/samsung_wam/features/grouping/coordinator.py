@@ -52,8 +52,8 @@ class GroupingCoordinator(WamProviderFeatureBase):
         for player in self.players:
             synced_to = player.synced_to
             if synced_to:
-                self.states.setdefault(synced_to, set()).add(player.player_id)
-                self._child_to_leader[player.player_id] = synced_to
+                self.states.setdefault(synced_to, set()).add(player.protocol_id)
+                self._child_to_leader[player.protocol_id] = synced_to
 
     def register_player(self, player: WamPlayer) -> None:
         """
@@ -61,7 +61,7 @@ class GroupingCoordinator(WamProviderFeatureBase):
 
         :param player: The WamPlayer to register.
         """
-        self._update_player_membership(player.player_id, player.synced_to)
+        self._update_player_membership(player.protocol_id, player.synced_to)
         if player.synced_to:
             if leader_player := self.provider.get_player(player.synced_to):
                 leader_player.state_sync.refresh_state()
@@ -72,8 +72,8 @@ class GroupingCoordinator(WamProviderFeatureBase):
 
         :param player: The WamPlayer to unregister.
         """
-        old_leader_id = self._child_to_leader.get(player.player_id)
-        self._remove_player_from_all_groups(player.player_id)
+        old_leader_id = self._child_to_leader.get(player.protocol_id)
+        self._remove_player_from_all_groups(player.protocol_id)
         if old_leader_id and (leader_player := self.provider.get_player(old_leader_id)):
             leader_player.state_sync.refresh_state()
 
@@ -143,7 +143,7 @@ class GroupingCoordinator(WamProviderFeatureBase):
             for pid in target_children:
                 self._update_player_membership(pid, leader_id)
             for child in children_to_remove:
-                self._update_player_membership(child.player_id, None)
+                self._update_player_membership(child.protocol_id, None)
 
             try:
                 ungroup_tasks = [child.grouping.leave_group() for child in children_to_remove]
@@ -173,17 +173,17 @@ class GroupingCoordinator(WamProviderFeatureBase):
 
         :param player: The WamPlayer whose state changed.
         """
-        old_leader_id = self._child_to_leader.get(player.player_id)
+        old_leader_id = self._child_to_leader.get(player.protocol_id)
         new_leader_id = player.synced_to
 
         if old_leader_id == new_leader_id:
             return
 
         affected_leader_ids = {old_leader_id, new_leader_id}
-        self._update_player_membership(player.player_id, new_leader_id)
+        self._update_player_membership(player.protocol_id, new_leader_id)
 
         for pid in affected_leader_ids:
-            if pid and pid != player.player_id:
+            if pid and pid != player.protocol_id:
                 if p := self.provider.get_player(pid):
                     p.state_sync.refresh_state()
 

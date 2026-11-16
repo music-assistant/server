@@ -21,8 +21,15 @@ def _player(
         corrected_elapsed_time=elapsed,
     )
     seek = AsyncMock()
-    player_queues = SimpleNamespace(get_active_queue=lambda _pid: queue, seek=seek)
-    fake = SimpleNamespace(player_id="p1", mass=SimpleNamespace(player_queues=player_queues))
+    # the queue is that of the player the protocol is attached to, not of the client id
+    player_queues = SimpleNamespace(
+        get_active_queue=lambda player_id: queue if player_id == "pl_p1" else None, seek=seek
+    )
+    fake = SimpleNamespace(
+        protocol_id="p1",
+        player=SimpleNamespace(player_id="pl_p1"),
+        mass=SimpleNamespace(player_queues=player_queues),
+    )
     return cast("SendspinPlayer", fake), seek
 
 

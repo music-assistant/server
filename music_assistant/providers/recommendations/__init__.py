@@ -227,7 +227,11 @@ class LibraryRecommendationsProvider(PluginProvider):
         ]
 
     async def get_recommendation_items(
-        self, item_id: str, providers: list[str] | None = None
+        self,
+        item_id: str,
+        providers: list[str] | None = None,
+        limit: int = 10,
+        random_seed: int | None = None,
     ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
         """
         Get the items for a single library recommendation row.
@@ -236,16 +240,18 @@ class LibraryRecommendationsProvider(PluginProvider):
         :param providers: Restrict items to those reachable through one of these provider
             instance ids (OR semantics). An explicit empty list returns no items; None
             applies no filter.
+        :param limit: The maximum number of items to return.
+        :param random_seed: Keep the order of a random row stable across pages.
         """
         if providers is not None and not providers:
             return UniqueList()
         items: Sequence[MediaItemType | ItemMapping | BrowseFolder]
         match item_id:
             case LibraryRowID.IN_PROGRESS:
-                items = await self.mass.music.in_progress_items(limit=10, providers=providers)
+                items = await self.mass.music.in_progress_items(limit=limit, providers=providers)
             case LibraryRowID.RECENTLY_PLAYED:
                 items = await self.mass.music.recently_played(
-                    limit=10,
+                    limit=limit,
                     media_types=[
                         MediaType.ALBUM,
                         MediaType.TRACK,
@@ -259,63 +265,73 @@ class LibraryRecommendationsProvider(PluginProvider):
                 )
             case LibraryRowID.RECENTLY_ADDED_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10,
+                    limit=limit,
                     sort_field=SortField.TIMESTAMP_ADDED,
                     sort_direction=SortDirection.DESC,
                     reachable_via=providers,
                 )
             case LibraryRowID.RECENTLY_ADDED_ALBUMS:
                 items = await self.mass.music.albums.library_items(
-                    limit=10,
+                    limit=limit,
                     sort_field=SortField.TIMESTAMP_ADDED,
                     sort_direction=SortDirection.DESC,
                     reachable_via=providers,
                 )
             case LibraryRowID.RANDOM_ARTISTS:
                 items = await self.mass.music.artists.library_items(
-                    limit=10, sort_field=SortField.RANDOM_PLAY_COUNT, reachable_via=providers
+                    limit=limit,
+                    sort_field=SortField.RANDOM_PLAY_COUNT,
+                    reachable_via=providers,
+                    random_seed=random_seed,
                 )
             case LibraryRowID.RANDOM_ALBUMS:
                 items = await self.mass.music.albums.library_items(
-                    limit=10, sort_field=SortField.RANDOM_PLAY_COUNT, reachable_via=providers
+                    limit=limit,
+                    sort_field=SortField.RANDOM_PLAY_COUNT,
+                    reachable_via=providers,
+                    random_seed=random_seed,
                 )
             case LibraryRowID.RECENT_FAVORITE_TRACKS:
                 items = await self.mass.music.tracks.library_items(
                     favorite=True,
-                    limit=10,
+                    limit=limit,
                     sort_field=SortField.FAVORITE_TIMESTAMP,
                     sort_direction=SortDirection.DESC,
                     reachable_via=providers,
                 )
             case LibraryRowID.FAVORITE_PLAYLISTS:
                 items = await self.mass.music.playlists.library_items(
-                    favorite=True, limit=10, sort_field=SortField.RANDOM, reachable_via=providers
+                    favorite=True,
+                    limit=limit,
+                    sort_field=SortField.RANDOM,
+                    reachable_via=providers,
+                    random_seed=random_seed,
                 )
             case LibraryRowID.FAVORITE_RADIO:
                 items = await self.mass.music.radio.library_items(
                     favorite=True,
-                    limit=10,
+                    limit=limit,
                     sort_field=SortField.PLAY_COUNT,
                     sort_direction=SortDirection.DESC,
                     reachable_via=providers,
                 )
             case LibraryRowID.RECENT_ARTISTS:
                 items = await self.mass.music.recently_played(
-                    limit=10,
+                    limit=limit,
                     media_types=[MediaType.ARTIST],
                     user_initiated_only=False,
                     providers=providers,
                 )
             case LibraryRowID.RECENT_TRACKS:
                 items = await self.mass.music.recently_played(
-                    limit=10,
+                    limit=limit,
                     media_types=[MediaType.TRACK],
                     user_initiated_only=False,
                     providers=providers,
                 )
             case LibraryRowID.FORGOTTEN_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10,
+                    limit=limit,
                     sort_field=SortField.LAST_PLAYED,
                     sort_direction=SortDirection.ASC,
                     played_only=True,
@@ -323,7 +339,7 @@ class LibraryRecommendationsProvider(PluginProvider):
                 )
             case LibraryRowID.FORGOTTEN_ALBUMS:
                 items = await self.mass.music.albums.library_items(
-                    limit=10,
+                    limit=limit,
                     sort_field=SortField.LAST_PLAYED,
                     sort_direction=SortDirection.ASC,
                     played_only=True,
@@ -331,7 +347,7 @@ class LibraryRecommendationsProvider(PluginProvider):
                 )
             case LibraryRowID.FORGOTTEN_ARTISTS:
                 items = await self.mass.music.artists.library_items(
-                    limit=10,
+                    limit=limit,
                     sort_field=SortField.LAST_PLAYED,
                     sort_direction=SortDirection.ASC,
                     played_only=True,
@@ -339,14 +355,14 @@ class LibraryRecommendationsProvider(PluginProvider):
                 )
             case LibraryRowID.MOST_PLAYED_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10,
+                    limit=limit,
                     sort_field=SortField.PLAY_COUNT,
                     sort_direction=SortDirection.DESC,
                     reachable_via=providers,
                 )
             case LibraryRowID.NEVER_PLAYED_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10,
+                    limit=limit,
                     sort_field=SortField.PLAY_COUNT,
                     sort_direction=SortDirection.ASC,
                     reachable_via=providers,

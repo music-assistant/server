@@ -96,6 +96,18 @@ async def test_play_index_moves_the_sleep_timer_stop_to_the_new_item() -> None:
     assert queue_data.sleep_timer_target == SleepTimerTarget(SleepTimerMode.END_OF_ITEM, "new", 279)
 
 
+async def test_play_index_drops_a_step_that_has_not_played_yet() -> None:
+    """An item that starts to play takes the place of a next or a previous that still waits."""
+    ctrl, _queue, _signals = _controller_with_stale_queue()
+
+    await ctrl._play_index(QUEUE_ID, 1, None, fade_in=False)
+
+    # the second for which the step holds its item back, and its move once that waits
+    step = f"queue_play_index_{QUEUE_ID}"
+    ctrl.mass.cancel_timer.assert_any_call(step)  # type: ignore[attr-defined]
+    ctrl.mass.cancel_task.assert_any_call(step)  # type: ignore[attr-defined]
+
+
 async def test_seek_publishes_target_before_restarting_stream() -> None:
     """A seek publishes its target before play_index starts rebuilding the stream."""
     ctrl, queue, _signals = _controller_with_stale_queue()

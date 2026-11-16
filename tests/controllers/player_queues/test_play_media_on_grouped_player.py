@@ -7,6 +7,9 @@ follows a's play_media_overrides_group setting: on, a leaves the group and plays
 queue; off, the owner's queue plays it. The real queue and players controllers handle the request;
 only the media lookup, the member change and what a device plays are stubbed. A request that
 ends up on the owner's queue needs access to the owner as well.
+
+The queue of a player has the id of the player; the protocols of the players have ids of
+their own, so a request that ends up on a protocol id instead of a player id fails.
 """
 
 from __future__ import annotations
@@ -17,7 +20,13 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.enums import MediaType, PlayerFeature, PlayerType, QueueOption
+from music_assistant_models.enums import (
+    MediaType,
+    PlayerFeature,
+    PlayerType,
+    ProtocolRole,
+    QueueOption,
+)
 from music_assistant_models.errors import InsufficientPermissions, MediaNotFoundError
 from music_assistant_models.media_items import (
     ItemMapping,
@@ -37,7 +46,12 @@ from music_assistant.controllers.player_queues.media_resolver import ResolvedIte
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
 from music_assistant.models.player import PlayerMedia
-from tests.common import MockPlayer, MockProvider, as_user, grouping_player_controller
+from tests.common import (
+    MockProtocol,
+    MockProvider,
+    as_user,
+    attach_mock,
+)
 
 ADDING_OPTIONS = [QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT]
 STARTING_OPTIONS = [QueueOption.PLAY, QueueOption.REPLACE]
@@ -50,6 +64,8 @@ RELEASE = {
     "dynamic": "set_members(g,-['a'])",
     "static": "stop(g)",
 }
+# the protocol of each player: the device of a and b, the group protocol of g
+PROTOCOL_IDS = {"a": "device_a", "b": "device_b", "g": "group_g"}
 
 
 def _caller(user: str, kind: str) -> contextlib.AbstractContextManager[None]:
@@ -83,41 +99,59 @@ class _Setup:
         """
         self.played: list[tuple[str, str | None]] = []
         self.released: list[str] = []
-        players = grouping_player_controller("a", "b")
-        self.players = players
-        mass = cast("MagicMock", players.mass)
-        mass.config.get_raw_player_config_value = MagicMock(
+        mass = MagicMock()
+        mass.closing = False
+        mass.config.get_player_value = MagicMock(
             side_effect=lambda player_id, key, default=None: (
                 overrides_group
                 if key == CONF_PLAY_MEDIA_OVERRIDES_GROUP and player_id == "a"
                 else default
             )
         )
-        group = MockPlayer(
+        mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
+        players = PlayerController(mass)
+        mass.players = players
+        self.players = players
+        self.protocols: dict[str, MockProtocol] = {}
+        devices = MockProvider("test", instance_id="test", mass=mass)
+        for player_id in ("a", "b"):
+            _, protocol = attach_mock(
+                devices, PROTOCOL_IDS[player_id], f"Player {player_id.upper()}", player_id=player_id
+            )
+            protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+            # devices of one provider name each other by protocol id
+            protocol._attr_can_group_with = {PROTOCOL_IDS["a"], PROTOCOL_IDS["b"]} - {
+                PROTOCOL_IDS[player_id]
+            }
+            self.protocols[player_id] = protocol
+        _, group_protocol = attach_mock(
             MockProvider("group", instance_id="group", mass=mass),
-            "g",
+            PROTOCOL_IDS["g"],
             "Group G",
+            role=ProtocolRole.VIRTUAL,
+            player_id="g",
             player_type=PlayerType.GROUP,
         )
-        group._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
-        players._players["g"] = group
-        group.set_initialized()
+        group_protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        self.protocols["g"] = group_protocol
         if kind == "synced":
-            players._players["b"]._attr_group_members = ["b", "a"]
-            players._players["b"]._attr_active_source = "b"
+            leader_protocol = self.protocols["b"]
+            leader_protocol._attr_group_members = [PROTOCOL_IDS["b"], PROTOCOL_IDS["a"]]
+            leader_protocol._attr_active_source = PROTOCOL_IDS["b"]
         elif kind is not None:
-            group._attr_powered = True
-            group._attr_group_members = ["a", "b"]
-            group._attr_static_group_members = ["a", "b"] if kind == "static" else []
-            group._attr_active_source = "g"
+            # a group names its members by player id
+            group_protocol._attr_powered = True
+            group_protocol._attr_group_members = ["a", "b"]
+            group_protocol._attr_static_group_members = ["a", "b"] if kind == "static" else []
+            group_protocol._attr_active_source = PROTOCOL_IDS["g"]
         self.queues = self._queue_controller(mass, track_default, radio_default)
         mass.player_queues = self.queues
         self._stub_player_side(players)
         # the owner first, so its members derive their state from its final one
         for _ in range(2):
-            for player in sorted(players._players.values(), key=lambda p: p.player_id != "g"):
-                player._cache.clear()
-                player.update_state(force_update=True, signal_event=False)
+            for player_id in ("g", "a", "b"):
+                self.protocols[player_id]._cache.clear()
+                players._players[player_id].update_state(force_update=True, signal_event=False)
         if kind is not None:
             member = players._players["a"].state
             assert (member.synced_to or member.active_group) == OWNER[kind]
@@ -393,8 +427,8 @@ async def test_a_request_without_option_that_adds_leaves_a_switched_off_owner_of
     """A track defaulting to ADD is added to a sync leader switched off at its power control."""
     setup = _Setup("synced", True, QueueOption.ADD.value)
     mass = cast("MagicMock", setup.players.mass)
-    raw_config = mass.config.get_raw_player_config_value.side_effect
-    mass.config.get_raw_player_config_value.side_effect = lambda player_id, key, default=None: (
+    raw_config = mass.config.get_player_value.side_effect
+    mass.config.get_player_value.side_effect = lambda player_id, key, default=None: (
         "plug"
         if key == CONF_POWER_CONTROL and player_id == "b"
         else raw_config(player_id, key, default)
@@ -403,9 +437,10 @@ async def test_a_request_without_option_that_adds_leaves_a_switched_off_owner_of
         id="plug", provider="test", name="Plug", supports_power=True, power_state=False
     )
     leader = setup.players._players["b"]
-    leader._attr_available = False
-    leader._cache.clear()
-    leader.update_state(force_update=True, signal_event=False)
+    leader_protocol = setup.protocols["b"]
+    leader_protocol._attr_available = False
+    leader_protocol._cache.clear()
+    leader_protocol.update_state(force_update=True, signal_event=False)
     assert leader.offline_by_power_control
     power_on = AsyncMock()
     setup.players._power_on_switched_off_player = power_on  # type: ignore[method-assign]

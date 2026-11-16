@@ -24,11 +24,13 @@ def _fake_player() -> Any:
     # __init__ is skipped: it needs a provider, cast info and a live Chromecast connection.
     # Typed as Any because the collaborators below are read back as the mocks they are.
     fake = cast("Any", ChromecastPlayer.__new__(ChromecastPlayer))
+    fake._player = None
     fake.logger = MagicMock()
     fake.update_state = MagicMock()
     fake.active_cast_group = None
-    # display_name is a cached property, normally built from the config in __init__
-    fake._cache = {"display_name": "Test Cast"}
+    # an unattached protocol shows the name its device reports
+    fake._cache = {}
+    fake._attr_name = "Test Cast"
     # state left over from what played before the dashboard took over, so the assertions
     # prove the handler clears it rather than matching an untouched default
     fake._attr_playback_state = PlaybackState.PLAYING

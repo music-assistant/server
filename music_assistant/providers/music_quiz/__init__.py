@@ -470,7 +470,7 @@ class MusicQuizPlugin(PluginProvider):
             initial_round_task = await self._prepare_initial_round(quiz_strategy)
             selected_player = self._validate_playback_config(game_config)
             if selected_player is not None:
-                game_config.venue_player_name = selected_player.display_name
+                game_config.venue_player_name = selected_player.name
             remembered_venue_player_id = (
                 game_config.venue_player_id
                 if game_config.playback_mode == SharedPlaybackMode.VENUE
@@ -1477,7 +1477,7 @@ class MusicQuizPlugin(PluginProvider):
                 "No playback target is available for the Music Quiz game"
             )
         player = self.mass.players.get_player(session.player_id)
-        if player is None or not player.state.available:
+        if player is None or not player.available:
             raise MusicQuizNoPlaybackTargetError(
                 "No playback target is available for the Music Quiz game"
             )
@@ -1515,7 +1515,7 @@ class MusicQuizPlugin(PluginProvider):
             if session is None:
                 return
             player = self.mass.players.get_player(session.player_id)
-            if player is None or not player.state.available:
+            if player is None or not player.available:
                 return
             if player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
                 return
@@ -1539,8 +1539,8 @@ class MusicQuizPlugin(PluginProvider):
                 # playback. Its first round then starts without prepared audio.
                 if (
                     venue is None
-                    or not venue.state.available
-                    or venue.state.playback_state != PlaybackState.IDLE
+                    or not venue.available
+                    or venue.playback_state != PlaybackState.IDLE
                 ):
                     return
             session = await self._get_playback_session()
@@ -1761,8 +1761,8 @@ class MusicQuizPlugin(PluginProvider):
         # current track, so its anchor is not this round's track start
         if queue is not None and queue.flow_mode:
             return None
-        elapsed = player.state.elapsed_time
-        last_updated = player.state.elapsed_time_last_updated
+        elapsed = player.elapsed_time
+        last_updated = player.elapsed_time_last_updated
         # providers report no position (Sendspin's play_media sets _attr_elapsed_time to None)
         # or a zero position with a fresh timestamp before real playback progress lands,
         # which would otherwise resolve to "audio started now"
@@ -1872,17 +1872,14 @@ class MusicQuizPlugin(PluginProvider):
         preference = await self._load_playback_preference()
         legacy_mode, legacy_player_id, _ = self._legacy_playback_preference()
         targets = self._venue_playback_targets()
-        visible_players = [player for player in targets if not player.state.hide_in_ui]
+        visible_players = [player for player in targets if not player.hide_in_ui]
         # the caller's own web player is hidden by default: it is offered, but only
         # recommended when it is the remembered choice
         offered_players = [
-            player
-            for player in targets
-            if not player.state.hide_in_ui or is_own_client_player(player)
+            player for player in targets if not player.hide_in_ui or is_own_client_player(player)
         ]
         venue_players: list[MusicQuizVenuePlayerOption] = [
-            {"player_id": player.player_id, "name": player.display_name}
-            for player in offered_players
+            {"player_id": player.player_id, "name": player.name} for player in offered_players
         ]
         offered_player_ids = {player["player_id"] for player in venue_players}
         stored_venue_player_id = (
@@ -1995,7 +1992,7 @@ class MusicQuizPlugin(PluginProvider):
         ]
         return sorted(
             targets,
-            key=lambda player: (player.display_name.casefold(), player.player_id),
+            key=lambda player: (player.name.casefold(), player.player_id),
         )
 
     def _is_venue_playback_target_id(self, player_id: str) -> bool:
@@ -2053,7 +2050,10 @@ class MusicQuizPlugin(PluginProvider):
             return None
         return {
             "playback_mode": cast("str", playback_mode),
-            "venue_player_id": venue_player_id,
+            # a stored id can be a legacy id of a player that answers to another id now
+            "venue_player_id": (
+                self.mass.players.resolve_player_id(venue_player_id) if venue_player_id else None
+            ),
         }
 
     async def _store_playback_preference(
@@ -2103,7 +2103,7 @@ class MusicQuizPlugin(PluginProvider):
         else:
             playback_mode = SharedPlaybackMode.VENUE
         venue_player_id = (
-            raw_player_id
+            self.mass.players.resolve_player_id(raw_player_id)
             if isinstance(raw_player_id, str)
             and raw_player_id
             and raw_player_id != CONF_PLAYER_AUTO

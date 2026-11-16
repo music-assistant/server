@@ -268,8 +268,8 @@ async def test_the_daily_check_keeps_what_the_provider_still_lacks(
     assert provider.lookups == 2
     assert not await _available(mass, db_podcast)
     assert not await _available(mass, db_radio)
-    assert await mass.music.podcasts.library_count() == 1
-    assert await mass.music.radio.library_count() == 1
+    assert await mass.music.database.get_count(mass.music.podcasts.db_table) == 1
+    assert await mass.music.database.get_count(mass.music.radio.db_table) == 1
 
 
 async def test_the_daily_check_skips_providers_not_loaded(mass: MusicAssistant) -> None:

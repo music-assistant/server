@@ -27,6 +27,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    ProtocolRole,
     ProviderType,
     QueueOption,
     StreamType,
@@ -51,8 +52,8 @@ from music_assistant.models.music_provider import (
     ProviderStreamHeldError,
     ProviderStreamLimitError,
 )
-from music_assistant.models.player import PlayerMedia
-from tests.common import MockPlayer, MockProvider, grouping_player_controller
+from music_assistant.models.player import Player, PlayerMedia
+from tests.common import MockProtocol, MockProvider, attach_mock, grouping_player_controller
 
 INSTANCE = "svc--one"
 PCM = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16)
@@ -119,7 +120,7 @@ class _Setup:
         self.players = players
         mass = cast("MagicMock", players.mass)
         self.mass = mass
-        mass.config.get_raw_player_config_value = MagicMock(
+        mass.config.get_player_value = MagicMock(
             side_effect=lambda _pid, key, default=None: (
                 True if key == CONF_PLAY_MEDIA_OVERRIDES_GROUP else default
             )
@@ -139,32 +140,33 @@ class _Setup:
         mass.music.check_item_playable_for_user = Mock()
         mass.music.get_playback_speed = AsyncMock(return_value=1.0)
         mass.streams.audio_analysis.start_analysis = AsyncMock()
-        group = MockPlayer(
+        _, group = attach_mock(
             MockProvider("group", instance_id="group", mass=mass),
-            "g",
+            "group_g",
             "Group G",
+            role=ProtocolRole.VIRTUAL,
             player_type=PlayerType.GROUP,
+            player_id="g",
         )
         group._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
-        players._players["g"] = group
-        group.set_initialized()
-        for player in players._players.values():
-            player._attr_playback_state = PlaybackState.IDLE
-        owner = players._players[self.owner]
+        for player_id in players._players:
+            self.protocol(player_id)._attr_playback_state = PlaybackState.IDLE
+        owner = self.protocol(self.owner)
         owner._attr_active_source = self.owner
         owner._attr_playback_state = PlaybackState.PLAYING
         if kind == "synced":
-            owner._attr_group_members = ["b", "a", "c"]
+            owner._attr_group_members = ["proto_b", "proto_a", "proto_c"]
         elif kind is not None:
             group._attr_powered = True
+            # a group reports its members by their player ids
             group._attr_group_members = ["a", "b", "c"]
             group._attr_static_group_members = ["a", "b", "c"] if kind == "static" else []
         if kind is not None:
             for player_id in "abc":
-                players._players[player_id]._attr_playback_state = PlaybackState.PLAYING
+                self.protocol(player_id)._attr_playback_state = PlaybackState.PLAYING
         else:
-            players._players["a"]._attr_active_source = "a"
-            players._players["a"]._attr_playback_state = PlaybackState.PLAYING
+            self.protocol("a")._attr_active_source = "a"
+            self.protocol("a")._attr_playback_state = PlaybackState.PLAYING
         self._stub_devices()
         self.queues = self._queue_controller()
         mass.player_queues = self.queues
@@ -173,6 +175,10 @@ class _Setup:
         self.refresh()
         if kind is not None:
             assert self.owner_of("a") == self.owner
+
+    def protocol(self, player_id: str) -> MockProtocol:
+        """Return the protocol of the given player's device."""
+        return cast("MockProtocol", self.players._players[player_id].own_protocol)
 
     def owner_of(self, player_id: str) -> str:
         """Return the id of the player that owns the given player's playback."""
@@ -184,6 +190,8 @@ class _Setup:
         for _ in range(2):
             for player in sorted(self.players._players.values(), key=lambda p: p.player_id != "g"):
                 player._cache.clear()
+                for protocol in player.attached_protocols.values():
+                    protocol._cache.clear()
                 player.update_state(force_update=True, signal_event=False)
 
     async def start_owner(self) -> None:
@@ -244,28 +252,36 @@ class _Setup:
 
         async def _played(player_id: str, _media: PlayerMedia) -> None:
             self.device_plays.append(player_id)
-            player = players._players[player_id]
-            player._attr_playback_state = PlaybackState.PLAYING
-            player._attr_active_source = player_id
+            protocol = self.protocol(player_id)
+            protocol._attr_playback_state = PlaybackState.PLAYING
+            protocol._attr_active_source = player_id
             self.refresh()
 
         async def _set_members(
-            parent: Any, _to_add: Any = None, player_ids_to_remove: Any = None
+            parent: Player, _to_add: Any = None, player_ids_to_remove: Any = None
         ) -> None:
-            await parent.set_members(None, player_ids_to_remove)
+            protocol = self.protocol(parent.player_id)
+            # a group names its members by player id, the protocol of a sync leader by protocol id
+            removed = {
+                player_id if protocol.role == ProtocolRole.VIRTUAL else f"proto_{player_id}"
+                for player_id in player_ids_to_remove or []
+            }
+            protocol._attr_group_members = [
+                member for member in protocol._attr_group_members if member not in removed
+            ]
             for player_id in player_ids_to_remove or []:
-                players._players[player_id]._attr_playback_state = PlaybackState.IDLE
+                self.protocol(player_id)._attr_playback_state = PlaybackState.IDLE
             self.refresh()
 
         players._handle_play_media = AsyncMock(side_effect=_played)  # type: ignore[method-assign]
         players._handle_set_members = AsyncMock(side_effect=_set_members)  # type: ignore[method-assign]
         players._handle_cmd_power = AsyncMock()  # type: ignore[method-assign]
 
-        for player_id, player in players._players.items():
+        for player_id in players._players:
 
             async def _stop(player_id: str = player_id) -> None:
                 self.device_stops.append(player_id)
-                stopped = players._players[player_id]
+                stopped = self.protocol(player_id)
                 stopped._attr_playback_state = PlaybackState.IDLE
                 if player_id == "g":
                     # a static group that stops lets its members go
@@ -274,7 +290,7 @@ class _Setup:
                     stopped._attr_active_source = None
                 self.refresh()
 
-            player.stop = _stop  # type: ignore[method-assign]
+            self.protocol(player_id).stop = _stop  # type: ignore[method-assign]
 
         @contextlib.asynccontextmanager
         async def _no_wait(*_args: Any, **_kwargs: Any) -> AsyncIterator[None]:

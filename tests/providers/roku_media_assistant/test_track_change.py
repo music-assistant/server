@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
@@ -26,7 +26,8 @@ def _make_player() -> MediaAssistantPlayer:
     player.mass = mass
     player._provider = provider
     player.logger = logging.getLogger("test.roku_media_assistant.player")
-    player._player_id = PLAYER_ID
+    player._protocol_id = PLAYER_ID
+    player._player = None
     player._cache = {}
     player._config = MagicMock()
     player._config.get_value.return_value = False
@@ -137,3 +138,19 @@ async def test_stop_forgets_queued_item() -> None:
 
     assert player.queued is None
     assert player._attr_current_media is None
+
+
+async def test_poll_shows_the_media_of_its_player_in_the_app() -> None:
+    """In flow mode the app is told what the player plays, as the player reports it."""
+    player = _make_player()
+    cast("MagicMock", player._config).get_value.return_value = True  # flow mode
+    shown = _media("shown")
+    player._player = MagicMock()
+    player._player.current_media = shown
+    player._attr_current_media = _media("reported")
+
+    await _poll_at(player, 10)
+
+    player.roku_input.assert_awaited_once()  # type: ignore[attr-defined]
+    params = player.roku_input.await_args.args[0]  # type: ignore[attr-defined]
+    assert params["songName"] == "shown"

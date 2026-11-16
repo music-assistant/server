@@ -10,7 +10,8 @@ from music_assistant_models.player import DeviceInfo
 from music_assistant.constants import CONF_ICON, CONF_PLAYERS
 from music_assistant.helpers.player import get_default_player_icon
 from music_assistant.mass import MusicAssistant
-from tests.common import MockPlayer, MockProvider
+from music_assistant.models.player import Player
+from tests.common import MockProvider, attach_mock, mock_player_mass, use_player_registry
 
 
 @pytest.mark.parametrize(
@@ -59,17 +60,12 @@ def test_default_player_icon(
     expected: str,
 ) -> None:
     """The player type, provider, and device metadata select a useful default icon."""
-    player = MockPlayer(
-        MockProvider(provider_domain),
-        "test_player",
-        "Test Player",
-        player_type=player_type,
-    )
-    player._attr_device_info = DeviceInfo(manufacturer=manufacturer, model=model)
-    cast("MagicMock", player.mass.config.get_raw_player_config_value).return_value = None
+    provider = MockProvider(provider_domain, instance_id=provider_domain, mass=mock_player_mass())
+    player, protocol = attach_mock(provider, "test_player", "Test Player", player_type=player_type)
+    protocol._attr_device_info = DeviceInfo(manufacturer=manufacturer, model=model)
     player._cache.clear()
 
-    assert player.icon == expected
+    assert player._icon == expected
 
 
 def test_default_player_icon_tolerates_missing_device_metadata() -> None:
@@ -79,39 +75,32 @@ def test_default_player_icon_tolerates_missing_device_metadata() -> None:
 
 def test_explicit_player_icon_overrides_default() -> None:
     """An explicitly configured icon always wins over the computed default."""
-    player = MockPlayer(MockProvider("airplay"), "apple_tv", "Apple TV")
-    player._attr_device_info = DeviceInfo(manufacturer="Apple", model="Apple TV 4K")
-    cast("MagicMock", player.mass.config.get_raw_player_config_value).return_value = "living-room"
+    mass = mock_player_mass()
+    mass.config.get_player_value = MagicMock(return_value="living-room")
+    provider = MockProvider("airplay", instance_id="airplay", mass=mass)
+    player, protocol = attach_mock(provider, "apple_tv", "Apple TV")
+    protocol._attr_device_info = DeviceInfo(manufacturer="Apple", model="Apple TV 4K")
     player._cache.clear()
 
-    assert player.icon == "living-room"
+    assert player._icon == "living-room"
 
 
 def test_automatic_player_icon_refreshes_with_device_info() -> None:
     """An automatic icon follows device information learned after initialization."""
-    player = MockPlayer(MockProvider("test"), "late_metadata", "Late metadata")
-    cast("MagicMock", player.mass.config.get_raw_player_config_value).return_value = None
+    provider = MockProvider("test", mass=mock_player_mass())
+    player, protocol = attach_mock(provider, "late_metadata", "Late metadata")
 
-    assert player.icon == "speaker"
+    assert player._icon == "speaker"
 
-    player._attr_device_info = DeviceInfo(manufacturer="Sonos", model="Era 100")
+    protocol._attr_device_info = DeviceInfo(manufacturer="Sonos", model="Era 100")
     player.update_state(signal_event=False)
 
-    assert player.icon == "sonos"
+    assert player._icon == "sonos"
 
 
 async def test_unset_icon_config_uses_player_default(mass_minimal: MusicAssistant) -> None:
     """An unset stored icon resolves to the player's computed config default."""
-    player = MagicMock()
-    player.player_id = "test_player"
-    player.state.type = PlayerType.PLAYER
-    player.default_icon = "sonos"
-    player.hidden_by_default = False
-    player.expose_to_ha_by_default = True
-    player.linked_output_protocols = []
-    player.supports_feature.return_value = False
-    mass_minimal.players = MagicMock()
-    mass_minimal.players.player_controls.return_value = []
+    player = _set_up_config_player(mass_minimal)
 
     entries = mass_minimal.config._get_default_player_config_entries(player)
     icon_entry = next(entry for entry in entries if entry.key == CONF_ICON)
@@ -206,8 +195,8 @@ async def test_explicit_icon_lifecycle(mass_minimal: MusicAssistant) -> None:
     assert callback_config.values[CONF_ICON].value is None
 
 
-def _set_up_config_player(mass: MusicAssistant) -> None:
-    """Set up a player mock that drives the real player config parsing path."""
+def _set_up_config_player(mass: MusicAssistant) -> Player:
+    """Set up a stored Sonos player with a mock protocol, on the real config controller."""
     if not mass.config.get(f"{CONF_PLAYERS}/test_player"):
         mass.config.set(
             f"{CONF_PLAYERS}/test_player",
@@ -218,21 +207,8 @@ def _set_up_config_player(mass: MusicAssistant) -> None:
                 "values": {},
             },
         )
-    player = MagicMock()
-    player.player_id = "test_player"
-    player.state.type = PlayerType.PLAYER
-    player.state.name = "Test Player"
-    player.provider.instance_id = "sonos"
-    player.translation_owner = "provider.sonos"
-    player.default_icon = "sonos"
-    player.hidden_by_default = False
-    player.expose_to_ha_by_default = True
-    player.linked_output_protocols = []
-    player.output_protocols = []
-    player.supported_features = set()
-    player.supports_feature.return_value = False
-    player.get_config_entries = AsyncMock(return_value=[])
-    mass.players = MagicMock()
-    mass.players.get_player.return_value = player
-    mass.players.player_controls.return_value = []
-    mass.players.on_player_config_change = AsyncMock()
+    players = use_player_registry(mass)
+    players.on_player_config_change = AsyncMock()
+    provider = MockProvider("sonos", instance_id="sonos", mass=cast("MagicMock", mass))
+    player, _ = attach_mock(provider, "sonos_test", "Test Player", player_id="test_player")
+    return player

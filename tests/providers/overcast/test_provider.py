@@ -275,6 +275,7 @@ async def test_apply_playback_states_respects_watermark() -> None:
     assert call.kwargs["seconds_played"] == 123
     # the playlog flag is sticky, so a sync must never claim the user asked for the play
     assert call.kwargs["user_initiated"] is False
+    assert call.kwargs["progress_timestamp"] == 1772409600
 
 
 async def test_apply_playback_states_ignores_other_feeds_watermark() -> None:

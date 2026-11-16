@@ -44,6 +44,7 @@ from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+from music_assistant.helpers.player import get_available_player
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sendspin.constants import (
     CONF_SOURCE_AUTOSTART_TARGET,
@@ -80,6 +81,7 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.player import Player
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
 OUTPUT_FORMAT = AudioFormat(
@@ -533,9 +535,9 @@ class SendspinSourceProvider(PluginProvider):
         role.request_start()
 
     def _refresh_player_listing(self, client_id: str) -> None:
-        """Rebuild the source list of the visible player that lists this client's line-in."""
-        if (player := self.mass.players.get_player(client_id)) is not None:
-            self.mass.players.trigger_player_update(player.protocol_parent_id or client_id)
+        """Rebuild the source list of the player that lists this client's line-in."""
+        if (player := self._client_player(client_id)) is not None:
+            self.mass.players.trigger_player_update(player.player_id)
 
     def _watch_client(self, client: SendspinClient) -> None:
         """Subscribe to a source client's events, for signal presence while idle."""
@@ -675,16 +677,22 @@ class SendspinSourceProvider(PluginProvider):
 
     async def _resolve_autostart_target(self, client_id: str) -> tuple[str, str] | None:
         """Return the queue id and source uri to autostart, if the source is configured."""
-        # Config entry defaults are not persisted until the user saves the page.
-        target_player_id = await self.mass.config.get_player_config_value(
-            client_id, CONF_SOURCE_AUTOSTART_TARGET, default=SOURCE_AUTOSTART_OFF
-        )
+        # Config entry defaults are not persisted until the user saves the page, so the
+        # config the client's protocol holds answers with its default.
+        if (protocol := self.mass.players.get_protocol(client_id)) is not None:
+            target_player_id = protocol.get_config_value(
+                CONF_SOURCE_AUTOSTART_TARGET, SOURCE_AUTOSTART_OFF
+            )
+        else:
+            target_player_id = self.mass.config.get_protocol_value(
+                client_id, CONF_SOURCE_AUTOSTART_TARGET, SOURCE_AUTOSTART_OFF
+            )
         if not target_player_id or target_player_id == SOURCE_AUTOSTART_OFF:
             return None
-        player = self.mass.players.get_player(target_player_id)
+        player = get_available_player(self.mass, target_player_id)
         if player is None:
             self.logger.warning(
-                "Autostart target %s for Sendspin source %s no longer exists",
+                "Autostart target %s for Sendspin source %s is not available",
                 target_player_id,
                 client_id,
             )
@@ -698,7 +706,7 @@ class SendspinSourceProvider(PluginProvider):
         target_id = (
             queue.queue_id
             if queue
-            else (player.state.synced_to or player.state.active_group or player.player_id)
+            else (player.synced_to or player.active_group or player.player_id)
         )
         return target_id, create_uri(MediaType.AUDIO_SOURCE, self.instance_id, client_id)
 
@@ -813,16 +821,17 @@ class SendspinSourceProvider(PluginProvider):
 
     def _device_name(self, client_id: str) -> str:
         """Return the name of the player the user sees for this client."""
-        if (player := self.mass.players.get_player(client_id)) is not None:
-            if player.protocol_parent_id and (
-                parent := self.mass.players.get_player(player.protocol_parent_id)
-            ):
-                player = parent
-            return player.display_name
+        if (player := self._client_player(client_id)) is not None:
+            return player.name
         # Fall back to the device's own name while it has no registered player.
         client = self._get_client(client_id)
         info = client.info_or_none if client else None
         return info.name if info else client_id
+
+    def _client_player(self, client_id: str) -> Player | None:
+        """Return the player the Sendspin protocol of a client is attached to, if any."""
+        protocol = self.mass.players.get_protocol(client_id)
+        return protocol.player if protocol is not None else None
 
     def _autostart_timer_id(self, client_id: str) -> str:
         return f"{self.instance_id}_autostart_{client_id}"

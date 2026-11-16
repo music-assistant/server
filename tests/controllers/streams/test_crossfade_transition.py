@@ -288,9 +288,7 @@ async def test_flow_repeat_preload_preserves_progress_and_duration(
                 assert queue_item.streamdetails.seek_position == 0
                 assert data.flow_mode_stream_log[0].seek_position == 59
                 player = SimpleNamespace(
-                    state=SimpleNamespace(
-                        corrected_elapsed_time=10, playback_state=PlaybackState.PLAYING
-                    )
+                    corrected_elapsed_time=10, playback_state=PlaybackState.PLAYING
                 )
                 assert controller._get_flow_queue_stream_index(queue, cast("Any", player)) == (
                     0,
@@ -310,9 +308,7 @@ async def test_flow_repeat_preload_preserves_progress_and_duration(
     assert [entry.duration for entry in data.flow_mode_stream_log] == [120, 120]
     assert item.duration == item.streamdetails.duration == 120
     controller._enqueue_next_item.assert_called_once_with(queue.queue_id, item)
-    player = SimpleNamespace(
-        state=SimpleNamespace(corrected_elapsed_time=66, playback_state=PlaybackState.PLAYING)
-    )
+    player = SimpleNamespace(corrected_elapsed_time=66, playback_state=PlaybackState.PLAYING)
     assert controller._get_flow_queue_stream_index(queue, cast("Any", player)) == (0, 5)
 
 

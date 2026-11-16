@@ -110,16 +110,15 @@ def _player(state: PlaybackState, queue_item_id: str, elapsed: float) -> Any:
     return SimpleNamespace(
         player_id="q1",
         type=PlayerType.PLAYER,
-        active_output_protocol=None,
-        current_media=SimpleNamespace(source_id="q1", queue_item_id=queue_item_id, uri=None),
-        state=SimpleNamespace(
-            name="Q1",
-            available=True,
-            playback_state=state,
-            active_source="q1",
-            corrected_elapsed_time=elapsed,
-            group_members=[],
+        resolve_output_protocol=lambda: SimpleNamespace(
+            current_media=SimpleNamespace(source_id="q1", queue_item_id=queue_item_id, uri=None)
         ),
+        name="Q1",
+        available=True,
+        playback_state=state,
+        active_source="q1",
+        corrected_elapsed_time=elapsed,
+        group_members=[],
     )
 
 
