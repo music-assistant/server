@@ -545,18 +545,6 @@ class MetaDataController(
                 return lyrics
         return lyrics
 
-    @staticmethod
-    def _select_track_lyrics(
-        candidate: MediaItemMetadata | None,
-        fallback: tuple[str | None, str | None],
-    ) -> tuple[bool, tuple[str | None, str | None]]:
-        """Select the first plain lyrics and report whether synchronized lyrics were found."""
-        if candidate is None:
-            return False, fallback
-        lyrics = fallback[0] or candidate.lyrics or None
-        lrc_lyrics = candidate.lrc_lyrics or extract_lrc_lyrics(candidate.lyrics)
-        return bool(lrc_lyrics), (lyrics, lrc_lyrics)
-
     def _register_maintenance_tasks(self) -> None:
         """Register the recurring metadata maintenance background tasks."""
         # Spread across the full day so instances don't all hit the shared MusicBrainz mirror at once
@@ -1064,6 +1052,18 @@ class MetaDataController(
             )
             report_current_task_failure(message)
             self.logger.warning(message)
+
+    @staticmethod
+    def _select_track_lyrics(
+        candidate: MediaItemMetadata | None,
+        fallback: tuple[str | None, str | None],
+    ) -> tuple[bool, tuple[str | None, str | None]]:
+        """Select the first plain lyrics and report whether synchronized lyrics were found."""
+        if candidate is None:
+            return False, fallback
+        lyrics = fallback[0] or candidate.lyrics or None
+        lrc_lyrics = candidate.lrc_lyrics or extract_lrc_lyrics(candidate.lyrics)
+        return bool(lrc_lyrics), (lyrics, lrc_lyrics)
 
 
 def _duplicate_album_sibling_guard() -> str:
