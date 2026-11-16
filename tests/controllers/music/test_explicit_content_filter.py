@@ -312,3 +312,34 @@ async def test_recently_played(mass: MusicAssistant) -> None:
         played = await mass.music.recently_played(media_types=[MediaType.TRACK])
 
     assert sorted(item.name for item in played) == ALLOWED
+
+
+async def test_a_pasted_link_to_an_explicit_track_is_not_found(mass: MusicAssistant) -> None:
+    """A shareable link to an explicit track finds nothing for the member."""
+    explicit = _track("explicit", True)
+    with (
+        _as(KID),
+        patch.object(
+            mass.music,
+            "_search_shareable_url",
+            AsyncMock(return_value=SearchResults(tracks=[explicit])),
+        ),
+    ):
+        result = await mass.music.search("https://www.deezer.com/track/1", [MediaType.TRACK])
+
+    assert result.tracks == []
+
+
+async def test_the_search_cache_is_kept_apart_per_explicit_setting(mass: MusicAssistant) -> None:
+    """Turning the setting off doesn't serve the member a search cached while it was on."""
+    await _add_library_tracks(mass)
+    allowed = User(user_id="kid", username="kid", role=UserRole.USER)
+
+    with patch.object(mass.music, "get_unique_providers", return_value=[]):
+        with _as(allowed):
+            before = await mass.music.search("explicit", [MediaType.TRACK])
+        with _as(KID):
+            after = await mass.music.search("explicit", [MediaType.TRACK])
+
+    assert [track.name for track in before.tracks] == ["explicit"]
+    assert after.tracks == []

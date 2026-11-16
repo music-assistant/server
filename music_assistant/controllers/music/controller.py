@@ -746,12 +746,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 )
             )
         # use cache to avoid repeated searches; the library results are narrowed to what
-        # the calling user may see, so the entry is kept per user (and role)
+        # the calling user may see, so the entry is kept per user (role and explicit setting)
         user = get_current_user()
         cache_key = (
             f"{search_query}-{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-"
             f"{int(include_library)}-{','.join(search_providers)}-"
-            f"{f'{user.user_id}:{user.role}' if user else ''}"
+            f"{f'{user.user_id}:{user.role}:{int(user.allow_explicit)}' if user else ''}"
         )
         if cache := await self.mass.cache.get(
             key=cache_key,
@@ -766,7 +766,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 search_query, media_types, None if providers is None else search_providers
             )
         ) is not None:
-            return url_result
+            return await self._visible_search_results(url_result)
         # handle normal global search by querying the library and all providers
         # the library (if included) is searched first: it is fast and its results are
         # used to deduplicate provider results and to skip provider searches for media
