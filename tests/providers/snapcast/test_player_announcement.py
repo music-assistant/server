@@ -13,6 +13,8 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant.providers.snapcast.player import SnapCastPlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import PlayerConfig
+
     from music_assistant.mass import MusicAssistant
     from music_assistant.providers.snapcast.provider import SnapCastProvider
     from music_assistant.providers.snapcast.snap_cntrl_proto import SnapclientProto
@@ -30,6 +32,7 @@ def _make_player(queue: SimpleNamespace) -> tuple[SnapCastPlayer, MagicMock]:
     )
     provider = MagicMock(_use_builtin_server=False)
     provider.get_snap_ma_stream.return_value = MagicMock(stream_id="music")
+    provider._snapserver.streams = [SimpleNamespace(identifier="music")]
     streams = {
         "announce.mp3": MagicMock(
             stream_id="announcement", start_stream=AsyncMock(), wait_for_stopped=AsyncMock()
@@ -50,6 +53,9 @@ def _make_player(queue: SimpleNamespace) -> tuple[SnapCastPlayer, MagicMock]:
     mass.player_queues.play_index = AsyncMock(side_effect=play_index)
     player.mass = cast("MusicAssistant", mass)
     player._player_id = "kitchen"
+    player.logger = MagicMock()
+    player._cache = {}
+    player._config = cast("PlayerConfig", SimpleNamespace(name="Kitchen"))
     return player, group
 
 
@@ -105,3 +111,43 @@ async def test_announcement_rejoins_live_stream_when_item_left_queue() -> None:
 
     player.mass.player_queues.play_index.assert_not_awaited()  # type: ignore[attr-defined]
     assert group.set_stream.await_args_list[-1].args == ("music",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("server_streams", "expected"),
+    [
+        (["librespot", "announcement"], ("librespot",)),
+        (["default", "announcement"], ("default",)),
+    ],
+    ids=["previous-external-stream", "previous-stream-gone"],
+)
+async def test_announcement_restores_previous_snapserver_stream(
+    server_streams: list[str], expected: tuple[str]
+) -> None:
+    """A group on a non-MA source goes back to it, else to 'default' when the server has one."""
+    player, group = _make_player(_queue())
+    group.stream = "librespot"
+    provider = cast("MagicMock", player.snap_provider)
+    provider.get_snap_ma_stream.return_value = None
+    provider._snapserver.streams = [SimpleNamespace(identifier=s) for s in server_streams]
+    player.mass.player_queues.get.return_value = None  # type: ignore[attr-defined]
+
+    await player.play_announcement(PlayerMedia(uri="announce.mp3"))
+
+    assert group.set_stream.await_args_list[-1].args == expected
+
+
+@pytest.mark.asyncio
+async def test_announcement_skips_restore_without_target_stream() -> None:
+    """Without the previous or a 'default' stream, no invalid stream is requested."""
+    player, group = _make_player(_queue())
+    group.stream = "librespot"
+    provider = cast("MagicMock", player.snap_provider)
+    provider.get_snap_ma_stream.return_value = None
+    provider._snapserver.streams = [SimpleNamespace(identifier="announcement")]
+    player.mass.player_queues.get.return_value = None  # type: ignore[attr-defined]
+
+    await player.play_announcement(PlayerMedia(uri="announce.mp3"))
+
+    assert group.set_stream.await_args_list[-1].args == ("announcement",)
