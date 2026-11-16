@@ -138,7 +138,7 @@ class HeosPlayer(Player):
 
         # Gen 1 HEOS hardware is capped at 48kHz/16-bit; HS2 and newer models
         # are hi-res capable up to 192kHz/24-bit
-        if model in NON_HIRES_HEOS_MODELS:
+        if self._device.model in NON_HIRES_HEOS_MODELS:
             self._attr_supported_sample_rates = [(44100, 16), (48000, 16)]
         else:
             self._attr_supported_sample_rates = [
