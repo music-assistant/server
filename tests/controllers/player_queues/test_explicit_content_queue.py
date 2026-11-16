@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
     MediaItemMetadata,
     Playlist,
     ProviderMapping,
+    Radio,
     Track,
 )
 from music_assistant_models.player_queue import PlayerQueue
@@ -31,6 +32,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.helpers import external_track_placeholder
 from music_assistant.controllers.player_queues.managed_pool import ManagedPool
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -83,6 +85,12 @@ def _explicit() -> Track:
     return _track("explicit", True)
 
 
+def _stored(uri: str) -> Track | Album:
+    """Return the item the music source holds for a uri, with its own explicit flag."""
+    item_id = uri.rsplit("/", 1)[-1]
+    return _album() if item_id == "album" else _track(item_id, item_id == "explicit")
+
+
 def _controller(user: User) -> Any:
     """
     Build a bare controller driving ``play_media`` on a single queue "q1" for the given user.
@@ -120,6 +128,7 @@ def _controller(user: User) -> Any:
     music = MusicController.__new__(MusicController)
     music.mass = ctrl.mass
     ctrl.mass.music.check_item_playable_for_user = music.check_item_playable_for_user
+    ctrl.mass.music.get_item_by_uri = AsyncMock(side_effect=_stored)
     ctrl.mass.providers = []
     set_music_source_access(
         ctrl.mass, {INSTANCE: ProviderAccess(owner=user.user_id, sharing=ProviderSharing.PRIVATE)}
@@ -152,6 +161,34 @@ async def test_playing_an_explicit_track_is_refused() -> None:
 
     assert err.value.translation_key == "media_explicit_not_allowed"
     assert _queued_item_ids(ctrl) == []
+
+
+async def test_an_explicit_track_sent_without_its_flag_is_refused() -> None:
+    """A track object the caller sent without its explicit flag is judged as it is stored."""
+    ctrl = _controller(KID)
+
+    with pytest.raises(MediaNotFoundError):
+        await _play(ctrl, KID, _track("explicit", None))
+
+    assert _queued_item_ids(ctrl) == []
+
+
+async def test_a_track_found_by_its_external_id_is_checked_once_found() -> None:
+    """A track known only by an external id is refused when the track found for it is explicit."""
+    ctrl = _controller(KID)
+    placeholder = external_track_placeholder("isrc:USRC17607839")
+    queue_item = QueueItem(
+        queue_id="q1", queue_item_id="1", name="x", duration=180, media_item=placeholder
+    )
+    ctrl._external_track_on_a_provider = AsyncMock(return_value=_explicit())
+
+    with (
+        patch(f"{LOADER}.resolve_playback_user_or_stand_in", AsyncMock(return_value=KID)),
+        pytest.raises(MediaNotFoundError),
+    ):
+        await ctrl.look_up_external_track(queue_item)
+
+    assert queue_item.media_item is placeholder
 
 
 async def test_an_allowed_member_plays_an_explicit_track() -> None:
@@ -237,12 +274,42 @@ def _pool() -> tuple[ManagedPool, MagicMock]:
 async def test_managed_pool_refills_leave_explicit_tracks_out(
     user: User, expected: list[str]
 ) -> None:
-    """Both kinds of source the pool draws on leave explicit tracks out for the queue owner."""
+    """A finite source the pool draws on leaves explicit tracks out for the queue owner."""
     pool, _ = _pool()
 
     with patch(f"{POOL}.get_current_user", return_value=user):
-        dynamic = await pool._fetch_dynamic(MagicMock(), None)
         finite = await pool._fetch_tracks(MagicMock())
 
-    assert [track.item_id for track in dynamic] == expected
     assert [track.item_id for track in finite] == expected
+
+
+async def test_a_finite_source_is_narrowed_again_when_the_queue_changes_hands() -> None:
+    """The tracks a source saved for an earlier owner are narrowed for a restricted new one."""
+    pool, queues = _pool()
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    queue_data = PlayerQueueData(queue=queue)
+    queue_data.source_items = [_album()]
+    queues.queue_data_or_none = Mock(return_value=queue_data)
+
+    with patch(f"{POOL}.get_current_user", return_value=PARENT):
+        before = await pool._collect_sources("q1", include_dynamic=False)
+    with patch(f"{POOL}.get_current_user", return_value=KID):
+        after = await pool._collect_sources("q1", include_dynamic=False)
+
+    assert [track.item_id for track in before[0].candidates] == ["clean", "explicit"]
+    assert [track.item_id for track in after[0].candidates] == ["clean"]
+
+
+@pytest.mark.parametrize(("user", "expected"), [(KID, ["clean"]), (PARENT, ["clean", "explicit"])])
+async def test_a_dynamic_station_batch_leaves_explicit_tracks_out(
+    user: User, expected: list[str]
+) -> None:
+    """The next batch of a dynamic station leaves explicit tracks out for the queue owner."""
+    queues = MagicMock()
+    queues.mass.music.radio.dynamic_tracks = AsyncMock(return_value=[_clean(), _explicit()])
+    station = Radio(item_id="station", provider=INSTANCE, name="Station", provider_mappings=set())
+
+    with patch(f"{RESOLVER}.get_current_user", return_value=user):
+        tracks = await MediaResolver(queues).get_dynamic_source_tracks(station)
+
+    assert [track.item_id for track in tracks] == expected

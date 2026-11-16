@@ -78,6 +78,7 @@ from music_assistant.helpers.provider_access import (
     explicit_allowed,
     playback_instance_for,
     playback_sources_for,
+    without_disallowed_explicit,
 )
 from music_assistant.helpers.util import is_disc_dir
 from music_assistant.models.music_provider import (
@@ -345,7 +346,10 @@ class MediaResolver:
         :param item: The dynamic source to fetch the next batch for.
         """
         if isinstance(item, Radio):
-            return await self.mass.music.radio.dynamic_tracks(item)
+            # the station's service picks the tracks, so they are narrowed here for the user
+            # the batch is for (a playlist's tracks below already are)
+            batch = await self.mass.music.radio.dynamic_tracks(item)
+            return await without_disallowed_explicit(self.mass, batch, get_current_user())
         if isinstance(item, Playlist):
             tracks = await self.get_playlist_tracks(item, start_item=None)
             return [track for track in tracks if isinstance(track, Track)]

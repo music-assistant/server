@@ -261,6 +261,12 @@ class ManagedPool:
                     materialized[uri] = source
                 else:
                     source.multiplicity = counts[uri]
+                    # the queue may have changed hands since the source was materialized
+                    source.tracks = deque(
+                        await without_disallowed_explicit(
+                            self.mass, source.tracks, get_current_user()
+                        )
+                    )
                 candidates = list(source.tracks)
             sources.append(
                 DynamicSource(
@@ -279,8 +285,6 @@ class ManagedPool:
             # the batch is music picked for the user, so their dislikes stay out of it;
             # the finite sources they added themselves are never filtered
             tracks = await without_disliked_tracks(self.mass, userid, tracks)
-            # the refill runs as the queue owner, who may be kept from explicit tracks
-            tracks = await without_disallowed_explicit(self.mass, tracks, get_current_user())
             return [track for track in tracks if track.available]
         return []
 
