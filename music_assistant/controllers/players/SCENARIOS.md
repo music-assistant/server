@@ -415,7 +415,7 @@ with the player: Den's device is never checked.
   first seconds after the power is cut.
 - Proven by: `test_power_control.py::test_a_player_that_goes_before_its_check_is_not_checked`
 
-### AWAY-24 · A speaker of receivers alone is checked through its most preferred receiver
+### AWAY-27 · A speaker of receivers alone is checked through its most preferred receiver
 
 The Den speaker is an AirPlay and a Cast receiver, on a smart plug that is cut while neither has
 noticed. Shortly after the plug reports off, its AirPlay receiver, which tells whether Den is there
