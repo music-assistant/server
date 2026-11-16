@@ -6,7 +6,6 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
@@ -37,7 +36,7 @@ from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_S
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.player import served_duration
-from music_assistant.helpers.util import is_valid_mac_address
+from music_assistant.helpers.util import is_valid_mac_address, port_accepts_connection
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 
@@ -77,24 +76,6 @@ if TYPE_CHECKING:
 # takes what a client that is stopped on purpose still logs
 _STOPPED_CLIENT_LOGGER = logging.getLogger(f"{__name__}.stopped_client")
 _STOPPED_CLIENT_LOGGER.disabled = True
-
-
-async def _port_answers(host: str, port: int) -> bool:
-    """
-    Return whether a port accepts a connection within DEVICE_CHECK_TIMEOUT.
-
-    :param host: The host to connect to.
-    :param port: The port to connect to.
-    """
-    try:
-        async with asyncio.timeout(DEVICE_CHECK_TIMEOUT):
-            _, writer = await asyncio.open_connection(host, port)
-    except OSError, TimeoutError:
-        return False
-    writer.close()
-    with suppress(OSError):
-        await writer.wait_closed()
-    return True
 
 
 class ChromecastPlayer(PlayerProtocol):
@@ -1068,7 +1049,14 @@ class ChromecastPlayer(PlayerProtocol):
             )
         )
         endpoints = {(host, port) for host, port, _ in resolved if host and port}
-        return any(await asyncio.gather(*(_port_answers(*endpoint) for endpoint in endpoints)))
+        return any(
+            await asyncio.gather(
+                *(
+                    port_accepts_connection(host, port, DEVICE_CHECK_TIMEOUT)
+                    for host, port in endpoints
+                )
+            )
+        )
 
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""

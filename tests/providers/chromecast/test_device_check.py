@@ -16,7 +16,9 @@ from pychromecast.models import HostServiceInfo
 from pychromecast.socket_client import SocketClient
 
 import music_assistant.providers.chromecast.player as cast_player_module
-from music_assistant.providers.chromecast.player import ChromecastPlayer, _port_answers
+from music_assistant.helpers.util import port_accepts_connection
+from music_assistant.providers.chromecast.constants import DEVICE_CHECK_TIMEOUT
+from music_assistant.providers.chromecast.player import ChromecastPlayer
 from tests.providers.chromecast.test_lifecycle import (
     _cast_info,
     _cast_player,
@@ -158,12 +160,17 @@ async def test_a_handler_of_another_part_moves_to_the_new_client() -> None:
     assert protocol._client_handlers == []
 
 
-async def test_the_cast_port_is_probed_with_a_connection() -> None:
-    """The probe tells a port that accepts a connection from one that does not."""
-    async with _listening() as port:
-        assert await _port_answers("127.0.0.1", port) is True
+async def test_a_service_is_probed_within_the_cast_timeout() -> None:
+    """A service of the client is probed with a connection that may take DEVICE_CHECK_TIMEOUT."""
+    protocol, client = await _attached(connected=False, answers=None)
+    client.socket_client.services = {HostServiceInfo("192.0.2.30", 8009)}
+    client.socket_client.zconf = None
+    probe = AsyncMock(return_value=False)
 
-    assert await _port_answers("127.0.0.1", _closed_port()) is False
+    with patch.object(cast_player_module, "port_accepts_connection", probe):
+        assert await protocol._services_answer(client.socket_client) is False
+
+    probe.assert_awaited_once_with("192.0.2.30", 8009, DEVICE_CHECK_TIMEOUT)
 
 
 async def test_a_disconnected_client_is_probed_on_the_services_it_tries() -> None:
@@ -292,14 +299,14 @@ async def test_a_client_that_connected_by_itself_during_the_probe_is_kept() -> N
         probed = asyncio.Event()
         deliver = asyncio.Event()
 
-        async def _probe_then_wait(host: str, port: int) -> bool:
-            answer = await _port_answers(host, port)
+        async def _probe_then_wait(host: str, port: int, timeout: float) -> bool:
+            answer = await port_accepts_connection(host, port, timeout)
             probed.set()
             await deliver.wait()
             return answer
 
         try:
-            with patch.object(cast_player_module, "_port_answers", _probe_then_wait):
+            with patch.object(cast_player_module, "port_accepts_connection", _probe_then_wait):
                 checking = asyncio.create_task(protocol.check_device())
                 await probed.wait()
                 await _connect_by_itself(socket_client)

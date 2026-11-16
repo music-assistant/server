@@ -33,6 +33,7 @@ from music_assistant.helpers.util import (
     is_port_in_use,
     join_task,
     load_provider_module,
+    port_accepts_connection,
     sanitize_http_header_value,
     select_free_port,
     try_parse_duration,
@@ -244,6 +245,58 @@ class TestIsPortInUse:
             await is_port_in_use(38800, host=host)
         socket_mock.assert_called_once_with(family, socket.SOCK_STREAM)
         socket_mock.return_value.__enter__.return_value.bind.assert_called_once_with((host, 38800))
+
+
+class TestPortAcceptsConnection:
+    """port_accepts_connection tells a port that accepts a connection from one that does not."""
+
+    @pytest.mark.asyncio
+    async def test_a_listening_port_accepts(self) -> None:
+        """A port with a listener accepts the connection, which is closed again."""
+        accepted = asyncio.Event()
+
+        async def _accept(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            accepted.set()
+            writer.close()
+
+        server = await asyncio.start_server(_accept, "127.0.0.1", 0)
+        try:
+            port = server.sockets[0].getsockname()[1]
+            assert await port_accepts_connection("127.0.0.1", port, 2) is True
+            await asyncio.wait_for(accepted.wait(), 2)
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_a_closed_port_does_not_accept(self) -> None:
+        """A port without a listener refuses the connection."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        assert await port_accepts_connection("127.0.0.1", port, 2) is False
+
+    @pytest.mark.asyncio
+    async def test_a_connection_that_does_not_complete_in_time_does_not_accept(self) -> None:
+        """A host that does not answer within the timeout does not accept."""
+
+        async def _hang(*_args: object, **_kwargs: object) -> None:
+            await asyncio.Event().wait()
+
+        with patch("music_assistant.helpers.util.asyncio.open_connection", _hang):
+            assert await port_accepts_connection("127.0.0.1", 7000, 0.01) is False
+
+    @pytest.mark.asyncio
+    async def test_a_connection_reset_while_closing_still_accepted(self) -> None:
+        """A connection the host resets while it is closed was accepted all the same."""
+        writer = MagicMock()
+        writer.wait_closed.side_effect = ConnectionResetError
+        with patch(
+            "music_assistant.helpers.util.asyncio.open_connection",
+            return_value=(MagicMock(), writer),
+        ):
+            assert await port_accepts_connection("127.0.0.1", 7000, 2) is True
+        writer.close.assert_called_once_with()
 
 
 class TestImportModuleInThread:

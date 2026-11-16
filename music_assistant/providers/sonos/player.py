@@ -56,7 +56,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
-from music_assistant.helpers.util import is_valid_mac_address
+from music_assistant.helpers.util import is_valid_mac_address, port_accepts_connection
 from music_assistant.helpers.wake_on_lan import send_magic_packet
 from music_assistant.models.player import PlayerSource
 from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
@@ -2058,15 +2058,9 @@ class SonosPlayer(PlayerProtocol):
 
     async def _is_reachable(self) -> bool:
         """Return whether the player API port answers a TCP connect."""
-        try:
-            async with asyncio.timeout(1):
-                # 1443 is the port aiosonos' websocket connects to
-                _, writer = await asyncio.open_connection(self.device_info.ip_address, 1443)
-        except OSError, TimeoutError:
-            return False
-        writer.close()
-        await writer.wait_closed()
-        return True
+        assert self.device_info.ip_address is not None  # for type checking
+        # 1443 is the port aiosonos' websocket connects to
+        return await port_accepts_connection(self.device_info.ip_address, 1443, 1)
 
     async def _ensure_playing_after_wake(self) -> None:
         """Nudge a woken speaker with play() when its restored paused session ignores the load."""

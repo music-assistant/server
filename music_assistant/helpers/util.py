@@ -1243,6 +1243,27 @@ async def is_port_in_use(port: int, host: str | None = None) -> bool:
     return await asyncio.to_thread(_is_port_in_use)
 
 
+async def port_accepts_connection(host: str, port: int, timeout: float) -> bool:
+    """
+    Return whether a TCP port of a host accepts a connection within the timeout.
+
+    The connection is closed again at once, without sending anything.
+
+    :param host: The host to connect to.
+    :param port: The port to connect to.
+    :param timeout: How many seconds the connection may take.
+    """
+    try:
+        async with asyncio.timeout(timeout):
+            _, writer = await asyncio.open_connection(host, port)
+    except OSError, TimeoutError:
+        return False
+    writer.close()
+    with suppress(OSError):
+        await writer.wait_closed()
+    return True
+
+
 # In-process reservations for ports handed out by select_free_port. Provider
 # instances (and reloads) frequently call select_free_port at nearly the same
 # moment and only bind the returned port asynchronously afterwards, so a port

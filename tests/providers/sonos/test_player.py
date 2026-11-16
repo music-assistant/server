@@ -22,7 +22,7 @@ from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.player import Player
+from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.models.player_protocol import AnnouncementFeature
 from music_assistant.providers.sonos.const import (
     PLAYER_SOURCE_MAP,
@@ -515,6 +515,20 @@ async def test_a_device_check_without_an_answer_drops_the_connection_and_reconne
     reconnect = timer_mass._tracked_timers[f"sonos_reconnect_{player.protocol_id}"]
     assert reconnect.when() - timer_mass.loop.time() == pytest.approx(5, abs=0.5)
     await player.on_detach()
+
+
+@pytest.mark.asyncio
+async def test_a_speaker_is_reachable_while_its_api_port_accepts_a_connection() -> None:
+    """Test the port of the player API is probed with a connection that may take 1 s."""
+    player, _ = _make_player()
+    player._attr_device_info = DeviceInfo(model="Era 100", manufacturer="Sonos")
+    player._attr_device_info.ip_address = "192.0.2.20"
+    probe = AsyncMock(return_value=True)
+
+    with patch("music_assistant.providers.sonos.player.port_accepts_connection", probe):
+        assert await player._is_reachable() is True
+
+    probe.assert_awaited_once_with("192.0.2.20", 1443, 1)
 
 
 @pytest.mark.asyncio
