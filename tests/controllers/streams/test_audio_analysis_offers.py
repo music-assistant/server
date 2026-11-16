@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-from typing import cast
+import asyncio
+from collections.abc import AsyncGenerator, Coroutine
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -63,8 +64,13 @@ def controller(registry: dict[str, MagicMock]) -> AudioAnalysisController:
     """Return a controller whose mass resolves the providers in the registry."""
     streams = MagicMock()
     mass = streams.mass
+
     # the analysis worker, finalize and idle monitor tasks are not under test here
-    mass.create_task = MagicMock(side_effect=lambda coro: coro.close())
+    def _create_task(coro: Coroutine[Any, Any, Any]) -> MagicMock:
+        coro.close()
+        return MagicMock(spec=asyncio.Task)
+
+    mass.create_task = MagicMock(side_effect=_create_task)
     mass.get_provider = MagicMock(side_effect=lambda pid, **_kw: registry.get(pid))
     controller = AudioAnalysisController(streams)
     controller._database_ready = True
