@@ -92,7 +92,7 @@ PREROLL_US: int = 250_000
 # is time for it. The start is measured and corrected in it. That takes the start offset,
 # the lead below and the reports the start error is taken from, about 0.6 s together, and
 # twice what the player starts later than that offset.
-LEAD_IN_US: int = 1_350_000
+LEAD_IN_US: int = 1_450_000
 # Silence the stream is at least kept ahead of what the player can have taken from it
 # until its start is corrected, which is all of it since the instant it was told to
 # start: a player reports what is heard, and its output holds more. What a late player
@@ -103,7 +103,7 @@ ALIGN_LEAD_US: int = 200_000
 # once, so it holds more than the lead above through a hiccup of the network. The room
 # is half of what the lead-in is longer than that lead and the quarter of a second of
 # reports the start error is taken from: no more audio is left out than with the lead alone.
-ALIGN_ROOM_US: int = 450_000
+ALIGN_ROOM_US: int = 500_000
 # A start that is not corrected this long after its instant is given its audio as it is:
 # its error is corrected in the audio when the player shows where it is.
 ALIGN_TIMEOUT_US: int = 2_000_000
@@ -1074,7 +1074,7 @@ class SendspinSqueezeliteBridge:
             return
         if (server_us := self._player_clock.to_server_us(status.jiffies)) is None:
             return
-        counted = loop.start_reports
+        start_reports = loop.start_reports
         report_ms = loop.on_report(
             server_us, status.elapsed_milliseconds, self._player_clock.generation
         )
@@ -1087,7 +1087,10 @@ class SendspinSqueezeliteBridge:
                 status.elapsed_milliseconds,
                 since_start_ms,
                 since_start_ms - status.elapsed_milliseconds - 0.5,
-                "counted" if loop.start_reports > counted else "not counted",
+                # the first of them again when the reports before it did not agree with it
+                f"counted, {len(loop.start_reports)} in a row"
+                if loop.start_reports != start_reports
+                else "not counted",
             )
         self._reports += 1
         if self._reports % 40 == 0 and (error_ms := loop.error_ms) is not None:

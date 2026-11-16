@@ -1306,13 +1306,13 @@ async def test_24_bit_audio_reaches_the_player_in_3_bytes_per_sample(rig: _Rig) 
     assert session.start_us == rig.origin_us - LEAD_IN_US
     assert session.loop is not None
     assert session.loop.frames_sent == 12000
-    # the lead-in of 1.35 seconds in frames of this stream, less the preroll, and then the
+    # the lead-in of 1.45 seconds in frames of this stream, less the preroll, and then the
     # lead of a second and a half ahead of the 300 ms it played
     lead = rig.align(session) + rig.drain(session)
-    assert _frames_24(lead) == [-1] * (64800 - 12000) + list(range(14400 + 72000 - 64800))
+    assert _frames_24(lead) == [-1] * (69600 - 12000) + list(range(14400 + 72000 - 69600))
     # and a second more for every second that it plays
     rig.clock.advance_us(1_000_000)
-    assert _frames_24(rig.drain(session)) == list(range(21600, 69600))
+    assert _frames_24(rig.drain(session)) == list(range(16800, 64800))
 
 
 async def test_corrections_are_frames_of_the_format_of_the_stream(rig: _Rig) -> None:
@@ -1358,7 +1358,7 @@ async def test_a_backlog_is_only_converted_as_it_is_sent(rig: _Rig) -> None:
     """A late joiner is handed half a minute at once: none of it is converted on arrival."""
     await rig.start_hires()
     session = await rig.start_playing(frames=48000, chunk=_chunk_24)
-    # the lead-in and 50 ms of the audio went out by the time the start is corrected
+    # the lead-in went out by the time the start is corrected
     rig.align(session)
     rig.clock.advance_us(1_000_000)
     with patch(f"{MODULE}._pack_24_bit", wraps=_pack_24_bit) as pack:
@@ -1373,7 +1373,7 @@ async def test_a_backlog_is_only_converted_as_it_is_sent(rig: _Rig) -> None:
     # one block of half a second, in 3 bytes per sample
     assert len(block) == 24000 * 6
     assert [len(converted.args[0]) for converted in pack.call_args_list] == [24000 * 8]
-    assert _frames_24(block) == list(range(2400, 26400))
+    assert _frames_24(block) == list(range(24000))
 
 
 async def test_a_stream_keeps_its_format_when_it_is_restarted(rig: _Rig) -> None:
@@ -1561,7 +1561,7 @@ async def test_a_late_join_backlog_is_paced(rig: _Rig) -> None:
     [
         # all of the lead-in: what a player holds is the room for a late start short of it
         (2_000_000, LEAD_IN_US, LEAD_IN_US - ALIGN_ROOM_US),
-        (1_050_000, 750_000, 300_000),
+        (1_100_000, 800_000, 300_000),
         # a lead-in with less than the room past the preroll: nothing more goes out
         (950_000, 650_000, PREROLL_US),
         (400_000, 100_000, PREROLL_US),
@@ -1648,7 +1648,7 @@ async def test_silence_keeps_a_player_fed_that_sendspin_has_nothing_for(rig: _Ri
     loop = session.loop
     assert loop is not None
     sent = rig.align(session)
-    rig.clock.advance_us(session.start_us - rig.now_us + 900_000)
+    rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
     sent += rig.drain(session)
     assert _frames(sent) == [-1] * (LEAD_IN_FRAMES - PREROLL_FRAMES) + list(range(SECOND))
 
@@ -1659,7 +1659,7 @@ async def test_silence_keeps_a_player_fed_that_sendspin_has_nothing_for(rig: _Ri
     starved = rig.drain(session)
 
     assert _frames(starved) == [-1] * (len(starved) // FRAME_SIZE)
-    assert loop.frames_consumed == round(2.1 * SECOND) + STARVED_LEAD_FRAMES
+    assert loop.frames_consumed == round(2.2 * SECOND) + STARVED_LEAD_FRAMES
     # audio that arrives late is played from where the stream is by then
     late_from = loop.frames_consumed - LEAD_IN_FRAMES
     rig.bridge._on_audio_chunk(_chunk(rig.origin_us, SECOND, SECOND))
@@ -1672,7 +1672,7 @@ async def test_audio_that_is_still_to_arrive_is_not_replaced_by_silence(rig: _Ri
     session = await rig.start_playing(frames=tenth)
     loop = session.loop
     assert loop is not None
-    assert session.start_us - rig.now_us == 650_000
+    assert session.start_us - rig.now_us == 550_000
 
     # all there is of the stream so far, and no silence behind it
     sent = _frames(rig.align(session) + rig.drain(session))
@@ -1681,13 +1681,13 @@ async def test_audio_that_is_still_to_arrive_is_not_replaced_by_silence(rig: _Ri
     assert _frames(rig.drain(session)) == list(range(tenth, 2 * tenth))
 
     # close to the end of what it holds the player is kept fed
-    rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
+    rig.clock.advance_us(session.start_us - rig.now_us + 1_100_000)
     assert rig.drain(session) == b""
     rig.clock.advance_us(100_000)
     starved = rig.drain(session)
     assert starved
     assert _frames(starved) == [-1] * (len(starved) // FRAME_SIZE)
-    assert loop.frames_consumed == round(1.1 * SECOND) + STARVED_LEAD_FRAMES
+    assert loop.frames_consumed == round(1.2 * SECOND) + STARVED_LEAD_FRAMES
 
 
 # ---------------------------------------------------------------- start
@@ -1699,7 +1699,7 @@ async def test_the_player_is_told_when_to_start_on_its_own_clock(rig: _Rig) -> N
 
     assert session.started
     rig.client.unpause_at.assert_awaited_once_with(rig.jiffies(rig.origin_us - LEAD_IN_US))
-    rig.client.unpause_at.assert_awaited_once_with(JIFFIES_AT_EPOCH + 650)
+    rig.client.unpause_at.assert_awaited_once_with(JIFFIES_AT_EPOCH + 550)
 
 
 async def test_a_start_is_at_least_300_ms_ahead(rig: _Rig) -> None:
@@ -1755,12 +1755,12 @@ async def test_a_start_is_at_most_5_seconds_ahead(rig: _Rig) -> None:
 
 async def test_a_learned_start_offset_tells_the_player_earlier(rig: _Rig) -> None:
     """A player that starts late is told to start that much earlier."""
-    rig.knows_start_offset(300_000)
+    rig.knows_start_offset(200_000)
 
     session = await rig.start_playing()
 
     assert session.start_us == rig.origin_us - LEAD_IN_US
-    rig.client.unpause_at.assert_awaited_once_with(rig.jiffies(session.start_us) - 300)
+    rig.client.unpause_at.assert_awaited_once_with(rig.jiffies(session.start_us) - 200)
 
 
 async def test_a_learned_start_offset_counts_in_the_earliest_start(rig: _Rig) -> None:
@@ -1873,6 +1873,63 @@ async def test_positions_of_before_the_start_do_not_count_for_it(
     assert told in caplog.text
 
 
+async def test_a_player_that_moves_its_position_is_measured_from_where_it_settles(
+    rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """As logged on a player: its first reports count from 126 ms too early, then it steps."""
+    caplog.set_level(VERBOSE_LOG_LEVEL, logger="test.squeezelite")
+    rig.knows_start_offset(127_000)
+    session = await rig.start_playing()
+    loop = session.loop
+    assert loop is not None
+    sent = rig.drain(session)
+
+    # what the player reported, and when: it is 11 ms late from its seventh report on
+    for elapsed_ms, at_ms in (
+        (0, -120),
+        (0, -69),
+        (100, -15),
+        (100, -15),
+        (148, 33),
+        (200, 85),
+        (123, 134),
+        (176, 187),
+        (234, 245),
+        (283, 295),
+        (333, 345),
+    ):
+        rig.clock.advance_us(session.start_us + at_ms * 1000 - rig.now_us)
+        rig.bridge.handle_slim_event(rig.status(elapsed_ms=elapsed_ms))
+        sent += rig.bridge._next_block(session)
+    sent += rig.drain(session)
+
+    assert not rig.aligning()
+    assert loop.start_error_ms == pytest.approx(33.5 / 3)
+    # the 11 ms are left out of its silence, where a start that looks early adds to it
+    assert _frames(sent).index(0) == LEAD_IN_FRAMES - PREROLL_FRAMES - round(33.5 / 3 * 44.1)
+    first, late_us = rig.first_audio(session, sent, late_ms=11)
+    assert first == 0
+    assert abs(late_us) < 1000
+    lines = [
+        record.getMessage().removeprefix("Kitchen reports ").split(": ")[1]
+        for record in caplog.records
+        if "after its start instant" in record.getMessage()
+    ]
+    assert lines == [
+        "-120.5 ms off, not counted",
+        "-69.5 ms off, not counted",
+        "-115.5 ms off, not counted",
+        "-115.5 ms off, not counted",
+        "-115.5 ms off, not counted",
+        "-115.5 ms off, counted, 1 in a row",
+        "+10.5 ms off, not counted",
+        "+10.5 ms off, not counted",
+        "+10.5 ms off, counted, 1 in a row",
+        "+11.5 ms off, counted, 2 in a row",
+        "+11.5 ms off, counted, 3 in a row",
+    ]
+
+
 async def test_every_report_is_logged_while_a_start_is_measured(
     rig: _Rig, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1907,9 +1964,9 @@ async def test_every_report_is_logged_while_a_start_is_measured(
             (70, 100, "+29.5", "not counted"),
             (120, 150, "+29.5", "not counted"),
             (170, 200, "+29.5", "not counted"),
-            (220, 250, "+29.5", "counted"),
-            (270, 300, "+29.5", "counted"),
-            (320, 350, "+29.5", "counted"),
+            (220, 250, "+29.5", "counted, 1 in a row"),
+            (270, 300, "+29.5", "counted, 2 in a row"),
+            (320, 350, "+29.5", "counted, 3 in a row"),
         )
     ]
     # nor once its start is corrected
@@ -2022,9 +2079,9 @@ async def test_a_player_that_does_not_report_gets_its_audio_after_two_seconds(
 
     assert not rig.aligning()
     assert loop.frames_sent == round(2.02 * SECOND) + STREAM_LEAD_FRAMES
-    # on the timeline as far as is known: 2.22 s into the stream is 0.87 s into its audio
-    assert rig.first_audio(session, sent) == (round(0.87 * SECOND), 0)
-    assert "its start not corrected, 870 ms of it left out" in caplog.text
+    # on the timeline as far as is known: 2.22 s into the stream is 0.77 s into its audio
+    assert rig.first_audio(session, sent) == (round(0.77 * SECOND), 0)
+    assert "its start not corrected, 770 ms of it left out" in caplog.text
     # once the player shows where it is, its start is corrected in the audio
     assert loop.start_jump_ms == START_JUMP_MS
     rig.play(session, 1.0, late_ms=5)
@@ -2069,9 +2126,9 @@ async def test_the_player_is_asked_more_often_until_its_start_is_corrected(rig: 
         await _settle()
         # nor one that was told when to start, until that instant
         assert session.started
-        assert session.command_us - rig.now_us == 650_000
+        assert session.command_us - rig.now_us == 550_000
         assert await _next_interval() == slow
-        rig.clock.advance_us(550_000)
+        rig.clock.advance_us(450_000)
         assert await _next_interval() == pytest.approx(0.1)
         rig.clock.advance_us(100_000)
         assert await _next_interval() == fast
@@ -3010,7 +3067,7 @@ async def test_an_underrun_restarts_the_stream_on_the_timeline(rig: _Rig) -> Non
     for second in range(1, 6):
         rig.bridge._on_audio_chunk(_chunk(rig.origin_us, second * SECOND, SECOND))
     rig.align(first)
-    rig.clock.advance_us(first.start_us - rig.now_us + 1_850_000)
+    rig.clock.advance_us(first.start_us - rig.now_us + 1_950_000)
     rig.drain(first)
 
     rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)

@@ -809,6 +809,85 @@ def test_start_error_is_measured_whenever_the_player_first_reports() -> None:
     assert loop.start_error_ms == pytest.approx(40.0)
 
 
+def _collected(loop: SyncLoop) -> list[float]:
+    """Return the errors of the reports a loop takes its start error from so far."""
+    return list(loop.start_reports)
+
+
+def _at(loop: SyncLoop, elapsed_ms: int, at_ms: int) -> float | None:
+    """Report ``elapsed_ms`` played, ``at_ms`` after the start instant."""
+    return loop.on_report(START_US + at_ms * 1000, elapsed_ms)
+
+
+def test_start_error_is_taken_from_where_a_player_settles() -> None:
+    """As logged on a player: it counts from 126 ms too early at first, then moves its position."""
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US, start_jump_ms=1.0, told_us=START_US - 180_000)
+    for elapsed_ms, at_ms in ((0, -120), (0, -69), (100, -15), (100, -15), (148, 33)):
+        _at(loop, elapsed_ms, at_ms)
+    assert _collected(loop) == []
+    # one report of the first 200 ms that still counts from the early origin
+    _at(loop, 200, 85)
+    assert _collected(loop) == [-115.5]
+    # its elapsed time goes back by 77 ms: from here on it is 11 ms late
+    for elapsed_ms, at_ms in ((123, 134), (176, 187)):
+        _at(loop, elapsed_ms, at_ms)
+    assert _collected(loop) == [-115.5]
+    _at(loop, 234, 245)
+    assert _collected(loop) == [10.5]
+    _at(loop, 283, 295)
+    assert loop.start_error_ms is None
+    _at(loop, 333, 345)
+
+    assert loop.start_error_ms == pytest.approx(33.5 / 3)
+    # a late player: frames are left out, and no silence is added
+    assert loop.pending_jump == round(33.5 / 3 * 48)
+    assert loop.process(b"") == b""
+
+
+def test_start_error_starts_over_when_a_player_moves_its_position() -> None:
+    """Reports from before a step say nothing about the start, however many there are."""
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US)
+    _report(loop, 200, -100.0)
+    _report(loop, 250, -100.0)
+    assert _collected(loop) == [-100.0, -100.0]
+    # the report that shows the step is the first of the ones that count
+    _report(loop, 300, 12.0)
+    assert _collected(loop) == [12.0]
+    _report(loop, 350, 12.0)
+    assert loop.start_error_ms is None
+    _report(loop, 400, 13.0)
+    assert loop.start_error_ms == pytest.approx(37.0 / 3)
+
+    # a player that keeps moving is not measured: there is no start to tell from it
+    restless = SyncLoop(RATE, FRAME_SIZE, START_US)
+    for index in range(12):
+        _report(restless, 200 + 50 * index, 20.0 * (index // 2))
+    assert restless.start_error_ms is None
+    assert _collected(restless) == [100.0, 100.0]
+
+
+def test_start_error_takes_reports_that_differ_by_a_millisecond_or_two() -> None:
+    """Reports of one position scatter and drift a little: they are the same position."""
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US)
+    for elapsed_ms, late_ms in ((200, 10.0), (250, 11.0), (300, 12.5)):
+        _report(loop, elapsed_ms, late_ms)
+    assert loop.start_error_ms == pytest.approx(33.5 / 3)
+
+    # it is the mean of the ones before that a report is held against, not the first of them
+    drifting = SyncLoop(RATE, FRAME_SIZE, START_US)
+    for elapsed_ms, late_ms in ((200, 10.0), (250, 14.0), (300, 16.5)):
+        _report(drifting, elapsed_ms, late_ms)
+    assert drifting.start_error_ms == pytest.approx(13.5)
+
+    # up to 5 ms from that mean
+    edge = SyncLoop(RATE, FRAME_SIZE, START_US)
+    _report(edge, 200, 10.0)
+    _report(edge, 250, 15.0)
+    assert _collected(edge) == [10.0, 15.0]
+    _report(edge, 300, 17.6)
+    assert _collected(edge) == pytest.approx([17.6])
+
+
 def test_start_error_leaves_out_reports_that_put_the_start_before_it_was_told() -> None:
     """A player does not start before it is told to: such a report is no position of this stream."""
     # a player with a start offset of 180 ms: it is told that much before its start instant
@@ -816,13 +895,13 @@ def test_start_error_leaves_out_reports_that_put_the_start_before_it_was_told() 
     # as logged on a player: 5.6 s played, a quarter of a second after it started
     for elapsed_ms in (5568, 5618, 5668):
         assert _report(loop, elapsed_ms, -5368.0) is None
-    assert loop.start_reports == 0
+    assert _collected(loop) == []
     assert loop.start_error_ms is None
     assert loop.pending_jump == 0
     # the reports of what it plays, 20 ms late, are the start
     for elapsed_ms in (350, 400):
         _report(loop, elapsed_ms, 20.0)
-    assert loop.start_reports == 2
+    assert _collected(loop) == [20.0, 20.0]
     _report(loop, 450, 20.0)
     assert loop.start_error_ms == pytest.approx(20.0)
     assert loop.pending_jump == 960
@@ -844,9 +923,9 @@ def test_start_error_of_a_player_that_starts_before_its_instant_counts() -> None
     # with 20 ms to spare for what a report can be off
     edge = SyncLoop(RATE, FRAME_SIZE, START_US, told_us=START_US - 180_000)
     _report(edge, 200, -200.1)
-    assert edge.start_reports == 0
+    assert _collected(edge) == []
     _report(edge, 250, -200.0)
-    assert edge.start_reports == 1
+    assert _collected(edge) == [-200.0]
 
 
 def test_reports_that_put_the_start_before_it_was_told_do_not_count_for_the_error() -> None:

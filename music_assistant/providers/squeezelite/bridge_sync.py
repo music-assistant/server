@@ -54,10 +54,14 @@ _CLOCK_MIN_SLOPE_POINTS = 5
 _JUMP_THRESHOLD_US = 5000
 _JUMP_SAMPLES = 3
 
-# the start error is the mean of this many reports, the first ones from this far (ms) into the
-# stream: until then a player reports up to tens of milliseconds off what it settles on
+# The start error is the mean of this many reports in a row that agree, the first ones from
+# this far (ms) into the stream: until then a player reports up to tens of milliseconds off
+# what it settles on. A player may also count from an origin of some 100 ms earlier at first
+# and step to the right one within that time: reports on either side of the step agree among
+# themselves within a millisecond or two, so the ones before a step are dropped.
 _START_REPORTS = 3
 _START_SKIP_MS = 200
+_START_AGREE_MS = 5.0
 # a report may put the start this much (ms) before the instant the player was told to start:
 # what the first mapping of its clock and the whole milliseconds of a report can be off
 _START_TOLERANCE_MS = 20
@@ -319,9 +323,9 @@ class SyncLoop:
         return self._start_error_ms
 
     @property
-    def start_reports(self) -> int:
-        """Return the number of reports the start error was taken from so far."""
-        return len(self._start_reports)
+    def start_reports(self) -> tuple[float, ...]:
+        """Return the errors (ms) of the reports the start error is taken from, as far as they are in."""
+        return tuple(self._start_reports)
 
     @property
     def pending_jump(self) -> int:
@@ -342,7 +346,8 @@ class SyncLoop:
         """
         Take in a status report of the player.
 
-        The start error is taken from the first reports that show the stream playing.
+        The start error is taken from the first reports that show the stream playing
+        and agree on where the player is.
         For the error after it a report is ignored while the player settles after the
         start, when nothing was played yet and when it repeats the previous report. The
         elapsed time may start over when the frame counter of the player wraps.
@@ -386,9 +391,13 @@ class SyncLoop:
             return None
         if self._start_error_ms is None and elapsed >= _START_SKIP_MS:
             # nothing was corrected yet, so this is the error of the start itself
-            self._start_reports.append(raw_ms)
-            if len(self._start_reports) == _START_REPORTS:
-                self._start_error_ms = start_error_ms = sum(self._start_reports) / _START_REPORTS
+            reports = self._start_reports
+            if reports and abs(raw_ms - sum(reports) / len(reports)) > _START_AGREE_MS:
+                # the player moved its position: what it reported before says nothing now
+                reports.clear()
+            reports.append(raw_ms)
+            if len(reports) == _START_REPORTS:
+                self._start_error_ms = start_error_ms = sum(reports) / _START_REPORTS
                 if self.start_jump_ms < abs(start_error_ms) <= MAX_START_JUMP_MS:
                     self._pending_jump = round(start_error_ms * self._sample_rate / 1000)
         if server_us < self._settled_us:
