@@ -327,6 +327,52 @@ async def test_a_buffer_without_a_user_may_release_what_its_queue_no_longer_play
     prepared.streamdetails.buffer = capture
 
 
+async def test_a_claim_holds_its_item_for_the_playback_it_was_made_in_only(rig: SlotRig) -> None:
+    """A stream's claim keeps a track in the stream's own playback session, and in no other."""
+    playing, prepared, later = rig.play("track 0", "track 1", "track 2")
+    queue_data = rig.queues._queue_data[QUEUE_ID]
+    capture = await rig.prepare_next(playing)
+    may_release = capture.may_release
+    assert may_release is not None
+    queue_data.items = [playing, later, prepared]
+    assert may_release(capture)
+
+    # a stream of this playback decided to play the track
+    claim = audio_mod._ItemClaim("stream", SESSION_ID)
+    rig.audio._claim_item(claim, prepared)
+    assert not may_release(capture)
+    # playback started over on the queue since
+    queue_data.session_id = "session-after"
+    assert may_release(capture)
+    # the queue stopped, and a stream that starts while nothing plays there holds nothing
+    queue_data.session_id = None
+    assert may_release(capture)
+    idle_claim = audio_mod._ItemClaim("idle stream", None)
+    rig.audio._claim_item(idle_claim, prepared)
+    assert may_release(capture)
+    queue_data.session_id = SESSION_ID
+    rig.audio._claim_item(idle_claim, None)
+    assert not may_release(capture)
+    # the track moved to the queue of another player, which plays in a session of its own
+    rig.play("track 7", "track 8", queue_id=OTHER_QUEUE_ID, session_id="session-b")
+    rig.queues._queue_data[OTHER_QUEUE_ID].items.append(prepared)
+    prepared.queue_id = OTHER_QUEUE_ID
+    assert may_release(capture)
+    # a stream of that playback holds it there
+    claim_there = audio_mod._ItemClaim("stream there", "session-b")
+    rig.audio._claim_item(claim_there, prepared)
+    assert not may_release(capture)
+
+    # the track gives its source up when the claim that held it ends
+    rig.audio._claim_item(claim, None)
+    await rig.settle()
+    assert rig.fills(capture)
+    rig.audio._claim_item(claim_there, None)
+    await rig.settle()
+    assert not rig.fills(capture)
+    assert rig.audio._item_claims == set()
+
+
 async def test_a_request_that_took_the_source_keeps_it_until_the_request_ends(
     rig: SlotRig,
 ) -> None:

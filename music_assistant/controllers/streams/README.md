@@ -142,14 +142,15 @@ A buffer keeps track of its users. `get_buffer()` counts whoever waits for the f
 the moment it takes the buffer until it ends, so the wait for a source slot and the time before its
 first read count as well. A stream also claims the queue item it decided to play, which holds the
 item's buffer before the stream has it and when someone else creates it: the item stream for its
-whole life, the flow stream from the moment it selects a track. The source of a buffer that still
-fills holds a stream slot of its provider, which lists those buffers in `stream_slot_holders`.
-`release_if_unneeded()` stops the source of a buffer that has no user and that neither a claim nor
-its queue needs (the player queues README says when that is), and makes the buffer invalid on the
-spot, so nobody takes it while its source unwinds. It runs when the last user of a buffer leaves,
-when a claim ends, and for every holder of a provider's slots when a track needs one and none is
-free; when none of them gives way, a debug line names the holders, their users and the streams that
-claim their items.
+whole life, the flow stream from the moment it selects a track. A claim counts for the playback
+session its stream is part of, and no longer once the queue the item is on plays in another session
+or in none. The source of a buffer that still fills holds a stream slot of its provider, which lists
+those buffers in `stream_slot_holders`. `release_if_unneeded()` stops the source of a buffer that has
+no user and that neither a claim nor its queue needs (the player queues README says when that is),
+and makes the buffer invalid on the spot, so nobody takes it while its source unwinds. It runs when
+the last user of a buffer leaves, when a claim ends, and for every holder of a provider's slots when
+a track needs one and none is free; when none of them gives way, a debug line names the holders,
+their users and the streams that claim their items.
 
 ### Error Handling
 

@@ -427,6 +427,8 @@ class _ItemClaim:
 
     # who claims, for log lines
     name: str
+    # the playback session the stream is part of, the only one the claim holds the item for
+    session_id: str | None
     queue_item: QueueItem | None = None
 
 
@@ -728,7 +730,8 @@ class StreamsAudio:
         # so without this the handoff is a race the fade loses.
         self._crossfade_pending: dict[str, tuple[str, asyncio.Event]] = {}
         # the queue items that streams decided to play. An item keeps the source of whichever
-        # buffer it has or gets for as long as it is claimed, also before any of it is read
+        # buffer it has or gets for as long as it is claimed, also before any of it is read,
+        # in the playback session of the stream that claims it
         self._item_claims: set[_ItemClaim] = set()
         self._smart_fades_mixer: SmartFadesMixer | None = None
         # serializes buffer preparation per queue item, so concurrent callers share
@@ -1798,7 +1801,8 @@ class StreamsAudio:
         :param normalization_override: Force this volume normalization mode instead of
             re-evaluating it from the (possibly just-updated) loudness measurement. Used by
             the crossfade path to keep a track's replayed intro and its body on the same mode.
-        :param session_id: Queue session that owns processing-detail updates.
+        :param session_id: Queue session this stream plays in, which owns processing-detail
+            updates.
         :param prepared_buffer: Existing buffer that must be used without opening a new source.
         :param exact_seek: Preserve millisecond precision instead of user-seek quantization.
         :param consumer_connected: Reports whether the consumer of this stream is still
@@ -1832,7 +1836,9 @@ class StreamsAudio:
 
         # the item is this stream's from here on, whichever buffer it has or gets: also
         # while the stream waits for the item's lock, for a source slot or for its first read
-        claim = _ItemClaim(f"stream of {queue_item.name}")
+        claim = _ItemClaim(
+            f"stream of {queue_item.name}", session_id or self._playback_session(queue_item)
+        )
         buffer_user = BufferUser(claim.name)
         self._claim_item(claim, queue_item)
         try:
@@ -2773,7 +2779,7 @@ class StreamsAudio:
         queue_exhausted = False
         incoming_prefetcher = _IncomingFadePrefetcher(self, pcm_format, flow_session_id)
         # this stream's claim on the track it selected, which no other stream can take away
-        flow_claim = _ItemClaim(f"flow stream of {queue.display_name}")
+        flow_claim = _ItemClaim(f"flow stream of {queue.display_name}", flow_session_id)
         try:
             while True:
                 # bail out early if a newer producer has taken over this queue,
@@ -4314,8 +4320,9 @@ class StreamsAudio:
         if streamdetails is None or streamdetails.buffer is not audio_buffer:
             # another buffer took its place on the item, so nothing reads this one again
             return True
-        if any(claim.queue_item is queue_item for claim in self._item_claims):
-            # a stream decided to play the item, whether or not it reads this buffer yet
+        if any(self._claim_holds(claim, queue_item) for claim in self._item_claims):
+            # a stream of the item's playback decided to play it, whether or not it reads
+            # this buffer yet
             return False
         queues = self.mass.player_queues
         queue_data = queues.queue_data_or_none(queue_item.queue_id)
@@ -4351,6 +4358,30 @@ class StreamsAudio:
             audio_buffer := cast("AudioBuffer | None", streamdetails.buffer)
         ) is not None:
             audio_buffer.release_if_unneeded()
+
+    def _claim_holds(self, claim: _ItemClaim, queue_item: QueueItem) -> bool:
+        """
+        Return whether a stream's claim holds a queue item.
+
+        A claim holds its item for the playback it was made for only: no longer once that
+        session ended, and not on the queue the item moved to.
+
+        :param claim: The stream's claim.
+        :param queue_item: The queue item to hold.
+        """
+        if claim.queue_item is not queue_item:
+            return False
+        session_id = self._playback_session(queue_item)
+        return session_id is not None and claim.session_id == session_id
+
+    def _playback_session(self, queue_item: QueueItem) -> str | None:
+        """
+        Return the playback session of the queue an item is on, or None if nothing plays there.
+
+        :param queue_item: The queue item to look up.
+        """
+        queue_data = self.mass.player_queues.queue_data_or_none(queue_item.queue_id)
+        return queue_data.session_id if queue_data is not None else None
 
     async def _release_unneeded_sources(
         self, queue_item: QueueItem, provider_instance: str
@@ -4392,8 +4423,9 @@ class StreamsAudio:
         users = list(audio_buffer.users)
         for claim in self._item_claims:
             if (
-                claim.queue_item is not None
-                and (streamdetails := claim.queue_item.streamdetails) is not None
+                (queue_item := claim.queue_item) is not None
+                and self._claim_holds(claim, queue_item)
+                and (streamdetails := queue_item.streamdetails) is not None
                 and streamdetails.buffer is audio_buffer
                 # a stream that has the buffer is one of its users already
                 and claim.name not in users

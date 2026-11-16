@@ -658,6 +658,65 @@ async def test_a_stream_of_the_old_player_that_ends_after_a_transfer_leaves_the_
     assert rig.buffer(track) is new_capture
 
 
+async def test_a_stream_the_old_player_left_open_holds_no_track_of_the_new_player(
+    rig: SlotRig,
+) -> None:
+    """
+    A track the new player prepares is not held by a stream the old player still has open.
+
+    The old player asked for the prepared track and never let go of it. After the transfer
+    the new player prepares that track again and the track is taken off its queue: the track
+    that plays next there gets the service's only stream.
+    """
+    playing, prepared, following = rig.play("track 0", "track 1", "track 2")
+    await rig.prepare_next(playing)
+    old_stream = rig.audio.get_queue_item_stream(prepared, PCM_FORMAT, session_id=SESSION_ID)
+    await anext(old_stream)
+
+    await rig.transfer_to(OTHER_QUEUE_ID)
+    target = rig.queues._queue_data[OTHER_QUEUE_ID]
+    target.session_id = "session-b"
+    target.queue.index_in_buffer = target.queue.current_index
+    new_capture = await rig.prepare_next(playing)
+    assert rig.fills(new_capture)
+    rig.queues.delete_item(OTHER_QUEUE_ID, prepared.queue_item_id)
+    buffer = await rig.ask(following)
+
+    assert buffer is not None
+    assert rig.fills(buffer)
+    assert not rig.fills(new_capture)
+    await old_stream.aclose()
+
+
+async def test_a_stream_of_an_earlier_playback_holds_no_track_of_the_one_that_followed(
+    rig: SlotRig,
+) -> None:
+    """
+    A stream a speaker left open when its queue started over holds no track of the new playback.
+
+    The speaker asked for the prepared track, then playback started over on the same queue.
+    The track is prepared again and taken off the queue: the track that plays next gets the
+    service's only stream.
+    """
+    playing, prepared, following = rig.play("track 0", "track 1", "track 2")
+    await rig.prepare_next(playing)
+    old_stream = rig.audio.get_queue_item_stream(prepared, PCM_FORMAT, session_id=SESSION_ID)
+    await anext(old_stream)
+
+    # the start of an item releases what the playback before it held, in use or not
+    await rig.queues._cleanup_queue_audio_data(QUEUE_ID)
+    rig.queues._queue_data[QUEUE_ID].session_id = "session-after"
+    new_capture = await rig.prepare_next(playing)
+    assert rig.fills(new_capture)
+    rig.queues.delete_item(QUEUE_ID, prepared.queue_item_id)
+    buffer = await rig.ask(following)
+
+    assert buffer is not None
+    assert rig.fills(buffer)
+    assert not rig.fills(new_capture)
+    await old_stream.aclose()
+
+
 # --- what the rule leaves alone
 
 
@@ -862,4 +921,30 @@ async def test_a_wait_for_a_slot_names_the_holders_and_their_users(
     assert (
         "No free Single stream slot for track 2, held by: "
         f"{prepared.streamdetails.uri} (used by: stream of track 1, reader)"
+    ) in caplog.text
+
+
+async def test_a_wait_for_a_slot_names_the_streams_that_hold_the_track(
+    rig: SlotRig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The log names a stream that claims the holder's track, and none of an earlier playback."""
+    playing, prepared, later = rig.play("track 0", "track 1", "track 2")
+    await rig.prepare_next(playing)
+    claim = audio_mod._ItemClaim("flow stream of Queue A", SESSION_ID)
+    earlier = audio_mod._ItemClaim("stream of an earlier playback", "session-before")
+    rig.audio._claim_item(claim, prepared)
+    rig.audio._claim_item(earlier, prepared)
+
+    with (
+        caplog.at_level(logging.DEBUG, logger=rig.audio.logger.name),
+        pytest.raises(ProviderStreamLimitError),
+    ):
+        await rig.ask(later, wait=0.1)
+    rig.audio._claim_item(claim, None)
+    rig.audio._claim_item(earlier, None)
+
+    assert prepared.streamdetails is not None
+    assert (
+        "No free Single stream slot for track 2, held by: "
+        f"{prepared.streamdetails.uri} (used by: flow stream of Queue A (claims it))"
     ) in caplog.text
