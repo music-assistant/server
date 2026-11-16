@@ -662,18 +662,20 @@ class _Rig:
         return asyncio.create_task(_serve())
 
     async def serve_player(
-        self, *, capacity_us: int | None = None
+        self, *, capacity_us: int | None = None, chunk_seconds: int = 1
     ) -> tuple[BridgeSession, _BufferedPlayer]:
         """
         Start a Sendspin stream and serve it to a player that plays it, its start corrected.
 
-        Sendspin delivered 30 seconds of it, in chunks of a second.
+        Sendspin delivered 30 seconds of it.
 
         :param capacity_us: The audio the buffers of the player hold, None for all it is sent.
+        :param chunk_seconds: The length of the chunks it was delivered in.
         """
-        session = await self.start_playing(frames=SECOND)
-        for second in range(1, 30):
-            self.bridge._on_audio_chunk(_chunk(self.origin_us, second * SECOND, SECOND))
+        frames = chunk_seconds * SECOND
+        session = await self.start_playing(frames=frames)
+        for first in range(frames, 30 * SECOND, frames):
+            self.bridge._on_audio_chunk(_chunk(self.origin_us, first, frames))
         session.claimed = session.preroll_sent = False
         player = _BufferedPlayer(self, session, capacity_us)
         self.serve(session, player)
@@ -1886,7 +1888,9 @@ async def test_a_player_whose_buffers_are_full_gets_its_stream_as_it_plays(rig: 
     assert min(held[20:]) > 2_000_000 - 50_000
     assert max(held) < 2_000_000 + MAX_BLOCK_US
     assert session.write_started_us is not None
-    assert rig.lead_frames(session) * FRAME_SIZE - len(player.body) <= MAX_BLOCK_FRAMES * FRAME_SIZE
+    assert session.loop is not None
+    waiting = session.loop.frames_sent * FRAME_SIZE - len(player.body)
+    assert 0 < waiting <= MAX_BLOCK_FRAMES * FRAME_SIZE
     assert rig.lead_frames(session) < STREAM_LEAD_FRAMES
     assert player.audio() == list(range(len(player.audio())))
 
@@ -3460,14 +3464,63 @@ async def test_an_underrun_tells_what_the_bridge_knew(
     await _settle()
 
     assert rig.session is not session
-    # the stream was 6 seconds ahead when the player stopped taking it, and the block after
-    # that waits: 7 of the 30 chunks of a second went out whole
+    # the stream was 6 seconds ahead when the player stopped taking it, and the block of
+    # 50 ms after that waits: 7 of the 30 chunks of a second went out whole
+    assert written == (LEAD_IN_FRAMES + round(7.85 * SECOND)) * FRAME_SIZE
     assert (
-        "Sendspin stream on Kitchen is restarted: it ran out of audio (written 4800 ms ahead, "
-        f"{written} bytes, a write waits for 1200 ms, 23000 ms of audio waiting, the player "
+        "Sendspin stream on Kitchen is restarted: it ran out of audio (prepared 4800 ms ahead, "
+        f"{written} bytes written, a write waits for 1200 ms, 23000 ms of audio waiting, the player "
         "got 1000000 bytes and held 65536 of 3145728 in its stream buffer and 1234 of 3528000 "
         "in its output buffer 1250 ms ago)"
     ) in caplog.text
+
+
+@pytest.mark.parametrize("sync_adjust", [0, 100, -80])
+async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(sync_adjust: int) -> None:
+    """A stall longer than the lead ends in an underrun: the new stream neither skips nor repeats audio."""
+    rig = _Rig(sync_adjust=sync_adjust)
+    try:
+        first, player = await rig.serve_player(chunk_seconds=3)
+        await player.play(3)
+
+        # nothing reaches the player, which reports where it plays until it has no more
+        player.stalled = True
+        while player.held_us > 0:
+            await player.play(0.05)
+            elapsed_ms = (rig.now_us - first.start_us) // 1000
+            rig.bridge.handle_slim_event(rig.status(elapsed_ms=elapsed_ms))
+        assert rig.session is first
+        played = player.audio()
+        # 6 seconds after the 3.3 it played: in the middle of the chunk that was partly taken
+        assert rig.now_us - first.start_us == 9_300_000
+        assert played == list(range(round(7.85 * SECOND)))
+        assert len(first.chunks) == 8
+        rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+        await _settle()
+        player.stalled = False
+
+        second = rig.session
+        assert second is not first
+        assert len(second.chunks) == 8
+        restarted = _BufferedPlayer(rig, second)
+        rig.serve(second, restarted)
+        await _settle()
+        rig.event(SlimEventType.PLAYER_BUFFER_READY)
+        await _settle()
+        await rig.align_served(second)
+        await restarted.play(2)
+
+        # nothing twice, and all of it from where the new stream could begin: 0.8 seconds
+        # for its start and its correction, in the chunk the first stream had begun
+        audio = restarted.audio()
+        assert audio == list(range(round(8.65 * SECOND), audio[0] + len(audio)))
+        assert rig.lead_frames(second) == STREAM_LEAD_FRAMES
+        # each frame at its own time, the sync delay of the player included
+        index = _frames(bytes(restarted.body)).index(audio[0])
+        heard_us = second.start_us + _frame_us(index)
+        assert heard_us == rig.origin_us - sync_adjust * 1000 + _frame_us(audio[0])
+    finally:
+        await rig.close()
 
 
 async def test_an_underrun_of_a_stream_without_audio_says_so(
@@ -3482,7 +3535,7 @@ async def test_an_underrun_of_a_stream_without_audio_says_so(
     await _settle()
 
     assert (
-        "it ran out of audio (written 500 ms ahead, 0 bytes, the last write took 0 ms, "
+        "it ran out of audio (prepared 500 ms ahead, 0 bytes written, the last write took 0 ms, "
         "0 ms of audio waiting, no status of the player)"
     ) in caplog.text
 

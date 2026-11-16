@@ -1064,7 +1064,8 @@ class SendspinSqueezeliteBridge:
         :param loop: The sync loop of that session.
         """
         now_us = self._clock.now_us()
-        written_us = session.start_us + loop.frames_consumed * 1_000_000 // session.sample_rate
+        # with the block a write waits for
+        prepared_us = session.start_us + loop.frames_consumed * 1_000_000 // session.sample_rate
         if (started_us := session.write_started_us) is not None:
             write = f"a write waits for {(now_us - started_us) / 1000:.0f} ms"
         else:
@@ -1080,8 +1081,9 @@ class SendspinSqueezeliteBridge:
                 f"{(now_us - status.received * 1_000_000) / 1000:.0f} ms ago"
             )
         return (
-            f"written {(written_us - now_us) / 1000:.0f} ms ahead, {session.bytes_written} "
-            f"bytes, {write}, {session.pending_us / 1000:.0f} ms of audio waiting, {player}"
+            f"prepared {(prepared_us - now_us) / 1000:.0f} ms ahead, {session.bytes_written} "
+            f"bytes written, {write}, {session.pending_us / 1000:.0f} ms of audio waiting, "
+            f"{player}"
         )
 
     def _align(self, session: BridgeSession, loop: SyncLoop, now_us: int) -> bytes:
