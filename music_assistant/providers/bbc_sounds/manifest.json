@@ -20,7 +20,7 @@
       "id": "listen_from_start",
       "label": "Listen from start",
       "media_types": ["radio"],
-      "scope": "library.read",
+      "scope": "queues.control",
       "icon": "mdi-restart",
       "requires_player": true
     }
