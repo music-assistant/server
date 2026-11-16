@@ -330,8 +330,8 @@ async def test_a_body_that_never_comes_is_given_up_on() -> None:
     assert session.get_diagnostics()["last_rate_limit_reason"] is None
 
 
-async def test_the_reason_goes_with_the_limit_it_came_with() -> None:
-    """The reason of a limit is not given for a later limit that came without one."""
+async def test_a_limit_that_moves_the_request_on_is_logged_with_its_reason() -> None:
+    """A request that leaves a limited client logs the client and the reason Spotify gave."""
     session = _make_session(personal=True)
     _stub_response(
         session,
@@ -339,13 +339,50 @@ async def test_the_reason_goes_with_the_limit_it_came_with() -> None:
         payload={"error": {"reason": "SOME_REASON"}},
         headers={"Retry-After": "8"},
     )
+
     with pytest.raises(RetriesExhausted):
         async with session._request("GET", "me"):
             pass
-    assert session.cooldown_reason == "SOME_REASON"
+    session.logger.info.assert_called_once_with(  # type: ignore[attr-defined]
+        "Spotify rate limited the custom Client ID (SOME_REASON)"
+    )
+    session.logger.warning.assert_not_called()  # type: ignore[attr-defined]
 
-    # that limit ran out, and the client is held back again by something that gave no reason
-    session.throttler._cooldown_until = 0
-    session._cooldown_reason_until = 0
+
+async def test_a_used_up_quota_is_logged_once_per_answer() -> None:
+    """The first quota answer of a block warns, the ones after it are logged as a limit."""
+    session = _make_session(personal=True)
+    _stub_response(session, status=429, payload=QUOTA_BODY)
+    for _ in range(2):
+        with pytest.raises(RetriesExhausted):
+            async with session._request("GET", "me"):
+                pass
+        session.throttler._cooldown_until = 0
+    session.logger.warning.assert_called_once()  # type: ignore[attr-defined]
+    session.logger.info.assert_called_once_with(  # type: ignore[attr-defined]
+        "Spotify rate limited the custom Client ID (QUOTA_EXCEEDED)"
+    )
+
+
+async def test_a_request_that_stood_in_line_is_not_sent_to_a_client_told_to_wait() -> None:
+    """A user action that was waiting for its turn gives up once the client is held back."""
+    session = _make_session(personal=True)
+    request = _stub_response(session, payload={})
     session.throttler.set_cooldown(3600)
-    assert session.cooldown_reason is None
+
+    with pytest.raises(RetriesExhausted) as err:
+        async with session._request("GET", "me"):
+            pass
+    assert err.value.translation_key == RateLimited.translation_key
+    request.assert_not_called()
+
+
+async def test_the_shared_client_sends_a_request_that_stood_in_line() -> None:
+    """Without another client to stand in, a request past the gate is sent as before."""
+    session = _make_session()
+    request = _stub_response(session, payload={})
+    session.throttler.set_cooldown(3600)
+
+    async with session._request("GET", "me"):
+        pass
+    request.assert_called_once()

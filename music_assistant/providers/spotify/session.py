@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -83,17 +82,8 @@ class SpotifySession:
         self._has_fallback = has_fallback
         self._last_rate_limit_reason: str | None = None
         self._last_rate_limit_at: datetime | None = None
-        # until when (monotonic) the cooldown of this session is the one that answer armed
-        self._cooldown_reason_until = 0.0
         # quota answers in a row, without an answered request in between
         self._quota_answers = 0
-
-    @property
-    def cooldown_reason(self) -> str | None:
-        """Return the reason Spotify gave for the limit that holds this session back now."""
-        if time.monotonic() < self._cooldown_reason_until:
-            return self._last_rate_limit_reason
-        return None
 
     def get_diagnostics(self) -> dict[str, Any]:
         """Return the rate limit state of this session for a diagnostics report."""
@@ -250,6 +240,16 @@ class SpotifySession:
         if not auth_info:
             auth_info = await self._get_auth()
         headers = {**(headers or {}), "Authorization": f"Bearer {auth_info['access_token']}"}
+        if (
+            self._has_fallback
+            and current_priority() is not RequestPriority.LOW
+            and self.throttler.cooldown_remaining > 0
+        ):
+            # the client was told to wait while this request stood in line for its turn
+            raise RetriesExhausted(
+                f"Spotify rate limited the {self.label}",
+                translation_key=RateLimited.translation_key,
+            )
         async with self.mass.http_session.request(
             method, f"{API_URL}/{endpoint}", headers=headers, **kwargs
         ) as response:
@@ -270,9 +270,10 @@ class SpotifySession:
                 if reason:
                     message += f" ({reason})"
                 quota_exceeded = reason == QUOTA_EXCEEDED
+                warned = False
                 if quota_exceeded:
                     self._quota_answers += 1
-                    if self._quota_answers == 1:
+                    if warned := self._quota_answers == 1:
                         self._warn_quota_exceeded(backoff_time)
                 if moves_on or (self._has_fallback and quota_exceeded):
                     # a used up quota does not come back within a retry either: the gate stays
@@ -285,7 +286,9 @@ class SpotifySession:
                             min(self.throttler.initial_backoff * 2**doublings, MAX_BACKOFF),
                         )
                     self.throttler.set_cooldown(cooldown)
-                    self._cooldown_reason_until = time.monotonic() + cooldown
+                    if not warned:
+                        # the caller moves on to the other session, so nothing else logs this
+                        self.logger.info(message)
                     raise RetriesExhausted(message, translation_key=RateLimited.translation_key)
                 raise RateLimited(message, backoff_time=backoff_time)
             self._quota_answers = 0

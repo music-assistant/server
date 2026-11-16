@@ -2009,12 +2009,10 @@ class SpotifyProvider(MusicProvider):
             return self._dev_session
         if (now := time.monotonic()) >= self._dev_fallback_logged_until:
             self._dev_fallback_logged_until = now + cooldown
-            reason = self._dev_session.cooldown_reason
             self.logger.info(
-                "Spotify limits the custom Client ID for another %d seconds%s, "
+                "Spotify limits the custom Client ID for another %d seconds, "
                 "user actions use the shared client meanwhile",
                 math.ceil(cooldown),
-                f" ({reason})" if reason else "",
             )
         return self._global_session
 
