@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, cast
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -18,7 +19,8 @@ from aiosendspin.server.push_stream import (
     _ResamplerKey,
 )
 from aiosendspin.server.roles.player.v1 import PlayerPersistentState, PlayerV1Role
-from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.enums import ContentType, CrossfadeMode, MediaType
+from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -32,9 +34,12 @@ from music_assistant.providers.sendspin.player import (
     SENDSPIN_FORMAT_AUTOMATIC,
     SendspinPlayer,
 )
+from tests.common import MockProvider, attach_mock, mock_player_mass
 
 if TYPE_CHECKING:
     import pytest
+
+    from music_assistant.models.player_protocol import PlayerProtocol
 
 PLAYER_ID = "client-1"
 MEMBER_ID = "client-2"
@@ -282,6 +287,86 @@ async def test_tone_above_24khz_reaches_a_96k_member() -> None:
     assert with_leader_rate < 0.001
 
 
+async def test_consecutive_44k_tracks_flow_without_restart() -> None:
+    """A group of a 48 kHz leader and a 44.1 kHz member flows from one 44.1 kHz track to the next."""
+    leader, _ = _player([FLAC_48K])
+    member, _ = _player([FLAC_48K, FLAC_44K], player_id=MEMBER_ID)
+    _group(leader, member)
+
+    assert await _flow_items_played(leader, [44100, 44100, 44100]) == ["0", "1", "2"]
+
+
+async def test_higher_track_rate_a_member_plays_restarts_the_flow() -> None:
+    """A 96 kHz track restarts the flow when a member plays 96 kHz."""
+    leader, _ = _player([FLAC_48K])
+    member, _ = _player([FLAC_48K, FLAC_44K], player_id=MEMBER_ID)
+    hires_member, _ = _player([FLAC_48K, FLAC_96K], player_id="client-3")
+    _group(leader, member, hires_member)
+
+    assert await _flow_items_played(leader, [44100, 44100, 96000]) == ["0", "1"]
+    assert await _flow_items_played(leader, [48000, 48000, 96000]) == ["0", "1"]
+
+
+async def test_higher_track_rate_no_member_plays_keeps_the_flow() -> None:
+    """A 96 kHz track keeps a 48 kHz flow going when the members play 48 and 44.1 kHz."""
+    leader, _ = _player([FLAC_48K])
+    member, _ = _player([FLAC_48K, FLAC_44K], player_id=MEMBER_ID)
+    _group(leader, member)
+
+    assert await _flow_items_played(leader, [48000, 96000, 44100]) == ["0", "1", "2"]
+
+
+async def test_96k_track_lifts_a_44k_flow_to_48k_as_for_a_lone_player() -> None:
+    """A 96 kHz track restarts a 44.1 kHz flow at 48 kHz, as for a lone 44.1/48 kHz player."""
+    leader, _ = _player([FLAC_48K])
+    member, _ = _player([FLAC_48K, FLAC_44K], player_id=MEMBER_ID)
+    _group(leader, member)
+    lone_player, _ = _player([FLAC_48K, FLAC_44K], player_id="client-3")
+
+    assert await _flow_items_played(leader, [44100, 96000]) == ["0"]
+    assert await _flow_items_played(lone_player, [44100, 96000]) == ["0"]
+
+
+async def test_group_of_48k_members_restarts_as_its_leader_alone() -> None:
+    """A group of 48 kHz members takes the same restart decisions as its leader's rates."""
+    leader, _ = _player([FLAC_48K])
+    member, _ = _player([OPUS_48K], player_id=MEMBER_ID)
+    _group(leader, member)
+    session = _session(leader, sample_rate=44100)
+    await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
+    pcm_format, _ = session._select_session_pcm_formats()
+    leader.playback_session = session
+    audio = leader.mass.streams.audio
+    supported = sorted({rate for rate, _ in leader.get_supported_sample_rates()})
+
+    for next_rate in (22050, 44100, 48000, 88200, 96000, 192000):
+        item = _flow_item("next", next_rate)
+        group_rate = await leader.get_flow_sample_rate(item.streamdetails)
+        decisions = [
+            audio._flow_stream_needs_restart(
+                cast("Any", item),
+                pcm_format,
+                supported,
+                FLOW_MODE_SAMPLE_RATE_SMART,
+                is_first_track=False,
+                next_flow_sample_rate=flow_rate,
+            )
+            for flow_rate in (group_rate, None)
+        ]
+        assert decisions == [False, False], next_rate
+
+
+async def test_flow_of_other_players_follows_their_supported_rates() -> None:
+    """A player outside a Sendspin group restarts its flow by its own supported rates."""
+    mass = mock_player_mass()
+    _, protocol = attach_mock(MockProvider("test", mass=mass), "renderer-1")
+    protocol._attr_supported_sample_rates = [(48000, 16), (96000, 24)]
+
+    assert await protocol.get_flow_sample_rate(_flow_item("0", 96000).streamdetails) is None
+    assert await _flow_items_played(protocol, [44100, 48000, 44100], 48000) == ["0", "1", "2"]
+    assert await _flow_items_played(protocol, [44100, 48000, 96000], 48000) == ["0", "1"]
+
+
 def _player(
     formats: list[SupportedAudioFormat],
     *,
@@ -330,6 +415,84 @@ def _group(*players: SendspinPlayer) -> None:
         cast("MagicMock", player.api).group.clients = list(clients.values())
         cast("MagicMock", player.provider).server_api.get_client.side_effect = clients.get
         cast("MagicMock", player.mass).players.get_player.side_effect = players_by_id.get
+
+
+async def _flow_items_played(
+    protocol: PlayerProtocol, item_rates: list[int], flow_rate: int | None = None
+) -> list[str]:
+    """
+    Return the items a flow stream for a protocol plays before it ends or restarts.
+
+    :param protocol: The protocol that consumes the flow stream.
+    :param item_rates: The sample rates of the queue items, from the first on.
+    :param flow_rate: The rate of the flow stream; by default the rate of the Sendspin
+        session of the protocol for the first item.
+    """
+    items = [_flow_item(str(index), rate) for index, rate in enumerate(item_rates)]
+    if flow_rate is None:
+        leader = cast("SendspinPlayer", protocol)
+        session = SendspinPlaybackSession(leader)
+        session._start_streamdetails = items[0].streamdetails
+        await session._follow_session_sample_rate(
+            [client.client_id for client in leader.api.group.clients]
+        )
+        flow_rate = session._select_session_pcm_formats()[0].sample_rate
+        leader.playback_session = session
+
+    async def _load_next(_queue_id: str, current_id: str) -> Any:
+        if (index := int(current_id) + 1) < len(items):
+            return items[index]
+        raise QueueEmpty
+
+    async def _one_chunk(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
+        yield b"\x00" * 8
+
+    audio = StreamsAudio(MagicMock())
+    queue_data = SimpleNamespace(session_id="session-1", flow_mode_stream_log=[])
+    mass = cast("MagicMock", audio.mass)
+    mass.player_queues.queue_data.return_value = queue_data
+    mass.player_queues.load_next_queue_item = _load_next
+    mass.player_queues.get_active_queue.return_value = None
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    mass.config.get_raw_core_config_value.return_value = 0
+    audio.get_queue_item_stream = _one_chunk  # type: ignore[method-assign]
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        flow_mode=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    pcm_format = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=flow_rate)
+    async for _chunk in audio.get_queue_flow_stream(
+        cast("Any", queue),
+        cast("Any", items[0]),
+        pcm_format,
+        session_id="session-1",
+        protocol_player=protocol,
+    ):
+        pass
+    return [entry.queue_item_id for entry in queue_data.flow_mode_stream_log]
+
+
+def _flow_item(item_id: str, sample_rate: int) -> SimpleNamespace:
+    """Return a queue item of a track with the given sample rate."""
+    return SimpleNamespace(
+        queue_item_id=item_id,
+        name=item_id,
+        media_type=MediaType.TRACK,
+        duration=300,
+        extra_attributes={},
+        streamdetails=StreamDetails(
+            provider="test",
+            item_id=item_id,
+            audio_format=AudioFormat(
+                content_type=ContentType.FLAC, sample_rate=sample_rate, bit_depth=16
+            ),
+            media_type=MediaType.TRACK,
+            duration=300,
+        ),
+    )
 
 
 async def _tone_level_at_member(session_rate: int, member_rate: int) -> float:

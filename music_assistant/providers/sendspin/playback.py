@@ -425,6 +425,30 @@ class SendspinPlaybackSession:
             self._pipeline_config_cache.clear()
             self._preassigned_channels.clear()
 
+    async def get_session_sample_rate(self, start_streamdetails: StreamDetails) -> int:
+        """
+        Return the sample rate this group picks for a session starting with an item.
+
+        :param start_streamdetails: Stream details of the first item of the session.
+        """
+        from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
+
+        member_rates: list[int] = []
+        for client in self.player.api.group.clients:
+            player = self.player.provider.get_protocol(client.client_id)
+            session_format = (
+                await player.get_session_format(start_streamdetails)
+                if isinstance(player, SendspinPlayer)
+                else None
+            )
+            if session_format is not None:
+                member_rates.append(_counted_sample_rate(_to_audio_format(*session_format)))
+            elif rate := self._get_member_sample_rate(client.client_id):
+                member_rates.append(rate)
+        return self._pick_session_sample_rate(
+            start_streamdetails.audio_format.sample_rate, member_rates
+        )
+
     async def add_member(self, player_id: str) -> None:
         """Add a member to the group with DSP-aware lifecycle handling."""
         async with self._state_lock:
@@ -1396,16 +1420,10 @@ class SendspinPlaybackSession:
             for client in self.player.api.group.clients
             if (rate := self._get_member_sample_rate(client.client_id))
         ]
-        if member_rates:
-            streamdetails = self._start_streamdetails
-            source_rate = (
-                (streamdetails.audio_format.sample_rate if streamdetails else 0)
-                or self._get_member_sample_rate(self.player.protocol_id)
-                or 0
-            )
-            sample_rate = min(max(source_rate, min(member_rates)), max(member_rates))
-        else:
-            sample_rate = _DEFAULT_PCM_FORMAT.sample_rate
+        streamdetails = self._start_streamdetails
+        sample_rate = self._pick_session_sample_rate(
+            streamdetails.audio_format.sample_rate if streamdetails else 0, member_rates
+        )
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_F32LE,
             sample_rate=sample_rate,
@@ -1419,6 +1437,18 @@ class SendspinPlaybackSession:
             sample_type="float",
         )
         return pcm_format, sendspin_pcm_format
+
+    def _pick_session_sample_rate(self, source_rate: int, member_rates: list[int]) -> int:
+        """
+        Return the session sample rate for a source rate and the rates the members play.
+
+        :param source_rate: The sample rate of the first item, 0 when unknown.
+        :param member_rates: The rates the members count with, see _get_member_sample_rate.
+        """
+        if not member_rates:
+            return _DEFAULT_PCM_FORMAT.sample_rate
+        source_rate = source_rate or self._get_member_sample_rate(self.player.protocol_id) or 0
+        return min(max(source_rate, min(member_rates)), max(member_rates))
 
     def _get_member_output_format(self, player_id: str) -> AudioFormat:
         """
@@ -1439,9 +1469,7 @@ class SendspinPlaybackSession:
         """
         if (output := self._get_member_preferred_format(player_id)) is None:
             return None
-        if output.content_type in (ContentType.OPUS, ContentType.MP3, ContentType.AAC):
-            return min(output.sample_rate, _LOSSY_MAX_SAMPLE_RATE)
-        return output.sample_rate
+        return _counted_sample_rate(output)
 
     def _get_member_preferred_format(self, player_id: str) -> AudioFormat | None:
         """
@@ -1457,18 +1485,7 @@ class SendspinPlaybackSession:
                     preferred_fmt = role.preferred_format
                     preferred_codec = role.preferred_codec
                     if preferred_fmt is not None and preferred_codec is not None:
-                        if preferred_codec == SendspinAudioCodec.FLAC:
-                            content_type = ContentType.FLAC
-                        elif preferred_codec == SendspinAudioCodec.OPUS:
-                            content_type = ContentType.OPUS
-                        else:
-                            content_type = ContentType.from_bit_depth(preferred_fmt.bit_depth)
-                        return AudioFormat(
-                            content_type=content_type,
-                            sample_rate=preferred_fmt.sample_rate,
-                            bit_depth=preferred_fmt.bit_depth,
-                            channels=preferred_fmt.channels,
-                        )
+                        return _to_audio_format(preferred_fmt, preferred_codec)
                 elif isinstance(role, BridgePlayerRole):
                     fmt = role.preferred_format
                     if fmt is not None:
@@ -1681,3 +1698,35 @@ class SendspinPlaybackSession:
         :param media: The media about to be played.
         """
         return media.media_type in _LIVE_MEDIA_TYPES
+
+
+def _to_audio_format(audio_format: SendspinAudioFormat, codec: SendspinAudioCodec) -> AudioFormat:
+    """
+    Return the MA AudioFormat of a Sendspin format in a codec.
+
+    :param audio_format: The Sendspin format.
+    :param codec: The codec of the format.
+    """
+    if codec == SendspinAudioCodec.FLAC:
+        content_type = ContentType.FLAC
+    elif codec == SendspinAudioCodec.OPUS:
+        content_type = ContentType.OPUS
+    else:
+        content_type = ContentType.from_bit_depth(audio_format.bit_depth)
+    return AudioFormat(
+        content_type=content_type,
+        sample_rate=audio_format.sample_rate,
+        bit_depth=audio_format.bit_depth,
+        channels=audio_format.channels,
+    )
+
+
+def _counted_sample_rate(output_format: AudioFormat) -> int:
+    """
+    Return the sample rate a member playing a format counts with for the session rate.
+
+    :param output_format: The format the member plays.
+    """
+    if output_format.content_type in (ContentType.OPUS, ContentType.MP3, ContentType.AAC):
+        return min(output_format.sample_rate, _LOSSY_MAX_SAMPLE_RATE)
+    return output_format.sample_rate

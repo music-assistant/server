@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     )
     from music_assistant_models.enums import RepeatMode
     from music_assistant_models.media_items import AudioFormat
+    from music_assistant_models.streamdetails import StreamDetails
 
     from .player import Player
     from .player_provider import PlayerProvider
@@ -790,6 +791,20 @@ class PlayerProtocol(ABC):
         :param media: The media a member was asked to play.
         :param pcm_format: The PCM format the member wants the audio in.
         :return: The audio, or None when the media is not that of such a shared stream.
+        """
+        return None
+
+    async def get_flow_sample_rate(self, streamdetails: StreamDetails) -> int | None:
+        """
+        Return the sample rate this protocol starts a flow stream at for an item.
+
+        Override in a protocol that picks the rate of its flow streams itself, such as a
+        group that serves several players with one stream. A flow stream that follows the
+        rate of its items restarts for an item this returns a higher rate for than the rate
+        the stream runs at.
+
+        :param streamdetails: Stream details of the item.
+        :return: The sample rate, or None to snap the item's rate to the supported rates.
         """
         return None
 

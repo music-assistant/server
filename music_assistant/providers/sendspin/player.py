@@ -1887,6 +1887,48 @@ class SendspinPlayer(SendspinBasePlayer):
             self._session_sample_rate = pcm_format.sample_rate
         await self._apply_preferred_format()
 
+    async def get_session_format(
+        self, start_streamdetails: StreamDetails
+    ) -> tuple[SendspinAudioFormat, AudioCodec] | None:
+        """
+        Return the Sendspin format and codec this player plays in a session starting with an item.
+
+        :param start_streamdetails: Stream details of the first item of the session.
+        :return: The format and codec, or None when the format of this player does not follow
+            the session: an explicitly configured format, or a client without a player role.
+        """
+        player_role = self._player_role
+        config_value = self.config.get_value(
+            CONF_PREFERRED_SENDSPIN_FORMAT, SENDSPIN_FORMAT_AUTOMATIC
+        )
+        if player_role is None or config_value != SENDSPIN_FORMAT_AUTOMATIC:
+            return None
+        pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
+            self, start_streamdetails=start_streamdetails
+        )
+        audio_format, codec = self._session_format(player_role, pcm_format.sample_rate)
+        if audio_format is not None and codec is not None:
+            return audio_format, codec
+        if not (formats := self._top_codec_formats(player_role)):
+            return None
+        default = formats[0]
+        return (
+            SendspinAudioFormat(
+                sample_rate=default.sample_rate,
+                bit_depth=default.bit_depth,
+                channels=default.channels,
+            ),
+            default.codec,
+        )
+
+    async def get_flow_sample_rate(self, streamdetails: StreamDetails) -> int:
+        """
+        Return the sample rate the Sendspin session of this player starts a flow at for an item.
+
+        :param streamdetails: Stream details of the item.
+        """
+        return await self.playback_session.get_session_sample_rate(streamdetails)
+
     async def on_group_content_takeover(self) -> object:
         """Clear the protocol snapshot before a new content owner joins."""
         async with self._metadata_lock:
@@ -2560,7 +2602,9 @@ class SendspinPlayer(SendspinBasePlayer):
         )
         if config_value == SENDSPIN_FORMAT_AUTOMATIC:
             # Automatic mode: follow the session sample rate, else let the client decide.
-            player_role.set_preferred_format(*self._session_format(player_role))
+            player_role.set_preferred_format(
+                *self._session_format(player_role, self._session_sample_rate)
+            )
             return
 
         parsed = option_value_to_format(config_value)
@@ -2582,20 +2626,21 @@ class SendspinPlayer(SendspinBasePlayer):
             )
 
     def _session_format(
-        self, player_role: PlayerRoleProtocol
+        self, player_role: PlayerRoleProtocol, session_sample_rate: int | None
     ) -> tuple[SendspinAudioFormat | None, AudioCodec | None]:
         """
-        Return the client's format for the session sample rate, or (None, None) for its default.
+        Return the client's format for a session sample rate, or (None, None) for its default.
 
         Only formats in the codec of the client's own top choice are considered.
 
         :param player_role: The player role of this client.
+        :param session_sample_rate: The sample rate the session follows, None for none.
         """
         formats = self._top_codec_formats(player_role)
-        if not formats or self._session_sample_rate in (None, formats[0].sample_rate):
+        if not formats or session_sample_rate in (None, formats[0].sample_rate):
             return None, None
         default = formats[0]
-        candidates = [fmt for fmt in formats if fmt.sample_rate == self._session_sample_rate]
+        candidates = [fmt for fmt in formats if fmt.sample_rate == session_sample_rate]
         if not candidates:
             return None, None
         best = max(candidates, key=lambda fmt: (fmt.channels == default.channels, fmt.bit_depth))
