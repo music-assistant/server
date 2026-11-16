@@ -301,13 +301,13 @@ async def test_next_track_starts_from_the_beginning() -> None:
 
 @pytest.mark.parametrize(
     ("start_position", "start_item", "seek_position"),
-    [(600, None, 599), (None, "2", 299)],
-    ids=["start position", "chapter"],
+    [(600, None, 599), (None, "2", 299), (None, None, 449)],
+    ids=["start position", "chapter", "newer provider progress"],
 )
-async def test_finished_audiobook_starts_at_the_picked_position(
+async def test_finished_audiobook_starts_at_its_fresh_resume_point(
     start_position: int | None, start_item: str | None, seek_position: int
 ) -> None:
-    """A finished audiobook played from a picked position or chapter starts there, not at 0:00."""
+    """A finished audiobook starts at a picked position, chapter or newer provider progress."""
     book = _book("book-a", resume_position_ms=119000, fully_played=True)
     media_item = cast("Audiobook", book.media_item)
     media_item.duration = book.duration = 1200
@@ -316,6 +316,8 @@ async def test_finished_audiobook_starts_at_the_picked_position(
         MediaItemChapter(position=2, name="2", start=300),
     ]
     controller, _ = _controller([book])
+    # re-listened part way in the provider's own app after it was finished in Music Assistant
+    controller.mass.music.get_resume_position = AsyncMock(return_value=(False, 450000))
     resolver = MediaResolver.__new__(MediaResolver)
     resolver.mass = controller.mass
     resolver.logger = MagicMock()
