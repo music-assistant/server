@@ -515,18 +515,41 @@ async def test_resolve_unversioned_track_rejects_versioned_recording_id() -> Non
         return_value=_track(
             item_id="live-recording",
             version="Live",
+            duration=218,
             external_ids={(ExternalID.ISRC, ISRC)},
         )
     )
 
     assert (
         await provider._resolve_media_item(
-            SharePayload(type="track", title="Track", artist="Artist", isrc=ISRC),
+            SharePayload(type="track", title="Track", artist="Artist", isrc=ISRC, duration=218),
             allow_search=False,
         )
         is None
     )
     mass.music.tracks.get.assert_not_called()
+
+
+async def test_resolve_unversioned_track_accepts_unversioned_recording_id() -> None:
+    """An unversioned share resolves an otherwise matching unversioned recording."""
+    provider = _provider()
+    mass = _mass(provider)
+    candidate = _track(item_id="recording", duration=218, external_ids={(ExternalID.ISRC, ISRC)})
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(
+        return_value=candidate
+    )
+    mass.music.tracks.get = AsyncMock(return_value=candidate)
+
+    assert (
+        await provider._resolve_media_item(
+            SharePayload(type="track", title="Track", artist="Artist", isrc=ISRC, duration=218),
+            allow_search=False,
+        )
+        is candidate
+    )
+    mass.music.tracks.get.assert_awaited_once_with(
+        "recording", "catalog--1", allow_update_metadata=False
+    )
 
 
 async def test_resolve_skips_id_match_when_full_track_details_are_unavailable() -> None:

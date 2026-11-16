@@ -173,6 +173,67 @@ async def test_item_share_info_uses_text_for_unsupported_mapping_urls() -> None:
     assert result.to_dict() == {"title": "Track", "text": "Track", "links": []}
 
 
+@pytest.mark.parametrize(
+    "config",
+    [
+        None,
+        {"type": "player", "domain": "spotify"},
+        {"type": "music", "domain": "tidal"},
+    ],
+    ids=["missing", "non-music", "different-domain"],
+)
+async def test_item_share_info_refuses_invalid_mapping_source(
+    config: dict[str, str] | None,
+) -> None:
+    """Mappings must belong to a configured music provider of the stated domain."""
+    provider = _provider()
+    mass = _mass(provider)
+    configs = {"spotify--1": config} if config is not None else {}
+    mass.config.get.side_effect = lambda key, default=None: (
+        configs if key == "providers" else configs.get(key.removeprefix("providers/"), default)
+    )
+    mass.music.get_item_by_uri = AsyncMock(
+        return_value=_track(
+            provider_mappings={
+                ProviderMapping(
+                    item_id="1",
+                    provider_domain="spotify",
+                    provider_instance="spotify--1",
+                    url="https://open.spotify.com/track/1",
+                )
+            }
+        )
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_item_share_info("library://track/1")
+
+
+async def test_item_share_info_includes_disabled_visible_source() -> None:
+    """A disabled music source remains visible when its access permits it."""
+    provider = _provider()
+    mass = _mass(provider)
+    configs = {"spotify--1": {"type": "music", "domain": "spotify", "enabled": False}}
+    mass.config.get.side_effect = lambda key, default=None: (
+        configs if key == "providers" else configs.get(key.removeprefix("providers/"), default)
+    )
+    mass.music.get_item_by_uri = AsyncMock(
+        return_value=_track(
+            provider_mappings={
+                ProviderMapping(
+                    item_id="1",
+                    provider_domain="spotify",
+                    provider_instance="spotify--1",
+                    url="https://open.spotify.com/track/1",
+                )
+            }
+        )
+    )
+
+    result = await provider.get_item_share_info("library://track/1")
+    assert [link.url for link in result.links] == ["https://open.spotify.com/track/1"]
+
+
 async def test_item_share_info_refuses_hidden_item_before_resolving() -> None:
     """The requested provider must be visible to the current user."""
     provider = _provider()

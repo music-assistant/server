@@ -26,11 +26,7 @@ from music_assistant_models.sharing import ItemShareInfo, ItemShareLink
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.playlists import PlaylistItem
-from music_assistant.helpers.provider_access import (
-    access_allows,
-    hidden_music_sources,
-    source_access,
-)
+from music_assistant.helpers.provider_access import hidden_music_sources
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.share_provider.links import (
@@ -144,7 +140,8 @@ class ShareProvider(PluginProvider):
         if provider_id == "builtin" or media_type not in SUPPORTED_SHARE_MEDIA_TYPES:
             raise InvalidDataError("This item cannot be shared")
         user = get_current_user()
-        if provider_id in hidden_music_sources(self.mass, user):
+        hidden_sources = hidden_music_sources(self.mass, user)
+        if provider_id in hidden_sources:
             raise MediaNotFoundError("Item not found")
         item = await self.mass.music.get_item_by_uri(uri)
         if isinstance(item, BrowseFolder) or item.media_type not in SUPPORTED_SHARE_MEDIA_TYPES:
@@ -165,7 +162,7 @@ class ShareProvider(PluginProvider):
             if (
                 config.get("domain") != mapping.provider_domain
                 or config.get("type") != ProviderType.MUSIC
-                or not access_allows(source_access(self.mass, mapping.provider_instance), user)
+                or mapping.provider_instance in hidden_sources
             ):
                 continue
             visible = True
