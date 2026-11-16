@@ -443,7 +443,7 @@ class SendspinChromecastBridge:
             on_fatal_audio_error=self._on_cast_fatal_audio_error,
             on_cast_connected=self._on_cast_connected,
         )
-        self.cast_player.cc.register_handler(self._log_controller)
+        self.cast_player.register_client_handler(self._log_controller)
 
         self._cast_app_was_active = self.cast_player.cc.app_id == SENDSPIN_CAST_APP_ID
         self.cast_player.on_app_status_changed = self.on_cast_status_changed
@@ -464,7 +464,7 @@ class SendspinChromecastBridge:
         self._cast_app_ready = None
 
         if self._log_controller is not None:
-            self.cast_player.cc.unregister_handler(self._log_controller)
+            self.cast_player.unregister_client_handler(self._log_controller)
             self._log_controller = None
 
         if self._launch_task and not self._launch_task.done():
@@ -826,7 +826,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         super().__init__(provider)
         self._rebridge_unsubs: dict[str, Callable[[], None]] = {}
         self._claimed_clients: dict[str, str] = {}
-        self._blocklist_log_state: dict[str, tuple[str, str]] = {}
+        self._skip_log_state: dict[str, tuple[str, ...]] = {}
         self._pending_bridge_evaluations: set[str] = set()
         self._unsubs.append(
             self.mass.players.subscribe_player_state_update(self._on_player_state_updated)
@@ -905,7 +905,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                 unsub()
         self._rebridge_unsubs.clear()
         self._claimed_clients.clear()
-        self._blocklist_log_state.clear()
+        self._skip_log_state.clear()
         self._pending_bridge_evaluations.clear()
         await super().close()
 
@@ -959,22 +959,29 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
 
         if self.mass.config.get_protocol_value(cast_player.protocol_id, CONF_SENDSPIN_UNSUPPORTED):
             # the receiver told us it cannot run the Sendspin client, so do not offer it
+            if self._skip_log_state.get(cast_player.protocol_id) != ("unsupported",):
+                self.logger.info(
+                    "Skipping Sendspin Cast bridge for %s — device reported it cannot run "
+                    "Sendspin (AudioContext not available); remove the player to retry",
+                    cast_player.display_name,
+                )
+                self._skip_log_state[cast_player.protocol_id] = ("unsupported",)
             return False
 
         manufacturer = cast_player.device_info.manufacturer or ""
         model = cast_player.device_info.model or ""
         if is_sendspin_cast_blocked(manufacturer, model):
             blocklist_state = (manufacturer, model)
-            if self._blocklist_log_state.get(cast_player.protocol_id) != blocklist_state:
+            if self._skip_log_state.get(cast_player.protocol_id) != blocklist_state:
                 self.logger.debug(
                     "Skipping Sendspin Cast bridge for %s (%s / %s) — device is blocklisted",
                     cast_player.display_name,
                     manufacturer,
                     model,
                 )
-                self._blocklist_log_state[cast_player.protocol_id] = blocklist_state
+                self._skip_log_state[cast_player.protocol_id] = blocklist_state
             return False
-        self._blocklist_log_state.pop(cast_player.protocol_id, None)
+        self._skip_log_state.pop(cast_player.protocol_id, None)
 
         # Prefer the airplay bridge over the cast bridge: the Cast receiver
         # pipeline is fragile on many (especially 3rd-party) devices. Deny the
@@ -1184,6 +1191,9 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                 client_id,
             )
             await self.mass.config.save_protocol_config(client_id, {CONF_ENABLED: False})
+            if not self.mass.config.get_protocol_record(client_id):
+                # the bridge was removed permanently during the save
+                return
         # written last: a missing note is what makes the next evaluation retry all of this
         self.mass.config.set_protocol_value(
             client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE, SENDSPIN_CAST_EXPERIMENTAL_NOTE

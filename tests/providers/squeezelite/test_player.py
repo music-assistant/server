@@ -152,6 +152,35 @@ async def test_play_url_mime_type_follows_the_url_extension(url: str, expected: 
     assert slimplayer.play_url.call_args.kwargs["mime_type"] == expected
 
 
+@pytest.mark.parametrize(
+    ("url", "duration"),
+    [
+        ("http://127.0.0.1:8097/single/s1/queue_1/q2/p1.flac", 4),
+        ("http://127.0.0.1:8097/flow/s1/queue_1/q2/p1.flac", 198),
+    ],
+    ids=["single_item", "flow"],
+)
+async def test_only_a_single_item_stream_gets_the_seconds_left_after_a_seek(
+    url: str, duration: int
+) -> None:
+    """A flow stream carries on into the next track."""
+    player, mass = _player_with_mocked_mass()
+    mass.player_queues.get.return_value = None
+    player.client = slimplayer = MagicMock()
+    slimplayer.play_url = AsyncMock()
+    media = PlayerMedia(
+        uri="fake://x",
+        media_type=MediaType.TRACK,
+        source_id="queue_1",
+        duration=198,
+        stream_duration=4,
+    )
+
+    await player._handle_play_url_for_slimplayer(url=url, media=media)
+
+    assert slimplayer.play_url.call_args.kwargs["metadata"]["duration"] == duration
+
+
 async def test_play_media_resets_elapsed_anchor() -> None:
     """A new stream does not carry the previous stream's position."""
     player, mass = _player_with_mocked_mass()

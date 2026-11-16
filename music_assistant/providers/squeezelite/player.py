@@ -27,6 +27,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.audio import get_mime_type
+from music_assistant.helpers.player import served_duration
 from music_assistant.models.player import DeviceInfo, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_state import POSITION_JUMP_THRESHOLD
@@ -364,7 +365,7 @@ class SqueezelitePlayer(PlayerProtocol):
                 "album": media.album,
                 "artist": media.artist,
                 "image_url": media.image_url,
-                "duration": media.stream_duration or media.duration,
+                "duration": served_duration(media, url),
                 "source_id": media.source_id,
                 "queue_item_id": media.queue_item_id,
             },

@@ -14,6 +14,7 @@ import pytest
 from music_assistant_models.enums import IdentifierType
 
 from music_assistant.constants import (
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
     CONF_PLAYER_DSP,
     CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
@@ -1311,7 +1312,8 @@ async def test_new_installation_gets_no_backup(tmp_path: Path) -> None:
 
     await controller._load()
 
-    assert controller._data == FLAGS
+    # and with the AirPlay sync adjust on its current sign
+    assert controller._data == {**FLAGS, CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: True}
     assert list(tmp_path.iterdir()) == []
 
 

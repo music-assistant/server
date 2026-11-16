@@ -263,7 +263,7 @@
     },
     "sync_adjust": {
       "label": "Audio synchronization delay correction",
-      "description": "If this player is playing audio synced with other players and you always hear the audio too early or late on this player, you can shift the audio a bit."
+      "description": "If this player is playing audio synced with other players and you always hear the audio too early or late on this player, you can shift the audio a bit. \nPositive values make this player play earlier; negative values make it play later. \nExample: enter the extra delay of an amplifier or TV connected to this player, in milliseconds, so it plays that much earlier."
     },
     "tts_pre_announce": {
       "label": "Pre-announce TTS announcements",

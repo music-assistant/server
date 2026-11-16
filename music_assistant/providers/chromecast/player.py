@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
@@ -29,10 +31,12 @@ from pychromecast.controllers.media import (
     STREAM_TYPE_LIVE,
 )
 from pychromecast.controllers.multizone import MultizoneController
+from pychromecast.dial import get_host_from_service
 from pychromecast.error import PyChromecastError
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.player import served_duration
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -49,6 +53,7 @@ from .constants import (
     CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
     CONF_USE_MASS_APP,
     DASHBOARD_KEEPALIVE_SUFFIXES,
+    DEVICE_CHECK_TIMEOUT,
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
 )
@@ -62,11 +67,34 @@ from .receiver_commands import MassCastCommandController
 
 if TYPE_CHECKING:
     from pychromecast import Chromecast
+    from pychromecast.controllers import BaseController
     from pychromecast.controllers.media import MediaStatus
     from pychromecast.controllers.receiver import CastStatus
-    from pychromecast.socket_client import ConnectionStatus
+    from pychromecast.socket_client import ConnectionStatus, SocketClient
 
     from .provider import ChromecastProvider
+
+# takes what a client that is stopped on purpose still logs
+_STOPPED_CLIENT_LOGGER = logging.getLogger(f"{__name__}.stopped_client")
+_STOPPED_CLIENT_LOGGER.disabled = True
+
+
+async def _port_answers(host: str, port: int) -> bool:
+    """
+    Return whether a port accepts a connection within DEVICE_CHECK_TIMEOUT.
+
+    :param host: The host to connect to.
+    :param port: The port to connect to.
+    """
+    try:
+        async with asyncio.timeout(DEVICE_CHECK_TIMEOUT):
+            _, writer = await asyncio.open_connection(host, port)
+    except OSError, TimeoutError:
+        return False
+    writer.close()
+    with suppress(OSError):
+        await writer.wait_closed()
+    return True
 
 
 class ChromecastPlayer(PlayerProtocol):
@@ -115,6 +143,8 @@ class ChromecastPlayer(PlayerProtocol):
         self._media_error_reported = False
         # a volume set while idle, kept back until playback starts (see volume_set)
         self._pending_volume: int | None = None
+        # controllers registered with register_client_handler
+        self._client_handlers: list[BaseController] = []
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -315,23 +345,11 @@ class ChromecastPlayer(PlayerProtocol):
 
         :param player: The player the protocol is attached to.
         """
-        provider = cast("ChromecastProvider", self.provider)
-        assert provider.mz_mgr is not None  # for type checking
-        self.cc = pychromecast.get_chromecast_from_cast_info(
-            self.cast_info.to_cast_info(), self.mass.discovery.aiozc.zeroconf
-        )
-        self.status_listener = CastStatusListener(self, provider.mz_mgr)
-        # the groups it is a member of may have changed while it was detached
-        self.update_active_cast_group()
-        if self.type == PlayerType.GROUP:
-            self.mz_controller = MultizoneController(self.cast_info.uuid)
-            self.cc.register_handler(self.mz_controller)
-        self.command_controller = MassCastCommandController(self._handle_receiver_command)
-        self.cc.register_handler(self.command_controller)
         # started without an await, so a detach never finds the client half set up
-        self.cc.start()
+        self._start_client()
         # not awaited: claiming the Sendspin client of the receiver app attaches that
         # client, which waits for this attach to finish
+        provider = cast("ChromecastProvider", self.provider)
         self._bridge_task = self.mass.create_task(
             provider.bridge_manager.evaluate_bridge(self), eager_start=False
         )
@@ -367,6 +385,46 @@ class ChromecastPlayer(PlayerProtocol):
             disconnect_cast(self.cc, 0)
         else:
             await asyncio.to_thread(disconnect_cast, self.cc, 10)
+
+    async def check_device(self) -> bool | None:
+        """
+        Probe a device whose client is not connected, and connect anew at once when it answers.
+
+        None for a connected client, whose own heartbeat tells when the device is gone, and for
+        a cast group, which is no device of its own.
+        """
+        if self.cast_info.is_audio_group or (listener := self.status_listener) is None:
+            return None
+        socket_client = self.cc.socket_client
+        if socket_client.is_connected:
+            return None
+        answers = await self._services_answer(socket_client)
+        if self.player is None or self.status_listener is not listener:
+            # detached, or connected with another client, meanwhile
+            return answers
+        if answers and not socket_client.is_connected:
+            # a client that finished its own connect just now costs one more connect, no more
+            self._replace_client()
+        return answers
+
+    def register_client_handler(self, handler: BaseController) -> None:
+        """
+        Register a controller on the client of the device, and on every client that replaces it.
+
+        :param handler: The controller to register.
+        """
+        self._client_handlers.append(handler)
+        self.cc.register_handler(handler)
+
+    def unregister_client_handler(self, handler: BaseController) -> None:
+        """
+        Unregister a controller registered with register_client_handler.
+
+        :param handler: The controller to unregister.
+        """
+        if handler in self._client_handlers:
+            self._client_handlers.remove(handler)
+        self.cc.unregister_handler(handler)
 
     async def on_remove(self) -> None:
         """Handle logic when the player is removed for good."""
@@ -963,6 +1021,55 @@ class ChromecastPlayer(PlayerProtocol):
                 # Poll current group status
                 self.update_active_cast_group()
 
+    def _start_client(self) -> None:
+        """Create and start the client of the device, and follow its status."""
+        provider = cast("ChromecastProvider", self.provider)
+        assert provider.mz_mgr is not None  # for type checking
+        self.cc = pychromecast.get_chromecast_from_cast_info(
+            self.cast_info.to_cast_info(), self.mass.discovery.aiozc.zeroconf
+        )
+        self.status_listener = CastStatusListener(self, provider.mz_mgr)
+        # the groups it is a member of may have changed while it was detached
+        self.update_active_cast_group()
+        if self.type == PlayerType.GROUP:
+            self.mz_controller = MultizoneController(self.cast_info.uuid)
+            self.cc.register_handler(self.mz_controller)
+        self.command_controller = MassCastCommandController(self._handle_receiver_command)
+        self.cc.register_handler(self.command_controller)
+        for handler in self._client_handlers:
+            self.cc.register_handler(handler)
+        self.cc.start()
+
+    def _replace_client(self) -> None:
+        """Stop the client of the device and start a new one, which connects at once."""
+        old_client = self.cc
+        if self.status_listener is not None:
+            self.status_listener.invalidate()
+        # off the old client before it stops, which would tear its controllers down
+        for handler in (self.mz_controller, self.command_controller, *self._client_handlers):
+            if handler is not None:
+                old_client.unregister_handler(handler)
+        # its worker logs the end of a connect that was stopped as an error
+        old_client.socket_client.logger.logger = _STOPPED_CLIENT_LOGGER
+        disconnect_cast(old_client, 0)
+        self._start_client()
+
+    async def _services_answer(self, socket_client: SocketClient) -> bool:
+        """
+        Return whether the device accepts a connection at one of the services its client tries.
+
+        :param socket_client: The socket client of the device.
+        """
+        # resolved as the client resolves them itself
+        resolved = await asyncio.gather(
+            *(
+                asyncio.to_thread(get_host_from_service, service, socket_client.zconf)
+                for service in socket_client.services.copy()
+            )
+        )
+        endpoints = {(host, port) for host, port, _ in resolved if host and port}
+        return any(await asyncio.gather(*(_port_answers(*endpoint) for endpoint in endpoints)))
+
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""
         # Always use LIVE stream type because MA streams are real-time encoded by FFmpeg,
@@ -986,7 +1093,7 @@ class ChromecastPlayer(PlayerProtocol):
             "contentType": f"audio/{file_ext}",
             "streamType": stream_type,
             "metadata": metadata,
-            "duration": media.stream_duration or media.duration,
+            "duration": served_duration(media, stream_url),
         }
 
     def _handle_receiver_command(self, command: str) -> None:

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 from collections import deque
+from contextlib import suppress
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -98,10 +99,10 @@ START_TIMEOUT_SECONDS: float = 10.0
 
 # Lead and buffer (ms) reported to Sendspin. The lead is how long before its audible
 # instant the first chunk of a stream arrives: it has to cover a cold start, which is the
-# flush, the stream request with its HTTP connect, the preroll that fills the player to
-# its threshold and a start MIN_START_AHEAD_US ahead, plus what the player is known to
-# start late. The buffer is what Sendspin keeps the bridge supplied with during the
-# stream: the stream lead and a margin.
+# mapping of the player's clock, the flush, the stream request with its HTTP connect, the
+# preroll that fills the player to its threshold and a start MIN_START_AHEAD_US ahead,
+# plus what the player is known to start late. The buffer is what Sendspin keeps the
+# bridge supplied with during the stream: the stream lead and a margin.
 BRIDGE_REQUIRED_LEAD_MS: int = 2000
 BRIDGE_MIN_BUFFER_MS: int = 2000
 
@@ -117,6 +118,10 @@ STATUS_TOKEN_BIT: int = 1 << 31
 # A mapping of the player's clock that got no reply for this long is learned again: the
 # clocks drift apart, by a millisecond in ten seconds at 100 ppm.
 CLOCK_MAX_AGE_US: int = 10_000_000
+# A session waits this long (seconds) for the mapping of the player's clock before it
+# requests its stream. A player answers late while it sets a stream up, and a mapping
+# learned from those replies is off by half of what they took.
+CLOCK_TIMEOUT_SECONDS: float = 0.5
 
 # The writer hands the player what it is allowed this often (seconds), at most this
 # much audio at a time.
@@ -220,6 +225,8 @@ class BridgeSession:
         self.command_us = 0
         self.loop: SyncLoop | None = None
         self.start_decided = asyncio.Event()
+        # the clock of the player is mapped: its stream can be requested
+        self.clock_mapped = asyncio.Event()
         # the stream was requested from the player, which answers for it from then on
         self.stream_requested = False
         # the player fetched the stream, got its preroll and reported its buffer ready
@@ -764,6 +771,8 @@ class SendspinSqueezeliteBridge:
         if audio_format is None:
             audio_format = self._role_format()
         self._session = session = BridgeSession(audio_format, shift_us, chunks)
+        if self._player_clock.to_jiffies(self._clock.now_us()) is not None:
+            session.clock_mapped.set()
         self.logger.debug(
             "Sendspin stream on %s is %d Hz / %d bit",
             self.protocol.display_name,
@@ -812,6 +821,10 @@ class SendspinSqueezeliteBridge:
 
     async def _start_session(self, session: BridgeSession) -> None:
         """Put the stream of a session on the player and start it at its instant."""
+        # the replies of a player that sets a stream up are no good to learn its clock from
+        with suppress(TimeoutError):
+            async with asyncio.timeout(CLOCK_TIMEOUT_SECONDS):
+                await session.clock_mapped.wait()
         try:
             self.protocol.release_native_playback()
             url = (
@@ -939,11 +952,19 @@ class SendspinSqueezeliteBridge:
                 if token == status.server_timestamp:
                     break
             self._clock_sampled_us = round(status.received * 1_000_000)
+            generation = self._player_clock.generation
             self._player_clock.add_sample(status.jiffies, sent_us, self._clock_sampled_us)
+            if self._player_clock.generation != generation:
+                self.logger.debug(
+                    "The clock of %s jumped: its mapping starts over",
+                    self.protocol.display_name,
+                )
         session = self._session
         if session is None or session.ended:
             return
         if (loop := session.loop) is None:
+            if self._player_clock.to_jiffies(self._clock.now_us()) is not None:
+                session.clock_mapped.set()
             self._decide_start(session)
             return
         if (server_us := self._player_clock.to_server_us(status.jiffies)) is None:
