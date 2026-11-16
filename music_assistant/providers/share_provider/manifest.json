@@ -6,7 +6,6 @@
   "icon": "share-variant",
   "description": "Generate and resolve provider-agnostic share links for tracks, albums and artists.",
   "codeowners": ["@dmoo500"],
-  "tier": "community",
   "documentation": "https://music-assistant.io/plugins/share-links/",
   "requirements": []
 }

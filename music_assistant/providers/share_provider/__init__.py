@@ -18,15 +18,25 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, ExternalID, MediaType
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.enums import ConfigEntryType, ExternalID, MediaType, ProviderType
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import Album, BrowseFolder, Track
+from music_assistant_models.sharing import ItemShareInfo, ItemShareLink
 
+from music_assistant.constants import CONF_PROVIDERS
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.playlists import PlaylistItem
+from music_assistant.helpers.provider_access import (
+    access_allows,
+    hidden_music_sources,
+    source_access,
+)
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.share_provider.links import (
     build_provider_links,
     is_valid_artwork_url,
+    is_valid_provider_link,
 )
 from music_assistant.providers.share_provider.payload import (
     SUPPORTED_SHARE_MEDIA_TYPES,
@@ -89,6 +99,11 @@ class ShareProvider(PluginProvider):
                     required_scope=Scope.LIBRARY_READ,
                 )
             )
+            self._unregister_api_commands.append(
+                self.mass.register_api_command(
+                    "share/item", self.get_item_share_info, required_scope=Scope.LIBRARY_READ
+                )
+            )
         except Exception:
             await self.unload()
             raise
@@ -116,6 +131,61 @@ class ShareProvider(PluginProvider):
             raise InvalidDataError(str(err)) from err
         base_url = self.config.get_value(CONF_SHARE_BASE_URL) or DEFAULT_SHARE_BASE_URL
         return f"{base_url}/#{encoded_payload}"
+
+    async def get_item_share_info(self, uri: str) -> ItemShareInfo:
+        """
+        Return provider links or a text fallback for a music item.
+
+        :param uri: The MA item URI.
+        """
+        if not isinstance(uri, str) or "://" not in uri:
+            raise InvalidDataError("Sharing requires a Music Assistant item URI")
+        media_type, provider_id, _ = await parse_uri(uri)
+        if provider_id == "builtin" or media_type not in SUPPORTED_SHARE_MEDIA_TYPES:
+            raise InvalidDataError("This item cannot be shared")
+        user = get_current_user()
+        if provider_id in hidden_music_sources(self.mass, user):
+            raise MediaNotFoundError("Item not found")
+        item = await self.mass.music.get_item_by_uri(uri)
+        if isinstance(item, BrowseFolder) or item.media_type not in SUPPORTED_SHARE_MEDIA_TYPES:
+            raise InvalidDataError("This item cannot be shared")
+        mappings = sorted(
+            item.provider_mappings,
+            key=lambda mapping: (
+                mapping.provider_domain,
+                mapping.provider_instance,
+                mapping.item_id,
+            ),
+        )
+        links: list[ItemShareLink] = []
+        seen: set[str] = set()
+        visible = False
+        for mapping in mappings:
+            config = self.mass.config.get(f"{CONF_PROVIDERS}/{mapping.provider_instance}", {})
+            if (
+                config.get("domain") != mapping.provider_domain
+                or config.get("type") != ProviderType.MUSIC
+                or not access_allows(source_access(self.mass, mapping.provider_instance), user)
+            ):
+                continue
+            visible = True
+            if (
+                isinstance(mapping.url, str)
+                and mapping.url not in seen
+                and is_valid_provider_link(mapping.provider_domain, mapping.url)
+            ):
+                links.append(
+                    ItemShareLink(
+                        provider_domain=mapping.provider_domain,
+                        provider_instance=mapping.provider_instance,
+                        url=mapping.url,
+                    )
+                )
+                seen.add(mapping.url)
+        if not visible:
+            raise MediaNotFoundError("Item not found")
+        text = None if links else item.name
+        return ItemShareInfo(title=item.name, text=text, links=links)
 
     async def resolve_share_link(
         self, encoded: str, allow_search: bool = True

@@ -37,6 +37,12 @@ The default share-page address is `https://app.music-assistant.io/share`.
 The plugin's base URL setting can point to another deployment of the share page;
 enter it without a trailing slash.
 
+The authenticated `share/item` API returns an `ItemShareInfo` with provider links
+from the user's visible music sources, or the item title as text when no supported
+link is available. It supports tracks, albums and artists and is available only
+while the Share Links plugin is loaded. It uses the same provider URL validation
+as share links and does not construct links from provider IDs.
+
 The link format is `/#1<base64url>`, where `1` identifies the format and the
 unpadded Base64url value contains raw-DEFLATE-compressed UTF-8 JSON. Both the
 encoded payload (including the prefix) and the decompressed JSON have a 65,536
