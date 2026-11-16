@@ -405,6 +405,100 @@ async def test_a_speaker_whose_own_protocol_only_controls_is_there_while_its_ren
     await _stop(scenario, player_id)
 
 
+@pytest.mark.parametrize("native", ["squeezelite", "sonos"])
+async def test_a_speaker_whose_own_protocol_is_detached_waits_for_it_whatever_its_receiver_reads(
+    scenario: Scenario, native: str
+) -> None:
+    """
+    A speaker whose provider detaches its own protocol is switched off until that one is back.
+
+    Den has its own protocol and an AirPlay receiver, and is on a smart plug that is cut. The
+    provider of its own protocol detaches it when the device goes, as Squeezelite does, instead
+    of letting it read unavailable, while its AirPlay receiver never noticed the cut. The player
+    shows as available and powered off. A play switches the plug on and waits, and so does a
+    new play after a stop called the first one off. Nothing is sent to the device, and Den
+    plays through its own protocol once that is attached again.
+    """
+    (den, den_airplay), plug, player_id = await _den(
+        scenario, (native, "native"), ("airplay", "audio")
+    )
+    await _cut(scenario, plug)
+    await scenario.unregister(den)
+    await scenario.idle()
+    state = _state(scenario, player_id)
+    assert (state.available, state.powered) == (True, False)
+
+    play = await _play(scenario, player_id)
+
+    assert not play.done(), play.exception()
+    assert plug.commands == [True]
+    await _stop(scenario, player_id)
+    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+        await play
+    play = await _play(scenario, player_id)
+    assert not play.done(), play.exception()
+    await scenario.advance(10)
+    assert not play.done(), play.exception()
+    assert den.commands == den_airplay.commands == []
+    await scenario.register(den)
+    await scenario.advance(1)
+    await play
+    await scenario.idle()
+
+    assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
+    assert (_starts(den), _starts(den_airplay)) == (1, 0)
+    assert plug.commands == [True]
+    await _stop(scenario, player_id)
+
+
+@pytest.mark.parametrize(
+    "away", ["its provider is disabled", "its provider is not loaded", "it is switched off"]
+)
+async def test_a_speaker_whose_own_protocol_can_not_come_back_is_told_for_by_its_receiver(
+    scenario: Scenario, away: str
+) -> None:
+    """
+    A speaker whose own protocol can not come back is there while its receiver reaches it.
+
+    Den has its Squeezelite protocol and an AirPlay receiver, and is on a smart plug. The user
+    disabled the Squeezelite provider, or it is not loaded (as after a failed load), or the user
+    switched the Squeezelite protocol off as an output of Den. Den then plays through its
+    receiver, which tells whether Den is there, as for a speaker of receivers alone: with the
+    plug on, a play starts at once; with the plug cut and the receiver no longer reaching Den, a
+    play switches the plug on, waits, and plays once the receiver is back.
+    """
+    (den, den_airplay), plug, player_id = await _den(
+        scenario, ("squeezelite", "native"), ("airplay", "audio")
+    )
+    squeezelite = scenario.provider("squeezelite")
+    if away == "its provider is disabled":
+        await scenario.mass.config.save_provider_config(
+            "squeezelite", {"enabled": False}, instance_id=squeezelite.instance_id
+        )
+    elif away == "its provider is not loaded":
+        await scenario.mass.unload_provider(squeezelite.instance_id)
+    else:
+        await scenario.mass.config.save_protocol_config(den.protocol_id, {"enabled": False})
+    await scenario.idle()
+    assert scenario.player_of(den) is None
+
+    await scenario.play(player_id)
+
+    assert _starts(den_airplay) == 1
+    await _stop(scenario, player_id)
+    await _cut(scenario, plug, den_airplay)
+    play = await _play(scenario, player_id)
+    assert not play.done(), play.exception()
+    await _reach(scenario, den_airplay)
+    await play
+    await scenario.idle()
+
+    assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
+    assert (_starts(den), _starts(den_airplay)) == (0, 2)
+    assert plug.commands == [True]
+    await _stop(scenario, player_id)
+
+
 async def test_a_speaker_whose_plug_is_cut_is_checked_and_waited_for(scenario: Scenario) -> None:
     """
     A speaker whose plug is cut is checked, and a play waits for its device.

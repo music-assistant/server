@@ -431,6 +431,30 @@ protocol once that is back, as a group does for such a member (GROUP-33).
   - `test_power_control.py::test_a_play_after_a_stop_waits_again_for_a_speaker_that_still_boots`
   - `test_power_control.py::test_a_source_selected_after_a_stop_waits_again_for_a_speaker_that_still_boots`
 
+### AWAY-25 · A speaker whose own protocol is detached is off until that protocol is back
+
+The Den speaker has its own protocol (Squeezelite, or Sonos) and an AirPlay receiver, and is on a
+smart plug that is cut. The provider of its own protocol takes it off the player when the device
+goes, as Squeezelite does, while its AirPlay receiver never noticed the cut. The player shows as
+available and powered off. Play switches the plug on and waits, and so does a new play after a
+stop. Nothing is sent to the device, and Den plays through its own protocol once that is back.
+
+- End-to-end: **possible with** a power control the lab can switch and a Squeezelite player behind
+  it that is also an AirPlay receiver.
+- Proven by: `test_power_control.py::test_a_speaker_whose_own_protocol_is_detached_waits_for_it_whatever_its_receiver_reads`
+
+### AWAY-26 · A speaker whose own protocol can not come back is told for by its receiver
+
+As in AWAY-25, but the user disabled the Squeezelite provider, or it is not loaded (as after a
+failed load), or the user switched the Squeezelite protocol of Den off. Den plays through its
+AirPlay receiver, which then tells whether Den is there, as in AWAY-16: with the plug on, play
+starts at once; with the plug cut and the receiver no longer reaching Den, play switches the plug
+on, waits, and plays once the receiver is back.
+
+- End-to-end: **possible with** a power control the lab can switch and a Squeezelite player behind
+  it that is also an AirPlay receiver.
+- Proven by: `test_power_control.py::test_a_speaker_whose_own_protocol_can_not_come_back_is_told_for_by_its_receiver`
+
 ## Several devices on one host
 
 One host, such as a Raspberry Pi, can run several players behind one MAC and one IP address.

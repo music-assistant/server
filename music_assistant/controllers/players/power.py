@@ -802,8 +802,7 @@ class PowerMixin(_PlayerControllerBase):
 
         :param player: The player to check.
         """
-        device = player.device_protocol
-        return player.available_for_playback and device is not None and device.available
+        return player.available_for_playback and player.device_available
 
     def _cancel_power_on(self, player: Player) -> None:
         """

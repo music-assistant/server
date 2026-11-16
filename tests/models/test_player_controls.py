@@ -407,6 +407,57 @@ class TestOfflineByPowerControl:
         assert player.available_for_playback is False
         assert player.available is True
 
+    @pytest.mark.parametrize(
+        ("provider_loaded", "switched_on", "offline"),
+        [(True, True, True), (False, True, False), (True, False, False)],
+        ids=["can_come_back", "provider_not_loaded", "switched_off"],
+    )
+    def test_a_detached_native_protocol_counts_as_not_there_while_it_can_come_back(
+        self, mock_mass: MagicMock, provider_loaded: bool, switched_on: bool, offline: bool
+    ) -> None:
+        """
+        A device whose native protocol is detached is switched off, whatever a receiver reads.
+
+        Unless that protocol can not come back: its provider is not loaded, or the user
+        switched it off. The receiver then tells for the device.
+        """
+        self._smart_plug(mock_mass, power_state=False)
+        native_provider = MockProvider("squeezelite", mass=mock_mass)
+        player, native = attach_mock(native_provider, "squeezelite_1")
+        _, airplay = attach_mock(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_1",
+            role=ProtocolRole.AUDIO,
+            player=player,
+        )
+        mock_mass.config.get_protocol_record = MagicMock(
+            side_effect=lambda protocol_id: (
+                {"role": "native", "provider": native_provider.instance_id}
+                if protocol_id == native.protocol_id
+                else None
+            )
+        )
+        mock_mass.config.is_protocol_switched_on = MagicMock(return_value=switched_on)
+        mock_mass.get_provider = MagicMock(
+            side_effect=lambda instance_id: (
+                native_provider
+                if provider_loaded and instance_id == native_provider.instance_id
+                else None
+            )
+        )
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        assert player.offline_by_power_control is False
+
+        player.remove_protocol(native.protocol_id)
+        player.refresh_state(signal_event=False)
+
+        assert player.device_protocol is airplay
+        assert player.device_available is not offline
+        assert player.offline_by_power_control is offline
+        assert player.available_for_playback is not offline
+        assert player.available is True
+
     def test_group_players_are_left_out(self, mock_mass: MagicMock) -> None:
         """A group player keeps reporting its own availability."""
         player = self._offline_player(mock_mass, power_state=False, player_type=PlayerType.GROUP)

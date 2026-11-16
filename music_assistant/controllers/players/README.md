@@ -599,7 +599,11 @@ protocol that reports for it, its `device_protocol`: the player is switched off 
 no longer reaches the device while the control is off, and it is back once that protocol reaches
 it again. What its other protocols read does not count: an AirPlay receiver can read available
 for minutes after the power was cut. A device protocol that only controls needs an audio protocol
-that reaches the device next to it.
+that reaches the device next to it. Some providers detach their protocol when its device goes
+instead of letting it read unavailable (Squeezelite, Raumfeld, a Sendspin client after its grace):
+while a native protocol of the player is detached and can come back (its provider is loaded and
+the user has it switched on), the device is not there either (`device_available`). One that can
+not come back leaves it to the other protocols, as for a player without a protocol of its own.
 
 A protocol notices a power cut at its own pace, some only minutes later. So a few seconds after
 the control reports off (`DEVICE_CHECK_DELAY`), the device protocol is asked to check its device

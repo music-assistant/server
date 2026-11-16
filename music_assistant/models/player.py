@@ -951,6 +951,18 @@ class Player:
         """
         return self._own_protocol or (self._audio_protocols[0] if self._audio_protocols else None)
 
+    @property
+    def device_available(self) -> bool:
+        """
+        Return whether the protocol that reports for the device reaches it (see device_protocol).
+
+        False while a native protocol of the player is detached and can come back (its provider
+        is loaded and the user has it switched on): the device then counts as not there,
+        whatever another protocol reads.
+        """
+        device = self.device_protocol
+        return device is not None and device.available and not self._native_protocol_detached()
+
     def get_role(self, protocol_id: str) -> ProtocolRole | None:
         """
         Return the role a protocol is attached to the player in, None when it is not attached.
@@ -2108,16 +2120,30 @@ class Player:
 
         :param reachable: Whether a protocol that renders audio reaches the device.
         """
-        device = self.device_protocol
         # the device is there while the protocol that reports for it reaches it, and
         # there is something to play on
-        is_there = reachable and device is not None and device.available
+        is_there = reachable and self.device_available
         if is_there or self.reported_type == PlayerType.GROUP:
             return False
         control = self.mass.players.get_player_control(self._power_control)
         if control is None or not control.supports_power:
             return False
         return not control.power_state or self._power_on_in_progress
+
+    def _native_protocol_detached(self) -> bool:
+        """Return whether a native protocol of the player is detached while it can come back."""
+        own = self._own_protocol
+        if own is not None and self._roles[own.protocol_id] == ProtocolRole.NATIVE:
+            return False
+        for protocol_id in self._protocol_ids - self._protocols.keys():
+            stored = self.mass.config.get_protocol_record(protocol_id) or {}
+            if (
+                stored.get("role") == ProtocolRole.NATIVE
+                and self.mass.config.is_protocol_switched_on(protocol_id)
+                and self.mass.get_provider(str(stored.get("provider"))) is not None
+            ):
+                return True
+        return False
 
     def _missing_provider_reason(self) -> str | None:
         """Return why the player has no protocol at all, when its provider is not installed."""
