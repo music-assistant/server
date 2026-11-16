@@ -313,7 +313,6 @@
     }
   },
   "errors": {
-    "play_request_timeout": "Loading what you asked to play took longer than {0} seconds and was cancelled.",
-    "queue_holds_tracks_not_looked_up": "This queue holds tracks that have not been looked up on a music service yet. They can be saved once they have played."
+    "play_request_timeout": "Loading what you asked to play took longer than {0} seconds and was cancelled."
   }
 }

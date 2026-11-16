@@ -323,7 +323,7 @@ class TestLiveProgrammeStreamDetails:
         programme_id = LiveProgrammeId("bbc_radio_one", "m0031hzl", now - 7200, now - 60)
         on_demand = Mock(spec=StreamDetails)
         catch_up = AsyncMock(return_value=on_demand)
-        monkeypatch.setattr(provider, "_catch_up_stream_details", catch_up)
+        monkeypatch.setattr(provider.stream_manager, "_catch_up_stream_details", catch_up)
 
         details = await provider.get_stream_details(programme_id.item_id, MediaType.PODCAST_EPISODE)
 
@@ -400,7 +400,7 @@ class TestContinueWithStation:
         station = Mock()
         monkeypatch.setattr(provider, "get_radio", AsyncMock(return_value=station))
 
-        await provider._continue_with_station(details, PROGRAMME)
+        await provider.stream_manager._continue_with_station(details, PROGRAMME)
 
         play_media.assert_awaited_once_with("queue_id", station, option=QueueOption.ADD)
 
@@ -423,7 +423,7 @@ class TestContinueWithStation:
         play_media = AsyncMock()
         monkeypatch.setattr(provider.mass.player_queues, "play_media", play_media)
 
-        await provider._continue_with_station(details, PROGRAMME)
+        await provider.stream_manager._continue_with_station(details, PROGRAMME)
 
         play_media.assert_not_called()
 
@@ -435,9 +435,13 @@ class TestContinueWithStation:
         async def _segments(**_kwargs: object) -> AsyncGenerator[bytes]:
             yield b"segment"
 
-        monkeypatch.setattr("music_assistant.providers.bbc_sounds.stream_programme", _segments)
+        monkeypatch.setattr(
+            "music_assistant.providers.bbc_sounds.streaming.stream_programme", _segments
+        )
         continue_with_station = Mock()
-        monkeypatch.setattr(provider, "_continue_with_station", continue_with_station)
+        monkeypatch.setattr(
+            provider.stream_manager, "_continue_with_station", continue_with_station
+        )
         create_task = Mock()
         monkeypatch.setattr(provider.mass, "create_task", create_task)
         details = _programme_details()
@@ -458,7 +462,9 @@ class TestContinueWithStation:
             details.buffer = Mock()
             yield b"segment"
 
-        monkeypatch.setattr("music_assistant.providers.bbc_sounds.stream_programme", _segments)
+        monkeypatch.setattr(
+            "music_assistant.providers.bbc_sounds.streaming.stream_programme", _segments
+        )
         create_task = Mock()
         monkeypatch.setattr(provider.mass, "create_task", create_task)
 
@@ -485,7 +491,9 @@ class TestSnapToLive:
         details = _programme_details()
         _playing_queue(monkeypatch, provider, details)
 
-        provider._snap_to_live(details, PROGRAMME, PROGRAMME.start + 1500, PROGRAMME.start + 500)
+        provider.stream_manager._snap_to_live(
+            details, PROGRAMME, PROGRAMME.start + 1500, PROGRAMME.start + 500
+        )
 
         provider.mass.player_queues.seek.assert_called_once_with("queue_id", 500)  # type: ignore[attr-defined]
         create_task.assert_called_once()
@@ -503,7 +511,7 @@ class TestSnapToLive:
         details = _programme_details()
         _playing_queue(monkeypatch, provider, details if streamed_by_queue else Mock())
 
-        provider._snap_to_live(
+        provider.stream_manager._snap_to_live(
             details, PROGRAMME, PROGRAMME.start + requested, PROGRAMME.start + 500
         )
 

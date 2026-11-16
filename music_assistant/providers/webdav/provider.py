@@ -244,9 +244,13 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
     async def _parse_tags(self, file_item: FileSystemItem) -> AudioTags:
         """Parse the tags of a file over HTTP."""
-        return await async_parse_tags(
+        tags = await async_parse_tags(
             file_item.absolute_path, file_item.file_size, verify_ssl=self.verify_ssl
         )
+        # ffprobe reports the (url-encoded) WebDAV URL as filename; the title/track/artist
+        # fallbacks parse the filename, so hand them the real WebDAV path instead
+        tags.filename = file_item.relative_path
+        return tags
 
     def _convert_webdav_items(
         self,

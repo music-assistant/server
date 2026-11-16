@@ -1868,6 +1868,52 @@ protocol reaches it again, and the plug is not switched a second time.
   two protocols, one of which reads available for a while after the power is cut.
 - Proven by: `test_power_control.py::test_a_new_start_waits_again_for_a_member_whose_own_protocol_is_not_back`
 
+### GROUP-48 · A sync group is not led by a member that can group with none of the others
+
+Downstairs is a sync group of Garden, Kitchen and Office, in that order, and Garden shares no
+output with the other two. The user plays Downstairs: Kitchen leads, Office follows it, and Garden
+is left out, which is logged. A first member that can group with some of the others keeps leading,
+whoever could lead more: when Garden can group with Office only, Garden leads Office and the rest
+is left out. When no member can group with any other, Downstairs plays on its first member alone.
+
+- End-to-end: **possible with** two Squeezelite players and a third player that has no output in
+  common with them, listed first.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_is_not_led_by_a_member_that_can_group_with_none_of_the_others`
+  - `test_grouping.py::test_a_first_member_that_can_group_with_some_of_the_others_leads_the_sync_group`
+  - `test_grouping.py::test_a_sync_group_whose_members_can_not_group_plays_on_its_first_member`
+
+### GROUP-49 · A new leader of a sync group is one that can group with the others
+
+Downstairs plays with Kitchen leading Office and Den. Garden, the next member in its list, was off
+the network when it started and came back without an output it shares with them. When Kitchen
+leaves the group, Office leads it, Den follows Office, and Garden is left out. A player the user
+adds to Downstairs while it does not play is checked against the member that will lead it, not
+against a first member that can not lead the others.
+
+- End-to-end: **possible with** three Squeezelite players and a fourth player that loses its
+  shared output while it is away.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_whose_leader_leaves_is_led_by_a_member_that_can_group_with_the_others`
+  - `test_grouping.py::test_a_player_added_to_an_idle_sync_group_is_checked_against_the_member_that_leads`
+
+### GROUP-50 · What a member does elsewhere does not cost it its place in a sync group
+
+Downstairs is a sync group of Kitchen, Office and Den, in that order. Members that follow a
+leader outside the group when Downstairs plays are released and play in it, with its first
+member leading as it would have. A member that plays as the leader of a group of its own does
+not take Downstairs over: the first member leads, and that member is left out and keeps playing
+with its own group. That also holds when the first member can group with none of the others: it
+plays Downstairs alone then. A first member that plays an input of its own, which narrows what
+it can group with for as long as that plays, keeps leading as well.
+
+- End-to-end: **possible with** three Squeezelite players and a fourth player outside the group.
+- Proven by:
+  - `test_grouping.py::test_members_that_follow_a_leader_outside_a_sync_group_are_not_passed_over`
+  - `test_grouping.py::test_a_member_that_leads_another_playing_group_does_not_take_a_sync_group`
+  - `test_grouping.py::test_a_member_that_leads_players_of_its_own_does_not_replace_the_first_member`
+  - `test_grouping.py::test_a_first_member_that_plays_an_input_of_its_own_keeps_leading_the_sync_group`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered
