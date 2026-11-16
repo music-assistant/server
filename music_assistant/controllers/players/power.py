@@ -330,6 +330,17 @@ class PowerMixin(_PlayerControllerBase):
         if changed_values.keys() & {"playback_state", ATTR_POWERED}:
             player.extra_data.pop(ATTR_IDLE_SINCE, None)
 
+    def _end_boot_once_online(self, player: Player) -> None:
+        """
+        End the boot after a power on of a player once its device is online, waited for or not.
+
+        A device that drops away after that is not waited for again (see _still_boots).
+
+        :param player: The player whose state changed.
+        """
+        if ATTR_POWER_ON_DEADLINE in player.extra_data and self._device_is_online(player):
+            del player.extra_data[ATTR_POWER_ON_DEADLINE]
+
     async def _power_off_idle_player(self, player_id: str) -> None:
         """
         Power off a player that has been idle for its configured idle power off time.

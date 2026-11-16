@@ -425,7 +425,10 @@ queue of Kitchen, or, with the receiver, a selection of Den's HDMI input. That w
 no lock meanwhile, the plug is not switched a second time, and Den plays through its Sonos
 protocol once that is back, as a group does for such a member (GROUP-33). A seek or a skip in the
 item of its queue does the same: it holds no lock while it waits, so a stop of the queue sent
-meanwhile returns at once and calls it off.
+meanwhile returns at once and calls it off. Once Den's Sonos protocol has reached it again, also
+with nothing waiting, its boot is over: when that protocol drops again shortly after, a play does
+not wait for it, and neither does the restore of the music after an announcement, which holds Den
+meanwhile.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
@@ -433,6 +436,8 @@ meanwhile returns at once and calls it off.
   - `test_power_control.py::test_a_play_after_a_stop_waits_again_for_a_speaker_that_still_boots`
   - `test_power_control.py::test_a_source_selected_after_a_stop_waits_again_for_a_speaker_that_still_boots`
   - `test_power_control.py::test_a_seek_after_a_stop_waits_for_a_speaker_that_still_boots_without_a_lock`
+  - `test_power_control.py::test_a_speaker_that_came_online_after_a_stop_is_not_waited_for_when_it_drops_again`
+  - `test_power_control.py::test_the_restore_after_an_announcement_holds_no_lock_when_the_speaker_drops`
 
 ### AWAY-25 · A speaker whose own protocol is detached is off until that protocol is back
 

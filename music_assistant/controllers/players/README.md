@@ -586,7 +586,9 @@ that still boots after a stop called its power on off, as a group does for such 
 below): before any lock is taken, until the 90 seconds of that power on are over, without
 switching the control once more (`_needs_power_on`). All but the selection of a source and the
 seek of the player itself (`players/cmd/seek`) do so also while the player shows as unavailable
-meanwhile, which it does when no other protocol of it reads available.
+meanwhile, which it does when no other protocol of it reads available. The boot is over once the
+device is online, also when nothing waits for it: a device that drops away after that is not
+waited for again.
 
 Such a player is the one case of a player that is available and can not play yet, and it stays
 that while a power on still waits for its device, when it already shows as powered on. Code

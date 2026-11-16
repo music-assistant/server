@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 
@@ -17,9 +17,17 @@ from music_assistant.controllers.players.power import (
     DEVICE_CHECK_INTERVAL,
     DEVICE_CHECK_TIMEOUT,
 )
+from music_assistant.controllers.streams.announcements import AnnouncementRender
 
 from .harness import TEST_TRACK_URI
-from .test_group_power_on import GROUPS, _downstairs, _play, _plays_along, _starts
+from .test_group_power_on import (
+    GROUPS,
+    _downstairs,
+    _play,
+    _plays_along,
+    _rendered_clip,
+    _starts,
+)
 from .test_grouping import (
     _device,
     _group,
@@ -32,6 +40,8 @@ from .test_grouping import (
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
+
+    from music_assistant_models.player import PlayerMedia
 
     from .harness import FakePowerControl, FakeProtocol, Role, Scenario
 
@@ -356,6 +366,112 @@ async def test_a_seek_after_a_stop_waits_for_a_speaker_that_still_boots_without_
     assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
     assert (_starts(den), _starts(den_airplay)) == (2, 0)
     assert plug.commands == [True]
+    await _stop(scenario, player_id)
+
+
+@pytest.mark.parametrize("receiver", ["own protocol only", "receiver reads available"])
+async def test_a_speaker_that_came_online_after_a_stop_is_not_waited_for_when_it_drops_again(
+    scenario: Scenario, receiver: str
+) -> None:
+    """
+    A speaker that is back after a stop called its power on off no longer boots.
+
+    Den played a track before its plug was cut; a play switched the plug on and a stop called
+    that off. Den's Sonos protocol then reaches it again, with nothing waiting, so its boot is
+    over. When that protocol drops again shortly after, with the plug still on, a play does not
+    wait for it: with its Sonos protocol alone Den is unavailable and the play fails at once,
+    with an AirPlay receiver that reads available the play starts at once through it.
+    """
+    protocols: list[tuple[str, Role]] = [("sonos", "native")]
+    if receiver == "receiver reads available":
+        protocols.append(("airplay", "audio"))
+    speakers, plug, player_id = await _den(scenario, *protocols)
+    den = speakers[0]
+    await scenario.play(player_id)
+    await _stop(scenario, player_id)
+    await _cut(scenario, plug, den)
+    play = await _play(scenario, player_id)
+    await _stop(scenario, player_id)
+    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+        await play
+    await _reach(scenario, den)
+    await scenario.report(den, available=False)
+
+    play = await _play(scenario, player_id)
+
+    assert play.done(), "the play waits for a boot that is over"
+    if receiver == "own protocol only":
+        with pytest.raises(PlayerUnavailableError, match="is not available"):
+            await play
+        assert _starts(den) == 1
+    else:
+        await play
+        await scenario.idle()
+        assert [_starts(speaker) for speaker in speakers] == [1, 1]
+        await _stop(scenario, player_id)
+    assert plug.commands == [True]
+
+
+async def test_the_restore_after_an_announcement_holds_no_lock_when_the_speaker_drops(
+    scenario: Scenario,
+) -> None:
+    """
+    The music an announcement interrupted comes back without waiting for a boot that is over.
+
+    As in the previous scenario, Den's Sonos protocol reaches Den again after a stop called its
+    power on off, and Den plays. An announcement plays on Den, and its Sonos protocol drops as
+    the clip ends. The restore of the music does not wait for the device while the announcement
+    holds Den: it goes on through Den's AirPlay receiver, and a stop of its queue sent meanwhile
+    returns at once.
+    """
+    (den, den_airplay), plug, player_id = await _den(
+        scenario, ("sonos", "native"), ("airplay", "audio")
+    )
+    await scenario.play(player_id)
+    await _stop(scenario, player_id)
+    await _cut(scenario, plug, den)
+    play = await _play(scenario, player_id)
+    await _stop(scenario, player_id)
+    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+        await play
+    await _reach(scenario, den)
+    await scenario.play(player_id)
+    play_media = den.play_media
+
+    async def _drops_after_the_clip(media: PlayerMedia) -> None:
+        await play_media(media)
+        if media.media_type == MediaType.ANNOUNCEMENT:
+            asyncio.get_running_loop().call_later(
+                1,
+                lambda: den._apply(
+                    "device gone", playback_state=PlaybackState.IDLE, available=False
+                ),
+            )
+
+    with (
+        patch.object(AnnouncementRender, "_render", new=_rendered_clip),
+        patch.object(den, "play_media", side_effect=_drops_after_the_clip),
+    ):
+        clip = await scenario.command(
+            scenario.mass.players.play_announcement(
+                player_id, url="http://clip.invalid/announcement.wav", pre_announce=False
+            )
+        )
+        await scenario.advance(8)
+
+        assert not any(
+            lock.locked() for lock in scenario.mass.players._player_command_locks.values()
+        ), "the restore after the announcement waits for the device while it holds a player lock"
+        stop = await scenario.command(scenario.mass.player_queues.stop(player_id))
+        await scenario.advance(1)
+        assert stop.done(), "the stop waits for the lock the announcement holds"
+        await stop
+        assert clip.done()
+        await clip
+
+    assert _starts(den_airplay) == 1
+    assert plug.commands == [True]
+    await _reach(scenario, den)
     await _stop(scenario, player_id)
 
 

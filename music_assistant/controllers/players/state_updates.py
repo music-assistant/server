@@ -214,6 +214,7 @@ class StateUpdatesMixin(_PlayerControllerBase):
                 task_id=task_id,
             )
         self._restart_idle_count(player, changed_values)
+        self._end_boot_once_online(player)
         # only steer into the (relatively expensive) membership cleanup when a field
         # that can require an unsync actually changed - this runs on every state tick
         if changed_values.keys() & {ATTR_AVAILABLE, ATTR_ENABLED, ATTR_POWERED, ATTR_REACHABLE}:
