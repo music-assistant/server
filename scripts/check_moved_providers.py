@@ -43,7 +43,7 @@ PROVIDERS_FOLDER = "music_assistant/providers"
 MOVED_FILE = "music_assistant/controllers/community_catalog/constants.py"
 MOVED_NAME = "MOVED_PROVIDER_DOMAINS"
 # the index a server reads (controllers/community_catalog/index.py)
-INDEX_URL = "https://music-assistant.github.io/community-catalog/v1/{line}.json"
+INDEX_URL = "https://catalog.music-assistant.io/v1/{line}.json"
 RESERVED_URL = (
     "https://raw.githubusercontent.com/music-assistant/community-catalog/main/reserved_domains.json"
 )
