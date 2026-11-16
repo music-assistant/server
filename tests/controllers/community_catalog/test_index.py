@@ -9,19 +9,19 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
-from aiohttp import ClientSession, ClientTimeout
+from aiohttp import ClientSession, ClientTimeout, TCPConnector, web
 
 from music_assistant.controllers.community_catalog import index as index_module
 from music_assistant.controllers.community_catalog.index import IndexClient, server_line
 from music_assistant.controllers.community_catalog.models import CatalogState
 from music_assistant.controllers.community_catalog.store import CatalogStore
-from tests.controllers.community_catalog.conftest import catalog_index
+from tests.controllers.community_catalog.conftest import catalog_index, serve
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
     from pathlib import Path
 
-    from tests.controllers.community_catalog.conftest import Registry
+    from tests.controllers.community_catalog.conftest import Registry, Tls
 
 LOGGER = logging.getLogger(__name__)
 
@@ -42,9 +42,9 @@ def test_server_line(version: str, line: str) -> None:
 
 
 @pytest.fixture
-async def client(tmp_path: Path) -> AsyncGenerator[IndexClient]:
+async def client(tmp_path: Path, tls: Tls) -> AsyncGenerator[IndexClient]:
     """Return an index client of a nightly server that keeps its copy in a temporary folder."""
-    async with ClientSession() as session:
+    async with ClientSession(connector=TCPConnector(ssl=tls.client)) as session:
         mass = SimpleNamespace(version="0.0.0", http_session=session)
         store = CatalogStore(str(tmp_path / "community_providers"), LOGGER)
         yield IndexClient(mass, store, LOGGER)  # type: ignore[arg-type]
@@ -135,6 +135,55 @@ async def test_failed_fetch_keeps_the_copy(
     assert message in warnings[0]
 
 
+async def test_index_after_an_https_redirect(
+    client: IndexClient, registry: Registry, tls: Tls, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An index the address redirects to over https is used."""
+    async with serve(_moved_app(registry.url), tls.server) as root:
+        monkeypatch.setattr(index_module, "INDEX_URL", f"{root}/v1/{{line}}.json")
+
+        assert await client.fetch() is True
+
+    assert registry.requests == [("nightly", None)]
+    assert client.store.state.index_etag == registry.etag
+
+
+@pytest.mark.parametrize("hop", ["first", "final"])
+async def test_index_over_plain_http_is_refused(
+    tmp_path: Path,
+    client: IndexClient,
+    registry: Registry,
+    tls: Tls,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    hop: str,
+) -> None:
+    """An index that reached the server over plain http on any hop is refused and the copy stays."""
+    folder = tmp_path / "community_providers"
+    assert await client.fetch() is True
+    kept, kept_index = (folder / "index.json").read_bytes(), client.store.index
+    registry.etag = '"two"'
+    registry.document = catalog_index()
+    del registry.document["providers"]["listed_one"]
+    if hop == "first":
+        moved, target = None, registry.url
+    else:
+        moved, target = tls.server, registry.http_url
+
+    async with serve(_moved_app(target), moved) as root:
+        monkeypatch.setattr(index_module, "INDEX_URL", f"{root}/v1/{{line}}.json")
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            assert await client.fetch() is None
+
+    assert len(registry.requests) == 2
+    assert (folder / "index.json").read_bytes() == kept
+    assert client.store.index == kept_index
+    assert client.store.state.index_etag == '"one"'
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "not served over https" in warnings[0]
+
+
 async def test_index_that_cannot_be_kept_is_still_used(
     tmp_path: Path, client: IndexClient, registry: Registry, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -194,3 +243,18 @@ async def test_no_etag_without_a_copy(
 
     assert registry.requests[1] == ("nightly", None)
     assert (folder / "index.json").exists()
+
+
+def _moved_app(target: str) -> web.Application:
+    """
+    Return an app that redirects each request for an index to the same index at another address.
+
+    :param target: The address of the index, with {line} for its line.
+    """
+
+    async def moved(request: web.Request) -> web.StreamResponse:
+        raise web.HTTPMovedPermanently(target.format(line=request.match_info["line"]))
+
+    app = web.Application()
+    app.router.add_get("/v1/{line}.json", moved)
+    return app
