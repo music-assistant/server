@@ -47,6 +47,7 @@ if TYPE_CHECKING:
         PlayerSoundMode,
     )
     from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.streamdetails import StreamMetadata
 
     from music_assistant.controllers.players.audio_sources import AudioSourceSession
 
@@ -146,19 +147,21 @@ class GroupSnapshot:
 @dataclass(slots=True, kw_only=True)
 class QueueSnapshot:
     """
-    A queue, with the artwork of its current item resolved to urls.
+    A queue, with the stream metadata and artwork of its current item resolved.
 
-    The urls are only given where they count: for the queue the player takes its
+    These are only given where they count: for the queue the player takes its
     current media from (see resolve_media_queue).
 
     :param queue: The queue.
     :param item_image_url: Url of the image of the current queue item.
     :param media_item_image_url: Url of the image of the media item it holds.
+    :param stream_metadata: What the stream of the current item plays, as shown.
     """
 
     queue: PlayerQueue
     item_image_url: str | None = None
     media_item_image_url: str | None = None
+    stream_metadata: StreamMetadata | None = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -1096,10 +1099,8 @@ def _queue_media(inputs: StateInputs, active_queue: QueueSnapshot) -> PlayerMedi
         # queue is active but no current item
         return None
     item_image_url = active_queue.item_image_url
-    if current_item.streamdetails and (
-        stream_metadata := current_item.streamdetails.stream_metadata
-    ):
-        # handle stream metadata in streamdetails (e.g. for radio stream)
+    if stream_metadata := active_queue.stream_metadata:
+        # handle stream metadata (e.g. for radio stream)
         image_url = stream_metadata.image_url or item_image_url
         elapsed_time, elapsed_time_last_updated = _resolve_position(
             stream_metadata.elapsed_time,
