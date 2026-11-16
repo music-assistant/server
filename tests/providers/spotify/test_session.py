@@ -232,3 +232,23 @@ async def test_quota_warning_returns_after_an_answer() -> None:
     with pytest.raises(RetriesExhausted):
         await session.get("me")
     assert session.logger.warning.call_count == 2  # type: ignore[attr-defined]
+
+
+async def test_quota_block_without_a_wait_is_asked_about_less_and_less() -> None:
+    """Each further quota answer that names no wait doubles the time until the next request."""
+    session = _make_session()
+    _stub_response(session, status=429, payload=QUOTA_BODY)
+    cooldowns = []
+    for _ in range(8):
+        with pytest.raises(RetriesExhausted):
+            await session.get("me")
+        cooldowns.append(round(session.throttler.cooldown_remaining))
+        session.throttler._cooldown_until = 0
+    assert cooldowns == [5, 10, 20, 40, 80, 120, 120, 120]
+    # an answered request ends the block
+    _stub_response(session, payload={})
+    await session.get("me")
+    _stub_response(session, status=429, payload=QUOTA_BODY)
+    with pytest.raises(RetriesExhausted):
+        await session.get("me")
+    assert round(session.throttler.cooldown_remaining) == 5

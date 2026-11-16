@@ -19,6 +19,7 @@ from orjson import JSONDecodeError
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import (
+    MAX_BACKOFF,
     RequestPriority,
     ThrottlerManager,
     current_priority,
@@ -78,7 +79,8 @@ class SpotifySession:
         self._has_fallback = has_fallback
         self._last_rate_limit_reason: str | None = None
         self._last_rate_limit_at: datetime | None = None
-        self._quota_exceeded = False
+        # quota answers in a row, without an answered request in between
+        self._quota_answers = 0
 
     def get_diagnostics(self) -> dict[str, Any]:
         """Return the rate limit state of this session for a diagnostics report."""
@@ -255,12 +257,20 @@ class SpotifySession:
                     # playback does not sit out a limit of this app while another session can
                     # serve it: close the gate for the time asked and give up right away
                     cooldown = max(backoff_time, self.throttler.initial_backoff)
-                    self.throttler.set_cooldown(cooldown)
                     if quota_exceeded:
-                        self._warn_quota_exceeded(cooldown if backoff_time else 0)
+                        self._quota_answers += 1
+                        # a block that goes on is asked about less and less
+                        doublings = min(self._quota_answers - 1, 10)
+                        cooldown = max(
+                            cooldown,
+                            min(self.throttler.initial_backoff * 2**doublings, MAX_BACKOFF),
+                        )
+                        if self._quota_answers == 1:
+                            self._warn_quota_exceeded(cooldown if backoff_time else 0)
+                    self.throttler.set_cooldown(cooldown)
                     raise RetriesExhausted(message, translation_key=RateLimited.translation_key)
                 raise RateLimited(message, backoff_time=backoff_time)
-            self._quota_exceeded = False
+            self._quota_answers = 0
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:
@@ -273,13 +283,10 @@ class SpotifySession:
 
     def _warn_quota_exceeded(self, held_back: float) -> None:
         """
-        Log once per block that the quota of this app is used up.
+        Log that the quota of this app is used up.
 
         :param held_back: Seconds requests on this app are held back, 0 when Spotify named no wait.
         """
-        if self._quota_exceeded:
-            return
-        self._quota_exceeded = True
         how_long = (
             f"requests on it are held back for {held_back:.0f} seconds"
             if held_back
