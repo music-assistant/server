@@ -453,6 +453,10 @@ class SyncLoop:
         self._frames_sent += len(silence) // self._frame_size
         return silence + self._correct(pcm)
 
+    def lift_start_bound(self) -> None:
+        """Take the start error from whatever the player reports next, whenever that puts its start."""
+        self._earliest_ms = -inf
+
     def _correct(self, pcm: bytes) -> bytes:
         """Drop or repeat the single frames that are due in a block at the current rate."""
         size = self._frame_size

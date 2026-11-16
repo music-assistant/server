@@ -1873,6 +1873,58 @@ async def test_positions_of_before_the_start_do_not_count_for_it(
     assert told in caplog.text
 
 
+async def test_positions_that_stay_impossible_restart_the_stream_after_the_timeout(
+    rig: _Rig,
+) -> None:
+    """A player that keeps reporting what it can not have played is not left unmeasured."""
+    rig.knows_start_offset(180_000)
+    session = await rig.start_playing()
+    loop = session.loop
+    assert loop is not None
+    rig.drain(session)
+    rig.clock.advance_us(session.start_us - rig.now_us + 150_000)
+
+    def _report_5_seconds_too_much() -> None:
+        rig.clock.advance_us(50_000)
+        played_ms = (rig.now_us - session.start_us) // 1000
+        rig.bridge.handle_slim_event(rig.status(elapsed_ms=played_ms + 5368))
+        rig.drain(session)
+
+    # for as long as its start is measured, such a report does not count
+    while rig.now_us - session.start_us <= ALIGN_TIMEOUT_US:
+        _report_5_seconds_too_much()
+        assert loop.start_error_ms is None
+    assert rig.session is session
+
+    # its audio went out uncorrected: from here on it is measured as it reports
+    _report_5_seconds_too_much()
+    assert not rig.aligning()
+    for _ in range(3):
+        _report_5_seconds_too_much()
+    await _settle()
+
+    assert loop.start_error_ms == pytest.approx(-5368.5)
+    assert rig.session is not session
+    assert rig.client.play_url.await_count == 2
+
+
+async def test_a_report_that_is_dropped_with_the_ones_before_it_is_logged_as_not_counted(
+    rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A clock that starts over drops the reports collected so far, also at a repeated report."""
+    caplog.set_level(VERBOSE_LOG_LEVEL, logger="test.squeezelite")
+    session = await rig.start_playing()
+    rig.drain(session)
+    rig.clock.advance_us(session.start_us - rig.now_us + 250_000)
+    rig.bridge.handle_slim_event(rig.status(elapsed_ms=230))
+    assert caplog.records[-1].getMessage().endswith("counted, 1 in a row")
+
+    rig.bridge._player_clock._generation += 1
+    rig.bridge.handle_slim_event(rig.status(elapsed_ms=230))
+
+    assert caplog.records[-1].getMessage().endswith("not counted")
+
+
 async def test_a_player_that_moves_its_position_is_measured_from_where_it_settles(
     rig: _Rig, caplog: pytest.LogCaptureFixture
 ) -> None:

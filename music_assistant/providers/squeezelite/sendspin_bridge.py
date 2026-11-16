@@ -1006,6 +1006,9 @@ class SendspinSqueezeliteBridge:
         sent_us = loop.frames_consumed * 1_000_000 // session.sample_rate
         left_out_ms = max(0, session.start_us + sent_us - session.first_audible_us) / 1000
         if (start_error_ms := loop.start_error_ms) is None:
+            # whatever it reports from here on is measured, so a start that is far off
+            # still restarts the stream
+            loop.lift_start_bound()
             self.logger.debug(
                 "%s did not show where it plays in time: its audio goes out with its start "
                 "not corrected, %.0f ms of it left out",
@@ -1089,7 +1092,7 @@ class SendspinSqueezeliteBridge:
                 since_start_ms - status.elapsed_milliseconds - 0.5,
                 # the first of them again when the reports before it did not agree with it
                 f"counted, {len(loop.start_reports)} in a row"
-                if loop.start_reports != start_reports
+                if loop.start_reports and loop.start_reports != start_reports
                 else "not counted",
             )
         self._reports += 1

@@ -913,6 +913,20 @@ def test_start_error_leaves_out_reports_that_put_the_start_before_it_was_told() 
     assert unbound.start_error_ms == pytest.approx(-5368.0)
 
 
+def test_start_error_takes_every_report_once_its_bound_is_lifted() -> None:
+    """A player that was not measured in time is measured from whatever it reports next."""
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US, told_us=START_US - 180_000)
+    for elapsed_ms in (5568, 5618, 5668):
+        assert _report(loop, elapsed_ms, -5368.0) is None
+    assert _collected(loop) == []
+
+    loop.lift_start_bound()
+
+    for elapsed_ms in (5718, 5768, 5818):
+        _report(loop, elapsed_ms, -5368.0)
+    assert loop.start_error_ms == pytest.approx(-5368.0)
+
+
 def test_start_error_of_a_player_that_starts_before_its_instant_counts() -> None:
     """A player that needs less than its start offset starts early, not before it was told."""
     loop = SyncLoop(RATE, FRAME_SIZE, START_US, told_us=START_US - 180_000)
