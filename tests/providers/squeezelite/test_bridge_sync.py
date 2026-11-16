@@ -1039,6 +1039,27 @@ def test_start_error_of_a_late_player_is_dropped_in_one_jump() -> None:
     assert _offset(loop) == jump
 
 
+def test_start_error_that_is_measured_late_is_jumped_for_what_the_rate_left_of_it() -> None:
+    """A start the rate is correcting already is jumped for the rest, not for all of it again."""
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US)
+    # a player whose reports keep moving: no start error yet, but an error for the rate
+    for index in range(8):
+        _report(loop, 1000 + index * 250, 300.0 + (8.0 if index % 2 else -8.0))
+        loop.process(_source(index * 12_000, 12_000))
+    assert loop.start_error_ms is None
+    assert loop.rate_ppm == MAX_RATE_PPM
+    corrected = _offset(loop)
+    assert corrected == 24
+
+    for elapsed_ms in (3000, 3250, 3500):
+        _report(loop, elapsed_ms, 300.0)
+    assert loop.start_error_ms == pytest.approx(300.0)
+    assert loop.pending_jump == 300 * RATE // 1000 - corrected
+    # with the jump made the stream is corrected for the start error, once
+    loop.process(_source(96_000, 24_000))
+    assert _offset(loop) == 300 * RATE // 1000
+
+
 def test_start_error_of_an_early_player_is_filled_with_silence() -> None:
     """A player that starts far too early gets silence first, once."""
     loop = SyncLoop(RATE, FRAME_SIZE, START_US)

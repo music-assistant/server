@@ -390,7 +390,7 @@ class SyncLoop:
             # corrections of a player that plays fast falls below it in time.
             return None
         if self._start_error_ms is None and elapsed >= _START_SKIP_MS:
-            # nothing was corrected yet, so this is the error of the start itself
+            # this early the drift adds nothing yet, so this is the error of the start itself
             reports = self._start_reports
             if reports and abs(raw_ms - sum(reports) / len(reports)) > _START_AGREE_MS:
                 # the player moved its position: what it reported before says nothing now
@@ -399,7 +399,9 @@ class SyncLoop:
             if len(reports) == _START_REPORTS:
                 self._start_error_ms = start_error_ms = sum(reports) / _START_REPORTS
                 if self.start_jump_ms < abs(start_error_ms) <= MAX_START_JUMP_MS:
-                    self._pending_jump = round(start_error_ms * self._sample_rate / 1000)
+                    # less what the rate corrected of it while it was not measured
+                    start_frames = round(start_error_ms * self._sample_rate / 1000)
+                    self._pending_jump = start_frames - self._offset
         if server_us < self._settled_us:
             return None
 
