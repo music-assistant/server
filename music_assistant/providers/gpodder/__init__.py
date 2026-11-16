@@ -360,9 +360,9 @@ class GPodder(MusicProvider):
         self, prov_episode_id: str, add_progress: bool = True
     ) -> PodcastEpisode:
         """Get Podcast Episode. Add progress information."""
-        podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
+        podcast_id, guid_or_stream_url = prov_episode_id.split(" ", 1)
         async for mass_episode in self.get_podcast_episodes(podcast_id, add_progress=add_progress):
-            _, _guid_or_stream_url = mass_episode.item_id.split(" ")
+            _, _guid_or_stream_url = mass_episode.item_id.split(" ", 1)
             # this is enough, as internal
             if guid_or_stream_url == _guid_or_stream_url:
                 await self._enrich_episode_chapters(podcast_id, guid_or_stream_url, mass_episode)
@@ -374,7 +374,7 @@ class GPodder(MusicProvider):
     ) -> tuple[bool, int, datetime | None]:
         """Return: finished, position_ms."""
         assert media_type == MediaType.PODCAST_EPISODE
-        podcast_id, guid_or_stream_url = item_id.split(" ")
+        podcast_id, guid_or_stream_url = item_id.split(" ", 1)
         stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
         try:
             progresses, timestamp = await self._client.get_episode_actions(
@@ -423,7 +423,7 @@ class GPodder(MusicProvider):
             return
         if time.time() - self.progress_guard_timestamp <= 5:
             return
-        podcast_id, guid_or_stream_url = prov_item_id.split(" ")
+        podcast_id, guid_or_stream_url = prov_item_id.split(" ", 1)
         stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
         assert stream_url is not None
         duration = media_item.duration
@@ -442,7 +442,7 @@ class GPodder(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for item."""
-        podcast_id, guid_or_stream_url = item_id.split(" ")
+        podcast_id, guid_or_stream_url = item_id.split(" ", 1)
         stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
         if stream_url is None:
             raise MediaNotFoundError
