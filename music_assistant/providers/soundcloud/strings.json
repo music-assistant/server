@@ -5,12 +5,16 @@
     },
     "authorization": {
       "label": "Authorization"
+    },
+    "refresh_token": {
+      "label": "Refresh token",
+      "description": "The value of the oauth_refresh_token cookie. Keeps the provider signed in after the short-lived authorization token expires."
     }
   },
   "setup_flow": {
     "user": {
       "title": "Enter your SoundCloud credentials",
-      "description": "SoundCloud has no public app registration. Sign in to the SoundCloud web player, open your browser's developer tools, and copy the client_id from a network request and your OAuth token from the request headers, then paste them here."
+      "description": "SoundCloud has no public app registration. Sign in to the SoundCloud web player, open your browser's developer tools, and copy the client_id from a network request and your OAuth token from the request headers, then paste them here. Also copy the oauth_refresh_token cookie, so the provider stays signed in. Use a private browser window and close it afterwards, as the provider takes over that sign-in session."
     }
   },
   "media": {

@@ -452,6 +452,17 @@ async def _fetch_source_image(
             # the provider looked and has nothing at this path: a miss, not a failed fetch
             msg = f"{provider} has no image at {path_or_url}"
             raise _NoImageError(msg)
+        # an accepted stored path must resolve to image data or a remote URL, never fall
+        # through to the local file and ffmpeg routes below
+        if prov.accepts_stored_image_path(path_or_url) and not (
+            (isinstance(resolved_image, bytes) and resolved_image)
+            or (
+                isinstance(resolved_image, str)
+                and resolved_image.startswith(("http://", "https://", "data:image"))
+            )
+        ):
+            msg = f"{provider} resolved image {path_or_url} to neither image data nor a URL"
+            raise FileNotFoundError(msg)
         if resolved_image:
             if isinstance(resolved_image, bytes):
                 return resolved_image, True
@@ -520,7 +531,7 @@ async def _fetch_remote_image(mass: MusicAssistant, url: str) -> bytes:
     # Bot-protected CDNs (e.g. Akamai) reject our normal self-identifying User-Agent,
     # and even regular browser User-Agents, while still serving well-known fetch tools.
     # We keep identifying as Music Assistant but carry a Wget compatibility token, which
-    # such CDNs allowlist, so artwork is served on the first (and only) request.
+    # such CDNs allowlist, so artwork is served on the first (and only) request (#4243).
     user_agent = f"{APPLICATION_NAME}/{mass.version} (Wget/1.24.5; +https://music-assistant.io)"
     async with mass.http_session_no_ssl.get(
         url, raise_for_status=True, headers={"User-Agent": user_agent}

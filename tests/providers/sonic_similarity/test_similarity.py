@@ -123,6 +123,28 @@ class TestApplyMMR:
         """Empty candidates returns empty."""
         assert apply_mmr([], [1.0], diversity=0.5, limit=10) == []
 
+    def test_duplicate_vectors_keep_input_order(self) -> None:
+        """Exact ties between duplicate vectors resolve in input order."""
+        candidates = [
+            ("a", [1.0, 0.0], 0.1),
+            ("a-dup", [1.0, 0.0], 0.1),
+            ("far", [0.0, 1.0], 0.9),
+        ]
+        relevance_only = apply_mmr(candidates, [1.0, 0.0], diversity=0.0, limit=3)
+        max_diversity = apply_mmr(candidates, [1.0, 0.0], diversity=1.0, limit=3)
+        assert [r[0] for r in relevance_only] == ["a", "a-dup", "far"]
+        assert [r[0] for r in max_diversity] == ["a", "far", "a-dup"]
+
+    def test_negative_similarity_lowers_redundancy(self) -> None:
+        """A candidate pointing away from every pick counts as less redundant than an orthogonal one."""
+        candidates = [
+            ("a", [1.0, 0.0], 0.1),
+            ("opposite", [-1.0, 0.1], 0.9),
+            ("orthogonal", [0.0, 1.0], 0.5),
+        ]
+        result = apply_mmr(candidates, [1.0, 0.0], diversity=0.6, limit=3)
+        assert [r[0] for r in result] == ["a", "opposite", "orthogonal"]
+
 
 class TestApplyMMRWeights:
     """Tests for the preset-weight-aware path of apply_mmr (weights=... shapes the picked set)."""
@@ -222,6 +244,31 @@ class TestApplyMMRWeights:
         # picked. The duplicate should NOT be picked because it has zero
         # rhythm-distance from rhythm-a (max redundancy).
         assert picked[1] != ("rhythm-b" if picked[0] == "rhythm-a" else "rhythm-a")
+
+    def test_equal_distance_ties_keep_input_order(self) -> None:
+        """Distinct candidates at exactly the same weighted distance resolve in input order."""
+        seed = self._zero18()
+        up = ("up", [1.0] + [0.0] * 17, 0.5)
+        down = ("down", [-1.0] + [0.0] * 17, 0.5)
+        weights = self._rhythm_only_weights()
+        down_first = apply_mmr([down, up], seed, diversity=0.0, limit=2, weights=weights)
+        up_first = apply_mmr([up, down], seed, diversity=0.0, limit=2, weights=weights)
+        assert [r[0] for r in down_first] == ["down", "up"]
+        assert [r[0] for r in up_first] == ["up", "down"]
+
+    def test_duplicate_vectors_keep_input_order(self) -> None:
+        """Under max diversity a duplicate of the first pick comes last, ties in input order."""
+        seed = self._zero18()
+        near = [0.1] * 18
+        candidates = [
+            ("near", near, 0.1),
+            ("near-dup", list(near), 0.1),
+            ("far", [1.0] * 18, 0.9),
+        ]
+        result = apply_mmr(
+            candidates, seed, diversity=1.0, limit=3, weights=self._rhythm_only_weights()
+        )
+        assert [r[0] for r in result] == ["near", "far", "near-dup"]
 
 
 class TestExpandRecursive:

@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
-from urllib.parse import parse_qs, quote, unquote, urlsplit
+from typing import TYPE_CHECKING
+from urllib.parse import parse_qs, quote, unquote, urlparse, urlsplit
 
 import aiohttp
 import defusedxml.ElementTree as DefusedET
+from async_upnp_client.search import async_search
 from music_assistant_models.enums import RepeatMode
 
 from music_assistant.helpers.util import try_parse_duration
 
-from .constants import HOST_CHECK_TIMEOUT, PLAYER_ID_PREFIX, RENDERER_QUERY_TIMEOUT
+from .constants import HOST_CHECK_TIMEOUT, PROTOCOL_ID_PREFIX, RENDERER_QUERY_TIMEOUT
+
+if TYPE_CHECKING:
+    from async_upnp_client.utils import CaseInsensitiveDict
+
+# Only the Raumfeld host publishes this UPnP device, so searching for it finds the host and
+# none of the speakers.
+_HOST_SEARCH_TARGET = "urn:schemas-raumfeld-com:device:ConfigDevice:1"
+# how long (seconds) to listen for the host to answer the search
+_DISCOVERY_TIMEOUT = 3
 
 # DIDL-Lite / metadata XML namespaces used in UPnP TrackMetaData.
 _DC = "{http://purl.org/dc/elements/1.1/}"
@@ -42,9 +53,9 @@ _QUERY_HEADERS = {
 }
 
 
-def serial_to_player_id(serial: str) -> str:
+def serial_to_protocol_id(serial: str) -> str:
     """
-    Derive a stable Music Assistant player_id from a renderer's hardware serial.
+    Derive a room's stable protocol id from its renderer's hardware serial.
 
     :param serial: The renderer's serialNumber (e.g. ``04:a3:16:f3:b6:c4``).
     """
@@ -52,16 +63,16 @@ def serial_to_player_id(serial: str) -> str:
     # the Raumfeld system. A room UDN only survives the former: re-adding a device (or
     # setting the system up again) hands every room a fresh UDN and orphans its config.
     cleaned = "".join(char for char in serial if char.isalnum()).lower()
-    return f"{PLAYER_ID_PREFIX}_{cleaned}"
+    return f"{PROTOCOL_ID_PREFIX}_{cleaned}"
 
 
-def room_udn_to_player_id(room_udn: str) -> str:
+def room_udn_to_protocol_id(room_udn: str) -> str:
     """
-    Derive a room-UDN based player_id, for a room whose serial another room already uses.
+    Derive a room-UDN based protocol id, for a room whose serial another room already uses.
 
     :param room_udn: The room UDN (e.g. ``uuid:1234...``).
     """
-    return f"{PLAYER_ID_PREFIX}_{room_udn.removeprefix('uuid:')}"
+    return f"{PROTOCOL_ID_PREFIX}_{room_udn.removeprefix('uuid:')}"
 
 
 def parse_serial_number(description_xml: str | None) -> str | None:
@@ -142,7 +153,7 @@ def external_source(section: str | None) -> tuple[str, str]:
 
 def parse_last_change(last_change_xml: str | None) -> dict[str, str]:
     """
-    Parse an AVTransport ``LastChange`` event into ``{state variable: value}``.
+    Parse a renderer's ``LastChange`` event into ``{state variable: value}``.
 
     Malformed or empty XML yields an empty dict (never raises).
 
@@ -183,12 +194,28 @@ def parse_control_url(description_xml: str | None, service: str) -> str | None:
     return None
 
 
+async def discover_hosts() -> list[str]:
+    """
+    Return the addresses of the Raumfeld hosts that answer a search of the network.
+
+    :raises OSError: When the network cannot be searched.
+    """
+    found: list[str] = []
+
+    async def on_response(headers: CaseInsensitiveDict) -> None:
+        # some devices (a Hue bridge, for one) answer every search, whatever it asks for
+        if headers.get("st") != _HOST_SEARCH_TARGET:
+            return
+        if (host := urlparse(headers.get("location") or "").hostname) and host not in found:
+            found.append(host)
+
+    await async_search(on_response, timeout=_DISCOVERY_TIMEOUT, search_target=_HOST_SEARCH_TARGET)
+    return found
+
+
 async def host_is_valid(session: aiohttp.ClientSession, host: str, port: int) -> bool:
     """
     Return whether a Raumfeld host answers ``getHostInfo`` at the given address.
-
-    Replaces hassfeld's ``async_host_is_valid``, which opens a session of its own and
-    gives the host 3 seconds.
 
     :param session: The HTTP session to use.
     :param host: Address of the Raumfeld host.

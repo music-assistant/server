@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
@@ -19,28 +19,24 @@ from music_assistant.constants import (
     CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
     CONF_ENABLE_ICY_METADATA,
-    CONF_HTTP_PROFILE,
     CONF_ICON,
-    CONF_LINKED_PROTOCOL_IDS,
-    CONF_NFS_SUBFOLDER_MIGRATED,
     CONF_PLAYER_DSP,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
-    CONF_PROTOCOL_PARENT_ID,
+    CONF_PROTOCOL_KEY_SPLITTER,
     CONF_PROVIDERS,
     CONF_RAUMFELD_ICY_BASIC_MIGRATED,
     CONF_SMART_FADES_MODE,
-    CONF_VALUE_DISABLED,
-    CONF_VALUE_ENABLED,
     CONF_VOLUME_NORMALIZATION,
-    CONF_VOLUME_NORMALIZATION_TARGET,
 )
-from music_assistant.controllers.player_queues.constants import (
-    CONF_SMART_SHUFFLE_ARTIST_RECENCY,
-    CONF_SMART_SHUFFLE_DUPLICATE_GAP,
-    CONF_SMART_SHUFFLE_ENABLED,
-    CONF_SMART_SHUFFLE_SONG_RECENCY,
+from music_assistant.controllers.config.player_split import (
+    LEGACY_LINKED_PROTOCOL_IDS,
+    LEGACY_PROTOCOL_PARENT_ID,
+    migrate_player_split,
+    remove_player_records_of_older_versions,
 )
+from music_assistant.controllers.player_queues.constants import CONF_DEFAULT_ENQUEUE_SELECT_ARTIST
 from music_assistant.controllers.tasks.constants import TASK_STATE_CONFIG_KEY
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS
 
@@ -51,9 +47,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-# removed player config key, only referenced by its migration
-LEGACY_CONF_OUTPUT_LIMITER = "output_limiter"
-
 # removed automatic-player-selection sentinel of the connected-player plugins, only
 # referenced by their migration
 LEGACY_PLAYER_ID_AUTO = "__auto__"
@@ -61,19 +54,14 @@ LEGACY_PLAYER_ID_AUTO = "__auto__"
 # shared prefix of the removed per-player Bose SoundTouch preset keys
 LEGACY_BOSE_PRESET_KEY_PREFIX = "preset_"
 
-# removed hass provider config keys, only referenced by their migration
-LEGACY_CONF_TTS_ENTITY = "tts_entity"
-LEGACY_CONF_AI_TASK_ENTITY = "ai_task_entity"
-
 # removed MSX Bridge provider config keys, only referenced by their migration
 LEGACY_MSX_BRIDGE_KEYS = ("enable_player_grouping", "enable_sendspin_bridge")
 
 # player id prefix of the Sendspin clients the removed MSX Sendspin bridge registered
 LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX = "spb_msx_"
 
-# engine selection keys of the providers that consume the plugin engines
-CONF_AI_ENGINE = "ai_engine"
-CONF_TTS_ENGINE = "tts_engine"
+# removed player HTTP profile config key, only referenced by its migrations
+LEGACY_HTTP_PROFILE_KEY = "http_profile"
 
 
 # Canonical ids of the shared icon set (music-assistant/shared-icons v0.3.0);
@@ -416,7 +404,7 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "neteasecloudmusic": ("api_base_url", "cookie", "uid"),
     "nicovideo": ("user_session",),
     "nugs": ("username", "password"),
-    "opensubsonic": ("username", "password", "baseURL", "port", "path"),
+    "opensubsonic": ("username", "password", "baseURL", "port", "path", "enable_legacy_auth"),
     "pandora": ("username", "password"),
     "plex": (
         "token",
@@ -506,7 +494,7 @@ PROVIDER_SETUP_FLOW_DEFAULTS: dict[str, dict[str, ConfigValueType]] = {
 }
 
 
-async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0912, PLR0915
+async def migrate(data: dict[str, Any]) -> bool:
     """Migrate the persistent settings data in-place; return True if anything changed."""
     changed = False
 
@@ -527,79 +515,10 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0912, PLR0915
             LOGGER.warning("Removed orphaned provider config stub %s", instance_id)
             changed = True
 
-    # Collapse legacy multi-instance Fully Kiosk provider configs into a single
-    # provider instance with a list of devices (matching the MPD provider pattern).
-    # TODO: remove after 2.10 release
-    if _migrate_fully_kiosk_multi_instance(data):
-        changed = True
-    # Migrate default_enqueue_option_radio -> default_enqueue_option_live_sources.
-    # The same setting now covers both radio stations and plugin AudioSources
-    # (Spotify Connect, AirPlay receiver, etc.); preserves the user's customised
-    # value if they set one.
-    # TODO: remove after 2.10 release
-    player_queues_cfg = data.get(CONF_CORE, {}).get("player_queues")
-    if isinstance(player_queues_cfg, dict):
-        values = player_queues_cfg.get("values")
-        if isinstance(values, dict) and "default_enqueue_option_radio" in values:
-            radio_value = values.pop("default_enqueue_option_radio")
-            values.setdefault("default_enqueue_option_live_sources", radio_value)
-            LOGGER.info(
-                "Migrated default_enqueue_option_radio -> default_enqueue_option_live_sources"
-            )
-            changed = True
-
-    # Migrate sync_group members_filter (exclusion) -> allowed_members (inclusion).
-    # Inversion freezes the universe at migration time; speakers added after this
-    # point must be added by the user explicitly, which matches the new design's
-    # "limit to these" intent.
-    # TODO: remove after 2.10 release
-    all_player_configs = data.get(CONF_PLAYERS, {})
-    if isinstance(all_player_configs, dict):
-        group_provider_domains = {"sync_group", "universal_group"}
-        universe = {
-            pid
-            for pid, cfg in all_player_configs.items()
-            if isinstance(cfg, dict) and cfg.get("provider") not in group_provider_domains
-        }
-        for player_id, player_cfg in all_player_configs.items():
-            if not isinstance(player_cfg, dict):
-                continue
-            if player_cfg.get("provider") != "sync_group":
-                continue
-            values = player_cfg.setdefault("values", {})
-            old_exclude = values.get("members_filter") or []
-            if not old_exclude or values.get("allowed_members") is not None:
-                continue
-            values["allowed_members"] = sorted(universe - set(old_exclude))
-            values["members_filter"] = []
-            LOGGER.info(
-                "Migrated sync_group %s: members_filter (exclusion) -> allowed_members (inclusion)",
-                player_id,
-            )
-            changed = True
-
-    # Clear self-referential protocol links: a player whose protocol_parent_id or
-    # linked_protocol_ids pointed at its own id was hidden as its own protocol child.
-    # TODO: remove after 2.10 release
-    if _migrate_self_referential_protocol_links(data):
-        changed = True
-
-    # TODO: remove after 2.10 release
-    if _migrate_volume_normalization_target(data):
-        changed = True
-
     # Move queue-scoped settings (crossfade duration, volume normalization) from the per-player
     # config to the new per-queue config (queue_id == player_id, so the id maps 1:1).
     # TODO: remove after 2.11 release
     if _migrate_player_queue_settings(data):
-        changed = True
-
-    # Adopt the global-with-override model for queue settings: convert the former boolean toggles to
-    # their select strings, and promote the now global-only settings (crossfade duration, smart
-    # shuffle recency windows) to the Player Queues core config. Runs after the player->queue move
-    # above so any values it just landed are picked up here.
-    # TODO: remove after 2.10 release
-    if _migrate_global_queue_settings(data):
         changed = True
 
     # Promote local_audio attribution stubs to regular players and fold the settings of
@@ -608,22 +527,10 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0912, PLR0915
     if _migrate_local_audio_attribution_stubs(data):
         changed = True
 
-    # Drop ghost players that were discovered from this server's own AirPlay Receiver
-    # (shairport-sync) advertisements before discovery learned to filter them out.
-    # TODO: remove after 2.10 release
-    if _migrate_airplay_receiver_ghost_players(data):
-        changed = True
-
     # Give Apple TVs paired before native power control existed the current
     # default ("native") instead of the stale "none" that hid their power button.
     # TODO: remove after 2.11 release
     if _migrate_airplay_apple_power_control(data):
-        changed = True
-
-    # Drop the stored value of the removed output limiter player setting; clipping protection
-    # is now an explicit Safety Limiter DSP filter instead of a fixed output stage.
-    # TODO: remove after 2.10 release
-    if _migrate_output_limiter(data):
         changed = True
 
         # Move player-owned credential/pairing keys (AirPlay creds, Fully Kiosk / MPD password)
@@ -650,13 +557,6 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0912, PLR0915
     # because BluOS only plays back correctly on the forced content length profile.
     # TODO: remove after 2.12 release
     if _migrate_bluesound_http_profile(data):
-        changed = True
-
-    # Drop disabled protocol player configs that lost their parent player: the device they
-    # belong to can never register again while such a config lingers, and it is not shown
-    # in the UI so there is no way to enable it again.
-    # TODO: remove after 2.12 release
-    if _migrate_orphaned_disabled_protocol_configs(data):
         changed = True
 
     # Clear the stored name of players that were never renamed, so an updated default
@@ -688,9 +588,35 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0912, PLR0915
     if _migrate_nicovideo_drop_mail_login(data):
         changed = True
 
+    # Drop the stored value of the removed MilkDrop visualizer color tint setting.
+    # TODO: remove after 2.13 release
+    if _migrate_milkdrop_drop_color_tint(data):
+        changed = True
+
     # Move Raumfeld players still on the former "full" ICY default to "basic".
     # TODO: remove after 2.13 release
     if _migrate_raumfeld_icy_basic(data):
+        changed = True
+
+    # Move an artist selection that listed the artist's whole catalogue to the tracks of the
+    # artist's albums in the library.
+    # TODO: remove after 2.13 release
+    if _migrate_artist_catalogue_selection(data):
+        changed = True
+
+    # Split the player configs into one record per player and one per protocol. This runs
+    # after the steps above, which work on the records as they were before the split.
+    if migrate_player_split(data):
+        changed = True
+
+    # Remove the player records an older version stored in the old shape after the split.
+    if remove_player_records_of_older_versions(data):
+        changed = True
+
+    # Drop the stored value of the removed HTTP profile setting from every player and protocol.
+    # It reads both trees, so it also reaches a config that was split before this step existed.
+    # TODO: remove after 2.13 release
+    if _migrate_drop_http_profile(data):
         changed = True
 
     return changed
@@ -755,69 +681,6 @@ def migrate_provider_setup_data(data: dict[str, Any], encrypt: Callable[[str], s
     return changed
 
 
-# TODO: remove after 2.10 release
-def migrate_nfs_subfolder_into_export_path(
-    data: dict[str, Any],
-    encrypt: Callable[[str], str],
-    decrypt: Callable[[str], str],
-) -> bool:
-    """
-    Fold a stored NFS `subfolder` into its `export_path`, once.
-
-    The provider mounts the export as configured and scans the subfolder inside that mount, so
-    folding the two keys into one keeps an existing instance mounting what it already mounts.
-    Runs after encryption is initialized, like migrate_provider_setup_data, because both keys
-    live encrypted in `setup_data`.
-
-    Guarded by CONF_NFS_SUBFOLDER_MIGRATED so it cannot run twice: a subfolder stored
-    afterwards means "scan this path inside the mount" and must never be folded. Returns True
-    when the settings were modified, including the first run's marker.
-
-    :param data: The persistent settings data to migrate in-place.
-    :param encrypt: Callback that encrypts a string value at rest.
-    :param decrypt: Callback that decrypts a stored string value (a no-op for plain values).
-    """
-    if data.get(CONF_NFS_SUBFOLDER_MIGRATED):
-        return False
-    all_provider_configs = data.get(CONF_PROVIDERS, {})
-    if not isinstance(all_provider_configs, dict):
-        return False
-    changed = False
-    for instance_id, provider_cfg in all_provider_configs.items():
-        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != "filesystem_nfs":
-            continue
-        setup_data = provider_cfg.get("setup_data")
-        if not isinstance(setup_data, dict):
-            continue
-        stored_subfolder = setup_data.get("subfolder")
-        stored_export_path = setup_data.get("export_path")
-        if not isinstance(stored_subfolder, str) or not isinstance(stored_export_path, str):
-            continue
-        try:
-            subfolder = decrypt(stored_subfolder).strip()
-            export_path = decrypt(stored_export_path)
-        except InvalidDataError:
-            # one unreadable instance must not fail config setup for the whole server; it
-            # still surfaces the problem at its own setup. Name it without its values.
-            LOGGER.warning(
-                "Could not read the stored NFS paths of %s; skipping its subfolder migration",
-                instance_id,
-            )
-            continue
-        if not subfolder or not export_path:
-            # an empty export path is broken either way and must not become a relative one
-            continue
-        # must come out as <export_path>/<subfolder> so the mount source is unchanged
-        setup_data["export_path"] = encrypt(str(PurePosixPath(export_path) / subfolder.lstrip("/")))
-        del setup_data["subfolder"]
-        changed = True
-    if changed:
-        LOGGER.info("Migrated NFS provider subfolder into the export path")
-    # claim the marker even when nothing was folded, so a subfolder stored later is safe
-    data[CONF_NFS_SUBFOLDER_MIGRATED] = True
-    return True
-
-
 # TODO: remove after 2.12 release
 def migrate_connected_player_plugins(
     data: dict[str, Any],
@@ -832,8 +695,10 @@ def migrate_connected_player_plugins(
     domain, the explicitly configured players carry over into the multi-select and the
     per-instance device names are dropped (the advertised name follows the player now).
     For ariacast_receiver and yandex_ynison the connected player became mandatory: the
-    removed automatic selection and players that no longer exist are cleared (so the
-    provider fails into reconfigure) and their free-form device name keys are dropped.
+    removed automatic selection is cleared (so the provider fails into reconfigure) and
+    their free-form device name keys are dropped. A configured player is kept whether
+    a config is stored for it or not: a player that only exists while its device is
+    connected has none.
 
     Runs after encryption is initialized, and after migrate_provider_setup_data so the
     pre-setup-flow values have landed in setup_data by now.
@@ -845,15 +710,13 @@ def migrate_connected_player_plugins(
     all_provider_configs = data.get(CONF_PROVIDERS, {})
     if not isinstance(all_provider_configs, dict):
         return False
-    stored_players = data.get(CONF_PLAYERS, {})
-    known_player_ids = set(stored_players) if isinstance(stored_players, dict) else set()
     changed = False
     for domain in ("spotify_connect", "airplay_receiver"):
         if _collapse_connected_player_instances(
-            all_provider_configs, domain, known_player_ids, decrypt, storage_path
+            all_provider_configs, domain, decrypt, storage_path
         ):
             changed = True
-    if _clear_invalid_connected_players(all_provider_configs, known_player_ids, decrypt):
+    if _clear_invalid_connected_players(all_provider_configs, decrypt):
         changed = True
     return changed
 
@@ -861,7 +724,6 @@ def migrate_connected_player_plugins(
 def _collapse_connected_player_instances(
     all_provider_configs: dict[str, Any],
     domain: str,
-    known_player_ids: set[str],
     decrypt: Callable[[str], str],
     storage_path: str,
 ) -> bool:
@@ -870,7 +732,6 @@ def _collapse_connected_player_instances(
 
     :param all_provider_configs: The stored provider configurations, modified in-place.
     :param domain: The plugin domain to collapse (spotify_connect or airplay_receiver).
-    :param known_player_ids: The player ids present in the stored player configurations.
     :param decrypt: Callback that decrypts a stored string value.
     :param storage_path: The server storage path holding per-instance provider data dirs.
     """
@@ -926,16 +787,12 @@ def _collapse_connected_player_instances(
             survivor_id,
         )
     # ordered de-duped carry-over of the explicitly configured players; the removed
-    # automatic selection and vanished players contribute nothing
+    # automatic selection contributes nothing
     connected_players: list[str] = []
     soloist_player_ids: dict[str, str] = {}
     for instance_id in enabled_ids:
         player_id = decrypted.get(instance_id, {}).get("mass_player_id")
-        if (
-            not isinstance(player_id, str)
-            or player_id == LEGACY_PLAYER_ID_AUTO
-            or player_id not in known_player_ids
-        ):
+        if not isinstance(player_id, str) or player_id == LEGACY_PLAYER_ID_AUTO:
             continue
         if player_id not in connected_players:
             connected_players.append(player_id)
@@ -1004,14 +861,12 @@ def _move_soloist_data_dirs(storage_path: str, soloist_player_ids: dict[str, str
 
 def _clear_invalid_connected_players(
     all_provider_configs: dict[str, Any],
-    known_player_ids: set[str],
     decrypt: Callable[[str], str],
 ) -> bool:
     """
     Enforce the now-mandatory connected player on the single-player plugins.
 
     :param all_provider_configs: The stored provider configurations, modified in-place.
-    :param known_player_ids: The player ids present in the stored player configurations.
     :param decrypt: Callback that decrypts a stored string value.
     """
     changed = False
@@ -1039,7 +894,7 @@ def _clear_invalid_connected_players(
                 "Could not read the configured player of %s; leaving it in place", instance_id
             )
             continue
-        if player_id == LEGACY_PLAYER_ID_AUTO or player_id not in known_player_ids:
+        if player_id == LEGACY_PLAYER_ID_AUTO:
             del setup_data["mass_player_id"]
             changed = True
             LOGGER.warning(
@@ -1048,86 +903,6 @@ def _clear_invalid_connected_players(
                 instance_id,
             )
     return changed
-
-
-# TODO: remove after 2.10 release
-def migrate_hass_engine_selection(data: dict[str, Any], encrypt: Callable[[str], str]) -> bool:
-    """
-    Hand the removed Home Assistant TTS/AI entity choice over to the providers consuming it.
-
-    The Home Assistant plugin exposes every TTS/AI entity as a selectable engine now and each
-    consuming provider picks one itself, so the single choice that used to live on the plugin
-    is copied to the installed consumers that have no choice of their own yet. Providers
-    installed later pick an engine themselves at load. Returns True if anything changed.
-
-    Runs after encryption is initialized (like migrate_provider_setup_data), since the ai_radio
-    selection belongs in its encrypted `setup_data`.
-
-    :param data: The persistent settings data to migrate in-place.
-    :param encrypt: Callback that encrypts a string value, used for the values that land in
-        `setup_data`.
-    """
-    all_provider_configs = data.get(CONF_PROVIDERS, {})
-    if not isinstance(all_provider_configs, dict):
-        return False
-    hass_configs = {
-        instance_id: provider_cfg
-        for instance_id, provider_cfg in all_provider_configs.items()
-        if isinstance(provider_cfg, dict) and provider_cfg.get("domain") == "hass"
-    }
-    if len(hass_configs) > 1:
-        # there is no correct winner between several choices, so let the user pick per provider
-        LOGGER.warning(
-            "Skipped migrating the Home Assistant TTS/AI entity selection: "
-            "%s Home Assistant configurations found, select the engines manually",
-            len(hass_configs),
-        )
-        return False
-    changed = False
-    for instance_id, hass_cfg in hass_configs.items():
-        values = hass_cfg.get("values")
-        if not isinstance(values, dict):
-            continue
-        if not any(key in values for key in (LEGACY_CONF_TTS_ENTITY, LEGACY_CONF_AI_TASK_ENTITY)):
-            continue
-        tts_entity = values.pop(LEGACY_CONF_TTS_ENTITY, None)
-        ai_task_entity = values.pop(LEGACY_CONF_AI_TASK_ENTITY, None)
-        changed = True
-        if isinstance(ai_task_entity, str) and ai_task_entity:
-            ai_engine = f"{instance_id}/{ai_task_entity}"
-            _set_engine_selection(
-                all_provider_configs, "music_quiz", "values", CONF_AI_ENGINE, ai_engine
-            )
-            _set_engine_selection(
-                all_provider_configs, "smart_playlist", "values", CONF_AI_ENGINE, ai_engine
-            )
-            _set_engine_selection(
-                all_provider_configs, "ai_radio", "setup_data", CONF_AI_ENGINE, encrypt(ai_engine)
-            )
-        if isinstance(tts_entity, str) and tts_entity:
-            _set_engine_selection(
-                all_provider_configs,
-                "ai_radio",
-                "setup_data",
-                CONF_TTS_ENGINE,
-                encrypt(f"{instance_id}/{tts_entity}"),
-            )
-        LOGGER.info("Migrated the Home Assistant TTS/AI entity selection to the plugin engines")
-    return changed
-
-
-def _set_engine_selection(
-    all_provider_configs: dict[str, Any], domain: str, section: str, key: str, value: str
-) -> None:
-    """Store an engine selection on each config of the given domain that has none of its own."""
-    for provider_cfg in all_provider_configs.values():
-        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != domain:
-            continue
-        section_values = provider_cfg.get(section)
-        if not isinstance(section_values, dict):
-            section_values = {}
-            provider_cfg[section] = section_values
-        section_values.setdefault(key, value)
 
 
 def _migrate_player_queue_settings(data: dict[str, Any]) -> bool:
@@ -1174,136 +949,6 @@ def _migrate_player_queue_settings(data: dict[str, Any]) -> bool:
     return changed
 
 
-def _migrate_global_queue_settings(data: dict[str, Any]) -> bool:
-    """
-    Adopt the global-with-override model for the per-queue settings.
-
-    The two former boolean toggles become their select strings (so a queue can also follow the
-    global value), and the settings that are now global-only are promoted to the Player Queues core
-    config. Queues that stored nothing keep nothing and therefore fall back to the new "global"
-    default. Idempotent: a second run finds only select strings and no per-queue global-only values.
-    """
-    all_queue_configs = data.get(CONF_PLAYER_QUEUES, {})
-    if not isinstance(all_queue_configs, dict):
-        return False
-    changed = False
-    # 1. convert the former booleans (True/False) to their select strings (enabled/disabled)
-    bool_to_select = {True: CONF_VALUE_ENABLED, False: CONF_VALUE_DISABLED}
-    for queue_cfg in all_queue_configs.values():
-        if not isinstance(queue_cfg, dict):
-            continue
-        values = queue_cfg.get("values")
-        if not isinstance(values, dict):
-            continue
-        for key in (CONF_VOLUME_NORMALIZATION, CONF_SMART_SHUFFLE_ENABLED):
-            if isinstance(values.get(key), bool):
-                values[key] = bool_to_select[values[key]]
-                changed = True
-    # 2. promote the now global-only settings to the Player Queues core config
-    global_only_keys = (
-        CONF_CROSSFADE_DURATION,
-        CONF_SMART_SHUFFLE_SONG_RECENCY,
-        CONF_SMART_SHUFFLE_ARTIST_RECENCY,
-        CONF_SMART_SHUFFLE_DUPLICATE_GAP,
-    )
-    for key in global_only_keys:
-        if _promote_queue_setting_to_global(data, key):
-            changed = True
-    return changed
-
-
-def _promote_queue_setting_to_global(data: dict[str, Any], key: str) -> bool:
-    """
-    Promote a (now global-only) per-queue setting to global config and drop the per-queue copies.
-
-    A single value shared by every queue that set it is promoted so the user's preference is kept;
-    mixed values fall back to the new default. Mirrors _migrate_volume_normalization_target.
-    """
-    all_queue_configs = data.get(CONF_PLAYER_QUEUES, {})
-    if not isinstance(all_queue_configs, dict):
-        return False
-    stored_values: set[Any] = set()
-    for queue_cfg in all_queue_configs.values():
-        if not isinstance(queue_cfg, dict):
-            continue
-        values = queue_cfg.get("values")
-        if isinstance(values, dict) and key in values:
-            stored_values.add(values[key])
-    if not stored_values:
-        return False
-    # promote only a single consistent value (mixed values fall back to the new default), and never
-    # clobber a value the user already set globally; only touch the core config when promoting
-    existing_core = data.get(CONF_CORE, {}).get(CONF_PLAYER_QUEUES, {})
-    existing_values = existing_core.get("values", {}) if isinstance(existing_core, dict) else {}
-    if len(stored_values) == 1 and key not in existing_values:
-        core_values = (
-            data.setdefault(CONF_CORE, {})
-            .setdefault(CONF_PLAYER_QUEUES, {"domain": CONF_PLAYER_QUEUES})
-            .setdefault("values", {})
-        )
-        core_values[key] = next(iter(stored_values))
-        LOGGER.info("Promoted per-queue %s to the global Player Queues config", key)
-    # the setting is global-only now, so drop every per-queue copy
-    for queue_cfg in all_queue_configs.values():
-        if not isinstance(queue_cfg, dict):
-            continue
-        values = queue_cfg.get("values")
-        if isinstance(values, dict):
-            values.pop(key, None)
-    return True
-
-
-def _migrate_volume_normalization_target(data: dict[str, Any]) -> bool:
-    """
-    Migrate volume_normalization_target from per-player to the global streams setting.
-
-    Collects all explicitly stored per-player values; if they all agree on a single value,
-    that value is promoted to the streams core config so the user's preference is preserved.
-    """
-    all_player_configs = data.get(CONF_PLAYERS, {})
-    if not isinstance(all_player_configs, dict):
-        return False
-    per_player_values: set[int] = set()
-    for player_cfg in all_player_configs.values():
-        if not isinstance(player_cfg, dict):
-            continue
-        values = player_cfg.get("values")
-        if not isinstance(values, dict):
-            continue
-        if CONF_VOLUME_NORMALIZATION_TARGET in values:
-            per_player_values.add(int(values[CONF_VOLUME_NORMALIZATION_TARGET]))
-
-    if not per_player_values:
-        return False
-
-    streams_core = data.setdefault(CONF_CORE, {}).setdefault("streams", {})
-    streams_values = streams_core.setdefault("values", {})
-    # only promote when not already globally configured
-    if CONF_VOLUME_NORMALIZATION_TARGET not in streams_values:
-        # single consistent value across all players → promote it; mixed → use new default
-        promoted = per_player_values.pop() if len(per_player_values) == 1 else None
-        if promoted is not None:
-            streams_values[CONF_VOLUME_NORMALIZATION_TARGET] = promoted
-            LOGGER.info(
-                "Promoted volume_normalization_target %s LUFS to global streams setting",
-                promoted,
-            )
-
-    for player_id, player_cfg in all_player_configs.items():
-        if not isinstance(player_cfg, dict):
-            continue
-        values = player_cfg.get("values")
-        if not isinstance(values, dict):
-            continue
-        if CONF_VOLUME_NORMALIZATION_TARGET in values:
-            del values[CONF_VOLUME_NORMALIZATION_TARGET]
-            LOGGER.info(
-                "Removed per-player volume_normalization_target for player %s",
-                player_id,
-            )
-    return True
-
-
 def _migrate_local_audio_attribution_stubs(data: dict[str, Any]) -> bool:
     """
     Promote local_audio attribution-stub players to regular players.
@@ -1328,7 +973,7 @@ def _migrate_local_audio_attribution_stubs(data: dict[str, Any]) -> bool:
             continue
         player_cfg["player_type"] = "player"
         values = player_cfg.setdefault("values", {})
-        values.pop(CONF_PROTOCOL_PARENT_ID, None)
+        values.pop(LEGACY_PROTOCOL_PARENT_ID, None)
         changed = True
 
         # the universal player wrapper was keyed on the stub's player_id
@@ -1374,8 +1019,8 @@ def _absorb_universal_player_config(
     universal_values = universal_values if isinstance(universal_values, dict) else {}
     # bookkeeping only relevant to the universal player wrapper itself
     internal_keys = (
-        CONF_LINKED_PROTOCOL_IDS,
-        CONF_PROTOCOL_PARENT_ID,
+        LEGACY_LINKED_PROTOCOL_IDS,
+        LEGACY_PROTOCOL_PARENT_ID,
         "device_identifiers",
         "device_info",
     )
@@ -1387,11 +1032,11 @@ def _absorb_universal_player_config(
     # carry the linked protocols (minus the stub itself, it is the parent now)
     # and re-point their cached parent so they restore fast on the next start
     linked_ids = [
-        pid for pid in (universal_values.get(CONF_LINKED_PROTOCOL_IDS) or []) if pid != player_id
+        pid for pid in (universal_values.get(LEGACY_LINKED_PROTOCOL_IDS) or []) if pid != player_id
     ]
     if linked_ids:
-        existing_ids = list(values.get(CONF_LINKED_PROTOCOL_IDS) or [])
-        values[CONF_LINKED_PROTOCOL_IDS] = existing_ids + [
+        existing_ids = list(values.get(LEGACY_LINKED_PROTOCOL_IDS) or [])
+        values[LEGACY_LINKED_PROTOCOL_IDS] = existing_ids + [
             pid for pid in linked_ids if pid not in existing_ids
         ]
     all_player_configs = data.get(CONF_PLAYERS, {})
@@ -1400,8 +1045,8 @@ def _absorb_universal_player_config(
         if not isinstance(protocol_cfg, dict):
             continue
         protocol_values = protocol_cfg.setdefault("values", {})
-        if protocol_values.get(CONF_PROTOCOL_PARENT_ID) == universal_id:
-            protocol_values[CONF_PROTOCOL_PARENT_ID] = player_id
+        if protocol_values.get(LEGACY_PROTOCOL_PARENT_ID) == universal_id:
+            protocol_values[LEGACY_PROTOCOL_PARENT_ID] = player_id
 
     # move per-queue settings and DSP configuration to the new player_id
     for tree_key in (CONF_PLAYER_QUEUES, CONF_PLAYER_DSP):
@@ -1422,215 +1067,6 @@ def _absorb_universal_player_config(
             members = other_values.get(key)
             if isinstance(members, list) and universal_id in members:
                 other_values[key] = [player_id if pid == universal_id else pid for pid in members]
-
-
-def _migrate_self_referential_protocol_links(data: dict[str, Any]) -> bool:
-    """Clear protocol links that point a player at its own id."""
-    all_player_configs = data.get(CONF_PLAYERS, {})
-    if not isinstance(all_player_configs, dict):
-        return False
-    changed = False
-    for player_id, player_cfg in all_player_configs.items():
-        if not isinstance(player_cfg, dict):
-            continue
-        values = player_cfg.get("values")
-        if not isinstance(values, dict):
-            continue
-        repaired = False
-        if values.get(CONF_PROTOCOL_PARENT_ID) == player_id:
-            values[CONF_PROTOCOL_PARENT_ID] = None
-            repaired = True
-        linked = values.get(CONF_LINKED_PROTOCOL_IDS)
-        if isinstance(linked, list) and player_id in linked:
-            values[CONF_LINKED_PROTOCOL_IDS] = [pid for pid in linked if pid != player_id]
-            repaired = True
-        if repaired:
-            LOGGER.warning("Repaired self-referential protocol link for %s", player_id)
-            changed = True
-    return changed
-
-
-def _migrate_fully_kiosk_multi_instance(data: dict[str, Any]) -> bool:
-    """Collapse legacy multi-instance Fully Kiosk configs into a single provider instance."""
-    providers = data.get(CONF_PROVIDERS, {})
-    legacy_ids = [
-        iid
-        for iid, conf in providers.items()
-        if isinstance(conf, dict) and conf.get("domain") == "fully_kiosk" and iid != "fully_kiosk"
-    ]
-    if not legacy_ids:
-        return False
-
-    ip_entries: list[str] = []
-    players = data.setdefault(CONF_PLAYERS, {})
-    for iid in legacy_ids:
-        old_values = providers[iid].get("values") or {}
-        host = old_values.get("ip_address")
-        if not host:
-            del providers[iid]
-            continue
-        try:
-            port = int(old_values.get("port") or 2323)
-        except TypeError, ValueError:
-            port = 2323
-        entry = host if port == 2323 else f"{host}:{port}"
-        if entry not in ip_entries:
-            ip_entries.append(entry)
-
-        new_player_id = f"fully_kiosk_{host}_{port}"
-        player_conf = players.setdefault(
-            new_player_id,
-            {
-                "player_id": new_player_id,
-                "provider": "fully_kiosk",
-                "enabled": True,
-                "values": {},
-            },
-        )
-        player_values = player_conf.setdefault("values", {})
-        for key in ("password", "use_ssl", "verify_ssl", "ssl_fingerprint"):
-            if old_values.get(key) is not None and key not in player_values:
-                player_values[key] = old_values[key]
-
-        del providers[iid]
-
-    if "fully_kiosk" in providers:
-        existing_values = providers["fully_kiosk"].setdefault("values", {})
-        existing_ips = list(existing_values.get("manual_discovery_ip_addresses") or [])
-        for entry in ip_entries:
-            if entry not in existing_ips:
-                existing_ips.append(entry)
-        existing_values["manual_discovery_ip_addresses"] = existing_ips
-    else:
-        providers["fully_kiosk"] = {
-            "type": "player",
-            "domain": "fully_kiosk",
-            "instance_id": "fully_kiosk",
-            "enabled": True,
-            "values": {"manual_discovery_ip_addresses": ip_entries},
-        }
-
-    LOGGER.warning(
-        "Migrated %d legacy Fully Kiosk provider instance(s) into a single instance. "
-        "Devices and their passwords have been preserved, but any Fully Kiosk player "
-        "that was part of a universal group will need to be re-added to it. ",
-        len(legacy_ids),
-    )
-    return True
-
-
-def _migrate_airplay_receiver_ghost_players(data: dict[str, Any]) -> bool:
-    """
-    Remove ghost players left behind by this server's own AirPlay Receiver instances.
-
-    The AirPlay provider could discover the server's own AirPlay Receiver
-    (shairport-sync) advertisements as regular AirPlay players. shairport-sync
-    derives its device id from the receiver name plus a host interface MAC, which
-    can change per boot (e.g. virtual interface MACs), so every restart could mint
-    a new player id: the previous ids linger as permanently unavailable players and
-    universal player wrappers. Discovery now filters these advertisements out; this
-    migration drops the leftovers.
-    """
-    all_provider_configs = data.get(CONF_PROVIDERS, {})
-    all_player_configs = data.get(CONF_PLAYERS, {})
-    if not isinstance(all_provider_configs, dict) or not isinstance(all_player_configs, dict):
-        return False
-    # the advertised name of every enabled receiver instance
-    # (key and default mirror the airplay_receiver provider's config entry).
-    # Disabled instances are skipped, consistent with the discovery filter: they
-    # run no daemon and cannot have produced the ghosts, so their name is too weak
-    # a signal to delete a config on (it could be a legitimate same-named device).
-    receiver_names: set[str] = set()
-    for provider_cfg in all_provider_configs.values():
-        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != "airplay_receiver":
-            continue
-        if not provider_cfg.get("enabled", True):
-            continue
-        setup_data = provider_cfg.get("setup_data")
-        if isinstance(setup_data, dict) and "airplay_name" in setup_data:
-            # New setup-flow instances cannot have produced legacy ghosts. Their
-            # encrypted receiver name is unavailable during this early migration.
-            continue
-        provider_values = provider_cfg.get("values")
-        if provider_cfg.get("instance_id") == "airplay_receiver" or (
-            isinstance(provider_values, dict) and CONF_CONNECTED_PLAYERS in provider_values
-        ):
-            # a per-player-model instance advertises player-derived names, so the
-            # legacy default names this cleanup matches on cannot originate there.
-            # The bare domain id is the durable signal (the legacy multi-instance
-            # era always minted suffixed ids); the connected_players marker alone
-            # is not, as the config store drops it again when the stored value
-            # equals the entry default (an empty selection).
-            continue
-        airplay_name = (
-            provider_values.get("airplay_name") if isinstance(provider_values, dict) else None
-        )
-        receiver_names.add(str(airplay_name) if airplay_name else "Music Assistant")
-    if not receiver_names:
-        return False
-    # the Sendspin bridge of such a ghost registered under "<name> (AirPlay)"
-    bridge_names = {f"{name} (AirPlay)" for name in receiver_names}
-
-    # First identify the ghost protocol endpoints: the discovered AirPlay player and
-    # its Sendspin bridge, each matched by its own advertised (receiver) name.
-    endpoint_ghost_ids: set[str] = set()
-    for player_id, player_cfg in all_player_configs.items():
-        if not isinstance(player_cfg, dict):
-            continue
-        default_name = player_cfg.get("default_name")
-        provider = player_cfg.get("provider")
-        if (
-            player_id.startswith("ap") and provider == "airplay" and default_name in receiver_names
-        ) or (
-            player_id.startswith("spb_") and provider == "sendspin" and default_name in bridge_names
-        ):
-            endpoint_ghost_ids.add(player_id)
-
-    # Then add the universal player wrappers that exclusively wrap those endpoints.
-    # A wrapper is only removed when it links at least one confirmed ghost endpoint
-    # and nothing else, so a real player that merely shares the receiver name (with
-    # no or different linked protocols) is never deleted.
-    ghost_ids = set(endpoint_ghost_ids)
-    for player_id, player_cfg in all_player_configs.items():
-        if not isinstance(player_cfg, dict):
-            continue
-        if not (
-            player_id.startswith("up")
-            and player_cfg.get("provider") == "universal_player"
-            and player_cfg.get("default_name") in receiver_names | bridge_names
-        ):
-            continue
-        values = player_cfg.get("values")
-        linked = values.get(CONF_LINKED_PROTOCOL_IDS) if isinstance(values, dict) else None
-        if isinstance(linked, list) and linked and all(pid in endpoint_ghost_ids for pid in linked):
-            ghost_ids.add(player_id)
-    if not ghost_ids:
-        return False
-
-    for player_id in ghost_ids:
-        del all_player_configs[player_id]
-        # drop dead per-queue and DSP state along with the player config
-        for tree_key in (CONF_PLAYER_QUEUES, CONF_PLAYER_DSP):
-            tree = data.get(tree_key)
-            if isinstance(tree, dict):
-                tree.pop(player_id, None)
-    # strip dangling references to the removed ghosts from group configurations
-    for player_cfg in all_player_configs.values():
-        if not isinstance(player_cfg, dict):
-            continue
-        values = player_cfg.get("values")
-        if not isinstance(values, dict):
-            continue
-        for key in ("group_members", "allowed_members"):
-            members = values.get(key)
-            if isinstance(members, list) and any(pid in ghost_ids for pid in members):
-                values[key] = [pid for pid in members if pid not in ghost_ids]
-    LOGGER.info(
-        "Removed %d ghost player config(s) left behind by this server's own "
-        "AirPlay Receiver instances",
-        len(ghost_ids),
-    )
-    return True
 
 
 def _migrate_airplay_apple_power_control(data: dict[str, Any]) -> bool:
@@ -1664,24 +1100,6 @@ def _migrate_airplay_apple_power_control(data: dict[str, Any]) -> bool:
     return changed
 
 
-def _migrate_output_limiter(data: dict[str, Any]) -> bool:
-    """Remove the stored values of the removed per-player output limiter setting."""
-    all_player_configs = data.get(CONF_PLAYERS, {})
-    if not isinstance(all_player_configs, dict):
-        return False
-    changed = False
-    for player_cfg in all_player_configs.values():
-        if not isinstance(player_cfg, dict):
-            continue
-        player_values = player_cfg.get("values")
-        if isinstance(player_values, dict) and LEGACY_CONF_OUTPUT_LIMITER in player_values:
-            del player_values[LEGACY_CONF_OUTPUT_LIMITER]
-            changed = True
-    if changed:
-        LOGGER.info("Removed the obsolete output limiter setting from the player configuration(s)")
-    return changed
-
-
 # the only HTTP profile BluOS devices play back correctly on
 FORCED_HTTP_PROFILE = "forced_content_length"
 
@@ -1706,11 +1124,40 @@ def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
         player_values = player_cfg.get("values")
         if not isinstance(player_values, dict):
             continue
-        if player_values.get(CONF_HTTP_PROFILE, FORCED_HTTP_PROFILE) != FORCED_HTTP_PROFILE:
-            del player_values[CONF_HTTP_PROFILE]
+        if player_values.get(LEGACY_HTTP_PROFILE_KEY, FORCED_HTTP_PROFILE) != FORCED_HTTP_PROFILE:
+            del player_values[LEGACY_HTTP_PROFILE_KEY]
             changed = True
     if changed:
         LOGGER.info("Restored the required HTTP profile on the Bluesound player configuration(s)")
+    return changed
+
+
+def _migrate_drop_http_profile(data: dict[str, Any]) -> bool:
+    """Drop the stored value of the removed HTTP profile setting from every player and protocol."""
+    # a player record can hold a copy of a protocol's value under a prefixed key: a parent
+    # player stored one for a linked protocol player, and the split keeps the values of a
+    # universal player on its player record
+    protocol_key_suffix = f"{CONF_PROTOCOL_KEY_SPLITTER}{LEGACY_HTTP_PROFILE_KEY}"
+    changed = False
+    for tree in (CONF_PLAYERS, CONF_PLAYER_PROTOCOLS):
+        records = data.get(tree)
+        if not isinstance(records, dict):
+            continue
+        for record in records.values():
+            if not isinstance(record, dict):
+                continue
+            values = record.get("values")
+            if not isinstance(values, dict):
+                continue
+            for key in [
+                key
+                for key in values
+                if key == LEGACY_HTTP_PROFILE_KEY or key.endswith(protocol_key_suffix)
+            ]:
+                del values[key]
+                changed = True
+    if changed:
+        LOGGER.info("Dropped the removed HTTP profile from the player configuration(s)")
     return changed
 
 
@@ -1737,53 +1184,6 @@ def _migrate_unrenamed_player_names(data: dict[str, Any]) -> bool:
         player_cfg["name"] = None
         changed = True
     return changed
-
-
-def _migrate_orphaned_disabled_protocol_configs(data: dict[str, Any]) -> bool:
-    """
-    Remove disabled protocol player configs that no longer belong to a player.
-
-    A protocol player is only ever presented as part of the player that owns it, so a
-    disabled config that outlived its owner keeps the device from registering again while
-    offering no way to enable it.
-    """
-    all_player_configs = data.get(CONF_PLAYERS, {})
-    if not isinstance(all_player_configs, dict):
-        return False
-    linked_ids: set[str] = set()
-    for player_cfg in all_player_configs.values():
-        if not isinstance(player_cfg, dict):
-            continue
-        player_values = player_cfg.get("values")
-        if not isinstance(player_values, dict):
-            continue
-        if isinstance(cached_ids := player_values.get(CONF_LINKED_PROTOCOL_IDS), list):
-            linked_ids.update(pid for pid in cached_ids if isinstance(pid, str))
-    orphaned: list[str] = []
-    for player_id, player_cfg in all_player_configs.items():
-        if not isinstance(player_cfg, dict):
-            continue
-        if player_cfg.get("player_type") != "protocol":
-            continue
-        if player_cfg.get("enabled", True):
-            continue
-        # a player owns a protocol player from either side of the link
-        if player_id in linked_ids:
-            continue
-        player_values = player_cfg.get("values")
-        parent_id = (
-            player_values.get(CONF_PROTOCOL_PARENT_ID) if isinstance(player_values, dict) else None
-        )
-        if parent_id in all_player_configs:
-            continue
-        orphaned.append(player_id)
-    dsp_configs = data.get(CONF_PLAYER_DSP)
-    for player_id in orphaned:
-        del all_player_configs[player_id]
-        if isinstance(dsp_configs, dict):
-            dsp_configs.pop(player_id, None)
-        LOGGER.warning("Removed orphaned player configuration %s", player_id)
-    return bool(orphaned)
 
 
 def _migrate_msx_bridge_settings(data: dict[str, Any]) -> bool:
@@ -1834,7 +1234,7 @@ def _migrate_msx_bridge_settings(data: dict[str, Any]) -> bool:
         player_values = player_cfg.get("values")
         if not isinstance(player_values, dict):
             continue
-        cached_ids = player_values.get(CONF_LINKED_PROTOCOL_IDS)
+        cached_ids = player_values.get(LEGACY_LINKED_PROTOCOL_IDS)
         if not isinstance(cached_ids, list):
             continue
         kept_ids = [
@@ -1843,7 +1243,7 @@ def _migrate_msx_bridge_settings(data: dict[str, Any]) -> bool:
             if not (isinstance(pid, str) and pid.startswith(LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX))
         ]
         if len(kept_ids) != len(cached_ids):
-            player_values[CONF_LINKED_PROTOCOL_IDS] = kept_ids
+            player_values[LEGACY_LINKED_PROTOCOL_IDS] = kept_ids
             changed = True
     return changed
 
@@ -2072,6 +1472,28 @@ def _migrate_nicovideo_drop_mail_login(data: dict[str, Any]) -> bool:
     return True
 
 
+def _migrate_milkdrop_drop_color_tint(data: dict[str, Any]) -> bool:
+    """Remove the stored color tint value from every milkdrop_visualizer provider instance."""
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    dropped = 0
+    for provider_cfg in all_provider_configs.values():
+        if (
+            not isinstance(provider_cfg, dict)
+            or provider_cfg.get("domain") != "milkdrop_visualizer"
+        ):
+            continue
+        stored = provider_cfg.get("values")
+        if isinstance(stored, dict) and "color_tint" in stored:
+            del stored["color_tint"]
+            dropped += 1
+    if not dropped:
+        return False
+    LOGGER.info("Removed %d unused milkdrop color tint value(s)", dropped)
+    return True
+
+
 def _migrate_raumfeld_icy_basic(data: dict[str, Any]) -> bool:
     """
     Move Raumfeld players still on the former "full" ICY default to "basic", once.
@@ -2106,4 +1528,21 @@ def _migrate_raumfeld_icy_basic(data: dict[str, Any]) -> bool:
         LOGGER.info("Moved %d Raumfeld player(s) from ICY metadata full to basic", migrated)
     # claim the marker even when nothing moved, so a "full" picked later is kept
     data[CONF_RAUMFELD_ICY_BASIC_MIGRATED] = True
+    return True
+
+
+def _migrate_artist_catalogue_selection(data: dict[str, Any]) -> bool:
+    """Move a stored artist selection that is no longer offered to the library album tracks."""
+    core_cfg = data.get(CONF_CORE)
+    queues_cfg = core_cfg.get("player_queues") if isinstance(core_cfg, dict) else None
+    queue_values = queues_cfg.get("values") if isinstance(queues_cfg, dict) else None
+    if not isinstance(queue_values, dict):
+        return False
+    if queue_values.get(CONF_DEFAULT_ENQUEUE_SELECT_ARTIST) not in (
+        "all_tracks",
+        "all_album_tracks",
+    ):
+        return False
+    queue_values[CONF_DEFAULT_ENQUEUE_SELECT_ARTIST] = "library_album_tracks"
+    LOGGER.info("Moved the artist playback selection to the tracks of the library albums")
     return True

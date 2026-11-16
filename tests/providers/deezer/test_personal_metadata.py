@@ -104,6 +104,7 @@ async def test_metadata_enrichment_backfills_personal_artwork(
     enrichment.logger = provider.logger
     enrichment.config = Mock()
     enrichment.config.get_value.return_value = False
+    enrichment.preferred_language = "en"  # type: ignore[misc]
 
     with patch.object(mass, "get_provider", return_value=provider):
         if isinstance(item, Album):

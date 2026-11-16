@@ -13,23 +13,27 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
-from music_assistant_models.auth import UserRole
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing, ProviderType
 from music_assistant_models.media_items import MediaItem
 
-from music_assistant.constants import CONF_PROVIDERS, MASS_LOGGER_NAME
+from music_assistant.constants import CONF_PROVIDERS, EXTERNAL_ID_PROVIDER, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
-    from music_assistant_models.auth import User
+    from music_assistant_models.media_items import ProviderMapping
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.provider_access")
 
+# owns no source, is no member of the home and is on no list of selected users
+_ANONYMOUS_PLAYBACK_USER: Final = User(
+    user_id="anonymous_playback", username="anonymous_playback", role=UserRole.GUEST
+)
 # a record we can not read hides its source instead of exposing it
 _UNREADABLE_ACCESS = ProviderAccess(sharing=ProviderSharing.PRIVATE)
 
@@ -70,16 +74,18 @@ def visible_music_sources(mass: MusicAssistant, user: User | None) -> list[str] 
 
 def hidden_music_sources(mass: MusicAssistant, user: User | None) -> set[str]:
     """
-    Return the instance ids of the music sources the given user may not see.
+    Return the instance ids, and service domains, of the music sources the user may not see.
+
+    The domain of a service is included when the user may see none of its accounts, so a
+    reference by domain is refused like one by instance id.
 
     :param mass: The MusicAssistant instance.
     :param user: The user to resolve the music sources for; None for anonymous playback.
     """
-    return {
-        source.instance_id
-        for source in _music_sources(mass)
-        if not access_allows(source.access, user)
-    }
+    sources = _music_sources(mass)
+    hidden = {src.instance_id for src in sources if not access_allows(src.access, user)}
+    visible_domains = {src.domain for src in sources if src.instance_id not in hidden}
+    return hidden | {src.domain for src in sources if src.domain not in visible_domains}
 
 
 def visible_playback_sources(mass: MusicAssistant, user: User | None) -> list[str] | None:
@@ -178,25 +184,79 @@ def music_sources_access(mass: MusicAssistant) -> dict[str, ProviderAccess | Non
 
 
 def visible_provider(
-    mass: MusicAssistant, instance_id_or_domain: str, user: User | None
+    mass: MusicAssistant, instance_id_or_domain: str, user: User | None, strict: bool = False
 ) -> ProviderInstanceType | None:
     """
     Return the loaded provider serving this instance id or domain, if the user may see it.
 
     An unavailable account of a streaming service resolves to another loaded account of that
-    service (see `mass.get_provider`), so the account actually serving is the one checked.
+    service (see `mass.get_provider`), so the account actually serving is the one checked; one
+    hidden from the user gives way to a visible account of the same service, if there is one,
+    the user's own account before a shared one.
     Only music sources are narrowed; None for the user means no narrowing at all.
 
     :param mass: The MusicAssistant instance.
     :param instance_id_or_domain: The provider instance id or domain to look up.
     :param user: The user to check the source for, None for unfiltered access.
+    :param strict: Serve exactly this instance, never another account of the service.
     """
-    provider = mass.get_provider(instance_id_or_domain)
+    if strict:
+        provider = exact_provider(mass, instance_id_or_domain)
+    else:
+        provider = mass.get_provider(instance_id_or_domain)
+        if provider is None and user is not None:
+            # an account that is not loaded at all hands the request to another loaded account
+            # of its streaming service, as an unavailable one does
+            domain = next(
+                (s.domain for s in _music_sources(mass) if s.instance_id == instance_id_or_domain),
+                None,
+            )
+            provider = next(
+                (
+                    other
+                    for other in (mass.get_provider_instances(domain) if domain else [])
+                    if getattr(other, "is_streaming_provider", False)
+                ),
+                None,
+            )
     if provider is None or user is None or provider.type != ProviderType.MUSIC:
         return provider
-    if provider.instance_id in hidden_music_sources(mass, user):
-        return None
-    return provider
+    hidden = hidden_music_sources(mass, user)
+    if strict or not getattr(provider, "is_streaming_provider", False):
+        return None if provider.instance_id in hidden else provider
+    if provider.instance_id == instance_id_or_domain and provider.instance_id not in hidden:
+        return provider
+    # another account of the service serves the request: choose among the visible ones
+    candidates = [
+        other
+        for other in mass.get_provider_instances(provider.domain)
+        if other.instance_id not in hidden
+    ]
+    # the user's own account of the service comes before one merely shared with them
+    candidates.sort(key=lambda other: source_owner(mass, other.instance_id) != user.user_id)
+    return candidates[0] if candidates else None
+
+
+def has_visible_source(
+    mass: MusicAssistant, provider_mappings: Iterable[ProviderMapping], user: User | None
+) -> bool:
+    """
+    Return whether at least one of the mappings is on a source the user may see.
+
+    Mappings on anything but a music source always count as visible, as does an item
+    without mappings.
+
+    :param mass: The MusicAssistant instance.
+    :param provider_mappings: The provider mappings of the item.
+    :param user: The user to check the sources for, None for unfiltered access.
+    """
+    if user is None:
+        return True
+    mappings = list(provider_mappings)
+    if not mappings:
+        return True
+    hidden = hidden_music_sources(mass, user)
+    return any(mapping.provider_instance not in hidden for mapping in mappings)
 
 
 def visible_items[T](mass: MusicAssistant, items: Iterable[T], user: User | None) -> list[T]:
@@ -204,7 +264,8 @@ def visible_items[T](mass: MusicAssistant, items: Iterable[T], user: User | None
     Return the items, leaving out the media items no source the user may see can serve.
 
     A media item is kept when at least one of its provider mappings resolves through
-    `visible_provider`; other items, such as folders, are always kept.
+    `visible_provider`. An item known only by an external id is always kept, as it is looked
+    up on the user's own sources, and so are other items, such as folders.
 
     :param mass: The MusicAssistant instance.
     :param items: The items to narrow.
@@ -224,7 +285,13 @@ def visible_items[T](mass: MusicAssistant, items: Iterable[T], user: User | None
         item
         for item in items
         if not isinstance(item, MediaItem)
-        or any(_is_visible(mapping.provider_instance) for mapping in item.provider_mappings)
+        or item.provider == EXTERNAL_ID_PROVIDER
+        # a library item is only visible through the exact accounts holding it
+        or (
+            has_visible_source(mass, item.provider_mappings, user)
+            if item.provider == "library"
+            else any(_is_visible(mapping.provider_instance) for mapping in item.provider_mappings)
+        )
     ]
 
 
@@ -277,6 +344,22 @@ async def resolve_playback_user(mass: MusicAssistant, queue_id: str) -> User | N
     if (pq_data := mass.player_queues.queue_data_or_none(queue_id)) and pq_data.userid:
         return await mass.webserver.auth.get_user(pq_data.userid)
     return None
+
+
+async def resolve_playback_user_or_stand_in(mass: MusicAssistant, queue_id: str) -> User:
+    """
+    Return the user to fetch media as for the playback of a queue.
+
+    That is the user the queue plays for. For anonymous playback it is a stand-in user the
+    music source rules give exactly what they give anonymous playback: the sources of the
+    whole home and the ones shared with everyone. Media fetched as this user is on a
+    source the queue's stream may use, where fetching it without a user would use every
+    source there is.
+
+    :param mass: The MusicAssistant instance.
+    :param queue_id: The queue the playback belongs to.
+    """
+    return await resolve_playback_user(mass, queue_id) or _ANONYMOUS_PLAYBACK_USER
 
 
 async def playback_sources(

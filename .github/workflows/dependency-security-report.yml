@@ -310,15 +310,7 @@ jobs:
             echo "---" >> security_report.md
             echo "" >> security_report.md
 
-            # 3. Vulnerability Scan Results
-            if [ -f audit_report.md ]; then
-              cat audit_report.md >> security_report.md
-            fi
-            echo "" >> security_report.md
-            echo "---" >> security_report.md
-            echo "" >> security_report.md
-
-            # 4. Automated Security Checks
+            # 3. Automated Security Checks
             echo "### Automated Security Checks" >> security_report.md
             echo "" >> security_report.md
 
@@ -377,6 +369,15 @@ jobs:
             else
               echo "**To approve:** Comment \`/approve-dependencies\` or manually add the \`dependencies-reviewed\` label." >> security_report.md
             fi
+
+            # 4. Vulnerability Scan Results, last because it lists the whole
+            # environment and is the part cut off when the comment gets too long
+            if [ -f audit_report.md ]; then
+              echo "" >> security_report.md
+              echo "---" >> security_report.md
+              echo "" >> security_report.md
+              cat audit_report.md >> security_report.md
+            fi
           else
             echo "✅ No dependency changes detected in this PR." >> security_report.md
           fi
@@ -395,8 +396,20 @@ jobs:
             const fs = require('fs');
             const { owner, repo } = context.repo;
             const prs = JSON.parse(process.env.PRS);
-            const report = fs.readFileSync('security_report.md', 'utf8');
             const marker = '🔒 Dependency Security Report';
+
+            // GitHub rejects a comment over 65536 characters; the run summary keeps the full report
+            const maxLength = 65536;
+            let report = fs.readFileSync('security_report.md', 'utf8');
+            if (report.length > maxLength) {
+              const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+              const note = `\n\n---\n\n✂️ This report is too long for a comment and was cut off here. See the [full report in the run summary](${runUrl}).\n`;
+              const closeFence = '\n```';
+              report = report.slice(0, Math.max(0, report.lastIndexOf('\n', maxLength - note.length - closeFence.length)));
+              // Close a code block the cut left open, so the note renders as text
+              if ((report.match(/^```/gm) ?? []).length % 2) report += closeFence;
+              report += note;
+            }
 
             for (const pr of prs) {
               const comments = await github.paginate(github.rest.issues.listComments, {

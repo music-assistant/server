@@ -53,6 +53,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
+    EXTERNAL_ID_PROVIDER,
     GENRE_ICONS_DIR_NAME,
     MASS_LOGO,
     PLAYLIST_MEDIA_TYPES,
@@ -87,6 +88,7 @@ from music_assistant.helpers.playlists import (
     fetch_playlist,
     generate_m3u,
     media_item_to_playlist_item,
+    move_playlist_block,
     parse_extinf_title,
     parse_m3u,
     parse_m3u_playlist_image,
@@ -634,6 +636,24 @@ class BuiltinProvider(MusicProvider):
                 msg = f"Position out of range for a playlist of {len(items)} item(s)"
                 raise InvalidDataError(msg)
             items.insert(to_position - 1, items.pop(from_position - 1))
+            playlist = await self.get_playlist(prov_playlist_id)
+            await self._write_m3u_file(
+                prov_playlist_id,
+                playlist.name,
+                items,
+                self._get_playlist_image_url(playlist),
+            )
+
+    async def move_playlist_tracks(
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int | None = None
+    ) -> None:
+        """Move tracks of a playlist as one block to another position (all 1-based)."""
+        async with self._get_playlist_lock(prov_playlist_id):
+            m3u_data = await self._read_m3u_file(prov_playlist_id)
+            entries = parse_m3u(m3u_data)
+            if to_position is None:
+                to_position = len(entries) - len(positions) + 1
+            items = move_playlist_block(entries, positions, to_position)
             playlist = await self.get_playlist(prov_playlist_id)
             await self._write_m3u_file(
                 prov_playlist_id,
@@ -1979,7 +1999,21 @@ class BuiltinProvider(MusicProvider):
 
     async def _build_m3u_entry_from_uri(self, uri: str) -> PlaylistItem:
         """Fetch a media item by URI and convert it to a PlaylistItem with full metadata."""
-        full_item = await self.mass.music.get_item_by_uri(uri, allow_update_metadata=False)
+        full_item: MediaItemType | BrowseFolder
+        if uri.startswith(f"{EXTERNAL_ID_PROVIDER}://"):
+            # a track known only by an external id costs its lookup and nothing more: the
+            # entry takes the names of its album and artists as the lookup found them
+            _, _, item_id = await parse_uri(uri)
+            try:
+                full_item = await self.mass.music.tracks.get(
+                    item_id, EXTERNAL_ID_PROVIDER, allow_update_metadata=False, recursive=False
+                )
+            except ProviderUnavailableError as err:
+                # an unavailable source ends the save, as one that asks to back off does,
+                # instead of the track being left out
+                raise ResourceTemporarilyUnavailable(str(err)) from err
+        else:
+            full_item = await self.mass.music.get_item_by_uri(uri, allow_update_metadata=False)
         if not isinstance(full_item, MediaItem):
             msg = f"Unsupported media type for playlist: {uri}"
             raise InvalidDataError(msg)

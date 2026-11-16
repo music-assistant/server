@@ -1575,6 +1575,7 @@ async def mass_minimal(mass_minimal: MusicAssistant) -> MusicAssistant:
         track_fully_buffered=lambda _queue_id, _item_id: None,
         queue_data_or_none=lambda _queue_id: None,
         has_paused_stream_slot_holder=lambda _provider_instance, _queue_id: False,
+        refuse_held_stream_slot=lambda _provider_instance, _queue_id: None,
     )
     mass_minimal.streams = MagicMock()
     return mass_minimal
@@ -1648,7 +1649,7 @@ async def test_sound_effect_next_item_triggers_prebuffer(mass_minimal: MusicAssi
     """A SOUND_EFFECT next item is pre-buffered like a track."""
     calls: list[tuple[str, str]] = []
     mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
-        lambda queue_id, queue_item_id: calls.append((queue_id, queue_item_id))
+        lambda queue_id, queue_item_id, **_kwargs: calls.append((queue_id, queue_item_id))
     )
 
     await _stream_until_prebuffer_window(
@@ -1663,7 +1664,7 @@ async def test_audio_source_next_item_is_not_prebuffered(mass_minimal: MusicAssi
     """A live AUDIO_SOURCE next item is still excluded from pre-buffering."""
     calls: list[tuple[str, str]] = []
     mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
-        lambda queue_id, queue_item_id: calls.append((queue_id, queue_item_id))
+        lambda queue_id, queue_item_id, **_kwargs: calls.append((queue_id, queue_item_id))
     )
 
     await _stream_until_prebuffer_window(
@@ -1685,7 +1686,7 @@ async def test_realtime_source_also_gets_the_fallback_prebuffer_trigger(
     """
     calls: list[tuple[str, str]] = []
     mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
-        lambda queue_id, queue_item_id: calls.append((queue_id, queue_item_id))
+        lambda queue_id, queue_item_id, **_kwargs: calls.append((queue_id, queue_item_id))
     )
 
     await _stream_until_prebuffer_window(
@@ -1703,7 +1704,7 @@ async def test_prebuffer_trigger_follows_the_streamed_item(mass_minimal: MusicAs
     """The item after the streamed one is prepared while the audible next item lags behind."""
     calls: list[tuple[str, str]] = []
     mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
-        lambda queue_id, queue_item_id: calls.append((queue_id, queue_item_id))
+        lambda queue_id, queue_item_id, **_kwargs: calls.append((queue_id, queue_item_id))
     )
 
     looked_up = await _stream_until_prebuffer_window(

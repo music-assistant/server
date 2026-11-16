@@ -46,7 +46,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.builtin import BuiltinProvider
 from music_assistant.providers.builtin.constants import CONF_KEY_TRACKS, StoredItem
-from tests.conftest import full_mass_context
+from music_assistant.testing import full_mass_context
 
 from .helpers import ISRC, create_album, create_track
 

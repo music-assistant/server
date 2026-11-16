@@ -208,3 +208,27 @@ async def fetch_all_bookmarks(
             break
         cursor = result.podcast_episode_bookmarks.page_info.end_cursor
     return bookmarks
+
+
+def parse_flac_streaminfo(data: bytes) -> tuple[int, int, int] | None:
+    """
+    Parse the audio format from the STREAMINFO block at the start of a FLAC file.
+
+    :param data: The first (decrypted) bytes of the FLAC file, at least 42 bytes.
+    :returns: Tuple of (sample_rate, bit_depth, channels), or None if the data does
+        not start with the fLaC marker followed by a valid STREAMINFO block.
+    """
+    if len(data) < 42 or data[:4] != b"fLaC":
+        return None
+    block_type = data[4] & 0x7F
+    block_length = int.from_bytes(data[5:8], "big")
+    if block_type != 0 or block_length != 34:
+        return None
+    # 20 bits sample rate, 3 bits channels - 1, 5 bits bits per sample - 1, 36 bits samples
+    packed = int.from_bytes(data[18:26], "big")
+    sample_rate = packed >> 44
+    channels = ((packed >> 41) & 0x07) + 1
+    bit_depth = ((packed >> 36) & 0x1F) + 1
+    if sample_rate == 0:
+        return None
+    return sample_rate, bit_depth, channels

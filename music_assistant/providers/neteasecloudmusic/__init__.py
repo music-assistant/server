@@ -48,7 +48,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.track_filter import filter_tracks
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT, MusicProvider
 
 from .constants import (
     CONF_API_BASE_URL,
@@ -231,6 +231,7 @@ class NcmApiClient:
         if params:
             req_params.update(params)
         headers: dict[str, str] = {
+            # mimics a browser on the NetEase Cloud Music website (#3640)
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -1206,7 +1207,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get all albums for an artist."""
+        """Get albums for an artist."""
         limit = 100
         offset = 0
         seen_album_ids: set[str] = set()
@@ -1235,9 +1236,9 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
             has_more = bool(data.get("more") or data.get("hasMore"))
             offset += limit
-            if not has_more and len(raw_albums) < limit:
+            if (not has_more and len(raw_albums) < limit) or len(albums) >= ARTIST_ALBUMS_LIMIT:
                 break
-        return albums
+        return albums[:ARTIST_ALBUMS_LIMIT]
 
     @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
@@ -1950,7 +1951,8 @@ class NeteaseCloudMusicProvider(MusicProvider):
             )
             bitrate = stream_info.get("br")
             if isinstance(bitrate, int) and bitrate > 0:
-                audio_format.bit_rate = bitrate
+                # The API reports br in bits/s; AudioFormat stores kbps.
+                audio_format.bit_rate = int(bitrate / 1000) if bitrate > 10000 else bitrate
             stream_sr = _to_positive_int(stream_info.get("sr"))
             if stream_sr > 0 and (
                 level_quality_obj is None or audio_format.sample_rate in (0, 44100)

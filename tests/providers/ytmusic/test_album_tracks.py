@@ -6,12 +6,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from music_assistant.providers.ytmusic import YoutubeMusicProvider
+from tests.common import use_real_create_task
 
 
 @pytest.fixture
 def provider() -> YoutubeMusicProvider:
     """Return a YoutubeMusicProvider instance with mocked dependencies."""
     mass = AsyncMock()
+    # force a cache miss so the cached raw fetches always run
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
+    use_real_create_task(mass)
     manifest = MagicMock()
     manifest.domain = "ytmusic"
     config = MagicMock()

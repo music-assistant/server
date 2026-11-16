@@ -22,6 +22,7 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
 )
 from music_assistant.controllers.streams.audio_analysis import (
+    LOUDNESS_ANALYSIS_DOMAIN,
     PROVIDER_LOUDNESS_DOMAIN,
     SMART_FADES_ANALYSIS_DOMAIN,
     SONIC_ANALYSIS_DOMAIN,
@@ -287,6 +288,48 @@ async def test_delete_audio_analysis_removes_only_that_provider_key(
         rows = await ctrl.database.get_rows(table, limit=0)
         assert [(r["provider"], r["aa_provider_domain"]) for r in rows] == [
             ("fs--b", "loudness_analysis")
+        ]
+
+
+@pytest.mark.asyncio
+async def test_delete_measured_loudness_keeps_other_analysis(
+    ctrl: AudioAnalysisController,
+) -> None:
+    """Only the measured loudness of the track goes, under its domain and its instance id."""
+    await ctrl.setup_database()
+    for item_id, provider, domain in (
+        ("t1", "filesystem_local", "loudness_analysis"),
+        ("t1", "fs--a", "loudness_analysis"),
+        ("t1", "fs--a", "provider_loudness"),
+        ("t1", "fs--a", "smart_fades"),
+        ("t2", "fs--a", "loudness_analysis"),
+    ):
+        for table, values in (
+            (AA_TABLE_ANALYSIS, {"header": "{}", "payload": b"", "analysis_version": 1}),
+            (AA_TABLE_FAILURES, {"reason": "never retry", "next_retry": None}),
+        ):
+            await ctrl.database.insert(
+                table,
+                {
+                    "media_type": "track",
+                    "item_id": item_id,
+                    "provider": provider,
+                    "aa_provider_domain": domain,
+                    **values,
+                },
+            )
+    mapping = ProviderMapping(
+        item_id="t1", provider_domain="filesystem_local", provider_instance="fs--a"
+    )
+
+    await ctrl.delete_measured_loudness([mapping])
+
+    for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
+        rows = await ctrl.database.get_rows(table, limit=0)
+        assert sorted((r["item_id"], r["provider"], r["aa_provider_domain"]) for r in rows) == [
+            ("t1", "fs--a", "provider_loudness"),
+            ("t1", "fs--a", "smart_fades"),
+            ("t2", "fs--a", "loudness_analysis"),
         ]
 
 
@@ -579,7 +622,7 @@ async def test_tracks_audio_metadata_matches_single_track_lookup(
         (128.0, "D"),
         (None, "F# minor"),
         None,
-        None,
+        (90.0, None),
         None,
         None,
         (140.0, None),
@@ -587,6 +630,35 @@ async def test_tracks_audio_metadata_matches_single_track_lookup(
         (110.0, "A"),
         (128.0, "D"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_tracks_audio_metadata_energy_level_matches_single_track_lookup(
+    ctrl: AudioAnalysisController,
+) -> None:
+    """Both lookups take the loudness for the energy level from the first-listed provider."""
+    await _setup_metadata_fixture(ctrl)
+    domains = (SMART_FADES_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN)
+    ctrl.mass.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[_aa_provider(domain) for domain in domains]
+    )
+    stored = [
+        (
+            SONIC_ANALYSIS_DOMAIN,
+            AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-30.0),
+        ),
+        (LOUDNESS_ANALYSIS_DOMAIN, AudioAnalysisData(loudness_integrated=-20.0)),
+        (PROVIDER_LOUDNESS_DOMAIN, AudioAnalysisData(loudness_integrated=-8.0)),
+    ]
+    for aa_domain, analysis in stored:
+        await ctrl.set_audio_analysis("e1", "fs--a", aa_domain, analysis)
+    tracks = [_track(("e1", "fs--a", ContentType.MP3))]
+
+    batched_result = await ctrl.get_tracks_audio_metadata(tracks)
+
+    assert batched_result == [await ctrl.get_track_audio_metadata(tracks[0])]
+    assert batched_result[0] is not None
+    assert batched_result[0].energy_level == 9
 
 
 @pytest.mark.asyncio

@@ -68,8 +68,8 @@ class SonosCloudQueue:
         path_parts = request.path.strip("/").split("/")
         if len(path_parts) != 4 or path_parts[0] != "sonos_queue":
             return web.Response(status=404)
-        player_id = path_parts[1]
-        if not (sonos_player := self.mass.players.get_player(player_id)):
+        protocol_id = path_parts[1]
+        if not (sonos_player := self.provider.get_protocol(protocol_id)):
             return web.Response(status=501)
         if TYPE_CHECKING:
             assert isinstance(sonos_player, SonosPlayer)
@@ -108,9 +108,10 @@ class SonosCloudQueue:
         unavailable: InvalidDataError | None = None
         try:
             window = await player.build_cloud_queue_window(
-                player.bare_item_id(wire_center) if wire_center else None,
+                wire_center or None,
                 max_previous=_requested_max(request.query.get("previousWindowSize")),
                 max_upcoming=_requested_max(request.query.get("upcomingWindowSize")),
+                generation=wire_generation,
             )
         except InvalidDataError as err:
             # the queue went away under us (a stop that never reached this speaker, so it keeps
@@ -126,7 +127,7 @@ class SonosCloudQueue:
             "queueVersion=%s -> %s begin=%s end=%s items=%s"
         )
         args: list[object] = [
-            player.player_id,
+            player.protocol_id,
             request.query.get("reason"),
             wire_center,
             request.query.get("previousWindowSize"),
@@ -150,7 +151,8 @@ class SonosCloudQueue:
             # label and Sonos never realises it changed.
             "queueVersion": str(queue_version),
             "items": [
-                self._parse_sonos_queue_item(player, x, wire_generation) for x in window.items
+                self._parse_sonos_queue_item(player, media, wire_id)
+                for media, wire_id in zip(window.items, window.wire_ids, strict=True)
             ],
         }
         return web.json_response(result)
@@ -166,7 +168,7 @@ class SonosCloudQueue:
         context_version = request.query.get("contextVersion") or "1"
         self.logger.debug(
             "Cloud queue version poll from %s: queueVersion=%s -> %s",
-            player.player_id,
+            player.protocol_id,
             request.query.get("queueVersion"),
             player.cloud_queue_version,
         )
@@ -237,26 +239,23 @@ class SonosCloudQueue:
                 continue
             if "positionMillis" not in item:
                 continue
-            # only the current load's wire id (or a legacy bare id) may update the
+            # only a report on the playing item from the current load may update the
             # position: a report from before a same-track reload carries the old
             # generation and its position, which the reload just seeked away from
-            if player.current_media and item["id"] in (
-                player.current_media.queue_item_id,
-                player.wire_item_id(player.current_media.queue_item_id),
-            ):
+            if player.reports_current_item(item["id"]):
                 player.update_elapsed_time(item["positionMillis"] / 1000)
             break
         return web.Response(status=204)
 
     def _parse_sonos_queue_item(
-        self, player: SonosPlayer, media: PlayerMedia, wire_generation: int
+        self, player: SonosPlayer, media: PlayerMedia, wire_id: str
     ) -> dict[str, Any]:
         """Parse MusicAssistant PlayerMedia to a Sonos Media (queue) object."""
         # the speaker tracks its position within the audio we serve, which is
         # shorter than the media item when playback starts at a seek position
         duration = media.stream_duration or media.duration
         return {
-            "id": player.wire_item_id(media.queue_item_id, wire_generation) or media.uri,
+            "id": wire_id or media.uri,
             "track": {
                 "type": "track",
                 "mediaUrl": media.uri,
@@ -289,9 +288,10 @@ class SonosCloudQueue:
         :param error: The error object the speaker attached to it.
         """
         if error.get("type") == "http" and str(error.get("status")) == "404":
-            # our own stream server refused the item: a track the queue moved past or no
-            # longer holds, or one it failed to stream and logged there. The speaker tries
-            # each track it cached before reading the queue again, so these come in bursts
+            # our own stream server refused the item: a position past the end of the queue,
+            # a session the queue moved past or a track that failed to stream (logged there).
+            # The speaker tries each track it cached before reading the queue again, so
+            # these come in bursts
             self.logger.debug(
                 "Speaker %s was refused %s by the stream server",
                 player.display_name,
@@ -306,12 +306,7 @@ class SonosCloudQueue:
         wire_id = item.get("id", "")
         title = (
             player.current_media.title
-            if player.current_media
-            and wire_id
-            in (
-                player.current_media.queue_item_id,
-                player.wire_item_id(player.current_media.queue_item_id),
-            )
+            if player.current_media and player.reports_current_item(wire_id)
             else wire_id
         )
         # nothing else tells us. Playback stops while Music Assistant still believes

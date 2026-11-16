@@ -43,7 +43,8 @@ def _make_player(
     player.mass = mass
     player._provider = provider
     player.logger = logging.getLogger("test.roku_media_assistant.player")
-    player._player_id = PLAYER_ID
+    player._protocol_id = PLAYER_ID
+    player._player = None
     player._cache = {}
     player._config = MagicMock()
     player._config.get_value.return_value = False

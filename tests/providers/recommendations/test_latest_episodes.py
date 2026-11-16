@@ -188,16 +188,16 @@ async def test_refresh_keeps_last_known_episode(provider: LibraryRecommendations
     assert {x[1].item_id for x in provider._latest_episodes} == {"old_broken", "old_offline"}
 
 
-async def test_play_history_wins_over_provider_state(
+async def test_resume_rule_gets_the_provider_state(
     provider: LibraryRecommendationsProvider,
 ) -> None:
-    """MA's play history is used when it has an entry, without changing the stored row."""
+    """The provider's state goes to the resume rule, without changing the stored row."""
     _set_library(provider, {"pod": [_episode("e1", "prov", 1)]})
     await provider._refresh_latest_episodes()
 
     async def restore(episode: PodcastEpisode, provider_instance_id: str) -> None:
         assert provider_instance_id == "prov"
-        assert episode.fully_played is None
+        assert (episode.fully_played, episode.resume_position_ms) == (True, 1000)
         episode.fully_played = False
         episode.resume_position_ms = 5000
 

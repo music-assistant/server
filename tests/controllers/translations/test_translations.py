@@ -61,6 +61,7 @@ def _make_controller() -> TranslationController:
     ctrl._locale_files = {}
     ctrl._locale_locks = {}
     ctrl._available_locales = {SOURCE_LANGUAGE}
+    ctrl._provider_strings = {}
     return ctrl
 
 

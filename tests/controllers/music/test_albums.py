@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.enums import ExternalID, ImageType, SortDirection, SortField
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
     ItemMapping,
@@ -497,28 +501,95 @@ async def test_album_tracks_outside_the_library_are_listed_once(mass: MusicAssis
     """An album that is not in the library is fetched once, from the instance its provider resolves to."""
     fetch = AsyncMock(return_value=[create_track("qobuz_1", "t1"), create_track("qobuz_1", "t2")])
     with (
-        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
-        patch.object(mass.music.albums, "_get_provider_album_tracks", fetch),
+        patch.object(
+            mass,
+            "get_provider",
+            return_value=SimpleNamespace(
+                instance_id="qobuz_1", available=True, get_album_tracks=fetch
+            ),
+        ),
         patch.object(mass.music.albums, "_backfill_album_on_tracks", AsyncMock()),
     ):
         # the domain and the instance it resolves to share one listing
         first = await mass.music.albums.tracks("album_x", "qobuz")
         second = await mass.music.albums.tracks("album_x", "qobuz_1")
-    fetch.assert_awaited_once_with("album_x", "qobuz_1")
+    fetch.assert_awaited_once_with("album_x")
     assert [track.item_id for track in first] == [track.item_id for track in second] == ["t1", "t2"]
 
 
 async def test_album_tracks_of_an_unavailable_provider_are_not_kept(mass: MusicAssistant) -> None:
     """Without the provider there is nothing to list, and nothing is cached as the listing."""
-    assert await mass.music.albums.tracks("album_x", "qobuz_1") == []
+    with pytest.raises(ProviderUnavailableError):
+        await mass.music.albums.tracks("album_x", "qobuz_1")
     fetch = AsyncMock(return_value=[create_track("qobuz_1", "t1")])
     with (
-        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
-        patch.object(mass.music.albums, "_get_provider_album_tracks", fetch),
+        patch.object(
+            mass,
+            "get_provider",
+            return_value=SimpleNamespace(
+                instance_id="qobuz_1", available=True, get_album_tracks=fetch
+            ),
+        ),
         patch.object(mass.music.albums, "_backfill_album_on_tracks", AsyncMock()),
     ):
         tracks = await mass.music.albums.tracks("album_x", "qobuz_1")
     assert [track.item_id for track in tracks] == ["t1"]
+
+
+async def test_provider_album_tracks_carry_the_album_held(mass: MusicAssistant) -> None:
+    """Tracks listed without their album get the album held already, without a new lookup."""
+    fetch = AsyncMock(return_value=[create_track("spotify_1", "t1")])
+    lookup = AsyncMock()
+    with (
+        patch.object(
+            mass,
+            "get_provider",
+            return_value=SimpleNamespace(
+                instance_id="spotify_1", available=True, get_album_tracks=fetch
+            ),
+        ),
+        patch.object(mass.music.albums, "get_provider_item", lookup),
+    ):
+        tracks = await mass.music.albums.provider_album_tracks(_detailed_album())
+    lookup.assert_not_awaited()
+    assert isinstance(tracks[0].album, ItemMapping)
+    assert tracks[0].album.item_id == "album1"
+    assert tracks[0].image is not None
+    assert tracks[0].image.path == ALBUM_IMAGE
+
+
+async def test_provider_album_tracks_look_up_an_album_without_image(mass: MusicAssistant) -> None:
+    """An album held without the image its tracks lack is looked up for it after all."""
+    fetch = AsyncMock(return_value=[create_track("spotify_1", "t1")])
+    lookup = AsyncMock(return_value=_detailed_album())
+    held = create_album("spotify_1", "album1")
+    with (
+        patch.object(
+            mass,
+            "get_provider",
+            return_value=SimpleNamespace(
+                instance_id="spotify_1", available=True, get_album_tracks=fetch
+            ),
+        ),
+        patch.object(mass.music.albums, "get_provider_item", lookup),
+    ):
+        tracks = await mass.music.albums.provider_album_tracks(held)
+    lookup.assert_awaited_once_with("album1", "spotify_1", strict_provider_instance=True)
+    assert tracks[0].image is not None
+    assert tracks[0].image.path == ALBUM_IMAGE
+
+
+async def test_provider_album_tracks_of_a_library_album_come_from_the_library(
+    mass: MusicAssistant,
+) -> None:
+    """A provider album that is in the library lists the tracks of the library album."""
+    library_album = await mass.music.albums.add_item_to_library(_detailed_album())
+    fetch = AsyncMock(return_value=[create_track("spotify_1", "t1")])
+    with patch.object(mass.music.albums, "_get_provider_album_tracks", fetch):
+        tracks = await mass.music.albums.provider_album_tracks(_detailed_album())
+    assert [track.item_id for track in tracks] == ["t1"]
+    assert isinstance(tracks[0].album, ItemMapping)
+    assert tracks[0].album.item_id == library_album.item_id
 
 
 async def test_album_tracks_of_a_source_not_loaded_are_assembled_again(

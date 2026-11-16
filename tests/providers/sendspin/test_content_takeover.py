@@ -93,7 +93,7 @@ async def test_takeover_completion_republishes_current_media() -> None:
     player = _make_metadata_player()
     player._metadata_generation = 1
     player._content_takeover_pending = True
-    player.state.current_media = object()
+    player.current_media = object()
     player.send_current_media_metadata = AsyncMock()
     scheduled: list[asyncio.Task[None]] = []
 

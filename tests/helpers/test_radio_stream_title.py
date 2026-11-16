@@ -1,6 +1,6 @@
 """Tests for cleaning radio streamtitle."""
 
-from music_assistant.helpers.util import clean_stream_title, parse_quoted_stream_title
+from music_assistant.helpers.util import clean_stream_title, parse_station_stream_title
 
 
 def test_cleaning_streamtitle() -> None:
@@ -92,10 +92,16 @@ def test_cleaning_streamtitle_english_format() -> None:
     assert clean_stream_title(line) == "Tori Amos - Cornflake Girl"
 
 
-def test_parse_quoted_stream_title() -> None:
-    """Test structured parsing of quoted stream titles, including album extraction."""
+def test_cleaning_streamtitle_radiomediaset_format() -> None:
+    """Test normalisation of the Italian RadioMediaset "Artist~Track~Album~..." format."""
+    line = "ALICE IN CHAINS~MAN IN THE BOX~FACELIFT~1990~~284~2026-10-28T10:00:00~Virgin Radio"
+    assert clean_stream_title(line) == "ALICE IN CHAINS - MAN IN THE BOX"
+
+
+def test_parse_station_stream_title() -> None:
+    """Test structured parsing of station stream titles, including album extraction."""
     # English format with album
-    assert parse_quoted_stream_title(
+    assert parse_station_stream_title(
         '"Nickel Wound" by Texas Is The Reason from "Do You Know Who You Are?: '
         'The Complete Collection"'
     ) == (
@@ -105,30 +111,44 @@ def test_parse_quoted_stream_title() -> None:
     )
 
     # English format without album
-    assert parse_quoted_stream_title('"Cornflake Girl" by Tori Amos') == (
+    assert parse_station_stream_title('"Cornflake Girl" by Tori Amos') == (
         "Cornflake Girl",
         "Tori Amos",
         None,
     )
 
     # "by" and "from" appearing inside the artist name must not be mis-split
-    assert parse_quoted_stream_title('"Romeo" by Death From Above 1979 from "Heads Up"') == (
+    assert parse_station_stream_title('"Romeo" by Death From Above 1979 from "Heads Up"') == (
         "Romeo",
         "Death From Above 1979",
         "Heads Up",
     )
-    assert parse_quoted_stream_title('"Romeo" by Death From Above 1979') == (
+    assert parse_station_stream_title('"Romeo" by Death From Above 1979') == (
         "Romeo",
         "Death From Above 1979",
         None,
     )
 
     # German format yields no album
-    assert parse_quoted_stream_title('"Cornflake Girl" von Tori Amos') == (
+    assert parse_station_stream_title('"Cornflake Girl" von Tori Amos') == (
         "Cornflake Girl",
         "Tori Amos",
         None,
     )
 
-    # conventional "Artist - Track" is not a quoted format
-    assert parse_quoted_stream_title("Tori Amos - Cornflake Girl") is None
+    # RadioMediaset fields, as Virgin Radio Italy sends them
+    assert parse_station_stream_title(
+        "NOAH KAHAN~DOORS~THE GREAT DIVIDE~2026~~225~2026-10-29T04:28:11~"
+        "2026-10-29T04:28:11~Virgin Radio"
+    ) == ("DOORS", "NOAH KAHAN", "THE GREAT DIVIDE")
+    assert parse_station_stream_title("ALICE IN CHAINS~MAN IN THE BOX~~1990~~284") == (
+        "MAN IN THE BOX",
+        "ALICE IN CHAINS",
+        None,
+    )
+
+    # a lone "~" in a title is not the RadioMediaset format
+    assert parse_station_stream_title("Artist - Song ~ Live") is None
+
+    # conventional "Artist - Track" is not a station format
+    assert parse_station_stream_title("Tori Amos - Cornflake Girl") is None

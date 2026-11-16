@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar, cast
 
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.media_items import (
@@ -38,6 +38,7 @@ from music_assistant.providers.lastfm_recommendations.constants import (
     RESOLUTION_BUFFER_LARGE,
     RESOLUTION_BUFFER_SMALL,
     SIMILAR_ITEMS_BUFFER,
+    SIMILAR_ITEMS_MISS_LIMIT,
     SIMILAR_ITEMS_PER_SEED,
     SIMILAR_TRACKS_BUFFER,
     TAGS_PER_ARTIST,
@@ -128,6 +129,60 @@ class LastFMRecommendationManager:
         ):
             yield folder
 
+    async def get_or_resolve_artist(self, lastfm_artist: dict[str, Any]) -> Artist | None:
+        """
+        Return an Artist from cache (in-memory or persistent) or resolve and cache it.
+
+        :param lastfm_artist: Raw Last.fm artist dict.
+        """
+        return await self._get_or_resolve(
+            _resolution_cache_key(lastfm_artist, MediaType.ARTIST),
+            Artist,
+            lambda: parse_artist(lastfm_artist, self.mass, self.provider.instance_id),
+        )
+
+    async def get_or_resolve_track(self, lastfm_track: dict[str, Any]) -> Track | None:
+        """
+        Return a Track from cache (in-memory or persistent) or resolve and cache it.
+
+        :param lastfm_track: Raw Last.fm track dict.
+        """
+        return await self._get_or_resolve(
+            _resolution_cache_key(lastfm_track, MediaType.TRACK),
+            Track,
+            lambda: parse_track(lastfm_track, self.mass, self.provider.instance_id),
+        )
+
+    async def resolve_similar_artists(
+        self, lastfm_artists: list[dict[str, Any]], limit: int
+    ) -> list[Artist]:
+        """
+        Resolve a Last.fm similar artists list to at most `limit` artists, in Last.fm's order.
+
+        Artists in the library or resolved before are taken first, at no cost to any music
+        provider; the music providers are only asked while fewer than `limit` are found.
+
+        :param lastfm_artists: Raw Last.fm artist dicts, the most similar first.
+        :param limit: Maximum number of artists to return.
+        """
+        return await self._resolve_similar(
+            lastfm_artists, limit, Artist, self.get_or_resolve_artist
+        )
+
+    async def resolve_similar_tracks(
+        self, lastfm_tracks: list[dict[str, Any]], limit: int
+    ) -> list[Track]:
+        """
+        Resolve a Last.fm similar tracks list to at most `limit` tracks, in Last.fm's order.
+
+        Tracks in the library or resolved before are taken first, at no cost to any music
+        provider; the music providers are only asked while fewer than `limit` are found.
+
+        :param lastfm_tracks: Raw Last.fm track dicts, the most similar first.
+        :param limit: Maximum number of tracks to return.
+        """
+        return await self._resolve_similar(lastfm_tracks, limit, Track, self.get_or_resolve_track)
+
     async def _yield_and_count(
         self, source: AsyncIterator[RecommendationFolder], category_label: str
     ) -> AsyncIterator[RecommendationFolder]:
@@ -146,46 +201,59 @@ class LastFMRecommendationManager:
         :param item_data: Raw Last.fm item data (artist, album, or track dict).
         :param media_type: Type of media item to check.
         """
+        return await self._find_library_item(item_data, media_type) is not None
+
+    async def _find_library_item(
+        self, item_data: dict[str, Any], media_type: MediaType, strict: bool = False
+    ) -> Artist | Album | Track | None:
+        """
+        Return the MA library's copy of a Last.fm item, None when the library has none.
+
+        :param item_data: Raw Last.fm item data (artist, album, or track dict).
+        :param media_type: Type of media item to look up.
+        :param strict: Only accept a library item whose name matches exactly.
+        """
         name = item_data.get("name", "")
         # MBID lookup is the most reliable; fall back to name search for items without MBID.
         mbid = item_data.get("mbid")
         if mbid:
             if media_type == MediaType.ARTIST:
-                if await self.mass.music.artists.get_library_item_by_external_id(
+                if library_artist := await self.mass.music.artists.get_library_item_by_external_id(
                     mbid, ExternalID.MB_ARTIST
                 ):
-                    self.logger.debug("Filtered artist '%s' (MBID match: %s)", name, mbid)
-                    return True
+                    self.logger.debug("Found artist '%s' in library (MBID match: %s)", name, mbid)
+                    return library_artist
             elif media_type == MediaType.ALBUM:
-                if await self.mass.music.albums.get_library_item_by_external_id(
+                if library_album := await self.mass.music.albums.get_library_item_by_external_id(
                     mbid, ExternalID.MB_ALBUM
                 ):
-                    self.logger.debug("Filtered album '%s' (MBID match: %s)", name, mbid)
-                    return True
+                    self.logger.debug("Found album '%s' in library (MBID match: %s)", name, mbid)
+                    return library_album
             elif media_type == MediaType.TRACK:
-                if await self.mass.music.tracks.get_library_item_by_external_id(
+                if library_track := await self.mass.music.tracks.get_library_item_by_external_id(
                     mbid, ExternalID.MB_RECORDING
                 ):
-                    self.logger.debug("Filtered track '%s' (MBID match: %s)", name, mbid)
-                    return True
+                    self.logger.debug("Found track '%s' in library (MBID match: %s)", name, mbid)
+                    return library_track
 
         # Library search is fuzzy and always returns a best-effort row, so verify the hit's
-        # name actually matches before treating the item as owned. Lenient (strict=False) so
-        # tagging variants still count, erring towards filtering over showing owned items.
+        # name actually matches before treating the item as owned. Lenient by default so
+        # tagging variants still count, erring towards filtering over showing owned items;
+        # strict when the hit is listed in place of the Last.fm item.
         if media_type == MediaType.ARTIST:
             if name:
                 artist_results = await self.mass.music.artists.library_items(
                     search=name, limit=LIBRARY_MATCH_SCAN_LIMIT, summary=False
                 )
                 artist_match = next(
-                    (a for a in artist_results if compare_strings(name, a.name, strict=False)),
+                    (a for a in artist_results if compare_strings(name, a.name, strict=strict)),
                     None,
                 )
                 if artist_match:
                     self.logger.debug(
-                        "Filtered artist '%s' (name match: '%s')", name, artist_match.name
+                        "Found artist '%s' in library (name match: '%s')", name, artist_match.name
                     )
-                    return True
+                    return artist_match
 
         elif media_type == MediaType.ALBUM:
             if name:
@@ -193,14 +261,14 @@ class LastFMRecommendationManager:
                     search=name, limit=LIBRARY_MATCH_SCAN_LIMIT, summary=False
                 )
                 album_match = next(
-                    (a for a in album_results if compare_strings(name, a.name, strict=False)),
+                    (a for a in album_results if compare_strings(name, a.name, strict=strict)),
                     None,
                 )
                 if album_match:
                     self.logger.debug(
-                        "Filtered album '%s' (name match: '%s')", name, album_match.name
+                        "Found album '%s' in library (name match: '%s')", name, album_match.name
                     )
-                    return True
+                    return album_match
 
         elif media_type == MediaType.TRACK:
             artist_info = item_data.get("artist", {})
@@ -223,9 +291,9 @@ class LastFMRecommendationManager:
                     (
                         track
                         for track in track_results
-                        if compare_strings(clean_name, track.name, strict=False)
+                        if compare_strings(clean_name, track.name, strict=strict)
                         and any(
-                            compare_strings(artist_name, track_artist.name, strict=False)
+                            compare_strings(artist_name, track_artist.name, strict=strict)
                             for track_artist in track.artists
                         )
                         and not (mbid and track.mbid and track.mbid != mbid)
@@ -234,14 +302,14 @@ class LastFMRecommendationManager:
                 )
                 if track_match:
                     self.logger.debug(
-                        "Filtered track '%s - %s' (name match: '%s')",
+                        "Found track '%s - %s' in library (name match: '%s')",
                         artist_name,
                         name,
                         track_match.name,
                     )
-                    return True
+                    return track_match
 
-        return False
+        return None
 
     @staticmethod
     def _exclude_owned(items: list[_MediaItemT]) -> list[_MediaItemT]:
@@ -280,41 +348,14 @@ class LastFMRecommendationManager:
 
         return top_items + random_items
 
-    async def get_or_resolve_artist(self, lastfm_artist: dict[str, Any]) -> Artist | None:
-        """
-        Return an Artist from cache (in-memory or persistent) or resolve and cache it.
-
-        :param lastfm_artist: Raw Last.fm artist dict.
-        """
-        cache_key = lastfm_artist.get("mbid") or lastfm_artist.get("name", "")
-        return await self._get_or_resolve(
-            f"artist_{cache_key}" if cache_key else "",
-            Artist,
-            lambda: parse_artist(lastfm_artist, self.mass, self.provider.instance_id),
-        )
-
-    async def get_or_resolve_track(self, lastfm_track: dict[str, Any]) -> Track | None:
-        """
-        Return a Track from cache (in-memory or persistent) or resolve and cache it.
-
-        :param lastfm_track: Raw Last.fm track dict.
-        """
-        cache_key = lastfm_track.get("mbid") or _artist_and_name_key(lastfm_track)
-        return await self._get_or_resolve(
-            f"track_{cache_key}" if cache_key else "",
-            Track,
-            lambda: parse_track(lastfm_track, self.mass, self.provider.instance_id),
-        )
-
     async def _get_or_resolve_album(self, lastfm_album: dict[str, Any]) -> Album | None:
         """
         Return an Album from cache (in-memory or persistent) or resolve and cache it.
 
         :param lastfm_album: Raw Last.fm album dict.
         """
-        cache_key = lastfm_album.get("mbid") or _artist_and_name_key(lastfm_album)
         return await self._get_or_resolve(
-            f"album_{cache_key}" if cache_key else "",
+            _resolution_cache_key(lastfm_album, MediaType.ALBUM),
             Album,
             lambda: parse_album(lastfm_album, self.mass, self.provider.instance_id),
         )
@@ -337,33 +378,16 @@ class LastFMRecommendationManager:
         """
         if not cache_key:
             return None
-        cached = self._resolved_cache.get(cache_key)
-        if isinstance(cached, base_class):
-            return cached
-        cached_item = await self.mass.cache.get(
-            key=cache_key,
-            category=CACHE_CATEGORY_RESOLVED_ITEMS,
-            provider=self.provider.instance_id,
-            base_class=base_class,
-        )
-        if isinstance(cached_item, base_class):
-            self._resolved_cache[cache_key] = cached_item
+        cached_item, missed = await self._get_cached(cache_key, base_class)
+        if cached_item is not None or missed:
             return cached_item
-        miss_key = f"miss_{cache_key}"
-        if await self.mass.cache.get(
-            key=miss_key,
-            category=CACHE_CATEGORY_RESOLVED_ITEMS,
-            provider=self.provider.instance_id,
-        ):
-            # misses are only kept in the persistent cache, so they expire and get retried
-            return None
         try:
             item = await resolve()
         except SearchIncomplete:
             return None
         if item is None:
             await self.mass.cache.set(
-                miss_key,
+                f"miss_{cache_key}",
                 True,
                 category=CACHE_CATEGORY_RESOLVED_ITEMS,
                 provider=self.provider.instance_id,
@@ -887,6 +911,98 @@ class LastFMRecommendationManager:
             *[self.get_or_resolve_track(track_data) for track_data in top_tracks_data]
         )
         return self._exclude_owned([track for track in resolved_tracks if track is not None])
+
+    async def _resolve_similar(
+        self,
+        lastfm_items: list[dict[str, Any]],
+        limit: int,
+        base_class: type[_MediaItemT],
+        resolve: Callable[[dict[str, Any]], Awaitable[_MediaItemT | None]],
+    ) -> list[_MediaItemT]:
+        """
+        Resolve a Last.fm similar items list to at most `limit` items, in Last.fm's order.
+
+        :param lastfm_items: Raw Last.fm items, the most similar first.
+        :param limit: Maximum number of items to return.
+        :param base_class: The media item class the items resolve to.
+        :param resolve: Resolves one item through the music providers.
+        """
+        found: dict[int, _MediaItemT] = {}
+        to_resolve: list[int] = []
+        for index, lastfm_item in enumerate(lastfm_items):
+            cache_key = _resolution_cache_key(lastfm_item, base_class.media_type)
+            if not cache_key:
+                continue
+            item, missed = await self._get_cached(cache_key, base_class)
+            if item is None:
+                # the library is checked before a remembered miss: a local file is never
+                # found on a music provider
+                item = cast(
+                    "_MediaItemT | None",
+                    await self._find_library_item(lastfm_item, base_class.media_type, strict=True),
+                )
+            if item is not None:
+                if item not in found.values():
+                    found[index] = item
+            elif not missed:
+                to_resolve.append(index)
+        misses = 0
+        # the most similar items first, the rest only fill in for misses; an item with a
+        # MusicBrainz id is fetched by its linked id instead of searched by name
+        for index in sorted(
+            to_resolve, key=lambda index: (index >= limit, not lastfm_items[index].get("mbid"))
+        ):
+            if len(found) >= limit or misses >= SIMILAR_ITEMS_MISS_LIMIT:
+                break
+            item = await resolve(lastfm_items[index])
+            if item is None:
+                misses += 1
+            elif item not in found.values():
+                found[index] = item
+        return [found[index] for index in sorted(found)][:limit]
+
+    async def _get_cached(
+        self, cache_key: str, base_class: type[_MediaItemT]
+    ) -> tuple[_MediaItemT | None, bool]:
+        """
+        Return the item resolved before under a cache key, and whether it is a remembered miss.
+
+        :param cache_key: Persistent cache key of the item.
+        :param base_class: The media item class the item resolves to.
+        """
+        cached = self._resolved_cache.get(cache_key)
+        if isinstance(cached, base_class):
+            return cached, False
+        cached_item = await self.mass.cache.get(
+            key=cache_key,
+            category=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider=self.provider.instance_id,
+            base_class=base_class,
+        )
+        if isinstance(cached_item, base_class):
+            self._resolved_cache[cache_key] = cached_item
+            return cached_item, False
+        # misses are only kept in the persistent cache, so they expire and get retried
+        missed = await self.mass.cache.get(
+            key=f"miss_{cache_key}",
+            category=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider=self.provider.instance_id,
+        )
+        return None, bool(missed)
+
+
+def _resolution_cache_key(lastfm_item: dict[str, Any], media_type: MediaType) -> str:
+    """
+    Return the key a resolved Last.fm item is cached under, empty when it can not be keyed.
+
+    :param lastfm_item: Raw Last.fm artist, album or track dict.
+    :param media_type: The media type the item resolves to.
+    """
+    if media_type == MediaType.ARTIST:
+        key = lastfm_item.get("mbid") or lastfm_item.get("name", "")
+    else:
+        key = lastfm_item.get("mbid") or _artist_and_name_key(lastfm_item)
+    return f"{media_type.value}_{key}" if key else ""
 
 
 def _artist_and_name_key(lastfm_item: dict[str, Any]) -> str:

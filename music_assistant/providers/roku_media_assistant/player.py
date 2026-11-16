@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 
-from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE
-from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import CONF_ROKU_APP_ID
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
     from rokuecp import Device, Roku
 
     from .provider import MediaAssistantprovider
@@ -31,19 +30,19 @@ def parse_app_ids(value: object) -> list[str]:
     return [app_id.strip() for app_id in value.split(",") if app_id.strip()]
 
 
-class MediaAssistantPlayer(Player):
+class MediaAssistantPlayer(PlayerProtocol):
     """MediaAssistantPlayer in Music Assistant."""
 
     def __init__(
         self,
         provider: MediaAssistantprovider,
-        player_id: str,
+        protocol_id: str,
         roku_name: str,
         roku: Roku,
         queued: PlayerMedia | None = None,
     ) -> None:
         """Initialize the Player."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         # init some static variables
         self.roku = roku
         self.queued = queued
@@ -58,12 +57,14 @@ class MediaAssistantPlayer(Player):
         self._attr_volume_muted = False
         self._attr_volume_level = 100
         self.lock = asyncio.Lock()  # Held when connecting or disconnecting the device
+        self._position_last_moved: float | None = None  # end-of-stream detector
+        self._stream_end_logged = False
 
     async def setup(self) -> None:
         """Set up player in MA."""
         self._attr_available = False
         self._attr_powered = False
-        await self.mass.players.register_or_update(self)
+        await self.mass.players.register(self)
 
     @property
     def needs_poll(self) -> bool:
@@ -80,17 +81,9 @@ class MediaAssistantPlayer(Player):
         """Return the IDs of the Roku apps to play in, in order of preference."""
         return parse_app_ids(self.provider.config.get_value(CONF_ROKU_APP_ID))
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player."""
-        default_entries = await super().get_config_entries()
-        return [
-            *default_entries,
-            CONF_ENTRY_HTTP_PROFILE,
-        ]
-
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info("Received POWER command on player %s", self.display_name)
 
         app_running = False
@@ -117,7 +110,7 @@ class MediaAssistantPlayer(Player):
         """Handle VOLUME MUTE command on the player."""
         await self.roku.remote("volume_mute")
 
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info(
             "Received VOLUME_MUTE command on player %s with muted %s", self.display_name, muted
         )
@@ -128,7 +121,7 @@ class MediaAssistantPlayer(Player):
         """Play command."""
         await self.roku.remote("play")
 
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info("Received PLAY command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
@@ -153,10 +146,15 @@ class MediaAssistantPlayer(Player):
                     },
                 )
 
-            logger = self.provider.logger.getChild(self.player_id)
+            logger = self.provider.logger.getChild(self.protocol_id)
             logger.info("Received STOP command on player %s", self.display_name)
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_current_media = None
+            # the stop above is itself a new (blank) deeplink, which also
+            # clears the app's queued slot - mirror it here.
+            self.queued = None
+            self._attr_elapsed_time = None
+            self._attr_elapsed_time_last_updated = None
             self.update_state()
         except Exception:
             self.logger.error("Failed to send stop signal to: %s", self.name)
@@ -165,13 +163,13 @@ class MediaAssistantPlayer(Player):
         """Pause command."""
         await self.roku.remote("play")
 
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info("Received PAUSE command on player %s", self.display_name)
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         try:
             device_info = await self.roku.update()
 
@@ -220,12 +218,21 @@ class MediaAssistantPlayer(Player):
                     return
                 await self.roku.launch(app_id, f_media)
 
-            logger = self.provider.logger.getChild(self.player_id)
+            logger = self.provider.logger.getChild(self.protocol_id)
             logger.info(
                 "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
             )
             self._attr_powered = True
             self._attr_current_media = media
+            # the app drops its queued slot on every new play
+            # (mediaplayer.brs handleDeepLink: m.queuedDeeplink = Invalid), so drop ours
+            # too, and restart the elapsed-time tracker so the first poll of the new stream
+            # cannot look like a "jump to the queued item" (see poll()).
+            self.queued = None
+            self._attr_elapsed_time = 0
+            self._attr_elapsed_time_last_updated = time.time()
+            self._position_last_moved = time.time()
+            self._stream_end_logged = False
             self.update_state()
         except Exception:
             self.logger.error("Failed to Play Media on: %s", self.name)
@@ -233,13 +240,26 @@ class MediaAssistantPlayer(Player):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next (queue) item on the player."""
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        try:
-            device_info = await self.roku.update()
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
+        # Music Assistant hands the next item over exactly once and never
+        # retries (player_queues/stream_feeder._enqueue_next_item), so one failed POST used
+        # to mean the app ran out of audio at the end of the track. Retry here, and say
+        # what happened at INFO so a missed handover is visible in the normal log.
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                device_info = await self.roku.update()
 
-            app_running = self._app_in_front(device_info)
+                app_running = self._app_in_front(device_info)
 
-            if app_running:
+                if not app_running:
+                    self.logger.warning(
+                        "Not enqueuing %s on %s: none of the Roku apps %s is in front",
+                        media.title,
+                        self.name,
+                        ", ".join(self.app_ids),
+                    )
+                    return
                 await self.roku_input(
                     {
                         "u": stream_url,
@@ -254,9 +274,18 @@ class MediaAssistantPlayer(Player):
                     },
                 )
                 self.queued = media
-        except Exception:
-            self.logger.error("Failed to Enqueue Media on: %s", self.name)
-            return
+                self.logger.info("Enqueued %s on %s", media.title, self.name)
+                return
+            except Exception:
+                self.logger.error(
+                    "Failed to Enqueue Media on: %s (attempt %d/%d)", self.name, attempt, attempts
+                )
+                # the handover holds the player's lock, so don't wait after the last try
+                if attempt < attempts:
+                    await asyncio.sleep(2)
+        self.logger.error(
+            "Gave up enqueuing %s on %s after %d attempts", media.title, self.name, attempts
+        )
 
     async def poll(self) -> None:
         """Poll player for state updates."""
@@ -291,11 +320,61 @@ class MediaAssistantPlayer(Player):
                 if "position" in media_state:
                     try:
                         position = int(media_state["position"].split(" ", 1)[0]) / 1000
-                        if self._attr_elapsed_time is not None:
-                            if abs(position - self._attr_elapsed_time) > 10:
-                                self._attr_current_media = self.queued
+                        prev_position = self._attr_elapsed_time
+                        now = time.time()
+                        # the app only ever moves on to the item we enqueued,
+                        # and that shows as the position falling back towards 0. Only then
+                        # is "current media = queued" true: never on a plain jump (which
+                        # every fresh play produced) and never when nothing is queued
+                        # (which used to blank the current track and freeze the queue).
+                        if (
+                            prev_position is not None
+                            and self.queued is not None
+                            and position < prev_position - 10
+                        ):
+                            self._attr_current_media = self.queued
+                            self.queued = None
+                            self.logger.info(
+                                "%s moved on to enqueued item %s",
+                                self.name,
+                                self._attr_current_media.title,
+                            )
+                        # The app has no end-of-track signal: when its buffer drains it sits
+                        # in state "play" with position == duration for ever. Report a
+                        # position frozen at the end of the stream as IDLE, so Music
+                        # Assistant can finish the queue, and a real stall shows as one.
+                        # Only time spent playing counts: a pause near the end isn't one.
+                        # A duration of 0 is a stream of unknown length, which has no end.
+                        duration = (
+                            int(media_state["duration"].split(" ", 1)[0]) / 1000
+                            if "duration" in media_state
+                            else 0
+                        )
+                        if (
+                            position != prev_position
+                            or self._position_last_moved is None
+                            or self._attr_playback_state != PlaybackState.PLAYING
+                        ):
+                            self._position_last_moved = now
+                            self._stream_end_logged = False
+                        elif (
+                            self._attr_playback_state == PlaybackState.PLAYING
+                            and duration > 0
+                            and position >= duration - 1.5
+                            and now - self._position_last_moved >= 10
+                        ):
+                            self._attr_playback_state = PlaybackState.IDLE
+                            # every poll finds the app in "play" again: say it once
+                            if not self._stream_end_logged:
+                                self._stream_end_logged = True
+                                self.logger.info(
+                                    "%s stream ended (position frozen at %.1fs for %.0fs)",
+                                    self.name,
+                                    position,
+                                    now - self._position_last_moved,
+                                )
                         self._attr_elapsed_time = position
-                        self._attr_elapsed_time_last_updated = time.time()
+                        self._attr_elapsed_time_last_updated = now
                     except Exception:
                         self.logger.info(
                             "Playback Position received from %s Was Invalid", self.name
@@ -304,16 +383,17 @@ class MediaAssistantPlayer(Player):
                 self.update_state()
 
                 if (
-                    not self.state.current_media
+                    self.player is None
+                    or not (current_media := self.player.current_media)
                     or self._attr_playback_state != PlaybackState.PLAYING
                 ):
                     return
 
-                image_url = self.state.current_media.image_url or ""
+                image_url = current_media.image_url or ""
 
-                album_name = self.state.current_media.album or ""
-                song_name = self.state.current_media.title or ""
-                artist_name = self.state.current_media.artist or ""
+                album_name = current_media.album or ""
+                song_name = current_media.title or ""
+                artist_name = current_media.artist or ""
                 if app_running and self.flow_mode:
                     await self.roku_input(
                         {
@@ -339,9 +419,14 @@ class MediaAssistantPlayer(Player):
         encoded = urlencode(params)
         await self.roku._request(f"input?{encoded}", method="POST", encoded=True)
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
         self.logger.info("Player %s unloaded", self.name)
+        await super().on_detach()
+
+    async def on_remove(self) -> None:
+        """Disconnect from the Roku, so that a discovery registers it as a new player."""
+        await cast("MediaAssistantprovider", self.provider).forget_player(self)
 
     def _app_in_front(self, device: Device, screensaver_counts: bool = True) -> bool:
         """

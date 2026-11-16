@@ -15,6 +15,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
 
+from music_assistant.controllers.music.constants import CONF_BOUND_ACCOUNT_ID
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.oauth import (
@@ -195,6 +196,7 @@ async def _authorize_developer_key(
         step_id="developer",
         last_step=True,
         translation_params=[HOSTED_CALLBACK_URL],
+        copy_text=HOSTED_CALLBACK_URL,
     )
     client_id = str(dev_values.get(CONF_CLIENT_ID) or "").strip()
     try:
@@ -222,8 +224,9 @@ async def _verify_account(session: SetupSession, access_token: str) -> str | Non
     Check the just-authenticated Spotify account and return its id.
 
     Turns the user away when the account has no Spotify Premium (neither playback
-    backend can stream for a free account) or when it is already set up on another
-    provider instance. A lookup Spotify does not answer is
+    backend can stream for a free account), when it is already set up on another
+    provider instance, or when a reconfigure signs in to another account than the
+    instance is bound to. A lookup Spotify does not answer is
     not held against the user: the setup simply continues and None is returned.
 
     :param session: The setup session driving the flow.
@@ -231,6 +234,7 @@ async def _verify_account(session: SetupSession, access_token: str) -> str | Non
         it is deliberate — minting a fresh one rotates the refresh token, which
         revokes the one just stored as setup data.
     :raises AbortFlow: When the account is non-Premium or already configured.
+    :raises SetupFlowError: When the instance being reconfigured is bound to another account.
     """
     if (userinfo := await _get_profile(session, access_token)) is None:
         return None
@@ -239,6 +243,18 @@ async def _verify_account(session: SetupSession, access_token: str) -> str | Non
         raise AbortFlow("premium_required")
     if not (account_id := str(userinfo.get("id") or "")):
         return None
+    bound_account_id = (
+        session.mass.config.get_provider_setup_value(instance_id, CONF_BOUND_ACCOUNT_ID)
+        if (instance_id := session.context.instance_id)
+        else None
+    )
+    # refused here, before the playback authorization can replace the instance's session
+    if bound_account_id not in (None, account_id):
+        raise SetupFlowError(
+            "This is a different account than the one this provider was set up with. "
+            "To use another account, remove this provider and add it again.",
+            translation_key="provider_account_changed",
+        )
     if await _account_in_use(session, account_id):
         raise AbortFlow("account_already_configured")
     return account_id
@@ -333,12 +349,13 @@ async def _setup_playback(
     :param setup_data: The setup data collected so far, updated in place.
     :param account_id: The signed-in Spotify user id, when known.
     """
-    # The stored choice wins; everything else preselects librespot. It is the
-    # short path (no consent step, no API key, no pairing), and an instance
-    # predating the choice runs it already, so a routine reconfigure cannot nudge
-    # anyone onto another playback path. An account librespot cannot serve
-    # (created since late 2024) has to switch, which the choice step explains.
-    preselect = str(setup_data.get(CONF_PLAYBACK_BACKEND) or "") or BACKEND_LIBRESPOT
+    # The stored choice wins. Without one, a new setup lands on soloist, the
+    # engine that serves every account, while an instance predating the choice
+    # already runs librespot, so a routine reconfigure keeps it there instead of
+    # nudging it onto another playback path.
+    preselect = str(setup_data.get(CONF_PLAYBACK_BACKEND) or "") or (
+        BACKEND_LIBRESPOT if session.context.kind == "reconfigure" else BACKEND_SOLOIST
+    )
     errors: dict[str, str | SetupFlowError] | None = None
     while True:
         selected = await _choose_playback_backend(session, preselect, errors)
@@ -380,7 +397,7 @@ async def _choose_playback_backend(
                     key=CONF_PLAYBACK_BACKEND,
                     type=ConfigEntryType.STRING,
                     required=True,
-                    default_value=BACKEND_LIBRESPOT,
+                    default_value=BACKEND_SOLOIST,
                     value=preselect,
                     options=[
                         ConfigValueOption(BACKEND_SOLOIST),

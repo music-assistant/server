@@ -24,8 +24,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 from music_assistant_models.enums import PlayerType
 
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import (
+    CONF_PLAYER_SPLIT_SESSION_ONLY,
+    CONF_PLAYER_SPLIT_TREE,
+    CONF_PLAYERS,
+)
 from music_assistant.controllers.config.controller import ConfigController
+
+# settings that no migration has anything left to do on
+RECOVERED = {"recovered": True, CONF_PLAYER_SPLIT_SESSION_ONLY: True, CONF_PLAYER_SPLIT_TREE: True}
 
 
 def _make_controller(tmp_path: Path) -> ConfigController:
@@ -90,30 +97,30 @@ async def test_empty_settings_file_does_not_clobber_backup(tmp_path: Path) -> No
     """
     controller = _make_controller(tmp_path)
     Path(controller.filename).write_text("")
-    Path(f"{controller.filename}.backup").write_text(json.dumps({"recovered": True}))
+    Path(f"{controller.filename}.backup").write_text(json.dumps(RECOVERED))
 
     await controller._load()
-    assert controller._data == {"recovered": True}
+    assert controller._data == RECOVERED
 
     await controller.async_save()
 
-    assert json.loads(Path(controller.filename).read_text()) == {"recovered": True}
-    assert json.loads(Path(f"{controller.filename}.backup").read_text()) == {"recovered": True}
+    assert json.loads(Path(controller.filename).read_text()) == RECOVERED
+    assert json.loads(Path(f"{controller.filename}.backup").read_text()) == RECOVERED
 
 
 async def test_corrupt_settings_file_does_not_clobber_backup(tmp_path: Path) -> None:
     """A non-empty but corrupt settings file (torn write) must never replace a good backup."""
     controller = _make_controller(tmp_path)
     Path(controller.filename).write_text('{"truncated": tr')
-    Path(f"{controller.filename}.backup").write_text(json.dumps({"recovered": True}))
+    Path(f"{controller.filename}.backup").write_text(json.dumps(RECOVERED))
 
     await controller._load()
-    assert controller._data == {"recovered": True}
+    assert controller._data == RECOVERED
 
     await controller.async_save()
 
-    assert json.loads(Path(controller.filename).read_text()) == {"recovered": True}
-    assert json.loads(Path(f"{controller.filename}.backup").read_text()) == {"recovered": True}
+    assert json.loads(Path(controller.filename).read_text()) == RECOVERED
+    assert json.loads(Path(f"{controller.filename}.backup").read_text()) == RECOVERED
 
 
 async def test_save_succeeds_when_directory_fsync_unsupported(tmp_path: Path) -> None:
@@ -154,11 +161,10 @@ async def test_player_config_summary_read_does_not_rewrite_settings(
     }
     controller._data = {CONF_PLAYERS: {player_id: deepcopy(raw_config)}}
     live_player = SimpleNamespace(
-        state=SimpleNamespace(
-            name="solarium-bath-sl",
-            available=False,
-            type=PlayerType.PLAYER,
-        )
+        provider_id=raw_config["provider"],
+        name="solarium-bath-sl",
+        available=False,
+        type=PlayerType.PLAYER,
     )
     mass.players.get_player.return_value = live_player
 

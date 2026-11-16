@@ -254,7 +254,8 @@ class ThrottlerManager:
         """
         priority = current_priority()
         if priority is RequestPriority.HIGH:
-            # playback neither sits out nor fails on a cooldown
+            # playback does not sit out a short cooldown, but sends nothing into a long one
+            self._raise_on_long_cooldown()
             yield await self.throttler.acquire(priority)
             return
         delay = 0.0
@@ -262,9 +263,7 @@ class ThrottlerManager:
         while True:
             # each deadline is waited out once, however often it is extended meanwhile
             while (target := self._cooldown_until) > honored:
-                if (remaining := self.cooldown_remaining) > MAX_WAIT_TIME:
-                    msg = f"Rate limited for another {remaining:.0f} seconds"
-                    raise RateLimited(msg, backoff_time=round(remaining))
+                self._raise_on_long_cooldown()
                 delay += await self._wait_until(target)
                 honored = target
             delay += await self.throttler.acquire(priority)
@@ -291,6 +290,12 @@ class ThrottlerManager:
         """
         self.throttler.rate_limit = rate_limit
         self.throttler.period = period
+
+    def _raise_on_long_cooldown(self) -> None:
+        """Raise RateLimited when the cooldown holds for longer than MAX_WAIT_TIME."""
+        if (remaining := self.cooldown_remaining) > MAX_WAIT_TIME:
+            msg = f"Rate limited for another {remaining:.0f} seconds"
+            raise RateLimited(msg, backoff_time=round(remaining))
 
     async def _wait_until(self, deadline: float) -> float:
         """Sleep until the given monotonic deadline, return the time waited."""

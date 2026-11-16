@@ -20,14 +20,26 @@ from uuid import uuid4
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import AlbumType, ArtistType, MediaType, SortDirection, SortField
-from music_assistant_models.helpers import create_safe_string
+from music_assistant_models.enums import (
+    AlbumType,
+    ArtistType,
+    ImageType,
+    MediaType,
+    SortDirection,
+    SortField,
+)
+from music_assistant_models.helpers import (
+    create_safe_string,
+    get_global_cache_value,
+    set_global_cache_values,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
     MediaCollection,
     MediaItemCollection,
+    MediaItemImage,
     MediaItemMetadata,
     ProviderMapping,
     Track,
@@ -831,6 +843,244 @@ async def test_artist_audiobooks_collapse_collections(
     assert collection.name == "Test Collection"
     assert [item.name for item in collection.items] == ["Book 1", "Book 2"]
     assert standalone.name == "Standalone"
+
+
+async def test_audiobook_collection_statistics_ignore_view_filters(
+    mass: MusicAssistant,
+) -> None:
+    """A favorites-only listing narrows a collection's items, but not its statistics."""
+    controller = mass.music.audiobooks
+    # name, collection, sequence, cover, duration, fully played, seconds played;
+    # added out of order, so the covers prove they follow the sequence
+    books = (
+        ("Alpha 4", "Alpha Series", 4, "alpha_4.jpg", 400, None, None),
+        ("Alpha 1", "Alpha Series", 1, None, 100, True, 100),
+        ("Alpha 2", "Alpha Series", 2, "alpha_2.jpg", 200, False, 50),
+        ("Alpha 5", "Alpha Series", 5, "alpha_5.jpg", 500, None, None),
+        ("Alpha 3", "Alpha Series", 3, "alpha_3.jpg", 300, None, None),
+        ("Beta 1", "Beta Series", 1, None, 400, True, 400),
+        # finished the first book, never started the second
+        ("Gamma 1", "Gamma Series", 1, None, 100, True, 100),
+        ("Gamma 2", "Gamma Series", 2, None, 100, None, None),
+    )
+    db_books = {}
+    for name, collection_name, sequence, cover, duration, fully_played, seconds_played in books:
+        db_book = await controller.add_item_to_library(
+            Audiobook(
+                item_id="0",
+                provider="library",
+                name=name,
+                duration=duration,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=name,
+                        provider_domain="prov_a",
+                        provider_instance="prov_a_inst",
+                        in_library=True,
+                    )
+                },
+                metadata=MediaItemMetadata(
+                    collections=UniqueList(
+                        [MediaItemCollection(title=collection_name, sequence=sequence)]
+                    ),
+                    images=UniqueList(
+                        [
+                            MediaItemImage(
+                                type=ImageType.THUMB,
+                                path=cover,
+                                provider="test",
+                                remotely_accessible=True,
+                            )
+                        ]
+                    )
+                    if cover
+                    else None,
+                ),
+            )
+        )
+        db_books[name] = db_book
+        if fully_played is None:
+            continue
+        await mass.music.database.insert(
+            DB_TABLE_MEDIA_PROGRESS,
+            {
+                "item_id": db_book.item_id,
+                "provider": "library",
+                "media_type": MediaType.AUDIOBOOK.value,
+                "name": name,
+                "timestamp": 100,
+                "fully_played": fully_played,
+                "seconds_played": seconds_played,
+                "userid": LISTING_USER.user_id,
+                "user_initiated": True,
+            },
+        )
+    await mass.music.database.commit()
+    await _like(mass, MediaType.AUDIOBOOK, str(db_books["Alpha 5"].item_id), True)
+
+    with patch(GET_CURRENT_USER, return_value=LISTING_USER):
+        everything = await controller.library_items(collapse_collections=True)
+        favorites = await controller.library_items(favorite=True, collapse_collections=True)
+    collections = {item.name: item for item in everything if isinstance(item, MediaCollection)}
+    alpha, beta = collections["Alpha Series"].metadata, collections["Beta Series"].metadata
+    assert (alpha.total_items, alpha.duration, alpha.fully_played, alpha.in_progress) == (
+        5,
+        1500,
+        False,
+        True,
+    )
+    assert (beta.total_items, beta.duration, beta.fully_played, beta.in_progress) == (
+        1,
+        400,
+        True,
+        False,
+    )
+    gamma = collections["Gamma Series"].metadata
+    assert (gamma.fully_played, gamma.in_progress) == (False, True)
+    # the first three books with a cover, in sequence order
+    assert [image.path for image in alpha.images or []] == [
+        "alpha_2.jpg",
+        "alpha_3.jpg",
+        "alpha_4.jpg",
+    ]
+    assert beta.images is None
+
+    # the collection without a favorite is left out, the other keeps its metadata
+    assert [item.name for item in favorites] == ["Alpha Series"]
+    favorite_alpha = favorites[0]
+    assert isinstance(favorite_alpha, MediaCollection)
+    assert [item.name for item in favorite_alpha.items] == ["Alpha 5"]
+    assert favorite_alpha.metadata == alpha
+
+    collection = await controller.get_collection(collections["Alpha Series"].item_id)
+    assert collection.metadata == alpha
+
+
+async def _add_collection_book(
+    mass: MusicAssistant,
+    name: str,
+    collection: str | None,
+    sequence: float | str | None = None,
+    duration: int = 0,
+    cover_remote: bool = True,
+) -> None:
+    await mass.music.audiobooks.add_item_to_library(
+        Audiobook(
+            item_id="0",
+            provider="library",
+            name=name,
+            duration=duration,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=name,
+                    provider_domain="prov_a",
+                    provider_instance="prov_a_inst",
+                    in_library=True,
+                )
+            },
+            metadata=MediaItemMetadata(
+                collections=UniqueList([MediaItemCollection(title=collection, sequence=sequence)])
+                if collection
+                else None,
+                images=UniqueList(
+                    [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=f"{name}.jpg",
+                            provider="test",
+                            remotely_accessible=cover_remote,
+                        )
+                    ]
+                ),
+            ),
+        )
+    )
+
+
+MIXED_SEQUENCE_ORDER = [
+    "Book 1.5",
+    "Book 2",
+    "Book 10",
+    "Book Text A",
+    "Book Text b",
+    "Book Untitled A",
+    "Book Untitled B",
+]
+
+
+@pytest.mark.parametrize("source", ["listing", "collection", "covers"])
+async def test_collection_order_follows_the_sequence(mass: MusicAssistant, source: str) -> None:
+    """Numbers sort by value, then text ignoring case, then books without a sequence by name."""
+    # added in reverse, so the order cannot come from the insertion
+    for name, sequence in (
+        ("Book Untitled B", None),
+        ("Book Untitled A", None),
+        ("Book Text b", "b"),
+        ("Book Text A", "A"),
+        ("Book 10", 10),
+        ("Book 2", "2"),
+        ("Book 1.5", 1.5),
+    ):
+        await _add_collection_book(mass, name, "Mixed Series", sequence)
+    controller = mass.music.audiobooks
+
+    # every book a cover, so the covers show the whole order
+    with patch(f"{MediaControllerBase.__module__}.COLLECTION_COVER_COUNT", 7):
+        (collection,) = await controller.library_items(collapse_collections=True)
+        assert isinstance(collection, MediaCollection)
+        if source == "collection":
+            collection = await controller.get_collection(collection.item_id)
+
+    if source == "covers":
+        names = [image.path.removesuffix(".jpg") for image in collection.metadata.images or []]
+    else:
+        names = [item.name for item in collection.items]
+    assert names == MIXED_SEQUENCE_ORDER
+
+
+async def test_collapsed_audiobook_collections_sort_by_duration(mass: MusicAssistant) -> None:
+    """Collections sort on the total duration of their books, between the single books."""
+    for name, collection, duration in (
+        ("Long 1", "Long Series", 50),
+        ("Long 2", "Long Series", 500),
+        ("Middle Book", None, 300),
+        ("Short 1", "Short Series", 100),
+        ("Short 2", "Short Series", 100),
+    ):
+        await _add_collection_book(mass, name, collection, duration=duration)
+
+    result = await mass.music.audiobooks.library_items(
+        collapse_collections=True,
+        sort_field=SortField.DURATION,
+        sort_direction=SortDirection.ASC,
+    )
+    assert [item.name for item in result] == ["Short Series", "Middle Book", "Long Series"]
+
+
+async def test_collection_covers_skip_thumbs_the_viewer_cannot_be_shown(
+    mass: MusicAssistant,
+) -> None:
+    """The cover stack takes the first books with a thumb, less those the viewer can't be shown."""
+    # the first two covers belong to a provider that is not loaded, so only the third of
+    # the three covers the query keeps can be shown
+    for name, sequence, cover_remote in (
+        ("Book 1", 1, False),
+        ("Book 2", 2, False),
+        ("Book 3", 3, True),
+        ("Book 4", 4, True),
+        ("Book 5", 5, True),
+        ("Book 6", 6, True),
+    ):
+        await _add_collection_book(mass, name, "Saga", sequence, cover_remote=cover_remote)
+
+    available_providers = get_global_cache_value("available_providers")
+    await set_global_cache_values({"available_providers": {"prov_a_inst"}})
+    try:
+        (collection,) = await mass.music.audiobooks.library_items(collapse_collections=True)
+    finally:
+        await set_global_cache_values({"available_providers": available_providers})
+    assert isinstance(collection, MediaCollection)
+    assert [image.path for image in collection.metadata.images or []] == ["Book 3.jpg"]
 
 
 async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistant) -> None:

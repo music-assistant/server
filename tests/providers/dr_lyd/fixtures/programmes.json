@@ -1,0 +1,377 @@
+[
+ {
+  "type": "Live",
+  "learnId": "urn:dr:ocs:audio:content:playable:12422563452",
+  "durationMilliseconds": 7380000,
+  "categories": [
+   "Musik",
+   "Klassisk"
+  ],
+  "productionNumber": "12422563452",
+  "startTime": "2026-11-05T21:00:00+00:00",
+  "endTime": "2026-11-05T23:03:00+00:00",
+  "presentationUrl": "https://www.dr.dk/lyd/p2/natsvaermeren/natsvaermeren-2025/poesi-12422563452",
+  "order": 0,
+  "nextId": "urn:dr:radio:episode:693b35fdaf5ce9656430ee59",
+  "previousId": "urn:dr:radio:episode:681c9e65923dffbb19777639",
+  "series": {
+   "title": "Natsværmeren",
+   "id": "urn:dr:radio:series:5fa264dd330eac2f135b81c3",
+   "slug": "natsvaermeren-758654987000",
+   "productionNumber": "758654987000",
+   "type": "Series",
+   "isAvailableOnDemand": true,
+   "presentationUrl": "https://www.dr.dk/lyd/p2/natsvaermeren-758654987000",
+   "learnId": "urn:dr:ocs:audio:content:series:758654987000"
+  },
+  "channel": {
+   "title": "P2",
+   "id": "urn:dr:radio:channel:5fa156d2da351264f87b4633",
+   "slug": "p2",
+   "type": "Channel",
+   "presentationUrl": "https://www.dr.dk/lyd/p2"
+  },
+  "audioAssets": [
+   {
+    "type": "Audio",
+    "target": "Stream",
+    "isStreamLive": true,
+    "format": "HLS",
+    "url": "https://drliveradio2.akamaized.net/hls/live/2118698/p2/masterab.m3u8"
+   },
+   {
+    "type": "Audio",
+    "target": "Stream",
+    "isStreamLive": true,
+    "format": "ICY",
+    "bitrate": 128,
+    "url": "https://live-icy.dr.dk/A/A04L.mp3"
+   },
+   {
+    "type": "Audio",
+    "target": "Stream",
+    "isStreamLive": true,
+    "format": "ICY",
+    "bitrate": 129,
+    "url": "https://live-icy.dr.dk/A/A04H.mp3"
+   }
+  ],
+  "isAvailableOnDemand": true,
+  "hasVideo": false,
+  "explicitContent": false,
+  "hasTranscription": false,
+  "id": "urn:dr:radio:episode:681c9e54b3140b1c1f3b9b75",
+  "slug": "poesi-12422563452",
+  "title": "Natsværmeren: Poesi",
+  "description": "Glæden ved poesi i musik.  \nVært: Katrine Ring.",
+  "imageAssets": [
+   {
+    "id": "urn:dr:radio:image:69b7ca4d40739ff717996e93",
+    "target": "SquareImage",
+    "ratio": "1:1",
+    "format": "image/png",
+    "blurHash": "oH8}MyE1WBa#WDocThslRkoKWCWCNKxZRkoLWBWD?HNHaxWVo0bHNJoeayayWXoKEMt6j[a#oLay"
+   },
+   {
+    "id": "urn:dr:radio:image:69b7ca4d40739ff717996e92",
+    "target": "Default",
+    "ratio": "16:9",
+    "format": "image/png",
+    "blurHash": "NE8;y4D%M}t3R.o2Kns8WBWCt6WXIpxtV@WEs.az"
+   },
+   {
+    "id": "urn:dr:radio:image:69b27d0592347793b68b12d3",
+    "target": "Podcast",
+    "ratio": "1:1",
+    "format": "image/png",
+    "blurHash": "oH9tWSMxr?n%WCkBtp$LensmWCR,WC%0V@s,WBWE^jRkn$jZn%W;Rls.jZf6WXj@EMt6j[a#oeay"
+   },
+   {
+    "id": "urn:dr:radio:image:69b7ca4d40739ff717996e93",
+    "target": "Default",
+    "ratio": "1:1",
+    "format": "image/png",
+    "blurHash": "oH8}MyE1WBa#WDocThslRkoKWCWCNKxZRkoLWBWD?HNHaxWVo0bHNJoeayayWXoKEMt6j[a#oLay"
+   }
+  ]
+ },
+ {
+  "type": "Live",
+  "learnId": "urn:dr:ocs:audio:content:playable:13332646454",
+  "durationMilliseconds": 7380000,
+  "categories": [
+   "Underholdning"
+  ],
+  "productionNumber": "13332646454",
+  "startTime": "2026-11-05T21:00:00+00:00",
+  "endTime": "2026-11-05T23:03:00+00:00",
+  "presentationUrl": "https://www.dr.dk/lyd/p3/den-sidste-time-6641303469000",
+  "order": 0,
+  "series": {
+   "title": "Den sidste time",
+   "id": "urn:dr:radio:series:6ac61845842017fe110efa60",
+   "slug": "den-sidste-time-6641303469000",
+   "productionNumber": "6641303469000",
+   "type": "Series",
+   "isAvailableOnDemand": true,
+   "presentationUrl": "https://www.dr.dk/lyd/p3/den-sidste-time-6641303469000",
+   "learnId": "urn:dr:ocs:audio:content:series:6641303469000"
+  },
+  "channel": {
+   "title": "P3",
+   "id": "urn:dr:radio:channel:5fa156d2da351264f87b4634",
+   "slug": "p3",
+   "type": "Channel",
+   "presentationUrl": "https://www.dr.dk/lyd/p3"
+  },
+  "audioAssets": [
+   {
+    "type": "Audio",
+    "target": "Stream",
+    "isStreamLive": true,
+    "format": "HLS",
+    "url": "https://drliveradio2.akamaized.net/hls/live/2118698/p3/masterab.m3u8"
+   },
+   {
+    "type": "Audio",
+    "target": "Stream",
+    "isStreamLive": true,
+    "format": "ICY",
+    "bitrate": 128,
+    "url": "https://live-icy.dr.dk/A/A05L.mp3"
+   },
+   {
+    "type": "Audio",
+    "target": "Stream",
+    "isStreamLive": true,
+    "format": "ICY",
+    "bitrate": 129,
+    "url": "https://live-icy.dr.dk/A/A05H.mp3"
+   }
+  ],
+  "isAvailableOnDemand": false,
+  "hasVideo": false,
+  "explicitContent": false,
+  "hasTranscription": false,
+  "id": "urn:dr:radio:episode:6ac619328b5f009a0f04c6a7",
+  "slug": "torsdag-5-november-2026-13332646454",
+  "title": "Den sidste time",
+  "description": "Chano Jørgensen og Kathrine Pontoppidan vil gerne prøve at gøre tingene en lille smule anderledes. For der er nødvendigvis ikke noget galt med plejer, men de deler begge kærligheden for at tage skridt i sneen, hvor der ikke allerede er sat fodspor. I 'Den sidste time' prøver de lige præcis det, når de kigger på tidens historier og tendenser og ser, hvad der sker, hvis man vender det hele lidt på hovedet.",
+  "imageAssets": [
+   {
+    "id": "urn:dr:radio:image:6ad9f2f072191fe5360b406b",
+    "target": "Podcast",
+    "ratio": "1:1",
+    "format": "image/png",
+    "blurHash": "oZMGVL.8X-Q-tl%M}HMxXlozaKSgmSRPW.t7s:X8iJtleTaKI:soSzt7rYR*tQRjx]R*eojsa}R*"
+   },
+   {
+    "id": "urn:dr:radio:image:6ad5c1091068ba26db3ae6da",
+    "target": "SquareImage",
+    "ratio": "1:1",
+    "format": "image/png",
+    "blurHash": "oZMGVL.8X-VEtl%M}HMxXlozaKSgmSRPWot7s:X8iJtla0aKI:soSzt7rYR*tQRjx]R*aLjsa}R*"
+   },
+   {
+    "id": "urn:dr:radio:image:6ad5c1091068ba26db3ae6db",
+    "target": "Default",
+    "ratio": "16:9",
+    "format": "image/png",
+    "blurHash": "NPOL_%%fYiVF%gyC?|IUSz%MRjb]IByDq^M{TIRP"
+   },
+   {
+    "id": "urn:dr:radio:image:6ad5c1091068ba26db3ae6da",
+    "target": "Default",
+    "ratio": "1:1",
+    "format": "image/png",
+    "blurHash": "oZMGVL.8X-VEtl%M}HMxXlozaKSgmSRPWot7s:X8iJtla0aKI:soSzt7rYR*tQRjx]R*aLjsa}R*"
+   }
+  ]
+ },
+ {
+  "type": "Live",
+  "learnId": "urn:dr:ocs:audio:content:playable:13652690454",
+  "durationMilliseconds": 3600000,
+  "categories": [
+   "Musik"
+  ],
+  "productionNumber": "13652690454",
+  "startTime": "2026-11-05T22:03:00+00:00",
+  "endTime": "2026-11-05T23:03:00+00:00",
+  "presentationUrl": "https://www.dr.dk/lyd/p4/foer-natten-paa-p4-3862397300000",
+  "order": 0,
+  "series": {
+   "title": "Før natten på P4",
+   "id": "urn:dr:radio:series:6336d806b3066954c0e9b49b",
+   "slug": "foer-natten-paa-p4-3862397300000",
+   "productionNumber": "3862397300000",
+   "type": "Series",
+   "isAvailableOnDemand": true,
+   "presentationUrl": "https://www.dr.dk/lyd/p4/foer-natten-paa-p4-3862397300000",
+   "learnId": "urn:dr:ocs:audio:content:series:3862397300000"
+  },
+  "channel": {
+   "title": "P4 Bornholm",
+   "id": "urn:dr:radio:channel:5fa156d2da351264f87b4647",
+   "slug": "p4bornholm",
+   "type": "Channel",
+   "presentationUrl": "https://www.dr.dk/lyd/p4bornholm"
+  },
+  "audioAssets": [
+   {
+    "type": "Audio",
+    "target": "Stream",
+    "isStreamLive": true,
+    "format": "HLS",
+    "url": "https://drliveradio2.akamaized.net/hls/live/2118698/p4bornholm/masterab.m3u8"
+   },
+   {
+    "type": "Audio",
+    "target": "Stream",
+    "isStreamLive": true,
+    "format": "ICY",
+    "bitrate": 128,
+    "url": "https://live-icy.dr.dk/A/A06L.mp3"
+   },
+   {
+    "type": "Audio",
+    "target": "Stream",
+    "isStreamLive": true,
+    "format": "ICY",
+    "bitrate": 129,
+    "url": "https://live-icy.dr.dk/A/A06H.mp3"
+   }
+  ],
+  "isAvailableOnDemand": false,
+  "hasVideo": false,
+  "explicitContent": false,
+  "hasTranscription": false,
+  "id": "urn:dr:radio:episode:693ad063b73064306f38ddcb",
+  "slug": "torsdag-5-november-2026-13652690454",
+  "title": "Før natten på P4",
+  "description": "Dit radiofoniske klap på skulderen. Vi siger tak for i dag med god karma og masser af den bedste musik til døgnets sidste timer.\nVært: Stine Bram.\nwww.dr.dk/lyd/p4",
+  "imageAssets": [
+   {
+    "id": "urn:dr:radio:image:6a576bd7545c5e44fccbdcc3",
+    "target": "Podcast",
+    "ratio": "1:1",
+    "format": "image/png",
+    "blurHash": "ooG8AQn,-ms:oIWA~8aexCs.j=j?s,WENHj[WYoes:oLNHWCWXayxWoJWDayj[fks+jtWXj[oej]"
+   },
+   {
+    "id": "urn:dr:radio:image:6a576974af3b8eba6dfee30b",
+    "target": "SquareImage",
+    "ratio": "1:1",
+    "format": "image/png",
+    "blurHash": "ooG8Gds.-ms:jXad~8axxVoefOayt3WENHfla~oLt5j[NHWVa#j?xWoJWDayj]j[s+a#WXj[oej]"
+   },
+   {
+    "id": "urn:dr:radio:image:6a57694d6e0fbbee2c3ffed0",
+    "target": "Default",
+    "ratio": "16:9",
+    "format": "image/png",
+    "blurHash": "NhKTLvs,~3WCR+oL^gWCIqkCNKoJocWWRmodxYWC"
+   },
+   {
+    "id": "urn:dr:radio:image:6a576974af3b8eba6dfee30b",
+    "target": "Default",
+    "ratio": "1:1",
+    "format": "image/png",
+    "blurHash": "ooG8Gds.-ms:jXad~8axxVoefOayt3WENHfla~oLt5j[NHWVa#j?xWoJWDayj]j[s+a#WXj[oej]"
+   }
+  ]
+ },
+ {
+  "type": "Live",
+  "learnId": "urn:dr:ocs:audio:content:playable:13652690454",
+  "durationMilliseconds": 3600000,
+  "categories": [
+   "Musik"
+  ],
+  "productionNumber": "13652690454",
+  "startTime": "2026-11-05T22:03:00+00:00",
+  "endTime": "2026-11-05T23:03:00+00:00",
+  "presentationUrl": "https://www.dr.dk/lyd/p4/foer-natten-paa-p4-3862397300000",
+  "order": 0,
+  "series": {
+   "title": "Før natten på P4",
+   "id": "urn:dr:radio:series:6336d806b3066954c0e9b49b",
+   "slug": "foer-natten-paa-p4-3862397300000",
+   "productionNumber": "3862397300000",
+   "type": "Series",
+   "isAvailableOnDemand": true,
+   "presentationUrl": "https://www.dr.dk/lyd/p4/foer-natten-paa-p4-3862397300000",
+   "learnId": "urn:dr:ocs:audio:content:series:3862397300000"
+  },
+  "channel": {
+   "title": "P4 København",
+   "id": "urn:dr:radio:channel:5fa156d3da351264f87b4651",
+   "slug": "p4kbh",
+   "type": "Channel",
+   "presentationUrl": "https://www.dr.dk/lyd/p4kbh"
+  },
+  "audioAssets": [
+   {
+    "type": "Audio",
+    "target": "Stream",
+    "isStreamLive": true,
+    "format": "HLS",
+    "url": "https://drliveradio2.akamaized.net/hls/live/2118698/p4kobenhavn/masterab.m3u8"
+   },
+   {
+    "type": "Audio",
+    "target": "Stream",
+    "isStreamLive": true,
+    "format": "ICY",
+    "bitrate": 128,
+    "url": "https://live-icy.dr.dk/A/A08L.mp3"
+   },
+   {
+    "type": "Audio",
+    "target": "Stream",
+    "isStreamLive": true,
+    "format": "ICY",
+    "bitrate": 129,
+    "url": "https://live-icy.dr.dk/A/A08H.mp3"
+   }
+  ],
+  "isAvailableOnDemand": false,
+  "hasVideo": false,
+  "explicitContent": false,
+  "hasTranscription": false,
+  "id": "urn:dr:radio:episode:693ad063b73064306f38ddcb",
+  "slug": "torsdag-5-november-2026-13652690454",
+  "title": "Før natten på P4",
+  "description": "Dit radiofoniske klap på skulderen. Vi siger tak for i dag med god karma og masser af den bedste musik til døgnets sidste timer.\nVært: Stine Bram.\nwww.dr.dk/lyd/p4",
+  "imageAssets": [
+   {
+    "id": "urn:dr:radio:image:6a576bd7545c5e44fccbdcc3",
+    "target": "Podcast",
+    "ratio": "1:1",
+    "format": "image/png",
+    "blurHash": "ooG8AQn,-ms:oIWA~8aexCs.j=j?s,WENHj[WYoes:oLNHWCWXayxWoJWDayj[fks+jtWXj[oej]"
+   },
+   {
+    "id": "urn:dr:radio:image:6a576974af3b8eba6dfee30b",
+    "target": "SquareImage",
+    "ratio": "1:1",
+    "format": "image/png",
+    "blurHash": "ooG8Gds.-ms:jXad~8axxVoefOayt3WENHfla~oLt5j[NHWVa#j?xWoJWDayj]j[s+a#WXj[oej]"
+   },
+   {
+    "id": "urn:dr:radio:image:6a57694d6e0fbbee2c3ffed0",
+    "target": "Default",
+    "ratio": "16:9",
+    "format": "image/png",
+    "blurHash": "NhKTLvs,~3WCR+oL^gWCIqkCNKoJocWWRmodxYWC"
+   },
+   {
+    "id": "urn:dr:radio:image:6a576974af3b8eba6dfee30b",
+    "target": "Default",
+    "ratio": "1:1",
+    "format": "image/png",
+    "blurHash": "ooG8Gds.-ms:jXad~8axxVoefOayt3WENHfla~oLt5j[NHWVa#j?xWoJWDayj]j[s+a#WXj[oej]"
+   }
+  ]
+ }
+]

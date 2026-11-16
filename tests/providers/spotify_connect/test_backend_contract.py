@@ -224,9 +224,9 @@ def _make_provider(
 def _player_with_volume(mass: MagicMock, volume_level: int) -> MagicMock:
     """Make player lookups on the mass mock return a player with the given volume."""
     player = MagicMock()
-    player.state.volume_level = volume_level
+    player.volume_level = volume_level
     # group_volume mirrors the player's own volume for anything that is not a group
-    player.state.group_volume = volume_level
+    player.group_volume = volume_level
     mass.players.get_player.return_value = player
     return player
 
@@ -267,6 +267,27 @@ async def test_playing_fires_play_media_after_debounce(monkeypatch: pytest.Monke
     assert task is not None
     await task
     mass.player_queues.play_media.assert_called_once_with("player1", _SOURCE_URI)
+
+
+async def test_playing_on_the_daemon_of_a_merged_player_starts_the_player_it_went_into(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connected player was merged into another: playback starts on that one."""
+    monkeypatch.setattr(provider_mod, "PLAY_MEDIA_DEBOUNCE_S", 0.01)
+    backend = FakeBackend()
+    provider, daemon, mass = _make_provider(backend, session_active=True)
+    mass.players.resolve_player_id.side_effect = lambda player_id: (
+        "kept_player" if player_id == _PLAYER_ID else player_id
+    )
+    mass.players.get_player.return_value = MagicMock()
+
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+
+    task = daemon.pending_play_media_task
+    assert task is not None
+    await task
+    mass.player_queues.play_media.assert_called_once_with("kept_player", _SOURCE_URI)
+    assert daemon.active_player_id == "kept_player"
 
 
 async def test_stop_daemon_awaits_inflight_play_and_ignores_late_events(

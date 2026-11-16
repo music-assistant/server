@@ -17,7 +17,7 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
-from music_assistant.controllers.players import controller as players_controller
+from music_assistant.controllers.players import locks as players_locks
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
@@ -47,11 +47,10 @@ async def test_enqueue_next_item_waits_for_playing_player_update(index_in_buffer
         await release_wait.wait()
         yield
 
-    player_state = SimpleNamespace(
+    player = SimpleNamespace(
         playback_state=PlaybackState.IDLE,
         active_source="q1",
     )
-    player = SimpleNamespace(state=player_state)
 
     mass = MagicMock()
     mass.players = MagicMock()
@@ -91,7 +90,7 @@ async def test_enqueue_next_item_waits_for_playing_player_update(index_in_buffer
     assert wait_entered.is_set()
     mass.players.enqueue_next_media.assert_not_awaited()
 
-    player_state.playback_state = PlaybackState.PLAYING
+    player.playback_state = PlaybackState.PLAYING
     release_wait.set()
     await enqueue_task
 
@@ -122,9 +121,7 @@ def _handover_controller() -> tuple[
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
     controller.logger = MagicMock()
     players = bare_player_controller()
-    player = SimpleNamespace(
-        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, active_source="q1")
-    )
+    player = SimpleNamespace(playback_state=PlaybackState.PLAYING, active_source="q1")
     mass = MagicMock()
     mass.players.wait_for_player_update = MagicMock(side_effect=_already_playing)
     mass.players.get_player = MagicMock(return_value=player)
@@ -195,9 +192,8 @@ async def test_enqueue_next_item_gives_up_on_a_player_that_stays_busy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A handover that cannot get the lock in time is dropped quietly."""
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.02)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.05)
+    monkeypatch.setattr(players_locks, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+    monkeypatch.setattr(players_locks, "PLAYER_LOCK_TIMEOUT", 0.05)
     controller, mass, players, items = _handover_controller()
 
     async with players.get_player_lock("q1", PlayerLockPurpose.PLAYBACK):
@@ -283,6 +279,7 @@ def _controller_with_next_item() -> tuple[PlayerQueuesController, SimpleNamespac
                 session_id="session-1",
                 next_item_id_preparing=None,
                 last_served_item_id=None,
+                sleep_timer_target=None,
             ),
         )
     }
@@ -341,6 +338,23 @@ async def test_prepare_next_uses_the_speculative_capacity_budget() -> None:
         "task_name": "prepare_next_audio_buffer_queue-1",
         "abort_existing": True,
     }
+
+
+async def test_prepare_next_waits_for_capacity_as_long_as_the_caller_allows() -> None:
+    """A caller that knows when the next item is due can let the preparation wait longer."""
+    controller, next_item, mass = _controller_with_next_item()
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1", "current", capacity_wait_timeout=30.0)
+    await mass.create_task.call_args.args[0]
+
+    mass.streams.audio.get_audio_buffer.assert_awaited_once_with(
+        next_item,
+        reason="prepare_next",
+        capacity_wait_timeout=30.0,
+        allow_provider_match=False,
+        stop_paused_queues=False,
+    )
 
 
 @pytest.mark.parametrize(
@@ -413,6 +427,32 @@ async def test_prepare_next_defers_while_the_streamed_item_holds_the_only_source
     controller.prepare_next_audio_buffer("queue-1", "current")
     await mass.create_task.call_args.args[0]
 
+    mass.streams.audio.get_audio_buffer.assert_not_awaited()
+
+
+async def test_a_deferred_preload_hints_the_slot_holder_at_its_next_item() -> None:
+    """The source holding the only slot hears which item follows, to line it up itself."""
+    controller, next_item, mass = _controller_with_next_item()
+    next_item.streamdetails = SimpleNamespace(buffer=None, provider="limited--1")
+    playing = MagicMock()
+    playing.eof = False
+    streamed = _streamed_item(controller)
+    streamed.streamdetails = SimpleNamespace(
+        provider="limited--1", buffer=playing, is_realtime=True
+    )
+    cast("Any", controller.get("queue-1")).current_item = SimpleNamespace(streamdetails=None)
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = 1
+    provider.has_available_stream_slot = False
+    mass.get_provider = MagicMock(return_value=provider)
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1", "current")
+    await mass.create_task.call_args.args[0]
+
+    provider.hint_next_item.assert_awaited_once_with(
+        streamed.streamdetails, next_item.streamdetails
+    )
     mass.streams.audio.get_audio_buffer.assert_not_awaited()
 
 

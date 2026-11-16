@@ -1,6 +1,7 @@
 {
   "type": "audio_analysis",
   "domain": "sonic_analysis",
+  "stage": "stable",
   "name": "Sonic Analysis (on-device)",
   "description": "Analyses how each track sounds to power similarity, mood-based playlists, and other audio-aware features.",
   "codeowners": [

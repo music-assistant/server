@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.errors import UnsupportedFeaturedException
 
 from .media_capabilities import (
     AudioStreamMixin,
@@ -63,6 +64,11 @@ class AIEngine(PluginEngine):
 @dataclass(kw_only=True)
 class TTSEngine(PluginEngine):
     """An engine that renders speech, invoked through ``PluginProvider.get_tts_message``."""
+
+
+@dataclass(kw_only=True)
+class ImageEngine(PluginEngine):
+    """An engine that generates images, invoked through ``PluginProvider.ai_generate_image``."""
 
 
 class PluginProvider(
@@ -128,7 +134,8 @@ class PluginProvider(
 
         Sync on purpose: called from the player's (sync) state calculation.
 
-        :param player_id: The player to return the input AudioSources for.
+        :param player_id: The id of the player or of one of its protocols: the player asks
+            with each, so a device known by the id of its protocol is found as well.
         """
         return []
 
@@ -200,13 +207,13 @@ class PluginProvider(
         prior request's teardown — see ``on_source_unselected`` for details.
 
         :param source_id: The AudioSource.item_id that was selected.
-        :param player_id: The player the audio is served to. For a source playing on
-            a player this is the owner itself; only direct-PCM consumers and the
-            legacy queue-item path pass a different (protocol or group member) player.
+        :param player_id: The id the stream is fetched under: that of the output protocol
+            of the player that renders the audio (only a live source fetched on its own
+            route passes the owner player). It is no player or queue id: do not use it as
+            one; ``mass.players.get_player_by_protocol`` returns its player.
         :param owner_player_id: The player that owns this playback session. Prefer this
-            for anything you store: it is the user-facing player and stays valid for
-            play_media and cmd_stop, where ``player_id`` can be an ephemeral protocol
-            bridge whose id is gone by the time you use it.
+            for anything you store: it is the user-facing player, the id that player and
+            queue commands such as play_media and cmd_stop take.
         :param stream_session_id: Opaque controller-generated token identifying
             this specific stream request. The matching ``on_source_unselected``
             receives the same value.
@@ -364,3 +371,32 @@ class PluginProvider(
         :return: The AI response as a string.
         """
         raise NotImplementedError
+
+    async def get_image_engines(self) -> list[ImageEngine]:
+        """
+        Return the image generation engines this plugin exposes.
+
+        Will only be called if ProviderFeature.AI_QUERY is declared. Unlike the AI engines this
+        is optional: a plugin that can not generate images keeps the default empty list.
+
+        May change over time (e.g. when the backend adds or removes entities).
+        The user picks one of these in the config of a consuming provider.
+
+        :return: A list of ImageEngine items. Return an empty list if the plugin
+            currently has no engines to expose (e.g. the backend is offline).
+        """
+        return []
+
+    async def ai_generate_image(self, prompt: str, engine_id: str | None = None) -> bytes:
+        """
+        Generate an image from a text prompt.
+
+        Will only be called for a plugin that exposes image engines.
+
+        :param prompt: The description of the image to generate.
+        :param engine_id: The provider-scoped id of the engine to use (``ImageEngine.id``,
+            not its ``uid``). Omit or pass None to use the plugin's own default engine.
+        :return: The encoded image (for example PNG or JPEG) as raw bytes.
+        """
+        msg = f"{self.name} can not generate images"
+        raise UnsupportedFeaturedException(msg)

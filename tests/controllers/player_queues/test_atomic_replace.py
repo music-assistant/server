@@ -69,7 +69,9 @@ def _controller(**queue_kwargs: Any) -> Any:
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = Mock()
     ctrl.mass = MagicMock()
-    ctrl.mass.players.get_player = Mock(return_value=Mock(extra_data={}))
+    ctrl.mass.players.get_player = Mock(
+        return_value=Mock(extra_data={}, offline_by_power_control=False)
+    )
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
@@ -204,7 +206,7 @@ async def test_replace_cancels_the_prewarm_of_the_track_it_swaps_out(dynamic: bo
 
     await ctrl.play_media("q1", _playlist("pl1", dynamic=dynamic), QueueOption.REPLACE)
 
-    assert order[0] == "prepare_next_audio_buffer_q1"
+    assert order.index("prepare_next_audio_buffer_q1") < order.index("release")
     assert order.count("release") == len(replaced)
 
 
@@ -255,11 +257,10 @@ async def test_replace_starting_at_a_chosen_track_never_advertises_a_partial_que
 
 async def test_replacing_a_dynamic_queue_hides_the_rebuild_from_clients() -> None:
     """
-    The pool is fetched over the network with the queue already emptied, so updates are held off.
+    Player updates are held off while the pool is fetched over the network.
 
-    Player updates would otherwise reconcile against the half-built queue and publish it as empty
-    with nothing playing - the very state this is meant to remove, and on the dynamic path the
-    fetch is the slowest part of the whole operation.
+    A track change picked up during the fetch, the slowest part of the whole operation, would
+    otherwise start a refill of the tail the rebuild is about to replace.
     """
     ctrl = _controller(is_dynamic=True, shuffle_enabled=True)
     _load_playing_queue(ctrl)
@@ -328,11 +329,13 @@ async def test_a_player_still_reporting_the_replaced_item_keeps_the_new_queue_po
     queue.next_item = new_items[1]
     player = SimpleNamespace(
         player_id="q1",
-        active_output_protocol="native",
-        current_media=SimpleNamespace(
-            source_id="q1", queue_item_id=replaced[0].queue_item_id, uri=None
+        resolve_output_protocol=lambda: SimpleNamespace(
+            current_media=SimpleNamespace(
+                source_id="q1", queue_item_id=replaced[0].queue_item_id, uri=None
+            )
         ),
-        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, corrected_elapsed_time=12.0),
+        playback_state=PlaybackState.PLAYING,
+        corrected_elapsed_time=12.0,
     )
 
     updated = ctrl._update_current_index_from_player(queue, cast("Player", player))

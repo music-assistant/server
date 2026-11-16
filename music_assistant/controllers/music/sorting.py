@@ -8,7 +8,8 @@ from typing import Final
 from music_assistant_models.api import SortOptionInfo
 from music_assistant_models.enums import ListingType, MediaType, SortDirection, SortField
 
-# what each sort field offers: whether it takes a direction and its default, and the label key
+# what each sort field offers: whether it takes a direction and its default, and the label key;
+# the models enum may hold fields no listing offers yet, and a request for one is rejected
 SORT_FIELD_DEFINITIONS: Final[dict[SortField, SortOptionInfo]] = {
     SortField.NAME: SortOptionInfo(
         field=SortField.NAME,
@@ -57,6 +58,12 @@ SORT_FIELD_DEFINITIONS: Final[dict[SortField, SortOptionInfo]] = {
         supports_direction=True,
         default_direction=SortDirection.DESC,
         label_key="year",
+    ),
+    SortField.RELEASE_DATE: SortOptionInfo(
+        field=SortField.RELEASE_DATE,
+        supports_direction=True,
+        default_direction=SortDirection.DESC,
+        label_key="release_date",
     ),
     SortField.POSITION: SortOptionInfo(
         field=SortField.POSITION,
@@ -150,7 +157,8 @@ _LIBRARY_LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...
     ListingType.LIBRARY_GENRES: _library_sort_options(),
 }
 
-# the sort options each listing offers, the first one being the listing's default
+# the sort options each listing offers, the first one being the listing's default; the models
+# enum may hold listing types without a row, which the sort_options command rejects
 LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...]]] = {
     **_LIBRARY_LISTING_SORT_OPTIONS,
     ListingType.ALBUM_TRACKS: _sort_options(
@@ -177,7 +185,9 @@ LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...]]] = {
     ListingType.ARTIST_TRACKS: _sort_options(
         SortField.SORT_NAME, SortField.NAME, SortField.ALBUM_NAME, SortField.DURATION
     ),
-    ListingType.ARTIST_ALBUMS: _sort_options(SortField.SORT_NAME, SortField.NAME, SortField.YEAR),
+    ListingType.ARTIST_ALBUMS: _sort_options(
+        SortField.SORT_NAME, SortField.NAME, SortField.YEAR, SortField.RELEASE_DATE
+    ),
     # an audiobook carries no year
     ListingType.ARTIST_AUDIOBOOKS: _sort_options(
         SortField.SORT_NAME, SortField.NAME, SortField.DURATION

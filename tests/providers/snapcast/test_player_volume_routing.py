@@ -10,78 +10,76 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import PlayerFeature, PlayerType, ProtocolRole
 
 from music_assistant.constants import CONF_MUTE_CONTROL, CONF_VOLUME_CONTROL
-from music_assistant.controllers.players import PlayerController
+from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.player import SnapCastPlayer
-from tests.common import MockPlayer, MockProvider, create_mock_config
+from tests.common import MockProtocol, MockProvider, attach_mock, mock_player_mass
 
 
 @pytest.fixture
 def mock_mass() -> MagicMock:
-    """Create a mock MusicAssistant instance, wired like the sibling protocol-state tests."""
-    mass = MagicMock()
-    mass.closing = False
-    mass.loop = None
-    mass.config = MagicMock()
-    mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(
-        side_effect=lambda _player_id, _key, default=None: default
+    """Create a mocked MusicAssistant whose players controller looks players up for real."""
+    return mock_player_mass()
+
+
+@pytest.fixture
+def snapcast_player(mock_mass: MagicMock) -> SnapCastPlayer:
+    """Create a SnapCastPlayer with native volume/mute support, attached to a player."""
+    provider = MockProvider("snapcast", instance_id="test_snapcast", mass=mock_mass)
+    provider.stream_audio_format = MagicMock(sample_rate=48000, bit_depth=16)  # type: ignore[attr-defined]
+    mock_mass.config.get_base_protocol_config.return_value = PlayerConfig(
+        values={}, provider=provider.instance_id, player_id="ma_kitchen"
     )
-    mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
-    mass.config.set = MagicMock()
-    mass.signal_event = MagicMock()
-    mass.get_providers = MagicMock(return_value=[])
-    mass.player_queues = MagicMock()
-    mass.player_queues.get = MagicMock(return_value=None)
-    return mass
-
-
-@pytest.fixture
-def controller(mock_mass: MagicMock) -> PlayerController:
-    """Create a real PlayerController so cross-player lookups resolve normally."""
-    ctrl = PlayerController(mock_mass)
-    mock_mass.players = ctrl
-    return ctrl
-
-
-@pytest.fixture
-def provider(mock_mass: MagicMock) -> MockProvider:
-    """Create a mock Snapcast provider, including the attributes SnapCastPlayer needs."""
-    prov = MockProvider("snapcast", instance_id="test_snapcast", mass=mock_mass)
-    prov.stream_audio_format = MagicMock(sample_rate=48000, bit_depth=16)  # type: ignore[attr-defined]
-    return prov
-
-
-@pytest.fixture
-def snapcast_player(provider: MockProvider) -> SnapCastPlayer:
-    """Create a SnapCastPlayer with native volume/mute support, as setup() grants it."""
-    provider.mass.config.get_base_player_config.return_value = create_mock_config(
-        "Test Snapcast Player"
-    )
-    # group=None keeps _get_active_snapstream() from reaching for snap_provider._snapserver,
-    # which MockProvider does not have - playback_state is read eagerly during Player.__init__.
+    # group=None keeps _get_active_snapstream() from reaching for snap_provider._snapserver
     snap_client = MagicMock(group=None)
-    player = SnapCastPlayer(provider, "player_1", snap_client)  # type: ignore[arg-type]
-    player._attr_supported_features = {
+    protocol = SnapCastPlayer(provider, "ma_kitchen", snap_client)  # type: ignore[arg-type]
+    protocol._attr_supported_features = {
         PlayerFeature.PLAY_MEDIA,
         PlayerFeature.VOLUME_SET,
         PlayerFeature.VOLUME_MUTE,
     }
-    player._cache.clear()
-    return player
+    player = Player(
+        mock_mass,
+        "pl_kitchen",
+        PlayerConfig(
+            values={},
+            provider=provider.instance_id,
+            player_id="pl_kitchen",
+            default_name="Kitchen",
+            player_type=PlayerType.PLAYER,
+        ),
+    )
+    mock_mass.players._players[player.player_id] = player
+    mock_mass.players._protocols[protocol.protocol_id] = protocol
+    player.add_protocol(protocol, ProtocolRole.NATIVE)
+    protocol.set_player(player)
+    player.set_initialized()
+    return protocol
 
 
 @pytest.fixture
-def sendspin_player(provider: MockProvider) -> MockPlayer:
-    """Create a Sendspin protocol player that supports volume, standing in for the real one."""
-    player = MockPlayer(provider, "sendspin_1", "Sendspin Bridge", player_type=PlayerType.PROTOCOL)
-    player._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
-    player._attr_playback_state = PlaybackState.PLAYING
-    player._cache.clear()
-    return player
+def sendspin_player(mock_mass: MagicMock, snapcast_player: SnapCastPlayer) -> MockProtocol:
+    """Attach a Sendspin audio protocol that supports volume to the player of the snapclient."""
+    provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+    _, protocol = attach_mock(
+        provider,
+        "sendspin_1",
+        "Sendspin Bridge",
+        role=ProtocolRole.AUDIO,
+        player=snapcast_player.player,
+    )
+    protocol._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
+    return protocol
+
+
+def _player(protocol: SnapCastPlayer) -> Player:
+    """Return the player a protocol is attached to."""
+    assert protocol.player is not None
+    return protocol.player
 
 
 class TestSnapCastVolumeFeatureExposure:
@@ -96,103 +94,69 @@ class TestSnapCastVolumeFeatureExposure:
         self, snapcast_player: SnapCastPlayer
     ) -> None:
         """An explicitly active native output also keeps native volume/mute."""
-        snapcast_player.set_active_output_protocol("native")
+        _player(snapcast_player).set_active_output_protocol("native")
         assert PlayerFeature.VOLUME_SET in snapcast_player.supported_features
         assert PlayerFeature.VOLUME_MUTE in snapcast_player.supported_features
 
     def test_native_volume_hidden_when_foreign_protocol_active(
-        self,
-        snapcast_player: SnapCastPlayer,
-        sendspin_player: MockPlayer,
-        controller: PlayerController,
+        self, snapcast_player: SnapCastPlayer, sendspin_player: MockProtocol
     ) -> None:
         """A foreign active protocol (e.g. Sendspin) hides native volume/mute."""
-        controller._players = {
-            snapcast_player.player_id: snapcast_player,
-            sendspin_player.player_id: sendspin_player,
-        }
-        snapcast_player.set_active_output_protocol(sendspin_player.player_id)
+        _player(snapcast_player).set_active_output_protocol(sendspin_player.protocol_id)
 
         assert PlayerFeature.VOLUME_SET not in snapcast_player.supported_features
         assert PlayerFeature.VOLUME_MUTE not in snapcast_player.supported_features
 
     def test_volume_control_resolves_to_active_protocol_not_idle_native(
-        self,
-        snapcast_player: SnapCastPlayer,
-        sendspin_player: MockPlayer,
-        controller: PlayerController,
+        self, snapcast_player: SnapCastPlayer, sendspin_player: MockProtocol
     ) -> None:
         """volume_control/mute_control redirect to Sendspin once it is active."""
-        controller._players = {
-            snapcast_player.player_id: snapcast_player,
-            sendspin_player.player_id: sendspin_player,
-        }
-        snapcast_player.set_active_output_protocol(sendspin_player.player_id)
+        player = _player(snapcast_player)
+        player.set_active_output_protocol(sendspin_player.protocol_id)
 
-        assert snapcast_player.volume_control == sendspin_player.player_id
-        assert snapcast_player.mute_control == sendspin_player.player_id
-        assert snapcast_player.volume_control != PLAYER_CONTROL_NATIVE
+        assert player._volume_control == sendspin_player.protocol_id
+        assert player._mute_control == sendspin_player.protocol_id
 
     def test_volume_control_reverts_to_native_when_protocol_cleared(
-        self,
-        snapcast_player: SnapCastPlayer,
-        sendspin_player: MockPlayer,
-        controller: PlayerController,
+        self, snapcast_player: SnapCastPlayer, sendspin_player: MockProtocol
     ) -> None:
         """Once Sendspin stops being active, native volume/mute control returns."""
-        controller._players = {
-            snapcast_player.player_id: snapcast_player,
-            sendspin_player.player_id: sendspin_player,
-        }
-        snapcast_player.set_active_output_protocol(sendspin_player.player_id)
-        assert snapcast_player.volume_control == sendspin_player.player_id
+        player = _player(snapcast_player)
+        player.set_active_output_protocol(sendspin_player.protocol_id)
+        assert player._volume_control == sendspin_player.protocol_id
 
-        snapcast_player.set_active_output_protocol(None)
+        player.set_active_output_protocol(None)
 
-        assert snapcast_player.volume_control == PLAYER_CONTROL_NATIVE
-        assert snapcast_player.mute_control == PLAYER_CONTROL_NATIVE
+        assert player._volume_control == PLAYER_CONTROL_NATIVE
+        assert player._mute_control == PLAYER_CONTROL_NATIVE
         assert PlayerFeature.VOLUME_SET in snapcast_player.supported_features
         assert PlayerFeature.VOLUME_MUTE in snapcast_player.supported_features
 
     def test_explicit_native_config_is_overridden_while_foreign_protocol_active(
-        self,
-        provider: MockProvider,
-        snapcast_player: SnapCastPlayer,
-        sendspin_player: MockPlayer,
-        controller: PlayerController,
+        self, mock_mass: MagicMock, snapcast_player: SnapCastPlayer, sendspin_player: MockProtocol
     ) -> None:
         """An explicit Native setting is set aside while Sendspin plays - deliberate."""
-        provider.mass.config.get_raw_player_config_value = MagicMock(
+        player = _player(snapcast_player)
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=lambda player_id, key, default=None: (
                 PLAYER_CONTROL_NATIVE
-                if player_id == snapcast_player.player_id
-                and key in (CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL)
+                if player_id == player.player_id and key in (CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL)
                 else default
             )
         )
-        controller._players = {
-            snapcast_player.player_id: snapcast_player,
-            sendspin_player.player_id: sendspin_player,
-        }
-        snapcast_player.set_active_output_protocol(sendspin_player.player_id)
+        player.set_active_output_protocol(sendspin_player.protocol_id)
 
-        assert snapcast_player.volume_control == sendspin_player.player_id
-        assert snapcast_player.mute_control == sendspin_player.player_id
+        assert player._volume_control == sendspin_player.protocol_id
+        assert player._mute_control == sendspin_player.protocol_id
 
-    def test_volume_control_for_output_still_native_before_protocol_marked_active(
-        self,
-        snapcast_player: SnapCastPlayer,
-        sendspin_player: MockPlayer,
-        controller: PlayerController,
+    def test_volume_control_for_output_is_that_output_before_it_is_marked_active(
+        self, snapcast_player: SnapCastPlayer, sendspin_player: MockProtocol
     ) -> None:
-        """Known gap: volume_control_for_output still returns native before Sendspin is active."""
-        controller._players = {
-            snapcast_player.player_id: snapcast_player,
-            sendspin_player.player_id: sendspin_player,
-        }
+        """The volume of an output that is about to play is owned by it, not by the snapclient."""
+        player = _player(snapcast_player)
 
-        assert snapcast_player.active_output_protocol in (None, "native")
+        assert player.active_output_protocol in (None, "native")
         assert (
-            snapcast_player.volume_control_for_output(sendspin_player.player_id)
-            == PLAYER_CONTROL_NATIVE
+            player.volume_control_for_output(sendspin_player.protocol_id)
+            == sendspin_player.protocol_id
         )

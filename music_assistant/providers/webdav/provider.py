@@ -244,9 +244,13 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
     async def _parse_tags(self, file_item: FileSystemItem) -> AudioTags:
         """Parse the tags of a file over HTTP."""
-        return await async_parse_tags(
+        tags = await async_parse_tags(
             file_item.absolute_path, file_item.file_size, verify_ssl=self.verify_ssl
         )
+        # ffprobe reports the (url-encoded) WebDAV URL as filename; the title/track/artist
+        # fallbacks parse the filename, so hand them the real WebDAV path instead
+        tags.filename = file_item.relative_path
+        return tags
 
     def _convert_webdav_items(
         self,
@@ -302,6 +306,8 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve image path to actual image data or URL."""
+        # drop the cache-busting suffix the parent appends to the image path
+        path = path.split("?cs=", 1)[0]
         # Check if this is an audio file with embedded image
         ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
         if ext in SUPPORTED_EXTENSIONS:

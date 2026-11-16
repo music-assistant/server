@@ -355,6 +355,7 @@ async def test_provider_resolved_ffmpeg_locator_never_reaches_ffmpeg(
     """An ffmpeg protocol locator reported as artwork is refused without spawning ffmpeg."""
     fake_provider = MagicMock(spec=PlayerProvider)
     fake_provider.resolve_image = AsyncMock(return_value="concat:/etc/passwd|/etc/hosts")
+    fake_provider.accepts_stored_image_path.return_value = False
     monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
 
     with (
@@ -385,6 +386,46 @@ async def test_own_imageproxy_url_with_control_chars_is_refused_before_resolving
     resolve_id.assert_not_awaited()
 
 
+@pytest.mark.parametrize("opted_in", [True, False], ids=["opted-in", "not-opted-in"])
+async def test_local_file_result_is_refused_only_for_an_accepted_stored_path(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    opted_in: bool,
+) -> None:
+    """A local file result is refused for an accepted stored path and read otherwise."""
+    image_path = _make_png_file(tmp_path)
+    fake_provider = MagicMock(spec=MusicProvider)
+    fake_provider.resolve_image = AsyncMock(return_value=image_path)
+    fake_provider.accepts_stored_image_path.return_value = opted_in
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+
+    if opted_in:
+        with pytest.raises(FileNotFoundError):
+            await get_image_data(mass_minimal, "al-123", "sonic--1")
+    else:
+        assert (
+            await get_image_data(mass_minimal, "al-123", "sonic--1")
+            == Path(image_path).read_bytes()
+        )
+
+
+async def test_accepted_stored_path_resolved_to_nothing_is_not_read_locally(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An accepted stored path the provider resolves to an empty string is never read as a file."""
+    image_path = _make_png_file(tmp_path)
+    fake_provider = MagicMock(spec=MusicProvider)
+    fake_provider.resolve_image = AsyncMock(return_value="")
+    fake_provider.accepts_stored_image_path.return_value = True
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+
+    with pytest.raises(FileNotFoundError):
+        await get_image_data(mass_minimal, image_path, "apple_music--1")
+
+
 async def test_provider_resolved_url_with_control_chars_is_not_fetched(
     mass_minimal: MusicAssistant,
     monkeypatch: pytest.MonkeyPatch,
@@ -398,6 +439,50 @@ async def test_provider_resolved_url_with_control_chars_is_not_fetched(
 
     with pytest.raises(FileNotFoundError, match="Invalid image reference"):
         await get_image_data(mass_minimal, "player/artwork", "player--1")
+    fetch_remote.assert_not_called()
+
+
+# artwork as a rogue DLNA renderer may report it: a non-http locator, optionally with a
+# header smuggled in after a CR/LF (inert marker only)
+_DLNA_ARTWORK = [
+    "rtsp://192.0.2.1:8094/ HTTP/1.1\r\nX-Marker: inert\r\n\r\n",
+    "rtsp://192.0.2.1:8094/cover.jpg",
+    "http://192.0.2.1/cover.jpg HTTP/1.1\r\nX-Marker: inert",
+]
+
+
+@pytest.mark.parametrize("artwork", _DLNA_ARTWORK, ids=["rtsp_crlf", "rtsp", "http_crlf"])
+@pytest.mark.parametrize("via_provider", [False, True], ids=["direct", "resolved"])
+async def test_rogue_renderer_artwork_never_reaches_ffmpeg_or_a_fetch(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    artwork: str,
+    via_provider: bool,
+) -> None:
+    """
+    Artwork reported by a renderer that is not a clean http(s) URL is never opened.
+
+    :param artwork: The artwork reference the renderer reports.
+    :param via_provider: Whether a player provider resolves to the artwork, rather than
+        it being requested directly.
+    """
+    fake_provider = MagicMock(spec=PlayerProvider)
+    fake_provider.resolve_image = AsyncMock(return_value=artwork)
+    fake_provider.accepts_stored_image_path.return_value = False
+    monkeypatch.setattr(
+        mass_minimal, "get_provider", lambda _prov, **_kw: fake_provider if via_provider else None
+    )
+    fetch_remote = AsyncMock(return_value=b"never")
+    monkeypatch.setattr(images, "_fetch_remote_image", fetch_remote)
+
+    with (
+        patch("music_assistant.helpers.tags.AsyncProcess") as mock_process,
+        pytest.raises(FileNotFoundError),
+    ):
+        await get_image_data(
+            mass_minimal, "player/artwork" if via_provider else artwork, "dlna--rogue"
+        )
+    mock_process.assert_not_called()
     fetch_remote.assert_not_called()
 
 

@@ -7,11 +7,21 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    UserNotFoundError,
+)
 from music_assistant_models.helpers import get_global_cache_value
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_scope,
+)
+from music_assistant.controllers.webserver.helpers.auth_providers import normalize_username
 from music_assistant.helpers.datetime import get_timezone
 from music_assistant.models.core_controller import CoreController
 
@@ -32,6 +42,40 @@ class _StatisticsBase(CoreController):
     """Shared state and helpers for statistics logic mixins."""
 
     domain: str = "statistics"
+
+    async def _get_statistics_user_ids(self, users: list[str] | None, all_users: bool) -> list[str]:
+        current_user = get_current_user()
+        if current_user is None:
+            return []
+        if users is None and not all_users:
+            return [current_user.user_id]
+        users = users or []
+        # checked before any lookup, so a member can not probe which usernames exist
+        if not has_scope(current_user, Scope.USERS_IMPERSONATE):
+            if all_users or any(
+                user != current_user.user_id and normalize_username(user) != current_user.username
+                for user in users
+            ):
+                raise InsufficientPermissions(
+                    "The users.impersonate scope is required for statistics of other users."
+                )
+            return [current_user.user_id] if users else []
+        auth = self.mass.webserver.auth
+        if all_users:
+            return [user.user_id for user in await auth.list_users()]
+        user_ids = []
+        for user in users:
+            # disabled users keep their play history, and auth/users lists them too
+            resolved = await auth.get_user(
+                user, include_disabled=True
+            ) or await auth.get_user_by_username(user, include_disabled=True)
+            if resolved is None:
+                raise UserNotFoundError(
+                    f"A user with user id or name {user} is not available.",
+                    translation_args=[user],
+                )
+            user_ids.append(resolved.user_id)
+        return user_ids
 
     async def _set_library_item_availability(self, items: list[ItemMapping]) -> None:
         """Apply current library availability to historical item references."""

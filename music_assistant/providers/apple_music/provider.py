@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any, cast
 
 import jwt
@@ -33,6 +34,7 @@ from music_assistant.models.recommendation_payload import RecommendationPayloadM
 
 from .api_client import AppleMusicAPIClient
 from .constants import (
+    ARTWORK_TOKEN_MEDIA_TYPES,
     CONF_MUSIC_APP_TOKEN,
     CONF_MUSIC_USER_MANUAL_TOKEN,
     CONF_MUSIC_USER_TOKEN,
@@ -44,6 +46,7 @@ from .constants import (
 from .helpers import browse_playlists
 from .helpers.utils import is_apple_id
 from .library import AppleMusicLibraryManager
+from .live_radio import AppleMusicLiveRadioManager
 from .media import AppleMusicMediaManager
 from .recommendations import AppleMusicRecommendationManager
 from .streaming import AppleMusicStreamingManager
@@ -82,7 +85,18 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self.media_manager = AppleMusicMediaManager(self)
         self.recommendation_manager = AppleMusicRecommendationManager(self)
         self.streaming_manager = AppleMusicStreamingManager(self)
+        self.live_radio_manager = AppleMusicLiveRadioManager(self)
         self._last_library_listings: dict[str, dict[str, Any]] = {}
+
+    @property
+    def storefront(self) -> str | None:
+        """Return the storefront of this account."""
+        return self._storefront
+
+    @property
+    def music_user_token(self) -> str | None:
+        """Return the music user token of this account."""
+        return self._music_user_token
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -104,6 +118,7 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
             "requests_since": self.api_client.request_counter.started_at,
             "requests": self.api_client.request_counter.as_dict(),
             "last_library_listings": self._last_library_listings,
+            "live_radio": self.live_radio_manager.state,
         }
 
     async def handle_async_init(self) -> None:
@@ -142,7 +157,16 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if path_parts[0] == "playlists":
             return await browse_playlists(self, path, path_parts)
         if path_parts[0] == "stations":
-            return await self.recommendation_manager.browse_stations()
+            try:
+                live_stations = await self.live_radio_manager.get_stations()
+            except (ClientError, TimeoutError, MusicAssistantError) as err:
+                # the recommended stations still work without the live ones
+                self.logger.warning("Could not get the live stations: %s", type(err).__name__)
+                live_stations = []
+            return [
+                *live_stations,
+                *await self.recommendation_manager.browse_stations(),
+            ]
         return await super().browse(path)
 
     async def search(
@@ -219,13 +243,18 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve an artwork token to a freshly signed artwork URL."""
-        media_type, _, item_id = path.partition("/")
-        # a station token from before stations were radios cannot resolve as a playlist
-        if not is_apple_id(item_id) or (
-            media_type == MediaType.PLAYLIST.value and item_id.startswith("ra.")
-        ):
+        if not _is_artwork_token(path):
             return ""
+        media_type, _, item_id = path.partition("/")
         return await self.media_manager.get_artwork_url(media_type, item_id) or ""
+
+    def accepts_stored_image_path(self, path: str) -> bool:
+        """
+        Return whether path is shaped like an artwork token of this provider.
+
+        :param path: The stored image path.
+        """
+        return _is_artwork_token(path)
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
@@ -407,8 +436,23 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     # ------------------------------------------------------------------
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Return the content details for the given track when it will be streamed."""
+        """Return the content details for the given item when it will be streamed."""
+        if media_type == MediaType.RADIO:
+            return await self.live_radio_manager.get_stream_details(item_id)
         return await self.streaming_manager.get_stream_details(item_id)
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """
+        Return the audio of a live station.
+
+        :param streamdetails: The StreamDetails from get_stream_details.
+        :param seek_position: Ignored, a live station can not seek.
+        """
+        async with aclosing(self.live_radio_manager.get_audio_stream(streamdetails)) as stream:
+            async for chunk in stream:
+                yield chunk
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the full recommendations payload (folders with items)."""
@@ -475,3 +519,12 @@ def _pick_app_token(stored: str | None, bundled: str) -> str | None:
 def _token_expiry(token: str) -> int:
     """Return the expiry (unix timestamp) of an app token."""
     return int(jwt.decode(token, options={"verify_signature": False})["exp"])
+
+
+def _is_artwork_token(path: str) -> bool:
+    """Return whether path is an artwork token that resolve_image may look up."""
+    media_type, _, item_id = path.partition("/")
+    if media_type not in ARTWORK_TOKEN_MEDIA_TYPES or not is_apple_id(item_id):
+        return False
+    # a station token from before stations were radios cannot resolve as a playlist
+    return not (media_type == MediaType.PLAYLIST.value and item_id.startswith("ra."))

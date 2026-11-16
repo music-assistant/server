@@ -57,6 +57,7 @@ def _controller(items: list[QueueItem]) -> PlayerQueuesController:
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mark_ended = Mock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     ctrl.mass.streams.is_smart_fades_active.return_value = False
     ctrl.mass.players.play_media = AsyncMock()
     return ctrl
@@ -68,15 +69,14 @@ def _player_reports(
     """Feed a player update naming the item it plays and its position in it."""
     player = SimpleNamespace(
         player_id=QUEUE_ID,
-        active_output_protocol=None,
-        current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id=item_id, uri=None),
-        state=SimpleNamespace(
-            name="Sonos",
-            available=True,
-            playback_state=state,
-            corrected_elapsed_time=elapsed,
-            group_members=[],
+        resolve_output_protocol=lambda: SimpleNamespace(
+            current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id=item_id, uri=None)
         ),
+        name="Sonos",
+        available=True,
+        playback_state=state,
+        corrected_elapsed_time=elapsed,
+        group_members=[],
     )
     ctrl._update_queue_from_player(player)  # type: ignore[arg-type]
 
