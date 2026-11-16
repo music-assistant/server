@@ -35,6 +35,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import get_mime_type
+from music_assistant.helpers.player import served_duration
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -619,7 +620,8 @@ class SqueezelitePlayer(PlayerProtocol):
                 "album": media.album,
                 "artist": media.artist,
                 "image_url": media.image_url,
-                "duration": media.stream_duration or media.duration,
+                # a sync group always plays a flow stream, from a URL without /flow/ in it
+                "duration": media.duration if is_group_playback else served_duration(media, url),
                 "source_id": media.source_id,
                 "queue_item_id": media.queue_item_id,
             },
