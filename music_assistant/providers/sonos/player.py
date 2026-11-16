@@ -417,6 +417,45 @@ class SonosPlayer(PlayerProtocol):
         self._mark_asleep()
         self.update_state()
 
+    async def on_power_cut(self) -> None:
+        """Let go of the speaker, whose power was cut: it reads unavailable and is not tried."""
+        task_id = f"sonos_reconnect_{self.protocol_id}"
+        # a timer that already fired lives on as a task under the same id
+        self.mass.cancel_timer(task_id)
+        self.mass.cancel_task(task_id)
+        await self._disconnect()
+        if self.player is None:
+            # detached meanwhile, which let go of the connection itself
+            return
+        self._attr_available = False
+        self.update_state()
+
+    async def on_power_restored(self) -> None:
+        """Connect to the speaker anew, now that its power is back and it has started up."""
+        listener = self._listen_task
+        # from what a power cut leaves: a connection to the speaker as it was answers
+        # nothing, and a reconnect that still runs may hang on it
+        await self.on_power_cut()
+        if listener is not None:
+            # ended before the new connection is made, which its cleanup would take for its own
+            await asyncio.wait([listener])
+        try:
+            # a connect to a speaker that is not up hangs on its stale ARP entry, so probe first
+            if await self._is_reachable() and self.player is not None:
+                with contextlib.suppress(ConnectionFailed, CannotConnect, ClientError):
+                    await self._connect()
+        finally:
+            if self.player is not None and not self.connected:
+                # not up yet, or the wait for it was ended before it answered
+                self.reconnect(5)
+        if not self.connected:
+            return
+        if self.player is None:
+            # detached while it connected: nothing else lets go of this connection
+            await self._disconnect()
+            return
+        self.on_player_event(None)
+
     async def volume_set(self, volume_level: int) -> None:
         """
         Handle VOLUME_SET command on the player.
