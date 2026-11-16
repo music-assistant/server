@@ -14,7 +14,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 
-from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.cache import forget_cached, use_cache
 from music_assistant.helpers.external_ids import (
     barcode_to_upc,
     is_valid_barcode,
@@ -261,6 +261,11 @@ class AppleMusicMediaManager:
             return cast("Album | None", parse_album(self.provider, response["data"][0]))
         except MediaNotFoundError:
             return None
+
+    async def forget_playlist_tracks(self, prov_playlist_id: str) -> None:
+        """Drop the kept pages of a playlist and its change marker, so they are fetched anew."""
+        await forget_cached(self._get_playlist_last_modified, prov_playlist_id)
+        await forget_cached(self._get_playlist_tracks_cached, prov_playlist_id)
 
     async def get_station_tracks(self, station_id: str) -> list[Track]:
         """Fetch the next batch of tracks for a radio station."""

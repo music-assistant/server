@@ -2155,10 +2155,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
         update_current_task_progress(90, f"Adding {len(ids_to_add)} item(s) to playlist")
         task = get_current_task()
         failures_before = task.failure_count if task else 0
-        await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
+        try:
+            await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
+        finally:
+            # an add that fails or is cancelled part way can leave some of the items added
+            await self._after_tracks_change(playlist, playlist_prov, playlist_prov_item_id)
         # the provider reports each item it could not add as a task failure
         skipped = task.failure_count - failures_before if task else 0
-        await self._request_metadata_refresh(playlist)
         update_current_task_progress(100, f"Added {len(ids_to_add) - skipped} item(s) to playlist")
 
     async def _handle_remove_playlist_tracks(
@@ -2180,8 +2183,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if ProviderFeature.PLAYLIST_TRACKS_EDIT not in provider.supported_features:
             msg = f"Provider {provider.name} does not support editing playlists"
             raise InvalidDataError(msg)
-        await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
-        await self._request_metadata_refresh(playlist)
+        try:
+            await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
+        finally:
+            # a removal that fails or is cancelled part way can leave some of the items removed
+            await self._after_tracks_change(playlist, provider, playlist_prov_item_id)
 
     async def _get_reorderable_playlist(
         self, db_playlist_id: str | int
@@ -2296,6 +2302,29 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 provider_instance_id,
                 err,
             )
+
+    async def _after_tracks_change(
+        self, playlist: Playlist, provider: MusicProvider, prov_playlist_id: str
+    ) -> None:
+        """
+        Let the next look at a playlist see its tracks as they are after a change to them.
+
+        :param playlist: The library playlist whose tracks were changed.
+        :param provider: The provider the change was made on.
+        :param prov_playlist_id: The id of the playlist on that provider.
+        """
+        try:
+            await provider.forget_playlist_tracks(prov_playlist_id)
+        except Exception as err:
+            # the outcome of the change stands, only the kept copy may stay until it expires
+            self.logger.warning(
+                "Provider %s could not forget the tracks it kept of playlist %s: %s",
+                provider.name,
+                playlist.name,
+                err,
+            )
+        finally:
+            await self._request_metadata_refresh(playlist)
 
     async def _request_metadata_refresh(self, playlist: Playlist) -> None:
         """Have the next metadata run refresh the playlist, and announce its changed items."""
