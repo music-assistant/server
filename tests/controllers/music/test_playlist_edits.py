@@ -410,7 +410,7 @@ async def test_an_add_after_a_removal_does_not_join_a_read_from_before_it(
 async def test_a_failing_forget_still_drops_the_listing_and_announces_the_playlist(
     mass: MusicAssistant,
 ) -> None:
-    """The listing is dropped and the playlist announced even when its pages can not be."""
+    """An add whose pages can not be dropped succeeds, drops the listing and is announced."""
     provider = _ForgetFailingProvider(mass, ["t1", "t2"])
     listing_uri = create_uri(MediaType.PLAYLIST, INSTANCE, PLAYLIST_ID)
     with _with_provider(mass, provider):
@@ -421,11 +421,9 @@ async def test_a_failing_forget_still_drops_the_listing_and_announces_the_playli
             provider=listing_uri,
             category=CACHE_CATEGORY_LISTINGS,
         )
-        with (
-            patch.object(mass, "signal_event") as signal_event,
-            pytest.raises(RuntimeError, match="not available"),
-        ):
+        with patch.object(mass, "signal_event") as signal_event:
             await _add(mass, playlist, "t3")
+    assert provider.track_ids == ["t1", "t2", "t3"]
     assert media_item_events(signal_event) == [EventType.MEDIA_ITEM_UPDATED]
     assert (
         await mass.cache.get(
@@ -435,3 +433,26 @@ async def test_a_failing_forget_still_drops_the_listing_and_announces_the_playli
         )
         is None
     )
+
+
+async def test_a_failing_forget_leaves_the_error_of_a_failed_add(mass: MusicAssistant) -> None:
+    """An add that failed on the service reports that failure, whatever the cleanup does."""
+    provider = _ForgetFailingProvider(mass, ["t1", "t2"])
+    provider.add_error = ResourceTemporarilyUnavailable("rate limited")
+    with _with_provider(mass, provider):
+        playlist = await _library_playlist(mass)
+        with pytest.raises(ResourceTemporarilyUnavailable):
+            await _add(mass, playlist, "t3", "t4")
+
+
+async def test_a_failing_forget_leaves_a_cancelled_add_cancelled(mass: MusicAssistant) -> None:
+    """An add that was cancelled stays cancelled, whatever the cleanup does."""
+    provider = _ForgetFailingProvider(mass, ["t1", "t2"])
+    provider.resume_add.clear()
+    with _with_provider(mass, provider):
+        playlist = await _library_playlist(mass)
+        add = asyncio.create_task(_add(mass, playlist, "t3", "t4"))
+        await _wait_for(lambda: "t3" in provider.track_ids)
+        add.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await add

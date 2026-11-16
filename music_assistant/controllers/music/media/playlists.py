@@ -2159,10 +2159,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
         finally:
             # an add that fails or is cancelled part way can leave some of the items added
-            try:
-                await playlist_prov.forget_playlist_tracks(playlist_prov_item_id)
-            finally:
-                await self._request_metadata_refresh(playlist)
+            await self._after_tracks_change(playlist, playlist_prov, playlist_prov_item_id)
         # the provider reports each item it could not add as a task failure
         skipped = task.failure_count - failures_before if task else 0
         update_current_task_progress(100, f"Added {len(ids_to_add) - skipped} item(s) to playlist")
@@ -2190,10 +2187,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
         finally:
             # a removal that fails or is cancelled part way can leave some of the items removed
-            try:
-                await provider.forget_playlist_tracks(playlist_prov_item_id)
-            finally:
-                await self._request_metadata_refresh(playlist)
+            await self._after_tracks_change(playlist, provider, playlist_prov_item_id)
 
     async def _get_reorderable_playlist(
         self, db_playlist_id: str | int
@@ -2308,6 +2302,29 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 provider_instance_id,
                 err,
             )
+
+    async def _after_tracks_change(
+        self, playlist: Playlist, provider: MusicProvider, prov_playlist_id: str
+    ) -> None:
+        """
+        Let the next look at a playlist see its tracks as they are after a change to them.
+
+        :param playlist: The library playlist whose tracks were changed.
+        :param provider: The provider the change was made on.
+        :param prov_playlist_id: The id of the playlist on that provider.
+        """
+        try:
+            await provider.forget_playlist_tracks(prov_playlist_id)
+        except Exception as err:
+            # the outcome of the change stands, only the kept copy may stay until it expires
+            self.logger.warning(
+                "Provider %s could not forget the tracks it kept of playlist %s: %s",
+                provider.name,
+                playlist.name,
+                err,
+            )
+        finally:
+            await self._request_metadata_refresh(playlist)
 
     async def _request_metadata_refresh(self, playlist: Playlist) -> None:
         """Have the next metadata run refresh the playlist, and announce its changed items."""
