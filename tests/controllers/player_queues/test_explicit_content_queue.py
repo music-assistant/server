@@ -22,6 +22,8 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemMetadata,
     Playlist,
+    Podcast,
+    PodcastEpisode,
     ProviderMapping,
     Radio,
     Track,
@@ -313,3 +315,53 @@ async def test_a_dynamic_station_batch_leaves_explicit_tracks_out(
         tracks = await MediaResolver(queues).get_dynamic_source_tracks(station)
 
     assert [track.item_id for track in tracks] == expected
+
+
+def _episode(item_id: str, explicit: bool | None) -> PodcastEpisode:
+    """Build an episode of a clean podcast on the member's own source, with its own flag."""
+    podcast = Podcast(
+        item_id="show",
+        provider=INSTANCE,
+        name="Show",
+        metadata=MediaItemMetadata(explicit=False),
+        provider_mappings={
+            ProviderMapping(item_id="show", provider_domain="deezer", provider_instance=INSTANCE)
+        },
+    )
+    return PodcastEpisode(
+        item_id=item_id,
+        provider=INSTANCE,
+        name=item_id,
+        podcast=podcast,
+        position=1,
+        duration=600,
+        metadata=MediaItemMetadata(explicit=explicit),
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="deezer", provider_instance=INSTANCE)
+        },
+    )
+
+
+@pytest.mark.parametrize(("user", "queued"), [(KID, 0), (PARENT, 1)])
+async def test_autoplay_skips_a_next_episode_the_owner_may_not_play(
+    user: User, queued: int
+) -> None:
+    """Autoplay doesn't follow a clean episode with an explicit one for a restricted owner."""
+    ctrl = _controller(user)
+    ctrl._queue_data["q1"].queue.autoplay_enabled = True
+    ctrl._media_resolver.get_next_podcast_episode = AsyncMock(
+        return_value=_episode("explicit", True)
+    )
+    ctrl.load = AsyncMock()
+    last_item = QueueItem(
+        queue_id="q1",
+        queue_item_id="1",
+        name="clean",
+        duration=600,
+        media_item=_episode("clean", False),
+    )
+
+    with patch(f"{LOADER}.get_current_user", return_value=user):
+        await ctrl._fill_autoplay_next_in_series("q1", last_item)
+
+    assert ctrl.load.await_count == queued

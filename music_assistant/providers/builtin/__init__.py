@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import urlparse
 
 import aiofiles
@@ -1654,11 +1654,15 @@ class BuiltinProvider(MusicProvider):
         :param without_explicit: Only shapes the cache key: the tracks are narrowed for the
             calling user.
         """
+        query_params: dict[str, Any] = {"excluded_album_type": "single"}
         for random_album in await self.mass.music.albums.get_library_items_by_query(
             limit=1,
             sort_field=SortField.RANDOM,
-            extra_query_parts=["album_type != :excluded_album_type"],
-            extra_query_params={"excluded_album_type": "single"},
+            extra_query_parts=[
+                "album_type != :excluded_album_type",
+                *self.mass.music.albums.listing_filter(query_params),
+            ],
+            extra_query_params=query_params,
         ):
             tracks = await self.mass.music.albums.tracks(
                 random_album.item_id, random_album.provider, limit=None
