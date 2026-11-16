@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
     CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
@@ -19,6 +20,7 @@ from music_assistant.controllers.config.migrations import (
     PROVIDER_SETUP_FLOW_DEFAULTS,
     PROVIDER_SETUP_FLOW_KEYS,
     _migrate_airplay_apple_power_control,
+    _migrate_airplay_sync_adjust_sign,
     _migrate_apple_music_sync_schedule,
     _migrate_artist_catalogue_selection,
     _migrate_bluesound_http_profile,
@@ -1471,6 +1473,91 @@ def test_migrate_raumfeld_icy_basic_survives_malformed_players() -> None:
     }
     assert _migrate_raumfeld_icy_basic(data) is True
     assert data["players"]["raumfeld_bar"] == "broken"
+
+
+def test_migrate_airplay_sync_adjust_sign_negates_once() -> None:
+    """Every stored AirPlay sync adjust is negated once; garbage and other protocols stay."""
+    data: dict[str, Any] = {
+        "players": {
+            # a record the split could not convert keeps its values on the player
+            "ap_unsplit": {"provider": "airplay", "values": {"sync_adjust": -120}},
+            "sonos_1": {"provider": "sonos", "values": {"icon": "speaker"}},
+            "broken": "not a mapping",
+        },
+        "player_protocols": {
+            "ap_tv": {"provider": "airplay", "player_id": "pl_a", "values": {"sync_adjust": -150}},
+            "ap_late": {"provider": "airplay", "player_id": "pl_b", "values": {"sync_adjust": 90}},
+            "ap_zero": {"provider": "airplay", "values": {"sync_adjust": 0}},
+            "ap_none": {"provider": "airplay", "values": {"sync_adjust": None}},
+            "ap_text": {"provider": "airplay", "values": {"sync_adjust": "-50"}},
+            "ap_unset": {"provider": "airplay", "values": {"output_codec": "flac"}},
+            "ap_no_values": {"provider": "airplay"},
+            "ap_bad_values": {"provider": "airplay", "values": ["sync_adjust"]},
+            "ap_no_provider": {"values": {"sync_adjust": -30}},
+            "sq_amp": {"provider": "squeezelite", "values": {"sync_adjust": 30}},
+        },
+    }
+    expected = deepcopy(data)
+    expected["players"]["ap_unsplit"]["values"]["sync_adjust"] = 120
+    expected["player_protocols"]["ap_tv"]["values"]["sync_adjust"] = 150
+    expected["player_protocols"]["ap_late"]["values"]["sync_adjust"] = -90
+    expected[CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED] = True
+
+    assert _migrate_airplay_sync_adjust_sign(data) is True
+    assert data == expected
+
+    # the marker makes a second run a no-op
+    assert _migrate_airplay_sync_adjust_sign(data) is False
+    assert data == expected
+
+
+def test_migrate_airplay_sync_adjust_sign_claims_the_marker_without_airplay() -> None:
+    """A config without AirPlay is marked too, so an AirPlay value stored later keeps its sign."""
+    data: dict[str, Any] = {"players": "broken", "player_protocols": None}
+
+    assert _migrate_airplay_sync_adjust_sign(data) is True
+    assert data[CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED] is True
+
+    data["player_protocols"] = {"ap_tv": {"provider": "airplay", "values": {"sync_adjust": 100}}}
+    assert _migrate_airplay_sync_adjust_sign(data) is False
+    assert data["player_protocols"]["ap_tv"]["values"]["sync_adjust"] == 100
+
+
+async def test_migrate_negates_the_airplay_sync_adjust_of_a_config_from_before_the_split() -> None:
+    """A config from before the split gets the AirPlay sync adjust negated in the split records."""
+    data: dict[str, Any] = {
+        "players": {
+            # an AirPlay device without another provider
+            "ap_tv": {
+                "provider": "airplay",
+                "player_type": "player",
+                "values": {"sync_adjust": -150, "hide_in_ui": True},
+            },
+            # an AirPlay output of a Sonos speaker
+            "sonos_1": {"provider": "sonos", "player_type": "player", "values": {}},
+            "ap_sonos": {
+                "provider": "airplay",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "sonos_1", "sync_adjust": 40},
+            },
+            "sq_amp": {
+                "provider": "squeezelite",
+                "player_type": "player",
+                "values": {"sync_adjust": 30},
+            },
+        }
+    }
+
+    assert await migrate(data) is True
+
+    protocols = data["player_protocols"]
+    assert protocols["ap_tv"]["values"]["sync_adjust"] == 150
+    assert protocols["ap_sonos"]["values"]["sync_adjust"] == -40
+    assert protocols["sq_amp"]["values"]["sync_adjust"] == 30
+    assert not [record for record in data["players"].values() if "sync_adjust" in record["values"]]
+    stored = deepcopy(data)
+    assert await migrate(data) is False
+    assert data == stored
 
 
 async def test_migrate_artist_catalogue_selection_moves_to_library_album_tracks() -> None:

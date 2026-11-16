@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
 
-from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.ffmpeg import FFMpeg
 
@@ -37,7 +36,7 @@ from .constants import (
     ClockReadiness,
     StreamingProtocol,
 )
-from .helpers import cli_clock_time, get_final_output_format
+from .helpers import cli_clock_time, get_final_output_format, get_sync_offset_ms
 from .stream import AirPlayStream
 
 if TYPE_CHECKING:
@@ -650,8 +649,7 @@ class AirPlayStreamSession:
                 )
             requested_at, fed_pos_due = map_to(anchor_at, committed=False)[:2]
             start_unix_ms = int(requested_at * 1000)
-            sync_adjust = airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
-            adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
+            adjust_ms = get_sync_offset_ms(airplay_player.config)
             position_ms = int(((self.media.elapsed_time or 0) + fed_pos_due) * 1000)
 
         try:
@@ -1227,8 +1225,8 @@ class AirPlayStreamSession:
         if not warm:
             return anchor
         # Splice-timeline members honor the commanded instant only when that
-        # instant (plus their sync_adjust) lands beyond their queued audio.
-        # A NEGATIVE sync_adjust moves a member's commanded instant earlier,
+        # instant (plus their sync offset) lands beyond their queued audio.
+        # A NEGATIVE sync offset moves a member's commanded instant earlier,
         # eating into the lead, so it must be added to that member's
         # requirement — otherwise the first round can never succeed for that
         # member and every group start pays a corrective round.
@@ -1237,8 +1235,7 @@ class AirPlayStreamSession:
             stream = player.stream
             if stream is None or stream.warm_lead_ms <= 0:
                 continue
-            sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
-            adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
+            adjust_ms = get_sync_offset_ms(player.config)
             member_requirement = max(member_requirement, stream.warm_lead_ms - min(0, adjust_ms))
         if member_requirement > 0:
             anchor = max(
@@ -1249,8 +1246,7 @@ class AirPlayStreamSession:
             stream = player.stream
             if stream is None or stream.flushed_head_unix_ms <= 0:
                 continue
-            sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
-            adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
+            adjust_ms = get_sync_offset_ms(player.config)
             # The member's commanded instant is anchor + adjust; it must clear
             # the member's frozen head with margin for the command round-trip.
             anchor = max(
@@ -1399,8 +1395,7 @@ class AirPlayStreamSession:
                     stream = player.stream
                     if stream is None:
                         continue
-                    sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
-                    adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
+                    adjust_ms = get_sync_offset_ms(player.config)
                     member_tasks.append(
                         (
                             adjust_ms,

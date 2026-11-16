@@ -959,9 +959,9 @@ async def test_warm_replace_start_failure_falls_back_to_cold() -> None:
         # the largest member requirement wins, wherever that member sits
         (((4000, 0), (1500, 0)), 4000),
         (((1500, 0), (4000, 0)), 4000),
-        # a negative sync_adjust widens that member's own requirement by exactly
+        # a positive sync_adjust widens that member's own requirement by exactly
         # the amount it moves that member's commanded instant earlier
-        (((4000, 0), (3600, -600)), 4200),
+        (((4000, 0), (3600, 600)), 4200),
     ],
 )
 def test_warm_anchor_clears_the_receivers_queued_audio(
@@ -982,9 +982,9 @@ def test_warm_anchor_clears_the_receivers_queued_audio(
     second.stream = _stream_defaults(MagicMock(running=True, connected=True))
     session.sync_clients.append(second)
     members.append(second)
-    for player, (warm_lead_ms, adjust_ms) in zip(members, member_specs, strict=True):
+    for player, (warm_lead_ms, sync_adjust) in zip(members, member_specs, strict=True):
         player.stream.warm_lead_ms = warm_lead_ms
-        player.config.get_value = MagicMock(return_value=adjust_ms)
+        player.config.get_value = MagicMock(return_value=sync_adjust)
 
     with patch(
         "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
@@ -998,7 +998,7 @@ def test_warm_anchor_clears_the_head_every_flushed_member_froze() -> None:
     """
     A warm re-anchor lands beyond the frozen head the flushed members reported.
 
-    A member renders from its own commanded instant (the anchor plus its
+    A member renders from its own commanded instant (the anchor minus its
     sync_adjust), so it is that instant, not the bare anchor, that has to clear
     the head the member froze at flush, with margin for the command round-trip.
     """
@@ -1017,8 +1017,8 @@ def test_warm_anchor_clears_the_head_every_flushed_member_froze() -> None:
     ):
         anchor = session._anchor_start_unix_ms(warm=True)
 
-    # the later head wins, and the offset its member adds comes back out of it
-    assert anchor == 105_000 - 300 + AIRPLAY_SPLICE_LEAD_MARGIN_MS
+    # the later head wins, and the earlier start its member takes is added to it
+    assert anchor == 105_000 + 300 + AIRPLAY_SPLICE_LEAD_MARGIN_MS
 
 
 @pytest.mark.asyncio
@@ -2105,8 +2105,8 @@ async def test_late_join_maps_content_from_the_acked_instant() -> None:
     player = _make_late_joiner()
     # A sync_adjust rides on top of the commanded instant, so it has to be taken
     # back out of the ack before the content is mapped onto it.
-    adjust_ms = 200
-    player.config.get_value = MagicMock(return_value=adjust_ms)
+    sync_adjust = 200
+    player.config.get_value = MagicMock(return_value=sync_adjust)
     deferral_ms = 1500
 
     def setup_deferred_ack(*_args: Any, **_kwargs: Any) -> None:
@@ -2130,7 +2130,8 @@ async def test_late_join_maps_content_from_the_acked_instant() -> None:
     ):
         await session.add_client(player)
 
-    commanded_ms = int((now + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000) * 1000) + adjust_ms
+    # a positive sync adjust plays earlier
+    commanded_ms = int((now + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000) * 1000) - sync_adjust
     assert player.stream.start.await_args.args[0] == commanded_ms
     # The ack lands 1.5s later than commanded, so the due position is 9.0s of
     # feed instead of 7.5s: the joiner skips 4.0s of the live feed.

@@ -29,7 +29,6 @@ from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFo
 from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType, PlaybackState
 
-from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -49,7 +48,7 @@ from .constants import (
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     StreamingProtocol,
 )
-from .helpers import cli_clock_time, player_id_to_mac_address
+from .helpers import cli_clock_time, get_sync_offset_ms, player_id_to_mac_address
 from .stream import AirPlayStream
 
 if TYPE_CHECKING:
@@ -917,12 +916,11 @@ class SendspinAirPlayBridge:
         anchor_ms = max(now_ms + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS, first_chunk_unix_ms)
         if ready_at_unix_ms:
             anchor_ms = max(anchor_ms, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
-        sync_adjust = self.airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
-        adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
+        adjust_ms = get_sync_offset_ms(self.airplay_player.config)
         if warm:
             # A splice-timeline receiver honours the commanded instant only when
             # it lands beyond the audio still queued behind the flushed head. A
-            # NEGATIVE sync_adjust moves the commanded instant earlier, eating
+            # NEGATIVE sync offset moves the commanded instant earlier, eating
             # into the lead, so it has to be added back to the requirement.
             if stream.warm_lead_ms > 0:
                 anchor_ms = max(
@@ -969,7 +967,7 @@ class SendspinAirPlayBridge:
             or self._airplay_stream is not stream
         ):
             return False
-        # The command carries the device's sync_adjust; the group timeline does not.
+        # The command carries the device's sync offset; the group timeline does not.
         acked_timeline_ms = acked_adjusted - adjust_ms
         sendspin_now_us = self.sendspin_server.clock.now_us()
         unix_now = cli_clock_time()
