@@ -176,6 +176,29 @@ players controller, such as when a player is enabled or removed) offers exactly 
 have no attached protocol. A device whose services
 disappear from mDNS is unregistered: its player stays, unavailable, until the device returns.
 
+### A device behind a smart plug
+
+A device whose power is cut sends no mDNS goodbye, and its cached records last for minutes, so
+discovery notices a power cut only that late. For a player behind an external power control, the
+players controller asks the protocol that reports for the device to check it
+(`check_device()` in [player.py](player.py)). Both kinds of AirPlay protocol can be that protocol:
+the receiver of a speaker of receivers alone, and an Apple device, whose AirPlay protocol is its
+own. The check connects to the address and port the stream connects to (the RTSP port of its
+`_airplay` or `_raop` record) and closes the connection at once.
+
+- A device that does not accept the connection within 3 s reads unavailable; the protocol stays
+  attached to its player. A stream to the device is stopped (the server sends no stop to a player
+  that is switched off at its power control); a group it played in plays on without it.
+- The protocol then probes the device again, after 5 s and a pause that doubles up to 30 s, until
+  it answers, so it is back by itself also when its plug is switched on outside Music Assistant.
+  A new mDNS record of the device has it probed at once. Only a record that is not cached as it
+  is reaches the provider, such as the address of a device once its cached address record
+  expired, so this is a speed-up and not to be relied on. A check that answers brings it back
+  too. An Apple device then reconnects its control services at once instead of on their
+  reconnect backoff.
+- A protocol that is taken off its player, also by a provider unload, stops probing and reads
+  available again.
+
 ### Protocol ID Format
 
 Protocol IDs follow the format: `ap{mac_address}` (e.g., `ap1a2b3c4d5e6f`). The player a

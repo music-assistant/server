@@ -500,6 +500,52 @@ async def test_a_player_that_goes_before_its_check_is_not_checked(
     assert den.device_checks == []
 
 
+async def test_a_speaker_of_receivers_alone_is_checked_through_its_most_preferred_receiver(
+    scenario: Scenario,
+) -> None:
+    """
+    A speaker of receivers alone whose plug is cut is checked through its most preferred one.
+
+    Den is an AirPlay and a Cast receiver, on a smart plug that is cut while neither has
+    noticed. Shortly after, its AirPlay receiver, which reports for the device, is asked to
+    check: the device does not answer, and the receiver reads unavailable. A play 10 s after
+    the cut switches the plug on and waits, the receiver is asked to reach the device every
+    few seconds, nothing is sent to the device, and Den plays once, through its AirPlay
+    receiver, once that reaches it again.
+    """
+    (den_airplay, den_cast), plug, player_id = await _den(
+        scenario, ("airplay", "audio"), ("chromecast", "audio")
+    )
+    den_airplay.device_answers = False
+    cut_at = scenario.mass.loop.time()
+    await scenario.switch(plug, False)
+    await scenario.advance(10)
+
+    assert den_airplay.device_checks == [cut_at + DEVICE_CHECK_DELAY]
+    assert den_cast.device_checks == []
+    state = _state(scenario, player_id)
+    assert (state.available, state.powered) == (True, False)
+
+    play = await _play(scenario, player_id)
+
+    assert not play.done(), play.exception()
+    assert plug.commands == [True]
+    await scenario.advance(2 * DEVICE_CHECK_INTERVAL)
+    assert not play.done(), play.exception()
+    assert len(den_airplay.device_checks) == 3
+    assert den_cast.device_checks == []
+    assert den_airplay.commands == den_cast.commands == []
+
+    await _boot(scenario, den_airplay)
+    await play
+    await scenario.idle()
+
+    assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
+    assert (_starts(den_airplay), _starts(den_cast)) == (1, 0)
+    assert plug.commands == [True]
+    await _stop(scenario, player_id)
+
+
 @pytest.mark.parametrize("group", GROUPS)
 async def test_a_group_waits_for_the_own_protocol_of_a_switched_off_member(
     scenario: Scenario, group: str
