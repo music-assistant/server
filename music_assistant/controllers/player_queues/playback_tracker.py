@@ -708,6 +708,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             )
             if not is_playing and isinstance(media_item, Audiobook | PodcastEpisode):
                 # a later pass over the queue resumes from this, not from the enqueue-time bookmark
+                media_item.fully_played = fully_played
                 media_item.resume_position_ms = 0 if fully_played else seconds_played * 1000
             if fully_played and not is_playing:
                 if credit_album := self._claim_enqueued_album_credit(queue_data, media_item):
