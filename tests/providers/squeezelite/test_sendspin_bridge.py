@@ -1773,6 +1773,80 @@ async def test_a_player_that_answers_late_while_it_sets_a_stream_up_starts_on_ti
     rig.client.unpause_at.assert_awaited_once()
     told = rig.client.unpause_at.await_args.args[0]
     assert abs(told - rig.jiffies(session.command_us)) <= 2
+    assert session.start_us + PREROLL_US == session.first_audible_us
+
+
+async def test_a_player_busy_with_another_stream_has_its_clock_mapped_from_prompt_replies(
+    rig: _Rig,
+) -> None:
+    """
+    The replies a player held back for a stream of its own do not map its clock either.
+
+    The session begins while the player still sets up another stream: the replies it
+    answers all at once when that one is ready come in while the session waits for the
+    mapping, and the stream is requested once the prompt replies after them mapped it.
+    """
+    real_sleep = asyncio.sleep
+    setup_us = 830_000
+    busy_until_us = rig.now_us + 330_000
+    held: list[int] = []
+    requested_at: list[int] = []
+
+    async def _sleep(delay: float) -> None:
+        # time passes on the clock of the rig, as the test advances it
+        wake_us = rig.now_us + round(delay * 1_000_000)
+        await real_sleep(0)
+        while rig.now_us < wake_us:
+            await real_sleep(0)
+
+    def _request_status(token: int) -> None:
+        if rig.now_us < busy_until_us or requested_at:
+            held.append(token)
+        else:
+            asyncio.get_running_loop().call_soon(
+                rig.bridge.handle_slim_event, rig.status(token=token)
+            )
+
+    rig.client.request_status.side_effect = _request_status
+    rig.client.play_url.side_effect = lambda **_kwargs: requested_at.append(rig.now_us)
+    with (
+        patch(f"{MODULE}.STATUS_POLL_INTERVAL", STATUS_POLL_INTERVAL),
+        patch(f"{MODULE}.STATUS_POLL_INTERVAL_UNMAPPED", STATUS_POLL_INTERVAL_UNMAPPED),
+        patch("asyncio.sleep", new=_sleep),
+    ):
+        session = await rig.start_stream(answers=False)
+        rig.bridge._on_audio_chunk(_chunk(rig.now_us + 2_000_000, 0, SECOND))
+        while rig.now_us < busy_until_us:
+            rig.clock.advance_us(10_000)
+            await _settle()
+        # the other stream is ready, and the replies held back for it come in
+        rig.event(SlimEventType.PLAYER_BUFFER_READY)
+        held_back, held = held, []
+        for token in held_back:
+            rig.bridge.handle_slim_event(rig.status(token=token))
+        await _settle()
+        assert not session.clock_mapped.is_set()
+        rig.client.play_url.assert_not_called()
+
+        while not requested_at:
+            rig.clock.advance_us(10_000)
+            await _settle()
+        assert session.clock_mapped.is_set()
+        while rig.now_us < requested_at[0] + setup_us:
+            rig.clock.advance_us(10_000)
+            await _settle()
+        rig.fetched(session)
+        rig.event(SlimEventType.PLAYER_BUFFER_READY)
+        for token in held:
+            rig.bridge.handle_slim_event(rig.status(token=token))
+        await _settle()
+
+    assert len(held_back) >= 3
+    rig.client.play_url.assert_awaited_once()
+    rig.client.unpause_at.assert_awaited_once()
+    told = rig.client.unpause_at.await_args.args[0]
+    assert abs(told - rig.jiffies(session.command_us)) <= 2
+    assert session.start_us + PREROLL_US == session.first_audible_us
 
 
 async def test_the_start_waits_for_the_first_chunk(rig: _Rig) -> None:

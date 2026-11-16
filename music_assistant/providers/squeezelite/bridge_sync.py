@@ -38,8 +38,12 @@ _FRAME_COUNTER_WRAP = 1 << 32
 # clock samples are filtered per bucket: only the ones with (nearly) the lowest round trip count
 _BUCKET_MS = 2000
 _RTT_MARGIN_US = 300
-# the very first samples are used at once, so a timed start is possible within a second
+# the first mapping is made as soon as this many samples agree on the round trip, so a timed
+# start is possible within a second. Replies the player held up come back together, each with
+# a shorter round trip than the one before: only a round trip that repeats is the real one.
+# The margin stays well under the time between two requests.
 _FIRST_SAMPLES = 3
+_FIRST_RTT_MARGIN_US = 20_000
 # the mapping is a line through the samples of this window, level until they span enough time
 _CLOCK_WINDOW_MS = 120_000
 _CLOCK_MIN_SPAN_MS = 10_000
@@ -111,7 +115,7 @@ class PlayerClock:
         self._last_jiffies = ticks
         offset = (sent_us + received_us) / 2 - ticks * 1000
         self._bucket.append((ticks, offset, received_us - sent_us))
-        first_samples = not self._points and len(self._bucket) >= _FIRST_SAMPLES
+        first_samples = not self._points and self._first_samples_agree()
         # a clock that went backwards closes the bucket too
         if first_samples or not 0 <= ticks - self._bucket[0][0] < _BUCKET_MS:
             self._flush()
@@ -154,6 +158,12 @@ class PlayerClock:
     def _offset_at(self, ticks: int) -> float:
         """Return the mapped offset (server time minus jiffies, in us) at unwrapped jiffies."""
         return self._offset_mean + self._slope * (ticks - self._jiffies_mean)
+
+    def _first_samples_agree(self) -> bool:
+        """Return whether enough samples of the bucket agree on their round trip."""
+        best_rtt = min(sample[2] for sample in self._bucket)
+        agreeing = sum(rtt <= best_rtt + _FIRST_RTT_MARGIN_US for _, _, rtt in self._bucket)
+        return agreeing >= _FIRST_SAMPLES
 
     def _flush(self) -> None:
         """Move the samples of the bucket with the lowest round trip into the mapping."""
