@@ -71,8 +71,10 @@ TRACK_IDS_BATCH_SIZE = 50
 
 # browse folder that lists the playlists and albums of the users the account follows
 BROWSE_FOLLOWING = "following"
-# the number of followed users, or of a user's playlists or albums, a browse listing fetches
-BROWSE_LIMIT = 200
+# the number of followed users fetched per request; the whole list is paged through
+FOLLOWING_PAGE_SIZE = 200
+# the number of a user's playlists, and of its albums, a browse listing fetches
+USER_SETS_LIMIT = 100
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -387,6 +389,8 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """
         base = f"{self.instance_id}://"
         path_parts = [part for part in path.removeprefix(base).split("/") if part]
+        if len(path_parts) == 1 and path_parts[0] in ("artists", "tracks", "playlists"):
+            return await self._browse_library_folder(path_parts[0])
         if not path_parts or path_parts[0] != BROWSE_FOLLOWING:
             result = list(await super().browse(path))
             if not path_parts:
@@ -411,6 +415,34 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
             return await self._get_user_sets(user_id)
         msg = f"Invalid browse path: {path}"
         raise InvalidDataError(msg)
+
+    async def _browse_library_folder(
+        self, folder: str
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Return every library item of a standard library folder.
+
+        :param folder: The folder: artists, tracks or playlists.
+        """
+        # overriding browse turns off the server's paged reading of these folders, and the
+        # default browse stops at 500 items, so the whole folder is read for the server to page
+        if folder == "artists":
+            if artists := await self.mass.music.artists.library_items(
+                provider=self.instance_id, summary=False, limit=0
+            ):
+                return artists
+            return [x async for x in self.get_library_artists()]
+        if folder == "tracks":
+            if tracks := await self.mass.music.tracks.library_items(
+                provider=self.instance_id, summary=False, limit=0
+            ):
+                return tracks
+            return [x async for x in self.get_library_tracks()]
+        if playlists := await self.mass.music.playlists.library_items(
+            provider=self.instance_id, summary=False, limit=0
+        ):
+            return playlists
+        return [x async for x in self.get_library_playlists()]
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the mixed-selection collections as folders with items."""
@@ -886,8 +918,12 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def _get_followed_users(self) -> list[Artist]:
         """Return the users the account follows that have public playlists or albums."""
         artists: list[Artist] = []
-        following = await self._soundcloud.get_following(self._user_id, BROWSE_LIMIT)
-        for user_obj in self._extract_collection(following) or []:
+        response = await self._soundcloud.get_following(self._user_id, FOLLOWING_PAGE_SIZE)
+        user_objs = _browse_collection(response, "followed users")
+        while next_href := response.get("next_href"):
+            response = await self._soundcloud.get(next_href, headers=self._soundcloud.headers)
+            user_objs.extend(_browse_collection(response, "followed users"))
+        for user_obj in user_objs:
             # a user without sets would only lead to an empty folder; the count also holds
             # sets that are not public, so a user that passes can still show an empty folder
             if user_obj.get("playlist_count", 1) == 0:
@@ -907,12 +943,11 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
         :param user_id: The Soundcloud user id.
         """
-        playlists_obj = await self._soundcloud.get_playlists_from_user(user_id, BROWSE_LIMIT)
-        albums_obj = await self._soundcloud.get_album_from_user(user_id, BROWSE_LIMIT)
-        # an unknown or deleted user answers with an error object instead of a collection
+        playlists_obj = await self._soundcloud.get_playlists_from_user(user_id, USER_SETS_LIMIT)
+        albums_obj = await self._soundcloud.get_album_from_user(user_id, USER_SETS_LIMIT)
         set_objs = [
-            *(self._extract_collection(playlists_obj) or []),
-            *(self._extract_collection(albums_obj) or []),
+            *_browse_collection(playlists_obj, f"playlists of user {user_id}"),
+            *_browse_collection(albums_obj, f"albums of user {user_id}"),
         ]
         set_objs.sort(key=lambda obj: str(obj.get("created_at") or ""), reverse=True)
         playlists: list[Playlist] = []
@@ -1068,6 +1103,27 @@ def _item_id(item_obj: Any) -> Any:
     """Return the id of a raw api object, or None if it does not have a readable one."""
     # called from the handlers that log an unusable object, so it must never raise itself
     return item_obj.get("id") if isinstance(item_obj, dict) else None
+
+
+def _browse_collection(response: Any, what: str) -> list[dict[str, Any]]:
+    """
+    Return the items of a browse response, which must not be cached when this raises.
+
+    :param response: The api response.
+    :param what: What was requested, for the error message.
+    :raises MediaNotFoundError: When Soundcloud does not know the requested user.
+    :raises InvalidDataError: When Soundcloud answered with any other error.
+    """
+    if isinstance(response, dict) and isinstance(collection := response.get("collection"), list):
+        return collection
+    # Soundcloud answers an error with an object such as
+    # {'errors': [{'error_message': '404 - Not Found'}]}  # noqa: ERA001
+    errors = response.get("errors") if isinstance(response, dict) else None
+    if errors and "404" in str(errors):
+        msg = f"Soundcloud has no {what}"
+        raise MediaNotFoundError(msg)
+    msg = f"Soundcloud answered the request for the {what} with an error: {errors or response}"
+    raise InvalidDataError(msg)
 
 
 def _user_permalink(artist: Artist) -> str | None:
