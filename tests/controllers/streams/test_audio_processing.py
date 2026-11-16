@@ -65,9 +65,7 @@ def _bare_buffer(**attributes: Any) -> SimpleNamespace:
 
     :param attributes: What the test reads from or sets on the buffer.
     """
-    return SimpleNamespace(
-        _add_user=lambda _user: None, _drop_user=lambda _user: None, **attributes
-    )
+    return SimpleNamespace(release_if_unneeded=lambda: None, **attributes)
 
 
 def _format(

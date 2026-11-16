@@ -163,8 +163,7 @@ def _delivered_buffer() -> SimpleNamespace:
         cancelled=False,
         has_error=False,
         max_size_seconds=300,
-        _add_user=lambda _user: None,
-        _drop_user=lambda _user: None,
+        release_if_unneeded=lambda: None,
     )
 
 
