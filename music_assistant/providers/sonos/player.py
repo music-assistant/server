@@ -656,13 +656,11 @@ class SonosPlayer(PlayerProtocol):
             members = native_members | self._airplay_rejoin_members
             self.mass.cancel_task(f"restore_airplay_group_{self.protocol_id}")
             self._airplay_rejoin_members = members
-            # Sonos drops the native members of a coordinator a new AirPlay session starts on,
-            # and moves a live group to one of them, which then hangs or restarts for up to
-            # 25 seconds. Our live session is left first, so the drop is clean, and members
-            # taken out first rejoin at once. A derived transport starts its AirPlay session
-            # only after this start returned, so its members stay in and the restore adds them
-            # back once Sonos dropped them. A session that already renders absorbs the new
-            # media and keeps its members.
+            # A new AirPlay session makes Sonos drop the coordinator's native members, and move
+            # a live group to one of them, which then hangs or restarts. So our session is left
+            # first, and the members are taken out to rejoin once AirPlay plays. A derived
+            # transport starts AirPlay only after this start returned: its members stay in until
+            # Sonos drops them. A session that already renders keeps its members.
             if native_members and airplay.playback_state not in RENDERING_STATES:
                 leave_session = True
                 if self.player is not None and (
@@ -1959,11 +1957,7 @@ class SonosPlayer(PlayerProtocol):
         self._forget_queue()
 
     async def _remove_native_members(self, members: set[str]) -> None:
-        """
-        Take members out of the native group this speaker coordinates, for the restore to add back.
-
-        :param members: The native group members to take out.
-        """
+        """Take the members out of the native group this speaker coordinates."""
         self.logger.debug(
             "Taking native group members %s out of the group of %s before AirPlay starts",
             sorted(members),
@@ -1980,12 +1974,7 @@ class SonosPlayer(PlayerProtocol):
             )
 
     def _start_airplay_group_restore(self, members: set[str]) -> None:
-        """
-        Start bringing the members back into the native group, replacing a running restore.
-
-        :param members: The native group members to keep with this speaker, as the restore
-            tracks them.
-        """
+        """Start bringing the members back into the native group, replacing a running restore."""
         self.mass.create_task(
             self._restore_airplay_group(members),
             task_id=f"restore_airplay_group_{self.protocol_id}",
@@ -2104,12 +2093,7 @@ class SonosPlayer(PlayerProtocol):
     async def _modify_group_members(
         self, player_ids_to_add: list[str], player_ids_to_remove: list[str]
     ) -> None:
-        """
-        Change the members of the native group this speaker coordinates, and wait for the result.
-
-        :param player_ids_to_add: The speakers to add to the group.
-        :param player_ids_to_remove: The speakers to remove from the group.
-        """
+        """Change the members of this speaker's native group, and wait for the result."""
         await self.group_controller.modify_group_members(
             player_ids_to_add=player_ids_to_add,
             player_ids_to_remove=player_ids_to_remove,
