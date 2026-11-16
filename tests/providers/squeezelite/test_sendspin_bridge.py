@@ -60,6 +60,8 @@ from music_assistant.providers.squeezelite.sendspin_bridge import (
     RECONNECT_REJOIN_WINDOW,
     RECOVERY_GUARD_US,
     STARVED_LEAD_US,
+    STATUS_POLL_INTERVAL,
+    STATUS_POLL_INTERVAL_UNMAPPED,
     STATUS_TOKEN_BIT,
     STREAM_LEAD_US,
     STREAM_THRESHOLD_KB,
@@ -445,10 +447,18 @@ class _Rig:
         """Let the player report an event."""
         self.bridge.handle_slim_event(SlimEvent(event_type, PLAYER_ID))
 
-    async def start_stream(self) -> BridgeSession:
-        """Start a Sendspin stream and let the bridge request its stream from the player."""
+    async def start_stream(self, *, answers: bool = True) -> BridgeSession:
+        """
+        Start a Sendspin stream and let the bridge request its stream from the player.
+
+        :param answers: Whether the player answers the status requests the stream request
+            waits for, while its clock is not mapped.
+        """
         self.bridge._on_stream_start(MagicMock())
         await _settle()
+        if answers and not self.session.clock_mapped.is_set():
+            self.map_clock()
+            await _settle()
         return self.session
 
     async def start_playing(
@@ -469,7 +479,6 @@ class _Rig:
         :param chunk: What makes that chunk, in the format of the stream.
         """
         session = await self.start_stream()
-        self.map_clock()
         self.fetched(session)
         self.origin_us = self.now_us + first_chunk_ahead_us
         self.bridge._on_audio_chunk(chunk(self.origin_us, 0, frames))
@@ -1618,7 +1627,10 @@ async def test_a_learned_start_offset_counts_in_the_earliest_start(rig: _Rig) ->
 
 async def test_the_start_waits_for_the_clock_of_the_player(rig: _Rig) -> None:
     """Without a mapping of its clock the player can not be told when to start."""
-    session = await rig.start_stream()
+    # a player that does not answer gets its stream request without a mapping
+    with patch(f"{MODULE}.CLOCK_TIMEOUT_SECONDS", 0):
+        session = await rig.start_stream(answers=False)
+    rig.client.play_url.assert_awaited_once()
     rig.fetched(session)
     rig.bridge._on_audio_chunk(_chunk(rig.now_us + 2_000_000, 0, SECOND))
     rig.event(SlimEventType.PLAYER_BUFFER_READY)
@@ -1639,7 +1651,7 @@ async def test_the_start_waits_for_the_clock_of_the_player(rig: _Rig) -> None:
 
 async def test_a_clock_mapping_that_was_not_kept_up_is_learned_again(rig: _Rig) -> None:
     """The clocks drift apart while the player is not asked: an old mapping is not used."""
-    await rig.start_stream()
+    await rig.start_stream(answers=False)
     for token in (101, 102, 103):
         rig.bridge._pending_status[STATUS_TOKEN_BIT | token] = rig.now_us
         rig.bridge.handle_slim_event(rig.status(token=STATUS_TOKEN_BIT | token))
@@ -1652,15 +1664,120 @@ async def test_a_clock_mapping_that_was_not_kept_up_is_learned_again(rig: _Rig) 
     assert rig.bridge._player_clock is known
 
     rig.clock.advance_us(CLOCK_MAX_AGE_US + 1)
-    await rig.start_stream()
+    await rig.start_stream(answers=False)
     assert rig.bridge._player_clock is not known
     assert rig.bridge._player_clock.to_jiffies(rig.now_us) is None
+
+
+async def test_the_stream_is_requested_once_the_clock_of_the_player_is_mapped(rig: _Rig) -> None:
+    """The player answers late while it sets a stream up: its clock is learned before."""
+    session = await rig.start_stream(answers=False)
+
+    for token in range(3):
+        rig.client.play_url.assert_not_called()
+        rig.bridge._pending_status[STATUS_TOKEN_BIT | 9000 + token] = rig.now_us
+        rig.bridge.handle_slim_event(rig.status(token=STATUS_TOKEN_BIT | 9000 + token))
+        rig.clock.advance_us(50_000)
+        await _settle()
+
+    assert session.clock_mapped.is_set()
+    rig.client.play_url.assert_awaited_once()
+    assert rig.owns_stream()
+
+
+async def test_a_player_that_does_not_answer_gets_its_stream_requested_anyway(rig: _Rig) -> None:
+    """The stream request waits for the clock of the player for a while, not for ever."""
+    with patch(f"{MODULE}.CLOCK_TIMEOUT_SECONDS", 0.2):
+        session = await rig.start_stream(answers=False)
+        rig.client.play_url.assert_not_called()
+
+        await _wait_for(lambda: rig.client.play_url.await_count == 1)
+
+    assert not session.clock_mapped.is_set()
+    assert rig.owns_stream()
+
+
+async def test_a_restart_with_a_known_clock_requests_its_stream_at_once(rig: _Rig) -> None:
+    """A session that restarts the stream has the mapping the one before it kept up."""
+    first = await rig.start_playing()
+    rig.clock.advance_us(first.start_us - rig.now_us + 2_000_000)
+
+    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+    await _settle()
+
+    assert rig.session is not first
+    assert rig.session.clock_mapped.is_set()
+    assert rig.client.play_url.await_count == 2
+
+
+async def test_a_new_stream_with_a_known_clock_requests_its_stream_at_once(rig: _Rig) -> None:
+    """A mapping that was kept up is used for the next stream right away."""
+    await rig.start_stream()
+    rig.clock.advance_us(CLOCK_MAX_AGE_US - 1)
+
+    session = await rig.start_stream(answers=False)
+
+    assert session.clock_mapped.is_set()
+    assert rig.client.play_url.await_count == 2
+
+
+async def test_a_player_that_answers_late_while_it_sets_a_stream_up_starts_on_time(
+    rig: _Rig,
+) -> None:
+    """
+    The replies a player holds back while it sets a stream up do not move its start.
+
+    Idle, the player answers a status request at once. From the stream request until its
+    buffer is ready it answers none, and then all of them at once, each with the reading
+    of its clock at that moment: their round trips are hundreds of milliseconds.
+    """
+    real_sleep = asyncio.sleep
+    setup_us = 830_000
+    held: list[int] = []
+    requested_at: list[int] = []
+
+    async def _sleep(delay: float) -> None:
+        # time passes on the clock of the rig, as the test advances it
+        wake_us = rig.now_us + round(delay * 1_000_000)
+        await real_sleep(0)
+        while rig.now_us < wake_us:
+            await real_sleep(0)
+
+    def _request_status(token: int) -> None:
+        if requested_at:
+            held.append(token)
+        else:
+            asyncio.get_running_loop().call_soon(
+                rig.bridge.handle_slim_event, rig.status(token=token)
+            )
+
+    rig.client.request_status.side_effect = _request_status
+    rig.client.play_url.side_effect = lambda **_kwargs: requested_at.append(rig.now_us)
+    with (
+        patch(f"{MODULE}.STATUS_POLL_INTERVAL", STATUS_POLL_INTERVAL),
+        patch(f"{MODULE}.STATUS_POLL_INTERVAL_UNMAPPED", STATUS_POLL_INTERVAL_UNMAPPED),
+        patch("asyncio.sleep", new=_sleep),
+    ):
+        session = await rig.start_stream(answers=False)
+        rig.bridge._on_audio_chunk(_chunk(rig.now_us + 2_000_000, 0, SECOND))
+        while not requested_at or rig.now_us < requested_at[0] + setup_us:
+            rig.clock.advance_us(10_000)
+            await _settle()
+        rig.fetched(session)
+        rig.event(SlimEventType.PLAYER_BUFFER_READY)
+        for token in held:
+            rig.bridge.handle_slim_event(rig.status(token=token))
+        await _settle()
+
+    assert len(held) >= 3
+    rig.client.unpause_at.assert_awaited_once()
+    told = rig.client.unpause_at.await_args.args[0]
+    assert abs(told - rig.jiffies(session.command_us)) <= 2
 
 
 async def test_the_start_waits_for_the_first_chunk(rig: _Rig) -> None:
     """A player that is ready before Sendspin delivered anything starts with the first chunk."""
     session = await rig.start_stream()
-    rig.map_clock()
     rig.fetched(session)
     rig.event(SlimEventType.PLAYER_BUFFER_READY)
     await _settle()
@@ -1675,7 +1792,6 @@ async def test_the_start_waits_for_the_first_chunk(rig: _Rig) -> None:
 async def test_a_buffer_ready_of_the_stream_before_is_ignored(rig: _Rig) -> None:
     """Until the player fetched this stream, its buffer ready is about another one."""
     session = await rig.start_stream()
-    rig.map_clock()
     rig.bridge._on_audio_chunk(_chunk(rig.now_us + 2_000_000, 0, SECOND))
 
     rig.event(SlimEventType.PLAYER_BUFFER_READY)
@@ -1707,7 +1823,7 @@ async def test_a_player_that_does_not_get_ready_has_its_stream_restarted(rig: _R
 async def test_the_player_is_asked_for_its_status_with_tokens_of_its_own(rig: _Rig) -> None:
     """The tokens can not be those of the heartbeat of aioslimproto, which counts up from 1."""
     with patch(f"{MODULE}.STATUS_POLL_INTERVAL_UNMAPPED", 0):
-        await rig.start_stream()
+        await rig.start_stream(answers=False)
         await _settle()
 
     tokens = [request.args[0] for request in rig.client.request_status.await_args_list]
@@ -1739,7 +1855,7 @@ async def test_the_status_is_polled_while_a_session_lasts(rig: _Rig) -> None:
 
 async def test_a_reply_to_a_request_maps_the_clock_of_the_player(rig: _Rig) -> None:
     """A status with the token of a request is a sample of the player's clock."""
-    await rig.start_stream()
+    await rig.start_stream(answers=False)
     clock = rig.bridge._player_clock
     for token in (101, 102, 103):
         rig.bridge._pending_status[STATUS_TOKEN_BIT | token] = rig.now_us
@@ -1754,7 +1870,7 @@ async def test_a_reply_to_a_request_maps_the_clock_of_the_player(rig: _Rig) -> N
 
 async def test_a_status_that_was_not_asked_for_is_no_clock_sample(rig: _Rig) -> None:
     """Only a reply has a known round trip: the heartbeat and an unasked status have none."""
-    await rig.start_stream()
+    await rig.start_stream(answers=False)
     asked = list(rig.bridge._pending_status)
     assert asked == [STATUS_TOKEN_BIT | 1]
 
@@ -1767,7 +1883,7 @@ async def test_a_status_that_was_not_asked_for_is_no_clock_sample(rig: _Rig) -> 
 
 async def test_requests_without_a_reply_are_forgotten(rig: _Rig) -> None:
     """Replies come in order, so a reply closes the requests before it; the rest is capped."""
-    await rig.start_stream()
+    await rig.start_stream(answers=False)
     rig.bridge._pending_status.clear()
     for token in (1, 2, 3, 4):
         rig.bridge._pending_status[STATUS_TOKEN_BIT | token] = rig.now_us
@@ -1935,6 +2051,8 @@ async def test_a_player_that_stays_off_its_timeline_has_its_stream_restarted(
     rig.play(session, 4.25, late_ms=late_ms)
     await _settle()
     assert rig.session is session
+    # the player answers its status requests all along
+    rig.map_clock()
 
     rig.play(session, 0.25, late_ms=late_ms)
     await _settle()
@@ -2427,6 +2545,8 @@ async def test_an_underrun_long_after_a_restart_restarts_again(rig: _Rig) -> Non
     rig.fetched(rig.session)
     rig.event(SlimEventType.PLAYER_BUFFER_READY)
     rig.clock.advance_us(RECOVERY_GUARD_US)
+    # the player answers its status requests all along
+    rig.map_clock()
 
     rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
     await _settle()

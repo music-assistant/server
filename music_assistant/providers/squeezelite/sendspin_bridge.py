@@ -99,10 +99,10 @@ START_TIMEOUT_SECONDS: float = 10.0
 
 # Lead and buffer (ms) reported to Sendspin. The lead is how long before its audible
 # instant the first chunk of a stream arrives: it has to cover a cold start, which is the
-# flush, the stream request with its HTTP connect, the preroll that fills the player to
-# its threshold and a start MIN_START_AHEAD_US ahead, plus what the player is known to
-# start late. The buffer is what Sendspin keeps the bridge supplied with during the
-# stream: the stream lead and a margin.
+# mapping of the player's clock, the flush, the stream request with its HTTP connect, the
+# preroll that fills the player to its threshold and a start MIN_START_AHEAD_US ahead,
+# plus what the player is known to start late. The buffer is what Sendspin keeps the
+# bridge supplied with during the stream: the stream lead and a margin.
 BRIDGE_REQUIRED_LEAD_MS: int = 2000
 BRIDGE_MIN_BUFFER_MS: int = 2000
 
