@@ -192,6 +192,10 @@ When a buffer starts from the beginning of an item (not for audio sources or sou
 
 A provider declares the media types it is offered in `media_types` (tracks only by default). `_start_analysis_on_providers()` offers a session, live or background, only to the providers that declared its media type.
 
+A live source (`MediaType.AUDIO_SOURCE`) has no buffer. `get_audio_source_stream()` hands its audio to `AudioAnalysisController.start_source_analysis()`, which offers it only to providers that declared `AUDIO_SOURCE`, and only when the source allows it (`AudioSource.allow_audio_analysis`, set by the plugin for a live input such as a line-in; off for what a streaming service delivers to a receiver). The session runs while the stream does and in realtime: audio is fed in one-second blocks without ever waiting, dropped beyond `LIVE_SOURCE_BACKLOG_SECONDS` while a provider falls behind, and the session is cancelled when the stream ends. Nothing of it is stored: no result, no failure, no place in the background scan.
+
+A provider can report what plays in a radio stream or live source with `AudioAnalysisProvider.report_stream_metadata()`. For a radio stream it becomes the stream's `stream_metadata` while the stream reports none itself; for a live source it becomes the session's metadata while the owning plugin has reported none (`AudioSourceSession.stream_metadata_reported`). Reported metadata is never stored.
+
 ### Loudness Measurement
 - Produced by the `loudness_analysis` provider (`providers/loudness_analysis/`): FFmpeg `ebur128` over up to 10 minutes of PCM
 - Result stored for future volume normalization (avoids dynamic mode overhead)

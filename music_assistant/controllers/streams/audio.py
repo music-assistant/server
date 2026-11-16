@@ -204,6 +204,7 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant.controllers.players.audio_sources import AudioSourceSession
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player_protocol import PlayerProtocol
     from music_assistant.models.provider import Provider
@@ -1617,6 +1618,7 @@ class StreamsAudio:
         raise_on_error: bool = True,
         display_name: str | None = None,
         on_no_audio: Callable[[], None] | None = None,
+        source_session: AudioSourceSession | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get the realtime PCM stream for a live AudioSource.
@@ -1639,13 +1641,23 @@ class StreamsAudio:
         :param display_name: Name to identify the source by in the logs.
         :param on_no_audio: Called when the stream failed without ever producing
             audio, so the caller can mark its own copy of the source unplayable.
+        :param source_session: The live source session this stream plays, whose audio the
+            analysis providers that may analyse the source follow while it streams.
         """
         logger = self.logger.getChild("audio_source_stream")
         name = display_name or streamdetails.uri
         bytes_received = 0
+        audio_analysis = self.mass.streams.audio_analysis
+        analysis_key = (
+            audio_analysis.start_source_analysis(source_session, streamdetails, pcm_format)
+            if source_session is not None
+            else None
+        )
         try:
             async for chunk in self._iter_audio_source_pcm(streamdetails, pcm_format):
                 bytes_received += len(chunk)
+                if analysis_key is not None:
+                    audio_analysis.feed_source_analysis(analysis_key, chunk)
                 yield chunk
         except AudioError as err:
             streamdetails.stream_error = True
@@ -1672,6 +1684,8 @@ class StreamsAudio:
                 streamdetails.uri,
             )
         finally:
+            if analysis_key is not None:
+                audio_analysis.stop_source_analysis(analysis_key)
             streamdetails.seconds_streamed = bytes_received / pcm_format.pcm_sample_size
 
     async def get_queue_item_stream(  # noqa: C901, PLR0912

@@ -324,6 +324,7 @@ class AudioSourceStream:
                 pcm_format=pcm_format,
                 raise_on_error=False,
                 display_name=session.source.name,
+                source_session=session,
             ):
                 if (
                     players.get_audio_source_session(session.player_id) is not session
@@ -2220,6 +2221,7 @@ class StreamsController(CoreController):
             pcm_format=pcm_format,
             raise_on_error=False,
             display_name=session.source.name,
+            source_session=session,
         )
         filter_params = self.audio.get_player_output_plan(
             protocol_id=player.protocol_id,

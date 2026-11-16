@@ -83,6 +83,10 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
     - If you have other conditions that determine whether to skip an analysis,
       implement them in _start_analysis and return False to reject the session.
     - Return AudioAnalysisData from _finalize; the base class persists it.
+    - To report what plays in a radio stream or live source (for example a recognised
+      song), call self.report_stream_metadata(session_id, StreamMetadata(...)). Players
+      show it while the stream or the plugin of the source reports nothing itself; it is
+      never stored.
     """
 
     # Increment this when your analysis algorithm changes significantly.
@@ -92,7 +96,10 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
 
     # The media types this provider is offered, as a frozenset of MediaType (for example
     # frozenset({MediaType.TRACK, MediaType.PODCAST_EPISODE})). Without it the provider gets
-    # tracks only.
+    # tracks only. Declare MediaType.AUDIO_SOURCE to follow a live source, such as a line-in or
+    # turntable, while it plays: it is offered only a source that allows analysis
+    # (AudioSource.allow_audio_analysis), gets its audio in realtime with no finalize, and
+    # nothing of such a session is stored.
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """

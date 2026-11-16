@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.provider import ProviderManifest
-    from music_assistant_models.streamdetails import StreamDetails
+    from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -80,6 +80,11 @@ class AnalysisSessionData:
 
     streamdetails: StreamDetails
     audio_format: AudioFormat
+
+    @property
+    def stored(self) -> bool:
+        """Return whether this session's result and failures are stored: a live source's never are."""
+        return self.streamdetails.media_type != MediaType.AUDIO_SOURCE
 
 
 class AudioAnalysisProvider(Provider):
@@ -238,7 +243,7 @@ class AudioAnalysisProvider(Provider):
                 )
                 if session is not None:
                     await self._record_failure(session, str(err), None)
-            if analysis is not None and session is not None:
+            if analysis is not None and session is not None and session.stored:
                 try:
                     await self.mass.streams.audio_analysis.set_audio_analysis(
                         item_id=session.streamdetails.item_id,
@@ -284,6 +289,22 @@ class AudioAnalysisProvider(Provider):
         :param analysis: The analysis data that was persisted by `_finalize`.
         """
         return
+
+    def report_stream_metadata(self, session_id: str, stream_metadata: StreamMetadata) -> None:
+        """
+        Report what plays right now in the stream of an analysis session, such as a recognised song.
+
+        Players show it for a radio stream or a live source, as long as that stream or the
+        plugin of that source reports no metadata of its own. It is never stored.
+
+        :param session_id: The analysis session ID.
+        :param stream_metadata: What plays right now.
+        """
+        if (session := self._sessions.get(session_id)) is None:
+            return
+        self.mass.streams.audio_analysis.show_stream_metadata(
+            session_id, session.streamdetails, stream_metadata
+        )
 
     async def cancel(self, session_id: str) -> None:
         """Cancel an in-progress analysis session."""
@@ -506,6 +527,8 @@ class AudioAnalysisProvider(Provider):
         retry_at: datetime | None,
     ) -> None:
         """Record a failure for this session's track."""
+        if not session.stored:
+            return
         # Swallow DB write errors so a failed recorder write never breaks the session
         # lifecycle (record_analysis_failure only performs a sqlite insert).
         try:
