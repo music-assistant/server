@@ -8,11 +8,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from mashumaro.exceptions import MissingField
-from music_assistant_models.enums import ExternalID, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Playlist, Track
 
-from music_assistant.helpers.compare import compare_strings
 from music_assistant.providers.listenbrainz.constants import (
     CONF_ENABLE_WEEKLY_EXPLORATION,
     CONF_ENABLE_WEEKLY_JAMS,
@@ -33,31 +31,8 @@ from music_assistant.providers.listenbrainz.parsers import (
 if TYPE_CHECKING:
     from music_assistant.providers.listenbrainz import ListenBrainzProvider
 
-CACHE_CATEGORY_RESOLVED_TRACKS = 1
 CACHE_CATEGORY_PLAYLISTS = 2
 CACHE_EXPIRATION_SECONDS = 60 * 60 * 24 * 30
-# Per-provider search limit (mirrors Last.fm's PROVIDER_SEARCH_LIMIT).
-SEARCH_PROVIDER_LIMIT = 5
-
-
-def _search_result_matches(searched_track: Track, result: Track, artist_name: str) -> bool:
-    """
-    Return True if a search result matches the searched track by name and artist.
-
-    Mirrors the Last.fm recommendations provider's ``_is_matching_result``: a
-    name match alone is not enough when the artist is known, because the same
-    title often exists as a cover, karaoke, or translation by a different artist.
-    """
-    if not compare_strings(searched_track.name, result.name, strict=False):
-        return False
-    # When we searched with an artist name, require an artist match too.
-    result_artists = getattr(result, "artists", None)
-    if artist_name and result_artists:
-        return any(
-            compare_strings(artist_name, result_artist.name, strict=False)
-            for result_artist in result_artists
-        )
-    return True
 
 
 @dataclass(kw_only=True)
@@ -67,12 +42,11 @@ class PlaylistState:
     playlist: Playlist
     tracks: tuple[Track, ...]
     source_patch: str | None
-    raw_tracks: tuple[Track, ...] | None = None
     modified_at: str | None = None
 
 
 class ListenBrainzPlaylistManager:
-    """Manage ListenBrainz playlists and resolve their tracks."""
+    """Manage ListenBrainz playlists with lazily resolved tracks."""
 
     def __init__(self, provider: ListenBrainzProvider) -> None:
         """Initialize the playlist manager."""
@@ -80,7 +54,6 @@ class ListenBrainzPlaylistManager:
         self.api = provider.api
 
         self._playlists: dict[str, PlaylistState] = {}
-        self._resolved_tracks: dict[str, Track] = {}
 
     @property
     def logger(self) -> logging.Logger:
@@ -104,16 +77,10 @@ class ListenBrainzPlaylistManager:
                 if not self._is_source_patch_enabled(source_patch):
                     continue
                 playlist = Playlist.from_dict(item["playlist"])
-                raw_tracks = item.get("raw_tracks")
                 playlists[playlist.item_id] = PlaylistState(
                     playlist=playlist,
                     tracks=tuple(Track.from_dict(track) for track in item["tracks"]),
                     source_patch=source_patch,
-                    raw_tracks=(
-                        tuple(Track.from_dict(track) for track in raw_tracks)
-                        if raw_tracks is not None
-                        else None
-                    ),
                     modified_at=item.get("modified_at"),
                 )
         except KeyError, TypeError, ValueError, MissingField:
@@ -125,10 +92,8 @@ class ListenBrainzPlaylistManager:
         """
         Refresh the active ListenBrainz playlists.
 
-        Only playlists whose ``last_modified_at`` has changed are re-fetched
-        from the API. Tracks in unchanged playlists are still re-resolved
-        (fast via the resolution cache) so matches discovered late — or after a
-        cache expiry — are picked up without an extra API call.
+        Only playlists whose ``last_modified_at`` has changed are re-fetched.
+        Track resolution is left to the core when a track is opened or played.
         """
         playlists = await self.api.get_createdfor_playlists(self.provider.username)
         refreshed: dict[str, PlaylistState] = {}
@@ -142,7 +107,7 @@ class ListenBrainzPlaylistManager:
         self._playlists = refreshed
         await self._store_cache()
         self.logger.debug(
-            "Refreshed %d ListenBrainz playlists with %d playable tracks",
+            "Refreshed %d ListenBrainz playlists with %d tracks",
             len(refreshed),
             sum(len(state.tracks) for state in refreshed.values()),
         )
@@ -158,48 +123,41 @@ class ListenBrainzPlaylistManager:
         raise MediaNotFoundError(f"ListenBrainz playlist {prov_playlist_id} is not available")
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Return resolved tracks from a ListenBrainz playlist."""
+        """Return all source tracks, retaining their metadata for URI-only play requests."""
         if page > 0:
             return []
         if state := self._playlists.get(prov_playlist_id):
+            for track in state.tracks:
+                listed_track = copy(track)
+                listed_track.position = None
+                await self.provider.mass.music.tracks.store_listed_external_item(listed_track)
             return list(state.tracks)
         return []
 
     async def _refresh_playlist(self, item: dict[str, Any]) -> PlaylistState:
-        """Refresh and publish one playlist and its resolved tracks."""
+        """Refresh and publish one playlist with all its source entries."""
         playlist = parse_playlist(item, self.provider.instance_id, self.provider.domain)
         last_modified = parse_playlist_last_modified(item)
         previous = self._playlists.get(playlist.item_id)
         if (
             previous is not None
-            and previous.raw_tracks is not None
             and last_modified is not None
             and previous.modified_at == last_modified
         ):
-            # Unchanged: reuse stored raw tracks, re-resolve (no API call)
-            raw_tracks = previous.raw_tracks
+            tracks = previous.tracks
         else:
-            # Changed or new: fetch full playlist from API
             playlist_data = await self.api.get_playlist(playlist.item_id)
-            raw_tracks = tuple(
-                parse_track(tr, self.provider.instance_id, self.provider.domain)
-                for tr in playlist_data["track"]
-            )
-
-        # Resolve (or re-resolve) tracks — cache hits for already-resolved,
-        # fresh attempts for previously unresolved
-        tracks: list[Track] = []
-        for position, raw_track in enumerate(raw_tracks, 1):
-            if resolved := await self._get_or_resolve_track(raw_track):
-                playlist_track = copy(resolved)
-                playlist_track.position = position
-                tracks.append(playlist_track)
+            parsed_tracks: list[Track] = []
+            for position, track_data in enumerate(playlist_data["track"], 1):
+                track = parse_track(track_data, self.provider.instance_id, self.provider.domain)
+                track.position = position
+                parsed_tracks.append(track)
+            tracks = tuple(parsed_tracks)
 
         state = PlaylistState(
             playlist=playlist,
-            tracks=tuple(tracks),
+            tracks=tracks,
             source_patch=parse_playlist_source_patch(item),
-            raw_tracks=raw_tracks,
             modified_at=last_modified,
         )
 
@@ -216,11 +174,6 @@ class ListenBrainzPlaylistManager:
                     "playlist": state.playlist.to_dict(),
                     "source_patch": state.source_patch,
                     "tracks": [track.to_dict() for track in state.tracks],
-                    "raw_tracks": (
-                        [track.to_dict() for track in state.raw_tracks]
-                        if state.raw_tracks is not None
-                        else None
-                    ),
                     "modified_at": state.modified_at,
                 }
                 for state in self._playlists.values()
@@ -230,116 +183,6 @@ class ListenBrainzPlaylistManager:
             checksum=self.provider.username,
             expiration=CACHE_EXPIRATION_SECONDS,
         )
-
-    async def _get_or_resolve_track(self, track: Track) -> Track | None:
-        """Return a cached, library, or streaming-provider match for a parsed track."""
-        recording_mbid = track.get_external_id(ExternalID.MB_RECORDING)
-        if recording_mbid is None:
-            self.logger.debug(
-                "Cannot resolve ListenBrainz track %s (no recording MBID)", track.name
-            )
-            return None
-        self.logger.debug(
-            "Resolving ListenBrainz track %s (%s)",
-            track.name,
-            recording_mbid,
-        )
-        if cached_track := self._resolved_tracks.get(recording_mbid):
-            return cached_track
-
-        cached_track = await self.provider.mass.cache.get(
-            key=recording_mbid,
-            category=CACHE_CATEGORY_RESOLVED_TRACKS,
-            provider=self.provider.instance_id,
-            base_class=Track,
-        )
-        if isinstance(cached_track, Track):
-            cached_track.add_external_id(ExternalID.MB_RECORDING, recording_mbid)
-            self._resolved_tracks[recording_mbid] = cached_track
-            return cached_track
-        resolved_track = await self._resolve_track(track, recording_mbid)
-        if resolved_track is not None:
-            resolved_track.add_external_id(ExternalID.MB_RECORDING, recording_mbid)
-            self._resolved_tracks[recording_mbid] = resolved_track
-            await self.provider.mass.cache.set(
-                key=recording_mbid,
-                data=resolved_track.to_dict(),
-                category=CACHE_CATEGORY_RESOLVED_TRACKS,
-                provider=self.provider.instance_id,
-                expiration=CACHE_EXPIRATION_SECONDS,
-            )
-            return resolved_track
-        self.logger.debug(
-            "Could not resolve ListenBrainz track %s (%s) — no library, MusicBrainz, or search match found",
-            track.name,
-            recording_mbid,
-        )
-        return None
-
-    async def _resolve_track(self, track: Track, recording_mbid: str) -> Track | None:
-        """Resolve a recording through the core, then search providers on a definite miss."""
-        if resolved := await self.provider.mass.music.tracks.get_item_by_external_id(
-            recording_mbid, ExternalID.MB_RECORDING
-        ):
-            return resolved
-        artist_name = track.artists[0].name if getattr(track, "artists", None) else ""
-        query = f"{artist_name} - {track.name}".strip(" -")
-        if query:
-            # Search streaming providers one by one (mirrors Last.fm's
-            # _search_providers) so a hit on an earlier provider spares the
-            # rest — mass.music.search() would fan out to every provider at
-            # once, potentially hammering their APIs.
-            for streaming_provider in self._streaming_track_providers():
-                if not streaming_provider.available:
-                    continue
-                try:
-                    tracks = await self.provider.mass.music.tracks.search(
-                        query,
-                        streaming_provider.instance_id,
-                        limit=SEARCH_PROVIDER_LIMIT,
-                    )
-                except MusicAssistantError:
-                    self.logger.debug(
-                        "Provider %s search failed for %s (%s)",
-                        streaming_provider.name,
-                        track.name,
-                        recording_mbid,
-                    )
-                    continue
-                if not streaming_provider.available:
-                    continue
-                for candidate in tracks:
-                    if _search_result_matches(track, candidate, artist_name):
-                        return candidate
-            self.logger.debug(
-                "Search for '%s' returned no matching tracks for %s (%s)",
-                query,
-                track.name,
-                recording_mbid,
-            )
-        else:
-            self.logger.debug(
-                "No searchable artist/track name for %s (%s)",
-                track.name,
-                recording_mbid,
-            )
-        return None
-
-    def _streaming_track_providers(self) -> list[Any]:
-        """
-        Return streaming music providers that can search tracks, excluding self.
-
-        Mirrors Last.fm's ``_get_streaming_providers``: only providers that
-        advertise ``LIBRARY_TRACKS`` support are included, so each one can
-        answer a track search request.
-        """
-        return [
-            p
-            for p in self.provider.mass.music.providers
-            if p.instance_id != self.provider.instance_id
-            and p.is_streaming_provider
-            and ProviderFeature.LIBRARY_TRACKS in p.supported_features
-        ]
 
     def _is_playlist_enabled(self, playlist_data: dict[str, Any]) -> bool:
         """Return whether the ListenBrainz playlist type is enabled."""

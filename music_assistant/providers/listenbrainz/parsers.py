@@ -17,6 +17,9 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import EXTERNAL_ID_PROVIDER
+from music_assistant.helpers.external_ids import external_item_id
+
 JSPF_PLAYLIST_EXTENSION = "https://musicbrainz.org/doc/jspf#playlist"
 JSPF_TRACK_EXTENSION = "https://musicbrainz.org/doc/jspf#track"
 
@@ -72,12 +75,12 @@ def parse_playlist_last_modified(playlist_data: dict[str, Any]) -> str | None:
 
 
 def parse_track(track_data: dict[str, Any], provider_instance: str, provider_domain: str) -> Track:
-    """Parse a JSPF playlist entry into an unavailable ListenBrainz track."""
+    """Parse a JSPF playlist entry into a track resolved by the core when opened or played."""
     recording_mbid = track_data["identifier"][0].rsplit("/", 1)[-1]
     album_name = track_data.get("album")
     return Track(
-        item_id=recording_mbid,
-        provider=provider_instance,
+        item_id=external_item_id(ExternalID.MB_RECORDING, recording_mbid),
+        provider=EXTERNAL_ID_PROVIDER,
         name=track_data.get("title") or recording_mbid,
         duration=(track_data.get("duration") or 0) // 1000,
         artists=UniqueList(parse_artists(track_data, provider_instance, provider_domain)),
@@ -91,14 +94,7 @@ def parse_track(track_data: dict[str, Any], provider_instance: str, provider_dom
             if album_name
             else None
         ),
-        provider_mappings={
-            ProviderMapping(
-                item_id=recording_mbid,
-                provider_domain=provider_domain,
-                provider_instance=provider_instance,
-                available=False,
-            )
-        },
+        provider_mappings=set(),
         external_ids={(ExternalID.MB_RECORDING, recording_mbid)},
     )
 

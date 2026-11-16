@@ -114,5 +114,5 @@ class ListenBrainzProvider(PluginProvider):
         return await self.playlists_manager.get_playlist(prov_playlist_id)
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Return resolved tracks from a ListenBrainz playlist."""
+        """Return source tracks for lazy resolution by the core."""
         return await self.playlists_manager.get_playlist_tracks(prov_playlist_id, page)

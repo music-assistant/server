@@ -5,6 +5,8 @@ from typing import Any
 import pytest
 from music_assistant_models.enums import ExternalID
 
+from music_assistant.constants import EXTERNAL_ID_PROVIDER
+from music_assistant.helpers.external_ids import external_item_id
 from music_assistant.providers.listenbrainz.parsers import (
     parse_artists,
     parse_playlist,
@@ -127,11 +129,11 @@ def test_parse_track_without_optional_metadata(explicit_null: bool) -> None:
     assert track.duration == 0
     assert track.album is None
     assert track.get_external_id(ExternalID.MB_RECORDING) == recording_mbid
-    assert track.available is False
+    assert track.is_playable is True
 
 
 def test_parse_track_from_jspf_playlist_entry() -> None:
-    """A JSPF playlist entry becomes an unavailable MBID-backed track."""
+    """A JSPF playlist entry carries display metadata and an external playback identity."""
     recording_mbid = "77777777-7777-4777-8777-777777777777"
     track_data = {
         "album": "Synthetic Album",
@@ -155,11 +157,13 @@ def test_parse_track_from_jspf_playlist_entry() -> None:
 
     track = parse_track(track_data, "listenbrainz--test", "listenbrainz")
 
-    assert track.item_id == recording_mbid
+    assert track.item_id == external_item_id(ExternalID.MB_RECORDING, recording_mbid)
+    assert track.provider == EXTERNAL_ID_PROVIDER
+    assert track.provider_mappings == set()
     assert track.name == "Synthetic Track"
     assert track.duration == 185
     assert track.album is not None
     assert track.album.name == "Synthetic Album"
     assert [artist.name for artist in track.artists] == ["Synthetic Artist"]
     assert track.get_external_id(ExternalID.MB_RECORDING) == recording_mbid
-    assert track.available is False
+    assert track.is_playable is True
