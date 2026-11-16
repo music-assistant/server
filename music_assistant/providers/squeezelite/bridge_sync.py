@@ -421,8 +421,12 @@ class SyncLoop:
         self._drift_ppm = slope * 1000
 
         if len(points) >= _MIN_REPORTS:
-            # what is left of the error once everything that was sent has been played
-            self._predicted_ms = raw_now - self._to_ms(self._offset + self._pending_jump)
+            # what is left of the error once everything that was sent has been played:
+            # the player drifts on for as long as that takes
+            ahead_s = max(0, self._frames_sent - position) / self._sample_rate
+            self._predicted_ms = (
+                raw_now + slope * ahead_s - self._to_ms(self._offset + self._pending_jump)
+            )
             rate_ppm = self._drift_ppm + self._gain_ppm_per_ms * self._predicted_ms
             self._rate_ppm = max(-self._max_rate_ppm, min(self._max_rate_ppm, rate_ppm))
         return raw_ms - played_ms

@@ -10,9 +10,9 @@ Every Sendspin stream is a session: one PCM stream over HTTP that the player sta
 at an instant of its own clock, on silence. A player starts later than it is told, by
 an amount that differs from start to start: the bridge measures that from the first
 positions the player reports and corrects it in the silence, so the first audio is
-heard on the timeline. From then on it keeps the stream a short lead ahead of what the
-player plays, and the sync loop holds it on the timeline from the positions the player
-reports.
+heard on the timeline. From then on it keeps the stream seconds ahead of what the player
+plays, as far as Sendspin delivered its audio, so the player plays on through a stall of
+its network. The sync loop holds it on the timeline from the positions the player reports.
 
 Audio flow:
 Sendspin PushStream -> BridgePlayerRole.on_audio_chunk -> session -> HTTP stream -> player
@@ -79,10 +79,15 @@ if TYPE_CHECKING:
 # The stream of a session is served on this path, to the player and session of its query.
 BRIDGE_STREAM_PATH = "/slimproto/bridge"
 
-# Audio the stream is kept ahead of what the player plays. A correction of the sync loop
-# is only heard once this much has played, so it is short; it still has to ride out a
-# hiccup of the network.
-STREAM_LEAD_US: int = 1_500_000
+# Audio the stream is kept ahead of what the player plays, as far as there is audio for
+# it: what a player holds to play on while nothing reaches it. A correction of the sync
+# loop is only heard once this much has played. At 96 kHz / 24 bit it is 3.5 MB, which the
+# stream and output buffers of a player hold together; a player that holds less takes it
+# as it plays.
+STREAM_LEAD_US: int = 6_000_000
+# The same until the start error is measured: one that is corrected in the audio is heard
+# once this much has played, so it is short.
+START_LEAD_US: int = 1_500_000
 
 # Silence the stream opens with. A player only reports its buffer ready once it holds
 # more than the stream threshold, and the instant its stream starts can only be decided
@@ -126,8 +131,9 @@ START_TIMEOUT_SECONDS: float = 10.0
 # mapping of the player's clock, the flush, the stream request with its HTTP connect, the
 # preroll that fills the player to its threshold and a start MIN_START_AHEAD_US ahead,
 # plus what the player is known to start late. What is left of it is the lead-in the
-# start is corrected in. The buffer is what Sendspin keeps the bridge supplied with
-# during the stream: the stream lead and a margin.
+# start is corrected in. The buffer is the least Sendspin keeps the bridge supplied with
+# during the stream, which delays what every player of its group plays: the stream lead
+# is filled from what a buffered source delivers beyond it.
 BRIDGE_REQUIRED_LEAD_MS: int = 2000
 BRIDGE_MIN_BUFFER_MS: int = 2000
 
@@ -156,6 +162,8 @@ MAX_BLOCK_US: int = 500_000
 # While Sendspin has nothing to play, silence keeps the stream this far ahead, so the
 # player does not run dry and stays on the timeline.
 STARVED_LEAD_US: int = 500_000
+# A write the player takes this long over is logged.
+SLOW_WRITE_US: int = 1_000_000
 
 # Caps on the audio that waits for its turn. Sendspin delivers a buffered source up to
 # 30 seconds ahead; beyond the caps the oldest chunks go. The count bounds a run of
@@ -166,8 +174,8 @@ MAX_PENDING_CHUNKS: int = 4_000
 # A player that stays this far off its timeline (ms) for this long has its stream
 # restarted: the sync loop would need minutes to pull it back. A player that stalled
 # without running out of audio ends up like that. The time covers a start error that
-# could only be corrected in the audio, in a jump that is heard once the stream lead has
-# played.
+# could only be corrected in the audio, in a jump that is heard once the lead of a start
+# has played.
 MAX_TIMELINE_ERROR_MS: float = 100.0
 MAX_OFF_TIMELINE_US: int = 4_000_000
 
@@ -244,6 +252,9 @@ class BridgeSession:
         self.preroll = bytes(self.frames(PREROLL_US) * self.frame_size)
         self.chunks: deque[AudioChunk] = deque()
         self.pending_us = 0
+        # chunks that went to the player, as far back as it can still hold them
+        self._sent: deque[AudioChunk] = deque()
+        self._sent_us = 0
         # instant the first chunk of the stream is due
         self.first_audible_us: int | None = None
         # set once the start is decided: the instant frame 0 of the stream is played, the
@@ -270,6 +281,14 @@ class BridgeSession:
         # report time since which every report was far off the timeline
         self.off_timeline_since_us: int | None = None
         self.pause_forwarded = False
+        # the stream as the player got it: the bytes it took, the time the write that
+        # waits for it began, how long the last one took and whether it is fed silence
+        self.bytes_written = 0
+        self.write_started_us: int | None = None
+        self.write_took_us = 0
+        self.starved = False
+        # the last status of the player while it played the stream
+        self.status: PlayerStatus | None = None
         self.tasks: list[asyncio.Task[None]] = []
         self._shift_us = timeline_shift_us
         # frames of the first chunk that were played already
@@ -334,7 +353,7 @@ class BridgeSession:
                 cursor += count
                 frames -= count
             if first + count >= chunk_frames:
-                self._drop_first()
+                self._drop_first(sent=True)
             else:
                 self._head_taken = first + count
         pcm = b"".join(parts)
@@ -349,10 +368,25 @@ class BridgeSession:
         """
         return not self.ended and not self.claimed and request.query.get("sid") == self.session_id
 
+    def unplayed(self, now_us: int) -> deque[AudioChunk]:
+        """
+        Return the chunks of the stream that are not played out yet.
+
+        :param now_us: The time on the server clock.
+        """
+        chunks = deque(
+            chunk
+            for chunk in self._sent
+            if chunk.timestamp_us + self._shift_us + chunk.duration_us > now_us
+        )
+        chunks.extend(self.chunks)
+        return chunks
+
     def close(self) -> None:
         """End the session: its stream ends and everything it started is cancelled."""
         self.ended = True
         self.chunks.clear()
+        self._sent.clear()
         self.pending_us = 0
         current = asyncio.current_task()
         for task in self.tasks:
@@ -360,10 +394,25 @@ class BridgeSession:
                 task.cancel()
         self.tasks.clear()
 
-    def _drop_first(self) -> None:
-        """Drop the first chunk that waits."""
-        self.pending_us -= self.chunks.popleft().duration_us
+    def _drop_first(self, *, sent: bool = False) -> None:
+        """
+        Drop the first chunk that waits.
+
+        :param sent: Whether the chunk went to the player, which has yet to play it.
+        """
+        chunk = self.chunks.popleft()
+        self.pending_us -= chunk.duration_us
         self._head_taken = 0
+        if not sent:
+            return
+        self._sent.append(chunk)
+        self._sent_us += chunk.duration_us
+        # the stream is never further ahead of what the player plays than its lead
+        while (
+            self._sent_us - self._sent[0].duration_us >= STREAM_LEAD_US
+            or len(self._sent) > MAX_PENDING_CHUNKS
+        ):
+            self._sent_us -= self._sent.popleft().duration_us
 
 
 class SendspinSqueezeliteBridge:
@@ -641,8 +690,8 @@ class SendspinSqueezeliteBridge:
                 session.buffer_ready = True
                 self._decide_start(session)
         elif event.type == SlimEventType.PLAYER_OUTPUT_UNDERRUN:
-            if session.loop is not None:
-                self._recover(session, "it ran out of audio")
+            if (loop := session.loop) is not None:
+                self._recover(session, f"it ran out of audio ({self._supply(session, loop)})")
         elif session.stream_requested:
             self._follow_player(session)
 
@@ -667,11 +716,11 @@ class SendspinSqueezeliteBridge:
         session.claimed = True
         try:
             await resp.prepare(request)
-            await resp.write(session.preroll)
+            await self._write(session, resp, session.preroll)
             session.preroll_sent = True
             while not session.ended:
                 if block := self._next_block(session):
-                    await resp.write(block)
+                    await self._write(session, resp, block)
                 await asyncio.sleep(WRITE_INTERVAL)
         except ConnectionError:
             pass
@@ -964,16 +1013,76 @@ class SendspinSqueezeliteBridge:
         played = session.frames(max(0, since_start_us))
         cursor = loop.frames_consumed
         max_frames = session.frames(MAX_BLOCK_US)
-        if (frames := min(played + session.frames(STREAM_LEAD_US) - cursor, max_frames)) <= 0:
+        lead_us = STREAM_LEAD_US if loop.start_error_ms is not None else START_LEAD_US
+        # counted from the timeline, not from what went out before: after a write the
+        # player kept waiting, the stream is back at its lead in blocks of this size
+        if (frames := min(played + session.frames(lead_us) - cursor, max_frames)) <= 0:
             return b""
-        if not (pcm := session.take(cursor, frames)):
+        if pcm := session.take(cursor, frames):
+            session.starved = False
+        else:
             # counted from the real time to the start: silence sent while the player still
             # waits for it would take the place of audio that is yet to arrive
             starved_until = session.frames(since_start_us + STARVED_LEAD_US)
             if (frames := min(starved_until - cursor, max_frames)) <= 0:
                 return b""
             pcm = bytes(frames * session.frame_size)
+            if not session.starved:
+                session.starved = True
+                self.logger.debug(
+                    "Sendspin has no audio for %s: silence keeps its stream going",
+                    self.protocol.display_name,
+                )
         return loop.process(pcm)
+
+    async def _write(self, session: BridgeSession, resp: web.StreamResponse, data: bytes) -> None:
+        """
+        Write the next part of the stream of a session to its player.
+
+        :param session: The session of the stream.
+        :param resp: The response the player reads the stream from.
+        :param data: The PCM to write.
+        """
+        session.write_started_us = started_us = self._clock.now_us()
+        # waits while the player and the connection to it hold all they can
+        await resp.write(data)
+        session.write_started_us = None
+        session.bytes_written += len(data)
+        session.write_took_us = self._clock.now_us() - started_us
+        if session.write_took_us > SLOW_WRITE_US:
+            self.logger.debug(
+                "%s took nothing of its stream for %.0f ms",
+                self.protocol.display_name,
+                session.write_took_us / 1000,
+            )
+
+    def _supply(self, session: BridgeSession, loop: SyncLoop) -> str:
+        """
+        Return what is known of the audio a player was supplied with, for the log.
+
+        :param session: The session of the stream.
+        :param loop: The sync loop of that session.
+        """
+        now_us = self._clock.now_us()
+        written_us = session.start_us + loop.frames_consumed * 1_000_000 // session.sample_rate
+        if (started_us := session.write_started_us) is not None:
+            write = f"a write waits for {(now_us - started_us) / 1000:.0f} ms"
+        else:
+            write = f"the last write took {session.write_took_us / 1000:.0f} ms"
+        if (status := session.status) is None:
+            player = "no status of the player"
+        else:
+            player = (
+                f"the player got {status.bytes_received} bytes and held "
+                f"{status.stream_buffer_fullness} of {status.stream_buffer_size} in its "
+                f"stream buffer and {status.output_buffer_fullness} of "
+                f"{status.output_buffer_size} in its output buffer "
+                f"{(now_us - status.received * 1_000_000) / 1000:.0f} ms ago"
+            )
+        return (
+            f"written {(written_us - now_us) / 1000:.0f} ms ahead, {session.bytes_written} "
+            f"bytes, {write}, {session.pending_us / 1000:.0f} ms of audio waiting, {player}"
+        )
 
     def _align(self, session: BridgeSession, loop: SyncLoop, now_us: int) -> bytes:
         """
@@ -1080,6 +1189,7 @@ class SendspinSqueezeliteBridge:
                 session.clock_mapped.set()
             self._decide_start(session)
             return
+        session.status = status
         if (server_us := self._player_clock.to_server_us(status.jiffies)) is None:
             return
         start_reports = loop.start_reports
@@ -1190,8 +1300,7 @@ class SendspinSqueezeliteBridge:
         self.logger.warning(
             "Sendspin stream on %s is restarted: %s", self.protocol.display_name, reason
         )
-        chunks, session.chunks = session.chunks, deque()
-        self._begin_session(chunks, session.audio_format)
+        self._begin_session(session.unplayed(now_us), session.audio_format)
 
     async def _leave_sendspin_session(self, *, rejoin: bool = True) -> None:
         """
