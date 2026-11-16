@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -36,6 +37,8 @@ API_URL = "https://api.spotify.com/v1"
 
 # reason Spotify gives in the body of a 429 when the quota of the app is used up
 QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
+# seconds to wait for the body of a 429, which only adds the reason to what its headers say
+RATE_LIMIT_BODY_TIMEOUT = 5
 
 
 class SpotifySession:
@@ -77,7 +80,8 @@ class SpotifySession:
         self._get_auth = get_auth
         self._on_unauthorized = on_unauthorized
         self._has_fallback = has_fallback
-        self._last_rate_limit_reason: str | None = None
+        # the reason Spotify gave with its last rate limit answer, None when it gave none
+        self.last_rate_limit_reason: str | None = None
         self._last_rate_limit_at: datetime | None = None
         # quota answers in a row, without an answered request in between
         self._quota_answers = 0
@@ -86,7 +90,7 @@ class SpotifySession:
         """Return the rate limit state of this session for a diagnostics report."""
         return {
             "cooldown_remaining_sec": round(self.throttler.cooldown_remaining),
-            "last_rate_limit_reason": self._last_rate_limit_reason,
+            "last_rate_limit_reason": self.last_rate_limit_reason,
             "last_rate_limit_at": (
                 self._last_rate_limit_at.isoformat() if self._last_rate_limit_at else None
             ),
@@ -244,29 +248,30 @@ class SpotifySession:
             if response.status == 429:
                 backoff_time = parse_retry_after(response.headers.get("Retry-After"))
                 reason = await _rate_limit_reason(response)
-                self._last_rate_limit_reason = reason
+                self.last_rate_limit_reason = reason
                 self._last_rate_limit_at = utc()
                 message = f"Spotify rate limited the {self.label}"
                 if reason:
                     message += f" ({reason})"
                 quota_exceeded = reason == QUOTA_EXCEEDED
-                if quota_exceeded or (
-                    self._has_fallback and current_priority() is not RequestPriority.LOW
+                if quota_exceeded:
+                    self._quota_answers += 1
+                    if self._quota_answers == 1:
+                        self._warn_quota_exceeded(backoff_time)
+                if self._has_fallback and (
+                    quota_exceeded or current_priority() is not RequestPriority.LOW
                 ):
-                    # a used up quota does not come back within a retry, and a user action or
-                    # playback does not sit out a limit of this app while another session can
-                    # serve it: close the gate for the time asked and give up right away
+                    # another session serves user actions and playback meanwhile, and a used up
+                    # quota does not come back within a retry: close the gate for the time
+                    # asked and give up right away
                     cooldown = max(backoff_time, self.throttler.initial_backoff)
                     if quota_exceeded:
-                        self._quota_answers += 1
                         # a block that goes on is asked about less and less
                         doublings = min(self._quota_answers - 1, 10)
                         cooldown = max(
                             cooldown,
                             min(self.throttler.initial_backoff * 2**doublings, MAX_BACKOFF),
                         )
-                        if self._quota_answers == 1:
-                            self._warn_quota_exceeded(cooldown if backoff_time else 0)
                     self.throttler.set_cooldown(cooldown)
                     raise RetriesExhausted(message, translation_key=RateLimited.translation_key)
                 raise RateLimited(message, backoff_time=backoff_time)
@@ -281,15 +286,15 @@ class SpotifySession:
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
             yield response
 
-    def _warn_quota_exceeded(self, held_back: float) -> None:
+    def _warn_quota_exceeded(self, asked_wait: float) -> None:
         """
         Log that the quota of this app is used up.
 
-        :param held_back: Seconds requests on this app are held back, 0 when Spotify named no wait.
+        :param asked_wait: Seconds Spotify asks to wait, 0 when it named no wait.
         """
         how_long = (
-            f"requests on it are held back for {held_back:.0f} seconds"
-            if held_back
+            f"Spotify asks to wait {asked_wait:.0f} seconds"
+            if asked_wait
             else "Spotify did not say for how long"
         )
         self.logger.warning("The %s has used up its Spotify quota, %s", self.label, how_long)
@@ -298,8 +303,9 @@ class SpotifySession:
 async def _rate_limit_reason(response: aiohttp.ClientResponse) -> str | None:
     """Return the reason Spotify gives in the body of a 429 answer, None when it gives none."""
     try:
-        body = await response.json(loads=json_loads, content_type=None)
-    except aiohttp.ClientError, ValueError:
+        async with asyncio.timeout(RATE_LIMIT_BODY_TIMEOUT):
+            body = await response.json(loads=json_loads, content_type=None)
+    except TimeoutError, aiohttp.ClientError, ValueError:
         return None
     if not isinstance(body, dict):
         return None

@@ -18,18 +18,24 @@ from music_assistant.providers.spotify.session import API_URL, SpotifySession
 QUOTA_BODY = {"error": {"status": 429, "message": "Quota exceeded", "reason": "QUOTA_EXCEEDED"}}
 
 
-def _make_session() -> SpotifySession:
-    """Return a session with a mocked http layer and a throttler that never holds back."""
+def _make_session(personal: bool = False) -> SpotifySession:
+    """
+    Return a session with a mocked http layer and a throttler that never holds back.
+
+    :param personal: Return the session of a custom Client ID, which the shared client stands
+        in for, instead of the shared client.
+    """
     mass = MagicMock()
     mass.metadata.locale = "en_US"
     return SpotifySession(
         mass,
         MagicMock(),
-        "global",
-        "shared client",
+        "dev" if personal else "global",
+        "custom Client ID" if personal else "shared client",
         ThrottlerManager(rate_limit=100, period=1),
         get_auth=AsyncMock(return_value={"access_token": "token"}),
         on_unauthorized=MagicMock(),
+        has_fallback=personal,
     )
 
 
@@ -148,6 +154,7 @@ async def test_post_without_result_returns_empty() -> None:
     [
         None,
         JSONDecodeError("Expected value", "Too many requests", 0),
+        TimeoutError(),
         "Too many requests",
         {"error": {"status": 429, "message": "API rate limit exceeded"}},
     ],
@@ -190,7 +197,7 @@ async def test_rate_limit_names_the_client_and_reason() -> None:
 @pytest.mark.parametrize(
     ("headers", "cooldown", "how_long"),
     [
-        ({"Retry-After": "3600"}, 3600, "requests on it are held back for 3600 seconds"),
+        ({"Retry-After": "3600"}, 3600, "Spotify asks to wait 3600 seconds"),
         ({}, 5, "Spotify did not say for how long"),
     ],
 )
@@ -198,7 +205,7 @@ async def test_quota_exceeded_is_not_retried_in_place(
     headers: dict[str, str], cooldown: int, how_long: str
 ) -> None:
     """A used up quota arms the cooldown, gives up at once and logs one warning per block."""
-    session = _make_session()
+    session = _make_session(personal=True)
     request = _stub_response(session, status=429, payload=QUOTA_BODY, headers=headers)
 
     with patch("music_assistant.helpers.throttle_retry.asyncio.sleep", AsyncMock()) as sleep:
@@ -213,14 +220,14 @@ async def test_quota_exceeded_is_not_retried_in_place(
         with pytest.raises(RetriesExhausted):
             await session.get("me")
     session.logger.warning.assert_called_once_with(  # type: ignore[attr-defined]
-        "The %s has used up its Spotify quota, %s", "shared client", how_long
+        "The %s has used up its Spotify quota, %s", "custom Client ID", how_long
     )
     assert session.get_diagnostics()["last_rate_limit_reason"] == "QUOTA_EXCEEDED"
 
 
 async def test_quota_warning_returns_after_an_answer() -> None:
     """A quota block that follows an answered request is warned about again."""
-    session = _make_session()
+    session = _make_session(personal=True)
     _stub_response(session, status=429, payload=QUOTA_BODY)
     with pytest.raises(RetriesExhausted):
         await session.get("me")
@@ -236,7 +243,7 @@ async def test_quota_warning_returns_after_an_answer() -> None:
 
 async def test_quota_block_without_a_wait_is_asked_about_less_and_less() -> None:
     """Each further quota answer that names no wait doubles the time until the next request."""
-    session = _make_session()
+    session = _make_session(personal=True)
     _stub_response(session, status=429, payload=QUOTA_BODY)
     cooldowns = []
     for _ in range(8):
@@ -252,3 +259,21 @@ async def test_quota_block_without_a_wait_is_asked_about_less_and_less() -> None
     with pytest.raises(RetriesExhausted):
         await session.get("me")
     assert round(session.throttler.cooldown_remaining) == 5
+
+
+async def test_quota_exceeded_on_the_shared_client_is_a_rate_limit_like_any_other() -> None:
+    """Without another client to stand in, a used up quota is retried after the wait."""
+    session = _make_session()
+    _stub_response(session, status=429, payload=QUOTA_BODY, headers={"Retry-After": "42"})
+
+    for _ in range(2):
+        with pytest.raises(RateLimited) as err:
+            async with session._request("GET", "me"):
+                pass
+        assert err.value.backoff_time == 42
+    assert session.throttler.cooldown_remaining == 0
+    session.logger.warning.assert_called_once_with(  # type: ignore[attr-defined]
+        "The %s has used up its Spotify quota, %s",
+        "shared client",
+        "Spotify asks to wait 42 seconds",
+    )

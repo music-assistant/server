@@ -346,7 +346,7 @@ async def test_quota_of_the_custom_client_id_moves_user_actions() -> None:
     provider.logger.warning.assert_called_once_with(  # type: ignore[attr-defined]
         "The %s has used up its Spotify quota, %s",
         "custom Client ID",
-        "requests on it are held back for 5 seconds",
+        "Spotify asks to wait 5 seconds",
     )
     diagnostics = await provider.get_diagnostics()
     dev = diagnostics["dev_session_rate_limit"]
@@ -402,3 +402,22 @@ async def test_unauthorized_clears_only_its_own_token(use_global_session: bool) 
         await provider._get_data("me/tracks", use_global_session=use_global_session)
     expected = (None, DEV_TOKEN) if use_global_session else (GLOBAL_TOKEN, None)
     assert _cached_tokens(provider) == expected
+
+
+async def test_move_to_the_shared_client_is_logged_with_spotifys_reason() -> None:
+    """The line that says user actions moved to the shared client carries Spotify's reason."""
+    provider = await _make_provider()
+    request = _stub_http_sequence(provider, [429], body_429={"error": {"reason": "SOME_REASON"}})
+
+    await provider._get_data("me/tracks")
+    assert _tokens_used(request) == ["dev", "global"]
+    moved = [
+        call.args
+        for call in provider.logger.info.call_args_list  # type: ignore[attr-defined]
+        if "custom Client ID" in call.args[0]
+    ]
+    assert len(moved) == 1
+    assert moved[0][0] % moved[0][1:] == (
+        "Spotify limits the custom Client ID for another 5 seconds (SOME_REASON), "
+        "user actions use the shared client meanwhile"
+    )
