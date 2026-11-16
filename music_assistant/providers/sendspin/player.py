@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable, Iterable
 from contextlib import suppress
 from copy import deepcopy
+from dataclasses import replace
 from io import BytesIO
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -361,6 +362,8 @@ class SendspinBasePlayer(PlayerProtocol):
     unsub_event_cb: Callable[[], None] | None = None
     unsub_group_event_cb: Callable[[], None] | None = None
     is_web_player: bool = False
+    # set when a device check found the client away, until the client connects again
+    _away_on_check: bool = False
     # transient alert produced by the most recent security action, surfaced on the next
     # config-entries render (the settings page re-renders after invoking an action)
     _pending_security_alert: AlertText | None = None
@@ -446,6 +449,24 @@ class SendspinBasePlayer(PlayerProtocol):
         await super().on_detach()
         self._unsubscribe_client_callbacks()
 
+    async def check_device(self) -> bool | None:
+        """
+        Return whether the client is connected; None for a client that runs in the server.
+
+        A client that is not connected reads unavailable from then on, until it connects again.
+        """
+        if self._connects_when_it_plays:
+            return None
+        away = self.api.connection is None
+        if away != self._away_on_check:
+            self._away_on_check = away
+            self.update_state()
+        return not away
+
+    def on_client_connected(self) -> None:
+        """Handle the client connecting (again): it reads available after a check found it away."""
+        self._away_on_check = False
+
     def ride_on(self, underlying_protocol_id: str) -> None:
         """
         Make this client the bridge of another protocol of its device.
@@ -462,6 +483,15 @@ class SendspinBasePlayer(PlayerProtocol):
         self._attr_private = False
         self._attr_expose_to_ha_by_default = True
         self._attr_session_only = False
+
+    @property
+    def available(self) -> bool:
+        """
+        Return if the player is available.
+
+        Not once a device check found its client away, until the client connects again.
+        """
+        return super().available and not self._away_on_check
 
     @property
     def needs_setup(self) -> bool:
@@ -682,6 +712,12 @@ class SendspinBasePlayer(PlayerProtocol):
     def _is_bridge_or_web_player(self) -> bool:
         """Whether this is a protocol bridge or built-in web/app player (skips pairing setup)."""
         return self.protocol_id.startswith(BRIDGE_PREFIX) or self.is_web_player
+
+    @property
+    def _connects_when_it_plays(self) -> bool:
+        """Whether the client runs in the server, as a bridge or a virtual player does."""
+        provider = cast("SendspinProvider", self.provider)
+        return provider.server_api.is_external_player(self.protocol_id)
 
     @property
     def _offers_unpaired_consent(self) -> bool:
@@ -1438,6 +1474,10 @@ class SendspinPlayer(SendspinBasePlayer):
     _content_takeover_pending: bool = False
     # Item (uri and queue item id) of the metadata last published to the group.
     _published_item: tuple[str, str | None] | None = None
+    # The metadata last published, also while it is still scheduled to take effect.
+    _published_metadata: Metadata | None = None
+    # Server-clock time that metadata takes effect at, when it was scheduled ahead.
+    _published_effective_us: int | None = None
     playback_session: SendspinPlaybackSession
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
     # output delay the device reported before its config was loaded, stored once it is
@@ -1678,6 +1718,9 @@ class SendspinPlayer(SendspinBasePlayer):
     async def stop(self) -> None:
         """Stop command."""
         self.logger.debug("Received STOP command on player %s", self.display_name)
+        # A new item scheduled for its first audio is not shown yet: the group stop below
+        # freezes what is in effect (the previous item) and drops the scheduled one.
+        update_pending = self._metadata_update_pending()
         if self.player is not None:
             self.player.mark_stop_called()
         self._abort_pending_cast_start()
@@ -1717,12 +1760,13 @@ class SendspinPlayer(SendspinBasePlayer):
             # The cancel is what ends the stream on that path, so deliver the
             # notify again; bridges already torn down ignore it.
             self._notify_bridges_explicit_stop(self.api.group.clients)
-        # The stop cancelled any push still loading, which may have left the previous item.
+        # The stop cancelled any push still loading, or a scheduled update, either of which
+        # may have left the previous item.
         if (
             self.synced_to is None
             and self._published_item is not None
             and (media := self._player_media) is not None
-            and (media.uri, media.queue_item_id) != self._published_item
+            and ((media.uri, media.queue_item_id) != self._published_item or update_pending)
         ):
             self.mass.create_task(
                 self.send_current_media_metadata(),
@@ -1984,7 +2028,7 @@ class SendspinPlayer(SendspinBasePlayer):
         )
 
     def on_flow_timeline_changed(self) -> None:
-        """Re-publish the beat schedule after the flow stream's timeline was set or moved."""
+        """Re-publish position and beat schedule after the flow stream's timeline was set or moved."""
         if self.synced_to is not None:
             return
         self.mass.create_task(
@@ -1992,6 +2036,22 @@ class SendspinPlayer(SendspinBasePlayer):
             task_id=f"sendspin_beat_rebase_{self.protocol_id}",
             abort_existing=True,
         )
+        # The position published at the play or seek command predates the audio.
+        self._schedule_position_republish()
+
+    def on_first_audio_heard(self) -> None:
+        """Re-publish the position once a new stream's first audio is heard."""
+        if self.synced_to is not None:
+            return
+        # The correction is smaller than a position jump, so nothing re-bases the queue on
+        # it by itself. The queue belongs to the player this protocol is attached to, whose
+        # state only follows on a deferred update: bring it up to date first.
+        if (player := self.player) is not None:
+            player.update_state(force_update=True)
+            self.mass.players.on_player_position_jumped(player)
+        # What was published at the play or seek command predates the audio, and the
+        # queue may only now place the track in the flow stream.
+        self._schedule_position_republish()
 
     def on_queue_updated(self, queue_id: str) -> None:
         """Push the repeat and shuffle state of the queue this player is playing."""
@@ -2068,6 +2128,9 @@ class SendspinPlayer(SendspinBasePlayer):
         track_progress = metadata.track_progress
         if track_progress is None:
             return
+        metadata, timestamp_us = self._timeline_anchored(
+            metadata, queue, queue_item, is_playing=is_playing
+        )
 
         if not self._metadata_publish_allowed(generation):
             return
@@ -2081,8 +2144,10 @@ class SendspinPlayer(SendspinBasePlayer):
                     int(current_media.duration * 1000) if current_media.duration else None
                 )
             if (metadata_role := self._metadata_role) is not None:
-                metadata_role.set_metadata(metadata)
+                metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
                 self._published_item = (current_media.uri, current_media.queue_item_id)
+                self._published_metadata = metadata
+                self._published_effective_us = timestamp_us
 
         if not self._metadata_publish_allowed(generation):
             return
@@ -2218,9 +2283,13 @@ class SendspinPlayer(SendspinBasePlayer):
         self.stop_taking_volume_reports()
         await self.playback_session.close()
         await super().on_detach()
-        if self.underlying_protocol_id and not self.mass.players.wants_protocol(self.protocol_id):
-            # the user switched this output off: the bridge it rides on goes with it
-            self.mass.create_task(evaluate_bridge_of(self.mass, self.underlying_protocol_id))
+        if (underlying_id := self.underlying_protocol_id) and not (
+            self.mass.players.wants_protocol(self.protocol_id)
+            and self.mass.config.is_protocol_switched_on(underlying_id)
+        ):
+            # this output was switched off: the bridge it rides on goes with it
+            # the protocol it rides on was switched off: another bridge may take the device
+            self.mass.create_task(evaluate_bridge_of(self.mass, underlying_id))
 
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""
@@ -2672,6 +2741,13 @@ class SendspinPlayer(SendspinBasePlayer):
             self.logger.debug("Skipping undecodable artwork: %s", err)
             return None
 
+    def _metadata_update_pending(self) -> bool:
+        """Return whether the metadata last published is still scheduled to take effect."""
+        if self._published_effective_us is None:
+            return False
+        provider = cast("SendspinProvider", self.provider)
+        return self._published_effective_us > provider.server_api.clock.now_us()
+
     def _metadata_publish_allowed(self, generation: int) -> bool:
         """Return whether a metadata task still owns the current snapshot."""
         return generation == self._metadata_generation and not self._content_takeover_pending
@@ -2733,6 +2809,8 @@ class SendspinPlayer(SendspinBasePlayer):
         self.last_sent_artwork_url = None
         self.last_sent_artist_artwork_url = None
         self._published_item = None
+        self._published_metadata = None
+        self._published_effective_us = None
         self._last_beat_queue_item_id = None
         self._last_beat_anchor_us = None
 
@@ -2828,6 +2906,23 @@ class SendspinPlayer(SendspinBasePlayer):
         up to the crossfade duration. Exact handling needs a raw-seek field on
         the flow log entry.
         """
+        if (
+            start := SendspinPlayer._flow_track_start(pq_data, queue_item, flow_position_s)
+        ) is None:
+            return None
+        track_flow_start_s, file_seek_s = start
+        return int((track_flow_start_s - file_seek_s) * 1_000_000)
+
+    @staticmethod
+    def _flow_track_start(
+        pq_data: PlayerQueueData | None, queue_item: QueueItem, flow_position_s: float
+    ) -> tuple[float, float] | None:
+        """
+        Return where the current track starts in the flow stream, and its file seek position.
+
+        The start is stream-time (the flow log counts streamed seconds), the seek media-time.
+        See `_flow_track_offset_us` for which pass of a repeated track is taken.
+        """
         if pq_data is None or queue_item.streamdetails is None:
             return None
         log = pq_data.flow_mode_stream_log
@@ -2845,7 +2940,151 @@ class SendspinPlayer(SendspinBasePlayer):
         file_seek_s = log[match_index].seek_position
         if file_seek_s is None:
             file_seek_s = float(queue_item.streamdetails.seek_position or 0)
-        return int((track_flow_start_s - file_seek_s) * 1_000_000)
+        return track_flow_start_s, file_seek_s
+
+    def _timeline_anchored(
+        self,
+        metadata: Metadata,
+        queue: PlayerQueue | None,
+        queue_item: QueueItem | None,
+        *,
+        is_playing: bool,
+    ) -> tuple[Metadata, int | None]:
+        """
+        Return the metadata with its position taken from the flow stream's timeline.
+
+        The queue's position counts from the play or seek command, before the audio was even
+        prepared; the timeline knows when the track is heard. Also returns the server-clock
+        time the metadata takes effect at: when the track isn't audible yet, then.
+        Unchanged (and None) while the timeline doesn't place the track.
+
+        :param metadata: Metadata with the queue's position.
+        :param queue: The queue the track plays from.
+        :param queue_item: The track playing now.
+        :param is_playing: Whether the player is playing.
+        """
+        if not is_playing or queue_item is None:
+            return metadata, None
+        if queue_item.streamdetails is not None and queue_item.streamdetails.stream_metadata:
+            # A radio station that reports each song: the position is the song's, not the
+            # time since the station started.
+            return metadata, None
+        provider = cast("SendspinProvider", self.provider)
+        now_us = provider.server_api.clock.now_us()
+        if (start := self._timeline_track_start_us(queue, queue_item, now_us)) is None:
+            return metadata, None
+        track_start_us, file_seek_s = start
+        seek_ms = int(file_seek_s * 1000)
+        if track_start_us > now_us:
+            return replace(metadata, track_progress=seek_ms), track_start_us
+        # The timeline runs in stream-time; the position is media-time, like the queue's.
+        speed = float(queue_item.extra_attributes.get("playback_speed") or 1.0)
+        progress_ms = seek_ms + int((now_us - track_start_us) * speed) // 1000
+        if metadata.track_duration:
+            progress_ms = min(progress_ms, metadata.track_duration)
+        return replace(metadata, track_progress=progress_ms), None
+
+    def _timeline_track_anchor_us(
+        self, queue: PlayerQueue | None, queue_item: QueueItem, now_us: int
+    ) -> int | None:
+        """
+        Return the server-clock time at which the current track's file position 0 plays.
+
+        Taken from the flow stream's audio timeline, so it matches what players hear.
+        None until the first chunk commits, or while the flow log hasn't recorded the track.
+
+        :param queue: The queue the track plays from.
+        :param queue_item: The track playing now.
+        :param now_us: The server clock now.
+        """
+        if (start := self._timeline_track_start_us(queue, queue_item, now_us)) is None:
+            return None
+        track_start_us, file_seek_s = start
+        return track_start_us - int(file_seek_s * 1_000_000)
+
+    def _timeline_track_start_us(
+        self, queue: PlayerQueue | None, queue_item: QueueItem, now_us: int
+    ) -> tuple[int, float] | None:
+        """
+        Return the server-clock time the current track's audio starts, and its seek position.
+
+        None until the first chunk commits, or while the flow log hasn't recorded the track.
+
+        :param queue: The queue the track plays from.
+        :param queue_item: The track playing now.
+        :param now_us: The server clock now.
+        """
+        timeline_start_us = self.playback_session.flow_track_anchor_us(0)
+        if timeline_start_us is None:
+            return None
+        pq_data = self.mass.player_queues.queue_data_or_none(queue.queue_id) if queue else None
+        start = self._flow_track_start(
+            pq_data, queue_item, (now_us - timeline_start_us) / 1_000_000
+        )
+        if start is None:
+            return None
+        track_flow_start_s, file_seek_s = start
+        return timeline_start_us + int(track_flow_start_s * 1_000_000), file_seek_s
+
+    def _schedule_position_republish(self) -> None:
+        """Re-publish the position from the flow stream's timeline, without the artwork."""
+        self.mass.create_task(
+            self._republish_position(),
+            task_id=f"sendspin_position_{self.protocol_id}",
+            abort_existing=True,
+        )
+
+    async def _republish_position(self) -> None:
+        """
+        Move the published position of the current item onto the flow stream's timeline.
+
+        Only the position changed, so the artwork and library lookups of a full metadata
+        send are not redone: at the start of a stream they compete with the audio, and
+        aborting a send that is still decoding artwork wastes that work. While the current
+        item is not published yet, the full send in flight (or a new one) places it.
+
+        Built from what this player published rather than from the role's metadata, which
+        is only what is in effect now: a new track scheduled for when it is heard would
+        otherwise be replaced by the previous track's metadata.
+        """
+        media = self._player_media
+        metadata_role = self._metadata_role
+        if media is None or metadata_role is None:
+            return
+        published = self._published_metadata
+        if published is None or (media.uri, media.queue_item_id) != self._published_item:
+            # Joins a send already in flight instead of aborting it.
+            self.mass.create_task(
+                self.send_current_media_metadata(),
+                task_id=f"sendspin_metadata_{self.protocol_id}",
+            )
+            return
+        generation = self._metadata_generation
+        queue: PlayerQueue | None = None
+        queue_item: QueueItem | None = None
+        if media.source_id and media.queue_item_id:
+            queue = self.mass.player_queues.get(media.source_id)
+            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        # Drop the stored timestamp: the position from the timeline counts as of now.
+        base = replace(published, timestamp_us=None)
+        metadata, timestamp_us = self._timeline_anchored(
+            base,
+            queue,
+            queue_item,
+            is_playing=self._player_playing,
+        )
+        if metadata is base:
+            # The timeline doesn't place the track (yet): what was published stands.
+            return
+        async with self._metadata_lock:
+            if (
+                not self._metadata_publish_allowed(generation)
+                or (media.uri, media.queue_item_id) != self._published_item
+            ):
+                return
+            metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
+            self._published_metadata = metadata
+            self._published_effective_us = timestamp_us
 
     async def _send_beat_schedule(
         self,
@@ -2886,15 +3125,7 @@ class SendspinPlayer(SendspinBasePlayer):
         # Anchor beats to the current track's spot in the flow stream's audio
         # timeline. Falls back to the progress-derived anchor until the first
         # chunk commits or while the flow log hasn't recorded this track yet.
-        anchor_us: int | None = None
-        pq_data = self.mass.player_queues.queue_data_or_none(queue.queue_id) if queue else None
-        timeline_start_us = self.playback_session.flow_track_anchor_us(0)
-        if timeline_start_us is not None:
-            offset_us = self._flow_track_offset_us(
-                pq_data, queue_item, (now_us - timeline_start_us) / 1_000_000
-            )
-            if offset_us is not None:
-                anchor_us = timeline_start_us + offset_us
+        anchor_us = self._timeline_track_anchor_us(queue, queue_item, now_us)
         if anchor_us is None:
             anchor_us = now_us - track_progress_ms * 1000
         # Re-push only on track change, seek or timeline rebase (anchor jumps beyond natural drift).

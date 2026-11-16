@@ -312,11 +312,12 @@ and Den plays through its Sonos protocol once that reaches it again.
   two protocols, one of which reads available for a while after the power is cut.
 - Proven by: `test_power_control.py::test_a_speaker_is_off_and_back_when_its_own_protocol_says_so`
 
-### AWAY-14 · Until its own protocol notices a power cut, a speaker reads as on
+### AWAY-14 · A speaker whose protocols can not check reads as on until one notices a power cut
 
-As in AWAY-13, but none of Den's protocols has noticed the cut yet. The player shows as available
-and powered off, and nothing tells that its device is gone: play switches the plug on and starts
-at once, on a device that still boots. That window closes when the Sonos protocol notices.
+As in AWAY-13, but none of Den's protocols has noticed the cut yet, and its Sonos protocol can not
+check its device when asked (AWAY-18). The player shows as available and powered off, and nothing
+tells that its device is gone: play switches the plug on and starts at once, on a device that
+still boots. That window closes when the Sonos protocol notices.
 
 - End-to-end: **possible with** a power control the lab can switch and a play right after the
   power is cut.
@@ -354,6 +355,65 @@ Den plays through its renderer.
 - End-to-end: **possible with** a power control the lab can switch and a LinkPlay speaker behind
   it.
 - Proven by: `test_power_control.py::test_a_speaker_whose_own_protocol_only_controls_is_there_while_its_renderer_is_too`
+
+### AWAY-18 · A speaker whose plug is cut is checked, and a play waits for its device
+
+The Den speaker has its Sonos protocol, which can check its device, and an AirPlay receiver, which
+can not, and is on a smart plug that is cut while neither has noticed. Shortly after the plug
+reports off, the Sonos protocol is asked to check: the device does not answer, and the protocol
+reads unavailable. A play 10 s after the cut switches the plug on and waits, nothing is sent to the
+device, and Den plays once, through its Sonos protocol, once that reaches it again. A play within
+those first seconds still starts at once, as in AWAY-14.
+
+- End-to-end: **possible with** a power control the lab can switch and a speaker behind it whose
+  protocol can check its device.
+- Proven by: `test_power_control.py::test_a_speaker_whose_plug_is_cut_is_checked_and_waited_for`
+
+### AWAY-19 · A speaker that kept its power while its plug reads off plays at once
+
+Den's plug reads off while the device is still there: the plug only feeds an amplifier, or Home
+Assistant can not reach the plug and reports it as off. The Sonos protocol is asked to check and
+the device answers, so Den stays reachable: play switches the plug on and starts at once.
+
+- End-to-end: **possible with** a power control the lab can switch that does not cut the power of
+  the speaker behind it.
+- Proven by: `test_power_control.py::test_a_speaker_that_kept_its_power_passes_the_check_and_plays_at_once`
+
+### AWAY-20 · A plug that is switched on again right away leaves its speaker unchecked
+
+Den's plug is switched off and on again within a few seconds, as Home Assistant can report a plug
+while it reloads. Den is not checked, nothing waits, and play starts at once. While a plug reads
+on, its speaker is never checked.
+
+- End-to-end: **possible with** a power control the lab can switch.
+- Proven by: `test_power_control.py::test_a_plug_switched_on_again_before_the_check_is_not_checked`
+
+### AWAY-21 · A device check that fails changes nothing
+
+Den's plug is cut, and the check of its Sonos protocol raises, or does not come back and is given
+up on after 10 s. That is logged at debug, and Den reads as before: play switches the plug on and
+starts at once, as for a protocol that can not check (AWAY-14).
+
+- End-to-end: **no**: it needs a protocol whose check fails.
+- Proven by: `test_power_control.py::test_a_device_check_that_fails_changes_nothing`
+
+### AWAY-22 · A device check is called off when its protocol is taken off its player
+
+Den's plug is cut, and its Sonos protocol is asked to check its device, which takes long.
+Meanwhile its provider loses the device, or the user removes or disables Den. The check is called
+off, so nothing comes of it for a protocol that left its player.
+
+- End-to-end: **no**: it needs a check that is still running when its protocol goes.
+- Proven by: `test_power_control.py::test_a_running_device_check_is_called_off_when_its_protocol_goes`
+
+### AWAY-23 · A player that goes before its check is not checked
+
+Den's plug is cut, and the user removes or disables Den before its check is due. The check goes
+with the player: Den's device is never checked.
+
+- End-to-end: **possible with** a power control the lab can switch, and a removal within the
+  first seconds after the power is cut.
+- Proven by: `test_power_control.py::test_a_player_that_goes_before_its_check_is_not_checked`
 
 ## Several devices on one host
 
@@ -1867,6 +1927,129 @@ protocol reaches it again, and the plug is not switched a second time.
 - End-to-end: **possible with** a power control the lab can switch and a speaker behind it with
   two protocols, one of which reads available for a while after the power is cut.
 - Proven by: `test_power_control.py::test_a_new_start_waits_again_for_a_member_whose_own_protocol_is_not_back`
+
+### GROUP-48 · A sync group is not led by a member that can group with none of the others
+
+Downstairs is a sync group of Garden, Kitchen and Office, in that order, and Garden shares no
+output with the other two. The user plays Downstairs: Kitchen leads, Office follows it, and Garden
+is left out, which is logged. A first member that can group with some of the others keeps leading,
+whoever could lead more: when Garden can group with Office only, Garden leads Office and the rest
+is left out. When no member can group with any other, Downstairs plays on its first member alone.
+
+- End-to-end: **possible with** two Squeezelite players and a third player that has no output in
+  common with them, listed first.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_is_not_led_by_a_member_that_can_group_with_none_of_the_others`
+  - `test_grouping.py::test_a_first_member_that_can_group_with_some_of_the_others_leads_the_sync_group`
+  - `test_grouping.py::test_a_sync_group_whose_members_can_not_group_plays_on_its_first_member`
+
+### GROUP-49 · A new leader of a sync group is one that can group with the others
+
+Downstairs plays with Kitchen leading Office and Den. Garden, the next member in its list, was off
+the network when it started and came back without an output it shares with them. When Kitchen
+leaves the group, Office leads it, Den follows Office, and Garden is left out. A player the user
+adds to Downstairs while it does not play is checked against the member that will lead it, not
+against a first member that can not lead the others.
+
+- End-to-end: **possible with** three Squeezelite players and a fourth player that loses its
+  shared output while it is away.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_whose_leader_leaves_is_led_by_a_member_that_can_group_with_the_others`
+  - `test_grouping.py::test_a_player_added_to_an_idle_sync_group_is_checked_against_the_member_that_leads`
+
+### GROUP-50 · What a member does elsewhere does not cost it its place in a sync group
+
+Downstairs is a sync group of Kitchen, Office and Den, in that order. Members that follow a
+leader outside the group when Downstairs plays are released and play in it, with its first
+member leading as it would have. A member that plays as the leader of a group of its own does
+not take Downstairs over: the first member leads, and that member is left out and keeps playing
+with its own group. That also holds when the first member can group with none of the others: it
+plays Downstairs alone then. A first member that plays an input of its own, which narrows what
+it can group with for as long as that plays, keeps leading as well.
+
+- End-to-end: **possible with** three Squeezelite players and a fourth player outside the group.
+- Proven by:
+  - `test_grouping.py::test_members_that_follow_a_leader_outside_a_sync_group_are_not_passed_over`
+  - `test_grouping.py::test_a_member_that_leads_another_playing_group_does_not_take_a_sync_group`
+  - `test_grouping.py::test_a_member_that_leads_players_of_its_own_does_not_replace_the_first_member`
+  - `test_grouping.py::test_a_first_member_that_plays_an_input_of_its_own_keeps_leading_the_sync_group`
+### GROUP-53 · Adding to the queue of a switched-off speaker does not switch it on
+
+The user's default for tracks is to add them, or to play them next. A client plays a track
+without naming an option, on Den, a speaker switched off at its plug, or on Downstairs, a group
+with Den as a member. The track is only added: Den's plug stays off, the request does not wait,
+and nothing plays. With the default to play, the same request switches Den's plug on and waits
+for the device, as any start does.
+
+- End-to-end: **possible with** a power control the lab can switch, and a core setting for the
+  default enqueue option of tracks.
+- Proven by:
+  - `test_group_power_on.py::test_media_that_is_only_added_by_default_switches_nothing_on`
+  - `test_group_power_on.py::test_media_that_plays_by_default_switches_its_power_control_on`
+
+### GROUP-54 · BBC Sounds' seek back to the live edge switches no member on
+
+The user starts a BBC Sounds programme that is on air at a point past the live edge, on
+Downstairs, a group with Den, a speaker switched off at its plug, as a member. BBC Sounds seeks
+the queue back to where the stream really starts. That seek is no start of the group: Den's plug
+is not switched on, and nothing waits for Den.
+
+- End-to-end: **no**: it needs BBC Sounds' own stream of a live programme, which the lab does not
+  serve.
+- Proven by: `tests/providers/bbc_sounds/test_live_rewind.py::test_the_seek_back_to_the_live_edge_switches_no_member_of_a_group_on`
+
+### GROUP-55 · MusicCast's own step to the next item switches no member on
+
+Downstairs, a group with Den, a speaker switched off at its plug, plays the queue of Office, a
+MusicCast speaker. Office reads idle at the end of a track, and MusicCast steps its queue to the
+next item by itself. That step is no start of the group: Den's plug is not switched on, and
+nothing waits for Den.
+
+- End-to-end: **no**: it needs MusicCast's own player, which the lab does not run.
+- Proven by: `tests/providers/musiccast/test_player.py::test_end_of_track_advance_switches_no_member_of_a_group_on`
+
+### GROUP-51 · Members on the leader's own stream follow it onto AirPlay, or leave
+
+Kitchen plays with Office and Den on HEOS, which can not pass AirPlay on to its members. The
+user adds Office again and Patio, which only has AirPlay. Kitchen's playback moves to its AirPlay
+receiver, which takes Patio and Office in one call. Den has no AirPlay receiver: it leaves the
+group, and that is logged as a warning.
+
+- End-to-end: **possible with** two HEOS speakers with AirPlay, a HEOS speaker without it, and an
+  AirPlay receiver.
+- Proven by: `test_grouping.py::test_members_on_the_leaders_own_stream_follow_it_onto_airplay`
+
+### GROUP-56 · A group whose member's plug was cut a moment ago waits for that member
+
+Den, a member of Downstairs, is on a smart plug that is cut while its Sonos protocol has not
+noticed. The check finds the device gone (AWAY-18). The user plays Downstairs 10 s after the cut:
+the plug is switched on and the play waits, and no speaker gets a command. Once Den's device is
+back, Downstairs starts once, on all three.
+
+- End-to-end: **possible with** a power control the lab can switch and a speaker behind it whose
+  protocol can check its device.
+- Proven by: `test_power_control.py::test_a_group_whose_member_was_cut_waits_for_it_and_starts_once`
+
+### GROUP-57 · A start asks the protocol of a member that is not back to reach its device
+
+Den, a member of Downstairs, is on a smart plug that is cut, and its Sonos protocol noticed. Once
+its device is up again, the protocol would only reach it on a reconnect minutes later. The user
+plays Downstairs: the plug is switched on, and while the play waits, Den's Sonos protocol is asked
+every few seconds to reach its device. The device is up 20 s after the play, the next ask reaches
+it, and Downstairs starts once, on all three, long before the play would leave Den out.
+
+- End-to-end: **possible with** a power control the lab can switch and a Chromecast behind it,
+  switched off long enough for its reconnect to back off.
+- Proven by: `test_power_control.py::test_a_start_asks_the_protocol_of_a_member_to_reach_its_device`
+
+### GROUP-58 · A group player on a power control has no device to check
+
+Downstairs, a sync group or a universal group, is on a smart plug that is switched off. Its own
+protocol is asked to check, and it can not: Downstairs stays available and powered off, and none
+of its members is checked.
+
+- End-to-end: **possible with** a power control the lab can switch, selected for a group player.
+- Proven by: `test_power_control.py::test_a_group_player_on_a_power_control_is_not_checked`
 
 ## Where playback goes
 

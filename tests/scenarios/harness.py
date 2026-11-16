@@ -164,6 +164,7 @@ class FakeProtocol(PlayerProtocol):
 
     Commands are applied to the reported state the way a well-behaved device reports them
     back (power, volume, playback), so the server never waits for a device that stays silent.
+    A device that is told to play media reports its position from 0, as a stream starts there.
     It has one config entry of its own (FAKE_SETTING), like a provider setting of the device.
     An object belongs to the server and provider instance it was created on; after a restart
     or a provider reload, Scenario.protocol() returns the current one.
@@ -180,6 +181,11 @@ class FakeProtocol(PlayerProtocol):
         super().__init__(provider, protocol_id)
         # every command received, as a tuple of the command name and its arguments
         self.commands: list[tuple[Any, ...]] = []
+        # whether its device answers a check (check_device), None for a protocol that can not
+        # check; a test sets it as the power of the device changes
+        self.device_answers: bool | None = None
+        # the clock time of every check of its device the server asked for
+        self.device_checks: list[float] = []
         # whether the protocol exists only while attached, like a browser session
         self._attr_session_only = device.session_only
         self._device = device
@@ -205,6 +211,14 @@ class FakeProtocol(PlayerProtocol):
                 required=False,
             ),
         ]
+
+    async def check_device(self) -> bool | None:
+        """Check the device: it reads available as it answers (device_answers)."""
+        self.device_checks.append(self.mass.loop.time())
+        if self.device_answers is not None:
+            self._set_reported(available=self.device_answers)
+            self.update_state()
+        return self.device_answers
 
     async def power(self, powered: bool) -> None:
         """Handle a power command."""
@@ -232,7 +246,14 @@ class FakeProtocol(PlayerProtocol):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle a play media command."""
-        self._apply("play_media", media, playback_state=PlaybackState.PLAYING, current_media=media)
+        self._apply(
+            "play_media",
+            media,
+            playback_state=PlaybackState.PLAYING,
+            current_media=media,
+            elapsed_time=0,
+            elapsed_time_last_updated=cast("FakePlayerProvider", self.provider).wall_time(),
+        )
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle the enqueue of the next media."""
@@ -333,6 +354,7 @@ class FakePlayerProvider(PlayerProvider):
         config: ProviderConfig,
         devices: dict[str, _Device],
         timeline: list[tuple[str, tuple[Any, ...]]],
+        wall_time: Callable[[], float],
     ) -> None:
         """
         Initialize the provider.
@@ -342,8 +364,10 @@ class FakePlayerProvider(PlayerProvider):
         :param config: The provider instance config.
         :param devices: The devices of the scenario, by protocol id.
         :param timeline: The commands the devices of the scenario received, in order.
+        :param wall_time: Returns the wall clock time as the server reads it.
         """
         super().__init__(mass, manifest, config)
+        self.wall_time = wall_time
         self._devices = devices
         self._timeline = timeline
         self._protocols: dict[str, FakeProtocol] = {}
@@ -1161,7 +1185,9 @@ class Scenario:
         async def _setup_provider(
             mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
         ) -> FakePlayerProvider:
-            return FakePlayerProvider(mass, manifest, config, self._devices, self.timeline)
+            return FakePlayerProvider(
+                mass, manifest, config, self._devices, self.timeline, self.wall_time
+            )
 
         async def _load_module(manifest: ProviderManifest) -> Any:
             if manifest.domain in fake_domains:

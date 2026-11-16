@@ -13,6 +13,8 @@ RESUME_POSITION_TOLERANCE_SECONDS: Final[int] = 2
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_KEEP_REMASTERS_APART: Final[str] = "keep_remasters_apart"
+# setup_data key: the account a provider instance is bound to
+CONF_BOUND_ACCOUNT_ID: Final[str] = "bound_account_id"
 
 DB_SCHEMA_VERSION: Final[int] = 74
 # headroom kept free on top of what moving the audio analysis out of library.db writes
@@ -65,6 +67,13 @@ RECOMMENDATIONS_ITEMS_TIMEOUT: Final[int] = 30
 # max time to wait for a single provider's recommendation rows; rows are
 # contractually fast (no live backend calls) so a short timeout suffices
 RECOMMENDATIONS_ROWS_TIMEOUT: Final[int] = 5
+
+# browse scheme under which every recommendation row can be opened in full
+RECOMMENDATIONS_BROWSE_SCHEME: Final[str] = "discover"
+
+# max items a library recommendation row returns when browsed in full,
+# instead of the handful its Discover row shows
+RECOMMENDATIONS_BROWSE_LIMIT: Final[int] = 500
 
 # how long after a provider is loaded its library sync runs for the first time,
 # leaving the rest of the startup work room to settle first
