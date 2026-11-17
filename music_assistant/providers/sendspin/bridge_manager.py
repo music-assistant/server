@@ -822,10 +822,12 @@ def _settle_carrier(
         _get_connections(mass, player),
         stored_carrier_id if isinstance(stored_carrier_id, str) else None,
     )
-    if stored_id and carrier_id:
-        for protocol, manager in protocols:
-            if protocol.protocol_id == carrier_id:
-                _settle_output(mass, stored_id, protocol, manager)
+    for protocol, manager in protocols:
+        # also an output of its id that belongs to no player anymore, which it takes over
+        if protocol.protocol_id == carrier_id and (
+            client_id := manager._client_ids.get(protocol.protocol_id)
+        ):
+            _settle_output(mass, client_id, protocol, manager)
     return carrier_id
 
 

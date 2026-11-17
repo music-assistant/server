@@ -540,7 +540,8 @@ class BridgedDevice:
             if not record["enabled"]:
                 await self._unregister_sendspin(protocol_id)
             elif (rides_on := self.rides_on(protocol_id)) is not None:
-                await evaluate_bridge_of(self.mass, rides_on)
+                # the Sendspin provider looks for its devices again, as a task of its own
+                self.mass.create_task(evaluate_bridge_of(self.mass, rides_on))
         elif not record["enabled"] and (protocol := self._get_protocol(protocol_id)) is not None:
             await self.detach(protocol, settle=False)
 
@@ -565,7 +566,8 @@ class BridgedDevice:
     async def _player_config_saved(self, protocol_id: str) -> None:
         """Let the Sendspin provider hear that a config of a player was saved."""
         if player_id := self.records()[protocol_id].get("player_id"):
-            await evaluate_bridges_of_player(self.mass, player_id)
+            # the listener of an event runs as a task of its own
+            self.mass.create_task(evaluate_bridges_of_player(self.mass, player_id))
         await self.settle()
 
     def _protocol(self, domain: str, manager_class: type, protocol_id: str) -> MagicMock:
