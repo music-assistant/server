@@ -1098,6 +1098,136 @@ async def test_a_refused_ha_login_start_returns_429(auth_manager: Authentication
     assert response.status == 429
 
 
+async def _link_by_username(
+    auth_manager: AuthenticationManager, ha_user_id: str, username: str, *, ha_admin: bool
+) -> User | None:
+    """
+    Sign in the given Home Assistant user through get_or_create_ha_user.
+
+    :param auth_manager: The authentication manager the user signs in with.
+    :param ha_user_id: The Home Assistant user id signing in.
+    :param username: The Home Assistant username.
+    :param ha_admin: Whether Home Assistant reports the user as an admin.
+    """
+    mass = auth_manager.mass
+    hass_provider = _ready_hass_provider(mass, ha_user_id, admin=ha_admin)
+    with patch.object(mass, "get_provider", return_value=hass_provider):
+        return await auth_providers.get_or_create_ha_user(
+            mass, ha_user_id, username, None, None, allow_create=True
+        )
+
+
+@pytest.mark.parametrize(
+    ("ha_admin", "ma_role", "allowed"),
+    [
+        (False, UserRole.ADMIN, False),
+        (True, UserRole.ADMIN, True),
+        (False, UserRole.USER, True),
+    ],
+    ids=["non_admin_to_admin", "admin_to_admin", "non_admin_to_user"],
+)
+async def test_ha_username_link_needs_ha_admin_for_an_admin_account(
+    auth_manager: AuthenticationManager, ha_admin: bool, ma_role: UserRole, allowed: bool
+) -> None:
+    """
+    Only a Home Assistant admin is linked by username to an admin account.
+
+    :param ha_admin: Whether Home Assistant reports the user as an admin.
+    :param ma_role: The role of the account with the same username.
+    :param allowed: Whether the link is expected to be made.
+    """
+    existing = await auth_manager.create_user(username="alice", role=ma_role)
+
+    if allowed:
+        user = await _link_by_username(auth_manager, "ha_alice", "Alice", ha_admin=ha_admin)
+        assert user is not None
+        assert user.user_id == existing.user_id
+        assert user.role == ma_role
+    else:
+        with pytest.raises(auth_providers.HomeAssistantLinkRefused):
+            await _link_by_username(auth_manager, "ha_alice", "Alice", ha_admin=ha_admin)
+    assert (await _get_ha_link(auth_manager, "ha_alice") is not None) is allowed
+    assert len(await auth_manager.database.get_rows("users")) == 1
+
+
+@pytest.mark.parametrize("exists", [True, False], ids=["system_user", "reserved_name_only"])
+async def test_ha_username_link_refuses_the_system_account(
+    auth_manager: AuthenticationManager, exists: bool
+) -> None:
+    """
+    A Home Assistant user named like the system account is neither linked nor created.
+
+    :param exists: Whether the Home Assistant system user exists already.
+    """
+    if exists:
+        await auth_manager.get_homeassistant_system_user()
+
+    with pytest.raises(auth_providers.HomeAssistantLinkRefused):
+        await _link_by_username(auth_manager, "ha_sys", HOMEASSISTANT_SYSTEM_USER, ha_admin=True)
+
+    assert await _get_ha_link(auth_manager, "ha_sys") is None
+    assert len(await auth_manager.database.get_rows("users")) == int(exists)
+
+
+async def test_ha_username_link_refuses_an_account_linked_to_another_ha_user(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """An account already linked to one Home Assistant user is not linked to another."""
+    await _create_user(auth_manager, "alice", ha_user_id="ha_alice")
+
+    with pytest.raises(auth_providers.HomeAssistantLinkRefused):
+        await _link_by_username(auth_manager, "ha_other", "alice", ha_admin=True)
+
+    assert await _get_ha_link(auth_manager, "ha_other") is None
+
+
+async def test_ha_username_link_leaves_an_already_linked_admin_signing_in(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """An admin already linked to a non-admin Home Assistant user signs in as before."""
+    existing = await auth_manager.create_user(username="alice", role=UserRole.ADMIN)
+    await auth_manager.link_user_to_provider(existing, AuthProviderType.HOME_ASSISTANT, "ha_alice")
+
+    user = await _link_by_username(auth_manager, "ha_alice", "renamed", ha_admin=False)
+
+    assert user is not None
+    assert user.user_id == existing.user_id
+    assert user.role == UserRole.ADMIN
+
+
+async def test_ha_username_link_returns_a_disabled_match_unlinked(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """A disabled account matched by username is returned for the caller to refuse."""
+    existing = await _create_user(auth_manager, "alice", disabled=True)
+
+    user = await _link_by_username(auth_manager, "ha_alice", "alice", ha_admin=False)
+
+    assert user is not None
+    assert user.user_id == existing.user_id
+    assert not user.enabled
+    assert await _get_ha_link(auth_manager, "ha_alice") is None
+
+
+async def test_ingress_refuses_a_non_admin_matching_an_admin_account(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """An Ingress sign-in of a non-admin named like an admin account authenticates nobody."""
+    mass = auth_manager.mass
+    await auth_manager.create_user(username="alice", role=UserRole.ADMIN)
+    hass_provider = _ready_hass_provider(
+        mass, "ha_alice", admin=False, details=("alice", None, None)
+    )
+    headers = {"X-Remote-User-ID": "ha_alice", "X-Remote-User-Name": "alice"}
+
+    with _ingress_request(mass, headers, hass_provider=hass_provider) as request:
+        user = await get_authenticated_user(request)
+
+    assert user is None
+    assert await _get_ha_link(auth_manager, "ha_alice") is None
+    assert len(await auth_manager.database.get_rows("users")) == 1
+
+
 def _connected_hass_provider(network_urls: dict[str, str | None] | None) -> MagicMock:
     """
     Return a mock hass provider whose Home Assistant reports the given URLs.
