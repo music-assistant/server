@@ -108,7 +108,7 @@ class PlayerQueueData:
     next_item_id_preparing: str | None = None
     # the audio buffers made for items of this queue, each with the item it was made for: an
     # item that left the queue keeps its buffer here. The entry of a buffer that was cleared
-    # goes when the next buffer is recorded
+    # goes the next time the record is read
     audio_buffers: list[tuple[QueueItem, AudioBuffer]] = field(default_factory=list)
     # queue_item_id of the last upcoming item placed by Smart Fades ordering; playback orders the
     # next batch behind it

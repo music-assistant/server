@@ -1900,10 +1900,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         audio_buffer.queue_item_id = queue_item.queue_item_id
         if (queue_data := self._queue_data.get(queue_item.queue_id)) is None:
             return
-        queue_data.audio_buffers = [
-            *self._audio_buffers(queue_data),
-            (queue_item, audio_buffer),
-        ]
+        self._audio_buffers(queue_data).append((queue_item, audio_buffer))
 
     async def release_failed_item_source(self, queue_id: str, queue_item_id: str) -> None:
         """
@@ -2724,10 +2721,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         Return the buffers on a queue's record that still hold audio, each with its item.
 
+        The entries of buffers that were cleared are dropped from the record.
+
         :param queue_data: The data of the queue.
         """
         # a buffer that was cleared stays cancelled, so its entry is of no use any more
-        return [entry for entry in queue_data.audio_buffers if not entry[1].cancelled]
+        queue_data.audio_buffers = [
+            entry for entry in queue_data.audio_buffers if not entry[1].cancelled
+        ]
+        return queue_data.audio_buffers
 
     def _cancel_pending_playback(self, queue_id: str) -> None:
         """Cancel the queue's pending play_index, preload, enqueue-next and prewarm work."""

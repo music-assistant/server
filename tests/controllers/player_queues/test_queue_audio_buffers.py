@@ -168,6 +168,21 @@ async def test_a_cleared_buffer_leaves_the_record_when_the_next_one_is_recorded(
     assert _record(rig) == [(upcoming, second)]
 
 
+async def test_a_cleared_buffer_leaves_the_record_when_the_record_is_read(rig: SlotRig) -> None:
+    """A buffer that released its audio is dropped without another one being recorded."""
+    playing, upcoming = rig.play("track 0", "track 1", realtime=False)
+    rig.sources["track 0"] = partial(source, 30)
+    first = await rig.ask(playing)
+    assert first is not None
+    await rig.delivered(playing)
+    second = await rig.ask(upcoming)
+    await first.clear()
+
+    await rig.queues.get_diagnostics()
+
+    assert _record(rig) == [(upcoming, second)]
+
+
 async def test_a_buffer_that_still_holds_audio_stays_when_another_one_is_recorded(
     rig: SlotRig,
 ) -> None:
