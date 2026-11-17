@@ -138,7 +138,7 @@ async def test_sign_in_is_unavailable_without_the_hass_plugin(
     providers = await auth_manager.get_login_providers()
     assert [p["provider_id"] for p in providers] == ["builtin"]
     assert await auth_manager.get_authorization_url("homeassistant") is None
-    result = await auth_manager.handle_oauth_callback("homeassistant", "ha_code", pending.state)
+    result = await auth_manager.handle_oauth_callback("ha_code", pending.state)
     assert result == AuthResult(success=False, error="Invalid provider")
 
 
@@ -264,10 +264,41 @@ async def test_ha_login_callback_reports_home_assistant_errors(
             provider, "_fetch_ha_user_id_via_websocket", AsyncMock(return_value=ha_user_id)
         ),
     ):
-        result = await auth_manager.handle_oauth_callback("homeassistant", "ha_code", pending.state)
+        result = await auth_manager.handle_oauth_callback("ha_code", pending.state)
 
     assert result == AuthResult(success=False, error=error)
     assert await auth_manager.list_users() == []
+
+
+@pytest.mark.parametrize(
+    ("origin", "expected_redirect_uri"),
+    [
+        ("http://192.168.1.10:8095", "http://192.168.1.10:8095/auth/callback"),
+        ("http://localhost:8095", "http://localhost:8095/auth/callback"),
+        ("https://example.com", "https://example.com/ma/auth/callback"),
+        ("https://evil.example", "https://example.com/ma/auth/callback"),
+    ],
+)
+@pytest.mark.usefixtures("provider")
+async def test_ha_login_client_id_follows_the_callback_origin(
+    auth_manager: AuthenticationManager,
+    origin: str,
+    expected_redirect_uri: str,
+) -> None:
+    """
+    The client_id sent to Home Assistant has the scheme and host of the redirect URI.
+
+    :param origin: The origin the client reached the server on.
+    :param expected_redirect_uri: The expected callback URL.
+    """
+    with _webserver_urls("http://192.168.1.10:8095", "https://example.com/ma"):
+        started = await auth_manager.get_authorization_url("homeassistant", origin=origin)
+    assert started is not None
+    query = parse_qs(urlparse(started[0]).query)
+
+    assert query["redirect_uri"] == [expected_redirect_uri]
+    redirect = urlparse(expected_redirect_uri)
+    assert query["client_id"] == [f"{redirect.scheme}://{redirect.netloc}"]
 
 
 async def test_ha_login_callback_exchanges_the_code_for_the_client_id_it_was_issued_to(
@@ -282,17 +313,13 @@ async def test_ha_login_callback_exchanges_the_code_for_the_client_id_it_was_iss
     assert started[0].startswith(f"{HA_URL}/auth/authorize?")
     query = parse_qs(urlparse(started[0]).query)
     assert query["client_id"] == ["https://example.com"]
-    assert query["redirect_uri"] == [
-        "https://example.com/ma/auth/callback?provider_id=homeassistant"
-    ]
+    assert query["redirect_uri"] == ["https://example.com/ma/auth/callback"]
     assert query["code_challenge_method"] == ["S256"]
     assert started[1].provider_id == provider.instance_id
 
     get_token = AsyncMock(return_value={})
     with patch.object(hass_auth, "get_token", get_token):
-        result = await auth_manager.handle_oauth_callback(
-            "homeassistant", "ha_code", query["state"][0]
-        )
+        result = await auth_manager.handle_oauth_callback("ha_code", query["state"][0])
 
     get_token.assert_awaited_once_with(
         HA_URL, "ha_code", client_id="https://example.com", code_verifier=ANY
@@ -316,7 +343,7 @@ async def test_ha_login_callback_refuses_an_expired_state(
         _monotonic_after(PENDING_LOGIN_TTL),
         patch.object(hass_auth, "get_token", get_token),
     ):
-        result = await auth_manager.handle_oauth_callback("homeassistant", "ha_code", state)
+        result = await auth_manager.handle_oauth_callback("ha_code", state)
 
     assert result == AuthResult(success=False, error="Invalid or expired state parameter")
     get_token.assert_not_awaited()
@@ -338,7 +365,7 @@ async def test_ha_login_callback_refuses_a_sign_in_that_returns_to_the_app(
 
     get_token = AsyncMock(return_value={"access_token": "ha_token"})
     with patch.object(hass_auth, "get_token", get_token):
-        result = await auth_manager.handle_oauth_callback("homeassistant", "ha_code", pending.state)
+        result = await auth_manager.handle_oauth_callback("ha_code", pending.state)
 
     assert result == AuthResult(success=False, error="Invalid or expired state parameter")
     get_token.assert_not_awaited()
@@ -352,9 +379,7 @@ async def test_ha_login_callback_refuses_a_malformed_code(
 
     get_token = AsyncMock(return_value={"access_token": "ha_token"})
     with patch.object(hass_auth, "get_token", get_token):
-        result = await auth_manager.handle_oauth_callback(
-            "homeassistant", "ha_code&client_id=x", pending.state
-        )
+        result = await auth_manager.handle_oauth_callback("ha_code&client_id=x", pending.state)
 
     assert result == AuthResult(success=False, error="Invalid authorization code")
     get_token.assert_not_awaited()
@@ -387,7 +412,7 @@ async def test_pending_ha_logins_are_capped(
 
     get_token = AsyncMock(return_value={})
     with patch.object(hass_auth, "get_token", get_token):
-        result = await auth_manager.handle_oauth_callback("homeassistant", "ha_code", states[0])
+        result = await auth_manager.handle_oauth_callback("ha_code", states[0])
     assert result == AuthResult(success=False, error="No access token received from HA")
     get_token.assert_awaited_once()
 
@@ -663,7 +688,7 @@ async def _ha_login_callback(
             provider, "_fetch_ha_user_id_via_websocket", AsyncMock(return_value=ha_user_id)
         ),
     ):
-        return await auth_manager.handle_oauth_callback("homeassistant", "ha_code", pending.state)
+        return await auth_manager.handle_oauth_callback("ha_code", pending.state)
 
 
 def _start_pending(
@@ -678,7 +703,7 @@ def _start_pending(
     return auth_manager.pending_logins.start(
         provider.instance_id,
         AuthTransport.DIRECT,
-        "http://ma.local:8095/auth/callback?provider_id=homeassistant",
+        "http://ma.local:8095/auth/callback",
         idp_code_verifier="login_verifier",
     )
 

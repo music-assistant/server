@@ -388,6 +388,8 @@ class AuthResult:
     translation_key: str | None = None
     access_token: str | None = None
     return_url: str | None = None
+    # the sign-in method id of the provider that completed a redirect sign-in
+    provider_id: str | None = None
 
 
 @dataclass

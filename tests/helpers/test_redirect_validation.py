@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import pytest
 from aiohttp.test_utils import make_mocked_request
 
 from music_assistant.helpers.redirect_validation import (
     build_code_redirect_url,
     is_allowed_redirect_url,
+    is_allowed_redirect_url_for_host,
 )
 
 
@@ -133,6 +136,13 @@ def test_is_allowed_redirect_url_blocks_ambiguous_urls(url: str) -> None:
     assert is_allowed_redirect_url(
         url, base_url="https://ma.example.com", external_url="https://ma.example.com"
     ) == (False, "blocked")
+    # the websocket variant refuses them too, even when the client claims that very host
+    assert is_allowed_redirect_url_for_host(
+        url,
+        urlparse(url).netloc,
+        base_url="https://ma.example.com",
+        external_url="https://ma.example.com",
+    ) == (False, "blocked")
 
 
 @pytest.mark.parametrize(
@@ -178,3 +188,30 @@ def test_is_allowed_redirect_url_same_origin_request() -> None:
         False,
         "blocked",
     )
+
+
+@pytest.mark.parametrize(
+    ("url", "request_host", "expected"),
+    [
+        ("https://music.example.net/#/home", "music.example.net", (True, "trusted")),
+        ("https://music.example.net/#/home", None, (True, "external")),
+        ("https://music.example.net/#/home", "other.example.net", (True, "external")),
+        ("https://music.example.net:8443/", "music.example.net", (True, "external")),
+        ("https://evil.example@music.example.net/", "music.example.net", (False, "blocked")),
+        ("javascript:alert(1)", "music.example.net", (False, "blocked")),
+    ],
+)
+def test_is_allowed_redirect_url_for_host(
+    url: str, request_host: str | None, expected: tuple[bool, str]
+) -> None:
+    """
+    The websocket variant trusts the host the client used, exactly like the HTTP variant.
+
+    :param url: The return URL.
+    :param request_host: The host the client used to reach the server.
+    :param expected: The expected validity and category.
+    """
+    assert is_allowed_redirect_url_for_host(url, request_host) == expected
+    if request_host:
+        request = make_mocked_request("GET", "/", headers={"Host": request_host})
+        assert is_allowed_redirect_url(url, request) == expected

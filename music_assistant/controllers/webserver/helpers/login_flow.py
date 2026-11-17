@@ -6,15 +6,18 @@ import hmac
 import re
 import secrets
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Literal
+from urllib.parse import urlparse
 
 from music_assistant_models.errors import MusicAssistantError, RateLimited
 
 from music_assistant.helpers.pkce import pkce_challenge
 
 if TYPE_CHECKING:
+    from aiohttp import web
     from music_assistant_models.auth import AuthProviderType
 
 # Seconds a sign-in may take, and how many may be pending at once
@@ -38,6 +41,14 @@ class AuthTransport(StrEnum):
     DIRECT = "direct"  # browser or app talks to the server over HTTP(S)
     REMOTE = "remote"  # remote app over the WebRTC data channel
     INGRESS = "ingress"  # Home Assistant ingress (already signed in)
+
+
+# How the client of the current HTTP request or websocket command reaches the server, and the
+# origin (scheme and host) it says it used, which is untrusted until checked against known hosts
+current_auth_transport: ContextVar[AuthTransport] = ContextVar(
+    "current_auth_transport", default=AuthTransport.DIRECT
+)
+current_auth_origin: ContextVar[str | None] = ContextVar("current_auth_origin", default=None)
 
 
 @dataclass
@@ -159,6 +170,47 @@ class PendingLoginStore:
         return len(states)
 
 
+def set_auth_request_context(transport: AuthTransport, origin: str | None) -> None:
+    """
+    Set how the client of the current request or command reaches the server.
+
+    :param transport: How the client reaches the server.
+    :param origin: The origin the client says it used, if any.
+    """
+    current_auth_transport.set(transport)
+    current_auth_origin.set(origin)
+
+
+def get_request_origin(request: web.Request) -> str | None:
+    """
+    Return the origin (scheme and host) a client says it used to reach the server.
+
+    The Origin header wins, else the (forwarded) scheme and host of the request. The result
+    is untrusted: it must match a known host before it is used.
+
+    :param request: The HTTP request, or the websocket upgrade request.
+    """
+    if (origin := request.headers.get("Origin")) and origin != "null":
+        return origin
+    host = _first_header_value(request, "X-Forwarded-Host") or request.host
+    scheme = _first_header_value(request, "X-Forwarded-Proto") or request.scheme
+    return f"{scheme}://{host}" if host else None
+
+
+def get_origin_host(origin: str | None) -> str | None:
+    """
+    Return the host (and any port) of an origin, None when absent or malformed.
+
+    :param origin: The origin (scheme and host).
+    """
+    if not origin:
+        return None
+    try:
+        return urlparse(origin).netloc or None
+    except ValueError:
+        return None
+
+
 def verify_pkce(code_verifier: str, code_challenge: str) -> bool:
     """
     Return whether a code verifier matches a PKCE S256 code challenge.
@@ -169,3 +221,14 @@ def verify_pkce(code_verifier: str, code_challenge: str) -> bool:
     if not PKCE_VERIFIER_RE.fullmatch(code_verifier):
         return False
     return hmac.compare_digest(pkce_challenge(code_verifier), code_challenge)
+
+
+def _first_header_value(request: web.Request, name: str) -> str | None:
+    """
+    Return the first value of a header that proxies may send as a comma separated list.
+
+    :param request: The HTTP request.
+    :param name: The name of the header.
+    """
+    value = request.headers.get(name, "").split(",")[0].strip()
+    return value or None

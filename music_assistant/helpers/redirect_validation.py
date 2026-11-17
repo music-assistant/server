@@ -53,6 +53,28 @@ def is_allowed_redirect_url(
         - "external": Valid but requires user consent
         - "blocked": Invalid/dangerous URL
     """
+    return is_allowed_redirect_url_for_host(
+        url, request.host if request else None, base_url, external_url
+    )
+
+
+def is_allowed_redirect_url_for_host(
+    url: str,
+    request_host: str | None = None,
+    base_url: str | None = None,
+    external_url: str | None = None,
+) -> tuple[bool, str]:
+    """
+    Validate a redirect URL like is_allowed_redirect_url, with the host the client used.
+
+    For callers without an HTTP request at hand, such as a websocket command.
+
+    :param url: The redirect URL to validate.
+    :param request_host: The host (and any port) the client used to reach the server.
+    :param base_url: Optional configured base URL to allow.
+    :param external_url: Optional configured External URL to allow.
+    :return: Tuple of (is_valid, category), see is_allowed_redirect_url.
+    """
     if not url:
         return False, "blocked"
 
@@ -87,11 +109,9 @@ def is_allowed_redirect_url(
             return False, "blocked"
 
         # 1. Same origin as request - always trusted
-        if request:
-            request_host = request.host
-            if parsed.netloc == request_host:
-                LOGGER.debug("Redirect URL trusted (same origin): %s", url)
-                return True, "trusted"
+        if request_host and parsed.netloc == request_host:
+            LOGGER.debug("Redirect URL trusted (same origin): %s", url)
+            return True, "trusted"
 
         # 2. Localhost - always trusted (for development and mobile app testing)
         if hostname in ("localhost", "127.0.0.1", "::1"):

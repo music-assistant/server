@@ -14,6 +14,7 @@ import inspect
 import json
 import math
 import os
+import re
 import secrets
 import socket
 import time
@@ -21,6 +22,7 @@ from collections.abc import Awaitable, Callable
 from concurrent import futures
 from contextlib import aclosing
 from functools import partial
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import urlparse
 
@@ -110,7 +112,14 @@ from .helpers.auth_middleware import (
     set_impersonated_user,
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
-from .helpers.login_flow import AuthTransport, RedirectTarget
+from .helpers.login_flow import (
+    AuthTransport,
+    RedirectTarget,
+    current_auth_origin,
+    current_auth_transport,
+    get_request_origin,
+    set_auth_request_context,
+)
 from .remote_access import RemoteAccessManager
 from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
@@ -141,6 +150,8 @@ PREVIEW_TOKEN_TTL = 60
 # Ceiling on live preview tokens. LIBRARY_READ is a guest scope, so minting is reachable by
 # every signed-in client; the cap keeps a chatty or hostile one from growing the store.
 MAX_PREVIEW_TOKENS = 500
+# a bare origin: scheme and host (name, IPv4 or bracketed IPv6) with an optional port
+_ORIGIN_RE: Final = re.compile(r"https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:\d{1,5})?")
 
 
 def _get_publish_addresses(
@@ -279,31 +290,26 @@ class WebserverController(CoreController):
         transport: AuthTransport,
         *,
         redirect_target: RedirectTarget = "server",
-        return_url: str | None = None,
-        request_host: str | None = None,
-    ) -> str:
+        origin: str | None = None,
+    ) -> str | None:
         """
         Return the URL (without the callback path) a redirect sign-in returns the browser to.
 
         :param transport: How the client that starts the sign-in reaches the server.
         :param redirect_target: Where the client asked the browser to return to; "app" is
             only honoured over Remote Access.
-        :param return_url: The URL the client returns to after signing in, if any.
-        :param request_host: The host (and any port) the client used to reach the server.
+        :param origin: The origin (scheme and host) the client says it used to reach the
+            server; only used when its host is one this server is known by.
+        :return: The callback base, or None over Ingress, which offers no redirect sign-in.
         """
+        if transport is AuthTransport.INGRESS:
+            return None
         if transport is AuthTransport.REMOTE and redirect_target == "app":
             return APP_MA_HOST
-        external_url = self.external_url
-        if not external_url:
-            return self.base_url
-        if return_url and _url_origin(return_url) in (_url_origin(external_url), APP_MA_HOST):
-            return external_url
-        # A native app returns to its own URL scheme, so look at how its connection came in
-        if transport is AuthTransport.REMOTE or (
-            request_host and request_host.lower() == urlparse(external_url).netloc.lower()
-        ):
-            return external_url
-        return self.base_url
+        if transport is AuthTransport.DIRECT and origin:
+            if known_origin := self._get_known_auth_origin(origin):
+                return known_origin
+        return self.external_url or self.base_url
 
     @property
     def internal_sendspin_url(self) -> str:
@@ -855,6 +861,7 @@ class WebserverController(CoreController):
         # These requests carry no connection identity, so the peer address is all an
         # unauthenticated handler has to tell one caller apart from another.
         set_current_peer_address(request.remote)
+        self._set_auth_request_context(request)
         # Fail early if we don't have any users yet
         if not self.auth.has_users:
             return web.Response(status=503, text="Setup required")
@@ -1329,7 +1336,15 @@ class WebserverController(CoreController):
                 if not is_valid:
                     return web.Response(status=400, text="Invalid return_url")
 
-            started = await self.auth.get_authorization_url(provider_id, return_url)
+            self._set_auth_request_context(request)
+            transport = current_auth_transport.get()
+            if transport is AuthTransport.INGRESS:
+                return web.Response(
+                    status=400, text="Sign-in with a redirect is not available over Ingress"
+                )
+            started = await self.auth.get_authorization_url(
+                provider_id, return_url, transport=transport, origin=current_auth_origin.get()
+            )
             if not started:
                 return web.Response(
                     status=400, text="Provider does not support OAuth or is not configured"
@@ -1345,9 +1360,10 @@ class WebserverController(CoreController):
     async def _handle_auth_callback(self, request: web.Request) -> web.Response:
         """Handle OAuth callback."""
         try:
+            # the provider comes from the sign-in that state names; a provider_id query of
+            # callback URLs from older versions is ignored
             code = request.query.get("code")
             state = request.query.get("state")
-            provider_id = request.query.get("provider_id")
 
             if error := request.query.get("error"):
                 if state:
@@ -1364,10 +1380,10 @@ class WebserverController(CoreController):
                 """
                 return web.Response(text=error_html, content_type="text/html", status=400)
 
-            if not code or not state or not provider_id:
-                return web.Response(status=400, text="code, state, and provider_id required")
+            if not code or not state:
+                return web.Response(status=400, text="code and state required")
 
-            auth_result = await self.auth.handle_oauth_callback(provider_id, code, state)
+            auth_result = await self.auth.handle_oauth_callback(code, state)
 
             if not auth_result.success or not auth_result.user:
                 # Return error page
@@ -1383,7 +1399,7 @@ class WebserverController(CoreController):
                 return web.Response(text=error_html, content_type="text/html", status=400)
 
             # Create token
-            device_name = f"OAuth ({provider_id})"
+            device_name = f"OAuth ({auth_result.provider_id})"
             token = await self.auth.create_token(auth_result.user, device_name)
 
             # Determine redirect URL (use return_url from OAuth flow or default to root)
@@ -1605,6 +1621,52 @@ class WebserverController(CoreController):
             )
             client.cancel()
 
+    def _set_auth_request_context(self, request: web.Request) -> None:
+        """
+        Set how the client of an HTTP request reaches the server, for the sign-in flow.
+
+        :param request: The HTTP request.
+        """
+        transport = (
+            AuthTransport.INGRESS
+            if is_request_from_ingress_proxy(request)
+            else AuthTransport.DIRECT
+        )
+        set_auth_request_context(transport, get_request_origin(request))
+
+    def _get_known_auth_origin(self, origin: str) -> str | None:
+        """
+        Return the sign-in callback base for an origin, if its host is one this server knows.
+
+        Known hosts are loopback, the published addresses and the hosts of the base URL and
+        the External URL.
+
+        :param origin: The origin (scheme and host) the client says it used.
+        """
+        if not _ORIGIN_RE.fullmatch(origin):
+            return None
+        try:
+            parsed = urlparse(origin)
+            hostname = parsed.hostname
+            _ = parsed.port
+        except ValueError:
+            return None
+        if not hostname:
+            return None
+        # a configured URL also carries the scheme and path the server is served under behind
+        # a proxy, which a client without an Origin header (a native app) cannot tell
+        for url in (self.external_url, self.base_url):
+            if url and urlparse(url).netloc.lower() == parsed.netloc.lower():
+                return url
+        known_hosts = {
+            *self.publish_addresses,
+            urlparse(self.base_url).hostname,
+            urlparse(self.external_url or "").hostname,
+        }
+        if _is_loopback(hostname) or any(_is_same_host(hostname, x) for x in known_hosts if x):
+            return _url_origin(origin)
+        return None
+
 
 def _error_status(error: MusicAssistantError) -> int:
     """
@@ -1661,6 +1723,33 @@ def _url_origin(url: str) -> str:
     """
     parsed = urlparse(url)
     return f"{parsed.scheme}://{parsed.netloc}".lower()
+
+
+def _is_loopback(hostname: str) -> bool:
+    """
+    Return whether a host name is this host's loopback address.
+
+    :param hostname: The host name or IP address.
+    """
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_same_host(hostname: str, other: str) -> bool:
+    """
+    Return whether two host names or IP addresses (in any notation) are the same host.
+
+    :param hostname: The host name or IP address.
+    :param other: The other host name or IP address.
+    """
+    try:
+        return ip_address(hostname) == ip_address(other)
+    except ValueError:
+        return hostname.lower() == other.lower()
 
 
 def _list_files(directory: Path) -> list[str]:

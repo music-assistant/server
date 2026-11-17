@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import AuthProviderType, SignInMethod
 from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import CoreState, EventType, ProviderType
@@ -272,17 +274,17 @@ async def test_remove_auth_provider_config(mass_auth: MusicAssistant) -> None:
 async def test_redirect_sign_in_refuses_an_unknown_method(idp: IdentityAuthProvider) -> None:
     """A sign-in for a method id no loaded auth provider offers is neither started nor completed."""
     auth = idp.mass.webserver.auth
-    pending = _start_pending(idp.mass, INSTANCE_ID)
+    pending = _start_pending(idp.mass, "unloaded--provider")
 
     # the instance id is not the sign-in method id
     for method_id in ("unknown", INSTANCE_ID):
         assert await auth.get_authorization_url(method_id) is None
         result = await auth.get_auth_url(method_id)
         assert result["authorization_url"] is None
-    callback = await auth.handle_oauth_callback("unknown", "code", pending.state)
+    callback = await auth.handle_oauth_callback("code", pending.state)
 
     assert callback == AuthResult(success=False, error="Invalid provider")
-    assert list(auth.pending_logins._pending) == [pending.state]
+    assert not auth.pending_logins._pending
 
 
 async def test_redirect_sign_in_dispatches_to_the_auth_provider(
@@ -299,13 +301,63 @@ async def test_redirect_sign_in_dispatches_to_the_auth_provider(
     auth_url, pending = started
     assert auth_url == f"https://idp.example/authorize?state={pending.state}"
     assert pending.provider_id == INSTANCE_ID
-    assert pending.redirect_uri.endswith("/auth/callback?provider_id=idp")
-    result = await auth.handle_oauth_callback("idp", "idp_code", pending.state)
+    assert pending.redirect_uri.endswith("/auth/callback")
+    result = await auth.handle_oauth_callback("idp_code", pending.state)
 
     assert result.success
+    assert result.provider_id == "idp"
     assert result.user is not None
     assert result.user.user_id == user.user_id
     assert result.user.display_name == "Alice from HA"
+
+
+@pytest.mark.parametrize("query_provider_id", [None, "idp", "other", "stale"])
+async def test_callback_completes_with_the_provider_of_its_state(
+    idp: IdentityAuthProvider, query_provider_id: str | None
+) -> None:
+    """
+    The callback is completed by the provider its state was started with, never another.
+
+    A provider_id query on the callback, as older versions sent, is ignored.
+
+    :param query_provider_id: The provider_id query on the callback, if any.
+    """
+    mass = idp.mass
+    auth = mass.webserver.auth
+    user = await auth.create_user(username="alice")
+    await auth.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, "ha_alice")
+    idp.identity = _ha_identity("ha_alice", "alice")
+    other = MagicMock(
+        spec=AuthProvider,
+        instance_id="other--provider",
+        sign_in_method_id="other",
+        available=True,
+        unloading=False,
+        sign_in_available=True,
+        requires_redirect=True,
+    )
+    other.complete_authorization = AsyncMock(side_effect=AssertionError("wrong provider"))
+    mass._providers["other--provider"] = other
+    started = await auth.get_authorization_url("idp")
+    assert started is not None
+    query = f"code=idp_code&state={started[1].state}"
+    if query_provider_id:
+        query += f"&provider_id={query_provider_id}"
+    request = make_mocked_request("GET", f"/auth/callback?{query}", app=web.Application())
+
+    try:
+        with patch.object(auth, "create_token", AsyncMock(return_value="token")) as create_token:
+            response = await mass.webserver._handle_auth_callback(request)
+    finally:
+        mass._providers.pop("other--provider")
+
+    assert response.status == 200
+    other.complete_authorization.assert_not_awaited()
+    create_token.assert_awaited_once()
+    assert create_token.await_args is not None
+    assert create_token.await_args.args[0].user_id == user.user_id
+    assert create_token.await_args.args[1] == "OAuth (idp)"
+    assert not auth.pending_logins._pending
 
 
 @pytest.mark.parametrize("case", ["linked_elsewhere", "system_user"])
@@ -326,7 +378,7 @@ async def test_redirect_sign_in_keeps_the_ha_link_guards(
         idp.identity = _ha_identity("ha_alice", HOMEASSISTANT_SYSTEM_USER)
     pending = _start_pending(idp.mass, INSTANCE_ID)
 
-    result = await auth.handle_oauth_callback("idp", "idp_code", pending.state)
+    result = await auth.handle_oauth_callback("idp_code", pending.state)
 
     assert result == AuthResult(success=False, error=HA_LINK_REFUSED_MESSAGE)
     assert await auth.get_user_by_provider_link(AuthProviderType.HOME_ASSISTANT, "ha_alice") is None

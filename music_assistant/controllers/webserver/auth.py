@@ -70,6 +70,9 @@ from music_assistant.controllers.webserver.helpers.login_flow import (
     PendingLogin,
     PendingLoginStore,
     RedirectTarget,
+    current_auth_origin,
+    current_auth_transport,
+    get_origin_host,
     verify_pkce,
 )
 from music_assistant.helpers.api import api_command
@@ -78,12 +81,11 @@ from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.jwt_auth import JWTHelper
 from music_assistant.helpers.provider_access import own_music_sources, with_derived_provider_filter
-from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
+from music_assistant.helpers.redirect_validation import is_allowed_redirect_url_for_host
 from music_assistant.models.auth_provider import AuthProvider
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
-    from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
@@ -1156,9 +1158,17 @@ class AuthenticationManager:
             invalid or the provider does not support it.
         :raises RateLimited: If too many sign-ins are pending.
         """
+        transport = current_auth_transport.get()
+        origin = current_auth_origin.get()
+        if transport is AuthTransport.INGRESS:
+            return {
+                "authorization_url": None,
+                "error": "Sign-in with a redirect is not available over Ingress",
+            }
         if return_url:
-            is_valid, _ = is_allowed_redirect_url(
+            is_valid, _ = is_allowed_redirect_url_for_host(
                 return_url,
+                get_origin_host(origin),
                 base_url=self.webserver.base_url,
                 external_url=self.webserver.external_url,
             )
@@ -1176,8 +1186,6 @@ class AuthenticationManager:
                 "error": "code_challenge is only supported with redirect_target app",
             }
 
-        client = self._get_calling_client()
-        transport = client.auth_transport if client else AuthTransport.DIRECT
         if redirect_target == "app":
             if transport is not AuthTransport.REMOTE or not code_challenge:
                 return {
@@ -1195,7 +1203,7 @@ class AuthenticationManager:
             provider_id,
             return_url,
             transport=transport,
-            request_host=client.request_host if client else None,
+            origin=origin,
             redirect_target=cast("RedirectTarget", redirect_target),
             code_challenge=code_challenge,
         )
@@ -1219,7 +1227,7 @@ class AuthenticationManager:
         return_url: str | None = None,
         *,
         transport: AuthTransport = AuthTransport.DIRECT,
-        request_host: str | None = None,
+        origin: str | None = None,
         redirect_target: RedirectTarget = "server",
         code_challenge: str | None = None,
     ) -> tuple[str, PendingLogin] | None:
@@ -1229,11 +1237,12 @@ class AuthenticationManager:
         :param provider_id: The provider ID.
         :param return_url: Optional (validated) URL to redirect to after successful login.
         :param transport: How the client that starts the sign-in reaches the server.
-        :param request_host: The host (and any port) the client used to reach the server.
+        :param origin: The origin (scheme and host) the client says it used to reach the server.
         :param redirect_target: Where the browser returns to; "app" must be validated first.
         :param code_challenge: The client's (validated) PKCE S256 code challenge, if any.
         :return: The authorization URL and the started sign-in, or None when the provider
-            does not exist, needs no redirect or is not reachable.
+            does not exist, needs no redirect, is not reachable or the transport offers no
+            redirect sign-in.
         :raises RateLimited: If too many sign-ins are pending.
         """
         provider = self._get_auth_provider(provider_id)
@@ -1241,16 +1250,15 @@ class AuthenticationManager:
             return None
 
         callback_base_url = self.webserver.get_auth_callback_base(
-            transport,
-            redirect_target=redirect_target,
-            return_url=return_url,
-            request_host=request_host,
+            transport, redirect_target=redirect_target, origin=origin
         )
+        if callback_base_url is None:
+            return None
+        # the provider is found from the state, so one callback URL serves every provider
         if transport is AuthTransport.REMOTE and redirect_target == "app":
-            # the provider is found from the state, as the app callback serves every provider
             redirect_uri = f"{callback_base_url}/auth/callback/"
         else:
-            redirect_uri = f"{callback_base_url}/auth/callback?provider_id={provider_id}"
+            redirect_uri = f"{callback_base_url}/auth/callback"
         pending = self.pending_logins.start(
             provider.instance_id,
             transport,
@@ -1270,33 +1278,32 @@ class AuthenticationManager:
                 self.pending_logins.pop(pending.state)
         return (auth_url, pending) if auth_url else None
 
-    async def handle_oauth_callback(self, provider_id: str, code: str, state: str) -> AuthResult:
+    async def handle_oauth_callback(self, code: str, state: str) -> AuthResult:
         """
-        Handle OAuth callback.
+        Handle OAuth callback, with the provider the sign-in was started with.
 
-        :param provider_id: The provider ID.
         :param code: OAuth authorization code.
         :param state: OAuth state parameter.
         """
-        provider = self._get_auth_provider(provider_id)
-        if not provider:
-            return AuthResult(success=False, error="Invalid provider")
-
         pending = self.pending_logins.pop(state)
         # a sign-in that returns to the app is completed by the app itself (auth/exchange)
-        if (
-            not pending
-            or pending.provider_id != provider.instance_id
-            or pending.redirect_target != "server"
-        ):
+        if not pending or pending.redirect_target != "server":
             return AuthResult(success=False, error="Invalid or expired state parameter")
+        provider = self._get_auth_provider_by_instance_id(pending.provider_id)
+        if not provider:
+            return AuthResult(success=False, error="Invalid provider")
         if not AUTH_CODE_RE.fullmatch(code):
             return AuthResult(success=False, error="Invalid authorization code")
         try:
             user = await self._complete_redirect_sign_in(provider, pending, {"code": code})
         except AuthenticationFailed as err:
             return AuthResult(success=False, error=str(err))
-        return AuthResult(success=True, user=user, return_url=pending.return_url)
+        return AuthResult(
+            success=True,
+            user=user,
+            return_url=pending.return_url,
+            provider_id=provider.sign_in_method_id,
+        )
 
     @api_command("auth/exchange", authenticated=False)
     async def exchange_authorization_code(
@@ -2836,10 +2843,13 @@ class AuthenticationManager:
         for callback in list(self._access_revoked_callbacks):
             self.mass.loop.call_soon(callback, user)
 
-    def _get_calling_client(self) -> WebsocketClientHandler | None:
-        """Return the websocket connection the current command came in on, if any."""
-        client_id = get_current_client_id()
-        return next((c for c in self.webserver.clients if c.client_id == client_id), None)
+    def _get_auth_provider_by_instance_id(self, instance_id: str) -> AuthProvider | None:
+        """
+        Return the usable auth provider with a provider instance id, if any.
+
+        :param instance_id: The instance id of the auth provider.
+        """
+        return next((p for p in self._get_auth_providers() if p.instance_id == instance_id), None)
 
     async def _complete_app_sign_in(
         self, pending: PendingLogin | None, code: str, code_verifier: str
@@ -2862,9 +2872,7 @@ class AuthenticationManager:
             raise AuthenticationFailed("This sign-in can not be completed with auth/exchange")
         if not verify_pkce(code_verifier, pending.client_code_challenge):
             raise AuthenticationFailed("The code_verifier does not match the code_challenge")
-        provider = next(
-            (p for p in self._get_auth_providers() if p.instance_id == pending.provider_id), None
-        )
+        provider = self._get_auth_provider_by_instance_id(pending.provider_id)
         if not provider:
             raise AuthenticationFailed("The login provider of this sign-in is not available")
         return await self._complete_redirect_sign_in(provider, pending, {"code": code})

@@ -61,7 +61,7 @@ from .helpers.auth_middleware import (
     set_impersonated_user,
     set_sendspin_player_id,
 )
-from .helpers.login_flow import AuthTransport
+from .helpers.login_flow import AuthTransport, get_request_origin, set_auth_request_context
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -142,9 +142,9 @@ class WebsocketClientHandler:
         return AuthTransport.DIRECT
 
     @property
-    def request_host(self) -> str:
-        """Return the host (and any port) the client says it used to reach the server."""
-        return self.request.headers.get("X-Forwarded-Host") or self.request.host
+    def auth_origin(self) -> str | None:
+        """Return the origin (scheme and host) the client says it used to reach the server."""
+        return get_request_origin(self.request)
 
     def matches_token(self, token: str) -> bool:
         """
@@ -317,6 +317,7 @@ class WebsocketClientHandler:
         set_current_user(self._authenticated_user)
         set_current_token(self._current_token)
         set_sendspin_player_id(self._sendspin_player_id)
+        set_auth_request_context(self.auth_transport, self.auth_origin)
         set_request_priority(RequestPriority.NORMAL)
 
         # Check authentication if required
