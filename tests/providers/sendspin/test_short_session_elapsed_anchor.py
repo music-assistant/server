@@ -43,6 +43,7 @@ def _short_session(monkeypatch: pytest.MonkeyPatch) -> SendspinPlaybackSession:
     session._pipeline_config_cache = {}
     session._push_stream = None
     session._history = deque()
+    session._join_catchup = {}
     session._produced_audio_us = 0
     session._timeline_start_us = None
     session._cancel_requested = False

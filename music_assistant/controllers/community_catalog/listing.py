@@ -47,7 +47,7 @@ def installed_provider(
     :param installed: What was installed.
     :param manifest: Its manifest, as installed_manifest returns it.
     :param entry: The provider in the kept copy of the index.
-    :param own_entry: The provider in the index of this server's line.
+    :param own_entry: The provider in the index of this server's channel.
     :param decision: Whether it loads, None when it was not decided.
     :param update: The version the kept copy of the index offers to change to, if any.
     :param error: Why it does not load, as its settings entries show it.

@@ -39,12 +39,14 @@ from aiosonos.exceptions import (
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
+    ChannelLayout,
     ConfigEntryType,
     EventType,
     IdentifierType,
     MediaType,
     PlaybackState,
     PlayerFeature,
+    PlayerType,
     RepeatMode,
 )
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
@@ -61,6 +63,7 @@ from music_assistant.helpers.wake_on_lan import send_magic_packet
 from music_assistant.models.player import PlayerSource
 from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 from music_assistant.providers.sonos.const import (
+    AMP_MODEL,
     CONF_SHOW_DEVICE_SETTINGS,
     DEVICE_FEATURE_WAKEABLE,
     NON_HIRES_MODELS,
@@ -80,6 +83,7 @@ from music_assistant.providers.sonos.const import (
     UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS,
     UPCOMING_ITEMS,
 )
+from music_assistant.providers.sonos.helpers import get_channel_layout
 from music_assistant.providers.sonos.options import (
     SONOS_OPTIONS,
     SonosDevice,
@@ -1211,6 +1215,10 @@ class SonosPlayer(PlayerProtocol):
             self._attr_available = self.connected
         if not self.connected:
             return
+        self._attr_channel_layout = self._channel_layout()
+        self._attr_type = (
+            PlayerType.PLAYER if self._attr_channel_layout is None else PlayerType.MULTI_CHANNEL
+        )
         # guard against the race where a volume event arrives before aiosonos'
         # async_init has populated _volume_data (the accessors raise AttributeError
         # on None). The next event re-runs once the data is there.
@@ -2114,15 +2122,20 @@ class SonosPlayer(PlayerProtocol):
             player_ids_to_remove=player_ids_to_remove,
         )
         await self._wait_for_group_members(player_ids_to_add, player_ids_to_remove)
-        members = (
-            self.provider.get_protocol(protocol_id)
+        members = [
+            member
             for protocol_id in {*player_ids_to_add, *player_ids_to_remove} - {self.protocol_id}
-        )
+            if isinstance(member := self.provider.get_protocol(protocol_id), SonosPlayer)
+            and member.connected
+        ]
+        answered = await asyncio.gather(*(member._refresh_groups() for member in members))
+        # a coordinator that has not registered a member that just (re)joined answers its
+        # removal without doing it, while the member itself still reports the group
         await asyncio.gather(
             *(
-                member._refresh_groups()
-                for member in members
-                if isinstance(member, SonosPlayer) and member.connected
+                member._leave_group_of(self)
+                for member, refreshed in zip(members, answered, strict=True)
+                if refreshed and member.protocol_id in player_ids_to_remove
             )
         )
 
@@ -2147,8 +2160,12 @@ class SonosPlayer(PlayerProtocol):
                 player_ids_to_add,
             )
 
-    async def _refresh_groups(self) -> None:
-        """Update the grouping of this speaker from what the speaker reports right now."""
+    async def _refresh_groups(self) -> bool:
+        """
+        Update the grouping of this speaker from what the speaker reports right now.
+
+        :return: Whether the speaker answered.
+        """
         # a speaker knows its new group at once, but holds its groups event back for seconds,
         # and sends none at all when its group is back to what it last reported by then
         try:
@@ -2159,11 +2176,35 @@ class SonosPlayer(PlayerProtocol):
                 raise
             # a reconnect cancels the replies it still waited on, the refresh among them
             self.logger.debug("Could not refresh the groups of %s: connection closed", self.name)
-            return
+            return False
         except (SonosException, ClientError, OSError, TimeoutError) as err:
             self.logger.debug("Could not refresh the groups of %s: %s", self.name, err)
-            return
+            return False
         self.client._handle_groups_event(groups)
+        return True
+
+    async def _leave_group_of(self, coordinator: SonosPlayer) -> None:
+        """Leave the group of the given coordinator, if this speaker still reports to be in it."""
+        group = self.client.player.group
+        if group is None or group.coordinator_id != coordinator.protocol_id:
+            return
+        try:
+            async with asyncio.timeout(GROUPS_REFRESH_TIMEOUT):
+                await self.client.create_group([self.protocol_id])
+                await self._refresh_groups()
+        except asyncio.CancelledError:
+            if (task := asyncio.current_task()) is not None and task.cancelling():
+                raise
+            # a reconnect cancels the replies it still waited on
+            self.logger.debug(
+                "Could not take %s out of the group of %s: connection closed",
+                self.name,
+                coordinator.name,
+            )
+        except (SonosException, ClientError, OSError, TimeoutError) as err:
+            self.logger.debug(
+                "Could not take %s out of the group of %s: %s", self.name, coordinator.name, err
+            )
 
     def _extract_mac_from_player_id(self) -> str | None:
         """
@@ -2252,6 +2293,21 @@ class SonosPlayer(PlayerProtocol):
             await asyncio.sleep(0.25)
         with contextlib.suppress(FailedCommand):
             await self.group_controller.play()
+
+    def _channel_layout(self) -> ChannelLayout | None:
+        """Return the channel layout of the speakers bonded into this player, None if no set."""
+        device = self.discovery_info["device"]
+        paired = self.client.player.is_stereo_pair
+        if SonosCapability.HT_PLAYBACK in device["capabilities"]:
+            front_channels = 2 if device.get("modelDisplayName") == AMP_MODEL else 3
+        else:
+            front_channels = 2 if paired else 1
+        return get_channel_layout(
+            front_channels,
+            paired=paired,
+            surrounds=self.client.player.has_surrounds,
+            subwoofer=self.client.player.has_subwoofer,
+        )
 
     @property
     def _options_device(self) -> SonosDevice:

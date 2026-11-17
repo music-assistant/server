@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
-from music_assistant.controllers.community_catalog.index import server_line
+from music_assistant.controllers.community_catalog.index import catalog_channel
 from music_assistant.controllers.community_catalog.models import IndexStatus
 
 if TYPE_CHECKING:
@@ -125,7 +125,7 @@ def evaluate(
     entry: IndexProvider | None,
     *,
     has_index: bool,
-    own_line: bool,
+    own_channel: bool,
 ) -> Decision:
     """
     Return whether an installed community provider may load, or switches to another version.
@@ -136,11 +136,11 @@ def evaluate(
     :param folder_hash: The content hash of the live folder, None when there is none.
     :param entry: The provider in the kept copy of the index, None when it is not in it.
     :param has_index: Whether the server has a kept copy of the index at all.
-    :param own_line: Whether the kept copy is the index of this server's line.
+    :param own_channel: Whether the kept copy is the index of this server's channel.
     """
     if not has_index:
         return Decision(Verdict.CATALOG_UNREACHABLE)
-    offered = entry.offered_version if entry is not None and own_line else None
+    offered = entry.offered_version if entry is not None and own_channel else None
     if offered == installed.failed_version:
         # a version the server went back from is not tried again
         offered = None
@@ -154,8 +154,8 @@ def evaluate(
         )
         # a blocked version switches to the version the catalog offers instead
         return Decision(Verdict.BLOCKED, reason, entry.reason_url, offered)
-    if not own_line:
-        # the versions of another line cannot be installed again here
+    if not own_channel:
+        # the versions of another channel cannot be installed again here
         if folder_hash == installed.content_hash:
             return Decision(Verdict.LOAD)
         return Decision(Verdict.CATALOG_UNREACHABLE)
@@ -202,19 +202,19 @@ class Gate:
             folder_hash,
             index.providers.get(domain) if index is not None else None,
             has_index=index is not None,
-            own_line=self.own_index() is not None,
+            own_channel=self.own_index() is not None,
         )
 
     def own_index(self) -> CatalogIndex | None:
-        """Return the kept copy of the index when it is the one of this server's line."""
+        """Return the kept copy of the index when it is the one of this server's channel."""
         index = self._store.index
-        if index is None or index.server_line != server_line(self.mass.version):
+        if index is None or index.channel != catalog_channel(self.mass.version):
             return None
         return index
 
     def own_entry(self, domain: str) -> IndexProvider | None:
         """
-        Return a provider in the index of this server's line, None when it is not in it.
+        Return a provider in the index of this server's channel, None when it is not in it.
 
         :param domain: The domain of the provider.
         """
