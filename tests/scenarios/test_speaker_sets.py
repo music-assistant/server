@@ -91,9 +91,11 @@ async def test_nothing_reaches_a_speaker_that_goes_up_in_a_set(
     scenario: Scenario, plug: bool
 ) -> None:
     """
-    No command reaches a playing speaker that goes up in a set, nor any other device.
+    The server sends no command to a playing speaker that goes up in a set, nor to any other device.
 
-    Also not when it is on a plug that cuts its power, which stays switched on.
+    No stop and no power off, also not when it is on a plug that cuts its power, which stays
+    switched on. Its protocols are detached as for a disabled player, which ends what they
+    themselves stream to it.
     """
     living, patio, patio_airplay = await _living_and_patio(scenario)
     patio_id = scenario.single_player(patio, patio_airplay).player_id
@@ -382,7 +384,7 @@ async def test_a_group_plays_on_without_a_speaker_that_goes_up_in_a_set(
     """
     A group or sync session that has the speaker as a member plays on and no longer lists it.
 
-    No command about it reaches the leader or any other member.
+    The server sends no command about it to the leader or to any other member.
     """
     living, patio, patio_airplay = await _living_and_patio(scenario, grouping=True)
     kitchen = scenario.provider("sonos").protocol(

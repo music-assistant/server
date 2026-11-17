@@ -324,9 +324,11 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         A set (a stereo pair, a home theater set) is one multi-channel player. Call this once
         the protocol is set up and whenever its set changes, always with the full list, and an
         empty one when the protocol delivers no set. While the set names a speaker, its player
-        is out of use: clients are told it is removed, nothing is sent to its device, no
-        protocol attaches to it, and its config, settings and saved queue stay. Once the set no
-        longer names it, it comes back under its id, unless the user disabled it.
+        is out of use: clients are told it is removed, and no protocol attaches to it. The
+        players controller sends it no command (no stop, no power off, no group change); its
+        protocols are detached as for a disabled player, which ends what they themselves stream
+        to the speaker. Its config, settings and saved queue stay. Once the set no longer names
+        it, it comes back under its id, unless the user disabled it.
         An id in the list is skipped when it has no stored config, or when its player is the
         player of this protocol, a group, or already part of another set. Nothing happens when
         this protocol itself has no stored config, or when the list changes nothing. It may be
@@ -1036,7 +1038,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         """
         Take a player out of use that went up in the set of speakers a protocol delivers.
 
-        Nothing is sent to its device; to clients it is removed.
+        To clients it is removed. No command is sent to its device (no stop, no power off, no
+        group change); its protocols are detached as for a disabled player.
 
         :param player_id: Id of the player, which has a stored config.
         :param protocol_id: Id of the protocol that delivers the set.
@@ -1070,7 +1073,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         """
         Take a player out of the registry with its queue, without a command to its device.
 
-        Its protocols are detached; its config and its saved queue stay.
+        Its protocols are detached, and each releases what it holds itself, which ends what it
+        streams to the device. Its config and its saved queue stay.
 
         :param player: The player.
         """

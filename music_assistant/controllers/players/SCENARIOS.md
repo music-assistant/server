@@ -1100,13 +1100,14 @@ While the set names a speaker, the player of that speaker is out of use; it come
 no longer names it. In the examples the Patio speaker, a Sonos speaker with an AirPlay receiver,
 goes up in the set of the Living speaker.
 
-### SET-1 · A speaker that goes up in a set is no player anymore, and nothing is sent to it
+### SET-1 · A speaker that goes up in a set is no player anymore and gets no command
 
 Patio plays when its provider reports that it went up in the set of Living. Clients are told once
 that Patio is removed: it is no player anymore, and the settings do not list it, whatever they ask
-for. Its record, its DSP and queue settings and its saved queue stay. No command reaches it through
-either of its protocols, also no power off when it is on a plug that cuts its power: the plug stays
-on.
+for. Its record, its DSP and queue settings and its saved queue stay. The server sends it no
+command through either of its protocols: no stop, and no power off, also not when it is on a plug
+that cuts its power: the plug stays on. Its protocols are detached as for a disabled player, which
+ends what they themselves stream to Patio.
 
 - End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
   yet, and a stereo pair of it.
@@ -1191,8 +1192,8 @@ once the set lets it go.
 ### SET-9 · A group plays on without a speaker that goes up in a set
 
 Patio plays along with Kitchen: in a sync session that Kitchen leads, in a sync group or in a
-universal group. When Patio goes up in the set, the group plays on and no longer lists it, and no
-command about it reaches Kitchen or Patio.
+universal group. When Patio goes up in the set, the group plays on and no longer lists it, and the
+server sends no command about it to Kitchen or to Patio.
 
 - End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
   yet, and a stereo pair of it.
