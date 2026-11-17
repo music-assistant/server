@@ -2161,6 +2161,7 @@ def _native_stream_handler_context(
 
     controller = cast("Any", object.__new__(StreamsController))
     controller._open_item_streams = {}
+    controller._flow_bytes_sent = {}
     controller.mass = mass
     controller.audio = audio
     controller.logger = MagicMock()
