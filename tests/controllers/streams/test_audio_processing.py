@@ -2367,6 +2367,62 @@ async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
     assert queue_item.duration == expected_duration
 
 
+@pytest.mark.asyncio
+async def test_item_stream_keeps_its_duration_when_a_repeat_loads_the_item_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pass started by a seek writes back the full length after its repeat was loaded."""
+    mass = MagicMock()
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+
+    def _details(seek_position: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            audio_format=pcm_format,
+            buffer=SimpleNamespace(cancelled=False, eof=False),
+            fade_in=False,
+            stream_error=False,
+            tail_overlap=None,
+            uri="test://track",
+            seek_position=seek_position,
+            seconds_streamed=0,
+            duration=434,
+            is_realtime=False,
+        )
+
+    queue_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="track",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=_details(431),
+        duration=434,
+        extra_attributes={},
+    )
+    mass.player_queues.get.return_value = SimpleNamespace(
+        queue_id="queue-1", display_name="Queue", index_in_buffer=0
+    )
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+
+    async def _item_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
+        for _ in range(3):
+            yield bytes(pcm_format.pcm_sample_size)
+        # the repeat of the item is loaded from its start while this pass still streams
+        queue_item.streamdetails = _details(0)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_item_stream_with_smartfade(
+        MagicMock(),
+        cast("Any", queue_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.DISABLED,
+    )
+
+    assert len([chunk async for chunk in stream]) == 3
+    assert queue_item.duration == 434
+
+
 def _manager_context(
     *,
     alters_audio: bool = False,
