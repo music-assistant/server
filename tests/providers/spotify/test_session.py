@@ -170,7 +170,7 @@ async def test_rate_limit_without_a_reason_is_retried_as_before(payload: Any) ->
             pass
     assert err.value.backoff_time == 42
     assert str(err.value) == "Spotify rate limited the shared client"
-    assert session.throttler.cooldown_remaining == 0
+    assert 41 < session.throttler.cooldown_remaining <= 42
     assert session.get_diagnostics()["last_rate_limit_reason"] is None
 
 
@@ -272,7 +272,7 @@ async def test_quota_exceeded_on_the_shared_client_is_a_rate_limit_like_any_othe
             async with session._request("GET", "me"):
                 pass
         assert err.value.backoff_time == 42
-    assert session.throttler.cooldown_remaining == 0
+    assert 41 < session.throttler.cooldown_remaining <= 42
     session.logger.warning.assert_called_once_with(  # type: ignore[attr-defined]
         "The %s has used up its Spotify quota, %s",
         "shared client",
@@ -280,9 +280,10 @@ async def test_quota_exceeded_on_the_shared_client_is_a_rate_limit_like_any_othe
     )
 
 
-async def test_the_gate_closes_before_the_body_of_a_limit_is_read() -> None:
-    """A client that moves user actions on holds further requests back while the body comes."""
-    session = _make_session(personal=True)
+@pytest.mark.parametrize("personal", [True, False])
+async def test_the_gate_closes_before_the_body_of_a_limit_is_read(personal: bool) -> None:
+    """A client that was told to wait holds further requests back while the body comes."""
+    session = _make_session(personal=personal)
     body_asked = asyncio.Event()
     body_sent = asyncio.Event()
 
@@ -302,7 +303,8 @@ async def test_the_gate_closes_before_the_body_of_a_limit_is_read() -> None:
     await asyncio.wait_for(body_asked.wait(), 1)
     assert session.throttler.cooldown_remaining > 3590
     body_sent.set()
-    with pytest.raises(RetriesExhausted):
+    # the personal client gives up, the shared client leaves the retry to its caller
+    with pytest.raises(RetriesExhausted if personal else RateLimited):
         await task
 
 

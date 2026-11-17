@@ -259,10 +259,9 @@ class SpotifySession:
                 # another session serves user actions and playback meanwhile
                 moves_on = self._has_fallback and current_priority() is not RequestPriority.LOW
                 cooldown = max(backoff_time, self.throttler.initial_backoff)
-                if moves_on:
-                    # the gate closes before the body is read, so nothing follows this
-                    # request to a client that just asked to wait
-                    self.throttler.set_cooldown(cooldown)
+                # the gate closes before the body is read, so nothing follows this
+                # request to a client that just asked to wait
+                self.throttler.set_cooldown(cooldown)
                 reason = await _rate_limit_reason(response)
                 self._last_rate_limit_reason = reason
                 self._last_rate_limit_at = utc()
