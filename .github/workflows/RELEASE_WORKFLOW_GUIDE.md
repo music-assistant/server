@@ -110,8 +110,8 @@ For every new minor version `X.Y`:
 1. **First beta of `X.Y` published:** add the `X.Y` line with the image
    `ghcr.io/music-assistant/server:beta`. The registry's daily **Releases** workflow checks
    the provider versions on the new line; dispatch it to start right away. A pull request
-   on `dev` that moves a provider out of the server also needs this line
-   (`scripts/check_moved_providers.py`).
+   on `dev` that moves a provider out of the server needs this line once `X.(Y-1).0` is
+   out (`scripts/check_moved_providers.py`), so it waits until the line is added.
 2. **Before the stable release:** open `https://catalog.music-assistant.io/v1/X.Y.json`
    (for example `v1/2.11.json`). Release `X.Y.0` only when it loads, its `server_line` is
    `X.Y`, and every provider with `status` `listed` has a `latest` version.
