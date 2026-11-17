@@ -683,11 +683,10 @@ class _Rig:
         """Let the player fetch the stream of a session, into a response."""
         request = MagicMock(method="GET", query={"sid": session.session_id})
 
-        async def _serve() -> Any:
-            with patch("aiohttp.web.StreamResponse", return_value=response):
-                return await self.bridge.serve_stream(request)
-
-        return asyncio.create_task(_serve())
+        # an eager start builds the response before its first await, so the patch never
+        # outlives this call: a patch held across awaits leaks when tasks overlap
+        with patch("aiohttp.web.StreamResponse", return_value=response):
+            return asyncio.create_task(self.bridge.serve_stream(request), eager_start=True)
 
     async def serve_player(
         self, *, capacity_us: int | None = None, chunk_seconds: int = 1
