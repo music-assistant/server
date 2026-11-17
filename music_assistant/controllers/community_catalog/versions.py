@@ -120,7 +120,7 @@ class VersionChanger:
         :param auto_update: Whether automatic updates are on.
         """
         for domain, version in self.targets(include_updates=auto_update).items():
-            # targets only come from the index of this server's line
+            # targets only come from the index of this server's channel
             entry = self._gate.own_entry(domain)
             assert entry is not None
             requirements = {
@@ -147,7 +147,7 @@ class VersionChanger:
         use stays staged for the next start, and the running version keeps running.
 
         :param domain: The domain of the provider.
-        :param version: The version to change to, listed in the index of this server's line.
+        :param version: The version to change to, listed in the index of this server's channel.
         :raises InstallError: The version cannot be downloaded or is not what the catalog lists.
         :raises DependencyConflict: Its requirements clash with those of the server or of
             another community provider.
@@ -284,7 +284,7 @@ class VersionChanger:
         nothing stays staged, so no version is pending; the live version is never touched.
 
         :param domain: The domain of the provider.
-        :param entry: The provider in the index of this server's line.
+        :param entry: The provider in the index of this server's channel.
         :param version: The version to stage.
         :param requirements: The requirements of the other community providers that load, by
             domain.
@@ -315,7 +315,7 @@ class VersionChanger:
         Make the staged version of an installed provider live, and record it as not verified.
 
         :param domain: The domain of the provider.
-        :param entry: The provider in the index of this server's line.
+        :param entry: The provider in the index of this server's channel.
         :param version: The staged version, listed in the entry.
         :raises InstallError: There is no staged version, or the folders cannot be renamed.
         :raises OSError: The state cannot be written.

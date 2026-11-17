@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast, final, overload
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER, ConfigValueType
 from music_assistant_models.constants import EXTRA_ATTRIBUTES_TYPES
 from music_assistant_models.enums import (
+    ChannelLayout,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -111,6 +112,7 @@ class PlayerProtocol(ABC):
     _attr_role: ProtocolRole = ProtocolRole.NATIVE
 
     _attr_type: PlayerType = PlayerType.PLAYER
+    _attr_channel_layout: ChannelLayout | None = None
     _attr_supported_features: set[PlayerFeature]
     _attr_group_members: list[str]
     _attr_static_group_members: list[str]
@@ -200,6 +202,11 @@ class PlayerProtocol(ABC):
     def type(self) -> PlayerType:
         """Return the type of the player."""
         return self._attr_type
+
+    @property
+    def channel_layout(self) -> ChannelLayout | None:
+        """Return how the speakers of a multi-channel player are laid out, None if not known."""
+        return self._attr_channel_layout
 
     @property
     def name(self) -> str | None:

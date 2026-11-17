@@ -574,6 +574,30 @@ class StreamsController(CoreController):
         """
         return queue_id in self._boundary_mix_owners
 
+    def flow_stream_blends_items(self, queue: PlayerQueue, start_queue_item: QueueItem) -> bool:
+        """
+        Return whether the flow stream of a queue blends the audio of its items.
+
+        :param queue: The queue that plays.
+        :param start_queue_item: The item the flow stream starts with.
+        """
+        crossfade_mode = (
+            self.get_crossfade_mode(queue)
+            if start_queue_item.media_type == MediaType.TRACK
+            else CrossfadeMode.DISABLED
+        )
+        # a declared tail overlap is mixed like a crossfade, and a queue a plugin holds
+        # in flow mode or has the boundaries mixed of is about to carry such items
+        return (
+            crossfade_mode != CrossfadeMode.DISABLED
+            or self.flow_mode_required(queue.queue_id)
+            or self.boundary_mix_required(queue.queue_id)
+            or (
+                start_queue_item.streamdetails is not None
+                and start_queue_item.streamdetails.tail_overlap is not None
+            )
+        )
+
     def mixes_item_boundaries(self, queue_id: str) -> bool:
         """
         Return whether the server mixes the boundary between two items for the queue's player.
@@ -1606,24 +1630,11 @@ class StreamsController(CoreController):
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
 
         # select the PCM format for the flow stream, anchored on the first track
-        crossfade_mode = (
-            self.get_crossfade_mode(queue)
-            if start_queue_item.media_type == MediaType.TRACK
-            else CrossfadeMode.DISABLED
-        )
         mix_overlay = overlay_mixed_in(queue, start_queue_item, flow_mode=True)
         flow_pcm_format = await self.audio.select_flow_pcm_format(
             player,
             start_streamdetails=start_queue_item.streamdetails,
-            # a declared tail overlap is mixed like a crossfade, and a queue a plugin holds
-            # in flow mode or has the boundaries mixed of is about to carry such items
-            crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED
-            or self.flow_mode_required(queue_id)
-            or self.boundary_mix_required(queue_id)
-            or (
-                start_queue_item.streamdetails is not None
-                and start_queue_item.streamdetails.tail_overlap is not None
-            ),
+            crossfade_enabled=self.flow_stream_blends_items(queue, start_queue_item),
             overlay_active=mix_overlay,
         )
 
