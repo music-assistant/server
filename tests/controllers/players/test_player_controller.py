@@ -53,6 +53,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     ItemMapping,
     PodcastEpisode,
+    Radio,
     SearchResults,
     Track,
     UniqueList,
@@ -4380,6 +4381,9 @@ class TestAddCurrentlyPlayingToFavorites:
         assert acting_users == [expected]
 
 
+STREAM_URL = "http://stream.example.com/live"
+
+
 def _track(item_id: str = "1", provider: str = "library") -> Track:
     """Return a track named "Title" by "Artist"."""
     return Track(
@@ -4435,6 +4439,16 @@ def _search_tracks(mock_mass: MagicMock, *tracks: Track) -> AsyncMock:
     mock_mass.music.add_item_to_favorites = AsyncMock()
     search: AsyncMock = music.mass.music.search
     return search
+
+
+def _stream_station() -> Radio:
+    """Return the radio station a plain stream url resolves to."""
+    return Radio(item_id=STREAM_URL, provider="builtin", name="Station", provider_mappings=set())
+
+
+def _stream_player(title: str | None = "Title", artist: str | None = "Artist") -> SimpleNamespace:
+    """Return a player on its own source that plays a radio stream from its url."""
+    return _other_source(PlayerMedia(uri=STREAM_URL, title=title, artist=artist))
 
 
 class TestGetCurrentlyPlayingTrack:
@@ -4565,6 +4579,34 @@ class TestGetCurrentlyPlayingTrack:
             search_query="Artist - Title", media_types=[MediaType.TRACK], providers=["library"]
         )
 
+    @pytest.mark.parametrize("library_only", [True, False])
+    async def test_radio_stream_song(self, mock_mass: MagicMock, library_only: bool) -> None:
+        """The song a player reports for a radio stream it plays itself is looked up by name."""
+        track = _track()
+        search = _search_tracks(mock_mass, track)
+        mock_mass.music.get_item = AsyncMock(return_value=_stream_station())
+
+        result = await self._get(mock_mass, _stream_player(), None, library_only=library_only)
+
+        assert result == track
+        search.assert_awaited_once_with(
+            search_query="Artist - Title",
+            media_types=[MediaType.TRACK],
+            providers=["library"] if library_only else None,
+        )
+
+    @pytest.mark.parametrize("library_only", [True, False])
+    async def test_radio_stream_without_song(
+        self, mock_mass: MagicMock, library_only: bool
+    ) -> None:
+        """A radio stream a player plays itself without naming the song plays no known track."""
+        search = _search_tracks(mock_mass, _track())
+        mock_mass.music.get_item = AsyncMock(return_value=_stream_station())
+        player = _stream_player(title=None, artist=None)
+
+        assert await self._get(mock_mass, player, None, library_only=library_only) is None
+        search.assert_not_awaited()
+
 
 class TestAddCurrentlyPlayingToFavoritesResolution:
     """Test what is added to the favorites from what plays on a player."""
@@ -4649,6 +4691,26 @@ class TestAddCurrentlyPlayingToFavoritesResolution:
             MediaType.TRACK, "abc", "spotify--1", allow_update_metadata=False
         )
         mock_mass.music.add_item_to_favorites.assert_awaited_once_with(track)
+
+    async def test_radio_stream_song(self, mock_mass: MagicMock) -> None:
+        """The song a player names on a radio stream it plays itself is added, not the station."""
+        track = _track()
+        _search_tracks(mock_mass, track)
+        mock_mass.music.get_item = AsyncMock(return_value=_stream_station())
+
+        await self._add(mock_mass, _stream_player(), None)
+
+        mock_mass.music.add_item_to_favorites.assert_awaited_once_with(track)
+
+    async def test_radio_stream_song_not_found(self, mock_mass: MagicMock) -> None:
+        """A radio stream whose song is not found adds the station."""
+        _search_tracks(mock_mass)
+        station = _stream_station()
+        mock_mass.music.get_item = AsyncMock(return_value=station)
+
+        await self._add(mock_mass, _stream_player(), None)
+
+        mock_mass.music.add_item_to_favorites.assert_awaited_once_with(station)
 
 
 class TestPlayerLockTimeouts:

@@ -982,20 +982,30 @@ class PlaybackMixin(_PlayerControllerBase):
         if not player.active_source or not (current_media := player.current_media):
             return None
         # prefer the uri of the current media item
-        if current_media.uri and (
-            item := await self._get_item_by_uri(current_media.uri, library_only)
-        ):
+        item = (
+            await self._get_item_by_uri(current_media.uri, library_only)
+            if current_media.uri
+            else None
+        )
+        if item and item.media_type != MediaType.RADIO:
             return item
-        # fallback to search based on artist and title (and album if available)
-        if current_media.artist and current_media.title:
-            return await self.mass.music.get_track_by_name(
-                current_media.title,
-                current_media.artist,
-                current_media.album,
-                library_only=library_only,
+        # fallback to search based on artist and title (and album if available),
+        # which also finds the song that plays on a radio stream
+        if (
+            current_media.artist
+            and current_media.title
+            and (
+                track := await self.mass.music.get_track_by_name(
+                    current_media.title,
+                    current_media.artist,
+                    current_media.album,
+                    library_only=library_only,
+                )
             )
-        # if we reach here, we could not resolve the currently playing item
-        return None
+        ):
+            return track
+        # a radio station whose song is unknown is still the item that plays
+        return item
 
     async def _get_item_by_uri(self, uri: str, library_only: bool) -> MediaItemType | None:
         """
