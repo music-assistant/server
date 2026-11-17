@@ -516,7 +516,7 @@ async def test_a_bridge_does_not_register_the_output_of_another_player() -> None
 
     await device.attach(device.squeezelite, device.other_player)
 
-    assert device.timeline == []
+    assert device.timeline == [], "the bridge registered the output of another player"
     assert device.manager_of(device.squeezelite).bridge_client_id(device.squeezelite) is None
     assert device.outputs()[SQUEEZELITE_CLIENT]["player_id"] == PLAYER_ID
 
@@ -577,4 +577,5 @@ async def test_an_output_registered_by_a_bridge_is_the_output_of_its_player_befo
 
     await device.attach(device.airplay)
 
+    assert set(device.outputs()) == {CAST_CLIENT}, "the bridge registered an output of its own"
     assert device.state() == ("airplay", CAST_CLIENT, "airplay", "on")

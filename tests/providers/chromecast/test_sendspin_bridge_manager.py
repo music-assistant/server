@@ -107,13 +107,13 @@ class TestCastBridgePolicy:
         client_id = manager.bridge_client_id(cast_protocol)
         assert client_id is not None
         mass.external_clients.add(client_id)
+        mass.get_provider.return_value.apply_bridge_claim = AsyncMock(return_value=True)
         bridge = MagicMock(start=AsyncMock(), is_registered=True)
 
-        with patch.object(manager, "_create_bridge", return_value=bridge) as create_bridge:
+        with patch.object(manager, "_create_bridge", return_value=bridge):
             await manager.setup_bridge(cast_protocol)
 
-        create_bridge.assert_called_once()
-        assert not manager._claimed_clients
+        assert not manager._claimed_clients, "the client of another bridge was claimed"
         assert manager.get_bridge(CAST_ID) is bridge
 
     async def test_self_connected_receiver_is_claimed(self) -> None:
