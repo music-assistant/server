@@ -115,8 +115,7 @@ from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
 from .helpers.login_flow import (
     AuthTransport,
     RedirectTarget,
-    current_auth_origin,
-    current_auth_transport,
+    get_auth_request_context,
     get_request_origin,
     set_auth_request_context,
 )
@@ -1342,13 +1341,13 @@ class WebserverController(CoreController):
                     return web.Response(status=400, text="Invalid return_url")
 
             self._set_auth_request_context(request)
-            transport = current_auth_transport.get()
+            transport, origin = get_auth_request_context()
             if transport is AuthTransport.INGRESS:
                 return web.Response(
                     status=400, text="Sign-in with a redirect is not available over Ingress"
                 )
             started = await self.auth.get_authorization_url(
-                provider_id, return_url, transport=transport, origin=current_auth_origin.get()
+                provider_id, return_url, transport=transport, origin=origin
             )
             if not started:
                 return web.Response(

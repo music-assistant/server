@@ -6,6 +6,7 @@ import hmac
 import re
 import secrets
 import time
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -45,10 +46,11 @@ class AuthTransport(StrEnum):
 
 # How the client of the current HTTP request or websocket command reaches the server, and the
 # origin (scheme and host) it says it used, which is untrusted until checked against known hosts
-current_auth_transport: ContextVar[AuthTransport] = ContextVar(
-    "current_auth_transport", default=AuthTransport.DIRECT
+# It is held as a resolver, so a websocket command that never starts a sign-in does not pay
+# for working it out
+_current_auth_request_context: ContextVar[Callable[[], tuple[AuthTransport, str | None]] | None] = (
+    ContextVar("current_auth_request_context", default=None)
 )
-current_auth_origin: ContextVar[str | None] = ContextVar("current_auth_origin", default=None)
 
 
 @dataclass
@@ -177,8 +179,25 @@ def set_auth_request_context(transport: AuthTransport, origin: str | None) -> No
     :param transport: How the client reaches the server.
     :param origin: The origin the client says it used, if any.
     """
-    current_auth_transport.set(transport)
-    current_auth_origin.set(origin)
+    _current_auth_request_context.set(lambda: (transport, origin))
+
+
+def set_auth_request_context_resolver(
+    resolver: Callable[[], tuple[AuthTransport, str | None]],
+) -> None:
+    """
+    Set how to find out how the client of the current request or command reaches the server.
+
+    :param resolver: Returns the transport and the origin the client says it used, if any.
+    """
+    _current_auth_request_context.set(resolver)
+
+
+def get_auth_request_context() -> tuple[AuthTransport, str | None]:
+    """Return how the client of the current request or command reaches the server."""
+    if resolver := _current_auth_request_context.get():
+        return resolver()
+    return AuthTransport.DIRECT, None
 
 
 def get_request_origin(request: web.Request) -> str | None:
