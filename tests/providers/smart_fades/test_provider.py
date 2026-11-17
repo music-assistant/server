@@ -468,6 +468,23 @@ async def test_setup_raises_when_requirements_not_met(
         await smart_fades.setup(mass_mock, manifest_mock, config_mock)
 
 
+def test_initialize_models_raises_setup_failed_on_checkpoint_download_error(
+    provider: SmartFadesProvider,
+) -> None:
+    """A failed Beat This checkpoint download raises a retryable error naming the cause."""
+    beat_this_error = ValueError("Could not load the checkpoint given the provided name", "small0")
+    beat_this_error.__context__ = OSError("HTTP Error 503: Service Unavailable")
+
+    with (
+        patch(
+            "music_assistant.providers.smart_fades.provider.Spect2Frames",
+            side_effect=beat_this_error,
+        ),
+        pytest.raises(SetupFailedError, match="HTTP Error 503: Service Unavailable"),
+    ):
+        provider._initialize_models()
+
+
 def test_initialize_models_uses_expected_components(provider: SmartFadesProvider) -> None:
     """Model initialization wires the expected local and third-party components."""
     beat_model = Mock()
