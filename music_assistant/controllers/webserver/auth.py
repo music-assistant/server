@@ -6,11 +6,12 @@ import asyncio
 import contextlib
 import hashlib
 import logging
+import os
 import secrets
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from datetime import datetime, timedelta
-from sqlite3 import IntegrityError, OperationalError
+from sqlite3 import DatabaseError, IntegrityError, OperationalError
 from typing import TYPE_CHECKING, Any, cast
 
 import jwt as pyjwt
@@ -29,6 +30,7 @@ from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
     RateLimited,
+    SetupFailedError,
 )
 
 from music_assistant.constants import (
@@ -2046,38 +2048,88 @@ class AuthenticationManager:
         self.logger.info("Join code revoked (code_id=%s)", code_id)
 
     async def _setup_database(self) -> None:
-        """Set up database schema and handle migrations."""
+        """
+        Set up database schema and handle migrations.
+
+        :raises SetupFailedError: The stored schema version is unreadable or newer than supported.
+        """
+        prev_version = await self._get_stored_schema_version()
+        if prev_version is not None and prev_version < DB_SCHEMA_VERSION:
+            await self._backup_database()
+
         # Always create tables if they don't exist
         await self._create_database_tables()
 
-        # Check current schema version
-        try:
-            if db_row := await self.database.get_row("settings", {"key": "schema_version"}):
-                prev_version = int(db_row["value"])
-            else:
-                prev_version = DB_SCHEMA_VERSION
-        except KeyError, ValueError, Exception:
-            # settings table doesn't exist yet or other error
-            prev_version = 0
-
-        # Perform migration if needed
-        if prev_version < DB_SCHEMA_VERSION:
-            self.logger.warning(
-                "Performing database migration from schema version %s to %s",
-                prev_version,
-                DB_SCHEMA_VERSION,
+        # a database without a stored version is new and now holds the current schema
+        if prev_version is None or prev_version < DB_SCHEMA_VERSION:
+            if prev_version is not None:
+                self.logger.warning(
+                    "Performing database migration from schema version %s to %s",
+                    prev_version,
+                    DB_SCHEMA_VERSION,
+                )
+                await self._migrate_database(prev_version)
+            await self.database.insert_or_replace(
+                "settings",
+                {"key": "schema_version", "value": str(DB_SCHEMA_VERSION), "type": "int"},
             )
-            await self._migrate_database(prev_version)
-
-        # Store current schema version
-        await self.database.insert_or_replace(
-            "settings",
-            {"key": "schema_version", "value": str(DB_SCHEMA_VERSION), "type": "int"},
-        )
 
         # Create indexes
         await self._create_database_indexes()
         await self.database.commit()
+
+    async def _get_stored_schema_version(self) -> int | None:
+        """
+        Return the schema version stored in the auth database, or None when it stores none.
+
+        :raises SetupFailedError: The stored version is unreadable or newer than supported.
+        """
+        db_path = self.database.db_path
+        try:
+            has_settings = await self.database.get_count_from_query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'settings'"
+            )
+            row = (
+                await self.database.get_row("settings", {"key": "schema_version"})
+                if has_settings
+                else None
+            )
+        except DatabaseError as err:
+            msg = (
+                f"Could not read the schema version of the auth database {db_path}: {err}. "
+                "Restore this file from a backup, or move it aside to start without any users."
+            )
+            raise SetupFailedError(msg) from err
+        if row is None:
+            return None
+        try:
+            version = int(row["value"])
+        except TypeError, ValueError:
+            version = 0
+        if version < 1:
+            msg = (
+                f"The auth database {db_path} stores {row['value']!r}, which is not a valid "
+                f"schema version (this server supports version {DB_SCHEMA_VERSION}). "
+                "Restore this file from a backup, or move it aside to start without any users."
+            )
+            raise SetupFailedError(msg)
+        if version > DB_SCHEMA_VERSION:
+            msg = (
+                f"The auth database {db_path} has schema version {version}, which is newer than "
+                f"version {DB_SCHEMA_VERSION} supported by this server. It was written by a newer "
+                "Music Assistant: update Music Assistant again, or restore a backup of this file "
+                "taken before that upgrade."
+            )
+            raise SetupFailedError(msg)
+        return version
+
+    async def _backup_database(self) -> None:
+        """Copy the auth database to a backup file beside it, replacing an earlier backup."""
+        backup_path = self.database.db_path + ".backup"
+        with contextlib.suppress(FileNotFoundError):
+            await asyncio.to_thread(os.remove, backup_path)
+        await self.database.execute("VACUUM INTO :path", {"path": backup_path})
+        self.logger.info("Auth database backed up to %s before migration", backup_path)
 
     async def _create_database_tables(self) -> None:
         """Create database tables."""
@@ -2211,14 +2263,12 @@ class AuthenticationManager:
 
         # Migration to version 3: Add player_filter and provider_filter columns
         if from_version < 3:
-            with contextlib.suppress(OperationalError):
-                # Column(s) may already exist
-                await self.database.execute(
-                    "ALTER TABLE users ADD COLUMN player_filter json NOT NULL DEFAULT '[]'"
-                )
-                await self.database.execute(
-                    "ALTER TABLE users ADD COLUMN provider_filter json NOT NULL DEFAULT '[]'"
-                )
+            for column in ("player_filter", "provider_filter"):
+                with contextlib.suppress(OperationalError):
+                    # Column may already exist
+                    await self.database.execute(
+                        f"ALTER TABLE users ADD COLUMN {column} json NOT NULL DEFAULT '[]'"
+                    )
             await self.database.commit()
 
         # Migration to version 4: Make usernames case-insensitive by converting to lowercase
