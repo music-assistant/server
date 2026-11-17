@@ -1205,19 +1205,21 @@ class AlbumsController(MediaControllerBase[Album]):
         self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease
     ) -> None:
         """Fill the recording ids and ISRCs of a release in on the library tracks at its positions."""
-        recordings = {
-            (medium.position, track.position): track.recording
+        by_position = {
+            (medium.position, track.position): track
             for medium in release.media
             for track in medium.tracks
             if track.position and track.recording
         }
         in_order = await self._recordings_in_order(album, db_tracks, release)
         for db_track in db_tracks:
-            if (recording := in_order.get(db_track.item_id)) is None:
+            if (release_track := in_order.get(db_track.item_id)) is None:
                 # a digital release stores its single disc as disc 0 or 1
-                recording = recordings.get((db_track.disc_number or 1, db_track.track_number))
-                if recording is None or not _recording_matches_track(recording, db_track):
+                release_track = by_position.get((db_track.disc_number or 1, db_track.track_number))
+                if release_track is None or not _recording_matches_track(release_track, db_track):
                     continue
+            if (recording := release_track.recording) is None:
+                continue
             changed = fill_track_from_recording(db_track, recording)
             if not changed and db_track.metadata.last_musicbrainz_lookup is not None:
                 continue
@@ -1226,7 +1228,7 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def _recordings_in_order(
         self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease
-    ) -> dict[str, MusicBrainzRecording]:
+    ) -> dict[str, MusicBrainzTrack]:
         """Return the release recording per library track of a service lining up with the release."""
         release_tracks = [
             track
@@ -1253,7 +1255,7 @@ class AlbumsController(MediaControllerBase[Album]):
         ]
         domains = {x.provider_domain for track in streaming_tracks for x in track.provider_mappings}
         linked_albums = await _linked_albums(release)
-        in_order: dict[str, MusicBrainzRecording] = {}
+        in_order: dict[str, MusicBrainzTrack] = {}
         for domain in sorted(domains):
             service_tracks = sorted(
                 (
@@ -1304,7 +1306,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 recording = release_track.recording
                 # the order alone does not outweigh another recording id the track holds
                 if recording and track.mbid in (None, recording.id):
-                    in_order.setdefault(track.item_id, recording)
+                    in_order.setdefault(track.item_id, release_track)
         return in_order
 
     async def _link_tracks_to_provider_album(
@@ -1917,13 +1919,16 @@ def _release_group_ids(
     }
 
 
-def _recording_matches_track(recording: MusicBrainzRecording, track: Track) -> bool:
-    """Return whether a release's recording is the given library track, by title and length."""
-    if not compare_strings(recording.title, track.name, strict=False):
+def _recording_matches_track(release_track: MusicBrainzTrack, track: Track) -> bool:
+    """Return whether a release track's recording is the given library track, by title or ISRC."""
+    recording = release_track.recording
+    if recording is None or _lengths_agree(release_track, track) is False:
         return False
-    if recording.length is None or not track.duration:
-        return True
-    return abs(recording.length / 1000 - track.duration) <= _TRACK_DURATION_TOLERANCE
+    # a streaming title may name only the movement ("I. Allegro con brio") where MusicBrainz
+    # names the work as well, so a shared ISRC identifies the recording too
+    return compare_strings(recording.title, track.name, strict=False) or bool(
+        _recording_isrcs(recording) & _isrcs(track)
+    )
 
 
 async def _linked_albums(release: MusicBrainzRelease) -> set[tuple[str, str]]:
@@ -1992,4 +1997,11 @@ def _isrcs(track: Track) -> set[str]:
         normalize_external_id(ExternalID.ISRC, value)
         for id_type, value in track.external_ids
         if id_type == ExternalID.ISRC and is_valid_isrc(value)
+    }
+
+
+def _recording_isrcs(recording: MusicBrainzRecording) -> set[str]:
+    """Return a MusicBrainz recording's valid ISRCs in canonical form."""
+    return {
+        normalize_external_id(ExternalID.ISRC, x) for x in recording.isrcs or [] if is_valid_isrc(x)
     }
