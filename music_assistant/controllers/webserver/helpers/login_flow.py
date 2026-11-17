@@ -15,6 +15,8 @@ from music_assistant_models.errors import MusicAssistantError, RateLimited
 from music_assistant.helpers.pkce import pkce_challenge
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from music_assistant_models.auth import AuthProviderType
 
 # Seconds a sign-in may take, and how many may be pending at once
@@ -69,6 +71,25 @@ class ExternalIdentity:
     avatar_url: str | None = None  # https only
     groups: list[str] = field(default_factory=list)
     claims: dict[str, Any] = field(default_factory=dict)  # snapshot, size-capped
+
+
+@dataclass
+class StoredIdentity:
+    """An external identity linked to a user, as the auth database stores it."""
+
+    identity_id: str
+    user_id: str
+    provider_type: AuthProviderType
+    provider_id: str  # instance id of the auth provider that verified it
+    issuer: str
+    subject: str
+    created_at: datetime
+    email: str | None = None
+    email_verified: bool = False
+    display_name: str | None = None
+    username_hint: str | None = None
+    claims: dict[str, Any] = field(default_factory=dict)
+    last_login_at: datetime | None = None
 
 
 class LoginFlowError(MusicAssistantError):

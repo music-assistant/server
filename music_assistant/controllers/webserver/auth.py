@@ -67,9 +67,11 @@ from music_assistant.controllers.webserver.helpers.login_flow import (
     AUTH_CODE_RE,
     PKCE_CHALLENGE_RE,
     AuthTransport,
+    ExternalIdentity,
     PendingLogin,
     PendingLoginStore,
     RedirectTarget,
+    StoredIdentity,
     verify_pkce,
 )
 from music_assistant.helpers.api import api_command
@@ -91,7 +93,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 PREF_SIDEBAR_SHORTCUTS = "sidebar.shortcuts"
 
 # Database schema version
-DB_SCHEMA_VERSION = 5
+DB_SCHEMA_VERSION = 6
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
@@ -361,6 +363,7 @@ class AuthenticationManager:
             avatar_url=user_row["avatar_url"],
             preferences=json_loads(user_row["preferences"]),
             player_filter=json_loads(user_row["player_filter"]),
+            email=user_row["email"],
         )
 
     async def get_user_by_username(
@@ -609,6 +612,7 @@ class AuthenticationManager:
         username: str | None = None,
         display_name: str | None = None,
         avatar_url: str | None = None,
+        email: str | None = None,
     ) -> User:
         """
         Update a user's profile information.
@@ -617,8 +621,10 @@ class AuthenticationManager:
         :param username: New username (optional).
         :param display_name: New display name (optional).
         :param avatar_url: New avatar URL (optional).
+        :param email: New email address (optional, an empty string clears it).
+        :raises InvalidDataError: If another user holds the email address.
         """
-        updates = {}
+        updates: dict[str, str | None] = {}
         if username is not None:
             # Normalize username for case-insensitive authentication
             updates["username"] = normalize_username(username)
@@ -626,6 +632,11 @@ class AuthenticationManager:
             updates["display_name"] = display_name
         if avatar_url is not None:
             updates["avatar_url"] = avatar_url
+        if email is not None:
+            normalized_email = _normalize_email(email)
+            if normalized_email:
+                await self._ensure_email_available(normalized_email, user.user_id)
+            updates["email"] = normalized_email
 
         if updates:
             await self.database.update("users", {"user_id": user.user_id}, updates)
@@ -695,6 +706,105 @@ class AuthenticationManager:
         else:
             # Create new link
             await self.link_user_to_provider(user, provider_type, provider_user_id)
+
+    async def get_identity(self, issuer: str, subject: str) -> StoredIdentity | None:
+        """
+        Get the stored external identity with the given issuer and subject, if any.
+
+        :param issuer: The issuer that identifies the identity provider.
+        :param subject: The identity provider's id of the account.
+        """
+        row = await self.database.get_row("user_identities", {"issuer": issuer, "subject": subject})
+        return _identity_from_row(row) if row else None
+
+    async def get_user_identities(self, user_id: str) -> list[StoredIdentity]:
+        """
+        Get the external identities linked to a user.
+
+        :param user_id: The user ID.
+        """
+        rows = await self.database.get_rows(
+            "user_identities", {"user_id": user_id}, order_by="created_at"
+        )
+        return [_identity_from_row(row) for row in rows]
+
+    async def add_identity(
+        self, user_id: str, provider_id: str, identity: ExternalIdentity
+    ) -> StoredIdentity:
+        """
+        Link an external identity to a user.
+
+        :param user_id: The ID of the user to link the identity to.
+        :param provider_id: The instance ID of the auth provider that verified the identity.
+        :param identity: The verified identity.
+        :raises InvalidDataError: If the identity is already linked to a user.
+        """
+        stored = StoredIdentity(
+            identity_id=secrets.token_urlsafe(32),
+            user_id=user_id,
+            provider_type=identity.provider_type,
+            provider_id=provider_id,
+            issuer=identity.issuer,
+            subject=identity.subject,
+            created_at=utc(),
+            email=identity.email,
+            email_verified=identity.email_verified,
+            display_name=identity.display_name,
+            username_hint=identity.username,
+            claims=identity.claims,
+        )
+        try:
+            await self.database.insert(
+                "user_identities",
+                {
+                    "identity_id": stored.identity_id,
+                    "user_id": user_id,
+                    "provider_type": stored.provider_type.value,
+                    "provider_id": provider_id,
+                    "issuer": stored.issuer,
+                    "subject": stored.subject,
+                    "email": stored.email,
+                    "email_verified": stored.email_verified,
+                    "display_name": stored.display_name,
+                    "username_hint": stored.username_hint,
+                    "claims": json_dumps(stored.claims),
+                    "created_at": stored.created_at.isoformat(),
+                },
+            )
+        except IntegrityError as err:
+            raise InvalidDataError("This identity is already linked to a user") from err
+        return stored
+
+    async def update_identity_snapshot(
+        self, identity_id: str, identity: ExternalIdentity, last_login_at: datetime | None = None
+    ) -> None:
+        """
+        Store what the identity provider returned for a linked identity at its latest sign-in.
+
+        :param identity_id: The ID of the stored identity.
+        :param identity: The verified identity as the provider returned it.
+        :param last_login_at: When the identity signed in, None for now.
+        """
+        await self.database.update(
+            "user_identities",
+            {"identity_id": identity_id},
+            {
+                "email": identity.email,
+                "email_verified": identity.email_verified,
+                "display_name": identity.display_name,
+                "username_hint": identity.username,
+                "claims": json_dumps(identity.claims),
+                "last_login_at": (last_login_at or utc()).isoformat(),
+            },
+        )
+
+    async def delete_identity(self, identity_id: str) -> None:
+        """
+        Unlink an external identity from its user.
+
+        :param identity_id: The ID of the stored identity.
+        """
+        await self.database.delete("user_identities", {"identity_id": identity_id})
 
     async def create_token(self, user: User, name: str, is_long_lived: bool = False) -> str:
         """
@@ -887,6 +997,7 @@ class AuthenticationManager:
                     avatar_url=row["avatar_url"],
                     preferences=json_loads(row["preferences"]),
                     player_filter=json_loads(row["player_filter"]),
+                    email=row["email"],
                 )
             )
         return [with_derived_provider_filter(self.mass, user) for user in users]
@@ -1394,6 +1505,7 @@ class AuthenticationManager:
         display_name: str | None = None,
         avatar_url: str | None = None,
         player_filter: list[str] | None = None,
+        email: str | None = None,
     ) -> User:
         """
         Create a new user with built-in authentication (admin only).
@@ -1404,6 +1516,7 @@ class AuthenticationManager:
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
         :param player_filter: Optional list of player IDs user has access to.
+        :param email: Optional email address (must not be in use by another user).
         :return: Created user object.
         """
         # Validation
@@ -1413,6 +1526,9 @@ class AuthenticationManager:
             raise InvalidDataError("Password must be at least 8 characters")
 
         self._ensure_role_exists(role)
+        email = _normalize_email(email) if email else None
+        if email:
+            await self._ensure_email_available(email)
 
         # Get built-in provider
         builtin_provider = self.login_providers.get("builtin")
@@ -1428,9 +1544,9 @@ class AuthenticationManager:
         )
 
         # Update optional fields if provided
-        if display_name or avatar_url:
+        if display_name or avatar_url or email:
             updated_user = await self.update_user(
-                user, display_name=display_name, avatar_url=avatar_url
+                user, display_name=display_name, avatar_url=avatar_url, email=email
             )
             if updated_user:
                 user = updated_user
@@ -1463,7 +1579,7 @@ class AuthenticationManager:
 
         # The ON DELETE CASCADE clauses on the dependent tables never fire, since foreign
         # key enforcement is off on our connections, so remove those rows here.
-        for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+        for table in ("auth_tokens", "join_codes", "user_auth_providers", "user_identities"):
             await self.database.delete(table, {"user_id": user_id})
         await self.mass.music.database.delete(DB_TABLE_MEDIA_PROGRESS, {"userid": user_id})
         await self.mass.music.database.delete(DB_TABLE_PLAY_HISTORY, {"userid": user_id})
@@ -1731,12 +1847,14 @@ class AuthenticationManager:
         role: str | None = None,
         preferences: dict[str, Any] | None = None,
         player_filter: list[str] | None = None,
+        email: str | None = None,
     ) -> User:
         """
         Update user profile information.
 
         Users can update their own profile. Admins can update any user including role and password.
         The username, role and password of the Home Assistant system user can not be changed.
+        Only a caller with the users.manage scope may set or change an email address.
 
         :param user_id: User ID to update (optional, defaults to current user).
         :param username: New username (optional, minimum 2 characters, must not be in use).
@@ -1746,6 +1864,7 @@ class AuthenticationManager:
         :param role: The id of the (builtin or custom) role to assign (optional, set by admin only).
         :param preferences: User preferences dict (completely replaces existing, optional).
         :param player_filter: List of player IDs user has access to (set by admin only, optional).
+        :param email: New email address (set by admin only, optional, an empty string clears it).
         :return: Updated user object.
         """
         current_user_obj = get_current_user()
@@ -1771,6 +1890,10 @@ class AuthenticationManager:
             _refuse_system_user(target_user.username)
         if username is not None:
             await self._ensure_valid_username(username, target_user.user_id)
+        if email is not None and not may_manage_users:
+            raise InsufficientPermissions(
+                "The users.manage scope is required to set an email address"
+            )
 
         # Update role (requires the users.manage scope)
         if role:
@@ -1790,12 +1913,13 @@ class AuthenticationManager:
             target_user = refreshed_user
 
         # Update basic profile fields
-        if username or display_name or avatar_url:
+        if username or display_name or avatar_url or email is not None:
             updated_user = await self.update_user(
                 target_user,
                 username=username,
                 display_name=display_name,
                 avatar_url=avatar_url,
+                email=email,
             )
             if not updated_user:
                 raise InvalidDataError("Failed to update user profile")
@@ -2190,7 +2314,8 @@ class AuthenticationManager:
                 preferences json NOT NULL DEFAULT '{}',
                 player_filter json NOT NULL DEFAULT '[]',
                 -- no longer read, kept only to avoid a schema bump
-                provider_filter json NOT NULL DEFAULT '[]'
+                provider_filter json NOT NULL DEFAULT '[]',
+                email TEXT
             )
             """
         )
@@ -2252,6 +2377,28 @@ class AuthenticationManager:
             )
             """
         )
+        # External identities (OIDC and other identity providers) linked to a user
+        await self.database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_identities (
+                identity_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                provider_type TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                issuer TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                email TEXT,
+                email_verified INTEGER NOT NULL DEFAULT 0,
+                display_name TEXT,
+                username_hint TEXT,
+                claims json NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                last_login_at TEXT,
+                refresh_token TEXT,
+                UNIQUE(issuer, subject)
+            )
+            """
+        )
         await self.database.commit()
 
     async def _create_database_indexes(self) -> None:
@@ -2272,6 +2419,13 @@ class AuthenticationManager:
         )
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS idx_join_codes_user ON join_codes(user_id)"
+        )
+        await self.database.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) "
+            "WHERE email IS NOT NULL"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities(user_id)"
         )
 
     async def _migrate_database(self, from_version: int) -> None:
@@ -2327,6 +2481,16 @@ class AuthenticationManager:
                 )
                 """
             )
+            await self.database.commit()
+
+        # Migration to version 6: Add the user email and the external identities table
+        if from_version < 6:
+            if not await self.database.get_count_from_query(
+                "SELECT name FROM pragma_table_info('users') WHERE name = 'email'"
+            ):
+                await self.database.execute("ALTER TABLE users ADD COLUMN email TEXT")
+            await self._create_database_tables()
+            await self._create_database_indexes()
             await self.database.commit()
 
     async def _get_or_create_jwt_secret(self) -> str:
@@ -2528,6 +2692,19 @@ class AuthenticationManager:
                 f"The username {username} is already in use", translation_key="username_taken"
             )
 
+    async def _ensure_email_available(self, email: str, user_id: str | None = None) -> None:
+        """
+        Raise when the given (normalized) email address is held by another user.
+
+        :param email: The email address to check, in its stored form.
+        :param user_id: The id of the user the address is for, None for a new user.
+        """
+        user_row = await self.database.get_row("users", {"email": email})
+        if user_row and user_row["user_id"] != user_id:
+            raise InvalidDataError(
+                f"The email address {email} is already in use", translation_key="email_taken"
+            )
+
     async def _ensure_not_last_admin(self, user_row: Mapping[str, Any]) -> None:
         """
         Raise when the given user is the last enabled administrator.
@@ -2550,7 +2727,7 @@ class AuthenticationManager:
         # this is optional hygiene, so a failure must never take the server down with it
         try:
             total = 0
-            for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+            for table in ("auth_tokens", "join_codes", "user_auth_providers", "user_identities"):
                 cursor = await self.database.execute(
                     f"DELETE FROM {table} WHERE user_id NOT IN (SELECT user_id FROM users)"
                 )
@@ -2933,3 +3110,36 @@ def _refuse_system_user(username: str) -> None:
             "or given another role or password.",
             translation_key="system_user_protected",
         )
+
+
+def _normalize_email(email: str) -> str | None:
+    """
+    Return an email address in its stored form, or None when it is blank.
+
+    :param email: The email address as given.
+    """
+    return email.strip().lower() or None
+
+
+def _identity_from_row(row: Mapping[str, Any]) -> StoredIdentity:
+    """
+    Build a stored identity from its user_identities row.
+
+    :param row: The user_identities row.
+    """
+    last_login_at = row["last_login_at"]
+    return StoredIdentity(
+        identity_id=row["identity_id"],
+        user_id=row["user_id"],
+        provider_type=AuthProviderType(row["provider_type"]),
+        provider_id=row["provider_id"],
+        issuer=row["issuer"],
+        subject=row["subject"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        email=row["email"],
+        email_verified=bool(row["email_verified"]),
+        display_name=row["display_name"],
+        username_hint=row["username_hint"],
+        claims=json_loads(row["claims"]),
+        last_login_at=datetime.fromisoformat(last_login_at) if last_login_at else None,
+    )

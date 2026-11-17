@@ -1300,6 +1300,7 @@
     "system_user_protected": "The Home Assistant system account can not be deleted, disabled, renamed or given another role or password.",
     "last_admin": "This is the last administrator. Make another user an administrator first.",
     "username_taken": "This username is already in use.",
+    "email_taken": "This email address is already in use by another user.",
     "username_too_short": "Username must be at least {0} characters.",
     "sign_in_expired": "This sign-in has expired or was already used. Please sign in again.",
     "self_registration_disabled": "Self-registration is disabled. Please contact an administrator.",
