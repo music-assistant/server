@@ -26,6 +26,7 @@ from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import AnnouncementFeature
 from music_assistant.providers.sonos.const import (
     PLAYER_SOURCE_MAP,
+    SOURCE_AIRPLAY,
     SOURCE_LINE_IN,
     SOURCE_SPOTIFY,
 )
@@ -65,6 +66,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._queue_session_id = None
     player._hand_over_tasks = set()
     player._airplay_rejoin_members = set()
+    player._own_airplay_session = False
     player.upnp = MagicMock(
         follow=AsyncMock(), unfollow=AsyncMock(), follows=False, player_ip="192.168.1.20"
     )
@@ -1161,6 +1163,80 @@ def test_a_service_we_did_not_map_leaves_the_source_list_when_it_is_given_up_on(
 
     assert player._attr_active_source is None
     assert player.source_list == [PLAYER_SOURCE_MAP[SOURCE_LINE_IN]]
+
+
+def _report_airplay(
+    player: SonosPlayer, client: MagicMock, state: SonosPlayBackState, *, our_output: bool
+) -> None:
+    """Let the speaker report an AirPlay session, with or without our AirPlay output on it."""
+    group = client.player.group
+    group.playback_state = state
+    group.position = 0.0
+    group.container_type = ContainerType.AIRPLAY
+    group.active_service = None
+    group.playback_metadata = {
+        "container": {"name": "AirPlay", "type": "linein.airplay", "service": {"name": "Airplay"}}
+    }
+    group.playback_actions = _actions({})
+    player._airplay_output = MagicMock(  # type: ignore[method-assign]
+        return_value=MagicMock() if our_output else None
+    )
+    player.on_player_event(None)
+
+
+def _speaker_on_airplay() -> tuple[SonosPlayer, MagicMock]:
+    """Create a connected player that coordinates a group of its own."""
+    player, _, client = _connected_player()
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    return player, client
+
+
+def test_our_stopped_airplay_session_is_reported_idle_without_a_source() -> None:
+    """Test the paused AirPlay session the speaker keeps after our stream stopped is not a source."""
+    player, client = _speaker_on_airplay()
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=True)
+
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PAUSED, our_output=False)
+
+    assert player._attr_playback_state is PlaybackState.IDLE
+    assert player._attr_active_source is None
+
+
+def test_an_airplay_sender_of_its_own_is_reported_as_the_airplay_source() -> None:
+    """Test a phone that starts AirPlay on the speaker shows as source AirPlay."""
+    player, client = _speaker_on_airplay()
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=True)
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PAUSED, our_output=False)
+
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=False)
+
+    assert (player._attr_playback_state, player._attr_active_source) == (
+        PlaybackState.PLAYING,
+        SOURCE_AIRPLAY,
+    )
+
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PAUSED, our_output=False)
+
+    assert (player._attr_playback_state, player._attr_active_source) == (
+        PlaybackState.PAUSED,
+        SOURCE_AIRPLAY,
+    )
+
+
+def test_other_speaker_events_keep_our_airplay_session() -> None:
+    """Test an event that leaves the playback alone, such as a volume change, keeps our session."""
+    player, client = _speaker_on_airplay()
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=True)
+    # our stream ends before the speaker reports its pause
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=False)
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PAUSED, our_output=False)
+
+    client.player.volume_level = 12
+    player.on_player_event(None)
+
+    assert player._attr_playback_state is PlaybackState.IDLE
+    assert player._attr_active_source is None
 
 
 def _wakeable_player() -> tuple[SonosPlayer, MagicMock]:
