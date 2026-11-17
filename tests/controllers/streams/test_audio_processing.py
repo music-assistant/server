@@ -59,6 +59,15 @@ from music_assistant.helpers.dsp import ComplexFilter
 from tests.common import MockProtocol, MockProvider, attach_mock, mock_player_mass
 
 
+def _bare_buffer(**attributes: Any) -> SimpleNamespace:
+    """
+    Build a bare stand-in for the buffer of an item that a flow stream plays.
+
+    :param attributes: What the test reads from or sets on the buffer.
+    """
+    return SimpleNamespace(release_if_unneeded=lambda: None, **attributes)
+
+
 def _format(
     content_type: ContentType,
     sample_rate: int = 44100,
@@ -1770,7 +1779,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         seek_position=0,
         seconds_streamed=0,
         duration=120,
-        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        buffer=_bare_buffer(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         is_realtime=False,
     )
     first_item = SimpleNamespace(
@@ -1787,7 +1796,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
     skipped_ready.set()
     skipped_streamdetails = SimpleNamespace(
         audio_format=pcm_format,
-        buffer=SimpleNamespace(
+        buffer=_bare_buffer(
             has_error=False,
             is_valid=lambda *_args: True,
             duration_available=16,
@@ -1893,7 +1902,7 @@ async def test_flow_ends_unfinished_when_its_source_is_released(
     pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
     streamdetails = SimpleNamespace(
         audio_format=pcm_format,
-        buffer=SimpleNamespace(cancelled=source_cancelled and not detached),
+        buffer=_bare_buffer(cancelled=source_cancelled and not detached),
         fade_in=False,
         stream_error=False,
         tail_overlap=None,
