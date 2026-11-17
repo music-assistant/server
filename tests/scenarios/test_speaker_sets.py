@@ -23,6 +23,8 @@ from .harness import DEFAULT_FEATURES, TEST_TRACK_URI, Event, Scenario
 if TYPE_CHECKING:
     from music_assistant_models.player import Player as PlayerState
 
+    from music_assistant.models.player import Player
+
     from .harness import FakeProtocol
 
 LIVING = {
@@ -44,6 +46,8 @@ DEN = {
 GROUPING = frozenset({*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS})
 # the events that tell clients a player came, changed or went
 PLAYER_EVENTS = (EventType.PLAYER_ADDED, EventType.PLAYER_UPDATED, EventType.PLAYER_REMOVED)
+# how long a protocol of a speaker takes to detach, in seconds, as one that closes a connection
+DETACH_TIME = 2
 
 
 async def test_a_speaker_that_goes_up_in_a_set_is_no_player_anymore(scenario: Scenario) -> None:
@@ -416,6 +420,95 @@ async def test_a_group_plays_on_without_a_speaker_that_goes_up_in_a_set(
     await _stop(scenario, playing_id)
 
 
+async def test_the_same_set_reported_twice_at_once_takes_its_speaker_out_once(
+    scenario: Scenario,
+) -> None:
+    """
+    Two reports of the same set at the same moment take the speaker out of use once.
+
+    Also while a protocol of the speaker takes its time to detach: clients are told once that
+    it is removed, and its queue is let go of once.
+    """
+    living, patio, patio_airplay = await _living_and_patio(scenario)
+    patio_id = scenario.single_player(patio, patio_airplay).player_id
+    patio_airplay.detach_time = DETACH_TIME
+    scenario.clear_events()
+    queues = scenario.mass.player_queues
+
+    with patch.object(queues, "on_player_remove", wraps=queues.on_player_remove) as queue_removals:
+        reports = [
+            await scenario.command(_set_of(scenario, living, patio)),
+            await scenario.command(_set_of(scenario, living, patio)),
+        ]
+        await scenario.advance(DETACH_TIME)
+        for report in reports:
+            await report
+    await scenario.idle()
+
+    assert scenario.removals() == [(patio_id, None)]
+    assert [call.args[0] for call in queue_removals.call_args_list] == [patio_id]
+
+
+async def test_a_set_reported_and_taken_apart_at_once_lets_its_speaker_go(
+    scenario: Scenario,
+) -> None:
+    """
+    A report that names a speaker and one that no longer does, at the same moment, end as the second.
+
+    The speaker is taken out of use and brought back: clients are told it is removed and then
+    added, it no longer names the set, and its protocols attach again.
+    """
+    living, patio, patio_airplay = await _living_and_patio(scenario)
+    patio_id = scenario.single_player(patio, patio_airplay).player_id
+    patio_airplay.detach_time = DETACH_TIME
+    scenario.clear_events()
+
+    reports = [
+        await scenario.command(_set_of(scenario, living, patio)),
+        await scenario.command(_set_of(scenario, living)),
+    ]
+    await scenario.advance(DETACH_TIME)
+    for report in reports:
+        await report
+    await scenario.idle()
+
+    assert scenario.events(EventType.PLAYER_REMOVED, EventType.PLAYER_ADDED) == [
+        Event(EventType.PLAYER_REMOVED, patio_id),
+        Event(EventType.PLAYER_ADDED, patio_id),
+    ]
+    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{patio_id}/{CONF_ABSORBED_BY}") is None
+    assert scenario.player_of(patio) == scenario.player_of(patio_airplay) == patio_id
+
+
+async def test_a_set_reported_while_its_protocol_attaches_takes_its_speaker_out(
+    scenario: Scenario,
+) -> None:
+    """
+    A provider may report the set while the protocol that delivers it attaches.
+
+    The protocol attaches, and the speaker the set names goes out of use.
+    """
+    sonos = await scenario.add_provider("sonos")
+    patio = sonos.protocol("sonos_patio", "Patio", identifiers=PATIO)
+    await scenario.register(patio)
+    await scenario.idle()
+    patio_id = scenario.single_player(patio).player_id
+    living = sonos.protocol("sonos_living", "Living", identifiers=LIVING)
+
+    async def _report_set_on_attach(player: Player) -> None:  # noqa: ARG001
+        """Report the set the protocol delivers, as a provider does once it is attached."""
+        await _set_of(scenario, living, patio)
+
+    living.on_attach = _report_set_on_attach  # type: ignore[method-assign]
+    attach = await scenario.command(scenario.mass.players.register(living))
+    await scenario.idle()
+
+    assert attach.done(), "the attach of the protocol that delivers the set did not finish"
+    await attach
+    assert scenario.player_of(living) is not None
+    assert scenario.removals() == [(patio_id, None)]
+
+
 async def _living_and_patio(
     scenario: Scenario, *, grouping: bool = False
 ) -> tuple[FakeProtocol, FakeProtocol, FakeProtocol]:
@@ -454,6 +547,18 @@ async def _report_set(scenario: Scenario, protocol: FakeProtocol, *speakers: Fak
         protocol.protocol_id, [speaker.protocol_id for speaker in speakers]
     )
     await scenario.idle()
+
+
+async def _set_of(scenario: Scenario, protocol: FakeProtocol, *speakers: FakeProtocol) -> None:
+    """
+    Report the other speakers of the set a protocol delivers, without waiting for the server.
+
+    :param protocol: The protocol that delivers the set.
+    :param speakers: The protocols of the other speakers of the set; none for no set.
+    """
+    await scenario.mass.players.set_absorbed_protocols(
+        protocol.protocol_id, [speaker.protocol_id for speaker in speakers]
+    )
 
 
 async def _change_a_queue_setting(scenario: Scenario, queue_id: str) -> None:

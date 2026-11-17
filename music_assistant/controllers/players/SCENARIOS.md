@@ -1198,6 +1198,29 @@ command about it reaches Kitchen or Patio.
   yet, and a stereo pair of it.
 - Proven by: `test_speaker_sets.py::test_a_group_plays_on_without_a_speaker_that_goes_up_in_a_set`
 
+### SET-10 · Reports of a set that come at the same moment are handled one after the other
+
+Two reports of the set of Living come at the same moment, while the AirPlay receiver of Patio takes
+its time to detach. When both name Patio, clients are told once that it is removed, and its queue
+is let go of once. When the second no longer names it, Patio is taken out and brought back: clients
+are told it is removed and then added, its record no longer names the set, and its protocols attach
+again.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by:
+  - `test_speaker_sets.py::test_the_same_set_reported_twice_at_once_takes_its_speaker_out_once`
+  - `test_speaker_sets.py::test_a_set_reported_and_taken_apart_at_once_lets_its_speaker_go`
+
+### SET-11 · A set can be reported while its protocol attaches
+
+The Sonos provider reports the set of Living from the attach of the protocol of Living. Living
+attaches, and Patio goes out of use.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by: `test_speaker_sets.py::test_a_set_reported_while_its_protocol_attaches_takes_its_speaker_out`
+
 ## Browser and app players
 
 A browser or app player has the id of its client and is the same player in every session. Until

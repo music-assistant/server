@@ -132,6 +132,9 @@ class PlayerController(
         )
         # Lock to prevent race conditions while protocols attach
         self._register_lock = asyncio.Lock()
+        # one report of the speakers of a set at a time; a report may come from on_attach,
+        # while the lock above is held
+        self._absorbed_protocols_lock = asyncio.Lock()
         # the end of the wait of every held protocol whose identifiers may still arrive
         self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
         # Live external AudioSource playing on a player, keyed on player_id

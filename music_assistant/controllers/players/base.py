@@ -80,6 +80,7 @@ class _PlayerControllerBase(CoreController):
     _task_held_locks: weakref.WeakKeyDictionary[asyncio.Task[Any], set[str]]
     _lock_holders: weakref.WeakValueDictionary[str, asyncio.Task[Any]]
     _register_lock: asyncio.Lock
+    _absorbed_protocols_lock: asyncio.Lock
     _pending_protocol_evaluations: dict[str, asyncio.TimerHandle]
     _source_sessions: dict[str, AudioSourceSession]
     _member_power_ons: dict[asyncio.Future[list[bool]], tuple[str, frozenset[str]]]

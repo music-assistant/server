@@ -329,36 +329,40 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         longer names it, it comes back under its id, unless the user disabled it.
         An id in the list is skipped when it has no stored config, or when its player is the
         player of this protocol, a group, or already part of another set. Nothing happens when
-        this protocol itself has no stored config, or when the list changes nothing.
+        this protocol itself has no stored config, or when the list changes nothing. It may be
+        called from on_attach; calls are handled one after the other.
 
         :param protocol_id: Id of the protocol that delivers the set.
         :param absorbed_protocol_ids: Ids of the protocols of the other speakers of the set,
             all of the provider of that protocol.
         """
-        if (set_player_id := self._get_stored_player_id(protocol_id)) is None:
-            return
-        absorbed_ids: set[str] = set()
-        for absorbed_protocol_id in absorbed_protocol_ids:
-            player_id = self._get_stored_player_id(absorbed_protocol_id)
-            if player_id is None or player_id == set_player_id:
-                continue
-            player = self._players.get(player_id)
-            stored_type = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/player_type")
-            if (player.reported_type if player else stored_type) == PlayerType.GROUP:
-                continue
-            # the first set that claims a speaker keeps it
-            if self.mass.config.get_absorbing_protocol_id(player_id) not in (None, protocol_id):
-                continue
-            absorbed_ids.add(player_id)
-        for player_id, stored in list(self.mass.config.get(CONF_PLAYERS, {}).items()):
-            if (
-                isinstance(stored, dict)
-                and stored.get(CONF_ABSORBED_BY) == protocol_id
-                and player_id not in absorbed_ids
-            ):
-                await self._release_absorbed_player(player_id)
-        for player_id in absorbed_ids:
-            await self._absorb_player(player_id, protocol_id)
+        # each report reads what the one before it stored and took out of use
+        async with self._absorbed_protocols_lock:
+            if (set_player_id := self._get_stored_player_id(protocol_id)) is None:
+                return
+            absorbed_ids: set[str] = set()
+            for absorbed_protocol_id in absorbed_protocol_ids:
+                player_id = self._get_stored_player_id(absorbed_protocol_id)
+                if player_id is None or player_id == set_player_id:
+                    continue
+                player = self._players.get(player_id)
+                stored_type = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/player_type")
+                if (player.reported_type if player else stored_type) == PlayerType.GROUP:
+                    continue
+                # the first set that claims a speaker keeps it
+                claimed_by = self.mass.config.get_absorbing_protocol_id(player_id)
+                if claimed_by not in (None, protocol_id):
+                    continue
+                absorbed_ids.add(player_id)
+            for player_id, stored in list(self.mass.config.get(CONF_PLAYERS, {}).items()):
+                if (
+                    isinstance(stored, dict)
+                    and stored.get(CONF_ABSORBED_BY) == protocol_id
+                    and player_id not in absorbed_ids
+                ):
+                    await self._release_absorbed_player(player_id)
+            for player_id in absorbed_ids:
+                await self._absorb_player(player_id, protocol_id)
 
     def on_unattached_protocol_update(self, protocol: PlayerProtocol) -> None:
         """

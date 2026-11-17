@@ -935,7 +935,7 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
    delivers no set. The provider guarantees that the list comes from what the speakers themselves
    report, never from a speaker that is silent or from a timeout; that it names only protocol ids of
    the provider itself; and that it registers no protocol of its own for a speaker while its set
-   names it.
+   names it. It may make the call from `on_attach`, and calls are handled one after the other.
 
 **Important Notes:**
 - **Always validate MAC addresses** using `is_valid_mac_address()` before adding them
