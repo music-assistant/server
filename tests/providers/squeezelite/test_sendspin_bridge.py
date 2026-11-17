@@ -59,6 +59,7 @@ from music_assistant.providers.squeezelite.sendspin_bridge import (
     CLOCK_MAX_AGE_US,
     LEAD_IN_US,
     MAX_BLOCK_US,
+    MAX_FLAC_BLOCKS,
     MAX_PENDING_AUDIO_US,
     MAX_PENDING_CHUNKS,
     MAX_PENDING_STATUS,
@@ -1492,9 +1493,19 @@ async def test_a_stream_is_in_the_format_sendspin_prefers(rig: _Rig) -> None:
     assert bytes(response.body) == session.preroll
 
 
-def _source(content_type: ContentType, bit_depth: int) -> AudioFormat:
-    """Return the format of the first item of a playback session."""
-    return AudioFormat(content_type=content_type, sample_rate=44100, bit_depth=bit_depth)
+def _source(
+    content_type: ContentType, bit_depth: int, codec_type: ContentType = ContentType.UNKNOWN
+) -> AudioFormat:
+    """
+    Return the format of the first item of a playback session.
+
+    :param content_type: Its container, which is its codec too where it holds only one.
+    :param bit_depth: Its bit depth: 16 where a provider does not tell.
+    :param codec_type: The codec in a container that holds more than one.
+    """
+    return AudioFormat(
+        content_type=content_type, sample_rate=44100, bit_depth=bit_depth, codec_type=codec_type
+    )
 
 
 FLAC_PLAYER = ["flc", "pcm", "mp3"]
@@ -1551,11 +1562,25 @@ SENT = [
     # a lossy source has 16 bits, whatever its decoder makes of it
     ("flac", FLAC_PLAYER, _source(ContentType.MP3, 24), (16, 24), FLAC, 16),
     ("wav", PLAIN_PLAYER, _source(ContentType.AAC, 24), (16, 24), PCM_16, 16),
-    # a source that is not known plays in all the bits of the player
+    ("flac", FLAC_PLAYER, _source(ContentType.MP3, 24), (16,), FLAC, 16),
+    # a container is as lossless as the codec in it
+    ("flac", FLAC_PLAYER, _source(ContentType.M4A, 24, ContentType.ALAC), (16, 24), FLAC, 24),
+    ("wav", PLAIN_PLAYER, _source(ContentType.M4A, 24, ContentType.ALAC), (16, 24), PCM_24, 24),
+    ("flac", FLAC_PLAYER, _source(ContentType.M4A, 16, ContentType.ALAC), (16, 24), FLAC, 16),
+    ("flac", FLAC_PLAYER, _source(ContentType.M4A, 24, ContentType.AAC), (16, 24), FLAC, 16),
+    ("flac", FLAC_PLAYER, _source(ContentType.UNKNOWN, 24, ContentType.AAC), (16, 24), FLAC, 16),
+    ("flac", FLAC_PLAYER, _source(ContentType.UNKNOWN, 24, ContentType.FLAC), (16, 24), FLAC, 24),
+    # a source that is not known plays in all the bits of the player: no item, or one
+    # whose provider does not tell what it is
     ("flac", FLAC_PLAYER, None, (16, 24), FLAC, 24),
     ("wav", PLAIN_PLAYER, None, (16, 24), PCM_24, 24),
     ("mp3", FLAC_PLAYER, None, (16, 24), PCM_16, 16),
     ("aac", PLAIN_PLAYER, None, (16, 24), PCM_16, 16),
+    ("flac", FLAC_PLAYER, None, (16,), FLAC, 16),
+    ("flac", FLAC_PLAYER, _source(ContentType.UNKNOWN, 16), (16, 24), FLAC, 24),
+    ("wav", PLAIN_PLAYER, _source(ContentType.UNKNOWN, 16), (16, 24), PCM_24, 24),
+    ("flac", FLAC_PLAYER, _source(ContentType.UNKNOWN, 16), (16,), FLAC, 16),
+    ("mp3", FLAC_PLAYER, _source(ContentType.UNKNOWN, 16), (16, 24), PCM_16, 16),
 ]
 
 
@@ -1565,9 +1590,10 @@ def _sent_id(case: tuple[str, list[str], AudioFormat | None, tuple[int, ...], st
     player = f"{'flac' if 'flc' in codecs else 'plain'} player of {max(depths)} bits"
     if source is None:
         return f"{output_codec}, {player}, source unknown"
-    return (
-        f"{output_codec}, {player}, {source.content_type.value} source of {source.bit_depth} bits"
-    )
+    kind = source.content_type.value
+    if source.codec_type != ContentType.UNKNOWN:
+        kind += f" with {source.codec_type.value}"
+    return f"{output_codec}, {player}, {kind} source of {source.bit_depth} bits"
 
 
 @pytest.mark.parametrize(
@@ -1597,6 +1623,111 @@ async def test_the_output_codec_and_the_source_decide_what_a_player_is_sent(
 
         assert (session.mime_type, session.audio_format.bit_depth) == (mime_type, bit_depth)
         assert rig.client.play_url.await_args.kwargs["mime_type"] == mime_type
+    finally:
+        await rig.close()
+
+
+async def test_a_flac_stream_that_fails_before_it_played_is_restarted_as_pcm(
+    flac_rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A player whose FLAC stream does not get to play is sent PCM, for as long as its bridge lasts."""
+    rig = flac_rig
+    client = rig.grouped()
+    first = await rig.start_playing()
+    assert first.mime_type == "audio/flac"
+
+    await rig.run_dry(played_s=2)
+
+    restarted = rig.session
+    assert restarted is not first
+    assert (restarted.mime_type, restarted.audio_format.bit_depth) == (MIME_TYPE, 16)
+    assert rig.client.play_url.await_args.kwargs["mime_type"] == MIME_TYPE
+    # with the audio the player had not played of its FLAC stream
+    assert [chunk.timestamp_us for chunk in restarted.chunks] == [rig.origin_us]
+    (told,) = [record for record in caplog.records if "instead of FLAC" in record.getMessage()]
+    assert told.levelno == logging.WARNING
+    assert told.getMessage() == (
+        "Kitchen is sent PCM instead of FLAC from now on: its FLAC stream failed before it "
+        "played 10 s"
+    )
+    # the failure counts as any other: two more in a row take the player out
+    await rig.run_dry()
+    assert rig.owns_stream()
+    assert rig.session.mime_type == MIME_TYPE
+    client.quiesce_to_solo_stopped.assert_not_called()
+    await rig.run_dry()
+    assert not rig.owns_stream()
+    client.quiesce_to_solo_stopped.assert_awaited_once()
+    # the streams after it are PCM too, and nothing more is said about it
+    assert (await rig.start_playing()).mime_type == MIME_TYPE
+    assert len([record for record in caplog.records if "of FLAC" in record.getMessage()]) == 1
+    # until the player has a new bridge
+    bridge = SendspinSqueezeliteBridge(rig.provider, rig.protocol, rig.server)
+    assert bridge._role_format().content_type == ContentType.FLAC
+
+
+async def test_a_flac_stream_that_fails_after_it_played_stays_flac(
+    flac_rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A player that played its FLAC stream for 10 seconds decodes it: its restart is FLAC."""
+    rig = flac_rig
+    first = await rig.start_playing()
+
+    await rig.run_dry(played_s=10)
+
+    assert rig.session is not first
+    assert rig.session.mime_type == "audio/flac"
+    assert (await rig.start_playing()).mime_type == "audio/flac"
+    assert "instead of FLAC" not in caplog.text
+
+
+@pytest.mark.parametrize(("output_codec", "codecs"), [("wav", FLAC_PLAYER), ("flac", PLAIN_PLAYER)])
+async def test_a_pcm_stream_that_fails_before_it_played_is_restarted_as_it_was(
+    output_codec: str, codecs: list[str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A player that is sent PCM has no other stream to go to, and its next bridge none to avoid."""
+    rig = _Rig(output_codec=output_codec)
+    try:
+        rig.client.supported_codecs = codecs
+        first = await rig.start_playing()
+
+        await rig.run_dry()
+
+        assert rig.session is not first
+        assert rig.session.mime_type == first.mime_type == MIME_TYPE
+        assert "instead of FLAC" not in caplog.text
+        # a FLAC stream is still what it gets once it is set to it and plays it
+        rig.config[CONF_OUTPUT_CODEC] = "flac"
+        rig.client.supported_codecs = FLAC_PLAYER
+        assert (await rig.start_playing()).mime_type == "audio/flac"
+    finally:
+        await rig.close()
+
+
+@pytest.mark.parametrize(
+    ("output_codec", "frames"),
+    [("wav", MAX_BLOCK_FRAMES), ("flac", MAX_FLAC_BLOCKS * BLOCK_FRAMES)],
+)
+async def test_a_round_of_the_writer_takes_no_more_than_the_event_loop_can_spare(
+    output_codec: str, frames: int
+) -> None:
+    """A FLAC stream is encoded as it is written: a dozen blocks a round, where PCM goes half a second."""
+    rig = _Rig(output_codec=output_codec)
+    try:
+        session = await rig.start_playing(frames=SECOND)
+        for second in range(1, 30):
+            rig.bridge._on_audio_chunk(_chunk(rig.origin_us, second * SECOND, SECOND))
+
+        # the silence ahead of its start
+        assert len(rig.bridge._next_block(session)) == frames * FRAME_SIZE
+        # and its audio, on the way to its long lead
+        rig.align(session)
+        rig.follow(session)
+        assert session.loop is not None
+        for _ in range(2):
+            taken = session.loop.frames_consumed
+            assert rig.bridge._next_block(session)
+            assert session.loop.frames_consumed - taken == frames
     finally:
         await rig.close()
 
@@ -1751,20 +1882,33 @@ async def test_a_flac_player_is_kept_its_lead_in_what_it_can_decode(flac_rig: _R
     assert rig.session is session
 
 
-@pytest.mark.parametrize(("level", "held_ms"), [(15, 180), (3, 660)])
+@pytest.mark.parametrize(("level", "held_ms"), [(15, 180), (3, 660), (0, 1500)])
 async def test_a_live_source_reaches_a_flac_player_with_no_silence_in_its_place(
     flac_rig: _Rig, caplog: pytest.LogCaptureFixture, level: int, held_ms: int
 ) -> None:
-    """Audio that is only 2 seconds ahead leaves a player enough to decode, loud or quiet."""
+    """
+    Audio that is only 2 seconds ahead reaches a player as it is, loud or quiet.
+
+    The quietest audio that goes out compressed leaves a second and a half of it undecoded,
+    and its player half a second to play: the writer has no silence to send for that.
+    """
     caplog.set_level(logging.DEBUG, logger="test.squeezelite")
     rig = flac_rig
     rng = random.Random(level)  # noqa: S311
     tenth = SECOND // 10
     ahead_us = BRIDGE_REQUIRED_LEAD_MS * 1000
+    # ten values on one channel, the same ones in every block: frames of 580 bytes, just
+    # over the eighth of a block below which a frame goes out with its samples in full
+    faint = [number % 10 - 4 for number in range(BLOCK_FRAMES)]
+    rng.shuffle(faint)
 
     def noise(origin_us: int, first: int, count: int) -> AudioChunk:
         """Return a chunk of noise of a number of bits, which is all an encoder goes by."""
-        values = (rng.randrange(-(1 << level), 1 << level) for _ in range(2 * count))
+        if level:
+            values = [rng.randrange(-(1 << level), 1 << level) for _ in range(2 * count)]
+        else:
+            values = [0] * (2 * count)
+            values[1::2] = [faint[frame % BLOCK_FRAMES] for frame in range(first, first + count)]
         data = struct.pack(f"<{2 * count}h", *values)
         return AudioChunk(
             data=data,
@@ -1789,13 +1933,16 @@ async def test_a_live_source_reaches_a_flac_player_with_no_silence_in_its_place(
             delivered += tenth
         held += await player.play(0.05)
 
+    assert "Sendspin has no audio for Kitchen" not in caplog.text
     # all of it went out, and the player can decode it but for the end of it
     assert not session.chunks
     assert session.frames_held * 1000 // SECOND == pytest.approx(held_ms, abs=40)
+    if not level:
+        assert min(player._frame_sizes[-100:]) >= 4608 // 8
+        assert max(player._frame_sizes[-100:]) <= 580
     # the lead of the group is its lead from when it is on its timeline, less that end
     assert min(held[80:]) > ahead_us - (held_ms + 150) * 1000
     assert min(held) >= ALIGN_LEAD_US
-    assert "Sendspin has no audio for Kitchen" not in caplog.text
     assert rig.session is session
     # from its first sample on the audio has no silence in it
     samples = struct.unpack(f"<{len(player.pcm()) // 2}h", player.pcm())
@@ -1818,9 +1965,14 @@ async def test_silence_keeps_a_flac_player_fed_that_sendspin_has_nothing_for(
 
     held = await player.play(10)
 
-    # all of the three seconds it was given, and silence from there on
+    # all of the three seconds it was given, and silence from there on: half a second
+    # ahead as for a PCM player, of which this one can not decode the end, and a block
+    # more where its last audio ends
     assert sorted(set(player.audio())) == list(range(3 * SECOND))
-    assert min(held) > STARVED_LEAD_US - _frame_us(BLOCK_FRAMES)
+    assert session._encoder is not None
+    undecoded = session._encoder.silence_held + BLOCK_FRAMES
+    assert min(held) > STARVED_LEAD_US - _frame_us(undecoded)
+    assert rig.lead_frames(session) == STARVED_LEAD_FRAMES
     assert rig.session is session
     assert rig.client.play_url.await_count == 1
 
@@ -4129,19 +4281,27 @@ async def test_an_underrun_tells_what_the_bridge_knew(
     ) in caplog.text
 
 
-@pytest.mark.parametrize("output_codec", ["wav", "flac"])
+@pytest.mark.parametrize(("output_codec", "plays_s"), [("wav", 3), ("flac", 3), ("flac", 9)])
 @pytest.mark.parametrize("sync_adjust", [0, 100, -80])
 async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(
-    sync_adjust: int, output_codec: str
+    sync_adjust: int, output_codec: str, plays_s: int
 ) -> None:
-    """A stall longer than the lead ends in an underrun: the new stream neither skips nor repeats audio."""
+    """
+    A stall longer than the lead ends in an underrun: the new stream neither skips nor repeats audio.
+
+    A FLAC stream that ran dry within 10 seconds is restarted as PCM, a later one as FLAC.
+    """
     rig = _Rig(sync_adjust=sync_adjust, output_codec=output_codec)
     # a FLAC player decodes whole blocks, and the silence a new stream opens with takes
     # 0.2 seconds more to get through its decoder
-    block, resumes_s = (BLOCK_FRAMES, 8.85) if output_codec == "flac" else (0, 8.65)
+    block = BLOCK_FRAMES if output_codec == "flac" else 0
+    restarted_as = "flac" if output_codec == "flac" and plays_s == 9 else "wav"
+    resumes_s = 8.85 if restarted_as == "flac" else 8.65
+    # what it plays longer before the stall, in whole chunks, comes on top of every position
+    later = (plays_s - 3) * SECOND
     try:
         first, player = await rig.serve_player(chunk_seconds=3)
-        await player.play(3)
+        await player.play(plays_s)
 
         # nothing reaches the player, which reports where it plays until it has no more
         player.stalled = True
@@ -4150,20 +4310,24 @@ async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(
         assert rig.session is first
         played = player.audio()
         # 6 seconds after the 3.3 it played: in the middle of the chunk that was partly taken
-        assert rig.now_us - first.start_us == pytest.approx(9_300_000, abs=50_000)
-        assert round(7.85 * SECOND) - block <= played[-1] + 1 <= round(7.85 * SECOND) + block
-        assert -22 <= player.left_out() <= 0
-        assert len(first.chunks) == 8
+        assert rig.now_us - first.start_us == pytest.approx(
+            9_300_000 + _frame_us(later), abs=50_000
+        )
+        assert abs(played[-1] + 1 - round(7.85 * SECOND) - later) <= block
+        assert -22 - later // 2000 <= player.left_out() <= 0
+        assert len(first.chunks) == 8 - (plays_s - 3) // 3
         # a setting that changed meanwhile is for the stream after this one
         rig.config[CONF_OUTPUT_CODEC] = "mp3"
         rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+        # it answers its status requests all along: its clock is known
+        rig.map_clock()
         await _settle()
         player.stalled = False
 
         second = rig.session
         assert second is not first
-        assert second.mime_type == first.mime_type
-        assert len(second.chunks) == 8
+        assert second.mime_type == ("audio/flac" if restarted_as == "flac" else MIME_TYPE)
+        assert len(second.chunks) == 8 - (plays_s - 3) // 3
         restarted = _BufferedPlayer(rig, second)
         rig.serve(second, restarted)
         await _settle()
@@ -4175,10 +4339,10 @@ async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(
         # nothing twice, and all of it from where the new stream could begin: 0.8 seconds
         # for its start and its correction, in the chunk the first stream had begun
         audio = restarted.audio()
-        assert played[-1] < audio[0] < 9 * SECOND
-        assert audio[0] == pytest.approx(resumes_s * SECOND, abs=SECOND // 10)
+        assert played[-1] < audio[0] < 9 * SECOND + later
+        assert audio[0] == pytest.approx(resumes_s * SECOND + later, abs=SECOND // 10)
         assert audio == list(range(audio[0], audio[0] + len(audio)))
-        if output_codec == "wav":
+        if restarted_as == "wav":
             assert rig.lead_frames(second) == START_LEAD_FRAMES
         else:
             assert abs(restarted.held_us - START_LEAD_US) < _frame_us(BLOCK_FRAMES)

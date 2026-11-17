@@ -10,10 +10,12 @@ from __future__ import annotations
 import io
 import random
 import struct
+from unittest.mock import patch
 
 import av
 import pytest
 
+from music_assistant.providers.squeezelite import bridge_flac
 from music_assistant.providers.squeezelite.bridge_flac import (
     BLOCK_FRAMES,
     HELD_BACK_BYTES,
@@ -47,9 +49,13 @@ def _level(frames: int, value: int) -> bytes:
     return struct.pack("<h", value) * (2 * frames)
 
 
-def _crc16(data: bytes) -> int:
-    """Return the checksum the format has for a frame, taken a bit at a time."""
-    crc = 0
+def _crc16(data: bytes, crc: int = 0) -> int:
+    """
+    Return the checksum the format has for a frame, taken a bit at a time.
+
+    :param data: The frame, or the next part of it.
+    :param crc: The checksum of the parts before it.
+    """
     for byte in data:
         crc ^= byte << 8
         for _ in range(8):
@@ -177,6 +183,65 @@ def test_every_frame_has_the_checksum_of_the_format(bit_depth: int) -> None:
     assert all(frame[-2:] == _crc16(frame[:-2]).to_bytes(2, "big") for frame in frames)
     # frames from number 128 on have a longer header
     assert decode_flac(encoder.header + b"".join(frames))[0] == b"".join(blocks)
+
+
+def test_the_checksum_is_right_for_every_byte_at_every_place() -> None:
+    """The checksum of a long frame comes from a table of what a byte adds at its place in a row of them."""
+    row = bridge_flac._CRC16_ROW
+    for byte in range(256):
+        # the byte with ever more bytes after it: the last place of a row first
+        expected = _crc16(bytes([byte]))
+        for after in range(row):
+            data = bytes(row - 1 - after) + bytes([byte]) + bytes(after)
+            assert bridge_flac._crc16(data) == expected, (byte, after)
+            expected = _crc16(b"\x00", expected)
+
+
+def test_the_checksum_carries_on_from_the_bytes_before() -> None:
+    """Any run of bytes after any checksum: what fills no row, rows, and both."""
+    rng = random.Random(4)  # noqa: S311
+    row = bridge_flac._CRC16_ROW
+    for length in (0, 1, row - 1, row, row + 1, 3 * row, 5 * row + 77, 4610, 6914):
+        for _ in range(8):
+            data, before = rng.randbytes(length), rng.randrange(1 << 16)
+            assert bridge_flac._crc16(data, before) == _crc16(data, before), (length, before)
+
+
+@pytest.mark.parametrize("bit_depth", [16, 24])
+def test_a_frame_in_full_is_not_checked_a_byte_at_a_time(bit_depth: int) -> None:
+    """Quiet audio that is no silence keeps the event loop no longer than audio that compresses less."""
+    encoder = FlacEncoder(44100, bit_depth, 2)
+    level = (b"\x00\x4d" if bit_depth == 16 else b"\x00\x00\x4d\x00") * (2 * BLOCK_FRAMES)
+    table = bridge_flac._CRC16_TABLE
+    looked_up = 0
+
+    class _Table:
+        """Counts the bytes that are looked up one by one."""
+
+        def __getitem__(self, index: int) -> int:
+            nonlocal looked_up
+            looked_up += 1
+            return table[index]
+
+    with patch.object(bridge_flac, "_CRC16_TABLE", _Table()):
+        frame = encoder.encode(level)
+
+    assert len(frame) == BLOCK_FRAMES * 2 * bit_depth // 8 + 10
+    assert frame[-2:] == _crc16(frame[:-2]).to_bytes(2, "big")
+    # the header of the frame, and the two bytes of its samples that fill no row
+    assert looked_up == 8
+
+
+def test_a_24_bit_frame_is_held_against_the_size_of_its_samples() -> None:
+    """A sample of 24 bits comes in 4 bytes: a frame goes out in full under an eighth of the 3 that count."""
+    encoder = FlacEncoder(44100, 24, 2)
+    block = _noise(BLOCK_FRAMES, 24, level=1)
+
+    frame = encoder.encode(block)
+
+    # over an eighth of its samples, and under an eighth of the bytes they came in
+    assert BLOCK_FRAMES * 6 // 8 <= len(frame) < BLOCK_FRAMES * 8 // 8
+    assert decode_flac(encoder.header + frame)[0] == block
 
 
 def test_what_a_player_can_not_decode_yet_is_known() -> None:

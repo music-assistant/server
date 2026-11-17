@@ -19,6 +19,7 @@ from collections import deque
 from functools import cache
 
 import av
+import numpy as np
 
 # Frames of audio in a FLAC frame: one of the block sizes every decoder takes at every
 # sample rate. What does not fill a block yet waits for the next PCM, 26 ms at most at
@@ -28,8 +29,8 @@ BLOCK_FRAMES = 1152
 # for in its stream buffer before it runs its decoder (16384 on other players), and the
 # 8192 a decoder reads ahead of the frame it decodes.
 HELD_BACK_BYTES = 25_000 + 8_192
-# A frame is at least this part of the PCM it holds: one that compresses further goes out
-# with its samples in full. That bounds the audio in the bytes above, which is half a
+# A frame is at least this part of the samples it holds: one that compresses further goes
+# out with its samples in full. That bounds the audio in the bytes above, which is half a
 # minute of compressed silence: a second and a half at most, and 0.2 seconds of silence.
 MIN_FRAME_PART = 1 / 8
 
@@ -60,6 +61,8 @@ class FlacEncoder:
         self._sample_size = 2 if bit_depth == 16 else 4
         self._sample_bytes = bit_depth // 8
         self._block_size = BLOCK_FRAMES * channels * self._sample_size
+        # the smallest frame that goes out as the encoder made it
+        self._min_frame_size = BLOCK_FRAMES * channels * self._sample_bytes * MIN_FRAME_PART
         self._context = av.CodecContext.create("flac", "w")
         self._context.sample_rate = sample_rate
         self._context.format = self._format
@@ -147,7 +150,7 @@ class FlacEncoder:
         (packet,) = self._context.encode(self._frame(block))
         self._blocks += 1
         data = bytes(packet)
-        if len(data) < len(block) * MIN_FRAME_PART:
+        if len(data) < self._min_frame_size:
             data = self._plain_frame(data, block)
         held = self._held
         held.append(len(data))
@@ -226,8 +229,18 @@ def _crc16(data: bytes, crc: int = 0) -> int:
     :param data: The frame, or the next part of it.
     :param crc: The checksum of the parts before it.
     """
-    for byte in data:
+    # what fills no row goes first, a byte at a time: all of a frame header
+    head = len(data) % _CRC16_ROW
+    for byte in data[:head]:
         crc = (crc << 8) & 0xFFFF ^ _CRC16_TABLE[crc >> 8 ^ byte]
+    if head == len(data):
+        return crc
+    # The checksum of a row is the exclusive or of what each of its bytes adds at its
+    # place, and the checksum before a row counts as two bytes more ahead of it.
+    rows = np.frombuffer(data, np.uint8, offset=head).reshape(-1, _CRC16_ROW)
+    added = np.bitwise_xor.reduce(_CRC16_AT.take(rows + _CRC16_PLACES), axis=1)
+    for row in added.tolist():
+        crc = _CRC16_HIGH[crc >> 8] ^ _CRC16_LOW[crc & 0xFF] ^ row
     return crc
 
 
@@ -278,5 +291,30 @@ def _crc_table(polynomial: int, bits: int) -> tuple[int, ...]:
     return tuple(table)
 
 
+def _crc16_places(row: int) -> np.ndarray:
+    """
+    Return what a byte adds to the checksum of a row of bytes, for every place in the row.
+
+    :param row: The number of bytes of a row.
+    :return: A row of the table per place, the first place first, with a value per byte.
+    """
+    table = np.array(_CRC16_TABLE, np.uint16)
+    # from the last place back: a byte with one byte more after it
+    places = [table]
+    for _ in range(row - 1):
+        last = places[-1]
+        places.append(last << 8 ^ table[last >> 8])
+    return np.stack(places[::-1])
+
+
 _CRC8_TABLE = _crc_table(0x07, 8)
 _CRC16_TABLE = _crc_table(0x8005, 16)
+# The checksum of a frame with its samples in full is taken a row of bytes at a time: a
+# byte at a time takes ten times as long as the encoder takes over the block.
+_CRC16_ROW = 128
+_CRC16_AT = _crc16_places(_CRC16_ROW)
+# where the values of each place of a row start in that table
+_CRC16_PLACES = np.arange(_CRC16_ROW, dtype=np.uint16) * 256
+# the high and the low byte of a checksum, as the two bytes ahead of the row after it
+_CRC16_HIGH: list[int] = _CRC16_AT[0].tolist()
+_CRC16_LOW: list[int] = _CRC16_AT[1].tolist()

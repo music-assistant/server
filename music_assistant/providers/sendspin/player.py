@@ -1841,7 +1841,8 @@ class SendspinPlayer(SendspinBasePlayer):
 
         The rate follows the player's sample rate setting for the first item of the session.
         Without a first item, the client's own default format is used.
-        An explicitly configured Sendspin format is left as is.
+        An explicitly configured Sendspin format keeps its sample rate; a bridge that plays
+        no more bits than its source has may lower its bit depth to that of the first item.
 
         :param start_streamdetails: Stream details of the first item of the session, if any.
         """

@@ -16,7 +16,8 @@ of what the player plays, as far as Sendspin delivered its audio, so the player 
 through a stall of its network.
 
 The stream is FLAC or PCM, by the output codec setting of the player and what the player
-says it plays, in no more bits than the source of what plays has.
+says it plays, in no more bits than the source of what plays has. A player whose FLAC
+stream fails before it played is sent PCM from then on.
 
 Audio flow:
 Sendspin PushStream -> BridgePlayerRole.on_audio_chunk -> session -> HTTP stream -> player
@@ -46,6 +47,7 @@ from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_OUTPUT_CODEC, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.controllers.streams.stream_sources import QualityTier, quality_tier
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -59,7 +61,7 @@ from music_assistant.providers.sendspin.helpers import (
     holds_bridge_client,
 )
 
-from .bridge_flac import FlacEncoder
+from .bridge_flac import BLOCK_FRAMES, FlacEncoder
 from .bridge_role import SLIMPROTO_BRIDGE_ROLE_ID, SlimprotoBridgeRole
 from .bridge_sync import MAX_START_JUMP_MS, START_JUMP_MS, PlayerClock, SyncLoop
 from .player import is_bridge_tool
@@ -170,6 +172,11 @@ CLOCK_TIMEOUT_SECONDS: float = 0.5
 # much audio at a time.
 WRITE_INTERVAL: float = 0.02
 MAX_BLOCK_US: int = 500_000
+# And at most this many blocks of a FLAC stream. Encoding keeps the event loop for every
+# block, some 40 to 75 microseconds on a desktop processor at any sample rate, and the
+# players of a group start together. At 192 kHz this is still over three times the audio
+# that plays meanwhile.
+MAX_FLAC_BLOCKS: int = 12
 # While Sendspin has nothing to play, silence keeps the stream this far ahead, so the
 # player does not run dry and stays on the timeline.
 STARVED_LEAD_US: int = 500_000
@@ -269,7 +276,10 @@ class BridgeSession:
         self._encoder: FlacEncoder | None = None
         self._header = b""
         preroll_frames = self.frames(PREROLL_US)
+        # the most frames the writer prepares at a time
+        self.max_block = self.frames(MAX_BLOCK_US)
         if audio_format.content_type == ContentType.FLAC:
+            self.max_block = min(self.max_block, MAX_FLAC_BLOCKS * BLOCK_FRAMES)
             # the encoder takes the samples as Sendspin delivers them
             self.frame_size = self._chunk_frame_size
             self.mime_type = "audio/flac"
@@ -524,6 +534,8 @@ class SendspinSqueezeliteBridge:
         # put back into a group by the bridge, with no stream that played long enough and
         # no other change of its group since
         self._rejoined = False
+        # a FLAC stream failed before it played long enough: the player is sent PCM
+        self._flac_failed = False
 
     @property
     def is_registered(self) -> bool:
@@ -967,8 +979,9 @@ class SendspinSqueezeliteBridge:
         """
         Return the most bits a sample of the next stream has, None when its source is not known.
 
-        That is what its source has: 16 for a lossy one. A player that is set to a lossy
-        output codec gets PCM in its place, in 16 bits whatever plays.
+        That is what its source has: 16 for a lossy one, by its container or the codec in
+        it. A player that is set to a lossy output codec gets PCM in its place, in 16 bits
+        whatever plays.
         """
         if self.protocol.config.get_value(CONF_OUTPUT_CODEC, "flac") in ("mp3", "aac"):
             return 16
@@ -977,14 +990,18 @@ class SendspinSqueezeliteBridge:
         bridge_client = cast("SendspinPlayer | None", self.mass.players.get_protocol(client_id))
         if bridge_client is None or (source := bridge_client.session_source_format) is None:
             return None
-        return 16 if source.bit_depth <= 16 or not source.content_type.is_lossless() else 24
+        tier = quality_tier(source)
+        if tier == QualityTier.UNKNOWN:
+            return None
+        return 24 if tier >= QualityTier.LOSSLESS and source.bit_depth > 16 else 16
 
     def _role_format(self) -> AudioFormat:
         """
         Return the format of a new stream.
 
         That is the PCM format the role of the bridge asks Sendspin for, sent as FLAC to a
-        player that is set to it and says that it plays it.
+        player that is set to it and says that it plays it, unless a FLAC stream failed
+        on it before it played.
         """
         requirements = self._bridge_role.preferred_format if self._bridge_role else None
         sample_rate = requirements.sample_rate if requirements else BRIDGE_SAMPLE_RATE
@@ -992,6 +1009,7 @@ class SendspinSqueezeliteBridge:
         flac = (
             self.protocol.config.get_value(CONF_OUTPUT_CODEC, "flac") == "flac"
             and "flc" in self._client.supported_codecs
+            and not self._flac_failed
         )
         return AudioFormat(
             content_type=ContentType.FLAC if flac else ContentType.from_bit_depth(bit_depth),
@@ -1117,7 +1135,7 @@ class SendspinSqueezeliteBridge:
         cursor = loop.frames_consumed
         # the stream is as far ahead as the player can decode it
         decodable = cursor - session.frames_held
-        max_frames = session.frames(MAX_BLOCK_US)
+        max_frames = session.max_block
         lead_us = STREAM_LEAD_US if loop.on_timeline else START_LEAD_US
         # counted from the timeline, not from what went out before: after a write the
         # player kept waiting, the stream is back at its lead in blocks of this size
@@ -1127,9 +1145,11 @@ class SendspinSqueezeliteBridge:
             session.starved = False
         else:
             # counted from the real time to the start: silence sent while the player still
-            # waits for it would take the place of audio that is yet to arrive
+            # waits for it would take the place of audio that is yet to arrive. And from
+            # all that went out, whatever the player can decode of it: audio for what
+            # follows it can arrive until it is this close to being played.
             starved_until = session.frames(since_start_us + STARVED_LEAD_US)
-            if (frames := min(starved_until - decodable, max_frames)) <= 0:
+            if (frames := min(starved_until - cursor, max_frames)) <= 0:
                 return b""
             pcm = bytes(frames * session.frame_size)
             if not session.starved:
@@ -1146,7 +1166,7 @@ class SendspinSqueezeliteBridge:
 
         :param session: The session of the stream.
         :param resp: The response the player reads the stream from.
-        :param data: The PCM to write.
+        :param data: The bytes to write: PCM, or the frames of a FLAC stream.
         """
         session.write_started_us = started_us = self._clock.now_us()
         # waits while the player and the connection to it hold all they can
@@ -1224,7 +1244,7 @@ class SendspinSqueezeliteBridge:
             session.frames(lead_in_us - ALIGN_ROOM_US),
         )
         frames = max(0, ahead - loop.frames_sent)
-        frames = min(frames, session.frames(MAX_BLOCK_US))
+        frames = min(frames, session.max_block)
         # what is left out for a late player comes on top: it is sent no less for it
         frames += max(0, loop.pending_jump)
         silence = loop.process(bytes(frames * session.frame_size))
@@ -1408,6 +1428,8 @@ class SendspinSqueezeliteBridge:
         """
         Restart a session that failed, unless the player keeps failing before it plays.
 
+        A FLAC stream that failed before it played is restarted as PCM.
+
         :param session: The session that failed.
         :param reason: What the player did, for the log.
         """
@@ -1418,6 +1440,19 @@ class SendspinSqueezeliteBridge:
             self._quick_failures += 1
         played_s = played_us / 1_000_000
         min_played_s = MIN_PLAYED_US / 1_000_000
+        audio_format = session.audio_format
+        if quick and audio_format.content_type == ContentType.FLAC:
+            # the decoder of the player may be what kept it from playing: PCM needs none
+            self._flac_failed = True
+            audio_format = replace(
+                audio_format, content_type=ContentType.from_bit_depth(audio_format.bit_depth)
+            )
+            self.logger.warning(
+                "%s is sent PCM instead of FLAC from now on: its FLAC stream failed before "
+                "it played %.0f s",
+                self.protocol.display_name,
+                min_played_s,
+            )
         if self._quick_failures >= MAX_QUICK_FAILURES:
             self.logger.error(
                 "Giving up on %s and taking it out of the Sendspin session: its stream failed "
@@ -1446,7 +1481,7 @@ class SendspinSqueezeliteBridge:
             count,
             reason,
         )
-        self._begin_session(session.unplayed(self._clock.now_us()), session.audio_format)
+        self._begin_session(session.unplayed(self._clock.now_us()), audio_format)
 
     async def _leave_sendspin_session(self, *, rejoin: bool = True) -> None:
         """
