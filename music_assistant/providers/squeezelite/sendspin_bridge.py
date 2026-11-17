@@ -6,14 +6,14 @@ provider creates a SendspinPlayer for that client, which rides on the squeezelit
 protocol and is attached to its player as one of its outputs. Sendspin handles the
 synchronization and the timing; the bridge puts its timeline on the player.
 
-Every Sendspin stream is a session: one stream over HTTP, FLAC or PCM by the output codec
-setting of the player, that the player starts at an instant of its own clock, on silence. A player starts later than it is told, by
-an amount that differs from start to start: the bridge measures that from the first
-positions the player reports and corrects it in the silence, so the first audio is
-heard on the timeline. The sync loop holds it there from the positions the player
-reports, and once it has little left to correct the bridge keeps the stream seconds ahead
-of what the player plays, as far as Sendspin delivered its audio, so the player plays on
-through a stall of its network.
+Every Sendspin stream is a session: one stream over HTTP, FLAC or PCM by the output
+codec setting of the player, that the player starts at an instant of its own clock, on
+silence. A player starts later than it is told, by an amount that differs from start to
+start: the bridge measures that from the first positions the player reports and corrects
+it in the silence, so the first audio is heard on the timeline. The sync loop holds it
+there from the positions the player reports, and once it has little left to correct the
+bridge keeps the stream seconds ahead of what the player plays, as far as Sendspin
+delivered its audio, so the player plays on through a stall of its network.
 
 Audio flow:
 Sendspin PushStream -> BridgePlayerRole.on_audio_chunk -> session -> HTTP stream -> player
@@ -237,17 +237,14 @@ class BridgeSession:
         audio_format: AudioFormat,
         timeline_shift_us: int,
         chunks: deque[AudioChunk] | None = None,
-        *,
-        flac: bool = False,
     ) -> None:
         """
         Initialize a session that waits for its player and its first chunk.
 
-        :param audio_format: The PCM format of the audio of the stream.
+        :param audio_format: The format of the stream to the player: FLAC, or PCM.
         :param timeline_shift_us: How much later than its Sendspin timestamp audio is due
             on this player.
         :param chunks: Chunks a session before this one did not play yet.
-        :param flac: Whether the stream goes to the player as FLAC instead of PCM.
         """
         self.session_id = secrets.token_hex(8)
         self.audio_format = audio_format
@@ -265,20 +262,18 @@ class BridgeSession:
         )
         self._encoder: FlacEncoder | None = None
         self._header = b""
-        if flac:
+        preroll_frames = self.frames(PREROLL_US)
+        if audio_format.content_type == ContentType.FLAC:
             # the encoder takes the samples as Sendspin delivers them
             self.frame_size = self._chunk_frame_size
             self.mime_type = "audio/flac"
             self._encoder = FlacEncoder(
-                audio_format.sample_rate,
-                audio_format.bit_depth,
-                audio_format.channels,
-                # silence takes next to no bytes: the padding is what a player holds of
-                # the stream when it reports its buffer ready
-                padding=STREAM_THRESHOLD_KB * 1024,
+                audio_format.sample_rate, audio_format.bit_depth, audio_format.channels
             )
             self._header = self._encoder.header
-        self.preroll = bytes(self.frames(PREROLL_US) * self.frame_size)
+            # the player holds the preroll, and has to decode that much of it
+            preroll_frames += self._encoder.silence_held
+        self.preroll = bytes(preroll_frames * self.frame_size)
         self.chunks: deque[AudioChunk] = deque()
         self.pending_us = 0
         # chunks that went to the player, as far back as it can still hold them
@@ -401,6 +396,19 @@ class BridgeSession:
         header, self._header = self._header, b""
         return header + encoder.encode(pcm)
 
+    def flush(self) -> bytes:
+        """Return what is left to write of a stream that ended: the PCM a FLAC stream waited with."""
+        return self._encoder.flush() if self._encoder else b""
+
+    @property
+    def frames_held(self) -> int:
+        """
+        Return the number of frames at the end of what went out that the player can not decode yet.
+
+        A player decodes a FLAC stream only as far as more of it follows.
+        """
+        return self._encoder.frames_held if self._encoder else 0
+
     def is_fetched_by(self, request: web.Request) -> bool:
         """
         Return whether a request is the one that fetches the stream of this session.
@@ -448,9 +456,11 @@ class BridgeSession:
             return
         self._sent.append(chunk)
         self._sent_us += chunk.duration_us
-        # the stream is never further ahead of what the player plays than its lead
+        # the stream is never further ahead of what the player plays than its lead, and
+        # what the player can not decode of it yet
+        lead_us = STREAM_LEAD_US + self.frames_held * 1_000_000 // self.sample_rate
         while (
-            self._sent_us - self._sent[0].duration_us >= STREAM_LEAD_US
+            self._sent_us - self._sent[0].duration_us >= lead_us
             or len(self._sent) > MAX_PENDING_CHUNKS
         ):
             self._sent_us -= self._sent.popleft().duration_us
@@ -601,7 +611,7 @@ class SendspinSqueezeliteBridge:
                 on_explicit_stop=self._on_explicit_stop,
                 initial_volume=self._client.volume_level,
             )
-            self._bridge_role.follow_source_bit_depth(self._source_bit_depth)
+            self._bridge_role.limit_bit_depth(self._bit_depth_limit)
             # its default format, until Sendspin prefers another one for a session
             self._bridge_role.set_preferred_format(None)
             self._bridge_role.set_timing(
@@ -764,6 +774,8 @@ class SendspinSqueezeliteBridge:
                 if (block := self._next_block(session)) and (data := session.encode(block)):
                     await self._write(session, resp, data)
                 await asyncio.sleep(WRITE_INTERVAL)
+            if data := session.flush():
+                await self._write(session, resp, data)
         except ConnectionError:
             pass
         finally:
@@ -870,8 +882,8 @@ class SendspinSqueezeliteBridge:
 
         :param chunks: Chunks of the stream the current session did not play yet, for a
             session that carries on with the same stream.
-        :param audio_format: The PCM format of that stream. A new stream comes in the
-            format the role of the bridge asks Sendspin for.
+        :param audio_format: The format of that stream. A new stream comes in the format
+            the role of the bridge asks Sendspin for, as the codec the player is set to.
         """
         if (old := self._session) is not None:
             # no stop for the player: the stream request of the new session flushes it
@@ -890,9 +902,7 @@ class SendspinSqueezeliteBridge:
         shift_us = -sync_adjust * 1000 if isinstance(sync_adjust, int) else 0
         if audio_format is None:
             audio_format = self._role_format()
-        self._session = session = BridgeSession(
-            audio_format, shift_us, chunks, flac=self._plays_flac()
-        )
+        self._session = session = BridgeSession(audio_format, shift_us, chunks)
         if self._player_clock.to_jiffies(self._clock.now_us()) is not None:
             session.clock_mapped.set()
         self.logger.debug(
@@ -900,7 +910,7 @@ class SendspinSqueezeliteBridge:
             self.protocol.display_name,
             audio_format.sample_rate,
             audio_format.bit_depth,
-            session.mime_type,
+            "FLAC" if audio_format.content_type == ContentType.FLAC else "PCM",
         )
         # Started on the next loop iteration, when the session is in place.
         session.tasks = [
@@ -930,19 +940,12 @@ class SendspinSqueezeliteBridge:
             # track of a group it left
             self.mass.create_task(self._client.clear_media())
 
-    def _plays_flac(self) -> bool:
-        """Return whether a stream goes to the player as FLAC: its setting, where it plays FLAC."""
-        return (
-            self.protocol.config.get_value(CONF_OUTPUT_CODEC, "flac") == "flac"
-            and "flc" in self._client.supported_codecs
-        )
-
-    def _source_bit_depth(self) -> int | None:
+    def _bit_depth_limit(self) -> int | None:
         """
-        Return the bit depth of the audio the next stream plays, None when that is not known.
+        Return the most bits a sample of the next stream has, None when its source is not known.
 
-        A lossy source has 16 bits, and so has a stream for a player that is set to a
-        lossy output codec, which gets PCM.
+        That is what its source has: 16 for a lossy one. A player that is set to a lossy
+        output codec gets PCM in its place, in 16 bits whatever plays.
         """
         if self.protocol.config.get_value(CONF_OUTPUT_CODEC, "flac") in ("mp3", "aac"):
             return 16
@@ -951,17 +954,24 @@ class SendspinSqueezeliteBridge:
         bridge_client = cast("SendspinPlayer | None", self.mass.players.get_protocol(client_id))
         if bridge_client is None or (source := bridge_client.session_source_format) is None:
             return None
-        if not source.content_type.is_lossless():
-            return 16
-        return 24 if source.bit_depth >= 24 else 16
+        return 16 if source.bit_depth <= 16 or not source.content_type.is_lossless() else 24
 
     def _role_format(self) -> AudioFormat:
-        """Return the PCM format the role of the bridge asks Sendspin for."""
+        """
+        Return the format of a new stream.
+
+        That is the PCM format the role of the bridge asks Sendspin for, sent as FLAC to a
+        player that is set to it and says that it plays it.
+        """
         requirements = self._bridge_role.preferred_format if self._bridge_role else None
         sample_rate = requirements.sample_rate if requirements else BRIDGE_SAMPLE_RATE
         bit_depth = requirements.bit_depth if requirements else BRIDGE_BIT_DEPTH
+        flac = (
+            self.protocol.config.get_value(CONF_OUTPUT_CODEC, "flac") == "flac"
+            and "flc" in self._client.supported_codecs
+        )
         return AudioFormat(
-            content_type=ContentType.from_bit_depth(bit_depth),
+            content_type=ContentType.FLAC if flac else ContentType.from_bit_depth(bit_depth),
             sample_rate=sample_rate,
             bit_depth=bit_depth,
             channels=BRIDGE_CHANNELS,
@@ -1082,11 +1092,13 @@ class SendspinSqueezeliteBridge:
         since_start_us = now_us - session.start_us
         played = session.frames(max(0, since_start_us))
         cursor = loop.frames_consumed
+        # the stream is as far ahead as the player can decode it
+        decodable = cursor - session.frames_held
         max_frames = session.frames(MAX_BLOCK_US)
         lead_us = STREAM_LEAD_US if loop.on_timeline else START_LEAD_US
         # counted from the timeline, not from what went out before: after a write the
         # player kept waiting, the stream is back at its lead in blocks of this size
-        if (frames := min(played + session.frames(lead_us) - cursor, max_frames)) <= 0:
+        if (frames := min(played + session.frames(lead_us) - decodable, max_frames)) <= 0:
             return b""
         if pcm := session.take(cursor, frames):
             session.starved = False
@@ -1094,7 +1106,7 @@ class SendspinSqueezeliteBridge:
             # counted from the real time to the start: silence sent while the player still
             # waits for it would take the place of audio that is yet to arrive
             starved_until = session.frames(since_start_us + STARVED_LEAD_US)
-            if (frames := min(starved_until - cursor, max_frames)) <= 0:
+            if (frames := min(starved_until - decodable, max_frames)) <= 0:
                 return b""
             pcm = bytes(frames * session.frame_size)
             if not session.starved:
@@ -1150,10 +1162,13 @@ class SendspinSqueezeliteBridge:
                 f"{status.output_buffer_size} in its output buffer "
                 f"{(now_us - status.received * 1_000_000) / 1000:.0f} ms ago"
             )
+        held = ""
+        if held_frames := session.frames_held:
+            held = f" with {held_frames * 1000 // session.sample_rate} ms it can not decode yet"
         return (
-            f"prepared {(prepared_us - now_us) / 1000:.0f} ms ahead, {session.bytes_written} "
-            f"bytes written, {write}, {session.pending_us / 1000:.0f} ms of audio waiting, "
-            f"{player}"
+            f"prepared {(prepared_us - now_us) / 1000:.0f} ms ahead{held}, "
+            f"{session.bytes_written} bytes written, {write}, "
+            f"{session.pending_us / 1000:.0f} ms of audio waiting, {player}"
         )
 
     def _played_us(self, session: BridgeSession) -> int:
@@ -1180,8 +1195,12 @@ class SendspinSqueezeliteBridge:
         assert session.first_audible_us is not None  # the start is decided with a first chunk
         lead_in_us = session.first_audible_us - session.start_us
         taken_us = max(0, now_us - session.command_us)
-        ahead_us = max(taken_us + ALIGN_LEAD_US, lead_in_us - ALIGN_ROOM_US)
-        frames = max(0, session.frames(ahead_us) - loop.frames_sent)
+        # the lead is what the player can decode: the room for a late start stays as it is
+        ahead = max(
+            session.frames(taken_us + ALIGN_LEAD_US) + session.frames_held,
+            session.frames(lead_in_us - ALIGN_ROOM_US),
+        )
+        frames = max(0, ahead - loop.frames_sent)
         frames = min(frames, session.frames(MAX_BLOCK_US))
         # what is left out for a late player comes on top: it is sent no less for it
         frames += max(0, loop.pending_jump)

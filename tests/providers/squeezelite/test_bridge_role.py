@@ -226,7 +226,7 @@ def test_the_bit_depth_follows_the_source(
 ) -> None:
     """A 16-bit source is played in 16 bits, also by a player that plays 24."""
     role = _role(formats)
-    role.follow_source_bit_depth(lambda: source_bit_depth)
+    role.limit_bit_depth(lambda: source_bit_depth)
 
     assert role.set_preferred_format(asked, AudioCodec.PCM if asked else None)
 
@@ -238,7 +238,7 @@ def test_another_bit_depth_is_reported_to_the_group() -> None:
     client = MagicMock(info=_hello(FORMATS))
     role = SlimprotoBridgeRole(client=client)
     depths = iter([24, 16, 16])
-    role.follow_source_bit_depth(lambda: next(depths))
+    role.limit_bit_depth(lambda: next(depths))
     assert role.set_preferred_format(None)
     client.group.on_role_format_changed.assert_not_called()
 
