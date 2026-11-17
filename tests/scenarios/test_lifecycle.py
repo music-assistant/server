@@ -1488,7 +1488,7 @@ async def test_a_player_stored_as_a_stereo_pair_is_a_multi_channel_player(
     """
     A player an older version stored as a stereo pair is a multi-channel player.
 
-    It is one while its device is away, and its stored type follows once the device is back.
+    It is one from the start, also while its device is away, and it is stored as one.
     """
     chromecast = await scenario.add_provider("chromecast")
     pair = chromecast.protocol(
@@ -1509,7 +1509,7 @@ async def test_a_player_stored_as_a_stereo_pair_is_a_multi_channel_player(
     living = scenario.player(living_id)
     assert living is not None
     assert (living.available, living.type) == (False, PlayerType.MULTI_CHANNEL)
-    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{living_id}/player_type") == "stereo_pair"
+    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{living_id}/player_type") == "multi_channel"
 
     scenario.set_present("cast_living", True)
     await scenario.register(scenario.protocol("cast_living"))
@@ -1522,4 +1522,3 @@ async def test_a_player_stored_as_a_stereo_pair_is_a_multi_channel_player(
         PlayerType.MULTI_CHANNEL,
         ChannelLayout.STEREO,
     )
-    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{living_id}/player_type") == "multi_channel"

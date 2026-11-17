@@ -983,8 +983,7 @@ the provider is removed again, Patio says again that its provider is not install
 ### RESTART-9 · A player stored as a stereo pair is a multi-channel player
 
 An older version stored the Living pair with the type stereo pair. After the start Living is a
-multi-channel player, also while its device is away. Once the device is found again, the stored
-type is multi-channel as well.
+multi-channel player, also while its device is away, and it is stored as one.
 
 - End-to-end: **no**: the lab has no settings of an older version.
 - Proven by: `test_lifecycle.py::test_a_player_stored_as_a_stereo_pair_is_a_multi_channel_player`
