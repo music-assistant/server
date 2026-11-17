@@ -58,8 +58,11 @@ def _plain(bpm: float) -> AudioAnalysisData:
 
 
 def _beatless_intro() -> AudioAnalysisData:
-    """Build a 122 BPM track without a kick for its first 40 s."""
-    return _analysis_with_bands(np.where(_T < 40.0, 0.02, 0.5), 0.3, 0.3, 0.3, bpm=122.0)
+    """Build a 122 BPM track without a kick or hats for its first 40 s."""
+    intro = _T < 40.0
+    return _analysis_with_bands(
+        np.where(intro, 0.02, 0.5), 0.3, 0.3, np.where(intro, 0.01, 0.3), bpm=122.0
+    )
 
 
 def _plan(fade_out: AudioAnalysisData, fade_in: AudioAnalysisData) -> TransitionPlan:
@@ -166,6 +169,27 @@ class TestStretchScenarios:
         assert plan.tempo_plan
         assert plan == _plan_ramped_only(monkeypatch, out, inc)
 
+    def test_a_kickless_intro_with_hats_keeps_the_ramp(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Steady high-band energy (hi-hats) over a kickless intro still has a beat to match."""
+        out = _kicked()
+        inc = _analysis_with_bands(np.where(_T < 40.0, 0.02, 0.5), 0.3, 0.3, 0.3, bpm=122.0)
+
+        plan = _plan(out, inc)
+
+        assert plan.tempo_plan
+        assert plan == _plan_ramped_only(monkeypatch, out, inc)
+
+    def test_a_dark_steady_high_band_is_no_beat(self) -> None:
+        """A kickless intro whose high band is steady but holds almost no power blends unstretched."""
+        inc = _analysis_with_bands(np.where(_T < 40.0, 0.02, 0.5), 0.3, 0.3, 0.01, bpm=122.0)
+
+        plan = _plan(_kicked(), inc)
+
+        assert plan.style is TransitionStyle.BLEND
+        assert not plan.tempo_plan
+
     def test_a_breakdown_before_the_overlap_keeps_the_ramp(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -187,7 +211,9 @@ class TestStretchScenarios:
         breakdown = (_T >= 8.0) & (_T < 30.0)
         # quiet voice bands, so the rolling intro may cut into the breakdown
         quiet = np.where(breakdown, 0.05, 0.3)
-        inc = _analysis_with_bands(np.where(breakdown, 0.02, 0.5), quiet, quiet, 0.3, bpm=122.0)
+        inc = _analysis_with_bands(
+            np.where(breakdown, 0.02, 0.5), quiet, quiet, np.where(breakdown, 0.01, 0.3), bpm=122.0
+        )
 
         plan = _plan(_kicked(), inc)
 

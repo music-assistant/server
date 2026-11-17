@@ -240,9 +240,9 @@ def _drop_unneeded_stretch(
     ctx: TransitionContext,
 ) -> Candidate:
     """
-    Return the winner, unstretched when a deck has no kick for its tempo ramp to match.
+    Return the winner, unstretched when a deck has no beat for its tempo ramp to match.
 
-    The unstretched build ships only when its own overlap still misses a kick on a deck
+    The unstretched build ships only when its own overlap still misses a beat on a deck
     and every policy accepts it; otherwise the ramped winner ships.
 
     :param winner: The selected candidate.
@@ -257,7 +257,7 @@ def _drop_unneeded_stretch(
         return winner
     spec = next(spec for spec, candidate in built if candidate is winner)
     unstretched = factory.build(spec, stretch=False)
-    # the unstretched overlap can be longer and reach both kicks, which need the ramp
+    # the unstretched overlap can be longer and reach both beats, which need the ramp
     if unstretched is None or _both_decks_kick(ctx, unstretched.plan):
         return winner
     if any(policy.evaluate(unstretched, ctx).rejected for policy in default_policies()):
@@ -302,7 +302,9 @@ def _overlaps(runs: tuple[tuple[float, float], ...], start: float, end: float) -
 
 def _both_decks_kick(ctx: TransitionContext, plan: TransitionPlan) -> bool:
     """
-    Whether both decks kick in a blend's overlap; a deck without band data counts as kicking.
+    Whether both decks keep a beat in a blend's overlap: a kick or high-band (hi-hat) energy.
+
+    A deck without band data counts as having one.
 
     :param ctx: The transition's context.
     :param plan: A timed blend, with or without a tempo ramp.
@@ -311,21 +313,37 @@ def _both_decks_kick(ctx: TransitionContext, plan: TransitionPlan) -> bool:
     ratio = plan.tempo_plan.steps[-1][1] if plan.tempo_plan else 1.0
     overlap_start = plan.fade_out_window - plan.crossfade_duration * ratio
     trim = plan.fadein_trim_start or 0.0
-    # a window that only grazes a kick bar, by less than a beat, holds no beat to match
-    out_kicks = ctx.kick_out is None or (
-        _kick_seconds(ctx.kick_out, overlap_start, plan.fade_out_window) >= 60.0 / ctx.outgoing.bpm
+    out_beat = _has_beat(
+        ctx.kick_out, ctx.hats_out, overlap_start, plan.fade_out_window, ctx.outgoing.bpm
     )
-    in_kicks = ctx.kick_in is None or (
-        _kick_seconds(ctx.kick_in, trim, trim + plan.crossfade_duration) >= 60.0 / ctx.incoming.bpm
+    in_beat = _has_beat(
+        ctx.kick_in, ctx.hats_in, trim, trim + plan.crossfade_duration, ctx.incoming.bpm
     )
-    return out_kicks and in_kicks
+    return out_beat and in_beat
 
 
-def _kick_seconds(runs: Iterable[tuple[float, float]], start_s: float, end_s: float) -> float:
+def _has_beat(
+    kicks: tuple[tuple[float, float], ...] | None,
+    hats: tuple[tuple[float, float], ...] | None,
+    start_s: float,
+    end_s: float,
+    bpm: float,
+) -> bool:
+    """Whether a deck's kick or hat runs cover at least a beat of the window; True without band data."""
+    if kicks is None:
+        return True
+    # a window that only grazes a kick or hat bar, by less than a beat, holds no beat to match
+    beat = 60.0 / bpm
+    return _run_seconds(kicks, start_s, end_s) >= beat or (
+        hats is not None and _run_seconds(hats, start_s, end_s) >= beat
+    )
+
+
+def _run_seconds(runs: Iterable[tuple[float, float]], start_s: float, end_s: float) -> float:
     """
-    Seconds of a window the kick runs cover.
+    Seconds of a window the runs cover.
 
-    :param runs: Disjoint kick runs, in the window's time base.
+    :param runs: Disjoint kick or hat runs, in the window's time base.
     :param start_s: Window start.
     :param end_s: Window end.
     """

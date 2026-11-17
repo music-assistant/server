@@ -191,22 +191,30 @@ def kick_runs(
     :param start_s: Window start in media seconds.
     :param end_s: Window end in media seconds.
     """
-    import numpy as np  # noqa: PLC0415
-
-    starts = profile.bar_starts
-    # the last bar ends one median bar after its downbeat, as in build_band_profile
-    ends = np.append(starts[1:], starts[-1] + float(np.median(np.diff(starts))))
     kick = profile.bar_power["low"] >= k * profile.reference["low"]
-    runs: list[tuple[float, float]] = []
-    for bar_start, bar_end in zip(starts[kick], ends[kick], strict=True):
-        left, right = max(float(bar_start), start_s), min(float(bar_end), end_s)
-        if right <= left:
-            continue
-        if runs and left <= runs[-1][1]:
-            runs[-1] = (runs[-1][0], right)
-        else:
-            runs.append((left, right))
-    return runs
+    return _bar_runs(profile, kick, start_s, end_s)
+
+
+def hat_runs(
+    profile: BandProfile, k: float, min_share: float, start_s: float, end_s: float
+) -> list[tuple[float, float]]:
+    """
+    Media-time runs of consecutive bars with high-band energy, clipped to a window.
+
+    This stands in for hi-hats: the envelopes are too coarse to see hat rhythm.
+    A bar counts when its high-band power reaches ``k`` x the track's reference
+    high power and at least ``min_share`` of the bar's total power.
+
+    :param profile: The track's band profile.
+    :param k: Reference multiplier a bar's high power must reach to count.
+    :param min_share: Share of the bar's total power its high band must reach.
+    :param start_s: Window start in media seconds.
+    :param end_s: Window end in media seconds.
+    """
+    high = profile.bar_power["high"]
+    # the reference test alone passes a dark, steady pad too
+    hats = (high >= k * profile.reference["high"]) & (high >= min_share * profile.total_power)
+    return _bar_runs(profile, hats, start_s, end_s)
 
 
 def detect_low_groove_entry(profile: BandProfile, k: float) -> float | None:
@@ -274,3 +282,24 @@ def instrumental_claim_confirmed(
     threshold = elevated_ratio * profile.reference["mid"]
     elevated = profile.bar_power["mid"][in_range][vad_silent] >= threshold
     return not bool(elevated.any())
+
+
+def _bar_runs(
+    profile: BandProfile, bars: npt.NDArray[np.bool_], start_s: float, end_s: float
+) -> list[tuple[float, float]]:
+    """Merge the flagged bars into media-time runs, clipped to a window."""
+    import numpy as np  # noqa: PLC0415
+
+    starts = profile.bar_starts
+    # the last bar ends one median bar after its downbeat, as in build_band_profile
+    ends = np.append(starts[1:], starts[-1] + float(np.median(np.diff(starts))))
+    runs: list[tuple[float, float]] = []
+    for bar_start, bar_end in zip(starts[bars], ends[bars], strict=True):
+        left, right = max(float(bar_start), start_s), min(float(bar_end), end_s)
+        if right <= left:
+            continue
+        if runs and left <= runs[-1][1]:
+            runs[-1] = (runs[-1][0], right)
+        else:
+            runs.append((left, right))
+    return runs

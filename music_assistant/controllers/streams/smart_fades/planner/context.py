@@ -22,6 +22,7 @@ from music_assistant.controllers.streams.smart_fades.bands import (
     build_band_profile,
     detect_low_groove_entry,
     detect_low_mix_out,
+    hat_runs,
     kick_runs,
     window_duty,
 )
@@ -77,6 +78,11 @@ TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD: float = 8.0
 _LOW_TIMING_ELIGIBILITY: float = 0.10
 # Reference multiplier a bar's low power must reach to count as "kick present"
 _LOW_ANCHOR_BAR_FRACTION: float = 0.5
+# Share of a bar's total power its high band must hold to count as hats;
+# beatless (ambient) edges sit at 0.000 to 0.002, hat-carrying ones from ~0.01
+_HAT_MIN_SHARE: float = 0.01
+# Reference multiplier a bar's high power must reach to count as hats
+_HAT_BAR_FRACTION: float = 0.5
 # Beyond this many outgoing bars of disagreement with the full-band anchor,
 # the low anchor is untrustworthy and the full-band anchor wins
 _LOW_ANCHOR_DIVERGENCE_BARS: int = 16
@@ -175,6 +181,9 @@ class TransitionContext:
     # None without a band profile
     kick_out: tuple[tuple[float, float], ...] | None = None
     kick_in: tuple[tuple[float, float], ...] | None = None
+    # runs of high-band (hi-hat) bars, in the same time bases as the kick runs
+    hats_out: tuple[tuple[float, float], ...] | None = None
+    hats_in: tuple[tuple[float, float], ...] | None = None
     # the outgoing last / incoming first SEGUE_MAX_SECONDS carry (almost) no kick
     out_kickless: bool = False
     in_kickless: bool = False
@@ -351,6 +360,7 @@ def build_transition_context(
     kick_out, kick_in, out_kickless, in_kickless = _kick_facts(
         outgoing_profile, incoming_profile, buffer_offset, audio_end
     )
+    hats_out, hats_in = _hat_facts(outgoing_profile, incoming_profile, buffer_offset, audio_end)
     segue = _segue_facts(outgoing, incoming, buffer_duration, audio_end)
 
     if vocal_out_scoring is not None and vocal_in_scoring is not None:
@@ -413,6 +423,8 @@ def build_transition_context(
         quick_fade_trigger=quick_fade_trigger,
         kick_out=kick_out,
         kick_in=kick_in,
+        hats_out=hats_out,
+        hats_in=hats_in,
         out_kickless=out_kickless,
         in_kickless=in_kickless,
         segue=segue,
@@ -620,6 +632,38 @@ def _kick_facts(
         )
         in_kickless = in_duty <= _KICKLESS_DUTY_MAX
     return kick_out, kick_in, out_kickless, in_kickless
+
+
+def _hat_facts(
+    outgoing_profile: BandProfile | None,
+    incoming_profile: BandProfile | None,
+    buffer_offset: float,
+    audio_end: float,
+) -> tuple[tuple[tuple[float, float], ...] | None, tuple[tuple[float, float], ...] | None]:
+    """Return ``(hats_out, hats_in)``, in the time bases of the kick runs."""
+    hats_out = hats_in = None
+    if outgoing_profile is not None:
+        hats_out = tuple(
+            (left - buffer_offset, right - buffer_offset)
+            for left, right in hat_runs(
+                outgoing_profile,
+                _HAT_BAR_FRACTION,
+                _HAT_MIN_SHARE,
+                buffer_offset,
+                buffer_offset + audio_end,
+            )
+        )
+    if incoming_profile is not None:
+        hats_in = tuple(
+            hat_runs(
+                incoming_profile,
+                _HAT_BAR_FRACTION,
+                _HAT_MIN_SHARE,
+                0.0,
+                float(SMART_CROSSFADE_DURATION),
+            )
+        )
+    return hats_out, hats_in
 
 
 def _segue_facts(
