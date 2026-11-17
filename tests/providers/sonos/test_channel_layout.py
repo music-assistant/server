@@ -146,9 +146,12 @@ def test_a_set_reports_its_layout(
 
 
 @pytest.mark.parametrize("device", [SOUNDBAR, AMP, SPEAKER])
-def test_a_device_alone_is_a_plain_player(device: tuple[str, list[str]]) -> None:
+@pytest.mark.parametrize("channels", [["LF", "RF"], []], ids=["both-fronts", "no-channel-map"])
+def test_a_device_alone_is_a_plain_player(
+    device: tuple[str, list[str]], channels: list[str]
+) -> None:
     """A soundbar, an Amp or a speaker without bonded speakers is no set."""
-    player, _ = _speaker(*device, *_zone(["LF", "RF"]))
+    player, _ = _speaker(*device, *_zone(channels))
 
     player.update_attributes()
 
