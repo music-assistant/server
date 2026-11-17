@@ -30,7 +30,6 @@ from aiosendspin.server import (
 )
 from music_assistant_models.enums import (
     ContentType,
-    EventType,
     MediaType,
     QueueOption,
     StreamType,
@@ -80,7 +79,6 @@ if TYPE_CHECKING:
     from aiosendspin.server.roles import SourceV1Role
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.enums import ProviderFeature
-    from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -145,7 +143,6 @@ class SendspinSourceProvider(PluginProvider):
         # Playback session of the last stream released per source, to tell a retry from a selection.
         self._released_playback_sessions: dict[str, str] = {}
         self._server_unsubscribe: Callable[[], None] | None = None
-        self._config_unsubscribe: Callable[[], None] | None = None
         self._unloading = False
 
     async def loaded_in_mass(self) -> None:
@@ -155,9 +152,6 @@ class SendspinSourceProvider(PluginProvider):
         if (sendspin := self._sendspin_provider) is None:
             return
         self._server_unsubscribe = sendspin.server_api.add_event_listener(self._on_server_event)
-        self._config_unsubscribe = self.mass.subscribe(
-            self._on_player_config_updated, EventType.PLAYER_CONFIG_UPDATED
-        )
         for client in sendspin.server_api.connected_clients:
             self._watch_client(client)
         for client in sendspin.server_api.clients:
@@ -177,9 +171,6 @@ class SendspinSourceProvider(PluginProvider):
         if self._server_unsubscribe is not None:
             self._server_unsubscribe()
             self._server_unsubscribe = None
-        if self._config_unsubscribe is not None:
-            self._config_unsubscribe()
-            self._config_unsubscribe = None
         for client_id, state in list(self._clients.items()):
             self._cancel_pending_autostart(client_id)
             self._cancel_pending_autostop(client_id)
@@ -414,6 +405,19 @@ class SendspinSourceProvider(PluginProvider):
                 # point would fabricate silence into the timeline, so re-anchor instead.
                 next_deadline = loop.time()
 
+    def on_client_config_updated(self, client_id: str) -> None:
+        """
+        Let the input of a client that is playing follow its changed settings.
+
+        :param client_id: ID of the Sendspin client whose config changed.
+        """
+        if (session := self._get_session(client_id)) is None or (
+            client := self._get_client(client_id)
+        ) is None:
+            return
+        # the session publishes the source it was selected with, so hand it the new one
+        self.mass.players.refresh_source(session.owner_player_id, self._audio_source(client))
+
     @property
     def _sendspin_provider(self) -> SendspinProvider | None:
         return cast("SendspinProvider | None", self.mass.get_provider("sendspin"))
@@ -555,19 +559,6 @@ class SendspinSourceProvider(PluginProvider):
             return
         self.logger.debug("Re-requesting stream start from %s", client_id)
         role.request_start()
-
-    def _on_player_config_updated(self, event: MassEvent) -> None:
-        """Let an input that is playing follow the changed settings of its device."""
-        for client_id, state in self._clients.items():
-            if (
-                (session := state.session) is None
-                or (player := self._client_player(client_id)) is None
-                or player.player_id != event.object_id
-                or (client := self._get_client(client_id)) is None
-            ):
-                continue
-            # the session publishes the source it was selected with, so hand it the new one
-            self.mass.players.refresh_source(session.owner_player_id, self._audio_source(client))
 
     def _refresh_player_listing(self, client_id: str) -> None:
         """Rebuild the source list of the player that lists this client's line-in."""

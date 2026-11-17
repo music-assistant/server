@@ -6,22 +6,26 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.source import ClientHelloSourceFeatures, ClientHelloSourceSupport
 from aiosendspin.noise.trust_store import PskCategory
-from music_assistant_models.enums import ConfigEntryType, PlayerType
+from music_assistant_models.enums import ConfigEntryType, IdentifierType, PlayerType, ProtocolRole
 
-from music_assistant.constants import CONF_ALLOW_AUDIO_ANALYSIS
+from music_assistant.constants import CONF_ALLOW_AUDIO_ANALYSIS, CONF_PROTOCOL_KEY_SPLITTER
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.sendspin.constants import (
     CONF_SOURCE_AUTOSTART_TARGET,
     SOURCE_AUTOSTART_OFF,
 )
-from music_assistant.providers.sendspin.player import SendspinBasePlayer, SendspinSourcePlayer
+from music_assistant.providers.sendspin.player import (
+    SendspinBasePlayer,
+    SendspinPlayer,
+    SendspinSourcePlayer,
+)
 
 if TYPE_CHECKING:
-    import pytest
     from aiosendspin.server.client import SendspinClient
     from music_assistant_models.config_entries import ConfigEntry
 
@@ -320,3 +324,93 @@ async def test_the_line_in_target_picked_in_the_setup_flow_is_kept(
     assert after_restart.config.get_value(CONF_SOURCE_AUTOSTART_TARGET) == kitchen_id
     assert after_restart.player is not None
     assert after_restart.player.player_id == LINE_IN_ID
+
+
+SPEAKER_ID = "jyu3dS9mC2xHq0yGm7Hn3oUuZz8kPq1wLr5tXv0aB4c"
+SPEAKER_MAC = "a0:b7:65:00:11:22"
+
+
+def _speaker_with_microphone(sendspin: FakePlayerProvider) -> SendspinPlayer:
+    """
+    Connect a speaker with a microphone, and return the protocol the provider creates.
+
+    :param sendspin: The Sendspin provider.
+    """
+    roles = ["player@v1", "source@v1"]
+    hello = ClientHelloPayload(
+        client_id=SPEAKER_ID,
+        name="Speaker",
+        version=1,
+        supported_roles=roles,
+        device_info=SendspinDeviceInfo(
+            product_name="ESP32 Speaker", manufacturer="Espressif", mac_address=SPEAKER_MAC
+        ),
+    )
+    client = MagicMock(
+        client_id=SPEAKER_ID,
+        info=hello,
+        info_or_none=hello,
+        negotiated_role_ids=roles,
+        active_roles=[object()],
+        connection_security=SimpleNamespace(psk_category=PskCategory.LONG_TERM),
+        is_connected=True,
+    )
+    client.roles_by_family.return_value = []
+    cast("Any", sendspin).clients[SPEAKER_ID] = client
+    protocol = SendspinPlayer(cast("SendspinProvider", sendspin), SPEAKER_ID, initial_hello=hello)
+    # the client of a device with a native protocol of another provider is an output of it
+    protocol._attr_role = ProtocolRole.AUDIO
+    return protocol
+
+
+@pytest.mark.parametrize("as_output", [False, True], ids=["own_player", "output_of_a_player"])
+async def test_a_change_of_the_analysis_switch_reaches_the_playing_input(
+    scenario: Scenario, monkeypatch: pytest.MonkeyPatch, as_output: bool
+) -> None:
+    """
+    Saving the analysis switch tells the plugin, so an input that plays follows it at once.
+
+    The switch is a setting of the player of the input, or of the Sendspin output of the
+    player of a device with another native protocol, which is saved by its prefixed key.
+    """
+
+    async def _no_security_entries(_self: SendspinBasePlayer) -> list[ConfigEntry]:
+        return []
+
+    monkeypatch.setattr(SendspinBasePlayer, "_get_security_config_entries", _no_security_entries)
+    if as_output:
+        squeezelite = await scenario.add_provider("squeezelite")
+        await scenario.register(
+            squeezelite.protocol(
+                "a0b765001122", "Kitchen", identifiers={IdentifierType.MAC_ADDRESS: SPEAKER_MAC}
+            )
+        )
+    sendspin = await scenario.add_provider("sendspin")
+    cast("Any", sendspin).clients = {}
+    cast("Any", sendspin).server_api = SimpleNamespace(get_client=cast("Any", sendspin).clients.get)
+    cast("Any", sendspin).is_virtual_player = lambda _client_id: False
+    protocol: SendspinBasePlayer
+    if as_output:
+        protocol = _speaker_with_microphone(sendspin)
+        key = f"{SPEAKER_ID}{CONF_PROTOCOL_KEY_SPLITTER}{CONF_ALLOW_AUDIO_ANALYSIS}"
+    else:
+        protocol = _line_in(sendspin)
+        key = CONF_ALLOW_AUDIO_ANALYSIS
+    await scenario.mass.players.register(protocol)
+    await scenario.settle()
+    assert protocol.player is not None
+    assert (protocol.player.own_protocol is protocol) is not as_output
+    source_plugin = MagicMock()
+    get_provider = scenario.mass.get_provider
+    monkeypatch.setattr(
+        scenario.mass,
+        "get_provider",
+        lambda domain, *args, **kwargs: (
+            source_plugin if domain == "sendspin_source" else get_provider(domain, *args, **kwargs)
+        ),
+    )
+
+    await scenario.mass.config.save_player_config(protocol.player.player_id, {key: False})
+
+    source_plugin.on_client_config_updated.assert_called_once_with(protocol.protocol_id)
+    assert protocol.config.get_value(CONF_ALLOW_AUDIO_ANALYSIS) is False

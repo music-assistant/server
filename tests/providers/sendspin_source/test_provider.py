@@ -18,7 +18,6 @@ from aiosendspin.server import (
 )
 from music_assistant_models.enums import (
     ContentType,
-    EventType,
     MediaType,
     PlaybackState,
     QueueOption,
@@ -148,21 +147,17 @@ async def test_a_playing_input_follows_a_change_of_the_setting(fake_client: _Fak
     await provider.on_source_selected("client-1", "player-1", "queue-1", "session-A")
     get_config(provider).values[("client-1", CONF_ALLOW_AUDIO_ANALYSIS)] = False
 
-    # the settings of another device change nothing for this input
-    provider.mass.signal_event(EventType.PLAYER_CONFIG_UPDATED, object_id="client-2")
+    # an input that is not playing has no session to hand it to
+    provider.on_client_config_updated("client-2")
     assert get_players(provider).refreshed == []
 
-    provider.mass.signal_event(EventType.PLAYER_CONFIG_UPDATED, object_id="client-1")
+    provider.on_client_config_updated("client-1")
     [(player_id, source)] = get_players(provider).refreshed
     assert (player_id, source.item_id, source.allow_audio_analysis) == (
         "queue-1",
         "client-1",
         False,
     )
-
-    await provider.unload()
-    provider.mass.signal_event(EventType.PLAYER_CONFIG_UPDATED, object_id="client-1")
-    assert len(get_players(provider).refreshed) == 1
 
 
 async def test_source_name_follows_a_player_rename(fake_client: _FakeClient) -> None:

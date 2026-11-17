@@ -352,6 +352,7 @@ if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
     from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
     from music_assistant.providers.hass import HomeAssistantProvider
+    from music_assistant.providers.sendspin_source.provider import SendspinSourceProvider
 
     from .provider import PinPairingSession, SendspinProvider
 
@@ -549,6 +550,14 @@ class SendspinBasePlayer(PlayerProtocol):
                 )
             )
         return entries
+
+    async def on_config_updated(self) -> None:
+        """Handle logic when the PlayerConfig is first loaded or updated."""
+        if source_provider := self.mass.get_provider("sendspin_source"):
+            # an input that is playing holds the source it was selected with
+            cast("SendspinSourceProvider", source_provider).on_client_config_updated(
+                self.protocol_id
+            )
 
     async def handle_config_action(self, action: str) -> list[ConfigEntry]:
         """Run an unpair/management/input action, then re-render the entries."""
@@ -1823,6 +1832,7 @@ class SendspinPlayer(SendspinBasePlayer):
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
+        await super().on_config_updated()
         if (reported_delay := self._reported_static_delay) is not None:
             self._reported_static_delay = None
             if reported_delay != self.config.get_value(
