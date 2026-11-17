@@ -51,7 +51,7 @@
   },
   "manifest": {
     "name": "Local files",
-    "description": "Play music, audiobooks and podcasts from folders on this server, connected drives and network shares."
+    "description": "Play music, audiobooks and podcasts from folders on this server, connected drives and network shares (SMB or NFS), such as a NAS."
   },
   "setup_flow": {
     "user": {

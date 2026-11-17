@@ -10,14 +10,19 @@ from music_assistant_models.audio_processing import (
     AudioOutputDetails,
 )
 from music_assistant_models.dsp import DSPConfig
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, IdentifierType
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import CONF_OUTPUT_CHANNELS
 from music_assistant.controllers.streams.audio_processing import AudioOutputPlan
 from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
 
 if TYPE_CHECKING:
     import pytest
+
+    from tests.scenarios.harness import Scenario
+
+DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
 
 
 def test_empty_plan_does_not_require_transform(
@@ -84,3 +89,32 @@ def test_a_member_takes_the_dsp_settings_of_its_player(
 
     assert config.requires_transform
     player.mass.config.get_player_dsp_config.assert_called_once_with("pl_member")
+
+
+async def test_a_bridged_member_follows_the_output_channels_of_the_output_it_rides_on(
+    scenario: Scenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bridged member gets its own processing for the channel set on the output it rides on."""
+    airplay = await scenario.add_provider("airplay")
+    sendspin = await scenario.add_provider("sendspin")
+    await scenario.register(airplay.protocol("ap_den", "Den", role="audio", identifiers=DEN))
+    await scenario.register(
+        sendspin.protocol("spb_den", "Den", role="audio", underlying_protocol_id="ap_den")
+    )
+    await scenario.idle()
+    scenario.mass.config.set_protocol_value("ap_den", CONF_OUTPUT_CHANNELS, "left")
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32, channels=2
+    )
+    session = SendspinPlaybackSession(MagicMock(protocol_id="leader", mass=scenario.mass))
+    session._pcm_format = pcm_format
+    monkeypatch.setattr(session, "_get_member_output_format", lambda _player_id: pcm_format)
+
+    config = session._read_pipeline_config("spb_den")
+
+    plan = scenario.mass.streams.audio.get_player_output_plan(
+        "spb_den", pcm_format, pcm_format, handoff_format=pcm_format
+    )
+    assert "pan=stereo|c0=FL|c1=FL" in plan.filter_params
+    assert config.requires_transform
+    assert config.filter_params == tuple(plan.filter_params)

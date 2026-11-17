@@ -55,7 +55,7 @@ from .locks import PlayerLocksMixin
 from .merging import PlayerMergingMixin
 from .outputs import OutputsMixin
 from .playback import PlaybackMixin
-from .power import PowerMixin
+from .power import PowerMixin, _PowerOnWait
 from .protocol_linking import ProtocolLinkingMixin
 from .sleep_timer import SleepTimerMixin
 from .state_updates import StateUpdatesMixin
@@ -139,6 +139,12 @@ class PlayerController(
         # the wait of each command for the switched-off members of a player, with the id
         # of that player and of those members: cancelling it calls the wait off
         self._member_power_ons: dict[asyncio.Future[list[bool]], tuple[str, frozenset[str]]] = {}
+        # the commands that wait for a player to start up after its power control was
+        # switched on, by player id
+        self._power_on_waits: dict[str, _PowerOnWait] = {}
+        # the players whose power control, which cuts their power, read off or was
+        # switched off, by player id: whether their power counts as cut by now
+        self._power_cuts: dict[str, bool] = {}
         # Subscribers for player state updates (called with player + changed_values)
         self._state_update_subscribers: list[
             Callable[[Player, dict[str, tuple[Any, Any]]], None]

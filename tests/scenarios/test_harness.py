@@ -26,6 +26,7 @@ from .harness import (
     ScenarioError,
     xfail_origin_error,
 )
+from .test_grouping import _group, _load_music, _player_id, _speakers, _stop
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Coroutine
@@ -508,6 +509,45 @@ async def test_play_runs_the_queue_on_the_fake_protocol(scenario: Scenario) -> N
     assert queue.current_item is not None
     assert queue.current_item.uri == TEST_TRACK_URI
     await scenario.idle()
+
+
+@pytest.mark.parametrize("group_type", [None, "sync_group", "universal_group"])
+async def test_a_device_plays_a_new_stream_from_its_start(
+    scenario: Scenario, group_type: str | None
+) -> None:
+    """
+    A speaker told to play new media reports its position from 0, not where the last stream was.
+
+    The queue of a single speaker, a sync group and a universal group then all follow the new
+    stream, also when the one before was paused far into its track.
+
+    :param group_type: The kind of group the speakers play in, None for a single speaker.
+    """
+    _, speakers = await _speakers(scenario, "Kitchen", "Office")
+    player_ids = [_player_id(scenario, speaker) for speaker in speakers]
+    queue_id = player_ids[0]
+    if group_type is not None:
+        queue_id = await _group(scenario, group_type, *player_ids)
+    await scenario.play(queue_id)
+    await scenario.advance(30)
+    for speaker in speakers:
+        await scenario.report(
+            speaker, elapsed_time=30, elapsed_time_last_updated=scenario.wall_time()
+        )
+    await scenario.mass.players.cmd_pause(queue_id)
+    await scenario.settle()
+    await _load_music(scenario)
+
+    play = await scenario.command(
+        scenario.mass.player_queues.play_media(queue_id, "test://track/1_1_1")
+    )
+    await scenario.advance(6)
+    await play
+
+    queue = scenario.queue(queue_id)
+    assert queue is not None
+    assert queue.elapsed_time == pytest.approx(6, abs=2)
+    await _stop(scenario, queue_id)
 
 
 async def test_timeline_holds_the_commands_of_every_device_in_order(scenario: Scenario) -> None:

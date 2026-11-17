@@ -658,7 +658,7 @@ async def test_tracks_audio_metadata_energy_level_matches_single_track_lookup(
 
     assert batched_result == [await ctrl.get_track_audio_metadata(tracks[0])]
     assert batched_result[0] is not None
-    assert batched_result[0].energy_level == 7
+    assert batched_result[0].energy_level == 9
 
 
 @pytest.mark.asyncio

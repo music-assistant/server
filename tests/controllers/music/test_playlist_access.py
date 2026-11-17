@@ -47,6 +47,7 @@ from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
 )
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.builtin import BuiltinProvider
 from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
@@ -917,6 +918,7 @@ async def test_add_task_does_not_count_items_the_provider_skipped(
     provider.available = True
     provider.supported_features = {ProviderFeature.PLAYLIST_TRACKS_EDIT}
     provider.get_playlist_tracks = AsyncMock(return_value=[])
+    provider.forget_playlist_tracks = AsyncMock()
 
     async def add_tracks(_prov_playlist_id: str, uris: list[str]) -> None:
         report_current_task_failure(f"Can't add {uris[-1]}")
@@ -960,7 +962,7 @@ async def test_library_add_command_ignores_a_supplied_record(
     """Adding a playlist through the generic library command never sets its owner or sharing."""
     monkeypatch.setattr(music_mass_module.metadata, "update_metadata", AsyncMock())
     crafted = _playlist("Crafted", PlaylistAccess(owner=OWNER.user_id))
-    provider = MagicMock()
+    provider = MagicMock(spec=BuiltinProvider)
     provider.domain = provider.instance_id = "builtin"
     provider.available = True
     provider.library_add = AsyncMock()
@@ -1051,6 +1053,7 @@ async def test_collaborator_edit_completes_its_bookkeeping(
     provider.available = True
     provider.supported_features = {ProviderFeature.PLAYLIST_TRACKS_EDIT}
     provider.remove_playlist_tracks = AsyncMock()
+    provider.forget_playlist_tracks = AsyncMock()
 
     with (
         patch.object(music_mass_module, "get_provider", return_value=provider),

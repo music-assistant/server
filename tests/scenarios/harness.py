@@ -164,6 +164,7 @@ class FakeProtocol(PlayerProtocol):
 
     Commands are applied to the reported state the way a well-behaved device reports them
     back (power, volume, playback), so the server never waits for a device that stays silent.
+    A device that is told to play media reports its position from 0, as a stream starts there.
     It has one config entry of its own (FAKE_SETTING), like a provider setting of the device.
     An object belongs to the server and provider instance it was created on; after a restart
     or a provider reload, Scenario.protocol() returns the current one.
@@ -180,6 +181,12 @@ class FakeProtocol(PlayerProtocol):
         super().__init__(provider, protocol_id)
         # every command received, as a tuple of the command name and its arguments
         self.commands: list[tuple[Any, ...]] = []
+        # every time the server told that the power of the device was cut ("cut") or is back
+        # ("restored"), with the clock time
+        self.power_reports: list[tuple[str, float]] = []
+        # whether the protocol reaches its device once it is told that the power is back, as
+        # one does that only reconnects by itself minutes later; a test sets it
+        self.connects_when_power_is_back = False
         # whether the protocol exists only while attached, like a browser session
         self._attr_session_only = device.session_only
         self._device = device
@@ -205,6 +212,17 @@ class FakeProtocol(PlayerProtocol):
                 required=False,
             ),
         ]
+
+    async def on_power_cut(self) -> None:
+        """Record that the power of the device was cut."""
+        self.power_reports.append(("cut", self.mass.loop.time()))
+
+    async def on_power_restored(self) -> None:
+        """Record that the power of the device is back, and reach it when set to."""
+        self.power_reports.append(("restored", self.mass.loop.time()))
+        if self.connects_when_power_is_back:
+            self._set_reported(available=True)
+            self.update_state()
 
     async def power(self, powered: bool) -> None:
         """Handle a power command."""
@@ -232,7 +250,14 @@ class FakeProtocol(PlayerProtocol):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle a play media command."""
-        self._apply("play_media", media, playback_state=PlaybackState.PLAYING, current_media=media)
+        self._apply(
+            "play_media",
+            media,
+            playback_state=PlaybackState.PLAYING,
+            current_media=media,
+            elapsed_time=0,
+            elapsed_time_last_updated=cast("FakePlayerProvider", self.provider).wall_time(),
+        )
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle the enqueue of the next media."""
@@ -333,6 +358,7 @@ class FakePlayerProvider(PlayerProvider):
         config: ProviderConfig,
         devices: dict[str, _Device],
         timeline: list[tuple[str, tuple[Any, ...]]],
+        wall_time: Callable[[], float],
     ) -> None:
         """
         Initialize the provider.
@@ -342,8 +368,10 @@ class FakePlayerProvider(PlayerProvider):
         :param config: The provider instance config.
         :param devices: The devices of the scenario, by protocol id.
         :param timeline: The commands the devices of the scenario received, in order.
+        :param wall_time: Returns the wall clock time as the server reads it.
         """
         super().__init__(mass, manifest, config)
+        self.wall_time = wall_time
         self._devices = devices
         self._timeline = timeline
         self._protocols: dict[str, FakeProtocol] = {}
@@ -664,8 +692,8 @@ class Scenario:
         """
         Start a command in the background and settle; await the task once it is done.
 
-        Run every server call that may wait for the clock (a timeout, a delay, a device to come
-        online) this way: the clock only moves through advance(), so awaiting such a call
+        Run every server call that may wait for the clock (a timeout, a delay, a player that
+        starts up) this way: the clock only moves through advance(), so awaiting such a call
         directly never returns. A failure of a command that is never awaited fails the scenario.
 
         :param command: The command, e.g. ``scenario.mass.players.cmd_power(player_id, True)``.
@@ -1161,7 +1189,9 @@ class Scenario:
         async def _setup_provider(
             mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
         ) -> FakePlayerProvider:
-            return FakePlayerProvider(mass, manifest, config, self._devices, self.timeline)
+            return FakePlayerProvider(
+                mass, manifest, config, self._devices, self.timeline, self.wall_time
+            )
 
         async def _load_module(manifest: ProviderManifest) -> Any:
             if manifest.domain in fake_domains:

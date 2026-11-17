@@ -45,6 +45,7 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_POWER_CONTROL,
+    CONF_POWER_CONTROL_CUTS_POWER,
     CONF_REQUIRES_FIXED_CONTENT_LENGTH,
 )
 from music_assistant.controllers.player_queues.helpers import handle_play_action
@@ -63,6 +64,7 @@ from tests.common import (
     make_player_state,
     mock_player_mass,
     record_lock_waits,
+    virtual_loop_clock,
 )
 
 GROUP_PROTOCOL_ID = "ugp_test"
@@ -204,8 +206,9 @@ def _switched_off_member(mass: MagicMock, player_id: str) -> Player:
         supports_power=True,
         power_state=False,
     )
+    on_the_plug = {CONF_POWER_CONTROL: plug.id, CONF_POWER_CONTROL_CUTS_POWER: True}
     mass.config.get_player_value.side_effect = lambda member_id, key, default=None: (
-        plug.id if (member_id, key) == (player_id, CONF_POWER_CONTROL) else default
+        on_the_plug.get(key, default) if member_id == player_id else default
     )
     mass.players.get_player_control.side_effect = {plug.id: plug}.get
     member._cache.clear()
@@ -492,6 +495,20 @@ class TestSetMembers:
 
         assert ugp._attr_group_members == []
         mass.players._handle_cmd_stop.assert_awaited_once_with("m1")
+
+    async def test_an_offline_member_is_removed_without_a_stop(self) -> None:
+        """A removed member that can not be reached is taken off the list and not stopped."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass, dynamic=True)
+        _make_member(mass, "m1", available=False, playback_state=PlaybackState.PLAYING)
+        ugp._attr_group_members = ["m1"]
+
+        with patch.object(ugp, "update_state") as update_state:
+            await ugp.set_members(player_ids_to_remove=["m1"])
+
+        assert ugp._attr_group_members == []
+        mass.players._handle_cmd_stop.assert_not_awaited()
+        update_state.assert_called_once()
 
 
 class TestIdleGraceTimer:
@@ -1018,10 +1035,17 @@ class TestCommandOnAMemberOfAHeldGroup:
             call = getattr(players, command)("m1")
 
         waits = record_lock_waits(players)
+        loop = asyncio.get_running_loop()
 
-        await call
+        # the clock only moves while the loop waits for a timer, so a pause of the process
+        # (garbage collection, a busy machine) does not count, and any wait does
+        with virtual_loop_clock():
+            started = loop.time()
+            await call
+            took = loop.time() - started
 
         assert waits == []
+        assert took < LOCK_BUDGET
         assert sorted(played_on) == ["m1", "m2"]
 
 

@@ -425,6 +425,10 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Remove track(s) from playlist."""
         await self.library_manager.remove_playlist_tracks(prov_playlist_id, positions_to_remove)
 
+    async def forget_playlist_tracks(self, prov_playlist_id: str) -> None:
+        """Drop what is kept of a playlist's tracks, so the next read fetches them anew."""
+        await self.media_manager.forget_playlist_tracks(prov_playlist_id)
+
     async def set_favorite(
         self, prov_item_id: str, media_type: MediaType, favorite: bool | None
     ) -> None:

@@ -98,6 +98,25 @@ class Provider:
         """
         raise ActionUnavailable(f"Unknown action: {action}")
 
+    async def handle_menu_action(
+        self, action_id: str, uri: str, player_id: str | None
+    ) -> ConfigActionResult | None:
+        """
+        Run a menu action this provider declares in its manifest, for a media item.
+
+        Override when the manifest declares ``menu_actions``. The server only calls this for a
+        user who may use this provider instance and holds the scope of the action, with the uri
+        of an item of one of the media types the action declares, and for an action that
+        requires a player with a player that user may use. Return a ``ConfigActionResult`` to
+        report the outcome (a message to show and/or a url to open), or None when there is
+        nothing to report. Raise a ``MusicAssistantError`` to report that the action failed.
+
+        :param action_id: The id of the menu action in the manifest.
+        :param uri: The uri of the media item the action was chosen for.
+        :param player_id: The player to act on for an action that requires a player, else None.
+        """
+        raise ActionUnavailable(f"Unknown menu action: {action_id}")
+
     async def handle_async_init(self) -> None:
         """
         Handle async initialization of the provider.

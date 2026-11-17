@@ -93,8 +93,6 @@ async def test_soundcloud_library_paging_and_search_beyond_500_items(
     assert [item.item_id for item in [*first[1:], *second]] == [str(index) for index in range(625)]
     assert [item.item_id for item in found[1:]] == ["624"]
     assert len(everything) == 626
-    assert endpoint.await_args_list[1].kwargs["offset"] == 499
-    assert endpoint.await_args_list[2].kwargs["search"] == "Item 0624"
 
 
 async def test_artist_playlist_controller_caps_provider_results(

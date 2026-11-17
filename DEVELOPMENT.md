@@ -95,7 +95,7 @@ A provider that lives outside the server repository (for example in a repository
 
 * The `requirements` in `manifest.json` are plain package names with versions, such as `aiohttp-retry==2.9.1`. They are installed next to the server's own packages and never replace one of them: a provider whose requirements clash with the server is not loaded.
 * A change to the code takes effect after a restart of the server.
-* To test the provider against a real server, add `pytest_plugins = ["music_assistant.testing"]` to `tests/conftest.py` (with pytest-asyncio's `asyncio_mode = "auto"`). The `mass` fixture then gives a started server in dev mode that loads the providers in the root folder of the test run, kept off the network. Next to the server, install the requirements of its built-in Sendspin provider (`aiosendspin[server]` and `av`, at the versions in `music_assistant/providers/sendspin/manifest.json`): the server starts that provider at every boot.
+* To test the provider against a real server, add `pytest_plugins = ["music_assistant.testing"]` to `tests/conftest.py` (with pytest-asyncio's `asyncio_mode = "auto"`). The `mass` fixture then gives a started server in dev mode that loads the providers in the root folder of the test run. It announces nothing on the network and listens on the loopback address only; the requests a provider makes itself still go out. Next to the server, install the requirements of its built-in Sendspin provider (`aiosendspin[server]` and `av`, at the versions in `music_assistant/providers/sendspin/manifest.json`): the server starts that provider at every boot.
 
 ### Trying a branch or your own provider in Docker
 
@@ -161,6 +161,8 @@ The Music Assistant server is fully built in Python. The Python language has no 
 A Music Provider is the provider type that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Local files can be put in the Music Provider category. All Providers (of all types) can be found in the `music_assistant/providers` folder.
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_music_provider` to get you started fast!
+
+Before you start, read [what a provider in the server asks of you](#-contributing-a-provider).
 
 
 **Adding the necessary files for a new Music Provider**
@@ -236,13 +238,16 @@ All Providers (of all types) can be found in the `music_assistant/providers` fol
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_player_provider` to get you started fast!
 
+Before you start, read [what a provider in the server asks of you](#-contributing-a-provider).
+
 A player provider implements one `PlayerProtocol` (`music_assistant/models/player_protocol.py`) per device and registers it with `mass.players.register()`. The server builds the `Player` that users see from the protocols of a device, and attaches the protocol to it: the protocol finds it as `self.player`. The contract between the two:
 
 * A protocol reports its own values (`_attr_*` or its properties) and reads them back from itself, never from a published state.
 * It reads the final values of its player (`self.player.<field>`: what the player published last, the same values as in `self.player.state`) only for what the device has to display or follow: the current media and its position.
 * The grouping as users see it comes from the player too (`self.player.group_members`, `self.player.synced_to`, `self.player.active_group`); what a protocol reports about grouping names the protocol ids of its own provider.
 * A property of a protocol is read while the server derives the state of its player, when `self.player.<field>` is still the previous value. Such a property never reads a final value of its own player: it asks what is true right now (`self.player.attached_protocols`, `self.player.resolve_output_protocol()`).
-* Whether another player takes part in what a protocol does (a member of its group, the target of a handover) is the `available` that player published, as for a client. A player that is switched off at its external power control is available too, while its device is off the network (`offline_by_power_control`). A protocol never switches such a player on itself: the server powers it on, and waits for its device, before a command starts the group or adds the player. A protocol that restarts playback by itself, which is no command of a user, does that inside `with mass.players.without_member_power_on():`, so the restart switches no member of a group on and waits for none. The members that play along right now come from `mass.players.iter_group_members()`.
+* Whether another player takes part in what a protocol does (a member of its group, the target of a handover) is the `available` that player published, as for a client. A player that is off or starting up at an external power control that cuts its power is available too, while its device can not play (`offline_by_power_control`). A protocol never switches such a player on itself: the server powers it on, and waits for its start-up time, before a command starts the group or adds the player. A protocol that restarts playback by itself, which is no command of a user, does that inside `with mass.players.without_member_power_on():`, so the restart switches no member of a group on and waits for none. The members that play along right now come from `mass.players.iter_group_members()`.
+* A user can say that the external power control of a player (a smart plug) cuts the power of the player itself. The server then tells every attached protocol of that player what happens to its device: `on_power_cut()` once the control has stayed off for a while or was switched off through the server, and `on_power_restored()` when the start-up time of the player has passed since the control came on. Every `on_power_cut()` is followed by an `on_power_restored()`: also when the server stops following the power of the player (its setting or its power control changed, or the control went away), while the device may still be off. Override them when your provider keeps a connection to the device: it would otherwise keep a dead connection, read available for long after the power is gone, or only reach the device again on a reconnect of its own that can be minutes away. In `on_power_cut()` close the connection, call off a reconnect that waits or runs, read unavailable and publish that. In `on_power_restored()` start from that same state, as it is also called when `on_power_cut()` was not (a play within the first seconds of a cut) and can be called twice: close what is left of an earlier connection, connect anew and return once the device is reached or can not be. The server waits at most 10 seconds for it and then ends the call, before the playback that waited for the start-up goes to the protocols that read available, so leave a retry of your own behind for a device that is not up yet. Either call can overlap a detach: after an `await`, check that the protocol is still attached before you go on. The Sonos and Chromecast players do this. A protocol without such a connection, one that connects for every stream, needs neither.
 * Data that only lives while the server runs (`extra_data`, the stop and external source markers) stays on `self.player`.
 * `self.player` is already `None` when `on_detach()` runs: a protocol releases what it holds itself.
 * The same object can be attached again after a detach, when the server moves it to another player or changes its role: whatever `on_detach()` ends, `on_attach()` starts again.
@@ -286,13 +291,52 @@ The manifest file contains metadata and configuration about a provider. The supp
 | upnp_discovery | List of SSDP search targets the provider wants to subscribe to. | array[string] |
 | self_service | Whether members may set up and reconfigure an instance of the provider as a music source of their own. Defaults to `true`. A provider whose setup reaches into the server itself, like a folder on its disk, may only keep it `true` when its setup flow checks what a member picks against what that member may use (the Local files flow checks every folder against `mass.storage.can_hold_music_source`); otherwise set it to `false` | boolean |
 | credits | List of credits/attributions, e.g. for libraries or icons used. Accepts markdown formatting. | array[string] |
+| menu_actions | Entries the provider adds to the menu of a media item, see [Menu actions](#-menu-actions). | array[object] |
 
 A provider's config entries are not declared in the manifest. They are built in code by overriding `get_config_entries` on the provider, and their values are read via `self.config.get_value(key)`. One-time setup input is collected by the provider's setup flow (`setup_flow.py`).
 
 Three more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG), `has_setup_flow` (set when the provider folder contains a `setup_flow.py`) and `tier` (`core`, built-in, for every provider that ships with the server).
 
-## 🤝 Community providers
-Every provider ships in this repository and is reviewed against the same usage policy, whoever maintains it. The people listed in `codeowners` maintain the provider. Set `support_url` if you want bug reports and questions somewhere other than the support repository.
+## 📋 Menu actions
+A provider can add its own entries to the menu of a track, album, artist, playlist, radio station, podcast, podcast episode or audiobook. It declares them in `menu_actions` in its manifest and implements what they do in its code; the Music Assistant app draws the entries, in a submenu under the name of the provider instance, so the provider ships no code for the app. The demo plugin (`_demo_plugin_provider`) has a complete example.
+
+```json
+"menu_actions": [
+  {
+    "id": "send_to_frame",
+    "label": "Show on the picture frame",
+    "media_types": ["album", "playlist"],
+    "scope": "library.read",
+    "icon": "mdi-image-frame",
+    "requires_player": false
+  }
+]
+```
+
+* `id`: names the action within the provider, in lower case letters, digits and underscores (at most 32).
+* `label`: the English text of the menu entry, one readable line of at most 40 characters. Put the same text in the provider's `strings.json` under `menu_actions.<id>.label` to have it translated, as with the other texts of the provider. A text from `strings.json` or `translations/` may have up to 80 characters, as translations grow; one that is not a single readable line of at most 80 is not used, and the label from the manifest is shown instead.
+* `media_types`: the kinds of media item the entry is offered for: `track`, `album`, `artist`, `playlist`, `radio`, `podcast`, `podcast_episode` and `audiobook`.
+* `scope`: what a user needs to use the action, such as `library.read`, `library.write` or `queues.control` (the values of `Scope` in the models). The app does not show the entry to a user without it, and the server refuses it.
+* `icon`: optional, the name of a [Material Design Icon](https://pictogrammers.com/library/mdi), such as `mdi-image-frame`, of at most 64 characters.
+* `requires_player`: optional, `true` when the action acts on a player. The app then also offers it in the menu of the play button, and passes the chosen player.
+
+When a user chooses an entry, the app calls the API command `providers/invoke_menu_action` with the instance of the provider, the id of the action, the `uri` of the item and, for an action that requires a player, the `player_id`. The server checks that the user may use that instance and holds the scope of the action, that the `uri` is of one of its media types and that the user may use the player, and then calls `handle_menu_action(action_id, uri, player_id)` on that instance. The server only checks the kind of item in the `uri`, not that the item exists or that it belongs to your provider, so `handle_menu_action` looks the item up itself. Implement it in your provider: it answers nothing, or a `ConfigActionResult` with a message the app shows and/or a url it opens once. To say the action failed, raise a `MusicAssistantError`. The provider registers no command. A provider that allows several instances needs nothing extra: the entries are offered for each instance, and each instance handles the actions chosen for it.
+
+The server checks the declared actions when it reads the manifest. An action that breaks one of the rules above, has the same `id` as an earlier one, or comes after the first ten valid ones is left out with a warning in the log, and the provider loads without it. For a provider in this repository the same rules fail the `check_manifests` check. A provider in its own repository declares menu actions in the same way, with its texts in the `strings.json` and `translations/` of its own folder.
+
+## 🤝 Contributing a provider
+**Consider the community catalog first.** Instead of adding a provider to the server itself, which comes with the expectations below and a longer wait for reviews, you can publish it in the [community catalog](https://github.com/music-assistant/.github/blob/main/COMMUNITY_CATALOG_RULES.md), especially when it covers a limited use case or a small group of users. There you keep it in your own repository and release whenever you want, and users install it from the Marketplace in Music Assistant. The [provider template](https://github.com/music-assistant/community-provider-template) gets you started.
+
+A provider that ships with Music Assistant is installed for every user and supported by the project. A new one therefore asks for more than working code:
+
+* **People ask for it.** Link the feature request or discussion that shows the demand.
+* **It is documented.** A pull request on the [documentation](https://github.com/music-assistant/music-assistant.io/blob/main/CONTRIBUTING.md) comes with it.
+* **It meets the standards.** It follows this guide and the [usage policy](https://github.com/music-assistant/.github/blob/main/USAGE_POLICY.md), passes `lint` and `test`, and has tests of its own.
+* **You maintain it.** You are listed in `codeowners` and keep following up on bug reports and on changes in the service, the device or the server.
+
+A provider whose maintainer no longer follows up may be moved out of the server to the [community catalog](https://github.com/music-assistant/.github/blob/main/COMMUNITY_CATALOG_RULES.md). That is announced first, so that someone can take it over. A maintainer can also move their own provider there, to release it from their own repository. Users keep it either way: a server that has it set up installs it from the community catalog after the upgrade, with its settings. How a move goes, and the check that guards it, is in the [community catalog README](music_assistant/controllers/community_catalog/README.md#moved-providers).
+
+Every provider in this repository is reviewed against the same usage policy, whoever maintains it. The people listed in `codeowners` maintain the provider. Set `support_url` if you want bug reports and questions somewhere other than the support repository.
 
 **Getting your changes merged**
 

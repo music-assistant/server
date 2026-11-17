@@ -34,7 +34,6 @@ from music_assistant_models.media_items import AudioFormat
 from orjson import dumps
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
-from music_assistant.controllers.players.constants import OFFLINE_POWER_ON_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
     has_scope,
@@ -78,10 +77,10 @@ HANDSHAKE_TIMEOUT = 10
 # Live announcements are spoken one at a time by a person, so a handful of sessions is
 # already generous; the cap bounds the audio that can be buffered at once.
 MAX_CONCURRENT_SESSIONS = 4
-# Room for a player that is switched off at its power control to come online, for the whole
-# clip to play out and for the player to be restored. A player provider that never returns
-# would otherwise hold one of the session slots until a restart.
-ANNOUNCEMENT_TIMEOUT = OFFLINE_POWER_ON_TIMEOUT + MAX_CLIP_SECONDS + 60
+# Room for the whole clip to play out and for the player to be restored, on top of the time
+# a player that is switched off at its power control needs to start up. A player provider
+# that never returns would otherwise hold one of the session slots until a restart.
+ANNOUNCEMENT_TIMEOUT = MAX_CLIP_SECONDS + 60
 # A close frame carries 125 bytes, two of which are taken by the status code.
 MAX_CLOSE_REASON_BYTES = 123
 
@@ -357,7 +356,8 @@ class LiveAnnouncementManager:
             # a player that plays announcements natively hands off to its provider, which
             # has no deadline of its own - one that never returns would otherwise keep
             # this session (and its slot) alive for as long as the server runs
-            async with asyncio.timeout(ANNOUNCEMENT_TIMEOUT):
+            timeout = ANNOUNCEMENT_TIMEOUT + self.mass.players.get_power_on_wait(player_id)
+            async with asyncio.timeout(timeout):
                 await self.mass.players.play_announcement(
                     player_id,
                     url=session.url,

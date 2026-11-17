@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import EventType, ProviderTier
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import UNHANDLED_PROVIDER_ERROR_CODE
 from music_assistant.controllers.community_catalog.dependencies import (
@@ -19,10 +18,13 @@ from music_assistant.controllers.community_catalog.dependencies import (
 )
 from music_assistant.controllers.community_catalog.gate import _REASONS, Decision, Verdict
 from music_assistant.controllers.community_catalog.installer import InstallError, _folder_hash
+from music_assistant.helpers.provider_manifest import read_manifest_file
 from music_assistant.helpers.util import load_provider_module
 
 if TYPE_CHECKING:
     import logging
+
+    from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.controllers.community_catalog.dependencies import (
         CommunityDependencies,
@@ -435,7 +437,7 @@ class VersionChanger:
             return decision
         if decision.verdict != Verdict.LOAD:
             return Decision(Verdict.WENT_BACK, failed)
-        manifest = await ProviderManifest.parse(str(folder / "manifest.json"))
+        manifest = (await read_manifest_file(folder / "manifest.json"))[0]
         try:
             resolved = await self._dependencies.resolve(
                 {**requirements, domain: manifest.requirements}

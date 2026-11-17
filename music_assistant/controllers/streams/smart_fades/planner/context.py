@@ -35,6 +35,7 @@ from music_assistant.controllers.streams.smart_fades.helpers import (
     detect_rise_point,
     extrapolate_downbeats,
     keys_compatible,
+    local_bpm,
 )
 from music_assistant.controllers.streams.smart_fades.models import (
     Deck,
@@ -232,11 +233,12 @@ def build_transition_context(
         if fade_in_analysis.downbeats is not None
         else incoming_beats
     )
+    # Only beats within the buffered head are usable for alignment decisions
+    head_beats = incoming_beats[incoming_beats <= SMART_CROSSFADE_DURATION]
     incoming = Deck(
         analysis=fade_in_analysis,
-        bpm=fade_in_analysis.bpm,
-        # Only beats within the buffered head are usable for alignment decisions
-        beats=incoming_beats[incoming_beats <= SMART_CROSSFADE_DURATION],
+        bpm=local_bpm(head_beats, fade_in_analysis.bpm),
+        beats=head_beats,
         downbeats=incoming_downbeats[incoming_downbeats <= SMART_CROSSFADE_DURATION],
         beats_per_bar=fade_in_analysis.beats_per_bar or 4,
     )
@@ -265,7 +267,13 @@ def build_transition_context(
         grid_beats,
         grid_downbeats,
     ) = _cue_outgoing_tail(outgoing, outgoing_profile, buffer_duration, logger)
-    outgoing = replace(outgoing, beats=grid_beats, downbeats=grid_downbeats)
+    outgoing = replace(
+        outgoing,
+        # the outro past the mix-out point is trimmed, so its beats do not set the tempo
+        bpm=local_bpm(grid_beats[grid_beats <= tier_anchor], fade_out_analysis.bpm),
+        beats=grid_beats,
+        downbeats=grid_downbeats,
+    )
 
     # Extrapolated up to the true RMS-audible boundary rather than the (possibly
     # downbeat-snapped) mix_out_anchor, so a later vocal re-anchor can always

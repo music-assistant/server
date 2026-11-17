@@ -15,6 +15,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
 
+from music_assistant.controllers.music.constants import CONF_BOUND_ACCOUNT_ID
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.oauth import (
@@ -223,8 +224,9 @@ async def _verify_account(session: SetupSession, access_token: str) -> str | Non
     Check the just-authenticated Spotify account and return its id.
 
     Turns the user away when the account has no Spotify Premium (neither playback
-    backend can stream for a free account) or when it is already set up on another
-    provider instance. A lookup Spotify does not answer is
+    backend can stream for a free account), when it is already set up on another
+    provider instance, or when a reconfigure signs in to another account than the
+    instance is bound to. A lookup Spotify does not answer is
     not held against the user: the setup simply continues and None is returned.
 
     :param session: The setup session driving the flow.
@@ -232,6 +234,7 @@ async def _verify_account(session: SetupSession, access_token: str) -> str | Non
         it is deliberate — minting a fresh one rotates the refresh token, which
         revokes the one just stored as setup data.
     :raises AbortFlow: When the account is non-Premium or already configured.
+    :raises SetupFlowError: When the instance being reconfigured is bound to another account.
     """
     if (userinfo := await _get_profile(session, access_token)) is None:
         return None
@@ -240,6 +243,18 @@ async def _verify_account(session: SetupSession, access_token: str) -> str | Non
         raise AbortFlow("premium_required")
     if not (account_id := str(userinfo.get("id") or "")):
         return None
+    bound_account_id = (
+        session.mass.config.get_provider_setup_value(instance_id, CONF_BOUND_ACCOUNT_ID)
+        if (instance_id := session.context.instance_id)
+        else None
+    )
+    # refused here, before the playback authorization can replace the instance's session
+    if bound_account_id not in (None, account_id):
+        raise SetupFlowError(
+            "This is a different account than the one this provider was set up with. "
+            "To use another account, remove this provider and add it again.",
+            translation_key="provider_account_changed",
+        )
     if await _account_in_use(session, account_id):
         raise AbortFlow("account_already_configured")
     return account_id

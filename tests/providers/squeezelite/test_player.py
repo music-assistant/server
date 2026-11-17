@@ -9,16 +9,20 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 
 import pytest
+from aioslimproto.models import ButtonCode, RemoteCode, SlimEvent
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import PlayerState as SlimPlayerState
-from aioslimproto.models import SlimEvent
+from music_assistant_models.audio_processing import AudioOutputDetails, AudioProcessingChain
 from music_assistant_models.enums import (
+    ContentType,
     MediaType,
     PlaybackState,
     PlayerFeature,
     ProtocolRole,
     RepeatMode,
 )
+from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
@@ -215,6 +219,43 @@ async def test_play_url_mime_type_is_explicit_for_sync_members(
     )
 
     assert slimplayer.play_url.call_args.kwargs["mime_type"] == expected
+
+
+@pytest.mark.parametrize(
+    ("url", "is_group_playback", "duration"),
+    [
+        ("http://127.0.0.1:8097/single/s1/queue_1/q2/p1.flac", False, 4),
+        ("http://127.0.0.1:8097/flow/s1/queue_1/q2/p1.flac", False, 198),
+        (
+            "http://127.0.0.1:8097/slimproto/multi?player_id=x&fmt=flac&child_player_id=y",
+            True,
+            198,
+        ),
+    ],
+    ids=["single_item", "flow", "sync_group"],
+)
+async def test_only_a_single_item_stream_gets_the_seconds_left_after_a_seek(
+    url: str, is_group_playback: bool, duration: int
+) -> None:
+    """A flow stream, also the one a sync group plays, carries on into the next track."""
+    player, mass = _player_with_mocked_mass()
+    mass.player_queues.get.return_value = None
+    slimplayer = MagicMock()
+    slimplayer.play_url = AsyncMock()
+    slimplayer.pause = AsyncMock()
+    media = PlayerMedia(
+        uri="fake://x",
+        media_type=MediaType.TRACK,
+        source_id="queue_1",
+        duration=198,
+        stream_duration=4,
+    )
+
+    await player._handle_play_url_for_slimplayer(
+        slimplayer, url=url, media=media, is_group_playback=is_group_playback
+    )
+
+    assert slimplayer.play_url.call_args.kwargs["metadata"]["duration"] == duration
 
 
 async def test_grouped_play_media_passes_per_member_mime_type() -> None:
@@ -825,6 +866,18 @@ def test_a_bridge_stream_is_no_media_of_the_protocol(owns_stream: bool) -> None:
         assert player.current_media.title == "Before"
 
 
+def test_a_track_change_of_the_player_goes_to_its_bridge() -> None:
+    """The stream of a bridge plays on from track to track: the bridge shows what plays now."""
+    player, bridge = _player_with_bridge()
+
+    player.on_player_media_updated()
+
+    bridge.update_now_playing.assert_called_once_with()
+    # without a bridge there is nothing to tell
+    player.sendspin_bridge = None
+    player.on_player_media_updated()
+
+
 async def test_a_stream_of_the_protocol_takes_the_players_back_from_their_bridges() -> None:
     """Before the protocol plays on its players, a bridge that plays on one of them lets go."""
     player, bridge = _player_with_bridge()
@@ -929,6 +982,93 @@ async def test_buttons_act_on_the_player_that_leads_the_sendspin_group(
     mass.player_queues.next.assert_awaited_once_with(queue.queue_id)
 
 
+def _button_event(data: dict[str, int | str]) -> SlimEvent:
+    """Return a button event aioslimproto passes on for the device."""
+    return SlimEvent(type=SlimEventType.PLAYER_BTN_EVENT, player_id="p1", data=data)
+
+
+@pytest.mark.parametrize(
+    ("data", "target", "command", "played"),
+    [
+        ({"type": "butn", "timestamp": 1, "button": ButtonCode.PLAY}, None, "cmd_play", "kitchen"),
+        ({"type": "ir", "timestamp": 1, "code": RemoteCode.PLAY}, None, "cmd_play", "kitchen"),
+        (
+            {"type": "ir", "timestamp": 1, "code": RemoteCode.PAUSE},
+            None,
+            "cmd_play_pause",
+            "kitchen",
+        ),
+        (
+            {"type": "butn", "timestamp": 1, "button": ButtonCode.PAUSE},
+            "living_room",
+            "cmd_play_pause",
+            "living_room",
+        ),
+    ],
+)
+async def test_play_or_pause_passed_on_by_the_device_goes_to_its_player(
+    data: dict[str, int | str], target: str | None, command: str, played: str
+) -> None:
+    """Play plays and pause toggles, on the leader of its group while it plays for its bridge."""
+    player, bridge = _player_with_bridge()
+    mass = cast("MagicMock", player.mass)
+    player._player = MagicMock(player_id="kitchen")
+    bridge.transport_command_target.return_value = target
+    mass.players.cmd_play = AsyncMock()
+    mass.players.cmd_play_pause = AsyncMock()
+
+    await player._handle_player_button_event(_button_event(data))
+
+    getattr(mass.players, command).assert_awaited_once_with(played)
+    other = "cmd_play" if command == "cmd_play_pause" else "cmd_play_pause"
+    getattr(mass.players, other).assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"type": "knob", "timestamp": 1, "position": 5, "sync": 0},
+        {"type": "butn", "timestamp": 1, "button": ButtonCode.PRESET_1},
+        {"type": "ir", "timestamp": 1, "code": RemoteCode.FORWARD},
+    ],
+)
+async def test_other_buttons_of_the_device_do_nothing(
+    data: dict[str, int | str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A knob or a button without a meaning for Music Assistant is no failure either."""
+    player, mass = _player_with_mocked_mass()
+    use_real_create_task(mass)
+    player._player = MagicMock(player_id="kitchen")
+    player.logger = MagicMock()
+    player.sendspin_bridge = None
+    mass.players.cmd_play = AsyncMock()
+    mass.players.cmd_play_pause = AsyncMock()
+
+    player.handle_slim_event(_button_event(data))
+    await asyncio.sleep(0)
+
+    mass.players.cmd_play.assert_not_called()
+    mass.players.cmd_play_pause.assert_not_called()
+    assert "Exception in task" not in caplog.text
+
+
+async def test_a_play_from_the_device_that_fails_is_logged() -> None:
+    """A play the player controller refuses does not fail the event of the device."""
+    player, mass = _player_with_mocked_mass()
+    player._player = MagicMock(player_id="kitchen")
+    player._player.name = "Kitchen"
+    player.logger = MagicMock()
+    player.sendspin_bridge = None
+    mass.players.cmd_play = AsyncMock(side_effect=PlayerUnavailableError("unavailable"))
+
+    await player._handle_player_button_event(
+        _button_event({"type": "butn", "timestamp": 1, "button": ButtonCode.PLAY})
+    )
+
+    player.logger.warning.assert_called_once()
+    assert player.logger.warning.call_args.args[1] == "Kitchen"
+
+
 async def test_the_bridge_is_evaluated_when_the_config_of_the_protocol_is_loaded() -> None:
     """Every attach and config change brings the Sendspin bridge in line."""
     player, mass = _player_with_mocked_mass()
@@ -959,3 +1099,117 @@ async def test_a_protocol_that_is_removed_takes_its_bridge_client_along() -> Non
     await player.on_remove()
 
     remove_bridge.assert_awaited_once_with("p1", permanent=True)
+
+
+# ---------------------------------------------------------------- delivered format
+
+FLAC_96_24 = AudioFormat(content_type=ContentType.FLAC, sample_rate=96000, bit_depth=24)
+MP3_44_16 = AudioFormat(content_type=ContentType.MP3, sample_rate=44100, bit_depth=16)
+QUEUE_ITEM_METADATA = {"title": "One", "source_id": "queue_1", "queue_item_id": "item_1"}
+
+
+def _player_streamed(
+    outputs: list[AudioOutputDetails] | None, **metadata: str | None
+) -> SqueezelitePlayer:
+    """
+    Return a player that plays a queue item, with the outputs recorded for its stream.
+
+    :param outputs: The outputs the stream controller recorded for the queue item, None
+        when it recorded none.
+    :param metadata: Metadata of the stream on the player, over that of the queue item.
+    """
+    player, mass = _player_with_mocked_mass()
+    use_real_create_task(mass)
+    player._player = MagicMock(player_id="pl_p1")
+    player.client = MagicMock(player_id="p1", update_metadata=AsyncMock())
+    player.client.current_media.metadata = {**QUEUE_ITEM_METADATA, **metadata}
+    queue_item = MagicMock()
+    queue_item.streamdetails.audio_processing = (
+        None if outputs is None else AudioProcessingChain(outputs=outputs)
+    )
+    mass.player_queues.get_item.side_effect = lambda queue_id, item_id: (
+        queue_item if (queue_id, item_id) == ("queue_1", "item_1") else None
+    )
+    # what the player makes of the state of its client is not what these tests are about
+    for method in ("update_attributes", "update_state", "_store_volume"):
+        setattr(player, method, MagicMock())
+    return player
+
+
+async def _report_update(player: SqueezelitePlayer) -> None:
+    """Let the client of a player report an update, and the tasks it starts run."""
+    player.handle_slim_event(SlimEvent(type=SlimEventType.PLAYER_UPDATED, player_id="p1"))
+    await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize(
+    ("output_format", "quality"),
+    [
+        (FLAC_96_24, {"samplerate": "96000", "samplesize": "24"}),
+        # a lossy stream has no bit depth, as LMS reports it
+        (MP3_44_16, {"samplerate": "44100"}),
+    ],
+)
+async def test_the_player_reports_the_format_it_is_streamed(
+    output_format: AudioFormat, quality: dict[str, str]
+) -> None:
+    """Clients of the player (e.g. a WiiM) show the format the stream to the player is in."""
+    player = _player_streamed(
+        [
+            AudioOutputDetails(player_ids=["other"], output_format=FLAC_96_24),
+            AudioOutputDetails(player_ids=["another", "pl_p1"], output_format=output_format),
+        ]
+    )
+
+    await _report_update(player)
+
+    # the whole metadata goes along: the update replaces it
+    cast("AsyncMock", player.client.update_metadata).assert_awaited_once_with(
+        {**QUEUE_ITEM_METADATA, **quality}
+    )
+
+
+@pytest.mark.parametrize(
+    ("outputs", "metadata"),
+    [
+        # the stream of another player was fetched, that of this one not yet
+        ([AudioOutputDetails(player_ids=["other"], output_format=FLAC_96_24)], {}),
+        # nothing recorded for the queue item
+        (None, {}),
+        # what the update of the stream comes back with
+        (
+            [AudioOutputDetails(player_ids=["pl_p1"], output_format=FLAC_96_24)],
+            {"samplerate": "96000", "samplesize": "24"},
+        ),
+        # a stream that started already: the item restarts in another format, and the
+        # update would reach the new stream before it plays
+        (
+            [AudioOutputDetails(player_ids=["pl_p1"], output_format=FLAC_96_24)],
+            {"samplerate": "44100", "samplesize": "16"},
+        ),
+        # a live source that plays outside a queue
+        (
+            [AudioOutputDetails(player_ids=["pl_p1"], output_format=FLAC_96_24)],
+            {"queue_item_id": None},
+        ),
+    ],
+)
+async def test_a_format_that_is_not_known_or_reported_leaves_the_stream_as_it_is(
+    outputs: list[AudioOutputDetails] | None, metadata: dict[str, str | None]
+) -> None:
+    """Without a format recorded for the player, or with that format reported, nothing changes."""
+    player = _player_streamed(outputs, **metadata)
+
+    await _report_update(player)
+
+    cast("AsyncMock", player.client.update_metadata).assert_not_called()
+
+
+async def test_the_stream_of_the_bridge_reports_its_own_format() -> None:
+    """While the player plays for its Sendspin bridge, the format of a queue item does not apply."""
+    player = _player_streamed([AudioOutputDetails(player_ids=["pl_p1"], output_format=FLAC_96_24)])
+    player.sendspin_bridge = MagicMock(owns_stream=True)
+
+    await _report_update(player)
+
+    cast("AsyncMock", player.client.update_metadata).assert_not_called()

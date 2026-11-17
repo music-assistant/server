@@ -185,6 +185,12 @@ async def test_init_distinguishes_expired_cookies_from_missing_premium(
         )
 
 
+def test_account_id_ignores_case_and_whitespace(provider: YoutubeMusicProvider) -> None:
+    """The same email typed in another case, or with stray spaces, is the same account."""
+    with patch.object(provider, "get_setup_value", return_value=" Me@Example.com "):
+        assert provider.account_id == "me@example.com"
+
+
 async def test_init_fetches_one_visitor_id_for_all_calls(provider: YoutubeMusicProvider) -> None:
     """The visitor id fetched at setup spares every later call a page fetch of its own."""
     page = MagicMock(text='ytcfg.set({"VISITOR_DATA": "visitor123"});')

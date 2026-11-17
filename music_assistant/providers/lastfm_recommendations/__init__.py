@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from itertools import islice
 from typing import TYPE_CHECKING
 
 from music_assistant_models.background_task import TaskSchedule
@@ -22,7 +23,7 @@ from music_assistant_models.media_items import RecommendationFolder, Track, Uniq
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.compare import match_ranked_tracks
 from music_assistant.helpers.throttle_retry import RequestPriority, with_request_priority
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
@@ -318,34 +319,5 @@ def _match_library_tracks(
     :param tracks: The artist's library tracks.
     :param limit: Maximum number of tracks to return.
     """
-    by_mbid = {
-        value: track
-        for track in tracks
-        for id_type, value in track.external_ids
-        if id_type == ExternalID.MB_RECORDING
-    }
-    matched: list[Track] = []
-    listed: set[str] = set()
-    for entry in ranking:
-        if len(matched) >= limit:
-            break
-        track = by_mbid.get(entry["mbid"])
-        if track is None or track.item_id in listed:
-            unlisted = [candidate for candidate in tracks if candidate.item_id not in listed]
-            # an exact title before a similar one: "Revolution" is not "Revolution 1"
-            named = [
-                candidate
-                for candidate in unlisted
-                if compare_strings(candidate.name, entry["name"], True)
-            ] or [
-                candidate
-                for candidate in unlisted
-                if compare_strings(candidate.name, entry["name"], False)
-            ]
-            if not named:
-                continue
-            # the original recording before a live, remix or other version of it
-            track = min(named, key=lambda candidate: bool(candidate.version))
-        matched.append(track)
-        listed.add(track.item_id)
-    return matched
+    matched = match_ranked_tracks(((entry["name"], entry["mbid"]) for entry in ranking), tracks)
+    return list(islice((track for track in matched if track), limit))
