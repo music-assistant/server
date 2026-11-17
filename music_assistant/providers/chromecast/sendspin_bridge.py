@@ -37,6 +37,7 @@ from music_assistant.constants import (
     CONF_ENABLED,
     CONF_PLAYERS,
     CONF_PROTOCOL_EXPERIMENTAL_NOTE,
+    CONF_UNDERLYING_PLAYER_ID,
     SENDSPIN_SERVER_PORT,
 )
 from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
@@ -855,9 +856,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             return
         if (player := protocol.player) and (carrier := self._earlier_carrier(player)):
             if client_id in carrier.bridge_client_ids(player):
-                # also the Sendspin output of a Cast bridge that is switched off goes, so the
-                # bridge that carries the device registers the output of its client id afresh
-                await self._remove_client_protocol(protocol.protocol_id, client_id)
+                await self._hand_output_over(protocol.protocol_id, client_id)
             return
         if not self._has_bridge(protocol.protocol_id):
             return
@@ -1150,6 +1149,26 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             if protocol is None or protocol.provider is not self.provider:
                 return
             await self.evaluate_bridge(protocol)
+
+    async def _hand_output_over(self, protocol_id: str, client_id: str) -> None:
+        """
+        Hand the stored Sendspin output of a Cast bridge to the bridge that carries the device.
+
+        That bridge registers under the same client id. The output keeps its settings, loses
+        the note of the Cast bridge and, as Sendspin over Cast can be switched off by default,
+        is switched on when it rides on the Cast protocol switched off.
+
+        :param protocol_id: The id of the Chromecast protocol.
+        :param client_id: The client id of its bridge and of the bridge that carries the device.
+        """
+        if (record := self.mass.config.get_protocol_record(client_id)) is None:
+            return
+        if self.mass.config.get_protocol_value(client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE):
+            self.mass.config.set_protocol_value(client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE, None)
+        rides_on = (record.get("values") or {}).get(CONF_UNDERLYING_PLAYER_ID)
+        if rides_on == protocol_id and not record.get(CONF_ENABLED, True):
+            await self.mass.config.save_protocol_config(client_id, {CONF_ENABLED: True})
+            self._let_other_bridges_take_over(protocol_id)
 
     async def _flag_bridge_experimental(
         self, protocol_id: str, client_id: str, disable: bool

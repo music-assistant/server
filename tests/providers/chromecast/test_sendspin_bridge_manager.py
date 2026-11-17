@@ -361,7 +361,7 @@ class TestCastBridgeYieldsToSqueezelite:
         assert not manager._has_bridge(CAST_ID)
 
     async def test_the_cast_bridge_goes_when_a_squeezelite_player_shows_up(self) -> None:
-        """Test a Cast bridge that came first steps back for good, taking its output along."""
+        """Test a Cast bridge that came first steps back, leaving the output of both to it."""
         manager, mass, cast_protocol = _make_cast_environment()
         client_id = manager._bridge_client_id(cast_protocol)
         assert client_id is not None
@@ -378,7 +378,9 @@ class TestCastBridgeYieldsToSqueezelite:
 
         assert not manager._has_bridge(CAST_ID)
         cast_bridge.stop.assert_awaited_once()
-        mass.players.remove_protocol.assert_awaited_once_with(client_id)
+        # the squeezelite bridge registers under the same client id, and takes the output over
+        mass.players.remove_protocol.assert_not_awaited()
+        assert client_id in records
 
     @pytest.mark.parametrize("permanent", [True, False])
     async def test_a_claimed_client_that_steps_back_lets_the_other_bridges_take_over(
@@ -679,8 +681,9 @@ class TestSwitchedOffCastOutputMakesWayForSqueezelite:
     """Tests for a switched-off Cast Sendspin output on a device with a squeezelite player."""
 
     async def test_squeezelite_attached_first_gets_its_bridge(self) -> None:
-        """Test the Cast evaluation clears the switched-off output for the squeezelite bridge."""
+        """Test the Cast evaluation hands the switched-off output to the squeezelite bridge."""
         device = _DualDevice(output_rides_on=CAST_ID, output_enabled=False)
+        output = device.configs[device.client_id]
         # the squeezelite player is there before the Cast protocol is evaluated
         await device.attach(device.squeezelite, signal=False)
         assert device.squeezelite_manager.get_bridge(SQUEEZELITE_ID) is None
@@ -689,20 +692,26 @@ class TestSwitchedOffCastOutputMakesWayForSqueezelite:
         await device.settle()
 
         assert device.squeezelite_manager.get_bridge(SQUEEZELITE_ID) is device.squeezelite_bridge
-        device.mass.players.remove_protocol.assert_awaited_once_with(device.client_id)
+        device.mass.players.remove_protocol.assert_not_awaited()
+        assert device.configs[device.client_id] is output
+        assert output["enabled"] is True
+        assert device.rides_on() == SQUEEZELITE_ID
         assert not device.cast_manager._has_bridge(CAST_ID)
 
     async def test_squeezelite_attached_later_gets_its_bridge(self) -> None:
         """Test a squeezelite player joining a switched-off Cast output gets its bridge."""
         device = _DualDevice(output_rides_on=CAST_ID, output_enabled=False)
         await device.cast_manager.evaluate_bridge(device.cast)
-        assert device.client_id in device.configs
+        output = device.configs[device.client_id]
 
         await device.attach_squeezelite()
         await device.settle()
 
         assert device.squeezelite_manager.get_bridge(SQUEEZELITE_ID) is device.squeezelite_bridge
-        device.mass.players.remove_protocol.assert_awaited_once_with(device.client_id)
+        device.mass.players.remove_protocol.assert_not_awaited()
+        assert device.configs[device.client_id] is output
+        assert output["enabled"] is True
+        assert device.rides_on() == SQUEEZELITE_ID
         assert not device.cast_manager._has_bridge(CAST_ID)
 
     async def test_the_output_of_the_squeezelite_bridge_is_left_alone(self) -> None:
@@ -716,7 +725,7 @@ class TestSwitchedOffCastOutputMakesWayForSqueezelite:
         await device.cast_manager.evaluate_bridge(device.cast)
         await device.settle()
 
-        device.mass.players.remove_protocol.assert_awaited_once_with(device.client_id)
+        device.mass.players.remove_protocol.assert_not_awaited()
         assert device.configs[device.client_id] is output
         device.squeezelite_bridge.stop.assert_not_awaited()
 

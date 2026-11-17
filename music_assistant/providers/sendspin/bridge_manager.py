@@ -147,10 +147,14 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             # so also clean up the bridge client protocol/config. Only act on
             # bridges we actually own - the computed client_id may collide
             # with another protocol's bridge on the same device (shared MAC).
+            # the stored output of a client id the carrying bridge registers under too passes
+            # to that bridge, with its settings
+            hands_over = self._earlier_carrier_shares_client(protocol, client_id)
             if self._has_bridge(protocol_id):
-                await self.remove_bridge(protocol_id, permanent=True)
+                await self.remove_bridge(protocol_id, permanent=not hands_over)
             elif (
                 client_id
+                and not hands_over
                 and (player := protocol.player) is not None
                 and self._earlier_bridge_carries(player)
                 and self.mass.config.is_protocol_switched_on(client_id)
@@ -414,6 +418,20 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         :param player: The player to look at.
         """
         return self._earlier_carrier(player) is not None
+
+    def _earlier_carrier_shares_client(
+        self, protocol: PlayerProtocol, client_id: str | None
+    ) -> bool:
+        """
+        Return whether the bridge that carries the player of a protocol uses its client id.
+
+        :param protocol: The protocol whose bridge leaves the output to an earlier bridge.
+        :param client_id: The client id the bridge of the protocol registers under.
+        """
+        if not client_id or (player := protocol.player) is None:
+            return False
+        carrier = self._earlier_carrier(player)
+        return carrier is not None and client_id in carrier.bridge_client_ids(player)
 
     def _earlier_carrier(self, player: Player) -> SendspinBridgeManagerBase[SendspinBridge] | None:
         """

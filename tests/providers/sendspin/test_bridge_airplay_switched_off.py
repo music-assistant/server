@@ -40,6 +40,10 @@ from music_assistant.providers.chromecast.sendspin_bridge import (
 from music_assistant.providers.chromecast.sendspin_bridge import SendspinChromecastBridge
 from music_assistant.providers.sendspin.bridge_manager import evaluate_bridge_of
 from music_assistant.providers.sendspin.bridge_role import BRIDGE_ROLE_ID
+from music_assistant.providers.sendspin.constants import (
+    CONF_SENDSPIN_BRIDGE_STATIC_DELAYS,
+    CONF_SENDSPIN_STATIC_DELAY,
+)
 from music_assistant.providers.sendspin.helpers import holds_bridge_client
 from music_assistant.providers.sendspin.player import SendspinPlayer
 from music_assistant.providers.squeezelite.bridge_role import SLIMPROTO_BRIDGE_ROLE_ID
@@ -244,6 +248,7 @@ class _Device:
             side_effect=lambda protocol_id: self.records().get(protocol_id)
         )
         mass.config.get_protocol_value = MagicMock(side_effect=self._get_value)
+        mass.config.set = MagicMock(side_effect=self._set)
         mass.config.set_protocol_value = MagicMock(side_effect=self._set_value)
         mass.config.save_protocol_config = AsyncMock(side_effect=self._save_protocol_config)
         mass.config.is_protocol_switched_on = MethodType(
@@ -530,6 +535,11 @@ class _Device:
             return
         self.sendspin_protocols[client_id] = rides_on
         if client_id in self.configs:
+            # the Sendspin protocol of the client rides on it from now on, with its delay
+            protocol = SendspinPlayer.__new__(SendspinPlayer)
+            protocol._protocol_id = client_id
+            protocol.mass = self.mass
+            protocol._hand_static_delay_over(rides_on)
             self.configs[client_id]["values"][CONF_UNDERLYING_PLAYER_ID] = rides_on
         else:
             self.store_output(client_id, rides_on)
@@ -553,6 +563,12 @@ class _Device:
     def _get_value(self, protocol_id: str, key: str, default: Any = None) -> Any:
         """Return a stored value of a protocol."""
         return (self.configs.get(protocol_id) or {}).get("values", {}).get(key, default)
+
+    def _set(self, key: str, value: Any) -> None:
+        """Store a config value by its path, as the values of a stored protocol."""
+        _, protocol_id, part = key.split("/")
+        assert part == "values", key
+        self.configs[protocol_id]["values"] = value
 
     def _set_value(self, protocol_id: str, key: str, value: Any) -> None:
         """Store a value of a protocol."""
@@ -731,7 +747,7 @@ async def test_an_output_under_the_same_client_id_is_taken_over_with_its_setting
     )
     await device.attach(first)
     _assert_carried_by(device, SQUEEZELITE_CLIENT, first.protocol_id)
-    device.configs[SQUEEZELITE_CLIENT]["values"]["static_delay"] = 120
+    device.configs[SQUEEZELITE_CLIENT]["values"][CONF_SENDSPIN_STATIC_DELAY] = 120
     output = device.configs[SQUEEZELITE_CLIENT]
 
     await device.attach(second)
@@ -740,8 +756,20 @@ async def test_an_output_under_the_same_client_id_is_taken_over_with_its_setting
 
     taker = device.squeezelite if carrier == "airplay" else device.airplay
     assert device.configs[SQUEEZELITE_CLIENT] is output
-    assert output["values"]["static_delay"] == 120
     _assert_carried_by(device, SQUEEZELITE_CLIENT, taker.protocol_id)
+    # the delay belongs to the bridge it was set for, and is put aside for it
+    assert CONF_SENDSPIN_STATIC_DELAY not in output["values"]
+    assert output["values"][CONF_SENDSPIN_BRIDGE_STATIC_DELAYS] == {first.protocol_id: 120}
+
+    if carrier == "airplay":
+        await device.switch(device.squeezelite, False)
+    else:
+        await device.switch(device.squeezelite, True)
+        await device.attach(device.squeezelite)
+
+    assert device.configs[SQUEEZELITE_CLIENT] is output
+    _assert_carried_by(device, SQUEEZELITE_CLIENT, first.protocol_id)
+    assert output["values"][CONF_SENDSPIN_STATIC_DELAY] == 120
 
 
 @pytest.mark.parametrize("slow_teardown", [False, True])
@@ -1028,7 +1056,7 @@ async def test_starting_up_keeps_the_output_of_squeezelite_whichever_protocol_co
 ) -> None:
     """After a restart squeezelite carries its stored output, and AirPlay never registers."""
     device = _Device(airplay_id=airplay_id)
-    device.store_output(SQUEEZELITE_CLIENT, SQUEEZELITE_ID, static_delay=120)
+    device.store_output(SQUEEZELITE_CLIENT, SQUEEZELITE_ID, sendspin_static_delay=120)
     output = device.configs[SQUEEZELITE_CLIENT]
     first_protocol, second_protocol = (
         (device.airplay, device.squeezelite)
@@ -1044,7 +1072,7 @@ async def test_starting_up_keeps_the_output_of_squeezelite_whichever_protocol_co
 
     assert device.timeline == [("registered", "squeezelite")]
     assert device.configs[SQUEEZELITE_CLIENT] is output
-    assert output["values"]["static_delay"] == 120
+    assert output["values"][CONF_SENDSPIN_STATIC_DELAY] == 120
     _assert_carried_by(device, SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
 
 
@@ -1286,7 +1314,7 @@ async def test_switching_the_sendspin_output_off_leaves_the_device_without_sends
     """No bridge takes a device whose Sendspin output is switched off, and nothing is removed."""
     device = _Device(airplay_id=airplay_id, cast=True)
     await _bridged(device, SQUEEZELITE_CLIENT)
-    device.configs[SQUEEZELITE_CLIENT]["values"]["static_delay"] = 120
+    device.configs[SQUEEZELITE_CLIENT]["values"][CONF_SENDSPIN_STATIC_DELAY] = 120
     records = dict(_sendspin_records(device))
     if away:
         await device.detach(device.squeezelite)
@@ -1303,7 +1331,7 @@ async def test_switching_the_sendspin_output_off_leaves_the_device_without_sends
     assert not any(manager._bridges for manager in device.managers)
     assert _sendspin_records(device) == records, "a Sendspin output was created or removed"
     assert records[SQUEEZELITE_CLIENT]["enabled"] is False
-    assert records[SQUEEZELITE_CLIENT]["values"]["static_delay"] == 120
+    assert records[SQUEEZELITE_CLIENT]["values"][CONF_SENDSPIN_STATIC_DELAY] == 120
     assert device.sendspin_output() is None
 
     await device.switch_output(SQUEEZELITE_CLIENT, True)
@@ -1317,7 +1345,7 @@ async def test_a_switched_off_cast_output_of_its_own_stays_when_airplay_takes_th
     """A Cast output with a client id of its own keeps its settings and its off."""
     device = _Device(squeezelite=False, cast=True)
     device.configs[AIRPLAY_ID]["enabled"] = False
-    device.store_output(CAST_CLIENT, CAST_ID, static_delay=123)
+    device.store_output(CAST_CLIENT, CAST_ID, sendspin_static_delay=123)
     output: dict[str, Any] = device.configs[CAST_CLIENT]
     output["enabled"] = False
     await device.attach(device.cast)
@@ -1327,7 +1355,7 @@ async def test_a_switched_off_cast_output_of_its_own_stays_when_airplay_takes_th
 
     assert device.configs.get(CAST_CLIENT) is output, "the switched-off Cast output was removed"
     assert output["enabled"] is False
-    assert output["values"]["static_delay"] == 123
+    assert output["values"][CONF_SENDSPIN_STATIC_DELAY] == 123
     _assert_carried_by(device, AIRPLAY_CLIENT, AIRPLAY_ID)
 
 
@@ -1340,7 +1368,7 @@ async def test_adding_squeezelite_to_a_device_bridged_over_airplay_moves_the_out
     """Squeezelite carries a device that had its Sendspin output on AirPlay once it is added."""
     device = _Device(airplay_id=airplay_id)
     airplay_client = SQUEEZELITE_CLIENT if airplay_id == SAME_ID_AIRPLAY_ID else AIRPLAY_CLIENT
-    device.store_output(airplay_client, airplay_id, static_delay=77)
+    device.store_output(airplay_client, airplay_id, sendspin_static_delay=77)
     output = device.configs[airplay_client]
     await device.attach(device.airplay)
     _assert_carried_by(device, airplay_client, airplay_id)
@@ -1365,7 +1393,7 @@ async def test_adding_squeezelite_to_a_device_whose_airplay_output_is_switched_o
     """A device whose Sendspin output the user switched off stays without one, whatever its id."""
     device = _Device(airplay_id=airplay_id)
     airplay_client = SQUEEZELITE_CLIENT if airplay_id == SAME_ID_AIRPLAY_ID else AIRPLAY_CLIENT
-    device.store_output(airplay_client, airplay_id, static_delay=77)
+    device.store_output(airplay_client, airplay_id, sendspin_static_delay=77)
     output: dict[str, Any] = device.configs[airplay_client]
     output["enabled"] = False
     await device.attach(device.airplay)
@@ -1376,7 +1404,7 @@ async def test_adding_squeezelite_to_a_device_whose_airplay_output_is_switched_o
     assert set(_sendspin_records(device)) == {airplay_client}
     assert device.configs[airplay_client] is output
     assert output["enabled"] is False
-    assert output["values"]["static_delay"] == 77
+    assert output["values"][CONF_SENDSPIN_STATIC_DELAY] == 77
     assert device.sendspin_output() is None
 
     await device.switch_output(airplay_client, True)
@@ -1390,7 +1418,7 @@ async def test_adding_squeezelite_to_a_device_whose_airplay_output_is_switched_o
 async def test_switching_on_the_airplay_output_of_a_device_that_is_away() -> None:
     """The output switched on while the device is away goes to squeezelite once it is back."""
     device = _Device()
-    device.store_output(AIRPLAY_CLIENT, AIRPLAY_ID, static_delay=77)
+    device.store_output(AIRPLAY_CLIENT, AIRPLAY_ID, sendspin_static_delay=77)
     device.configs[AIRPLAY_CLIENT]["enabled"] = False
     await device.attach(device.airplay)
     await device.attach(device.squeezelite)
@@ -1442,8 +1470,8 @@ async def test_a_cast_output_that_is_off_by_default_does_not_keep_the_carrier_aw
 async def test_a_carrier_with_an_output_of_its_own_follows_that_output() -> None:
     """A switched-off output of a later bridge does not touch a carrier with a stored output."""
     device = _Device()
-    device.store_output(SQUEEZELITE_CLIENT, SQUEEZELITE_ID, static_delay=120)
-    device.store_output(AIRPLAY_CLIENT, AIRPLAY_ID, static_delay=77)
+    device.store_output(SQUEEZELITE_CLIENT, SQUEEZELITE_ID, sendspin_static_delay=120)
+    device.store_output(AIRPLAY_CLIENT, AIRPLAY_ID, sendspin_static_delay=77)
     airplay_output: dict[str, Any] = device.configs[AIRPLAY_CLIENT]
     airplay_output["enabled"] = False
     await device.attach(device.airplay)
@@ -1451,7 +1479,7 @@ async def test_a_carrier_with_an_output_of_its_own_follows_that_output() -> None
     await device.attach(device.squeezelite)
 
     _assert_carried_by(device, SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
-    assert device.configs[SQUEEZELITE_CLIENT]["values"]["static_delay"] == 120
+    assert device.configs[SQUEEZELITE_CLIENT]["values"][CONF_SENDSPIN_STATIC_DELAY] == 120
     assert device.configs[AIRPLAY_CLIENT] is airplay_output
     assert airplay_output["enabled"] is False
 
@@ -1466,3 +1494,68 @@ async def test_a_switched_off_output_of_an_earlier_bridge_leaves_the_carrier_alo
     await device.attach(device.airplay)
 
     _assert_carried_by(device, AIRPLAY_CLIENT, AIRPLAY_ID)
+
+
+async def test_airplay_takes_the_device_at_the_next_change_of_its_outputs() -> None:
+    """AirPlay takes a device whose away squeezelite output was switched off, once its outputs change."""
+    device = _Device(cast=True)
+    await device.attach(device.airplay)
+    await device.attach(device.squeezelite)
+    await device.detach(device.squeezelite)
+    # switched off while it is away, which changes no output of the player
+    device.configs[SQUEEZELITE_ID]["enabled"] = False
+    assert device.manager_of(device.airplay).get_bridge(AIRPLAY_ID) is None
+
+    await device.attach(device.cast)
+
+    _assert_carried_by(device, AIRPLAY_CLIENT, AIRPLAY_ID)
+
+
+async def test_a_take_over_whose_set_up_waits_keeps_the_output_of_the_same_client_id() -> None:
+    """AirPlay stepping back while squeezelite still sets up leaves it the output of both."""
+    device = _Device(airplay_id=SAME_ID_AIRPLAY_ID)
+    await device.attach(device.airplay)
+    output = device.configs[SQUEEZELITE_CLIENT]
+    output["values"][CONF_SENDSPIN_STATIC_DELAY] = 77
+    cache_read = asyncio.Event()
+
+    async def _read_later(*_args: Any, **_kwargs: Any) -> None:
+        await cache_read.wait()
+
+    # squeezelite reads what it learned about the player before it registers
+    device.mass.cache.get = AsyncMock(side_effect=_read_later)
+
+    await device.attach(device.squeezelite)
+
+    assert device.manager_of(device.airplay).get_bridge(SAME_ID_AIRPLAY_ID) is None
+    assert device.configs.get(SQUEEZELITE_CLIENT) is output, "AirPlay removed the output"
+
+    cache_read.set()
+    await device.settle()
+
+    assert device.configs[SQUEEZELITE_CLIENT] is output
+    _assert_carried_by(device, SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
+    assert output["values"][CONF_SENDSPIN_BRIDGE_STATIC_DELAYS] == {SAME_ID_AIRPLAY_ID: 77}
+
+
+async def test_a_switched_off_cast_output_of_the_same_client_id_passes_to_airplay() -> None:
+    """The Cast output of the client id of AirPlay passes to it with its settings, switched on."""
+    device = _Device(airplay_id=SAME_ID_AIRPLAY_ID, squeezelite=False, cast=True)
+    device.configs[SAME_ID_AIRPLAY_ID]["enabled"] = False
+    device.store_output(
+        CAST_CLIENT,
+        CAST_ID,
+        sendspin_static_delay=123,
+        **{CONF_PROTOCOL_EXPERIMENTAL_NOTE: "Sendspin over Cast is experimental"},
+    )
+    output: dict[str, Any] = device.configs[CAST_CLIENT]
+    output["enabled"] = False
+    await device.attach(device.cast)
+
+    await device.switch(device.airplay, True)
+    await device.attach(device.airplay)
+
+    assert device.configs.get(CAST_CLIENT) is output, "the output of the Cast bridge was removed"
+    _assert_carried_by(device, CAST_CLIENT, SAME_ID_AIRPLAY_ID)
+    assert output["values"][CONF_SENDSPIN_BRIDGE_STATIC_DELAYS] == {CAST_ID: 123}
+    assert not output["values"].get(CONF_PROTOCOL_EXPERIMENTAL_NOTE)
