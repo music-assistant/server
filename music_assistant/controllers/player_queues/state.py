@@ -115,8 +115,9 @@ class PlayerQueueData:
     # queue_item_ids whose audio reached the player during the current load, plus the item it
     # was still playing when that load started. The tracker only reports a play for, or ends the
     # queue on, one of these: a player can name an item it never received (one from its own
-    # cached copy of the queue that the stream server then refused), and nothing of it has played
-    served_item_ids: set[str] = field(default_factory=set)
+    # cached copy of the queue that the stream server then refused), and nothing of it has played.
+    # Maps each to the stream session that served it
+    served_item_ids: dict[str, str | None] = field(default_factory=dict)
     # the point an END_OF_ITEM/END_OF_CHAPTER sleep timer stops the queue at; while set, the
     # queue does not advance past that item on its own
     sleep_timer_target: SleepTimerTarget | None = None
