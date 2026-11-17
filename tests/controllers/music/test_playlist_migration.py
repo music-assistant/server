@@ -1202,22 +1202,17 @@ async def test_migration_lookup_error_marks_only_its_own_track(
     assert "after an earlier failure" not in final_report
 
 
-async def test_migration_rate_limit_does_not_drop_the_provider(
+async def test_migration_holds_back_a_rate_limited_provider(
     music: MusicController,
 ) -> None:
-    """Rate limited tracks are reported as such and do not count towards the breaker."""
+    """A rate limit pauses the provider for the wait it asked for, without dropping it."""
     source_playlist = _playlist("1", "Source", "spotify_1", "source")
     destination_playlist = _playlist("2", "Migrated", "tidal_1", "target")
     source_provider, target_provider = _migration_providers()
-    # the limited tracks fill the first resolve batch, so a provider dropped over them
-    # would no longer be asked for the track after it
-    limited_count = _MIGRATION_RESOLVE_BATCH_SIZE
     source_tracks = [
-        create_track("spotify_1", f"source-{index}", name=f"Track {index}")
-        for index in range(limited_count + 1)
+        create_track("spotify_1", f"source-{index}", name=f"Track {index}") for index in range(6)
     ]
-    matched_key = f"source-{limited_count}"
-    target_track = create_track("tidal_1", "tidal-match", name=f"Track {limited_count}")
+    target_track = create_track("tidal_1", "tidal-match", name="Track 0")
 
     async def iter_playlist_tracks(*args: object, **_kwargs: object) -> AsyncGenerator[Track]:
         if args == ("source", "spotify_1"):
@@ -1229,7 +1224,7 @@ async def test_migration_rate_limit_does_not_drop_the_provider(
     async def find_match(
         track: Track, *_args: object, **_kwargs: object
     ) -> TrackProviderMatchResult:
-        if track.item_id != matched_key:
+        if track.item_id != "source-0":
             raise RateLimited("Tidal rate limit", backoff_time=120)
         return TrackProviderMatchResult(
             match=TrackProviderMatch(
@@ -1274,11 +1269,13 @@ async def test_migration_rate_limit_does_not_drop_the_provider(
             ("spotify_1", "tidal_1"),
         )
 
-    assert find_provider_match.await_count == len(source_tracks)
+    # the match, then the track that ran into the limit; the rest are not asked at all
+    assert find_provider_match.await_count == 2
     target_provider.add_playlist_tracks.assert_awaited_once_with("target", ["tidal-match"])
     final_report = set_report.call_args.args[0]
     assert "Rate limited on Tidal, retry in 120 seconds" in final_report
-    assert f"| Rate limited | {limited_count} |" in final_report
+    assert f"| Rate limited | {len(source_tracks) - 1} |" in final_report
+    # a rate limit is not a provider failure, so the breaker stays out of it
     assert "after an earlier failure" not in final_report
 
 

@@ -1373,10 +1373,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_failures: ProviderMatchFailures,
     ) -> _PlaylistMigrationTrackResult:
         """Resolve one source track for a migration destination."""
-        if provider.domain != "builtin" and provider_failures.blocked(provider.instance_id):
-            return _PlaylistMigrationTrackResult(
-                error=f"Matching unavailable on {provider.name} after an earlier failure"
-            )
+        if provider.domain != "builtin":
+            if provider_failures.blocked(provider.instance_id):
+                return _PlaylistMigrationTrackResult(
+                    error=f"Matching unavailable on {provider.name} after an earlier failure"
+                )
+            if pause := provider_failures.rate_limit_pause(provider.instance_id, provider.name):
+                return _PlaylistMigrationTrackResult(rate_limited_providers=(pause,))
         try:
             if provider.domain == "builtin":
                 enrichment = await self.mass.music.tracks.enrich_provider_mappings(

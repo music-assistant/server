@@ -163,6 +163,7 @@ async def test_search_provider_uses_centralized_provider_search() -> None:
         [MediaType.TRACK],
         limit=5,
         strict_provider_instance=True,
+        raise_rate_limited=True,
     )
 
 
@@ -189,6 +190,7 @@ async def test_search_provider_resolves_domain_within_explicit_scope() -> None:
         [MediaType.TRACK],
         limit=5,
         strict_provider_instance=True,
+        raise_rate_limited=True,
     )
 
 
@@ -268,6 +270,7 @@ async def test_search_provider_unscoped_domain_skips_unavailable_sibling() -> No
         [MediaType.TRACK],
         limit=10,
         strict_provider_instance=True,
+        raise_rate_limited=True,
     )
 
 

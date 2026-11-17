@@ -37,6 +37,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
     UnsupportedFeaturedException,
 )
@@ -178,7 +179,11 @@ from music_assistant.helpers.provider_access import (
     visible_provider,
 )
 from music_assistant.helpers.tags import split_artists
-from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    is_rate_limit_error,
+    request_priority,
+)
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.core_controller import CoreController
@@ -968,6 +973,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             media_types,
             limit=limit,
             strict_provider_instance=True,
+            # the caller resolves one item against many providers and reports a rate
+            # limit apart from a failure, so it must not arrive as an empty result
+            raise_rate_limited=True,
         )
         if result is None:
             raise ResourceTemporarilyUnavailable(
@@ -3340,6 +3348,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         skip_item_ids: set[tuple[MediaType, str, str]] | None = None,
         strict_provider_instance: bool = False,
         soft_timeout: float | None = None,
+        raise_rate_limited: bool = False,
     ) -> SearchResults | None:
         """
         Perform search on given provider, returns None if the search failed or timed out.
@@ -3354,6 +3363,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param strict_provider_instance: Do not fall back to another provider instance.
         :param soft_timeout: Seconds to wait before returning None while the search
                              continues in the background; None waits for it to finish.
+        :param raise_rate_limited: Raise RateLimited instead of returning None when the
+                                   provider asked us to wait. For a caller that walks
+                                   provider after provider and must know to stop.
         """
         prov = visible_provider(
             self.mass, provider_instance_id_or_domain, get_current_user(), strict_provider_instance
@@ -3398,6 +3410,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 prov.name,
             )
             return None
+        except RateLimited:
+            # for a plain search a limited provider simply contributes nothing
+            if not raise_rate_limited:
+                return None
+            raise
         if prov_search_results is None:
             return None
         return self._visible_search_results(
@@ -3415,9 +3432,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         Execute the actual search on a provider and cache the result.
 
-        Returns None if the provider search failed or timed out. All errors are
-        handled here (and not raised) as this coroutine runs as a background task
-        that may outlive the request that started it.
+        Returns None if the provider search failed or timed out. Errors are handled
+        here (and not raised) as this coroutine runs as a background task that may
+        outlive the request that started it; a rate limit is the exception, since a
+        caller that searches provider after provider has to know to stop.
         """
         try:
             async with asyncio.timeout(SEARCH_PROVIDER_HARD_TIMEOUT):
@@ -3426,6 +3444,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             self.logger.warning("Search on provider %s timed out", prov.name)
             return None
         except MusicAssistantError as err:
+            if is_rate_limit_error(err):
+                self.logger.info("Search on provider %s is rate limited: %s", prov.name, str(err))
+                raise
             self.logger.warning("Search on provider %s failed: %s", prov.name, str(err))
             return None
         except Exception as err:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections import Counter
 from collections.abc import Iterable
 from contextlib import suppress
@@ -98,6 +99,8 @@ if TYPE_CHECKING:
 # a provider that fails this many items in a row is dropped from the rest of a matching
 # run, so the remaining items do not each pay the same timeout or retry cycle
 MAX_CONSECUTIVE_PROVIDER_FAILURES: Final[int] = 3
+# how long a rate limited provider is left alone when it named no Retry-After
+DEFAULT_RATE_LIMIT_PAUSE: Final[int] = 60
 # the ways a match attempt on one provider is expected to fail
 PROVIDER_MATCH_ERRORS: Final[tuple[type[Exception], ...]] = (
     *PROVIDER_UNUSABLE_ERRORS,
@@ -157,6 +160,8 @@ class ProviderMatchFailures:
 
     unusable: set[str] = field(default_factory=set)
     consecutive_failures: Counter[str] = field(default_factory=Counter)
+    # monotonic deadline until which a rate limited provider is not asked again
+    rate_limited_until: dict[str, float] = field(default_factory=dict)
 
     def blocked(self, provider_instance_id: str) -> bool:
         """
@@ -174,6 +179,24 @@ class ProviderMatchFailures:
         """
         self.unusable.add(provider_instance_id)
 
+    def rate_limit_pause(
+        self, provider_instance_id: str, provider_name: str
+    ) -> ProviderRateLimit | None:
+        """
+        Return the rate limit still holding a provider back, None when it may be asked.
+
+        :param provider_instance_id: Provider instance to check.
+        :param provider_name: Display name for the report of the item that is skipped.
+        """
+        deadline = self.rate_limited_until.get(provider_instance_id)
+        if deadline is None:
+            return None
+        if (remaining := deadline - time.monotonic()) <= 0:
+            # the wait is over, the provider takes part in the run again
+            del self.rate_limited_until[provider_instance_id]
+            return None
+        return ProviderRateLimit(provider_name, round(remaining))
+
     def record_success(self, provider_instance_id: str) -> None:
         """
         Clear the failure streak of a provider that answered.
@@ -181,6 +204,7 @@ class ProviderMatchFailures:
         :param provider_instance_id: Provider instance that answered an attempt.
         """
         self.consecutive_failures.pop(provider_instance_id, None)
+        self.rate_limited_until.pop(provider_instance_id, None)
 
     def record_failure(
         self, provider_instance_id: str, error: BaseException
@@ -192,8 +216,14 @@ class ProviderMatchFailures:
         :param error: Error the attempt failed with.
         """
         if is_rate_limit_error(error):
-            # a rate limit lifts by itself and the throttler holds the calls made while it
-            # lasts back on its own, so the provider stays in the run for the later items
+            # a rate limit lifts by itself, so the provider is held back for the wait it
+            # asked for rather than dropped. Not every provider paces itself behind a
+            # cooldown of its own, so the remaining items must not keep asking it
+            pause = rate_limit_retry_after(error) or DEFAULT_RATE_LIMIT_PAUSE
+            self.rate_limited_until[provider_instance_id] = max(
+                self.rate_limited_until.get(provider_instance_id, 0.0),
+                time.monotonic() + pause,
+            )
             return ProviderMatchFailureKind.RATE_LIMITED
         if isinstance(error, PROVIDER_UNUSABLE_ERRORS):
             self.mark_unusable(provider_instance_id)
@@ -1685,6 +1715,11 @@ class TracksController(MediaControllerBase[Track]):
         for provider in providers:
             if provider_failures.blocked(provider.instance_id):
                 continue
+            if pause := provider_failures.rate_limit_pause(provider.instance_id, provider.name):
+                # the provider asked to be left alone, so this item is reported as
+                # skipped instead of costing a request the provider would refuse
+                rate_limited_providers.append(pause)
+                continue
             if provider.domain in existing_domains:
                 continue
             if (
@@ -1770,11 +1805,13 @@ class TracksController(MediaControllerBase[Track]):
         providers: list[MusicProvider] = []
         failed_providers: list[str] = []
         for provider_instance_id in sorted(provider_instance_ids):
+            candidate = self.mass.get_provider(provider_instance_id, return_unavailable=True)
             if provider_failures.blocked(provider_instance_id):
                 # Keep reporting a known-failed instance for each skipped entry.
-                failed_providers.append(provider_instance_id)
+                failed_providers.append(
+                    candidate.name if candidate is not None else provider_instance_id
+                )
                 continue
-            candidate = self.mass.get_provider(provider_instance_id, return_unavailable=True)
             if not (
                 isinstance(candidate, MusicProvider)
                 and candidate.instance_id == provider_instance_id
