@@ -984,7 +984,7 @@
   "core.players.errors.source_control_unsupported": "The source playing on {0} does not support this.",
   "core.players.errors.source_no_longer_playing": "The source this was meant for no longer plays on {0}.",
   "core.players.errors.source_not_found": "{0} has no source called {1}.",
-  "core.players.errors.tts_engine_unavailable": "No text-to-speech engine is available to speak the announcement.",
+  "core.players.errors.tts_engine_unavailable": "The text-to-speech engine for this announcement is unavailable.",
   "core.players.errors.unlink_derived": "{0} rides on another output and follows it.",
   "core.players.errors.unlink_group": "{0} belongs to a group and can not be taken off it.",
   "core.players.errors.unlink_only_protocol": "{0} is the only output of its player, which is a player of its own already.",

@@ -36,6 +36,6 @@
     "nothing_playing": "Nothing is playing on {0}.",
     "favorite_track_unknown": "Music Assistant can not tell which track is playing on {0}, so it can not be added to your favorites.",
     "group_leave_failed": "{0} could not leave its group because the player it follows is unavailable.",
-    "tts_engine_unavailable": "No text-to-speech engine is available to speak the announcement."
+    "tts_engine_unavailable": "The text-to-speech engine for this announcement is unavailable."
   }
 }
