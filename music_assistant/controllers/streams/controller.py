@@ -376,6 +376,9 @@ class StreamsController(CoreController):
         # Per queue, the session and the items whose GET requests ended in it since the
         # player last asked for another item, which that next request checks
         self._ended_item_streams: dict[str, tuple[str, set[str]]] = {}
+        # Per player, the path of the flow stream it got last and the bytes sent of it, which a
+        # player that lost the connection asks to continue after
+        self._flow_bytes_sent: dict[str, tuple[str, int]] = {}
         # Number of queue streams (single item or flow) actively serving a player right now,
         # counted for both entry points: the http routes and the raw-PCM get_stream helper.
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
@@ -907,6 +910,26 @@ class StreamsController(CoreController):
         :param session_id: The playback session the requests must belong to.
         """
         return self._requested_item_ids(queue_id, session_id)
+
+    def restart_lost_stream(self, stream_url: str) -> bool:
+        """
+        Restart the queue of a stream a player gave up on, at the position that plays now.
+
+        For a player that reports a playback error on a stream it was playing. Only the flow
+        stream of the queue's current session restarts, within the queue's restart limit.
+
+        :param stream_url: The URL of the stream the player gave up on.
+        :return: Whether the queue restarts.
+        """
+        flow_url_prefix = f"{self.base_url}/flow/"
+        if not stream_url.startswith(flow_url_prefix):
+            return False
+        # <session_id>/<queue_id>/<queue_item_id>/<player_id>.<fmt>
+        url_parts = stream_url.removeprefix(flow_url_prefix).split("/")
+        if len(url_parts) != 4:
+            return False
+        session_id, queue_id = url_parts[:2]
+        return self.mass.player_queues.restart_lost_flow_stream(queue_id, session_id)
 
     @_log_not_found
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: C901, PLR0912, PLR0915
@@ -1552,6 +1575,20 @@ class StreamsController(CoreController):
                     headers={"Content-Range": f"bytes */{range_start}"}
                 )
             raise web.HTTPNotFound(reason=f"Flow stream already finished: {session_id}")
+        if (
+            request.method == "GET"
+            and request.headers.get("Range")
+            and (range_start := request.http_range.start)
+            and (flow_sent := self._flow_bytes_sent.get(player_id))
+            and flow_sent[0] == request.path
+            and range_start <= flow_sent[1]
+            and self.mass.player_queues.restart_lost_flow_stream(queue_id, session_id)
+        ):
+            # the player lost its connection and asks to continue after the bytes it holds,
+            # which a new stream can not do: the queue restarts it where it plays now
+            raise web.HTTPRequestRangeNotSatisfiable(
+                headers={"Content-Range": f"bytes */{range_start}"}
+            )
         start_queue_item_id = request.match_info["queue_item_id"]
         start_queue_item = self._get_flow_start_item(queue, start_queue_item_id)
         if not start_queue_item:
@@ -1679,6 +1716,15 @@ class StreamsController(CoreController):
             # with ICY framing the write loop counts bytes towards the metadata interval
             chunk_size=ICY_WRITE_SIZE if enable_icy else None,
         )
+        bytes_sent = 0
+
+        async def write(data: bytes) -> None:
+            nonlocal bytes_sent
+            # counted before the write, so a player never holds more than recorded
+            bytes_sent += len(data)
+            self._flow_bytes_sent[player_id] = (request.path, bytes_sent)
+            await resp.write(data)
+
         client_disconnected = False
         # same registry as the single-item route: a forced-flow player (overlay)
         # seeks through the same session rotation and its stale response must be
@@ -1699,7 +1745,7 @@ class StreamsController(CoreController):
                 async for chunk in audio_bytes:
                     try:
                         if not enable_icy:
-                            await resp.write(chunk)
+                            await write(chunk)
                             continue
                         pending = chunk
                         while pending:
@@ -1707,19 +1753,30 @@ class StreamsController(CoreController):
                                 pending[:icy_bytes_until_meta],
                                 pending[icy_bytes_until_meta:],
                             )
-                            await resp.write(head)
+                            await write(head)
                             icy_bytes_until_meta -= len(head)
                             if icy_bytes_until_meta == 0:
-                                await resp.write(
+                                await write(
                                     _icy_metadata_block(
                                         self.audio_analysis, queue, full=icy_preference == "full"
                                     )
                                 )
                                 icy_bytes_until_meta = icy_meta_interval
-                    except BrokenPipeError, ConnectionResetError, ConnectionError:
+                    except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
                         # a superseded response is aborted under us and this is
                         # its normal end
                         client_disconnected = True
+                        if queue_data.session_id == session_id and not (
+                            player.player and player.player.stop_called
+                        ):
+                            self.logger.info(
+                                "Player %s disconnected from the flow stream of %s - "
+                                "error: %s, sent %d bytes",
+                                player.display_name,
+                                queue.display_name,
+                                err.__class__.__name__,
+                                bytes_sent,
+                            )
                         break
         except AbortFlowStream:
             await audio_bytes.aclose()

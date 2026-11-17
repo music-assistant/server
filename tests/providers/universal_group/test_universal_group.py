@@ -64,6 +64,7 @@ from tests.common import (
     make_player_state,
     mock_player_mass,
     record_lock_waits,
+    virtual_loop_clock,
 )
 
 GROUP_PROTOCOL_ID = "ugp_test"
@@ -1034,10 +1035,17 @@ class TestCommandOnAMemberOfAHeldGroup:
             call = getattr(players, command)("m1")
 
         waits = record_lock_waits(players)
+        loop = asyncio.get_running_loop()
 
-        await call
+        # the clock only moves while the loop waits for a timer, so a pause of the process
+        # (garbage collection, a busy machine) does not count, and any wait does
+        with virtual_loop_clock():
+            started = loop.time()
+            await call
+            took = loop.time() - started
 
         assert waits == []
+        assert took < LOCK_BUDGET
         assert sorted(played_on) == ["m1", "m2"]
 
 
