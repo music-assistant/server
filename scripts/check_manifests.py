@@ -41,7 +41,7 @@ MANDATORY_KEYS = ("type", "domain", "name", "description", "codeowners")
 
 # Valid provider types, mirroring music_assistant_models.enums.ProviderType (minus ``unknown``,
 # which is a runtime fallback and must never be authored into a manifest).
-VALID_TYPES = frozenset({"music", "player", "metadata", "plugin", "core", "audio_analysis"})
+VALID_TYPES = frozenset({"music", "player", "metadata", "plugin", "core", "audio_analysis", "auth"})
 
 
 def find_violations(manifest_paths: Iterable[Path] | None = None) -> list[str]:

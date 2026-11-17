@@ -8,16 +8,21 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.auth import SignInMethod
+from music_assistant_models.auth import AuthProviderType, SignInMethod
 from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import CoreState, EventType, ProviderType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.constants import CONF_PROVIDERS
+from music_assistant.constants import CONF_PROVIDERS, HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.webserver import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     _parse_provider_user_arg,
+)
+from music_assistant.controllers.webserver.helpers.auth_providers import (
+    HA_LINK_REFUSED_MESSAGE,
+    AuthFailure,
+    AuthResult,
 )
 from music_assistant.controllers.webserver.helpers.login_flow import (
     AuthTransport,
@@ -25,12 +30,13 @@ from music_assistant.controllers.webserver.helpers.login_flow import (
     LoginFlowError,
     PendingLogin,
 )
+from music_assistant.helpers.pkce import pkce_challenge
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.auth_provider import AuthProvider
 from music_assistant.testing import full_mass_context
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import AsyncGenerator, Mapping
     from pathlib import Path
 
     from music_assistant_models.event import MassEvent
@@ -88,6 +94,25 @@ class RelabelledAuthProvider(FakeAuthProvider):
         return "Company login"
 
 
+class IdentityAuthProvider(FakeAuthProvider):
+    """Auth provider that signs in the identity a test gives it."""
+
+    identity: ExternalIdentity | None = None
+
+    @property
+    def sign_in_method_id(self) -> str:
+        """Return a fixed sign-in method id."""
+        return "idp"
+
+    async def complete_authorization(
+        self, pending: PendingLogin, params: Mapping[str, str]
+    ) -> ExternalIdentity:
+        """Return the identity of the test, or refuse when there is none."""
+        if self.identity is None:
+            raise LoginFlowError("idp_refused", "The identity provider refused")
+        return self.identity
+
+
 def _manifest() -> ProviderManifest:
     return ProviderManifest.from_dict(
         {
@@ -121,6 +146,27 @@ def mass_auth(mass_minimal: MusicAssistant) -> MusicAssistant:
     mass_minimal.music = MagicMock(unschedule_provider_sync=AsyncMock())
     mass_minimal.discovery = MagicMock(run_provider_discovery=AsyncMock())
     return mass_minimal
+
+
+@pytest.fixture
+async def idp(mass_auth: MusicAssistant) -> AsyncGenerator[IdentityAuthProvider]:
+    """Load an identity provider on a server whose auth manager is set up."""
+    webserver = mass_auth.webserver
+    webserver.config = await mass_auth.config.get_core_config("webserver")
+    # creating a user migrates playlog rows through the music controller
+    music = MagicMock(unschedule_provider_sync=AsyncMock())
+    music.database.execute = AsyncMock()
+    music.database.commit = AsyncMock()
+    mass_auth.music = music
+    await webserver.auth.setup()
+    provider = IdentityAuthProvider(mass_auth, _manifest(), _conf())
+    provider.available = True
+    mass_auth._providers[INSTANCE_ID] = provider
+    try:
+        yield provider
+    finally:
+        mass_auth._providers.pop(INSTANCE_ID, None)
+        await webserver.auth.close()
 
 
 async def test_get_sign_in_method(mass_auth: MusicAssistant) -> None:
@@ -221,6 +267,131 @@ async def test_remove_auth_provider_config(mass_auth: MusicAssistant) -> None:
     pending_logins = mass_auth.webserver.auth.pending_logins
     assert pending_logins.pop(own.state) is None
     assert pending_logins.pop(other.state) is other
+
+
+async def test_redirect_sign_in_refuses_an_unknown_method(idp: IdentityAuthProvider) -> None:
+    """A sign-in for a method id no loaded auth provider offers is neither started nor completed."""
+    auth = idp.mass.webserver.auth
+    pending = _start_pending(idp.mass, INSTANCE_ID)
+
+    # the instance id is not the sign-in method id
+    for method_id in ("unknown", INSTANCE_ID):
+        assert await auth.get_authorization_url(method_id) is None
+        result = await auth.get_auth_url(method_id)
+        assert result["authorization_url"] is None
+    callback = await auth.handle_oauth_callback("unknown", "code", pending.state)
+
+    assert callback == AuthResult(success=False, error="Invalid provider")
+    assert list(auth.pending_logins._pending) == [pending.state]
+
+
+async def test_redirect_sign_in_dispatches_to_the_auth_provider(
+    idp: IdentityAuthProvider,
+) -> None:
+    """A redirect sign-in is started and completed by the auth provider of its method id."""
+    auth = idp.mass.webserver.auth
+    user = await auth.create_user(username="alice", display_name="Alice")
+    await auth.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, "ha_alice")
+    idp.identity = _ha_identity("ha_alice", "alice", display_name="Alice from HA")
+
+    started = await auth.get_authorization_url("idp")
+    assert started is not None
+    auth_url, pending = started
+    assert auth_url == f"https://idp.example/authorize?state={pending.state}"
+    assert pending.provider_id == INSTANCE_ID
+    assert pending.redirect_uri.endswith("/auth/callback?provider_id=idp")
+    result = await auth.handle_oauth_callback("idp", "idp_code", pending.state)
+
+    assert result.success
+    assert result.user is not None
+    assert result.user.user_id == user.user_id
+    assert result.user.display_name == "Alice from HA"
+
+
+@pytest.mark.parametrize("case", ["linked_elsewhere", "system_user"])
+async def test_redirect_sign_in_keeps_the_ha_link_guards(
+    idp: IdentityAuthProvider, case: str
+) -> None:
+    """
+    An identity the Home Assistant link guards refuse signs nobody in and links nothing.
+
+    :param case: Why the link is refused.
+    """
+    auth = idp.mass.webserver.auth
+    if case == "linked_elsewhere":
+        other = await auth.create_user(username="alice")
+        await auth.link_user_to_provider(other, AuthProviderType.HOME_ASSISTANT, "ha_other")
+        idp.identity = _ha_identity("ha_alice", "alice")
+    else:
+        idp.identity = _ha_identity("ha_alice", HOMEASSISTANT_SYSTEM_USER)
+    pending = _start_pending(idp.mass, INSTANCE_ID)
+
+    result = await auth.handle_oauth_callback("idp", "idp_code", pending.state)
+
+    assert result == AuthResult(success=False, error=HA_LINK_REFUSED_MESSAGE)
+    assert await auth.get_user_by_provider_link(AuthProviderType.HOME_ASSISTANT, "ha_alice") is None
+
+
+@pytest.mark.parametrize(
+    ("identity", "error", "translation_key"),
+    [
+        (None, "The identity provider refused", "idp_refused"),
+        (
+            ExternalIdentity(provider_type=AuthProviderType.BUILTIN, issuer="i", subject="s"),
+            "Signing in with this identity type is not supported",
+            "authentication_failed",
+        ),
+    ],
+    ids=["provider_refusal", "unsupported_identity_type"],
+)
+async def test_app_sign_in_passes_on_a_refusal(
+    idp: IdentityAuthProvider,
+    identity: ExternalIdentity | None,
+    error: str,
+    translation_key: str,
+) -> None:
+    """
+    A refused remote app sign-in reports why, with the translation key of the reason.
+
+    :param identity: The identity the provider returns, None when it refuses.
+    :param error: The expected error.
+    :param translation_key: The expected translation key.
+    """
+    auth = idp.mass.webserver.auth
+    idp.identity = identity
+    verifier = "client-verifier-" + "v" * 40
+    pending = auth.pending_logins.start(
+        INSTANCE_ID,
+        AuthTransport.REMOTE,
+        "https://app.music-assistant.io/auth/callback/",
+        "v" * 43,
+        redirect_target="app",
+        client_code_challenge=pkce_challenge(verifier),
+    )
+
+    result = await auth.exchange_authorization_code(pending.state, "idp_code", verifier)
+
+    assert isinstance(result, AuthFailure)
+    assert result.error == error
+    assert result.translation_key == translation_key
+    assert await auth.list_users() == []
+
+
+def _ha_identity(subject: str, username: str, display_name: str | None = None) -> ExternalIdentity:
+    """
+    Return a Home Assistant identity.
+
+    :param subject: The Home Assistant user id.
+    :param username: The Home Assistant username.
+    :param display_name: The display name from Home Assistant, if any.
+    """
+    return ExternalIdentity(
+        provider_type=AuthProviderType.HOME_ASSISTANT,
+        issuer="http://ha.local:8123",
+        subject=subject,
+        username=username,
+        display_name=display_name,
+    )
 
 
 @pytest.mark.parametrize("provider", ["unknown", "not_a_provider", None])
