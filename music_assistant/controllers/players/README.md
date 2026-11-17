@@ -580,7 +580,7 @@ player itself, as a smart plug does (`power_control_cuts_power`, offered with th
 `power_on_startup_time` once an external control is the power control of the player, never for a
 group player). As a plain switch it changes nothing else about the player: the player is
 available while one of its protocols reaches its device, and a power on switches the control on
-and waits a few seconds for it to report on.
+and waits up to 15 seconds (`POWER_ON_REPORT_TIMEOUT`) for it to report on.
 
 A player whose power control cuts its power is off, starting up or on
 (`Player.offline_by_power_control` is true while it is off or starting up):

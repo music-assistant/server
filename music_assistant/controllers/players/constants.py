@@ -28,6 +28,9 @@ PLAYER_LOCKS_ATTEMPTS: Final = 3
 POWER_RESTORE_TIMEOUT: Final = 10
 # The longest a power on of a player can wait for it to start up.
 MAX_POWER_ON_WAIT: Final = POWER_ON_STARTUP_TIME_RANGE[1] + POWER_RESTORE_TIMEOUT
+# How long a power on waits for the power control of a player, or its own protocol, to report
+# on before the command goes on: an amplifier or receiver can take a while to report.
+POWER_ON_REPORT_TIMEOUT: Final = 15
 
 
 class PlayerLockPurpose(StrEnum):
