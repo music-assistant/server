@@ -3,7 +3,7 @@
 import asyncio
 import time
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.config_entries import PlayerConfig
@@ -676,6 +676,63 @@ class TestVolumeCommand:
 
         mock_wiim_device.async_set_volume.assert_awaited_once_with(42)
         assert player._attr_volume_level == 42
+
+    @pytest.mark.asyncio
+    async def test_volume_set_while_muted_keeps_mute(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A volume set while muted must not reach the device, whose firmware would unmute."""
+        player = _wiim_player(
+            provider=mock_provider, protocol_id="uuid:test", device=mock_wiim_device
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        mock_wiim_device.is_muted = True
+
+        await player.volume_set(30)
+
+        mock_wiim_device.async_set_volume.assert_not_awaited()
+        assert player._attr_volume_level == 30
+        assert player._attr_volume_muted is True
+
+    @pytest.mark.asyncio
+    async def test_unmute_sends_level_set_while_muted_first(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """The level set while muted should reach the device before the unmute."""
+        player = _wiim_player(
+            provider=mock_provider, protocol_id="uuid:test", device=mock_wiim_device
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        mock_wiim_device.is_muted = True
+        calls = MagicMock()
+        calls.attach_mock(mock_wiim_device.async_set_volume, "set_volume")
+        calls.attach_mock(mock_wiim_device.async_set_mute, "set_mute")
+
+        await player.volume_set(30)
+        assert calls.mock_calls == []
+        await player.volume_mute(False)
+
+        assert calls.mock_calls == [call.set_volume(30), call.set_mute(False)]
+
+    @pytest.mark.asyncio
+    async def test_unmute_on_device_drops_level_set_while_muted(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A speaker unmuted on the device itself should show the level it plays at."""
+        player = _wiim_player(
+            provider=mock_provider, protocol_id="uuid:test", device=mock_wiim_device
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        mock_wiim_device.is_muted = True
+        await player.volume_set(30)
+
+        mock_wiim_device.is_muted = False
+        mock_wiim_device.volume = 55
+        player._update_ma_state_from_sdk_cache()
+        await player.volume_mute(False)
+
+        assert player._attr_volume_level == 55
+        mock_wiim_device.async_set_volume.assert_not_awaited()
 
 
 class TestErrorHandling:
