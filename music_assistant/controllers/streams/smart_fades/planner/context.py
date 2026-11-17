@@ -269,7 +269,8 @@ def build_transition_context(
     ) = _cue_outgoing_tail(outgoing, outgoing_profile, buffer_duration, logger)
     outgoing = replace(
         outgoing,
-        bpm=local_bpm(grid_beats, fade_out_analysis.bpm),
+        # the outro past the mix-out point is trimmed, so its beats do not set the tempo
+        bpm=local_bpm(grid_beats[grid_beats <= tier_anchor], fade_out_analysis.bpm),
         beats=grid_beats,
         downbeats=grid_downbeats,
     )
