@@ -100,10 +100,6 @@ NON_HIRES_MODELS = (
 AMP_MODEL = "Amp"  # always drives a (RCA) subwoofer and has a subwoofer crossover
 ULTRA_SOUNDBAR_MODELS = ("Arc Ultra", "Beam Ultra")  # speech enhancement in levels 1..4
 
-# how long a speaker must keep answering as a satellite of a set before its old player is
-# removed, and the least time between two such checks of one speaker
-SATELLITE_RECHECK_INTERVAL = 600
-
 
 class OptionRange(NamedTuple):
     """Value range of a numeric player option."""

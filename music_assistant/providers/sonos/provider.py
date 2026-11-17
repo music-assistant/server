@@ -7,9 +7,8 @@ https://github.com/music-assistant/aiosonos
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import SonosCapability
@@ -27,7 +26,6 @@ from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
 from .cloud_queue import SonosCloudQueue
-from .const import SATELLITE_RECHECK_INTERVAL
 from .helpers import get_primary_ip_address
 from .player import SonosPlayer
 from .upnp import SonosUpnp
@@ -35,7 +33,6 @@ from .upnp import SonosUpnp
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from aiosonos.api.models import DiscoveryInfo
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.event import MassEvent
     from zeroconf.asyncio import AsyncServiceInfo
@@ -46,18 +43,12 @@ def _refresh_task_id(protocol_id: str) -> str:
     return f"sonos_refresh_cloud_queue_{protocol_id}"
 
 
-def _satellite_task_id(protocol_id: str) -> str:
-    """Return the id of the check whether a speaker is now a satellite of a set."""
-    return f"sonos_satellite_{protocol_id}"
-
-
 class SonosPlayerProvider(PlayerProvider):
     """Sonos Player provider."""
 
     _ignored_disabled_players: set[str]
     _pending_setup_tasks: set[str]
     _pending_refresh_tasks: set[str]
-    _satellite_checks: dict[str, float]
     _unloaded: bool
     _cloud_queue: SonosCloudQueue
     upnp: SonosUpnp
@@ -72,7 +63,6 @@ class SonosPlayerProvider(PlayerProvider):
         self._ignored_disabled_players = set()
         self._pending_setup_tasks = set()
         self._pending_refresh_tasks = set()
-        self._satellite_checks = {}
         self._unloaded = False
         self._set_aiosonos_log_level()
         self._cloud_queue = SonosCloudQueue(self)
@@ -95,8 +85,6 @@ class SonosPlayerProvider(PlayerProvider):
             # so both are needed to cover the pending and the running case
             self.mass.cancel_timer(task_id)
             self.mass.cancel_task(task_id)
-        for protocol_id in self._satellite_checks:
-            self.mass.cancel_task(_satellite_task_id(protocol_id))
         self._pending_setup_tasks.clear()
         self._pending_refresh_tasks.clear()
 
@@ -169,7 +157,6 @@ class SonosPlayerProvider(PlayerProvider):
                 sonos_player.client.player_ip = cur_address
                 # schedule reconnect
                 sonos_player.reconnect()
-                self._check_satellite(protocol_id, cur_address)
             sonos_player.update_state()
             return
         if self._ignore_disabled_discovery(protocol_id, name):
@@ -195,14 +182,13 @@ class SonosPlayerProvider(PlayerProvider):
                     "Ignoring %s (manual IP) as it is not reachable: %s", ip_address, str(err)
                 )
                 continue
-            protocol_id = discovery_info["device"]["id"]
             if SonosCapability.PLAYBACK not in discovery_info["device"]["capabilities"]:
                 # this will happen for satellite speakers in a surround/stereo setup
                 self.logger.debug(
                     "Ignoring %s (manual IP) as it is a passive satellite.", ip_address
                 )
-                self._check_satellite(protocol_id, ip_address)
                 continue
+            protocol_id = discovery_info["device"]["id"]
             if self.get_protocol(protocol_id) or not self.mass.players.wants_protocol(protocol_id):
                 continue
             sonos_player = SonosPlayer(self, protocol_id, discovery_info=discovery_info)
@@ -260,80 +246,11 @@ class SonosPlayerProvider(PlayerProvider):
             self.logger.debug(
                 "Ignoring %s in discovery as it is a passive satellite.", display_name
             )
-            self._check_satellite(protocol_id, address)
             return
         self.logger.debug("Discovered Sonos device %s on %s", name, address)
         sonos_player = SonosPlayer(self, protocol_id, discovery_info=discovery_info)
         sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         await sonos_player.setup()
-
-    def _check_satellite(self, protocol_id: str, address: str) -> None:
-        """
-        Start the check whether the speaker of an earlier player is now a satellite of a set.
-
-        :param protocol_id: The Sonos player ID of the speaker.
-        :param address: The IP address the speaker answers on.
-        """
-        now = self.mass.loop.time()
-        last_check = self._satellite_checks.get(protocol_id)
-        if last_check is not None and now - last_check < SATELLITE_RECHECK_INTERVAL:
-            return
-        self._satellite_checks[protocol_id] = now
-        self.mass.create_task(
-            self._remove_satellite(protocol_id, address), task_id=_satellite_task_id(protocol_id)
-        )
-
-    async def _remove_satellite(self, protocol_id: str, address: str) -> None:
-        """
-        Remove the protocol of a speaker that keeps answering as a satellite of a set.
-
-        :param protocol_id: The Sonos player ID of the speaker.
-        :param address: The IP address the speaker answers on.
-        """
-        if not await self._answers_as_satellite(protocol_id, address):
-            return
-        # a speaker that starts up or updates its firmware is a player again well within this
-        await asyncio.sleep(SATELLITE_RECHECK_INTERVAL)
-        if not (discovery_info := await self._answers_as_satellite(protocol_id, address)):
-            return
-        self.logger.info(
-            "Removing %s as the speaker is now part of a stereo pair or home theater set",
-            discovery_info["device"].get("name") or protocol_id,
-        )
-        await self.mass.players.remove_protocol(protocol_id)
-
-    async def _answers_as_satellite(self, protocol_id: str, address: str) -> DiscoveryInfo | None:
-        """
-        Return the info of a speaker this provider set up earlier, when it answers as a satellite.
-
-        None when it was not set up by this provider, its player is disabled, it is connected
-        as a player, or it does not answer as that speaker without the playback capability.
-
-        :param protocol_id: The Sonos player ID of the speaker.
-        :param address: The IP address the speaker answers on.
-        """
-        record = self.mass.config.get_protocol_record(protocol_id)
-        if record is None or record.get("provider") != self.instance_id:
-            return None
-        if not self.mass.players.wants_protocol(protocol_id):
-            return None
-        sonos_player = self.get_protocol(protocol_id)
-        if isinstance(sonos_player, SonosPlayer) and sonos_player.connected:
-            return None
-        try:
-            async with asyncio.timeout(10):
-                discovery_info = await get_discovery_info(self.mass.http_session_no_ssl, address)
-        except ClientError, TimeoutError, ValueError:
-            return None
-        device = cast("dict[str, Any]", discovery_info).get("device") or {}
-        capabilities = device.get("capabilities")
-        if (
-            device.get("id") != protocol_id
-            or not isinstance(capabilities, list)
-            or SonosCapability.PLAYBACK in capabilities
-        ):
-            return None
-        return discovery_info
 
     def _ignore_disabled_discovery(self, protocol_id: str, name: str) -> bool:
         """
