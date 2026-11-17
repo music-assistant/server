@@ -1711,7 +1711,9 @@ class StreamsController(CoreController):
                             icy_bytes_until_meta -= len(head)
                             if icy_bytes_until_meta == 0:
                                 await resp.write(
-                                    _icy_metadata_block(queue, full=icy_preference == "full")
+                                    _icy_metadata_block(
+                                        self.audio_analysis, queue, full=icy_preference == "full"
+                                    )
                                 )
                                 icy_bytes_until_meta = icy_meta_interval
                     except BrokenPipeError, ConnectionResetError, ConnectionError:
@@ -2829,13 +2831,30 @@ class StreamsController(CoreController):
             del owners[queue_id]
 
 
-def _icy_metadata_block(queue: PlayerQueue, *, full: bool) -> bytes:
-    """Return the length-prefixed ICY metadata block for the queue's current item."""
+def _icy_metadata_block(
+    audio_analysis: AudioAnalysisController, queue: PlayerQueue, *, full: bool
+) -> bytes:
+    """
+    Return the length-prefixed ICY metadata block for the queue's current item.
+
+    :param audio_analysis: The controller that tells the metadata shown for a stream.
+    :param queue: The queue.
+    :param full: Whether to add the image of the item.
+    """
     # use current item here and not buffered item, otherwise
     # the icy metadata will be too much ahead
     current_item = queue.current_item
-    if current_item and current_item.streamdetails and current_item.streamdetails.stream_title:
-        title = current_item.streamdetails.stream_title
+    stream_metadata = (
+        audio_analysis.shown_stream_metadata(current_item.streamdetails)
+        if current_item and current_item.streamdetails
+        else None
+    )
+    if stream_metadata and stream_metadata.title:
+        title = (
+            f"{stream_metadata.artist} - {stream_metadata.title}"
+            if stream_metadata.artist
+            else stream_metadata.title
+        )
     elif current_item and current_item.name:
         title = current_item.name
     else:

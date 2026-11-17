@@ -29,7 +29,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 from music_assistant_models.queue_item import QueueItem
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.controllers.streams import controller as controller_mod
 from music_assistant.controllers.streams.audio import (
@@ -2460,6 +2460,8 @@ async def test_flow_with_icy_framing_writes_small_blocks_and_counts_to_the_inter
     """
     controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
     controller.mass.config.get_protocol_value.return_value = "full"
+    controller._audio_analysis = MagicMock()
+    controller._audio_analysis.shown_stream_metadata.return_value = None
     request.headers = {"Icy-MetaData": "1"}
     seen: dict[str, Any] = {}
     written: list[bytes] = []
@@ -2480,9 +2482,26 @@ async def test_flow_with_icy_framing_writes_small_blocks_and_counts_to_the_inter
     assert seen["chunk_size"] == ICY_WRITE_SIZE
     stream = b"".join(written)
     metadata = controller_mod._icy_metadata_block(
-        controller.mass.player_queues.get.return_value, full=True
+        controller.audio_analysis, controller.mass.player_queues.get.return_value, full=True
     )
     assert stream == b"a" * 256_000 + metadata + b"a" * 44_000
+
+
+def test_icy_title_is_the_metadata_shown_for_the_stream() -> None:
+    """The ICY title relayed to a player is what its stream shows, recognised or its own."""
+    streamdetails = _make_stream_details(MediaType.RADIO, is_realtime=True)
+    queue = SimpleNamespace(
+        current_item=SimpleNamespace(name="Station", streamdetails=streamdetails, image=None)
+    )
+    audio_analysis = MagicMock()
+    audio_analysis.shown_stream_metadata.return_value = StreamMetadata(
+        title="Recognised", artist="Someone"
+    )
+
+    metadata = controller_mod._icy_metadata_block(audio_analysis, cast("Any", queue), full=False)
+
+    audio_analysis.shown_stream_metadata.assert_called_once_with(streamdetails)
+    assert metadata[1:].rstrip(b"\x00") == b"StreamTitle='Someone - Recognised';"
 
 
 async def test_flow_producer_learns_when_its_player_left(monkeypatch: pytest.MonkeyPatch) -> None:
