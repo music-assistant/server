@@ -534,6 +534,72 @@ def test_drift_is_fed_forward_after_ten_seconds() -> None:
     assert loop.rate_ppm == pytest.approx(100.0 + 1.4 * GAIN_PPM_PER_MS, rel=1e-3)
 
 
+def test_drift_counts_for_the_time_until_a_correction_is_heard() -> None:
+    """A correction is heard once what was sent before it has played: the player drifts on until then."""
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US)
+    # the stream is 6 seconds ahead of the last report of a player that is 100 ppm slow
+    loop.process(bytes(20 * RATE * FRAME_SIZE))
+    for elapsed_ms in range(2000, 14_250, 250):
+        _report(loop, elapsed_ms, elapsed_ms / 10_000)
+
+    assert loop.drift_ppm == pytest.approx(100.0, rel=1e-3)
+    assert loop.error_ms == pytest.approx(1.4, abs=1e-3)
+    assert loop.rate_ppm == pytest.approx(100.0 + (1.4 + 0.6) * GAIN_PPM_PER_MS, rel=1e-3)
+
+
+@pytest.mark.parametrize(("late_ms", "on_timeline"), [(0.9, True), (-0.9, True), (1.4, False)])
+def test_player_is_on_its_timeline_after_four_reports_with_little_to_correct(
+    late_ms: float, on_timeline: bool
+) -> None:
+    """A second of reports within a millisecond of the timeline brings the long lead."""
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US)
+    # the loop acts from the fifth report on
+    next_ms = _reports(loop, late_ms, count=7)
+    assert not loop.on_timeline
+    _reports(loop, late_ms, first_ms=next_ms, count=20)
+    assert loop.on_timeline is on_timeline
+
+
+def test_player_stays_on_its_timeline_whatever_it_reports_later() -> None:
+    """An error or a clock step after it takes nothing back: the lead does not flap."""
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US, window_s=2.0)
+    next_ms = _reports(loop, 0.5, count=8)
+    assert loop.on_timeline
+
+    for late_ms in (0.9, 1.1, 8.0, 0.9, 1.1):
+        next_ms = _reports(loop, late_ms, first_ms=next_ms, count=10)
+        assert loop.on_timeline
+    _reports(loop, 50.0, first_ms=next_ms, count=10, generation=1)
+    assert loop.on_timeline
+
+
+def test_a_report_with_more_to_correct_starts_the_count_over() -> None:
+    """Three reports with little to correct, one with more and three with little again are no four in a row."""
+    # the error is the mean of the last five reports
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US, window_s=1.1)
+    # which is 0.5 ms from the fifth report on, 1.5 ms at the eighth and 0.5 ms after it
+    reports = [0.5] * 7 + [5.5, -4.5, 0.5, 0.5]
+    errors = []
+    for number, late_ms in enumerate(reports):
+        _report(loop, 2000 + number * 250, late_ms)
+        errors.append(loop.error_ms)
+        assert not loop.on_timeline
+    assert errors[4:] == pytest.approx([0.5, 0.5, 0.5, 1.5, 0.5, 0.5, 0.5])
+
+    _report(loop, 2000 + len(reports) * 250, 0.5)
+    assert loop.on_timeline
+
+
+def test_reports_before_a_clock_step_do_not_count_for_the_timeline() -> None:
+    """The four reports have to follow each other on one mapping of the clock of the player."""
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US)
+    next_ms = _reports(loop, 0.5, count=7)
+    next_ms = _reports(loop, 0.5, first_ms=next_ms, count=7, generation=1)
+    assert not loop.on_timeline
+    _reports(loop, 0.5, first_ms=next_ms, count=1, generation=1)
+    assert loop.on_timeline
+
+
 def test_filter_window_slides() -> None:
     """Reports older than the window no longer count."""
     loop = SyncLoop(RATE, FRAME_SIZE, START_US, window_s=5.0, min_span_s=math.inf)
@@ -1329,9 +1395,11 @@ def test_replay_makes_the_recorded_corrections(
     """
     Left to make its own corrections, the loop makes the ones of the recorded run.
 
-    The stream is sent 1.5 s ahead in blocks of 10 ms, as in the recording. The moment a
-    block was built is not recorded, so a correction can land a block earlier or later:
-    at every report the offset is within one frame of the recorded one.
+    The stream is sent in blocks of 10 ms, as in the recording, but no further than it is
+    played: the recording did not allow for what a player drifts while it plays what it was
+    sent ahead. The moment a block was built is not recorded, so a correction can land a
+    block earlier or later: at every report the offset is within one frame of the recorded
+    one.
     """
     recording = _load_recording(FIXTURE_DIR / f"{name}.json.gz")
     assert len(recording.status) == status_count
@@ -1346,7 +1414,7 @@ def test_replay_makes_the_recorded_corrections(
     made = 0
     reports = 0
     for index, status in enumerate(recording.status):
-        ahead = 1.5 * rate - _offset(loop)
+        ahead: float = -_offset(loop)
         if index >= recording.start_before:
             ahead += (status.received_us - start_us) * rate / 1_000_000
         while loop.frames_sent < int(ahead):
@@ -1437,7 +1505,10 @@ def test_replay_needs_a_complete_recording(tmp_path: Path) -> None:
 
 # ---------------------------------------------------------------- closed loop simulation
 
-SIM_LEAD_S = 1.5
+# what the stream is sent ahead: until the player is on its timeline, and from then on
+SIM_START_LEAD_S = 1.5
+SIM_LEAD_S = 6.0
+SIM_LEADS = [SIM_START_LEAD_S, SIM_LEAD_S]
 SIM_PREROLL_S = 3.0
 
 
@@ -1479,12 +1550,14 @@ def _simulate(
     output_delay_ms: float = 0.0,
     clock_step: tuple[float, float] | None = None,
     wrap_after_s: float | None = None,
+    lead_s: float = SIM_LEAD_S,
 ) -> _Simulation:
     """
     Run a session against a simulated player and return what was heard.
 
     The player is polled four times a second over a jittery network, starts on a timed
-    start and plays what ``process`` returned about 1.5 s earlier.
+    start and plays what ``process`` returned about 1.5 s earlier, and the lead earlier
+    once the loop has it on its timeline.
 
     :param seconds: Length of the session.
     :param seed: Seed of the network jitter.
@@ -1494,10 +1567,11 @@ def _simulate(
     :param clock_step: Seconds into the session at which the player's clock steps, and by how
         many milliseconds.
     :param wrap_after_s: Seconds into the session at which the player's jiffies wrap.
+    :param lead_s: Seconds the stream is sent ahead once the player is on its timeline.
     """
     rng = random.Random(seed)  # noqa: S311
     begin_us = 1_000_000_000
-    start_us = begin_us + round((SIM_PREROLL_S + SIM_LEAD_S) * 1_000_000)
+    start_us = begin_us + round((SIM_PREROLL_S + SIM_START_LEAD_S) * 1_000_000)
     clock_at_zero_ms = 7_000_000.0
     if wrap_after_s is not None:
         clock_at_zero_ms = JIFFIES_WRAP - (start_us / 1000 + wrap_after_s * 1000)
@@ -1509,10 +1583,10 @@ def _simulate(
     # the offset per stream position as it was really sent, to work out what is heard
     sent_positions, sent_offsets = [0], [0]
     started = False
-    for tick in range(round((SIM_PREROLL_S + SIM_LEAD_S + seconds) * 100)):
+    for tick in range(round((SIM_PREROLL_S + SIM_START_LEAD_S + seconds) * 100)):
         now_us = begin_us + tick * 10_000
         since_start_s = (now_us - start_us) / 1_000_000
-        if not started and since_start_s >= -SIM_LEAD_S:
+        if not started and since_start_s >= -SIM_START_LEAD_S:
             started = True
             start_jiffies = clock.to_jiffies(start_us)
             assert start_jiffies is not None
@@ -1520,7 +1594,9 @@ def _simulate(
         if clock_step is not None and since_start_s >= clock_step[0]:
             player.clock_step_ms = clock_step[1]
         if started:
-            while loop.frames_sent < player.position(now_us) + SIM_LEAD_S * RATE:
+            while loop.frames_sent < player.position(now_us) + RATE * (
+                lead_s if loop.on_timeline else SIM_START_LEAD_S
+            ):
                 sent, offset = loop.frames_sent, _offset(loop)
                 loop.process(block)
                 if _offset(loop) == offset:
@@ -1561,16 +1637,22 @@ def _assert_rate_limited(simulation: _Simulation) -> None:
         assert singles[index + limit] - singles[index] >= RATE - RATE // 100
 
 
+@pytest.mark.parametrize("lead_s", SIM_LEADS)
 @pytest.mark.parametrize(
     ("dac_ppm", "clock_ppm", "wrap_after_s"),
     [(100.0, -30.0, None), (-100.0, 20.0, 60.0)],
 )
 def test_simulation_follows_a_drifting_player(
-    dac_ppm: float, clock_ppm: float, wrap_after_s: float | None
+    dac_ppm: float, clock_ppm: float, wrap_after_s: float | None, lead_s: float
 ) -> None:
-    """A player whose DAC runs 100 ppm off is kept within half a millisecond."""
+    """A player whose DAC runs 100 ppm off is kept within half a millisecond, whatever its lead."""
     simulation = _simulate(
-        180, seed=1, dac_ppm=dac_ppm, clock_ppm=clock_ppm, wrap_after_s=wrap_after_s
+        180,
+        seed=1,
+        dac_ppm=dac_ppm,
+        clock_ppm=clock_ppm,
+        wrap_after_s=wrap_after_s,
+        lead_s=lead_s,
     )
     loop = simulation.loop
     # once the filter window of a minute is full
@@ -1590,24 +1672,32 @@ def test_simulation_follows_a_drifting_player(
     _assert_rate_limited(simulation)
 
 
+@pytest.mark.parametrize("lead_s", SIM_LEADS)
 @pytest.mark.parametrize("output_delay_ms", [420.0, -420.0])
-def test_simulation_removes_a_large_start_error_in_one_jump(output_delay_ms: float) -> None:
+def test_simulation_removes_a_large_start_error_in_one_jump(
+    output_delay_ms: float, lead_s: float
+) -> None:
     """A start that is 420 ms off is measured and corrected in a single jump."""
-    simulation = _simulate(60, seed=2, dac_ppm=20.0, output_delay_ms=output_delay_ms)
+    simulation = _simulate(60, seed=2, dac_ppm=20.0, output_delay_ms=output_delay_ms, lead_s=lead_s)
     assert simulation.loop.start_error_ms == pytest.approx(output_delay_ms, abs=1.5)
     jumps = [change for _, change in simulation.changes if abs(change) > 1]
     assert jumps == [pytest.approx(output_delay_ms * RATE / 1000, abs=1.5 * RATE / 1000)]
-    # off by the full delay until the jump is played, on time from then on
+    # off by the full delay until the jump is played, which went out before the lead
+    # grew, and on time from then on
+    assert simulation.loop.on_timeline
     assert min(simulation.errors(0.5, 2.0)) > 418.0
     assert max(simulation.errors(3.0)) <= 1.0
     assert simulation.p95(30) <= 0.5
     _assert_rate_limited(simulation)
 
 
+@pytest.mark.parametrize("lead_s", SIM_LEADS)
 @pytest.mark.parametrize("output_delay_ms", [5.0, -5.0])
-def test_simulation_slews_a_small_start_error_away(output_delay_ms: float) -> None:
+def test_simulation_slews_a_small_start_error_away(output_delay_ms: float, lead_s: float) -> None:
     """A start that is 5 ms off is removed by the rate alone, without a jump."""
-    simulation = _simulate(60, seed=3, dac_ppm=-20.0, output_delay_ms=output_delay_ms)
+    simulation = _simulate(
+        60, seed=3, dac_ppm=-20.0, output_delay_ms=output_delay_ms, lead_s=lead_s
+    )
     assert simulation.loop.start_error_ms == pytest.approx(output_delay_ms, abs=1.5)
     assert {abs(change) for _, change in simulation.changes} == {1}
     assert min(simulation.errors(0.5, 3.0)) > 3.5
@@ -1621,10 +1711,13 @@ def test_simulation_slews_a_small_start_error_away(output_delay_ms: float) -> No
     _assert_rate_limited(simulation)
 
 
+@pytest.mark.parametrize("lead_s", SIM_LEADS)
 @pytest.mark.parametrize("step_ms", [50.0, -50.0])
-def test_simulation_rides_out_a_clock_step(step_ms: float) -> None:
+def test_simulation_rides_out_a_clock_step(step_ms: float, lead_s: float) -> None:
     """A step of the player's clock pauses the corrections, and little of it is heard."""
-    simulation = _simulate(240, seed=4, dac_ppm=60.0, clock_ppm=-25.0, clock_step=(120.0, step_ms))
+    simulation = _simulate(
+        240, seed=4, dac_ppm=60.0, clock_ppm=-25.0, clock_step=(120.0, step_ms), lead_s=lead_s
+    )
     assert simulation.clock.generation == 1
     assert simulation.p95(60, 120) <= 0.5
     # noticed within three buckets of samples, and the corrections stop for four reports
@@ -1637,3 +1730,23 @@ def test_simulation_rides_out_a_clock_step(step_ms: float) -> None:
     assert simulation.loop.drift_ppm == pytest.approx(-60.0, abs=5.0)
     assert simulation.loop.rate_ppm == pytest.approx(-60.0, abs=25.0)
     _assert_rate_limited(simulation)
+
+
+@pytest.mark.parametrize("output_delay_ms", [0.0, 8.0, -8.0, 15.0, -15.0])
+def test_simulation_pulls_a_start_error_in_as_fast_with_a_long_lead(output_delay_ms: float) -> None:
+    """What is left of a start is corrected a short lead ahead: the long one comes when it is gone."""
+    short, long = (
+        _simulate(60, seed=5, dac_ppm=30.0, output_delay_ms=output_delay_ms, lead_s=lead_s)
+        for lead_s in SIM_LEADS
+    )
+    # 8 ms is slewed away in half a minute and 15 ms is jumped: heard the same either way
+    differences = [
+        abs(heard - heard_short)
+        for (_, heard, _, _), (_, heard_short, _, _) in zip(long.polls, short.polls, strict=True)
+    ]
+    assert max(differences) <= 0.3
+    assert long.loop.on_timeline
+    assert long.loop.frames_sent - short.loop.frames_sent == pytest.approx(
+        (SIM_LEAD_S - SIM_START_LEAD_S) * RATE, abs=RATE // 100
+    )
+    assert max(long.errors(45)) <= 0.75

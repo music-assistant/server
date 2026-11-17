@@ -853,6 +853,80 @@ async def test_a_returning_member_of_a_fixed_group_rejoins_its_leader(
     await _stop(scenario, group_id)
 
 
+async def test_an_offline_member_its_leader_still_lists_is_removed(scenario: Scenario) -> None:
+    """
+    A member that dropped off and that its leader's device still lists is removed on request.
+
+    The leader's own protocol is asked to let it go, and nothing is sent to the member.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[office_id, den_id])
+    await scenario.idle()
+    await scenario.report(office, available=False)
+    await scenario.idle()
+    # the leader's device lists the member it lost again
+    await scenario.report(kitchen, group_members=["sonos_kitchen", "sonos_office", "sonos_den"])
+    await scenario.idle()
+    assert _state(scenario, kitchen_id).group_members == [kitchen_id, office_id, den_id]
+
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_remove=[office_id])
+    await scenario.idle()
+
+    assert _grouping_commands(kitchen)[-1] == ("set_members", None, ["sonos_office"])
+    assert _state(scenario, kitchen_id).group_members == [kitchen_id, den_id]
+    assert office.commands == []
+
+
+@pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
+@pytest.mark.parametrize("playing", [False, True], ids=["idle", "playing"])
+async def test_an_offline_member_is_removed_from_a_group_player(
+    scenario: Scenario, group_type: str, playing: bool
+) -> None:
+    """A member of a group player that dropped off is removed, and nothing is sent to it."""
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    group_id = await _group(scenario, group_type, kitchen_id, office_id, den_id)
+    if playing:
+        await scenario.play(group_id)
+    sent = len(office.commands)
+
+    await scenario.report(office, available=False)
+    await scenario.idle()
+    await scenario.mass.players.cmd_set_members(group_id, player_ids_to_remove=[office_id])
+    await scenario.idle()
+
+    assert _state(scenario, group_id).group_members == [kitchen_id, den_id]
+    assert len(office.commands) == sent
+    if playing:
+        await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
+async def test_an_offline_member_of_a_fixed_group_is_refused_as_an_online_one(
+    scenario: Scenario, group_type: str
+) -> None:
+    """A member of a group with a fixed member list can not be removed, offline or online."""
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    group_id = await _group(scenario, group_type, kitchen_id, office_id, den_id, dynamic=False)
+    await scenario.report(office, available=False)
+    await scenario.idle()
+
+    refusals: list[tuple[str, str | None]] = []
+    for member_id in (office_id, den_id):
+        with pytest.raises(UnsupportedFeaturedException) as refusal:
+            await scenario.mass.players.cmd_set_members(group_id, player_ids_to_remove=[member_id])
+        refusals.append((str(refusal.value), refusal.value.translation_key))
+    await scenario.idle()
+
+    assert refusals[0] == refusals[1]
+    assert _state(scenario, group_id).group_members == [kitchen_id, office_id, den_id]
+
+
 async def _garden(scenario: Scenario) -> tuple[FakeProtocol, str]:
     """
     Attach Garden, a speaker of another make that shares no output with Kitchen, Office or Den.

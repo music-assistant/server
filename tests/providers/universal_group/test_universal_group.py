@@ -495,6 +495,20 @@ class TestSetMembers:
         assert ugp._attr_group_members == []
         mass.players._handle_cmd_stop.assert_awaited_once_with("m1")
 
+    async def test_an_offline_member_is_removed_without_a_stop(self) -> None:
+        """A removed member that can not be reached is taken off the list and not stopped."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass, dynamic=True)
+        _make_member(mass, "m1", available=False, playback_state=PlaybackState.PLAYING)
+        ugp._attr_group_members = ["m1"]
+
+        with patch.object(ugp, "update_state") as update_state:
+            await ugp.set_members(player_ids_to_remove=["m1"])
+
+        assert ugp._attr_group_members == []
+        mass.players._handle_cmd_stop.assert_not_awaited()
+        update_state.assert_called_once()
+
 
 class TestIdleGraceTimer:
     """The idle-grace timer absorbs natural PLAYING→IDLE transitions for UGP."""
