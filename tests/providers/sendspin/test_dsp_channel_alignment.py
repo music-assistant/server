@@ -133,6 +133,8 @@ class _SessionHarness:
         self.entered = 0
         self.returned = 0
         self._source_limit: int | None = None
+        # How often the producer asked the source for a slice.
+        self.source_reads = 0
         self.source_ended = False
         self._source_wakeup = asyncio.Event()
         self.start_hooks: deque[Callable[[], Awaitable[None]] | None] = deque()
@@ -261,6 +263,7 @@ class _SessionHarness:
     async def _source(self) -> AsyncIterator[bytes]:
         index = 0
         while True:
+            self.source_reads += 1
             while self._source_limit is not None and index >= self._source_limit:
                 if self.source_ended:
                     return

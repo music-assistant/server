@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import struct
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import replace
@@ -36,8 +37,9 @@ from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_OUTPUT_CODEC, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.providers.sendspin.bridge_role import BRIDGE_SAMPLE_RATE
+from music_assistant.providers.squeezelite.bridge_flac import BLOCK_FRAMES, HELD_BACK_BYTES
 from music_assistant.providers.squeezelite.bridge_role import (
     SLIMPROTO_BRIDGE_ROLE_ID,
     SlimprotoBridgeRole,
@@ -57,6 +59,7 @@ from music_assistant.providers.squeezelite.sendspin_bridge import (
     CLOCK_MAX_AGE_US,
     LEAD_IN_US,
     MAX_BLOCK_US,
+    MAX_FLAC_BLOCKS,
     MAX_PENDING_AUDIO_US,
     MAX_PENDING_CHUNKS,
     MAX_PENDING_STATUS,
@@ -79,6 +82,7 @@ from music_assistant.providers.squeezelite.sendspin_bridge import (
     _pack_24_bit,
 )
 from tests.common import use_real_bridge_holders, use_real_create_task
+from tests.providers.squeezelite.test_bridge_flac import decode_flac
 
 if TYPE_CHECKING:
     from aiosendspin.models.core import ClientHelloPayload
@@ -202,6 +206,7 @@ def _slim_client(device_type: str = "squeezeplay") -> MagicMock:
         state=SlimPlayerState.STOPPED,
         volume_level=20,
         muted=False,
+        supported_codecs=["pcm", "mp3", "flc"],
     )
     for command in (
         "play_url",
@@ -371,18 +376,56 @@ class _BufferedPlayer(_Response):
         self.stalled = False
         self._rig = rig
         self._session = session
+        # the sizes of the frames of a FLAC stream as they were made, and how many of
+        # them it decoded, with their bytes
+        self._frame_sizes: list[int] = []
+        self._decoded = 0
+        self._decoded_bytes = 0
+        if (encoder := session._encoder) is not None:
+            encode_block = encoder._encode_block
+
+            def _encode_block(block: bytes) -> bytes:
+                frame = encode_block(block)
+                self._frame_sizes.append(len(frame))
+                return frame
+
+            encoder._encode_block = _encode_block  # type: ignore[method-assign]
+
+    @property
+    def frames(self) -> int:
+        """
+        Return the number of frames of the stream the player can play.
+
+        That is all it got of a PCM stream. A frame of a FLAC stream is decoded once the
+        player holds more of the stream from that frame on than its decoder waits for.
+        """
+        if (encoder := self._session._encoder) is None:
+            return len(self.body) // FRAME_SIZE
+        got = len(self.body) - len(encoder.header)
+        while (
+            self._decoded < len(self._frame_sizes) and got - self._decoded_bytes > HELD_BACK_BYTES
+        ):
+            self._decoded_bytes += self._frame_sizes[self._decoded]
+            self._decoded += 1
+        return self._decoded * BLOCK_FRAMES
 
     @property
     def held_us(self) -> int:
-        """Return the audio the player got and did not play yet: it ran dry at 0."""
+        """Return the audio the player can play and did not play yet: it ran dry at 0."""
         played_us = max(0, self._rig.now_us - self._session.start_us)
-        return _frame_us(len(self.body) // FRAME_SIZE) - played_us
+        return _frame_us(self.frames) - played_us
 
     async def write(self, data: bytes) -> None:
         """Take in what the bridge writes, once the connection and the buffers have room for it."""
         while self.stalled or (self.capacity_us is not None and self.held_us >= self.capacity_us):
             await asyncio.sleep(0)
         self.body += data
+
+    def pcm(self) -> bytes:
+        """Return the PCM of all of the stream it got, which it decodes from a FLAC stream."""
+        if self._session._encoder is None:
+            return bytes(self.body)
+        return decode_flac(bytes(self.body))[0]
 
     async def play(self, seconds: float) -> list[int]:
         """
@@ -397,15 +440,16 @@ class _BufferedPlayer(_Response):
             played_us = self._rig.now_us - self._session.start_us
             if played_us % 250_000 == 0:
                 # it reports what it played, which is no more than it got
-                elapsed_us = min(played_us, _frame_us(len(self.body) // FRAME_SIZE))
+                elapsed_us = min(played_us, _frame_us(self.frames))
                 self._rig.bridge.handle_slim_event(self._rig.status(elapsed_ms=elapsed_us // 1000))
             await _settle()
             held.append(self.held_us)
         return held
 
     def audio(self) -> list[int]:
-        """Return the source frames it got, without the silence."""
-        return [frame for frame in _frames(bytes(self.body)) if frame >= 0]
+        """Return the source frames it can play, without the silence."""
+        pcm = self.pcm()[: self.frames * FRAME_SIZE]
+        return [frame for frame in _frames(pcm) if frame >= 0]
 
     def left_out(self) -> int:
         """
@@ -423,12 +467,20 @@ class _BufferedPlayer(_Response):
 class _Rig:
     """A bridge of a player, with everything around it mocked."""
 
-    def __init__(self, *, sync_adjust: int = 0, device_type: str = "squeezeplay") -> None:
+    def __init__(
+        self,
+        *,
+        sync_adjust: int = 0,
+        device_type: str = "squeezeplay",
+        output_codec: str = "wav",
+    ) -> None:
         """
         Initialize the rig.
 
         :param sync_adjust: The sync delay setting of the player.
         :param device_type: The device type the player reports.
+        :param output_codec: The output codec setting of the player. Most tests are about
+            the stream of a session whatever it is sent as, which PCM shows as it is.
         """
         self.clock = ManualClock(now_us_value=EPOCH_US)
         self.mass = mass = MagicMock()
@@ -467,7 +519,13 @@ class _Rig:
         protocol.available = True
         protocol.client = self.client
         protocol.provider = provider
-        protocol.config.get_value = MagicMock(return_value=sync_adjust)
+        self.config = {CONF_SYNC_ADJUST: sync_adjust, CONF_OUTPUT_CODEC: output_codec}
+        protocol.config.get_value = MagicMock(
+            side_effect=lambda key, default=None: self.config.get(key, default)
+        )
+        # the Sendspin protocol of the bridge client, which knows no source yet
+        self.sendspin_player = mass.players.get_protocol.return_value
+        self.sendspin_player.session_bit_depth = None
         protocol.get_supported_sample_rates.return_value = [(44100, 16)]
         protocol.volume_set = AsyncMock()
         protocol.release_native_playback = AsyncMock()
@@ -793,6 +851,14 @@ async def rig() -> AsyncGenerator[_Rig]:
     await rig.close()
 
 
+@pytest.fixture
+async def flac_rig() -> AsyncGenerator[_Rig]:
+    """Return a bridge of a player that is set to FLAC, not registered with Sendspin yet."""
+    rig = _Rig(output_codec="flac")
+    yield rig
+    await rig.close()
+
+
 @pytest.fixture(autouse=True)
 def _timing() -> Any:
     """
@@ -909,6 +975,7 @@ async def test_registration_hands_sendspin_what_it_needs_in_order(rig: _Rig) -> 
         "register().add_event_listener",
         "register().roles_by_family",
         "role.set_callbacks",
+        "role.limit_bit_depth",
         "role.set_preferred_format",
         "role.set_timing",
     ]
@@ -1347,6 +1414,504 @@ async def test_a_stream_is_in_the_format_sendspin_prefers(rig: _Rig) -> None:
     # the preroll is a quarter of a second of that format
     assert bytes(response.body) == bytes(12000 * 6)
     assert bytes(response.body) == session.preroll
+
+
+FLAC_PLAYER = ["flc", "pcm", "mp3"]
+# what a player plays that sends no capabilities
+PLAIN_PLAYER = ["pcm", "mp3"]
+PCM_16 = "audio/pcm;rate=44100;bitrate=16;channels=2"
+PCM_24 = "audio/pcm;rate=44100;bitrate=24;channels=2"
+FLAC = "audio/flac"
+
+# The output codec setting of a player, the codecs it says it plays, the bit depth of the
+# audio of the playback session and the bit depths the player plays, with what the player
+# is sent.
+SENT = [
+    # FLAC for a player that plays it, in the bit depth of the session
+    ("flac", FLAC_PLAYER, 16, (16, 24), FLAC, 16),
+    ("flac", FLAC_PLAYER, 24, (16, 24), FLAC, 24),
+    ("flac", FLAC_PLAYER, 16, (16,), FLAC, 16),
+    ("flac", FLAC_PLAYER, 24, (16,), FLAC, 16),
+    # PCM for a player that does not say it plays FLAC
+    ("flac", PLAIN_PLAYER, 16, (16, 24), PCM_16, 16),
+    ("flac", PLAIN_PLAYER, 24, (16, 24), PCM_24, 24),
+    ("flac", PLAIN_PLAYER, 16, (16,), PCM_16, 16),
+    ("flac", PLAIN_PLAYER, 24, (16,), PCM_16, 16),
+    # PCM for the setting that asks for it
+    ("wav", FLAC_PLAYER, 16, (16, 24), PCM_16, 16),
+    ("wav", FLAC_PLAYER, 24, (16, 24), PCM_24, 24),
+    ("wav", FLAC_PLAYER, 16, (16,), PCM_16, 16),
+    ("wav", FLAC_PLAYER, 24, (16,), PCM_16, 16),
+    ("wav", PLAIN_PLAYER, 16, (16, 24), PCM_16, 16),
+    ("wav", PLAIN_PLAYER, 24, (16, 24), PCM_24, 24),
+    ("wav", PLAIN_PLAYER, 16, (16,), PCM_16, 16),
+    ("wav", PLAIN_PLAYER, 24, (16,), PCM_16, 16),
+    # never FLAC for a lossy setting: PCM in 16 bits, whatever the session and the player
+    ("mp3", FLAC_PLAYER, 16, (16, 24), PCM_16, 16),
+    ("mp3", FLAC_PLAYER, 24, (16, 24), PCM_16, 16),
+    ("mp3", FLAC_PLAYER, 32, (16, 24), PCM_16, 16),
+    ("mp3", FLAC_PLAYER, 24, (16,), PCM_16, 16),
+    ("mp3", PLAIN_PLAYER, 16, (16, 24), PCM_16, 16),
+    ("mp3", PLAIN_PLAYER, 24, (16, 24), PCM_16, 16),
+    ("aac", FLAC_PLAYER, 16, (16, 24), PCM_16, 16),
+    ("aac", FLAC_PLAYER, 24, (16, 24), PCM_16, 16),
+    ("aac", PLAIN_PLAYER, 32, (16, 24), PCM_16, 16),
+    ("aac", PLAIN_PLAYER, 24, (16,), PCM_16, 16),
+    # a session whose audio is processed on its way has 32 bits, which fill the 24 of a player
+    ("flac", FLAC_PLAYER, 32, (16, 24), FLAC, 24),
+    ("wav", PLAIN_PLAYER, 32, (16, 24), PCM_24, 24),
+    ("flac", FLAC_PLAYER, 32, (16,), FLAC, 16),
+    # a session without a first item plays in all the bits of the player
+    ("flac", FLAC_PLAYER, None, (16, 24), FLAC, 24),
+    ("wav", PLAIN_PLAYER, None, (16, 24), PCM_24, 24),
+    ("mp3", FLAC_PLAYER, None, (16, 24), PCM_16, 16),
+    ("aac", PLAIN_PLAYER, None, (16, 24), PCM_16, 16),
+    ("flac", FLAC_PLAYER, None, (16,), FLAC, 16),
+]
+
+
+def _sent_id(case: tuple[str, list[str], int | None, tuple[int, ...], str, int]) -> str:
+    """Return the name of a case: its setting, its player and the bit depth of its session."""
+    output_codec, codecs, session_bit_depth, depths, _mime_type, _bit_depth = case
+    player = f"{'flac' if 'flc' in codecs else 'plain'} player of {max(depths)} bits"
+    session = f"session of {session_bit_depth} bits" if session_bit_depth else "no first item"
+    return f"{output_codec}, {player}, {session}"
+
+
+@pytest.mark.parametrize(
+    ("output_codec", "codecs", "session_bit_depth", "depths", "mime_type", "bit_depth"),
+    SENT,
+    ids=[_sent_id(case) for case in SENT],
+)
+async def test_the_output_codec_and_the_session_decide_what_a_player_is_sent(
+    output_codec: str,
+    codecs: list[str],
+    session_bit_depth: int | None,
+    depths: tuple[int, ...],
+    mime_type: str,
+    bit_depth: int,
+) -> None:
+    """The setting of the player picks FLAC or PCM, and the playback session the bit depth."""
+    rig = _Rig(output_codec=output_codec)
+    try:
+        rig.client.supported_codecs = codecs
+        rig.protocol.get_supported_sample_rates.return_value = [(44100, depth) for depth in depths]
+        await rig.bridge.start()
+        # a playback session starts: Sendspin has the player follow its first item
+        rig.sendspin_player.session_bit_depth = session_bit_depth
+        assert rig.role.set_preferred_format(None)
+
+        session = await rig.start_stream()
+
+        assert (session.mime_type, session.audio_format.bit_depth) == (mime_type, bit_depth)
+        assert rig.client.play_url.await_args.kwargs["mime_type"] == mime_type
+    finally:
+        await rig.close()
+
+
+async def test_a_flac_stream_that_fails_before_it_played_is_restarted_as_pcm(
+    flac_rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A player whose FLAC stream does not get to play is sent PCM, for as long as its bridge lasts."""
+    rig = flac_rig
+    client = rig.grouped()
+    first = await rig.start_playing()
+    assert first.mime_type == "audio/flac"
+
+    await rig.run_dry(played_s=2)
+
+    restarted = rig.session
+    assert restarted is not first
+    assert (restarted.mime_type, restarted.audio_format.bit_depth) == (MIME_TYPE, 16)
+    assert rig.client.play_url.await_args.kwargs["mime_type"] == MIME_TYPE
+    # with the audio the player had not played of its FLAC stream
+    assert [chunk.timestamp_us for chunk in restarted.chunks] == [rig.origin_us]
+    (told,) = [record for record in caplog.records if "instead of FLAC" in record.getMessage()]
+    assert told.levelno == logging.WARNING
+    assert told.getMessage() == (
+        "Kitchen is sent PCM instead of FLAC from now on: its FLAC stream failed before it "
+        "played 10 s"
+    )
+    # the failure counts as any other: two more in a row take the player out
+    await rig.run_dry()
+    assert rig.owns_stream()
+    assert rig.session.mime_type == MIME_TYPE
+    client.quiesce_to_solo_stopped.assert_not_called()
+    await rig.run_dry()
+    assert not rig.owns_stream()
+    client.quiesce_to_solo_stopped.assert_awaited_once()
+    # the streams after it are PCM too, and nothing more is said about it
+    assert (await rig.start_playing()).mime_type == MIME_TYPE
+    assert len([record for record in caplog.records if "of FLAC" in record.getMessage()]) == 1
+    # until the player has a new bridge
+    bridge = SendspinSqueezeliteBridge(rig.provider, rig.protocol, rig.server)
+    assert bridge._role_format().content_type == ContentType.FLAC
+
+
+async def test_a_flac_stream_that_fails_after_it_played_stays_flac(
+    flac_rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A player that played its FLAC stream for 10 seconds decodes it: its restart is FLAC."""
+    rig = flac_rig
+    first = await rig.start_playing()
+
+    await rig.run_dry(played_s=10)
+
+    assert rig.session is not first
+    assert rig.session.mime_type == "audio/flac"
+    assert (await rig.start_playing()).mime_type == "audio/flac"
+    assert "instead of FLAC" not in caplog.text
+
+
+@pytest.mark.parametrize(("output_codec", "codecs"), [("wav", FLAC_PLAYER), ("flac", PLAIN_PLAYER)])
+async def test_a_pcm_stream_that_fails_before_it_played_is_restarted_as_it_was(
+    output_codec: str, codecs: list[str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A player that is sent PCM has no other stream to go to, and its next bridge none to avoid."""
+    rig = _Rig(output_codec=output_codec)
+    try:
+        rig.client.supported_codecs = codecs
+        first = await rig.start_playing()
+
+        await rig.run_dry()
+
+        assert rig.session is not first
+        assert rig.session.mime_type == first.mime_type == MIME_TYPE
+        assert "instead of FLAC" not in caplog.text
+        # a FLAC stream is still what it gets once it is set to it and plays it
+        rig.config[CONF_OUTPUT_CODEC] = "flac"
+        rig.client.supported_codecs = FLAC_PLAYER
+        assert (await rig.start_playing()).mime_type == "audio/flac"
+    finally:
+        await rig.close()
+
+
+@pytest.mark.parametrize(
+    ("output_codec", "frames"),
+    [("wav", MAX_BLOCK_FRAMES), ("flac", MAX_FLAC_BLOCKS * BLOCK_FRAMES)],
+)
+async def test_a_round_of_the_writer_takes_no_more_than_the_event_loop_can_spare(
+    output_codec: str, frames: int
+) -> None:
+    """A FLAC stream is encoded as it is written: a dozen blocks a round, where PCM goes half a second."""
+    rig = _Rig(output_codec=output_codec)
+    try:
+        session = await rig.start_playing(frames=SECOND)
+        for second in range(1, 30):
+            rig.bridge._on_audio_chunk(_chunk(rig.origin_us, second * SECOND, SECOND))
+
+        # the silence ahead of its start
+        assert len(rig.bridge._next_block(session)) == frames * FRAME_SIZE
+        # and its audio, on the way to its long lead
+        rig.align(session)
+        rig.follow(session)
+        assert session.loop is not None
+        for _ in range(2):
+            taken = session.loop.frames_consumed
+            assert rig.bridge._next_block(session)
+            assert session.loop.frames_consumed - taken == frames
+    finally:
+        await rig.close()
+
+
+async def test_a_stream_keeps_its_codec_and_bit_depth_while_it_plays(flac_rig: _Rig) -> None:
+    """What the queue plays next and a setting that changes are for the stream after this one."""
+    rig = flac_rig
+    rig.protocol.get_supported_sample_rates.return_value = [(44100, 16), (44100, 24)]
+    await rig.bridge.start()
+    rig.sendspin_player.session_bit_depth = 16
+    assert rig.role.set_preferred_format(None)
+    session = await rig.start_playing()
+
+    rig.sendspin_player.session_bit_depth = 24
+    rig.config[CONF_OUTPUT_CODEC] = "wav"
+    rig.bridge._on_audio_chunk(_chunk(rig.origin_us, 4 * SECOND, SECOND))
+    rig.bridge.update_now_playing()
+    await _settle()
+
+    assert rig.session is session
+    assert (session.mime_type, session.audio_format.bit_depth) == ("audio/flac", 16)
+    assert rig.client.play_url.await_count == 1
+
+
+@pytest.mark.parametrize(
+    ("bit_depth", "frame_size", "preroll_frames"), [(16, 4, 21216), (24, 8, 17760)]
+)
+async def test_the_stream_request_tells_the_player_it_is_flac(
+    bit_depth: int, frame_size: int, preroll_frames: int
+) -> None:
+    """What aioslimproto makes of a FLAC session: the player takes the format from the stream."""
+    session = BridgeSession(
+        AudioFormat(
+            content_type=ContentType.FLAC, sample_rate=48000, bit_depth=bit_depth, channels=2
+        ),
+        0,
+    )
+    sent: list[tuple[bytes, bytes]] = []
+    writer = MagicMock(drain=AsyncMock())
+    writer.is_closing.return_value = False
+    writer.write.side_effect = lambda packet: sent.append((packet[2:6], packet[6:]))
+    client = SlimClient(asyncio.StreamReader(), writer, MagicMock())
+    try:
+        await client.play_url(
+            url=f"{BASE_URL}{BRIDGE_STREAM_PATH}?player_id={PLAYER_ID}&sid={session.session_id}",
+            mime_type=session.mime_type,
+            autostart=False,
+        )
+    finally:
+        client._reader_task.cancel()
+
+    command, start = sent[-1]
+    assert command == b"strm"
+    assert start[:1] == b"s"
+    assert start[2:7] == b"f????"
+    # the encoder takes the samples as Sendspin delivers them: 24 bits in 4 bytes
+    assert session.frame_size == frame_size
+    # a quarter of a second, and the silence a player can not decode at the end of it
+    assert len(session.preroll) == preroll_frames * frame_size
+
+
+async def test_a_flac_stream_opens_with_silence_its_player_can_decode(flac_rig: _Rig) -> None:
+    """The preroll is silence in full: more than the buffer waits for, a quarter of a second to play."""
+    rig = flac_rig
+    session = await rig.start_stream()
+    request = MagicMock(method="GET", query={"sid": session.session_id})
+    player = _BufferedPlayer(rig, session)
+
+    with patch("aiohttp.web.StreamResponse", return_value=player) as response:
+        serving = asyncio.create_task(rig.bridge.serve_stream(request))
+        await _settle()
+
+    assert response.call_args.kwargs["headers"] == {"Content-Type": "audio/flac"}
+    assert rig.client.play_url.await_args.kwargs["stream_threshold"] == STREAM_THRESHOLD_KB
+    assert session.preroll_sent
+    assert player.body[:4] == b"fLaC"
+    assert len(player.body) > STREAM_THRESHOLD_KB * 1024
+    # the preroll is the blocks that are complete, and the player decodes the first of
+    # them: the quarter of a second it has to hold, and no block more
+    preroll, sample_rate, bit_depth = decode_flac(bytes(player.body))
+    assert (sample_rate, bit_depth) == (44100, 16)
+    assert preroll == bytes(17 * BLOCK_FRAMES * FRAME_SIZE)
+    assert PREROLL_FRAMES <= player.frames < PREROLL_FRAMES + BLOCK_FRAMES
+    # and the start is decided as for any stream, with the preroll as frame 0 and on
+    rig.origin_us = rig.now_us + 2_000_000
+    rig.bridge._on_audio_chunk(_chunk(rig.origin_us, 0, SECOND))
+    rig.event(SlimEventType.PLAYER_BUFFER_READY)
+    await _settle()
+    assert session.start_us == rig.origin_us - LEAD_IN_US
+    assert session.loop is not None
+    assert session.loop.frames_sent >= len(session.preroll) // FRAME_SIZE
+    rig.bridge._on_stream_end()
+    await serving
+
+
+async def test_a_flac_player_has_silence_to_play_until_its_start_is_corrected(
+    flac_rig: _Rig,
+) -> None:
+    """From its start instant on a player holds silence it can decode, as far ahead as a PCM one."""
+    rig = flac_rig
+    session = await rig.start_playing(frames=SECOND)
+    for first in range(SECOND, 30 * SECOND, SECOND):
+        rig.bridge._on_audio_chunk(_chunk(rig.origin_us, first, SECOND))
+    session.claimed = session.preroll_sent = False
+    player = _BufferedPlayer(rig, session)
+    rig.serve(session, player)
+    await _settle()
+    rig.clock.advance_us(session.start_us - rig.now_us)
+
+    held = []
+    while session.aligning:
+        held += await player.play(0.05)
+        assert len(held) < ALIGN_ROUNDS, "the start was not corrected"
+
+    assert session.loop is not None
+    assert session.loop.start_error_ms == pytest.approx(-0.5)
+    block_us = _frame_us(BLOCK_FRAMES)
+    assert min(held) >= ALIGN_LEAD_US
+    # all of the lead-in but the room for a late start went out before the player played
+    # any of it, as it does for a PCM player: the 7 blocks at the end of it are what this
+    # one can not decode yet
+    at_once_us = LEAD_IN_US - ALIGN_ROOM_US - 7 * block_us
+    assert held[0] == pytest.approx(at_once_us - 50_000, abs=block_us)
+    assert rig.client.play_url.await_count == 1
+    # its first audio is heard on the timeline, and it holds the lead of a start of it
+    await player.play(2)
+    index = _frames(player.pcm()).index(0)
+    assert session.start_us + _frame_us(index) == rig.origin_us
+    assert rig.session is session
+
+
+async def test_a_flac_player_is_kept_its_lead_in_what_it_can_decode(flac_rig: _Rig) -> None:
+    """A player that decodes less than it got rides out the stall a PCM player does."""
+    rig = flac_rig
+    session, player = await rig.serve_player()
+    # a lead is kept to the block: what does not fill one waits for the audio after it
+    block_us = _frame_us(BLOCK_FRAMES)
+    await player.play(1)
+    assert abs(player.held_us - START_LEAD_US) < block_us
+    await player.play(2)
+    assert abs(player.held_us - STREAM_LEAD_US) < block_us
+    # what went out is further ahead than that, by what the player can not decode yet
+    assert session.frames_held >= 7 * BLOCK_FRAMES
+    assert rig.lead_frames(session) >= STREAM_LEAD_FRAMES + 6 * BLOCK_FRAMES
+
+    player.stalled = True
+    held = await player.play(4)
+    player.stalled = False
+
+    assert min(held) > 1_900_000
+    await player.play(1)
+    assert abs(player.held_us - STREAM_LEAD_US) < block_us
+    assert rig.session is session
+
+
+@pytest.mark.parametrize(("level", "held_ms"), [(15, 180), (3, 660), (0, 1500)])
+async def test_a_live_source_reaches_a_flac_player_with_no_silence_in_its_place(
+    flac_rig: _Rig, caplog: pytest.LogCaptureFixture, level: int, held_ms: int
+) -> None:
+    """
+    Audio that is only 2 seconds ahead reaches a player as it is, loud or quiet.
+
+    The quietest audio that goes out compressed leaves a second and a half of it undecoded,
+    and its player half a second to play: the writer has no silence to send for that.
+    """
+    caplog.set_level(logging.DEBUG, logger="test.squeezelite")
+    rig = flac_rig
+    rng = random.Random(level)  # noqa: S311
+    tenth = SECOND // 10
+    ahead_us = BRIDGE_REQUIRED_LEAD_MS * 1000
+    # ten values on one channel, the same ones in every block: frames of 580 bytes, just
+    # over the eighth of a block below which a frame goes out with its samples in full
+    faint = [number % 10 - 4 for number in range(BLOCK_FRAMES)]
+    rng.shuffle(faint)
+
+    def noise(origin_us: int, first: int, count: int) -> AudioChunk:
+        """Return a chunk of noise of a number of bits, which is all an encoder goes by."""
+        if level:
+            values = [rng.randrange(-(1 << level), 1 << level) for _ in range(2 * count)]
+        else:
+            values = [0] * (2 * count)
+            values[1::2] = [faint[frame % BLOCK_FRAMES] for frame in range(first, first + count)]
+        data = struct.pack(f"<{2 * count}h", *values)
+        return AudioChunk(
+            data=data,
+            timestamp_us=origin_us + _frame_us(first),
+            duration_us=_frame_us(count),
+            byte_count=len(data),
+        )
+
+    session = await rig.start_playing(first_chunk_ahead_us=ahead_us, frames=tenth, chunk=noise)
+    session.claimed = session.preroll_sent = False
+    player = _BufferedPlayer(rig, session)
+    rig.serve(session, player)
+    await _settle()
+    rig.clock.advance_us(session.start_us - rig.now_us)
+
+    held = []
+    delivered = tenth
+    for _ in range(200):
+        # Sendspin delivers what is due up to its lead from now
+        while _frame_us(delivered) < rig.now_us + ahead_us - rig.origin_us:
+            rig.bridge._on_audio_chunk(noise(rig.origin_us, delivered, tenth))
+            delivered += tenth
+        held += await player.play(0.05)
+
+    assert "Sendspin has no audio for Kitchen" not in caplog.text
+    # all of it went out, and the player can decode it but for the end of it
+    assert not session.chunks
+    assert session.frames_held * 1000 // SECOND == pytest.approx(held_ms, abs=40)
+    if not level:
+        assert min(player._frame_sizes[-100:]) >= 4608 // 8
+        assert max(player._frame_sizes[-100:]) <= 580
+    # the lead of the group is its lead from when it is on its timeline, less that end
+    assert min(held[80:]) > ahead_us - (held_ms + 150) * 1000
+    assert min(held) >= ALIGN_LEAD_US
+    assert rig.session is session
+    # from its first sample on the audio has no silence in it
+    samples = struct.unpack(f"<{len(player.pcm()) // 2}h", player.pcm())
+    audio = samples[next(at for at, sample in enumerate(samples) if sample) :]
+    quiet = max(len(run) for run in bytes(bool(sample) for sample in audio).split(b"\x01"))
+    assert quiet < 20
+
+
+async def test_silence_keeps_a_flac_player_fed_that_sendspin_has_nothing_for(
+    flac_rig: _Rig,
+) -> None:
+    """Silence goes out in full, so the player decodes the audio before it and plays on."""
+    rig = flac_rig
+    session = await rig.start_playing(frames=3 * SECOND)
+    session.claimed = session.preroll_sent = False
+    player = _BufferedPlayer(rig, session)
+    rig.serve(session, player)
+    await _settle()
+    await rig.align_served(session)
+
+    held = await player.play(10)
+
+    # all of the three seconds it was given, and silence from there on: half a second
+    # ahead as for a PCM player, of which this one can not decode the end, and a block
+    # more where its last audio ends
+    assert sorted(set(player.audio())) == list(range(3 * SECOND))
+    assert session._encoder is not None
+    undecoded = session._encoder.silence_held + BLOCK_FRAMES
+    assert min(held) > STARVED_LEAD_US - _frame_us(undecoded)
+    assert rig.lead_frames(session) == STARVED_LEAD_FRAMES
+    assert rig.session is session
+    assert rig.client.play_url.await_count == 1
+
+
+async def test_a_flac_stream_decodes_to_what_the_writer_made(flac_rig: _Rig) -> None:
+    """Every frame of the PCM is in the stream once, the ones the sync loop repeated or dropped too."""
+    rig = flac_rig
+    produced = bytearray()
+    encode = BridgeSession.encode
+
+    def _encode(session: BridgeSession, pcm: bytes) -> bytes:
+        produced.extend(pcm)
+        return encode(session, pcm)
+
+    with patch.object(BridgeSession, "encode", _encode):
+        session, player = await rig.serve_player()
+        assert session.mime_type == "audio/flac"
+        await player.play(12)
+        loop = session.loop
+        assert loop is not None
+        # all of what was made went out, but what waits for the rest of its block
+        decoded = player.pcm()
+        assert len(produced) == loop.frames_sent * FRAME_SIZE
+        assert decoded == bytes(produced[: len(decoded)])
+        assert 0 <= loop.frames_sent - len(decoded) // FRAME_SIZE < BLOCK_FRAMES
+        rig.bridge._on_stream_end()
+        await _settle()
+
+    # what the rig reports makes the loop send frames twice: they are in the stream
+    assert rig.dropped(session) < 0
+    # one stream: its header went out once, and its end left nothing behind
+    assert bytes(player.body).count(b"fLaC") == 1
+    assert player.pcm() == bytes(produced)
+    steps = [second - first for first, second in pairwise(_frames(player.pcm())) if first >= 0]
+    assert set(steps) <= {0, 1}
+    assert -steps.count(0) == rig.dropped(session)
+
+
+async def test_24_bit_audio_reaches_a_flac_player_bit_for_bit(flac_rig: _Rig) -> None:
+    """The encoder takes the 24 bits Sendspin delivers in 32: nothing is packed or lost."""
+    rig = flac_rig
+    await rig.start_hires()
+    session = await rig.start_playing(frames=4 * 48000, chunk=_chunk_24)
+    assert (session.mime_type, session.frame_size) == ("audio/flac", 8)
+
+    pcm = rig.align(session) + rig.drain(session)
+    stream = session.encode(session.preroll) + session.encode(pcm)
+
+    decoded, sample_rate, bit_depth = decode_flac(stream)
+    assert (sample_rate, bit_depth) == (48000, 24)
+    # the lead-in of 1.45 seconds, then the audio as its chunk holds it
+    audio = _chunk_24(rig.origin_us, 0, 4 * 48000).data
+    assert decoded[: 69600 * 8] == bytes(69600 * 8)
+    # a short lead ahead of the 300 ms it played, which is 75 blocks
+    assert len(decoded) == (14400 + 72000) * 8
+    assert decoded[69600 * 8 :] == audio[: len(decoded) - 69600 * 8]
 
 
 @pytest.mark.parametrize(
@@ -2054,6 +2619,33 @@ def test_audio_that_went_out_is_kept_until_it_is_played() -> None:
     assert list(session.unplayed(EPOCH_US)) == chunks[2:]
     assert list(session.unplayed(EPOCH_US + 3_500_000)) == chunks[3:]
     assert list(session.unplayed(EPOCH_US + 9_000_000)) == chunks[8:]
+
+
+def test_audio_a_flac_player_did_not_decode_yet_is_kept_too() -> None:
+    """A FLAC stream is ahead by more than its lead: a restart sends that again as well."""
+    session = BridgeSession(replace(CD_FORMAT, content_type=ContentType.FLAC), 0)
+    session.start_us = EPOCH_US
+    # noise an encoder makes a quarter of: a player can not decode the last 0.7 seconds of it
+    rng = random.Random(1)  # noqa: S311
+    chunks = []
+    for second in range(10):
+        data = struct.pack(f"<{2 * SECOND}h", *(rng.randrange(-8, 8) for _ in range(2 * SECOND)))
+        chunks.append(
+            AudioChunk(
+                data=data,
+                timestamp_us=EPOCH_US + second * 1_000_000,
+                duration_us=1_000_000,
+                byte_count=len(data),
+            )
+        )
+        session.add(chunks[-1])
+    for cursor in range(0, 8 * SECOND + 100, TEN_MS):
+        session.encode(session.take(cursor, TEN_MS))
+    assert 0.6 * SECOND < session.frames_held < 0.8 * SECOND
+
+    # 8.1 seconds went out: the player holds 6 of them, and the ones it can not decode
+    assert list(session.unplayed(EPOCH_US)) == chunks[1:]
+    assert list(session.unplayed(EPOCH_US + 3_500_000)) == chunks[3:]
 
 
 # ---------------------------------------------------------------- start
@@ -3572,13 +4164,27 @@ async def test_an_underrun_tells_what_the_bridge_knew(
     ) in caplog.text
 
 
+@pytest.mark.parametrize(("output_codec", "plays_s"), [("wav", 3), ("flac", 3), ("flac", 9)])
 @pytest.mark.parametrize("sync_adjust", [0, 100, -80])
-async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(sync_adjust: int) -> None:
-    """A stall longer than the lead ends in an underrun: the new stream neither skips nor repeats audio."""
-    rig = _Rig(sync_adjust=sync_adjust)
+async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(
+    sync_adjust: int, output_codec: str, plays_s: int
+) -> None:
+    """
+    A stall longer than the lead ends in an underrun: the new stream neither skips nor repeats audio.
+
+    A FLAC stream that ran dry within 10 seconds is restarted as PCM, a later one as FLAC.
+    """
+    rig = _Rig(sync_adjust=sync_adjust, output_codec=output_codec)
+    # a FLAC player decodes whole blocks, and the silence a new stream opens with takes
+    # 0.2 seconds more to get through its decoder
+    block = BLOCK_FRAMES if output_codec == "flac" else 0
+    restarted_as = "flac" if output_codec == "flac" and plays_s == 9 else "wav"
+    resumes_s = 8.85 if restarted_as == "flac" else 8.65
+    # what it plays longer before the stall, in whole chunks, comes on top of every position
+    later = (plays_s - 3) * SECOND
     try:
         first, player = await rig.serve_player(chunk_seconds=3)
-        await player.play(3)
+        await player.play(plays_s)
 
         # nothing reaches the player, which reports where it plays until it has no more
         player.stalled = True
@@ -3587,17 +4193,24 @@ async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(sync_a
         assert rig.session is first
         played = player.audio()
         # 6 seconds after the 3.3 it played: in the middle of the chunk that was partly taken
-        assert rig.now_us - first.start_us == pytest.approx(9_300_000, abs=50_000)
-        assert played[-1] + 1 == round(7.85 * SECOND)
-        assert -22 <= player.left_out() <= 0
-        assert len(first.chunks) == 8
+        assert rig.now_us - first.start_us == pytest.approx(
+            9_300_000 + _frame_us(later), abs=50_000
+        )
+        assert abs(played[-1] + 1 - round(7.85 * SECOND) - later) <= block
+        assert -22 - later // 2000 <= player.left_out() <= 0
+        assert len(first.chunks) == 8 - (plays_s - 3) // 3
+        # a setting that changed meanwhile is for the stream after this one
+        rig.config[CONF_OUTPUT_CODEC] = "mp3"
         rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+        # it answers its status requests all along: its clock is known
+        rig.map_clock()
         await _settle()
         player.stalled = False
 
         second = rig.session
         assert second is not first
-        assert len(second.chunks) == 8
+        assert second.mime_type == ("audio/flac" if restarted_as == "flac" else MIME_TYPE)
+        assert len(second.chunks) == 8 - (plays_s - 3) // 3
         restarted = _BufferedPlayer(rig, second)
         rig.serve(second, restarted)
         await _settle()
@@ -3609,12 +4222,15 @@ async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(sync_a
         # nothing twice, and all of it from where the new stream could begin: 0.8 seconds
         # for its start and its correction, in the chunk the first stream had begun
         audio = restarted.audio()
-        assert played[-1] < audio[0] < 9 * SECOND
-        assert audio[0] == pytest.approx(8.65 * SECOND, abs=SECOND // 10)
+        assert played[-1] < audio[0] < 9 * SECOND + later
+        assert audio[0] == pytest.approx(resumes_s * SECOND + later, abs=SECOND // 10)
         assert audio == list(range(audio[0], audio[0] + len(audio)))
-        assert rig.lead_frames(second) == START_LEAD_FRAMES
+        if restarted_as == "wav":
+            assert rig.lead_frames(second) == START_LEAD_FRAMES
+        else:
+            assert abs(restarted.held_us - START_LEAD_US) < _frame_us(BLOCK_FRAMES)
         # each frame at its own time, the sync delay of the player included
-        index = _frames(bytes(restarted.body)).index(audio[0])
+        index = _frames(restarted.pcm()).index(audio[0])
         heard_us = second.start_us + _frame_us(index)
         assert heard_us == rig.origin_us - sync_adjust * 1000 + _frame_us(audio[0])
     finally:
@@ -3636,6 +4252,27 @@ async def test_an_underrun_of_a_stream_without_audio_says_so(
         "it ran out of audio (prepared 500 ms ahead, 0 bytes written, the last write took 0 ms, "
         "0 ms of audio waiting, no status of the player)"
     ) in caplog.text
+
+
+async def test_an_underrun_of_a_flac_stream_tells_what_its_player_could_not_decode(
+    flac_rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The supply of a FLAC player is what went out less what its decoder waits with."""
+    rig = flac_rig
+    session, player = await rig.serve_player()
+    await player.play(3)
+    player.stalled = True
+    await player.play(1.25)
+    held_ms = session.frames_held * 1000 // SECOND
+    assert 180 < held_ms < 240
+
+    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+    await _settle()
+
+    assert rig.session is not session
+    # 6 seconds ahead in what the player can decode, when it stopped taking its stream
+    told = f"it ran out of audio (prepared 4990 ms ahead with {held_ms} ms it can not decode yet, "
+    assert told in caplog.text
 
 
 async def test_an_underrun_is_answered_before_the_stream_is_restarted(rig: _Rig) -> None:
@@ -4158,7 +4795,9 @@ async def test_a_group_is_only_returned_to_after_a_reconnect(rig: _Rig, case: st
     await rig.manager.evaluate_bridge(rig.protocol)
     group = MagicMock(clients=[rig.sendspin_client, MagicMock()], add_client=AsyncMock())
     rig.sendspin_client.group = group
-    rig.mass.players.get_protocol.return_value = MagicMock(underlying_protocol_id=None)
+    rig.mass.players.get_protocol.return_value = MagicMock(
+        underlying_protocol_id=None, session_bit_depth=None
+    )
     if case == "solo":
         group.clients = [rig.sendspin_client]
     if case != "attached":

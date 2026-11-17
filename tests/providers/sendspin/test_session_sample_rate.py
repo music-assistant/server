@@ -8,12 +8,18 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from aiosendspin.models import AudioCodec
 from aiosendspin.models.core import ClientStatePayload
 from aiosendspin.models.player import PlayerStatePayload, SupportedAudioFormat
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.roles.player.v1 import PlayerPersistentState, PlayerV1Role
-from music_assistant_models.enums import ContentType, CrossfadeMode, MediaType
+from music_assistant_models.enums import (
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    VolumeNormalizationMode,
+)
 from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
@@ -54,8 +60,6 @@ _HAND_OVER_MODES = (
 _HAND_OVER_MODE_PAIRS = [(old, new) for old in _HAND_OVER_MODES for new in _HAND_OVER_MODES]
 
 if TYPE_CHECKING:
-    import pytest
-
     from music_assistant.models.player_protocol import PlayerProtocol
 
 PLAYER_ID = "client-1"
@@ -103,6 +107,40 @@ _MEMBER_SET_UPS: dict[
         ([FLAC_96K, FLAC_48K], SENDSPIN_FORMAT_AUTOMATIC, None),
     ],
 }
+
+
+@pytest.mark.parametrize(
+    ("blends_items", "mixes_overlay", "bit_depth"),
+    [(False, False, 16), (True, False, 24), (False, True, 24)],
+)
+async def test_session_that_mixes_audio_plays_in_all_the_bits(
+    monkeypatch: pytest.MonkeyPatch, blends_items: bool, mixes_overlay: bool, bit_depth: int
+) -> None:
+    """A session that blends its items or mixes an overlay in has more bits than a 16-bit item."""
+    flac_24 = SupportedAudioFormat(
+        codec=AudioCodec.FLAC, channels=2, sample_rate=44100, bit_depth=24
+    )
+    player, _ = _player([flac_24, FLAC_44K])
+    session = _session(player, sample_rate=44100)
+    assert session._start_streamdetails is not None
+    # nothing else works on the audio of the item
+    session._start_streamdetails.volume_normalization_mode = VolumeNormalizationMode.DISABLED
+    monkeypatch.setattr(
+        player.mass.streams.audio,
+        "_resolve_player_dsp_config",
+        lambda _player: MagicMock(enabled=False),
+    )
+    cast("MagicMock", player.mass).streams.flow_stream_blends_items.return_value = blends_items
+    monkeypatch.setattr(
+        "music_assistant.providers.sendspin.playback.overlay_mixed_in",
+        lambda *_args, **_kwargs: mixes_overlay,
+    )
+    media = PlayerMedia(uri="track-1", source_id="queue-1", queue_item_id="item-1")
+
+    session._start_mixes = session._get_start_mixes(media)
+    await session._follow_session_sample_rate([PLAYER_ID])
+
+    assert player.session_bit_depth == bit_depth
 
 
 async def test_session_follows_first_track_rate() -> None:

@@ -1457,6 +1457,9 @@ class SendspinPlayer(SendspinBasePlayer):
     _stop_taking_volume_reports: Callable[[], None] | None = None
     # sample rate an automatic Sendspin format follows, set by the last playback session
     _session_sample_rate: int | None = None
+    # bit depth a lossless output of that session has, None when it has no first item: a
+    # bridge reads it
+    session_bit_depth: int | None = None
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -1830,23 +1833,46 @@ class SendspinPlayer(SendspinBasePlayer):
                 abort_existing=True,
             )
 
-    async def follow_session_sample_rate(self, start_streamdetails: StreamDetails | None) -> None:
+    async def follow_session_sample_rate(
+        self,
+        start_streamdetails: StreamDetails | None,
+        *,
+        crossfade_enabled: bool = False,
+        overlay_active: bool = False,
+    ) -> None:
         """
         Match an automatic Sendspin format to the sample rate of a new playback session.
 
         The rate follows the player's sample rate setting for the first item of the session.
         Without a first item, the client's own default format is used.
-        An explicitly configured Sendspin format is left as is.
+        An explicitly configured Sendspin format keeps its sample rate; a bridge may play it
+        in fewer bits when the audio of the session has no more.
 
         :param start_streamdetails: Stream details of the first item of the session, if any.
+        :param crossfade_enabled: Whether the session blends the audio of its items.
+        :param overlay_active: Whether an audio overlay is mixed into the session.
         """
         if start_streamdetails is None:
             self._session_sample_rate = None
+            self.session_bit_depth = None
         else:
             pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
-                self, start_streamdetails=start_streamdetails
+                self,
+                start_streamdetails=start_streamdetails,
+                crossfade_enabled=crossfade_enabled,
+                overlay_active=overlay_active,
             )
             self._session_sample_rate = pcm_format.sample_rate
+            # the codec only stands for a lossless one here
+            output_format = await self.mass.streams.audio.get_output_format(
+                "flac",
+                self,
+                pcm_format.sample_rate,
+                pcm_format.bit_depth,
+                media_type=start_streamdetails.media_type,
+                source_bit_depth=start_streamdetails.audio_format.bit_depth,
+            )
+            self.session_bit_depth = output_format.bit_depth
         await self._apply_preferred_format()
 
     async def get_session_format(
