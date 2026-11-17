@@ -361,6 +361,16 @@ until the start-up time of the player is over, counted from the moment the plug 
   container of a virtual player.
 - Proven by: `test_power_control.py::test_a_play_switches_the_plug_on_and_waits_for_the_startup_time`
 
+### AWAY-34 · The play button shows the play while the speaker starts up
+
+Den's plug, which cuts its power, is off, and Den holds the track it played before. The play
+button is pressed: for the whole start-up time Den's queue shows that a play is in progress, so
+the button spins in the app. Once Den plays, it shows that no more.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_power_control.py::test_the_play_button_shows_the_play_while_the_speaker_starts_up`
+
 ### AWAY-26 · A plug that is switched on elsewhere lets the start-up time run as well
 
 Den's plug, which cuts its power, is off, and someone switches it on in Home Assistant. From that

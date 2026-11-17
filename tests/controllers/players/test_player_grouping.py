@@ -24,6 +24,7 @@ from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 
+from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
@@ -40,7 +41,6 @@ if TYPE_CHECKING:
     from collections.abc import Coroutine
 
     from music_assistant import MusicAssistant
-    from music_assistant.controllers.player_queues import PlayerQueuesController
     from music_assistant.models.player import Player
 
 
@@ -556,6 +556,8 @@ class _PlayingQueues:
 
     def _drop_pending_step(self, queue_id: str) -> None:
         """Hold no step to drop."""
+
+    _show_play_action = PlayerQueuesController._show_play_action
 
 
 @handle_play_action

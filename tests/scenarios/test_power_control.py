@@ -11,6 +11,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 
 from music_assistant.constants import (
+    ATTR_PLAY_ACTION_IN_PROGRESS,
     CONF_POWER_CONTROL_CUTS_POWER,
     CONF_POWER_ON_STARTUP_TIME,
     DEFAULT_POWER_ON_STARTUP_TIME,
@@ -184,6 +185,42 @@ async def test_a_play_switches_the_plug_on_and_waits_for_the_startup_time(
     assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
     assert (_starts(den), _starts(den_airplay)) == (1, 0)
     assert plug.commands == [True]
+    await _stop(scenario, player_id)
+
+
+async def test_the_play_button_shows_the_play_while_the_speaker_starts_up(
+    scenario: Scenario,
+) -> None:
+    """
+    The play button shows that a play is under way while the speaker starts up for it.
+
+    Den's plug, which cuts its power, is off, and Den holds the track it played before. The
+    play button is pressed: for the whole start-up time Den's queue shows that a play is in
+    progress, which makes the button spin in the app. Once Den plays, it shows that no more.
+    """
+    (den, den_airplay), plug, player_id = await _den(
+        scenario, ("sonos", "native"), ("airplay", "audio")
+    )
+    await scenario.play(player_id)
+    await _stop(scenario, player_id)
+    await _cut(scenario, plug, den, den_airplay)
+    queue = scenario.mass.player_queues.get(player_id)
+    assert queue is not None
+
+    press = await scenario.command(scenario.mass.players.cmd_play_pause(player_id))
+    await scenario.advance(5)
+    await _reach(scenario, den, den_airplay)
+    await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME - 6)
+
+    assert not press.done(), press.exception()
+    assert queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS) is True, (
+        "the queue does not show the play while Den starts up"
+    )
+    await scenario.advance(2)
+    await press
+    await scenario.idle()
+    assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
+    assert queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS) is False
     await _stop(scenario, player_id)
 
 
