@@ -357,6 +357,22 @@ class _Device:
         if not enabled and protocol.player is not None:
             await self.detach(protocol)
 
+    async def switch_output(self, client_id: str, enabled: bool) -> None:
+        """
+        Let the user switch a Sendspin output of the player on or off.
+
+        An output switched off is detached, which evaluates the bridges again; one switched
+        on is set up again through the protocol it rides on, as the Sendspin provider does.
+
+        :param client_id: The client id of the output.
+        :param enabled: Whether the output is switched on.
+        """
+        rides_on = self.rides_on(client_id)
+        await self.mass.config.save_protocol_config(client_id, {"enabled": enabled})
+        if enabled and rides_on is not None:
+            await evaluate_bridge_of(self.mass, rides_on)
+        await self.settle()
+
     async def detach(self, protocol: Any, *, settle: bool = True) -> None:
         """
         Detach a protocol from the player, as a disconnect or switching it off does.
@@ -814,10 +830,8 @@ async def test_an_earlier_bridge_takes_back_a_client_of_the_same_id(
     _assert_carried_by(device, SQUEEZELITE_CLIENT, protocols[returning].protocol_id)
 
 
-async def test_a_squeezelite_player_that_comes_and_goes_hands_a_client_of_the_same_id_with_cast() -> (
-    None
-):
-    """Squeezelite and Cast hand a client of the same id over in turn as squeezelite comes and goes."""
+async def test_squeezelite_takes_a_client_of_the_same_id_over_from_cast_and_keeps_it_away() -> None:
+    """Squeezelite takes the client of the same id over from Cast, and keeps it while away."""
     device = _Device(airplay=False, cast=True)
     # the output the Cast bridge carried before, so it is no first-time opt-in
     device.store_output(CAST_CLIENT, CAST_ID)
@@ -835,8 +849,10 @@ async def test_a_squeezelite_player_that_comes_and_goes_hands_a_client_of_the_sa
 
     await device.detach(device.squeezelite)
 
-    assert device.timeline == [("stopped", "squeezelite"), ("registered", "chromecast")]
-    _assert_carried_by(device, CAST_CLIENT, CAST_ID)
+    assert device.timeline == [("stopped", "squeezelite")]
+    assert device.manager_of(device.cast).get_bridge(CAST_ID) is None
+    assert device.configs[SQUEEZELITE_CLIENT] is output
+    assert device.rides_on(SQUEEZELITE_CLIENT) == SQUEEZELITE_ID
 
 
 @pytest.mark.parametrize("kind", ["squeezelite", "airplay", "chromecast"])
@@ -977,49 +993,43 @@ async def test_a_cast_bridge_whose_receiver_left_takes_its_client_along(warm: bo
 
 
 @pytest.mark.parametrize(
-    ("airplay_id", "airplay_client"),
-    [
-        pytest.param(AIRPLAY_ID, AIRPLAY_CLIENT, id="other id form"),
-        pytest.param(SAME_ID_AIRPLAY_ID, SQUEEZELITE_CLIENT, id="same id"),
-        pytest.param(
-            OTHER_INTERFACE_AIRPLAY_ID, OTHER_INTERFACE_AIRPLAY_CLIENT, id="other interface"
-        ),
-    ],
+    "airplay_id",
+    [AIRPLAY_ID, SAME_ID_AIRPLAY_ID, OTHER_INTERFACE_AIRPLAY_ID],
+    ids=["other id form", "same id", "other interface"],
 )
-async def test_a_squeezelite_player_that_is_away_leaves_the_device_to_airplay_until_it_returns(
-    airplay_id: str, airplay_client: str
-) -> None:
-    """AirPlay carries the output while the squeezelite player is away, and hands it back."""
+async def test_a_squeezelite_player_that_is_away_keeps_the_device(airplay_id: str) -> None:
+    """AirPlay does not take the device while its squeezelite player is away."""
     device = _Device(airplay_id=airplay_id)
     await _bridged(device, SQUEEZELITE_CLIENT)
+    output = device.configs[SQUEEZELITE_CLIENT]
+    device.timeline.clear()
 
     await device.detach(device.squeezelite)
 
-    _assert_carried_by(device, airplay_client, airplay_id)
+    assert device.manager_of(device.airplay).get_bridge(airplay_id) is None
+    assert device.configs[SQUEEZELITE_CLIENT] is output
+    assert device.rides_on(SQUEEZELITE_CLIENT) == SQUEEZELITE_ID
 
     await device.attach(device.squeezelite)
 
-    assert device.manager_of(device.airplay).get_bridge(airplay_id) is None
+    assert device.timeline == [("stopped", "squeezelite"), ("registered", "squeezelite")]
+    assert device.configs[SQUEEZELITE_CLIENT] is output
     _assert_carried_by(device, SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
 
 
 @pytest.mark.parametrize("first", ["airplay", "squeezelite"])
 @pytest.mark.parametrize(
-    ("airplay_id", "airplay_client"),
-    [
-        pytest.param(AIRPLAY_ID, AIRPLAY_CLIENT, id="other id form"),
-        pytest.param(SAME_ID_AIRPLAY_ID, SQUEEZELITE_CLIENT, id="same id"),
-        pytest.param(
-            OTHER_INTERFACE_AIRPLAY_ID, OTHER_INTERFACE_AIRPLAY_CLIENT, id="other interface"
-        ),
-    ],
+    "airplay_id",
+    [AIRPLAY_ID, SAME_ID_AIRPLAY_ID, OTHER_INTERFACE_AIRPLAY_ID],
+    ids=["other id form", "same id", "other interface"],
 )
-async def test_starting_up_with_both_known_ends_with_squeezelite_carrying_the_output(
-    first: str, airplay_id: str, airplay_client: str
+async def test_starting_up_keeps_the_output_of_squeezelite_whichever_protocol_comes_first(
+    first: str, airplay_id: str
 ) -> None:
-    """After a restart squeezelite carries the output, whichever protocol attaches first."""
+    """After a restart squeezelite carries its stored output, and AirPlay never registers."""
     device = _Device(airplay_id=airplay_id)
-    device.store_output(SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
+    device.store_output(SQUEEZELITE_CLIENT, SQUEEZELITE_ID, static_delay=120)
+    output = device.configs[SQUEEZELITE_CLIENT]
     first_protocol, second_protocol = (
         (device.airplay, device.squeezelite)
         if first == "airplay"
@@ -1028,15 +1038,13 @@ async def test_starting_up_with_both_known_ends_with_squeezelite_carrying_the_ou
 
     await device.attach(first_protocol)
 
-    _assert_carried_by(
-        device,
-        airplay_client if first == "airplay" else SQUEEZELITE_CLIENT,
-        first_protocol.protocol_id,
-    )
+    assert device.configs[SQUEEZELITE_CLIENT] is output
 
     await device.attach(second_protocol)
 
-    assert device.manager_of(device.airplay).get_bridge(airplay_id) is None
+    assert device.timeline == [("registered", "squeezelite")]
+    assert device.configs[SQUEEZELITE_CLIENT] is output
+    assert output["values"]["static_delay"] == 120
     _assert_carried_by(device, SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
 
 
@@ -1205,3 +1213,99 @@ async def test_the_bridges_of_a_device_found_on_players_of_their_own_settle_once
         )
         is not None
     ), "Sendspin lost the client of the bridge that carries the device"
+
+
+@pytest.mark.parametrize(
+    "switch", ["squeezelite output", "squeezelite provider", "sendspin output"]
+)
+async def test_switching_squeezelite_off_for_the_device_hands_it_to_airplay_and_back(
+    switch: str,
+) -> None:
+    """Each way the user switches squeezelite off hands the device to AirPlay, and back."""
+    device = _Device()
+    await _bridged(device, SQUEEZELITE_CLIENT)
+    squeezelite_provider = device.providers["squeezelite"]
+
+    if switch == "squeezelite output":
+        await device.switch(device.squeezelite, False)
+    elif switch == "squeezelite provider":
+        device.configs["providers/squeezelite"]["enabled"] = False
+        del device.providers["squeezelite"]
+        await device.detach(device.squeezelite)
+    else:
+        await device.switch_output(SQUEEZELITE_CLIENT, False)
+
+    assert device.manager_of(device.squeezelite).get_bridge(SQUEEZELITE_ID) is None
+    _assert_carried_by(device, AIRPLAY_CLIENT, AIRPLAY_ID)
+    if switch == "sendspin output":
+        # an output switched off keeps its settings
+        assert device.configs[SQUEEZELITE_CLIENT]["enabled"] is False
+
+    if switch == "squeezelite output":
+        await device.switch(device.squeezelite, True)
+        await device.attach(device.squeezelite)
+    elif switch == "squeezelite provider":
+        device.configs["providers/squeezelite"]["enabled"] = True
+        device.providers["squeezelite"] = squeezelite_provider
+        await device.attach(device.squeezelite)
+    else:
+        await device.switch_output(SQUEEZELITE_CLIENT, True)
+
+    assert device.manager_of(device.airplay).get_bridge(AIRPLAY_ID) is None
+    assert AIRPLAY_CLIENT not in device.configs
+    _assert_carried_by(device, SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
+
+
+async def test_switching_the_sendspin_output_of_airplay_off_hands_the_device_to_cast() -> None:
+    """The Sendspin output of AirPlay switched off hands the device to Cast, and back."""
+    device = _Device(squeezelite=False, cast=True)
+    await _bridged(device, AIRPLAY_CLIENT)
+
+    await device.switch_output(AIRPLAY_CLIENT, False)
+
+    assert device.manager_of(device.airplay).get_bridge(AIRPLAY_ID) is None
+    assert CAST_ID in device.bridges, "the Cast bridge was not set up"
+    device.bridges[CAST_ID].start.assert_awaited_once()
+    assert device.rides_on(CAST_CLIENT) == CAST_ID
+    # Sendspin over Cast is opt-in for an output that Cast registers for the first time
+    assert device.configs[CAST_CLIENT]["enabled"] is False
+
+    await device.switch_output(AIRPLAY_CLIENT, True)
+
+    assert device.manager_of(device.cast).get_bridge(CAST_ID) is None
+    _assert_carried_by(device, AIRPLAY_CLIENT, AIRPLAY_ID)
+
+
+@pytest.mark.parametrize("stored", [True, False], ids=["provider not loaded", "never bridged"])
+async def test_a_squeezelite_player_that_is_away_without_its_bridge_leaves_the_device_to_airplay(
+    stored: bool,
+) -> None:
+    """AirPlay carries a device whose squeezelite side has no provider loaded or never had a bridge."""
+    device = _Device()
+    if stored:
+        device.store_output(SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
+        del device.providers["squeezelite"]
+
+    await device.attach(device.airplay)
+
+    _assert_carried_by(device, AIRPLAY_CLIENT, AIRPLAY_ID)
+
+
+async def test_switching_off_the_output_of_a_squeezelite_player_that_is_away_hands_it_on() -> None:
+    """AirPlay takes the device whose away squeezelite output is switched off, which stays stored."""
+    device = _Device()
+    await _bridged(device, SQUEEZELITE_CLIENT)
+    await device.detach(device.squeezelite)
+    output = device.configs[SQUEEZELITE_CLIENT]
+
+    await device.switch_output(SQUEEZELITE_CLIENT, False)
+    # that takes effect at the next change of the outputs of the player, as at a restart
+    await device.attach(device.airplay)
+
+    _assert_carried_by(device, AIRPLAY_CLIENT, AIRPLAY_ID)
+    assert device.configs[SQUEEZELITE_CLIENT] is output, "the switched-off output was removed"
+
+    await device.attach(device.squeezelite)
+
+    assert device.manager_of(device.squeezelite).get_bridge(SQUEEZELITE_ID) is None
+    _assert_carried_by(device, AIRPLAY_CLIENT, AIRPLAY_ID)

@@ -6,14 +6,16 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import CONF_PROTOCOL_EXPERIMENTAL_NOTE, CONF_UNDERLYING_PLAYER_ID
+from music_assistant.controllers.config.players import PlayerConfigMixin
 from music_assistant.providers.airplay.sendspin_bridge import (
     SendspinBridgeManager as AirPlaySendspinBridgeManager,
 )
@@ -328,7 +330,7 @@ def _attach_squeezelite(
     """
     # the squeezelite manager looks up what it learned about a player before it bridges it
     mass.cache.get = AsyncMock(return_value=None)
-    provider = MagicMock(mass=mass, domain="squeezelite")
+    provider = MagicMock(mass=mass, domain="squeezelite", instance_id="squeezelite")
     provider.logger = logging.getLogger("test.squeezelite_bridge_manager")
     provider.bridge_manager = SqueezeliteSendspinBridgeManager(provider)
     mass.providers["squeezelite"] = provider
@@ -488,12 +490,28 @@ class _DualDevice:
         client_id = self.cast_manager._bridge_client_id(self.cast)
         assert client_id is not None
         self.client_id = client_id
-        self.configs: dict[str, Any] = {f"players/{PLAYER_ID}": {"enabled": True}}
+        self.configs: dict[str, Any] = {
+            f"players/{PLAYER_ID}": {"enabled": True},
+            "providers/squeezelite": {"enabled": True},
+            "providers/sendspin": {"enabled": True},
+            SQUEEZELITE_ID: {"provider": "squeezelite", "player_id": PLAYER_ID, "enabled": True},
+        }
+        mass.get_provider.return_value.instance_id = "sendspin"
         self._store_output(output_rides_on, enabled=output_enabled)
         mass.config.get = MagicMock(
             side_effect=lambda key, default=None: self.configs.get(key, default)
         )
         mass.config.get_protocol_record = MagicMock(side_effect=self.configs.get)
+        mass.config.get_protocol_ids_of_player = MagicMock(
+            side_effect=lambda player_id: [
+                protocol_id
+                for protocol_id, record in self.configs.items()
+                if "/" not in protocol_id and record.get("player_id") == player_id
+            ]
+        )
+        mass.config.is_protocol_switched_on = MethodType(
+            PlayerConfigMixin.is_protocol_switched_on, mass.config
+        )
         mass.config.get_protocol_value = MagicMock(side_effect=self._get_value)
         mass.config.set_protocol_value = MagicMock(side_effect=self._set_value)
         mass.config.save_protocol_config = AsyncMock(
@@ -508,6 +526,19 @@ class _DualDevice:
         )
         mass.players.remove_protocol = AsyncMock(side_effect=self._remove_protocol)
         self.squeezelite = _attach_squeezelite(mass, self.cast)
+        # the squeezelite output of the player, also while it is away
+        self.player.get_output_protocol_by_domain = MagicMock(
+            side_effect=lambda domain: (
+                OutputProtocol(
+                    output_protocol_id=SQUEEZELITE_ID,
+                    name="Squeezelite",
+                    protocol_domain="squeezelite",
+                    available=SQUEEZELITE_ID in self.attached,
+                )
+                if domain == "squeezelite"
+                else None
+            )
+        )
         self.squeezelite.player = None
         self.squeezelite._on_detach_callbacks = []
         # the protocols attached to the player, which the controller knows by id
@@ -627,6 +658,7 @@ class _DualDevice:
         """Store the Sendspin output of the bridge client, riding on a protocol."""
         self.configs[self.client_id] = {
             "enabled": enabled,
+            "provider": "sendspin",
             "player_id": PLAYER_ID,
             "values": {CONF_UNDERLYING_PLAYER_ID: rides_on},
         }
@@ -710,10 +742,8 @@ class TestSwitchedOffCastOutputMakesWayForSqueezelite:
 class TestOutputSwitchedOnWhileItsCarrierIsAway:
     """Tests for a Sendspin output switched on while the protocol it rides on is detached."""
 
-    async def test_the_cast_bridge_takes_the_output_of_a_squeezelite_player_that_is_away(
-        self,
-    ) -> None:
-        """Test the attached Cast protocol carries the output, until squeezelite returns."""
+    async def test_a_squeezelite_player_that_is_away_keeps_its_output(self) -> None:
+        """Test the Cast bridge leaves an output switched on for an away squeezelite player."""
         device = _DualDevice(output_rides_on=CAST_ID, output_enabled=True)
         await device.cast_manager.evaluate_bridge(device.cast)
         await device.attach(device.squeezelite)
@@ -727,12 +757,10 @@ class TestOutputSwitchedOnWhileItsCarrierIsAway:
         await device.switch_output(True)
         await device.settle()
 
-        assert device.cast_manager.get_bridge(CAST_ID) is device.cast_bridge
-        # the Cast bridge took the stored output over, switched on
+        assert not device.cast_manager._has_bridge(CAST_ID)
         assert device.configs[device.client_id] is output
-        assert device.rides_on() == CAST_ID
+        assert device.rides_on() == SQUEEZELITE_ID
         assert output["enabled"] is True
-        assert output["values"][CONF_PROTOCOL_EXPERIMENTAL_NOTE] == SENDSPIN_CAST_EXPERIMENTAL_NOTE
 
         await device.attach(device.squeezelite)
         await device.settle()

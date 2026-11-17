@@ -101,6 +101,8 @@ class _Environment:
         provider.get_protocol = lambda protocol_id: self.protocols.get(protocol_id)
         provider.logger = logging.getLogger("test.bridge_manager")
         self.provider = provider
+        # the player of the protocols, which lists the attached ones
+        self.player = MagicMock(player_id=PLAYER_ID, attached_protocols=self.protocols)
         self.manager = FakeBridgeManager(provider)
         provider.bridge_manager = self.manager
         self.protocol = self.attach(BASE_ID)
@@ -115,7 +117,7 @@ class _Environment:
         protocol.protocol_id = protocol_id
         protocol.display_name = "Test Player"
         protocol.provider = self.provider
-        protocol.player = MagicMock(player_id=PLAYER_ID)
+        protocol.player = self.player
         protocol._on_detach_callbacks = []
         self.protocols[protocol_id] = protocol
         self.provider.protocols = list(self.protocols.values())
@@ -413,3 +415,25 @@ async def test_a_bridge_that_fails_after_registering_takes_its_client_along() ->
     assert holder_at_stop == [BASE_ID], "the bridge did not hold its client when it was stopped"
     assert env.sendspin_provider.get_bridge_holder(CLIENT_ID) is None
     assert env.manager.get_bridge(BASE_ID) is None
+
+
+async def test_switching_an_output_evaluates_every_bridge_of_its_player_earliest_first() -> None:
+    """The bridges of all protocols of the player are evaluated, the earliest in the order first."""
+    evaluated: list[str] = []
+    protocols: dict[str, Any] = {}
+    player = MagicMock(attached_protocols=protocols)
+    for protocol_id, domain in (("cc", "chromecast"), ("ap", "airplay"), ("sq", "squeezelite")):
+        manager = MagicMock(spec=SendspinBridgeManagerBase)
+        manager.evaluate_bridge = AsyncMock(
+            side_effect=lambda protocol: evaluated.append(protocol.provider.domain)
+        )
+        provider = MagicMock(domain=domain, bridge_manager=manager)
+        protocols[protocol_id] = MagicMock(
+            protocol_id=protocol_id, provider=provider, player=player
+        )
+    mass = MagicMock()
+    mass.players.get_protocol = MagicMock(side_effect=protocols.get)
+
+    await evaluate_bridge_of(mass, "cc")
+
+    assert evaluated == ["squeezelite", "airplay", "chromecast"]
