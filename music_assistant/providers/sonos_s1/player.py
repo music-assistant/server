@@ -15,11 +15,13 @@ from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import (
+    ChannelLayout,
     IdentifierType,
     MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerState,
+    PlayerType,
 )
 from music_assistant_models.errors import PlayerCommandFailed
 from soco import SoCoException
@@ -33,6 +35,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
+from music_assistant.providers.sonos.helpers import get_channel_layout
 
 from .constants import (
     AVAILABILITY_TIMEOUT,
@@ -134,6 +137,7 @@ class SonosPlayer(PlayerProtocol):
             """Read the initial state from the speaker (NOT async friendly)."""
             self._attr_volume_level = self.soco.volume
             self._attr_volume_muted = self.soco.mute
+            self._set_channel_layout(self._read_channel_layout())
             self.update_groups()
             if not self.synced_to:
                 self.poll_media()
@@ -578,6 +582,10 @@ class SonosPlayer(PlayerProtocol):
                 if self.soco.uid == group[0]:
                     _regroup(group)
                     _provider.topology_condition.notify_all()
+            with contextlib.suppress(OSError, SoCoException):
+                layout = await asyncio.to_thread(self._read_channel_layout)
+                if self._set_channel_layout(layout):
+                    self.update_state()
 
         return _handle_group_event(event)
 
@@ -654,6 +662,31 @@ class SonosPlayer(PlayerProtocol):
 
         # Format as XX:XX:XX:XX:XX:XX
         return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
+
+    def _read_channel_layout(self) -> ChannelLayout | None:
+        """Return the channel layout of the speakers bonded into this player (NOT async friendly)."""
+        if self.soco.is_soundbar:
+            if not self.soco.has_satellites:
+                return None
+            # the satellites of a soundbar or an Amp are its subwoofer and its surrounds, and
+            # SoCo only tells the subwoofer (and reports one for every Amp)
+            if self.soco.has_subwoofer:
+                return ChannelLayout.UNKNOWN
+            return get_channel_layout(3, paired=False, surrounds=True, subwoofer=False)
+        # SoCo does not tell a speaker alone from a stereo pair
+        return ChannelLayout.UNKNOWN if self.soco.has_subwoofer else None
+
+    def _set_channel_layout(self, layout: ChannelLayout | None) -> bool:
+        """
+        Set the channel layout and the type that goes with it, return whether it changed.
+
+        :param layout: The channel layout, None when the player is no set of speakers.
+        """
+        if layout == self._attr_channel_layout:
+            return False
+        self._attr_channel_layout = layout
+        self._attr_type = PlayerType.PLAYER if layout is None else PlayerType.MULTI_CHANNEL
+        return True
 
     async def _check_availability(self) -> None:
         """Check if the player is still available."""
