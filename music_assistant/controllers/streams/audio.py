@@ -3641,6 +3641,22 @@ class StreamsAudio:
         """
         return any(self._claim_holds(claim, queue_item) for claim in self._item_claims)
 
+    def claim_item(self, queue_item: QueueItem, session_id: str, name: str) -> Callable[[], None]:
+        """
+        Claim a queue item for a consumer that decided to play it, before it reads any of it.
+
+        Until the claim ends the item's audio is kept for the playback session of its queue,
+        whatever the queue plays now or next.
+
+        :param queue_item: The queue item the consumer decided to play.
+        :param session_id: The playback session the consumer plays in.
+        :param name: Who claims, for log lines.
+        :return: Ends the claim. To be called exactly once, however the consumer ends.
+        """
+        claim = _ItemClaim(name, session_id)
+        self._claim_item(claim, queue_item)
+        return partial(self._claim_item, claim, None)
+
     def get_stream_providers(
         self, mapping: ProviderMapping, allowed: list[str] | None
     ) -> list[Provider]:

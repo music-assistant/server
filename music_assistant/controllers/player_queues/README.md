@@ -238,7 +238,9 @@ A buffer that still fills holds one of its provider's stream slots, and it knows
 waits for its first audio and every stream that is open on it (a speaker's request, a direct PCM
 consumer, the flow stream and the fade-in it collects ahead of time, a fade into the next track). A
 stream also claims the item it decided to play, from before it has any of the item's audio: an item
-stream for as long as it runs, a flow stream from the moment it selects its next track. The claim is
+stream for as long as it runs, a flow stream from the moment it selects its next track. A speaker's
+request for an item claims it from the moment it is accepted until it ends, so a queue change while
+the request is still being set up leaves the track the speaker asked for alone. The claim is
 on the item, so it holds whichever buffer the item has or gets, and every stream takes its own claim
 away when it ends. A claim holds its item only for the playback session its stream is part of: once
 the queue stopped or started over, or was transferred to another player (which gets the same items

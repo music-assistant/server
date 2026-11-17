@@ -1026,6 +1026,15 @@ class StreamsController(CoreController):
         # open (gating some players' cutover) until the player times it out
         stream_entry = (session_id, request)
         self._open_item_streams.setdefault(queue_id, []).append(stream_entry)
+        # the player decided to play this item, so its queue keeps the item's audio from
+        # here on, also when a queue change during the setup below makes another item next
+        end_item_claim = (
+            self.audio.claim_item(
+                queue_item, session_id, f"request of {player.display_name} for {queue_item.name}"
+            )
+            if request.method == "GET"
+            else None
+        )
         try:
             if pq_data.session_id != session_id:
                 # rotated between the validation above and the registration: the
@@ -1385,6 +1394,8 @@ class StreamsController(CoreController):
                 )
             return resp
         finally:
+            if end_item_claim is not None:
+                end_item_claim()
             # read while this request is still registered: only what the player asked for
             # after it tells whether the player moved on from this track
             newer_item_ids = self._requested_item_ids(queue_id, session_id, after=stream_entry)
