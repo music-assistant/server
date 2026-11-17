@@ -269,12 +269,14 @@ async def test_a_slot_given_back_stays_reserved_for_its_queue() -> None:
     assert granted == ["source"]
     # no source is open, though the slot is spoken for
     assert provider.has_available_stream_slot
+    assert provider.stream_slot_reservations == ("queue_a",)
     # the queue it is kept for takes it without waiting, and with that the slot is an
     # ordinary one again
     async with provider.acquire_stream_slot(0, queue_id="queue_a"):
         granted.append("next source")
     await asyncio.wait_for(other, 1)
     assert granted == ["source", "next source", "other"]
+    assert not provider.stream_slot_reservations
 
 
 async def test_a_slot_is_only_kept_when_its_taker_says_so() -> None:

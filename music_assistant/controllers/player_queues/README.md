@@ -272,14 +272,22 @@ replace and the start of an item do not ask for users or claims.
 
 A source that delivers at playback pace holds its provider's slot for as long as its track plays.
 When such a source gives the slot back and the playback session of its queue goes on with that
-provider (a track the queue plays now or next, or one a stream of that session claims, still gets
-audio from there), the slot stays reserved for that queue for a few seconds. The queue's next source
-takes it at once; to every other taker, a preview or another queue, it is taken that much longer.
-So a queue that moves to its next track, skips or seeks does not lose its stream to a queue that
-asks in that moment. The other one waits within its own budget and gets the slot when the
-reservation lapses, or the refusal it gets at any other moment of the track. Nothing is reserved
-after the last track of a queue, when the next track comes from another provider, for a source that
-loads ahead of playback, or once the session ended; the end of a session also ends its reservation.
+provider, the slot stays reserved for that queue for a few seconds, and the queue's next source
+takes it at once. The queue goes on with a provider when the track its player fetches or a start is
+loading, the track after it, or a track a stream of that session claims still gets audio from there:
+a track without a source yet, without audio, or with audio that still arrives. The track the source
+was for only counts once its buffer was taken off it (a seek, a restart, a replace), so not after it
+delivered everything or broke off. So a queue that moves to its next track, skips, seeks or replaces
+its tracks does not lose its stream to a queue that asks in that moment. To another queue that
+starts, a reserved slot is held by the queue it is reserved for, as while that queue's source is
+open: the start is refused at once, naming the player to a user who may control it. A preview or a
+track that is prepared ahead of time waits within its own budget and gets the slot when the
+reservation lapses. Nothing is reserved after the last track of a queue, when the tracks the queue
+goes on with come from another provider, for a source that loads ahead of playback, for a paused
+queue, or without a session. A reservation ends when its queue is paused (when its player reports
+the pause, which is also when a paused queue starts to hand its slot over), when its session ends,
+and when a start has loaded its track without using it: a replace gives its old audio up before the
+new tracks are on the queue, so what it reserved lasts until the first of them has loaded.
 
 A paused queue keeps its session and its buffers until the pause watcher stops it once the
 configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread

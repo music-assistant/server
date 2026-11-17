@@ -912,20 +912,20 @@ class StreamsAudio:
         # resolve the exact owning instance (even when flagged unavailable) so the
         # slot is charged to the account that issued the streamdetails
         provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
-        delivered = False
-
-        def _keeps_slot() -> bool:
-            # asked when the slot goes back: the queue of the buffer may go on with the
-            # provider, and then finds the slot there for its next source
-            return slot_holder is not None and self.mass.player_queues.keeps_stream_slot(
-                slot_holder, streamdetails.provider, delivered
-            )
-
         # taken for the queue the audio is for, to which a slot kept for it is free
         queue_id = slot_holder.queue_id if slot_holder is not None else streamdetails.queue_id
         stream_slot = (
             provider.acquire_stream_slot(
-                source_wait_timeout, slot_holder, queue_id=queue_id, reserve=_keeps_slot
+                source_wait_timeout,
+                slot_holder,
+                queue_id=queue_id,
+                # asked when the slot goes back: the queue of the buffer may go on with the
+                # provider, and then finds the slot there for its next source
+                reserve=partial(
+                    self.mass.player_queues.keeps_stream_slot, slot_holder, streamdetails.provider
+                )
+                if slot_holder is not None
+                else None,
             )
             if isinstance(provider, MusicProvider)
             else nullcontext()
@@ -937,7 +937,6 @@ class StreamsAudio:
                 return
             async for chunk in media_stream:
                 yield chunk
-            delivered = True
 
     async def resolve_radio_stream(self, url: str) -> tuple[str, StreamType]:
         """
@@ -4311,7 +4310,10 @@ class StreamsAudio:
                 # a realtime source keeps its slot until its item ends, so the budget would
                 # run out with nothing to show for it: refuse right away instead
                 self.mass.player_queues.refuse_held_stream_slot(
-                    streamdetails.provider, queue_item.queue_id
+                    streamdetails.provider,
+                    queue_item.queue_id,
+                    # a track that is prepared ahead of time waits a reservation out
+                    behind_reservation=stop_paused_queues,
                 )
             source_wait = remaining if last_resort else 0.0
             # record whose audio this is before it exists: a queue stop releases only the

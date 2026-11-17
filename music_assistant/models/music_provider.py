@@ -279,6 +279,11 @@ class _StreamSlots:
         """Return whether fewer slots are taken than there are."""
         return self._taken < self._limit
 
+    @property
+    def reserved_for(self) -> tuple[str, ...]:
+        """Return the queues a slot is reserved for."""
+        return tuple(self._reservations)
+
     async def take(self, queue_id: str | None) -> None:
         """
         Take a slot, waiting until one is free for the given queue.
@@ -444,6 +449,11 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
     def stream_slot_holders(self) -> tuple[AudioBuffer, ...]:
         """Return the audio buffers whose sources hold a source-stream slot right now."""
         return tuple(self._stream_slot_holders)
+
+    @property
+    def stream_slot_reservations(self) -> tuple[str, ...]:
+        """Return the queues a source-stream slot is reserved for right now."""
+        return tuple(self._stream_slots.reserved_for) if self._stream_slots is not None else ()
 
     @asynccontextmanager
     async def acquire_stream_slot(

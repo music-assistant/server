@@ -177,9 +177,13 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         queue.items = len(self._queue_data[queue_id].items)
 
+        was_paused = queue.state == PlaybackState.PAUSED
         queue.state = (
             player.playback_state or PlaybackState.IDLE if queue.active else PlaybackState.IDLE
         )
+        if queue.state == PlaybackState.PAUSED and not was_paused:
+            # a paused queue hands its stream slot over instead of keeping one reserved
+            self._end_stream_slot_reservations(queue_id)
         # update current item/index from player report
         if not self._update_current_index_from_player(queue, player):
             return
