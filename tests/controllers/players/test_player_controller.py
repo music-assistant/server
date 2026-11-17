@@ -3791,7 +3791,7 @@ class TestOfflinePowerControl:
 
         await getattr(controller, command)("player_1")
         async with asyncio.timeout(1.5):
-            with pytest.raises(PlayerUnavailableError, match="switched off"):
+            with pytest.raises(PlayerUnavailableError, match="was called off"):
                 await pending
 
         controller._handle_play_media.assert_not_awaited()
@@ -3888,7 +3888,7 @@ class TestOfflinePowerControl:
 
         await getattr(queues, action)("player_1")
         async with asyncio.timeout(1.5):
-            with pytest.raises(PlayerUnavailableError, match="switched off"):
+            with pytest.raises(PlayerUnavailableError, match="was called off"):
                 await pending
 
         queues.play_index.assert_not_awaited()
