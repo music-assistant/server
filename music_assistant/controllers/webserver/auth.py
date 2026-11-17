@@ -19,10 +19,12 @@ from music_assistant_models.auth import (
     AuthToken,
     Role,
     Scope,
+    SignInMethod,
     User,
     UserAuthProvider,
     UserRole,
 )
+from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
     AuthenticationFailed,
     AuthenticationRequired,
@@ -75,6 +77,7 @@ from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.jwt_auth import JWTHelper
 from music_assistant.helpers.provider_access import own_music_sources, with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
+from music_assistant.models.auth_provider import AuthProvider
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -390,6 +393,8 @@ class AuthenticationManager:
         :param provider_user_id: The user ID from the provider.
         :param include_disabled: Also return a disabled user.
         """
+        if provider_type == AuthProviderType.UNKNOWN:
+            return None
         link_row = await self.database.get_row(
             "user_auth_providers",
             {
@@ -552,7 +557,10 @@ class AuthenticationManager:
         :param user: The user to link.
         :param provider_type: The provider type.
         :param provider_user_id: The user ID from the provider (e.g., password hash, OAuth ID).
+        :raises InvalidDataError: If the provider type is unknown.
         """
+        if provider_type == AuthProviderType.UNKNOWN:
+            raise InvalidDataError("Can not link a user to an unknown auth provider type")
         # Check if a link already exists for this provider/provider_user_id
         existing_link = await self.database.get_row(
             "user_auth_providers",
@@ -567,7 +575,7 @@ class AuthenticationManager:
             return UserAuthProvider(
                 link_id=existing_link["link_id"],
                 user_id=existing_link["user_id"],
-                provider_type=AuthProviderType(existing_link["provider_type"]),
+                provider_type=provider_type,
                 provider_user_id=existing_link["provider_user_id"],
                 created_at=datetime.fromisoformat(existing_link["created_at"]),
             )
@@ -1006,6 +1014,30 @@ class AuthenticationManager:
                 }
             )
         return providers
+
+    def get_sign_in_methods(self) -> list[SignInMethod]:
+        """Return the sign-in methods of the loaded auth providers."""
+        # registered providers rather than initialized ones: signing in needs none of the API
+        # commands loaded_in_mass() registers, and the startup awaits registration only
+        return [
+            provider.get_sign_in_method()
+            for provider in self.mass.providers
+            if isinstance(provider, AuthProvider) and provider.available and not provider.unloading
+        ]
+
+    def on_auth_provider_changed(self, instance_id: str, loaded: bool) -> None:
+        """
+        Handle an auth provider that was loaded or unloaded.
+
+        :param instance_id: The instance id of the auth provider.
+        :param loaded: True if the provider was loaded, False if it was unloaded.
+        """
+        if not loaded:
+            # a sign-in started with a provider that is gone can no longer complete
+            self.pending_logins.drop_provider(instance_id)
+        # carries no data: websocket clients only receive events once authenticated, and
+        # the methods are fetched by the login page itself
+        self.mass.signal_event(EventType.AUTH_SIGNIN_METHODS_UPDATED)
 
     @api_command("auth/login", authenticated=False)
     async def login(
@@ -1825,8 +1857,9 @@ class AuthenticationManager:
         rows = await self.database.get_rows("user_auth_providers", {"user_id": user.user_id})
         providers = [UserAuthProvider.from_dict(dict(row)) for row in rows]
         for provider in providers:
-            # the builtin link stores the password hash as its provider user id
-            if provider.provider_type == AuthProviderType.BUILTIN:
+            # the builtin link stores the password hash as its provider user id, and a link
+            # of a type this server does not know may hold a credential just as well
+            if provider.provider_type in (AuthProviderType.BUILTIN, AuthProviderType.UNKNOWN):
                 provider.provider_user_id = ""
         return [p.to_dict() for p in providers]
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, overload
 
 from .audio_analysis_provider import AudioAnalysisProvider
+from .auth_provider import AuthProvider
 from .metadata_provider import MetadataProvider
 from .music_provider import MusicProvider
 from .player_provider import PlayerProvider
@@ -19,7 +20,12 @@ if TYPE_CHECKING:
 
 
 ProviderInstanceType = (
-    AudioAnalysisProvider | MetadataProvider | MusicProvider | PlayerProvider | PluginProvider
+    AudioAnalysisProvider
+    | AuthProvider
+    | MetadataProvider
+    | MusicProvider
+    | PlayerProvider
+    | PluginProvider
 )
 
 
