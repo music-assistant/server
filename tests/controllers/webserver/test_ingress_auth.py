@@ -35,6 +35,7 @@ from music_assistant.controllers.webserver.helpers import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
+    set_current_peer_address,
     set_current_user,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
@@ -224,6 +225,7 @@ async def _ha_login_callback(
         AuthTransport.DIRECT,
         "http://ma.local:8095/auth/callback",
         idp_code_verifier="login_verifier",
+        key="peer:192.0.2.1",
     )
     hass_provider = _ready_hass_provider(mass, ha_user_id, admin=False, details=details)
     with (
@@ -811,6 +813,7 @@ async def test_ha_login_callback_refuses_a_sign_in_that_returns_to_the_app(
         redirect_target="app",
         client_code_challenge="x" * 43,
         idp_code_verifier="login_verifier",
+        key="remote:session",
     )
 
     get_token = AsyncMock(return_value={"access_token": "ha_token"})
@@ -831,6 +834,7 @@ async def test_ha_login_callback_refuses_a_malformed_code(
         AuthTransport.DIRECT,
         "http://ma.local:8095/auth/callback?provider_id=homeassistant",
         idp_code_verifier="login_verifier",
+        key="peer:192.0.2.1",
     )
 
     get_token = AsyncMock(return_value={"access_token": "ha_token"})
@@ -856,10 +860,16 @@ async def test_starting_a_ha_login_drops_expired_ones(auth_manager: Authenticati
 
 async def test_pending_ha_logins_are_capped(auth_manager: AuthenticationManager) -> None:
     """Starting a HA login beyond the limit is refused and keeps the pending ones valid."""
-    states = [await _start_ha_login(auth_manager) for _ in range(MAX_PENDING_LOGINS)]
-
-    with pytest.raises(RateLimited):
-        await auth_manager.get_authorization_url("homeassistant")
+    try:
+        states = [
+            await _start_ha_login(auth_manager, f"192.0.2.{index}")
+            for index in range(MAX_PENDING_LOGINS)
+        ]
+        set_current_peer_address("192.0.2.200")
+        with pytest.raises(RateLimited):
+            await auth_manager.get_authorization_url("homeassistant")
+    finally:
+        set_current_peer_address(None)
     assert list(auth_manager.pending_logins._pending) == states
 
     get_token = AsyncMock(return_value={})
@@ -880,11 +890,13 @@ async def test_concurrent_ha_logins_stay_within_the_limit(
         await ha_answers.wait()
         return "http://ha.local:8123"
 
+    starts = []
     with patch.object(provider, "_get_external_ha_url", slow_ha_url):
-        starts = [
-            asyncio.create_task(auth_manager.get_authorization_url("homeassistant"))
-            for _ in range(MAX_PENDING_LOGINS + 10)
-        ]
+        for index in range(MAX_PENDING_LOGINS + 10):
+            # each task copies the context, and with it the peer address set for it
+            set_current_peer_address(f"192.0.2.{index}")
+            starts.append(asyncio.create_task(auth_manager.get_authorization_url("homeassistant")))
+        set_current_peer_address(None)
         await asyncio.sleep(0)
         ha_answers.set()
         results = await asyncio.gather(*starts, return_exceptions=True)
@@ -957,6 +969,7 @@ async def test_ha_login_for_the_remote_app_needs_a_public_home_assistant_url(
         redirect_target="app",
         client_code_challenge="c" * 43,
         idp_code_verifier="ha_verifier",
+        key="remote:session",
     )
 
     with patch.object(mass, "get_provider", return_value=_connected_hass_provider(network_urls)):
@@ -1059,6 +1072,7 @@ async def test_ha_login_exchange_refuses_a_user_that_may_not_sign_in(
         redirect_target="app",
         client_code_challenge=pkce_challenge(verifier),
         idp_code_verifier="ha_verifier",
+        key="remote:session",
     )
     hass_provider = _ready_hass_provider(
         mass, "ha_alice", admin=False, details=("alice", None, None)
@@ -1121,14 +1135,17 @@ def _register_oauth_provider(auth_manager: AuthenticationManager) -> HomeAssista
     return provider
 
 
-async def _start_ha_login(auth_manager: AuthenticationManager) -> str:
+async def _start_ha_login(auth_manager: AuthenticationManager, peer: str | None = None) -> str:
     """
     Start a HA login and return its OAuth state.
 
     :param auth_manager: The authentication manager to start the login with.
+    :param peer: The address the login is started from, if not the current one.
     """
     if "homeassistant" not in auth_manager.login_providers:
         _register_oauth_provider(auth_manager)
+    if peer:
+        set_current_peer_address(peer)
     started = await auth_manager.get_authorization_url("homeassistant")
     assert started is not None
     return parse_qs(urlparse(started[0]).query)["state"][0]

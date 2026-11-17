@@ -5,6 +5,7 @@ import hashlib
 import logging
 import pathlib
 import threading
+import time
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -24,6 +25,7 @@ from music_assistant_models.errors import (
     AuthenticationFailed,
     InsufficientPermissions,
     InvalidDataError,
+    RateLimited,
     UserNotFoundError,
 )
 from music_assistant_models.translations import TRANSLATION_RESOLVER
@@ -51,6 +53,7 @@ from music_assistant.controllers.webserver.auth import (
     _mask_join_code,
 )
 from music_assistant.controllers.webserver.controller import WebserverController
+from music_assistant.controllers.webserver.helpers import login_flow
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ImpersonatedUser,
     get_current_user,
@@ -70,6 +73,8 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     LoginRateLimiter,
 )
 from music_assistant.controllers.webserver.helpers.login_flow import (
+    SIGN_IN_START_BURST,
+    SIGN_IN_START_REFILL_SECONDS,
     AuthTransport,
     PendingLogin,
 )
@@ -1471,6 +1476,54 @@ async def test_get_login_providers_ha_provider_without_url(
     assert not any(p["provider_id"] == "homeassistant" for p in providers)
 
 
+async def test_password_failures_from_one_peer_do_not_lock_out_another(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Failed passwords throttle the user only from the peer they came from."""
+    builtin_provider = auth_manager.login_providers["builtin"]
+    assert isinstance(builtin_provider, BuiltinLoginProvider)
+    await builtin_provider.create_user_with_password("victim", "right_password", UserRole.USER)
+
+    async def login(peer: str, password: str) -> AuthResult:
+        set_current_peer_address(peer)
+        return await auth_manager.authenticate_with_credentials(
+            "builtin", {"username": "victim", "password": password}
+        )
+
+    try:
+        for _ in range(3):
+            assert (await login("192.0.2.66", "wrong")).translation_key == "login_failed"
+        throttled = await login("192.0.2.66", "right_password")
+        other_peer = await login("192.0.2.10", "right_password")
+    finally:
+        set_current_peer_address(None)
+
+    assert throttled.success is False
+    assert throttled.translation_key == "rate_limited"
+    assert other_peer.success is True
+
+
+@pytest.mark.usefixtures("oauth_provider")
+async def test_sign_in_starts_are_throttled_per_source(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """A source that started a burst of sign-ins is refused until its bucket refills."""
+    try:
+        set_current_peer_address("192.0.2.66")
+        for _ in range(SIGN_IN_START_BURST):
+            assert await auth_manager.get_authorization_url("oauth")
+        with pytest.raises(RateLimited):
+            await auth_manager.get_authorization_url("oauth")
+        set_current_peer_address("192.0.2.10")
+        assert await auth_manager.get_authorization_url("oauth")
+        set_current_peer_address("192.0.2.66")
+        later = MagicMock(monotonic=lambda: time.monotonic() + SIGN_IN_START_REFILL_SECONDS)
+        with patch.object(login_flow, "time", later):
+            assert await auth_manager.get_authorization_url("oauth")
+    finally:
+        set_current_peer_address(None)
+
+
 @pytest.fixture
 def oauth_provider(auth_manager: AuthenticationManager) -> MagicMock:
     """
@@ -1815,6 +1868,7 @@ async def test_exchange_refuses_an_invalid_sign_in(
         "oauth",
         AuthTransport.REMOTE,
         "https://app.music-assistant.io/auth/callback/",
+        key="remote:session",
         redirect_target="app" if redirect_target == "app" else "server",
         client_code_challenge=CLIENT_CHALLENGE,
         idp_code_verifier="idp_verifier",
@@ -2021,6 +2075,7 @@ def _start_app_sign_in(auth_manager: AuthenticationManager) -> PendingLogin:
         "oauth",
         AuthTransport.REMOTE,
         "https://app.music-assistant.io/auth/callback/",
+        key="remote:session",
         redirect_target="app",
         client_code_challenge=CLIENT_CHALLENGE,
         idp_code_verifier="idp_verifier",

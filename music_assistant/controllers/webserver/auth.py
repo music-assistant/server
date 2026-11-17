@@ -61,11 +61,17 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
 )
 from music_assistant.controllers.webserver.helpers.login_flow import (
     AUTH_CODE_RE,
+    FAILED_SIGN_IN_BURST,
+    FAILED_SIGN_IN_REFILL_SECONDS,
     PKCE_CHALLENGE_RE,
+    SIGN_IN_START_BURST,
+    SIGN_IN_START_REFILL_SECONDS,
     AuthTransport,
     PendingLogin,
     PendingLoginStore,
     RedirectTarget,
+    SourceRateLimiter,
+    source_key,
     verify_pkce,
 )
 from music_assistant.helpers.api import api_command
@@ -158,6 +164,13 @@ class AuthenticationManager:
         self._join_code_exchange_lock = asyncio.Lock()
         self.pending_logins = PendingLoginStore()
         self._auth_exchange_rate_limiter = LoginRateLimiter(subject="client")
+        self._sign_in_start_limiter = SourceRateLimiter(
+            SIGN_IN_START_BURST, SIGN_IN_START_REFILL_SECONDS
+        )
+        # counts callbacks with an unknown or expired state and failed auth/exchange calls
+        self._failed_sign_in_limiter = SourceRateLimiter(
+            FAILED_SIGN_IN_BURST, FAILED_SIGN_IN_REFILL_SECONDS
+        )
         # Serialises the read-modify-write of the user access filters
         self._user_filter_lock = asyncio.Lock()
         self._custom_roles: dict[str, Role] = {}
@@ -220,6 +233,12 @@ class AuthenticationManager:
             return AuthResult(success=False, error="Invalid provider")
 
         return await provider.authenticate(credentials)
+
+    def get_calling_source_key(self) -> str:
+        """Return the source that sign-in limits count the current request against."""
+        if client := self._get_calling_client():
+            return client.source_key
+        return source_key(get_current_peer_address())
 
     async def authenticate_with_token(self, token: str) -> User | None:
         """
@@ -1194,11 +1213,15 @@ class AuthenticationManager:
         :param code_challenge: The client's (validated) PKCE S256 code challenge, if any.
         :return: The authorization URL and the started sign-in, or None when the provider
             does not exist, needs no redirect or is not reachable.
-        :raises RateLimited: If too many sign-ins are pending.
+        :raises RateLimited: If too many sign-ins are pending, or the client started too many.
         """
         provider = self.login_providers.get(provider_id)
         if not provider or not provider.requires_redirect:
             return None
+        source = self.get_calling_source_key()
+        if not self._sign_in_start_limiter.take(source):
+            self.logger.warning("Sign-in start throttled (source=%s)", source)
+            raise RateLimited("Too many sign-ins were started, try again later")
 
         callback_base_url = self.webserver.get_auth_callback_base(
             transport,
@@ -1215,6 +1238,7 @@ class AuthenticationManager:
             provider_id,
             transport,
             redirect_uri,
+            key=source,
             redirect_target=redirect_target,
             return_url=return_url,
             client_code_challenge=code_challenge,
@@ -1235,12 +1259,19 @@ class AuthenticationManager:
         :param provider_id: The provider ID.
         :param code: OAuth authorization code.
         :param state: OAuth state parameter.
+        :raises RateLimited: If the client returned with too many unknown or expired states.
         """
         provider = self.login_providers.get(provider_id)
         if not provider:
             return AuthResult(success=False, error="Invalid provider")
 
+        source = self.get_calling_source_key()
+        if not self._failed_sign_in_limiter.allows(source):
+            self.logger.warning("Sign-in callback throttled (source=%s)", source)
+            raise RateLimited("Too many failed sign-ins, try again later")
         pending = self.pending_logins.pop(state)
+        if pending is None:
+            self._failed_sign_in_limiter.take(source)
         # a sign-in that returns to the app is completed by the app itself (auth/exchange)
         if not pending or pending.provider_id != provider_id or pending.redirect_target != "server":
             return AuthResult(success=False, error="Invalid or expired state parameter")
@@ -1271,6 +1302,12 @@ class AuthenticationManager:
         allowed, remaining_delay = await self._auth_exchange_rate_limiter.check_rate_limit(
             rate_limit_key
         )
+        source = self.get_calling_source_key()
+        if not self._failed_sign_in_limiter.allows(source):
+            self.logger.warning("Sign-in exchange throttled (source=%s)", source)
+            return AuthFailure(
+                "Too many failed sign-ins, try again later", RateLimited.translation_key
+            )
         if not allowed:
             self.logger.warning(
                 "Sign-in exchange throttled (client=%s). %d seconds remaining.",
@@ -1288,6 +1325,7 @@ class AuthenticationManager:
             )
         except AuthenticationFailed as err:
             await self._auth_exchange_rate_limiter.record_failed_attempt(rate_limit_key)
+            self._failed_sign_in_limiter.take(source)
             self.logger.warning("Sign-in exchange failed: %s", err)
             return AuthFailure(str(err), err.translation_key, err.translation_args)
         if key_is_exclusive:

@@ -513,13 +513,15 @@ class BuiltinLoginProvider(LoginProvider):
             return AuthResult(success=False, error="Username and password required")
 
         username = normalize_username(username)
+        # failures from one source must not delay the same user signing in from another
+        rate_limit_key = f"{username} from {self.auth_manager.get_calling_source_key()}"
 
         # Check rate limit before attempting authentication
-        allowed, remaining_delay = await self._rate_limiter.check_rate_limit(username)
+        allowed, remaining_delay = await self._rate_limiter.check_rate_limit(rate_limit_key)
         if not allowed:
             self.logger.warning(
-                "Rate limit exceeded for username '%s'. %d seconds remaining.",
-                username,
+                "Rate limit exceeded for '%s'. %d seconds remaining.",
+                rate_limit_key,
                 remaining_delay,
             )
             return AuthResult(
@@ -543,7 +545,7 @@ class BuiltinLoginProvider(LoginProvider):
 
         if not user_row or not user:
             # Record failed attempt
-            await self._rate_limiter.record_failed_attempt(username)
+            await self._rate_limiter.record_failed_attempt(rate_limit_key)
             return AuthResult(
                 success=False,
                 error="Invalid username or password",
@@ -553,7 +555,7 @@ class BuiltinLoginProvider(LoginProvider):
         # Check if user is enabled
         if not user.enabled:
             # Record failed attempt for disabled accounts too
-            await self._rate_limiter.record_failed_attempt(username)
+            await self._rate_limiter.record_failed_attempt(rate_limit_key)
             return AuthResult(
                 success=False,
                 error="User account is disabled",
@@ -561,7 +563,7 @@ class BuiltinLoginProvider(LoginProvider):
             )
 
         # Successful login - clear any failed attempts
-        await self._rate_limiter.clear_attempts(username)
+        await self._rate_limiter.clear_attempts(rate_limit_key)
         return AuthResult(success=True, user=user)
 
     async def create_user_with_password(

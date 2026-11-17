@@ -1166,6 +1166,7 @@ class WebserverController(CoreController):
 
     async def _handle_auth_login(self, request: web.Request) -> web.Response:
         """Handle login request."""
+        set_current_peer_address(request.remote)
         # Block until onboarding is complete
         if not self.auth.has_users:
             return web.json_response(
@@ -1310,6 +1311,7 @@ class WebserverController(CoreController):
 
     async def _handle_auth_authorize(self, request: web.Request) -> web.Response:
         """Handle OAuth authorization request."""
+        set_current_peer_address(request.remote)
         try:
             provider_id = request.query.get("provider_id")
             return_url = request.query.get("return_url")
@@ -1337,13 +1339,14 @@ class WebserverController(CoreController):
 
             return web.json_response({"authorization_url": started[0]})
         except RateLimited:
-            return web.Response(status=429, text="Too many sign-ins are pending, try again later")
+            return web.Response(status=429, text="Too many sign-ins, try again later")
         except Exception:
             self.logger.exception("Error during OAuth authorization")
             return web.json_response({"error": "Authorization failed"}, status=500)
 
     async def _handle_auth_callback(self, request: web.Request) -> web.Response:
         """Handle OAuth callback."""
+        set_current_peer_address(request.remote)
         try:
             code = request.query.get("code")
             state = request.query.get("state")
@@ -1418,6 +1421,8 @@ class WebserverController(CoreController):
             )
 
             return web.Response(text=success_html, content_type="text/html")
+        except RateLimited:
+            return web.Response(status=429, text="Too many failed sign-ins, try again later")
         except Exception:
             self.logger.exception("Error during OAuth callback")
             error_html = """

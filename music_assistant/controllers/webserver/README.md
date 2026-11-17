@@ -159,7 +159,12 @@ Manages individual WebSocket connections:
 - Rate limiting implementation
 
 **Sign-in flow ([helpers/login_flow.py](helpers/login_flow.py)):**
-- Pending sign-ins (`PendingLoginStore`): 10 minutes each, single use, at most 100 at once
+- Pending sign-ins (`PendingLoginStore`): 10 minutes each, single use, at most 100 at once and
+  10 per source (a source's 11th replaces its oldest)
+- Sources (`source_key`): the socket peer address (IPv6 by /64), or the WebRTC session for Remote
+  Access; forwarded headers are never read, so everyone behind one reverse proxy shares a source
+- Per-source token buckets (`SourceRateLimiter`) on sign-in starts (burst 30, then 1 per 6 s) and
+  on callbacks with an unknown state plus failed `auth/exchange` calls (burst 20, then 1 per 30 s)
 - How a client reaches the server (`AuthTransport`: direct, Remote Access or Ingress)
 - PKCE S256 verification of client code verifiers
 

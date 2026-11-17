@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import quote
 
 import pytest
@@ -12,7 +12,10 @@ from music_assistant_models.auth import User, UserRole
 
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_providers import AuthResult
-from music_assistant.controllers.webserver.helpers.login_flow import AuthTransport
+from music_assistant.controllers.webserver.helpers.login_flow import (
+    FAILED_SIGN_IN_BURST,
+    AuthTransport,
+)
 from music_assistant.helpers.json import json_dumps
 from music_assistant.helpers.redirect_validation import build_code_redirect_url
 from music_assistant.mass import MusicAssistant
@@ -77,6 +80,7 @@ async def test_auth_callback_idp_error_consumes_state(
         AuthTransport.DIRECT,
         "http://localhost:8095/auth/callback?provider_id=homeassistant",
         "verifier",
+        key="peer:127.0.0.1",
         return_url="http://localhost:8095/",
     )
     state = pending.state if known_state else "unknown-state"
@@ -118,3 +122,28 @@ async def test_auth_callback_idp_error_without_state(mass_minimal: MusicAssistan
     assert response.text is not None
     assert "Authentication Failed" in response.text
     assert "access_denied" not in response.text
+
+
+async def test_auth_callbacks_with_unknown_state_are_throttled_per_peer(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A peer returning with unknown states is refused with 429, other peers are not."""
+    webserver = WebserverController(mass_minimal)
+    mass_minimal.webserver = webserver
+    webserver.auth.login_providers["oauth"] = MagicMock()
+
+    async def callback(peer_ip: str) -> int:
+        transport = MagicMock()
+        transport.get_extra_info.side_effect = {"peername": (peer_ip, 54321)}.get
+        request = make_mocked_request(
+            "GET",
+            "/auth/callback?code=fakecode&state=w.unknown&provider_id=oauth",
+            app=web.Application(),
+            transport=transport,
+        )
+        return (await webserver._handle_auth_callback(request)).status
+
+    statuses = [await callback("192.0.2.10") for _ in range(FAILED_SIGN_IN_BURST + 1)]
+
+    assert statuses == [400] * FAILED_SIGN_IN_BURST + [429]
+    assert await callback("192.0.2.11") == 400
