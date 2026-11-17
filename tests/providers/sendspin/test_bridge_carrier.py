@@ -6,7 +6,7 @@ import itertools
 import logging
 from collections.abc import AsyncGenerator
 from typing import Any, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -24,6 +24,7 @@ from music_assistant.providers.sendspin.bridge_manager import (
     hand_static_delay_over,
     select_carrier,
 )
+from music_assistant.providers.sendspin.bridge_role import BRIDGE_ROLE_ID
 from music_assistant.providers.sendspin.constants import (
     CONF_SENDSPIN_BRIDGE_STATIC_DELAYS,
     CONF_SENDSPIN_CAST_OPT_IN,
@@ -41,6 +42,7 @@ from .bridge_harness import (
     SQUEEZELITE_CLIENT,
     SQUEEZELITE_ID,
     BridgedDevice,
+    hello,
 )
 
 # the devices of a test, whose Sendspin servers are closed after it
@@ -491,6 +493,26 @@ async def test_cast_leaves_an_output_it_takes_over_off_until_the_user_opts_in() 
 
     # the opt-in is remembered: Cast carries the output at once the next time
     assert device.state() == ("chromecast", AIRPLAY_CLIENT, "chromecast", "on")
+
+
+async def test_an_output_cast_switches_off_is_detached_also_without_a_bridge() -> None:
+    """The default of Cast takes an attached output away that no bridge holds the client of."""
+    device = _device(airplay=False, squeezelite=False, cast=True)
+    # stored switched on, and never offered over Cast
+    device.store_output(CAST_CLIENT, CAST_ID)
+    # its client is there before the Cast protocol is, as a receiver that connected by itself
+    device.server.register_external_player(
+        hello(CAST_CLIENT, BRIDGE_ROLE_ID), on_stream_start=MagicMock()
+    )
+    await device.settle()
+    assert device.sendspin_protocols == {CAST_CLIENT: CAST_ID}
+
+    await device.attach(device.cast)
+
+    assert device.output()["enabled"] is False
+    assert device.output()["values"][CONF_PROTOCOL_OFF_BY_DEFAULT] is True
+    assert CAST_CLIENT not in device.sendspin_protocols, "the output is still attached"
+    assert device.manager_of(device.cast).get_bridge(CAST_ID) is None
 
 
 # ---------------------------------------------------------------- one output per player

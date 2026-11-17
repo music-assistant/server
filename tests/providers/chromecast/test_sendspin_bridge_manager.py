@@ -53,6 +53,9 @@ def _make_cast_environment() -> tuple[CastSendspinBridgeManager, MagicMock, Magi
     mass.players.subscribe_player_state_update = MagicMock(return_value=MagicMock())
     mass.create_task = MagicMock()
     mass.config.get_protocol_value = MagicMock(return_value=None)
+    # nothing is stored: no protocol, and no Sendspin output of the player
+    mass.config.get_protocol_record = MagicMock(return_value=None)
+    mass.config.get_protocol_ids_of_player = MagicMock(return_value=[])
     use_real_bridge_holders(mass.get_provider.return_value)
     external_clients: set[str] = set()
     sendspin_server = mass.get_provider.return_value.server_api

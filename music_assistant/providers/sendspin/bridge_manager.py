@@ -741,7 +741,7 @@ def _settle_output(
     client_id: str,
     carrier: PlayerProtocol,
     manager: SendspinBridgeManagerBase[Any],
-) -> None:
+) -> bool:
     """
     Let the stored Sendspin output of a player follow the protocol that carries it.
 
@@ -755,9 +755,10 @@ def _settle_output(
     :param client_id: The client id of the output.
     :param carrier: The attached protocol that carries the output.
     :param manager: The bridge manager of that protocol.
+    :return: Whether the output was switched off.
     """
     if (record := mass.config.get_protocol_record(client_id)) is None:
-        return
+        return False
     stored_values = record.get("values") or {}
     values = dict(stored_values)
     was_enabled = enabled = bool(record.get(CONF_ENABLED, True))
@@ -782,13 +783,14 @@ def _settle_output(
         mass.config.set(f"{CONF_PLAYER_PROTOCOLS}/{client_id}/values", values)
     if enabled != was_enabled:
         mass.config.set_protocol_value(client_id, CONF_ENABLED, enabled)
+    return was_enabled and not enabled
 
 
 def _settle_carrier(
     mass: MusicAssistant,
     player: Player,
     protocols: list[tuple[PlayerProtocol, SendspinBridgeManagerBase[Any]]],
-) -> str | None:
+) -> tuple[str | None, str | None]:
     """
     Decide which protocol of a player carries its Sendspin output, and let the output follow it.
 
@@ -797,7 +799,8 @@ def _settle_carrier(
     :param mass: The Music Assistant instance.
     :param player: The player.
     :param protocols: Its attached protocols that have a bridge manager, with that manager.
-    :return: The id of the protocol that carries the output, None when none does.
+    :return: The id of the protocol that carries the output, None when none does, and the
+        client id of the output when its carrier switched it off.
     """
     stored_id = get_bridge_output_id(mass, player.player_id)
     # an output a bridge registered is not stored before its protocol is attached
@@ -822,13 +825,16 @@ def _settle_carrier(
         _get_connections(mass, player),
         stored_carrier_id if isinstance(stored_carrier_id, str) else None,
     )
+    switched_off_id: str | None = None
     for protocol, manager in protocols:
         # also an output of its id that belongs to no player anymore, which it takes over
-        if protocol.protocol_id == carrier_id and (
-            client_id := manager._client_ids.get(protocol.protocol_id)
+        if (
+            protocol.protocol_id == carrier_id
+            and (client_id := manager._client_ids.get(protocol.protocol_id))
+            and _settle_output(mass, client_id, protocol, manager)
         ):
-            _settle_output(mass, client_id, protocol, manager)
-    return carrier_id
+            switched_off_id = client_id
+    return carrier_id, switched_off_id
 
 
 async def _await_removals(mass: MusicAssistant, player: Player) -> None:
@@ -867,7 +873,10 @@ async def _evaluate_player(mass: MusicAssistant, player: Player) -> None:
         return
     async with sendspin.bridge_lock(player.player_id):
         await _await_removals(mass, player)
-        carrier_id = _settle_carrier(mass, player, protocols)
+        carrier_id, switched_off_id = _settle_carrier(mass, player, protocols)
+        if switched_off_id is not None:
+            # also when no bridge holds its client, as with a receiver that connected by itself
+            await mass.players.unregister(switched_off_id)
         # the bridge that carried the output stops before the one that carries it starts
         for protocol, manager in sorted(
             protocols, key=lambda managed: managed[0].protocol_id == carrier_id
