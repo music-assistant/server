@@ -1681,6 +1681,34 @@ def test_construct_keeps_the_provider_instance() -> None:
     assert media_item.provider == "radiobrowser--BBB"
 
 
+def test_construct_unloaded_instance_does_not_borrow_a_mapped_instance() -> None:
+    """An unloaded instance's mapping is not moved onto an instance the entry already maps."""
+
+    class DummyProvider:
+        domain = "opensubsonic"
+        instance_id = "opensubsonic--userA"
+
+    mass = MagicMock()
+    mass.get_provider.side_effect = lambda ref: (
+        DummyProvider() if ref in ("opensubsonic", "opensubsonic--userA") else None
+    )
+    item = PlaylistItem(
+        path="opensubsonic://track/20",
+        metadata={"media_type": MediaType.TRACK.value, "name": "Song"},
+        providers=[
+            ProviderMappingInfo("opensubsonic", "20", "opensubsonic--userA"),
+            ProviderMappingInfo("opensubsonic", "10", "opensubsonic--userB"),
+        ],
+    )
+
+    media_item = construct_media_item_from_playlist_item(item, cast("Any", mass))
+
+    assert media_item is not None
+    assert {
+        (m.provider_instance, m.item_id, m.available) for m in media_item.provider_mappings
+    } == {("opensubsonic--userA", "20", True), ("opensubsonic--userB", "10", False)}
+
+
 # --------------------------------------------------------------------------- #
 #  PlaylistController.iter_tracks() — provider-driven pagination               #
 # --------------------------------------------------------------------------- #
@@ -2091,6 +2119,7 @@ async def test_fetch_playlist_reads_only_the_head_of_the_body() -> None:
 def _spotify_mass() -> MagicMock:
     """Return a mass mock with one loaded Spotify instance."""
     spotify = MagicMock(domain="spotify", instance_id="spotify_1")
+    spotify.accepts_stored_image_path.return_value = False
     mass = MagicMock()
     mass.get_provider.side_effect = lambda ref: {
         "spotify": spotify,
@@ -2164,6 +2193,76 @@ def test_construct_media_item_remote_image_of_another_provider(loaded: bool) -> 
         assert [img.provider for img in result.metadata.images] == ["fanarttv"]
     else:
         assert not result.metadata.images
+
+
+@pytest.mark.parametrize(
+    ("path", "provider", "kept"),
+    [
+        ("al-0a1b2c_5f3e", "coverprov--abc", True),
+        ("https://example.com/cover.jpg", "coverprov--abc", True),
+        ("/data/x.png", "coverprov--abc", False),
+        ("al-0a1b2c_5f3e", "spotify_1", False),
+        ("al-0a1b2c_5f3e", "coverprov--gone", False),
+    ],
+    ids=["accepted-id", "remote", "refused-path", "not-opted-in", "unloaded"],
+)
+def test_construct_media_item_stored_image_path_needs_provider_opt_in(
+    path: str, provider: str, kept: bool
+) -> None:
+    """A non-URL image path is imported only when its loaded provider accepts it."""
+    mass = _spotify_mass()
+    cover_provider = MagicMock(domain="coverprov", instance_id="coverprov--abc")
+    cover_provider.accepts_stored_image_path.side_effect = lambda p: "/" not in p
+    spotify_lookup = mass.get_provider.side_effect
+    mass.get_provider.side_effect = lambda ref: (
+        cover_provider if ref == "coverprov--abc" else spotify_lookup(ref)
+    )
+    item = _spotify_item(
+        [ImageInfo(type="thumb", path=path, provider=provider, remotely_accessible=True)]
+    )
+
+    result = construct_media_item_from_playlist_item(item, mass)
+
+    assert result is not None
+    images = list(result.metadata.images or [])
+    assert [img.path for img in images] == ([path] if kept else [])
+    # only a URL may be handed to a client as is
+    assert all(img.remotely_accessible == img.path.startswith("https://") for img in images)
+
+
+def test_track_round_trip_preserves_image_id_its_provider_accepts() -> None:
+    """A cover id of a provider that accepts it survives export, generate and re-parse."""
+    image = MediaItemImage(
+        type=ImageType.THUMB,
+        path="al-0a1b2c_5f3e",
+        provider="opensubsonic--abc",
+        remotely_accessible=False,
+    )
+    track = Track(
+        item_id="tr-1",
+        provider="opensubsonic--abc",
+        name="Song",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="tr-1",
+                provider_domain="opensubsonic",
+                provider_instance="opensubsonic--abc",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        metadata=MediaItemMetadata(images=UniqueList([image])),
+    )
+    subsonic = MagicMock(domain="opensubsonic", instance_id="opensubsonic--abc")
+    subsonic.accepts_stored_image_path.return_value = True
+    mass = MagicMock()
+    mass.get_provider.return_value = subsonic
+
+    parsed = parse_m3u(generate_m3u("Mix", [media_item_to_playlist_item(track)]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], mass)
+
+    assert reconstructed is not None
+    assert reconstructed.metadata.images == [image]
 
 
 def test_media_item_to_playlist_item_track_round_trip_preserves_own_image() -> None:
@@ -2257,3 +2356,29 @@ def test_playlist_block_move_steps_match_the_block_move() -> None:
 def test_playlist_block_move_steps_skip_a_block_already_in_place() -> None:
     """Moving a block onto its own place needs no moves."""
     assert playlists.playlist_block_move_steps(5, [2, 3], 2) == []
+
+
+def test_media_item_to_playlist_item_keeps_every_instance_of_a_domain() -> None:
+    """Each provider instance keeps its mapping, so every account that saved the track can play it."""
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="Shared Library Track",
+        duration=200,
+        provider_mappings={
+            ProviderMapping(
+                item_id="song-1",
+                provider_domain="opensubsonic",
+                provider_instance=instance,
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            )
+            for instance in ("opensubsonic--userA", "opensubsonic--userB")
+        },
+    )
+
+    result = media_item_to_playlist_item(track)
+
+    assert {p.instance_id for p in result.providers} == {
+        "opensubsonic--userA",
+        "opensubsonic--userB",
+    }

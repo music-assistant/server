@@ -10,11 +10,13 @@ import os
 import re
 from collections import defaultdict
 from ipaddress import IPv4Address
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, EventType
-from zeroconf import (
+from zeroconf import (  # type: ignore[attr-defined]  # AddressResolver is missing in __all__
+    AddressResolver,
+    IPVersion,
     NonUniqueNameException,
     ServiceStateChange,
     Zeroconf,
@@ -27,7 +29,8 @@ from music_assistant.constants import (
     INGRESS_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.hassio import supervisor_request
+from music_assistant.helpers.build_info import release_channel
+from music_assistant.helpers.hassio import SupervisorError, supervisor_request
 from music_assistant.helpers.util import get_ip_pton, get_zeroconf_args
 from music_assistant.models.core_controller import CoreController
 
@@ -35,6 +38,7 @@ if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.event import MassEvent
+    from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.models import ProviderInstanceType
 
@@ -47,6 +51,14 @@ UPNP_DISCOVERY_INTERVAL = 300
 UPNP_DISCOVERY_BROADCAST_TARGET = (str(IPv4Address("255.255.255.255")), 1900)
 UPNP_DISCOVERY_TASK_ID = "discovery_upnp_cycle"
 UPNP_DISCOVERY_TIMER_ID = "discovery_upnp_timer"
+
+# mDNS service types that devices of any kind announce: seeing one says nothing about a provider
+GENERIC_MDNS_TYPES: Final = frozenset({"_http._tcp.local."})
+
+# The mDNS hostname a server claims when no other host on the network answers for it
+MASS_MDNS_HOSTNAME: Final = "musicassistant.local."
+MASS_MDNS_HOSTNAME_PROBE_TIMEOUT: Final = 1000  # milliseconds
+MASS_SERVICE_TASK_ID: Final = "discovery_register_mass_service"
 
 # Re-announce daily so the HA integration token rotates before expiry, also on long uptimes
 HA_ANNOUNCE_INTERVAL = 86400
@@ -76,10 +88,16 @@ class DiscoveryController(CoreController):
         self._aiozc: AsyncZeroconf | None = None
         self._mdns_browser: AsyncServiceBrowser | None = None
         self._mass_service_info: AsyncServiceInfo | None = None
+        self._mass_service_lock = asyncio.Lock()
+        self._mass_hostname: str | None = None
         self._mdns_locks: dict[str, asyncio.Lock] = {}
         self._upnp_locks: dict[str, asyncio.Lock] = {}
         self._upnp_run_lock = asyncio.Lock()
         self._mdns_waiters: list[asyncio.Event] = []
+        # the path of the MCP server offered to Home Assistant, None when not offered
+        self._mcp_path: str | None = None
+        self._mcp_discovery_uuid: str | None = None
+        self._mcp_refusal_logged = False
 
     @property
     def aiozc(self) -> AsyncZeroconf:
@@ -98,7 +116,8 @@ class DiscoveryController(CoreController):
         self.config = config
         self._configure_library_loggers()
         await self._setup_mdns_browser()
-        await self._register_mass_service()
+        # claiming the hostname probes the network, which must not delay the startup
+        self.mass.create_task(self._register_mass_service(), task_id=MASS_SERVICE_TASK_ID)
         # the mdns record embeds the server info, so refresh it when that info
         # changes (e.g. the server was renamed or its state/urls changed)
         self.mass.subscribe(self._on_core_state_updated, EventType.CORE_STATE_UPDATED)
@@ -125,6 +144,7 @@ class DiscoveryController(CoreController):
         self.mass.cancel_timer(UPNP_DISCOVERY_TIMER_ID)
         self.mass.cancel_task(UPNP_DISCOVERY_TASK_ID)
         self.mass.cancel_timer(HA_ANNOUNCE_TIMER_ID)
+        self.mass.cancel_task(MASS_SERVICE_TASK_ID)
 
         await self._cancel_mdns_browser()
 
@@ -155,6 +175,32 @@ class DiscoveryController(CoreController):
         self._mdns_locks.pop(instance_id, None)
         self._upnp_locks.pop(instance_id, None)
         self._schedule_periodic_upnp_discovery()
+
+    async def refresh_mdns_browser(self) -> None:
+        """Make the mDNS browser follow the service types of the registered manifests."""
+        await self._setup_mdns_browser()
+
+    async def announce_mcp_server(self, path: str) -> None:
+        """
+        Offer the MCP server to Home Assistant, now and on every daily re-announce.
+
+        Only has effect when running as Home Assistant add-on.
+
+        :param path: The path of the MCP endpoint on the internal (ingress) webserver.
+        """
+        self._mcp_path = path
+        await self._announce_mcp_server()
+
+    async def withdraw_mcp_server(self) -> None:
+        """Withdraw the offer of the MCP server to Home Assistant."""
+        self._mcp_path = None
+        if (discovery_uuid := self._mcp_discovery_uuid) is None:
+            return
+        self._mcp_discovery_uuid = None
+        try:
+            await supervisor_request(self.mass, "delete", f"/discovery/{discovery_uuid}")
+        except SupervisorError as err:
+            self.logger.debug("Failed to withdraw the MCP server from Home Assistant: %s", err)
 
     async def async_find_mdns_service(
         self, service_type: str, name_filter: str | None = None, timeout: float = 3.0
@@ -221,6 +267,23 @@ class DiscoveryController(CoreController):
         finally:
             self._mdns_waiters.remove(event)
 
+    def is_seen_on_mdns(self, manifest: ProviderManifest, *, identifying: bool = False) -> bool:
+        """
+        Return whether a service of one of the provider's mDNS types was seen on the network.
+
+        :param manifest: The manifest of the provider, with the types in its mdns_discovery.
+        :param identifying: Leave out the types that devices of any kind announce, so that a
+            match means a device of this provider is there.
+        """
+        mdns_types = set(manifest.mdns_discovery or ())
+        if identifying:
+            mdns_types -= GENERIC_MDNS_TYPES
+        return any(
+            mdns_type in mdns_name
+            for mdns_name in set(self.aiozc.zeroconf.cache.cache)
+            for mdns_type in mdns_types
+        )
+
     def _configure_library_loggers(self) -> None:
         """Align third-party discovery logging with the discovery controller log level."""
         library_log_level = (
@@ -277,29 +340,56 @@ class DiscoveryController(CoreController):
 
     async def _register_mass_service(self) -> None:
         """Register the Music Assistant server on the network via Zeroconf."""
-        zeroconf_type = "_mass._tcp.local."
-        server_id = self.mass.server_id
-        self.logger.debug("Starting Zeroconf broadcast...")
-        info = AsyncServiceInfo(
-            zeroconf_type,
-            name=f"{server_id}.{zeroconf_type}",
-            addresses=[
+        async with self._mass_service_lock:
+            zeroconf_type = "_mass._tcp.local."
+            server_id = self.mass.server_id
+            self.logger.debug("Starting Zeroconf broadcast...")
+            addresses = [
                 await get_ip_pton(address) for address in self.mass.webserver.publish_addresses
-            ],
-            port=self.mass.webserver.publish_port,
-            properties=self.mass.get_server_info().to_dict(),
-            server="mass.local.",
-        )
-        try:
-            if self._mass_service_info:
-                await self.aiozc.async_update_service(info)
-            else:
-                await self.aiozc.async_register_service(info)
-            self._mass_service_info = info
-        except NonUniqueNameException:
-            self.logger.error(
-                "Music Assistant instance with identical name present in the local network!"
+            ]
+            if self._mass_hostname is None:
+                self._mass_hostname = await self._choose_mass_hostname(addresses)
+            info = AsyncServiceInfo(
+                zeroconf_type,
+                name=f"{server_id}.{zeroconf_type}",
+                addresses=addresses,
+                port=self.mass.webserver.publish_port,
+                properties=self.mass.get_server_info().to_dict(),
+                server=self._mass_hostname,
             )
+            try:
+                if self._mass_service_info:
+                    await self.aiozc.async_update_service(info)
+                else:
+                    await self.aiozc.async_register_service(info)
+                self._mass_service_info = info
+            except NonUniqueNameException:
+                self.logger.error(
+                    "Music Assistant instance with identical name present in the local network!"
+                )
+
+    async def _choose_mass_hostname(self, own_addresses: list[bytes]) -> str:
+        """
+        Return the mDNS hostname to advertise the server on.
+
+        :param own_addresses: The packed IP addresses the server publishes.
+        """
+        fallback = f"musicassistant-{self.mass.server_id[:6]}.local."
+        if release_channel(self.mass.version) == "nightly":
+            self.logger.debug("Using mDNS hostname %s", fallback)
+            return fallback
+        resolver = AddressResolver(MASS_MDNS_HOSTNAME)
+        await resolver.async_request(self.aiozc.zeroconf, MASS_MDNS_HOSTNAME_PROBE_TIMEOUT)
+        # an answer with only our own addresses comes from this host, which may carry the name
+        if set(resolver.addresses_by_version(IPVersion.All)) - set(own_addresses):
+            self.logger.info(
+                "Another host on the network uses %s, using %s instead",
+                MASS_MDNS_HOSTNAME,
+                fallback,
+            )
+            return fallback
+        self.logger.debug("Using mDNS hostname %s", MASS_MDNS_HOSTNAME)
+        return MASS_MDNS_HOSTNAME
 
     async def _on_core_state_updated(self, event: MassEvent) -> None:
         """Refresh the advertised mdns record after the server info changed."""
@@ -501,6 +591,35 @@ class DiscoveryController(CoreController):
             )
         except Exception as err:
             self.logger.warning("Failed to announce to Home Assistant: %s", err)
+        await self._announce_mcp_server()
+
+    async def _announce_mcp_server(self) -> None:
+        """Announce the MCP server to Home Assistant via Supervisor API, when offered."""
+        if self._mcp_path is None or not self.mass.running_as_hass_addon:
+            return
+        discovery_payload = {
+            "service": "mcp",
+            "config": {
+                "url": f"http://{os.environ['HOSTNAME']}:{INGRESS_SERVER_PORT}{self._mcp_path}",
+                "token": await self.mass.webserver.auth.get_homeassistant_system_user_token(),
+            },
+        }
+        try:
+            result = await supervisor_request(
+                self.mass, "post", "/discovery", json_data=discovery_payload
+            )
+        except SupervisorError as err:
+            # an add-on whose config does not list the mcp discovery service yet is refused
+            if err.status == 403:
+                if not self._mcp_refusal_logged:
+                    self._mcp_refusal_logged = True
+                    self.logger.info(
+                        "Home Assistant does not accept the MCP server discovery yet: %s", err
+                    )
+                return
+            self.logger.warning("Failed to announce the MCP server to Home Assistant: %s", err)
+            return
+        self._mcp_discovery_uuid = result.get("uuid") if isinstance(result, dict) else None
 
     def _schedule_periodic_ha_announce(self) -> None:
         """Schedule the periodic (re)announce to Home Assistant."""

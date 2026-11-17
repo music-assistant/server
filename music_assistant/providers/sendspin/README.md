@@ -193,7 +193,7 @@ Sendspin players support:
 - **Volume control** - Set volume level (0-100) and mute
 - **Synchronized playback** - Sample-accurate sync across grouped players
 - **Per-player DSP** - Individual equalizer settings per device
-- **Player grouping** - Create multi-room audio groups
+- **Player grouping** - Create multi-room audio groups. A group plays at the sample rate of what it plays, kept within the lowest and highest rate its members play; a member at another rate gets the group audio converted to its own rate
 - **Metadata display** - Track info, artwork, progress
 - **Playback control** - Play, pause, stop, next, previous
 - **Repeat/Shuffle** - Queue control from clients
@@ -214,6 +214,14 @@ Sendspin players support:
 - `aiolibdatachannel` - WebRTC implementation for Python (used for WebRTC bridging)
 - `PIL/Pillow` - Image processing for artwork
 
+## Players
+
+Every Sendspin client is a protocol (`SendspinBasePlayer`) whose id is its client id.
+
+- A web or app player, a virtual player, a display, a visualizer, a light and an audio source exist only while they are connected (`session_only`): each is the native protocol of a player of its own, whose player id is its client id. Nothing is stored for one until its config is changed.
+- Any other client is the native protocol of its player, unless that player has a protocol of its own from another provider: then it is an audio output of it. A client with a hardware MAC address that is seen for the first time joins the player of its device when there is one, as an audio output; it is the native protocol of a player of its own from its next connection on. A new client without one is the native protocol of a player of its own at once, as nothing else can tie it to a device.
+- A client reports the MAC address it uses as client id or reports in its hello. A client whose id is not its MAC address also reports its id as an instance id, so several clients on one host stay separate players; a device whose client id changes from its MAC address to its key id keeps its player and settings.
+
 ## External Players (Protocol Bridges)
 
 The Sendspin server supports external player registration for bridging other audio protocols. This enables cross-protocol grouping where Sendspin handles timing and synchronization.
@@ -224,14 +232,24 @@ External players are registered programmatically via `server_api.register_extern
 
 1. The bridge provider creates a `ClientHelloPayload` with the device info and supported capabilities
 2. The Sendspin server creates a `SendspinClient` and triggers `ClientAddedEvent`
-3. The Sendspin provider creates a `SendspinPlayer` for this client
-4. Protocol linking matches the SendspinPlayer with the original player via device identifiers (e.g., MAC address)
+3. The Sendspin provider creates a `SendspinPlayer` for this client, with the id of the bridged protocol as its underlying protocol
+4. That Sendspin protocol is a derived audio protocol: it attaches to the player of the protocol it rides on, also while that protocol is away (through the player its record names), and is an available output only while that protocol is attached
+
+A client whose record says it rides on another protocol is that bridge again when it connects before its bridge is set up, as the Sendspin Cast receiver app does after a restart: it is no browser player of its own then, although it reports as one.
+
+The bridge managers (`SendspinBridgeManagerBase` in `bridge_manager.py`, subclassed by the AirPlay, squeezelite and Chromecast bridges) keep a bridge for as long as the protocol it bridges is attached and its Sendspin output is switched on. The interface they offer the bridged providers takes the protocol id of the bridged protocol.
+
+A device gets one Sendspin output, carried by the first of its bridges in the order AirPlay, squeezelite, Chromecast. A protocol the user switched off as an output, or whose provider is disabled, lets the next bridge take the output over. An AirPlay protocol that is merely away keeps its place, while a squeezelite protocol that is away leaves the output to Chromecast until it returns. The managers settle this when the outputs of the player change, so a protocol switched on or off while its device is away on it takes effect at the next change of those outputs or at a restart.
+
+Bridges that share a client id (their protocols report the same MAC address) share one output and its record. Its static delay is kept per bridge: at a take-over the delay set for the bridge before is put aside in the record (`sendspin_bridge_static_delays`, by protocol id), and the one set while the new bridge carried the output before comes back; without one, the default of the new bridge applies.
 
 ### Implemented Bridges
 
 | Provider | Bridge Location | Identifier |
 |----------|-----------------|------------|
 | AirPlay | `airplay/sendspin_bridge.py` | MAC address |
+| Squeezelite | `squeezelite/sendspin_bridge.py` | MAC address |
+| Chromecast | `chromecast/sendspin_bridge.py` | MAC address (Cast group: its uuid) |
 
 ### Implementing a New Bridge
 
@@ -240,7 +258,7 @@ To bridge another protocol to Sendspin:
 1. Create a `ClientHelloPayload` with the device's capabilities
 2. Call `register_external_player()` with an `on_stream_start` callback
 3. Create a custom `Role` subclass to receive audio via `on_audio_chunk()`
-4. Ensure the client_id matches an identifier the protocol linking system recognizes
+4. Register the id of the protocol it rides on with `register_bridge_underlying_protocol()` before the client is registered
 
 See the [AirPlay Sendspin Bridge](../airplay/sendspin_bridge.py) for a complete implementation example.
 
@@ -273,10 +291,12 @@ of virtual players whose owner no longer exists are swept on provider startup.
 
 Virtual players are never auto-restored: when the Sendspin provider reloads
 (or the server restarts), the owning provider must call `create_virtual_player`
-again to restore its session anchor. The player's configuration (including the
-owner marker) may persist across restarts and is reused when the same owner
-recreates the same player id; it is deleted on `remove_virtual_player` or swept
-at startup once the owner provider no longer exists.
+again to restore its session anchor. A virtual player is a session-only player
+with its client id as player id, so nothing is stored for it unless its config
+is changed. A stored configuration (including the owner marker) is reused when
+the same owner recreates the same player id; it is deleted on
+`remove_virtual_player` or swept at startup once the owner provider no longer
+exists.
 
 ## Related Documentation
 

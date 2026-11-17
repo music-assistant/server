@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from uuid import UUID
 
 from music_assistant_models.enums import ExternalID
+from music_assistant_models.errors import InvalidProviderID
 
 _GTIN_LENGTHS = (8, 12, 13, 14, 15)
 _ISRC_PATTERN = re.compile(r"^[A-Z]{2}[A-Z0-9]{3}\d{7}$")
@@ -113,6 +114,53 @@ def is_valid_barcode(value: str) -> bool:
     :param value: Identifier value to validate.
     """
     return _is_valid_gtin(normalize_external_id(ExternalID.BARCODE, value))
+
+
+def is_valid_mbid(value: str) -> bool:
+    """
+    Return whether a value is a structurally valid MusicBrainz identifier (a UUID).
+
+    :param value: Identifier value to validate.
+    """
+    try:
+        UUID(value.strip("{}"))
+    except ValueError, AttributeError:
+        return False
+    return True
+
+
+def external_item_id(external_id_type: ExternalID, value: str) -> str:
+    """
+    Return the item id of an item known only by an external id.
+
+    :param external_id_type: Type of the external identifier.
+    :param value: The identifier itself.
+    """
+    return f"{external_id_type.value}:{normalize_external_id(external_id_type, value)}"
+
+
+def parse_external_item_id(item_id: str) -> tuple[ExternalID, str]:
+    """
+    Return the type and canonical value of the external id an item id names.
+
+    :param item_id: Item id as external_item_id() builds it: "<external id type>:<value>".
+    :raises InvalidProviderID: The id type is unknown, or the value can not be such an id.
+    """
+    id_type, _, value = item_id.partition(":")
+    external_id_type = ExternalID(id_type)
+    value = normalize_external_id(external_id_type, value)
+    if external_id_type.is_musicbrainz:
+        valid = is_valid_mbid(value)
+    elif external_id_type == ExternalID.ISRC:
+        valid = is_valid_isrc(value)
+    elif external_id_type == ExternalID.BARCODE:
+        valid = is_valid_barcode(value)
+    else:
+        valid = external_id_type != ExternalID.UNKNOWN and bool(value)
+    if not valid:
+        msg = f"Not a valid external item id: {item_id}"
+        raise InvalidProviderID(msg)
+    return external_id_type, value
 
 
 def external_id_lookup_values_untyped(value: str) -> tuple[str, ...]:

@@ -469,6 +469,70 @@ async def test_is_our_image_recognizes_own_images(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("relative_to_images_dir", [False, True])
+async def test_cleanup_old_playlist_images_keeps_files_outside_images_dir(
+    tmp_path: Any,
+    relative_to_images_dir: bool,
+) -> None:
+    """An image claiming our provider id must never delete a file outside our images dir."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+
+    outside_file = tmp_path / "not_our_file.txt"
+    outside_file.write_bytes(b"keep me")
+    image_path = (
+        os.path.join(provider._images_dir, "..", outside_file.name)
+        if relative_to_images_dir
+        else str(outside_file)
+    )
+    playlist = _make_playlist()
+    playlist.metadata.images = UniqueList(
+        [
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=image_path,
+                provider="playlist_metadata",
+                remotely_accessible=False,
+            )
+        ]
+    )
+
+    await provider._cleanup_old_playlist_images(playlist, {ImageType.THUMB})
+
+    assert outside_file.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store_absolute_path", [True, False])
+async def test_cleanup_old_playlist_images_removes_own_files(
+    tmp_path: Any,
+    store_absolute_path: bool,
+) -> None:
+    """Images we generated are deleted whether their path was stored absolute or as a name."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+
+    own_file = Path(provider._images_dir) / "test_playlist_1_1234567890_thumb.jpg"
+    own_file.write_bytes(b"old_image_data")
+    playlist = _make_playlist()
+    playlist.metadata.images = UniqueList(
+        [
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=str(own_file) if store_absolute_path else own_file.name,
+                provider="playlist_metadata",
+                remotely_accessible=False,
+            )
+        ]
+    )
+
+    await provider._cleanup_old_playlist_images(playlist, {ImageType.THUMB})
+
+    assert not own_file.exists()
+    assert not playlist.metadata.images
+
+
+@pytest.mark.asyncio
 async def test_analyze_playlist_genres_returns_most_common_genres(
     tmp_path: Any,
 ) -> None:

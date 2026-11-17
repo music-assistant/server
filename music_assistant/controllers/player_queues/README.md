@@ -56,8 +56,8 @@ and the targets for playback, and coordinates with several sibling controllers:
 - **Player Controller (`mass.players`)** — a bidirectional coupling. Outbound, the queue
   controller drives the player (stop/pause/play/enqueue-next, grouping/ungrouping, active-queue
   lookup) and serializes transport via the player's playback lock. Inbound, the player controller
-  calls the queue controller's register/update/elapsed-time/remove hooks, which is how the queue
-  reconciles itself against real player state. The `queue_id` is the `player_id`.
+  calls the queue controller's register/update/elapsed-time/detach/remove hooks, which is how the
+  queue reconciles itself against real player state. The `queue_id` is the `player_id`.
 - **Streams Controller (`mass.streams`)** — resolves a `QueueItem`'s stream details when loading
   and pre-loading items, and provides the audio-buffer primitive. It also drives next-track buffer
   warming: near the end of the item being streamed, or once a realtime source has delivered all
@@ -94,10 +94,10 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
   (a leaf player, a group player, or a sync leader). Every per-queue record on the controller
   and the cache entries are keyed by this shared id, so provider and transport commands keyed on
   `queue_id` target the correct player.
-- **One queue object per player; reconciliation gated by type.** A `PlayerQueue` object is created
-  for every player on register and removed on player remove. `PROTOCOL` players are never
-  reconciled, however — their player-update callbacks are ignored, so a protocol player's queue
-  object stays effectively inert.
+- **One queue per player.** A `PlayerQueue` object is created when the players controller
+  publishes a player and goes when the player is dropped (disabled or removed; only a removal
+  deletes its saved state). A protocol has no queue: the queue of a player plays through whichever
+  of its protocols renders the audio, and a player whose protocols are all detached keeps its queue.
 - **Active means active-source.** A queue is considered active only when the player's active source
   is this queue's id (or none); when inactive with no prior state it is forced idle.
 - **Transitioning queues are skipped.** While a `queue_id` is marked as transitioning, incoming
@@ -119,7 +119,7 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
   starting an album, podcast, podcast episode, audiobook or audio source (`ORDERED_MEDIA_TYPES`)
   with *play* or *replace* switches shuffle off, because those are sequenced content rather than a
   pool of tracks. An artist counts as sequenced too when it plays its albums under an album
-  order. Top tracks, an artist without albums, and authors or narrators keep the queue's shuffle. An explicit `shuffle` argument on `play_media` always wins, and the first item of
+  order. Top tracks, an artist without library albums, and authors or narrators keep the queue's shuffle. An explicit `shuffle` argument on `play_media` always wins, and the first item of
   a batch decides for the whole batch — it is the only media type known before the items are
   resolved. Switching shuffle off goes through `set_shuffle`, so the items that stay in the queue
   are restored to their original order rather than left shuffled behind a queue that now reads
@@ -136,8 +136,8 @@ All live state lives in memory on the controller instance in one `PlayerQueueDat
 keyed by `queue_id` (`state.py`). Each record wraps the wire `PlayerQueue` and holds the rest of the
 server-side state around it: the ordered `QueueItem` list, the full media items behind the dynamic
 `sources`, the enqueued parent items and the owning user, plus the runtime-only fields — a
-previous-state snapshot, a transitioning flag, an in-progress play-action refcount, a
-last-counted-play marker, the flow-buffer-completed session, and the
+previous-state snapshot, a transitioning flag, a halted-by-command flag, an in-progress
+play-action refcount, a last-counted-play marker, the flow-buffer-completed session, and the
 current stream session's id, flow play-log and next-enqueued item id.
 
 `PlayerQueueData` owns the pair's (de)serialization; the wire `PlayerQueue` carries no cache logic of
@@ -158,15 +158,22 @@ are dropped.
 
 Transport and playback actions on a given queue are serialized through the player's shared playback
 lock, obtained from the Player Controller. That lock is re-entrant, so nested actions on the same
-queue do not deadlock. Play actions take it strictly: a request waits for the running one to finish,
-up to 120 seconds per lock, and then fails with a busy error rather than run alongside it (the player
-controller's own commands fall back to running without the lock after 30 seconds, to survive a hung
-provider call). The next-track handover takes the same strict lock and only checks the queue once it
-holds it, so a track handed to the player after a wait is still the one that follows the playing one.
+queue do not deadlock. A request waits for the running one to finish, up to 120 seconds per lock, and
+then fails with a busy error rather than run alongside it; the player controller's own commands wait
+for it the same way. The lookup of what a play request plays (a big artist, playlist or folder fetched
+through a throttled provider can take minutes) runs under that lock, so it has a deadline of its own
+(`PLAY_REQUEST_RESOLVE_TIMEOUT`), which starts once the request holds the lock: the wait for a
+running command does not count. When it runs out the request fails and releases the lock, and that
+of the group holding the player, before it has changed the queue, so the queue keeps its items,
+enqueued items, shuffle state and playback. The deadline does not cover filling the managed pool of
+a queue that stays dynamic, which fetches the tracks of each new source once the queue's sources are
+stored. The next-track handover takes the same lock and only checks the queue once it holds it, so a
+track handed to the player after a wait is still the one that follows the playing one.
 Queue edits (moves, deletes, refills) do not take the lock, so the handover checks the queue again once
 the player has the track, and hands over the real next track when an edit changed it meanwhile.
 While an action is in progress an "action in progress" flag is surfaced on the queue and reported to
-subscribers.
+subscribers. A command that starts a queue that does not play raises it already while it waits for
+the queue's player, or the members of its group, to start up at their power control.
 
 A per-queue transitioning flag guards the window during track changes, so concurrent
 player-update callbacks are skipped while a queue is mid-transition. A load that shuffles prepares
@@ -190,6 +197,27 @@ stream-time). It diffs the incoming state against the previous-state snapshot to
 single continuous stream of concatenated items, so the player's cumulative stream index and
 position must be mapped back to a per-track index and per-track elapsed time.
 
+A queue whose player goes idle on its last item, with that item played (or, in flow mode,
+streamed) to its end, is taken for ended 5 seconds later, unless it plays again by then: it is
+refilled from its dynamic source when it has one, and marked as ended otherwise. A pause or a
+stop is never that end. A queue whose playback a command halted (`halted_by_command`: set by a
+pause and by the common stop handler) keeps its place until it plays again, also when the
+command left its player idle (a player without a pause of its own is stopped, and a paused player
+is stopped once the pause timeout passes). Only the stop of a sleep timer that waited for the
+end of an item or a chapter ends the queue, at that point; a timer that runs out mid-track stops
+the queue like any other stop. The flag is cleared when the queue is seen playing, when its
+paused player is told to play on or when a play action starts a stream session, taken back by a
+pause or a stop that fails, and reset when the queue is cleared or marked as ended.
+
+That check runs in a task of its own, holds no lock, and belongs to the playback that went idle:
+it remembers the stream session the queue was last seen playing. After every wait (each of its
+five rounds, the fetch of the dynamic source) it first waits for the command that holds the
+player's playback lock, and then gives up when the queue is not idle or a play started since:
+another stream session started last (`started_session_id`), also while its player does not
+report yet that it plays and when a stop ended it before that. So it never refills, restarts or
+ends a queue on behalf of a playback that is no longer its last. It also gives up when the
+player is still held at the timeout of that lock.
+
 Data flow: player state → diff against the previous snapshot → updated `PlayerQueue` fields →
 signalled events + cache write.
 
@@ -207,7 +235,39 @@ else goes, including what sessions that ended earlier left behind: sessions rota
 so a claim that is no longer current marks audio nobody will come back for. A clear or a replace
 drops the items themselves, so all of their audio goes with them.
 
-A paused queue keeps its session and its buffers until the pause watcher stops it after 30 seconds.
+A buffer that still fills holds one of its provider's stream slots, and it knows who uses it: whoever
+waits for its first audio and every stream that is open on it (a speaker's request, a direct PCM
+consumer, the flow stream and the fade-in it collects ahead of time, a fade into the next track). A
+stream also claims the item it decided to play, from before it has any of the item's audio: an item
+stream for as long as it runs, a flow stream from the moment it selects its next track. The claim is
+on the item, so it holds whichever buffer the item has or gets, and every stream takes its own claim
+away when it ends. A claim holds its item only for the playback session its stream is part of: once
+the queue stopped or started over, or was transferred to another player (which gets the same items
+and plays them in a session of its own), a stream that is still open from before holds nothing of the
+playback that followed. The buffer such a stream still reads keeps it as a user. A buffer is needed
+while it has a user, while a stream of its queue's session claims its item, or while its queue plays
+its item now or next (`plays_now_or_next`: the item the queue is on, the item its player has started
+fetching, and the item that follows either of them). A queue that is not playing plays next the item
+it is on, and nothing after it: audio that is buffered ahead of its start, as the music quiz does for
+the first track of a round while its lobby is open, is needed until the queue starts and takes it
+over. A buffer that is not needed gives its source up only when its provider has no free slot: a
+provider with a slot to spare, or without a limit, keeps every source it has. The buffer is asked at
+three moments: when a track asks the provider for a slot and none is free, when its last user leaves,
+and when the claim on its item ends. On a provider with a single slot there is no slot to spare while
+a source still fills, as that source holds the slot itself: there a source that is not needed is
+released the moment its last user leaves, whether or not another track is asking for the slot. From
+the moment a buffer is told to give its source up it is no longer valid, so nobody takes it while the
+source unwinds: whoever wants that item's audio after that gets a buffer of its own, through the
+provider's slots like any other. So a prepared track that a queue change moved away from the head or
+took off the queue hands its slot to the track that plays next, while a track that is in use or about
+to play keeps it. The releases of a stop, a clear, a replace and the start of an item do not ask for
+users or claims.
+
+A paused queue keeps its session and its buffers until the pause watcher stops it once the
+configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread
+buffer releases its audio). The watcher leaves the queue alone while a command still waits for
+players to start up before it acts on the player of the queue, and counts again from the end of
+that wait: only then can a pause outlast the buffer.
 When playback on another queue finds no free provider stream slot and one of those buffers holds
 one, the paused queue is stopped right away. It resumes later from where it was paused, with a new
 source stream. Preparing the next track ahead of time never stops a paused queue. A player that
@@ -288,13 +348,22 @@ Close choices keep some randomness, and Smart Fades still decides the actual tra
 
 Non-track media must be expanded into the actual tracks or episodes to enqueue. Each source type
 (artist, album, genre, playlist, podcast, audiobook, browse folder) resolves into a concrete track
-list, applying the configured selection rules (e.g. top tracks vs library tracks vs all tracks),
+list, applying the configured selection rules (e.g. top tracks vs library tracks),
 resolving library-versus-provider variants, and optionally ordering the result. The same concern
 also builds the `PlayerMedia` payload handed to the player, using the Metadata Controller for
 images.
 
 Data flow: media item → Music/Metadata controller lookups → `Track`/`QueueItem` list and
 `PlayerMedia`.
+
+A track known only by an external id (a MusicBrainz recording id or an ISRC, its `provider`
+set to `external`) is the exception. It goes onto the queue as it is and is looked up on the
+music providers only when the queue loads it, or when a player asks for its stream, on the
+music sources the queue's stream may use. A list of such tracks then costs a lookup per
+track that is reached, never one per track of the list for a single play request. Until it is
+looked up it is on no music source: it still counts as enqueueable
+(`helpers.can_be_enqueued`), seeds no similar-tracks refill, and a queue that holds one can
+not be saved as a playlist.
 
 ## Queue Item Origin
 
@@ -417,12 +486,13 @@ mechanism) that configure default enqueue behaviour, in three groups:
 - **Per-media-type default enqueue option** — for artist, album, track, genre, live sources, and
   playlist (plus the hidden audiobook, podcast, podcast-episode, and folder types), each defaulting
   to *play* or *replace*.
-- **Selection modes** — how artists and albums expand into tracks (e.g. top tracks, library tracks,
-  prefer library, all tracks), and the order an artist plays in: shuffled tracks, or its albums
-  in random or release order. The artist selection picks the artist's own albums, and each album
-  plays as it does on its own, following the album selection. The album orders leave out singles,
-  and the compilations found only on a provider. They fall back to shuffled tracks for the top
-  tracks selection or an artist without albums.
+- **Selection modes** — how artists and albums expand into tracks (top tracks, library tracks,
+  prefer library, or the tracks of the artist's library albums), and the order an artist plays in:
+  shuffled tracks, or its library albums in random or release order. Each album plays as it does
+  on its own, following the album selection. The album orders leave out singles. They fall back
+  to shuffled tracks for the top tracks selection or an artist without library albums. An artist
+  that is not in the library plays its top tracks. Playing an artist never lists or expands the
+  albums a provider has of it, as that costs a request per release.
 - **Click actions** — what a client does when an artist, album, track, genre, radio, or playlist is
   clicked (*browse* or *play*), and what the play button on a track row inside an album
   or playlist starts (*play from here* or *play track*).

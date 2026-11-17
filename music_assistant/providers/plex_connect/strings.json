@@ -1,8 +1,8 @@
 {
   "config_entries": {
     "plex_provider_id": {
-      "label": "Plex Music Provider",
-      "description": "Select the Plex music provider to use for this connection."
+      "label": "Plex music source",
+      "description": "Select the Plex music source to use for this connection."
     },
     "mass_player_id": {
       "label": "Music Assistant Player",
@@ -86,12 +86,12 @@
       "description": "Pick the Plex server this player should show up on, and the Music Assistant player to expose."
     },
     "abort": {
-      "no_plex_provider": "No Plex music provider is loaded. Make sure your Plex provider is set up and working, then try again.",
+      "no_plex_provider": "No Plex music source is loaded. Make sure your Plex music source is set up and working, then try again.",
       "no_players": "No players are available yet. Add a player to Music Assistant first, then try again."
     }
   },
   "errors": {
-    "plextv_unlink_required": "Unlink from plex.tv in this provider's settings before changing the player or Plex music provider."
+    "plextv_unlink_required": "Unlink from plex.tv in this plugin's settings before changing the player or Plex music source."
   },
   "manifest": {
     "description": "Makes a Music Assistant player appear as a device in the official Plex apps."

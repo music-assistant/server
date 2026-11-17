@@ -359,6 +359,13 @@ class QuizType(ABC):
                 provider_instance_id_or_domain=media_item.provider,
                 limit=None,
             )
+            if not tracks:
+                # most music providers have no artist tracks listing
+                tracks = await self.mass.music.artists.top_tracks(
+                    item_id=media_item.item_id,
+                    provider_instance_id_or_domain=media_item.provider,
+                    limit=None,
+                )
         else:
             tracks = []
             offset = 0

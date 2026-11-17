@@ -290,8 +290,9 @@ def parse_playlist(
     else:
         playlist_id = raw_id
         # A playlist is editable when the authenticated user is one of its owners.
-        # This needs the "owners" relationship to be present; search omits it (it
-        # would exceed the include cap), so search results are non-editable there.
+        # This needs the "owners" relationship to be present; a search over all
+        # media types omits it (it would exceed the include cap), so those results are
+        # non-editable.
         owner_ids = doc.linkage_ids(resource, "owners")
         user_id = str(provider.auth.user_id) if provider.auth.user_id else None
         is_editable = bool(user_id and user_id in owner_ids)

@@ -281,3 +281,39 @@ async def test_create_playlist_keeps_an_existing_playlist(music_tree: Path) -> N
     assert (music_tree / "AC_DC Mix.m3u").read_text(encoding="utf-8") == "#EXTM3U\nsong.mp3\n"
     assert (music_tree / "AC_DC Mix (1).m3u").read_text(encoding="utf-8") == "#EXTM3U\n"
     provider.get_playlist.assert_awaited_once_with("AC_DC Mix (1).m3u")
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["folder.jpg", "Artist/Album/cover.png", "Book/01 Chapter.mp3?cs=1700000000", "What?.jpg"],
+)
+def test_accepts_stored_image_path_relative_paths(music_tree: Path, path: str) -> None:
+    """Paths relative to the source folder are accepted as stored image paths."""
+    assert _make_provider(str(music_tree)).accepts_stored_image_path(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "",
+        "/etc/passwd",
+        "../secret.jpg",
+        "Artist/../../secret.jpg",
+        "cover.jpg?cs=1/../../secret.jpg",
+        "Artist\\cover.jpg",
+        "//evil.com/x.jpg",
+        "http://evil/x.jpg",
+        "https://evil/x.jpg",
+        "cover.jpg\nX",
+        "notes.txt",
+        "Documents/secret.pdf",
+        "notes.txt?cs=cover.png",
+        "cover",
+        "Mix.m3u8",
+        "Mix.pls",
+        "Album/album.cue",
+    ],
+)
+def test_accepts_stored_image_path_refuses_paths(music_tree: Path, path: str) -> None:
+    """Absolute, escaping, URL-shaped, control-character and non-media paths are refused."""
+    assert not _make_provider(str(music_tree)).accepts_stored_image_path(path)

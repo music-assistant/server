@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
 import pytest
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.providers.airplay.constants import StreamingProtocol
-from music_assistant.providers.airplay.pairing import AirPlayPairing
+from music_assistant.providers.airplay.pairing import PAIR_PIN_START_HEADERS, AirPlayPairing
 
 # stderr of a pair-setup run that hit the ATV's pairing rate limit (HAP backoff)
 BACKOFF_STDERR = [
@@ -129,3 +130,30 @@ async def test_unclassified_failure_uses_generic_pairing_translation() -> None:
 
     assert excinfo.value.translation_key == "pairing_failed"
     assert "Cannot connect" in str(excinfo.value)
+
+
+async def test_raop_pin_start_sends_receiver_headers() -> None:
+    """RAOP pairing names the client on /pair-pin-start so OS 27 receivers show their PIN."""
+    pairing = AirPlayPairing(
+        address="192.168.68.60",
+        name="HomeView",
+        protocol=StreamingProtocol.RAOP,
+        logger=logging.getLogger("test.airplay.pairing"),
+        port=7000,
+        device_id="ABCDEF0123456789",
+    )
+    response = MagicMock(status=200)
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=response)
+    context.__aexit__ = AsyncMock(return_value=None)
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.post = MagicMock(return_value=context)
+    pairing._session = session
+
+    assert await pairing.start_pin_pairing()
+
+    session.post.assert_called_once()
+    assert session.post.call_args.args[0] == "http://192.168.68.60:7000/pair-pin-start"
+    headers = session.post.call_args.kwargs["headers"]
+    assert headers == PAIR_PIN_START_HEADERS
+    assert headers["X-Apple-Client-Name"] == "Music Assistant"

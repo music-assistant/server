@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest.mock
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -25,6 +26,9 @@ from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
 )
 
+if TYPE_CHECKING:
+    from music_assistant_models.streamdetails import StreamDetails
+
 TEST_PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
     sample_rate=44100,
@@ -44,6 +48,8 @@ def _create_mock_provider(
     prov.name = name
     prov.domain = domain
     prov.available = True
+    prov.unloading = False
+    prov.media_types = frozenset(MediaType)
     prov.start_analysis = AsyncMock(return_value=True)
     prov.process_pcm_chunk = AsyncMock()
     prov.finalize = AsyncMock()
@@ -477,6 +483,50 @@ async def test_idle_monitor_keeps_models_while_finalize_in_flight(
 
 
 # -- Edge cases --
+
+
+class _ReloadableProvider(AudioAnalysisProvider):
+    """Concrete provider, so its real unload() runs against the controller."""
+
+    async def _start_analysis(
+        self, session_id: str, streamdetails: StreamDetails, audio_format: AudioFormat
+    ) -> bool:
+        return True
+
+    async def process_pcm_chunk(self, session_id: str, pcm_chunk: bytes) -> None:
+        return None
+
+    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_reloaded_provider_does_not_inherit_running_sessions(
+    controller: AudioAnalysisController,
+    mock_mass: MagicMock,
+) -> None:
+    """A provider loaded under the id of an unloaded one gets none of its running sessions."""
+    mock_mass.streams.audio_analysis = controller
+    config = MagicMock(instance_id="reloaded", get_value=MagicMock(return_value="GLOBAL"))
+    old = _ReloadableProvider(mock_mass, MagicMock(domain="reloaded"), config, set())
+    new = _create_mock_provider(instance_id="reloaded", domain="reloaded")
+    other = _create_mock_provider(instance_id="other", domain="other")
+    controller._active_sessions["shared"] = {"reloaded", "other"}
+    controller._active_sessions["alone"] = {"reloaded"}
+
+    await old.unload()
+    mock_mass.get_provider = MagicMock(side_effect={"reloaded": new, "other": other}.get)
+    await controller._distribute_chunk("shared", ONE_SECOND_CHUNK)
+    controller._finalize_providers("shared")
+    await _await_tasks(mock_mass)
+
+    # a session left without providers ends, the other provider keeps its session
+    assert "alone" not in controller._active_sessions
+    other.process_pcm_chunk.assert_awaited_once()
+    other.finalize.assert_awaited_once()
+    new.start_analysis.assert_not_awaited()
+    new.process_pcm_chunk.assert_not_awaited()
+    new.finalize.assert_not_awaited()
 
 
 @pytest.mark.asyncio

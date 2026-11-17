@@ -221,7 +221,7 @@ class ResourceAuthorizer:
         if normalized is None or not self._scope_checker(user, normalized):
             return "Resource is not permitted for the current user"
         if capability in {str(Capability.QUERY_PLAYERS), str(Capability.QUERY_QUEUE)}:
-            target = _resource_target(uri)
+            target = self.mass.players.resolve_player_id(_resource_target(uri))
             allowed = getattr(user, "player_filter", None)
             if (
                 not _is_admin(user)

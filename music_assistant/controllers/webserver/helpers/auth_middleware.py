@@ -34,6 +34,9 @@ if TYPE_CHECKING:
 
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
+# API websocket query parameter and Sendspin auth message field with which a browser
+# identifies itself over Home Assistant Ingress
+INGRESS_CLIENT_KEY: Final = "ingress_client_key"
 
 _GUEST_SCOPES: Final[frozenset[Scope]] = frozenset(
     {
@@ -388,7 +391,11 @@ def is_own_client_player(player: Player | None) -> bool:
 
     :param player: The player to check, or None.
     """
-    if player is None or not player.private or player.player_id != get_sendspin_player_id():
+    # a client announces the id of its own protocol, which is attached to its player
+    client_protocol = (
+        player.attached_protocols.get(get_sendspin_player_id() or "") if player else None
+    )
+    if client_protocol is None or not client_protocol.private:
         return False
     acting_user = get_impersonated_user()
     authenticated_user = current_user.get()
@@ -422,10 +429,13 @@ def has_player_access(user: User | None, player_id: str, player: Player | None =
 
     :param user: The user to check, or None for an unauthenticated caller.
     :param player_id: The id of the player (or queue) to check access to.
-    :param player: The resolved player, when available, to honor the private client exemption.
+    :param player: The player looked up for that id, when available. Its own id is checked
+        instead of the given one (which may be a legacy id), and it honors the private
+        client exemption.
     """
     allowed = player_access_filter(user)
-    return allowed is None or player_id in allowed or is_own_client_player(player)
+    checked_id = player.player_id if player else player_id
+    return allowed is None or checked_id in allowed or is_own_client_player(player)
 
 
 def set_current_user(user: User | None) -> None:
@@ -456,15 +466,26 @@ def set_impersonated_user(user: User | None) -> None:
 
 
 @contextmanager
-def system_auth_context() -> Iterator[None]:
-    """Run the enclosed block as the server itself, without the requesting user."""
-    current_user_token = current_user.set(None)
+def user_auth_context(user: User | None) -> Iterator[None]:
+    """
+    Run the enclosed block as the given user instead of the requesting one.
+
+    :param user: The user to run the block as; None for the server itself.
+    """
+    current_user_token = current_user.set(user)
     impersonated_user_token = impersonated_user.set(None)
     try:
         yield
     finally:
         impersonated_user.reset(impersonated_user_token)
         current_user.reset(current_user_token)
+
+
+@contextmanager
+def system_auth_context() -> Iterator[None]:
+    """Run the enclosed block as the server itself, without the requesting user."""
+    with user_auth_context(None):
+        yield
 
 
 def get_current_token() -> str | None:

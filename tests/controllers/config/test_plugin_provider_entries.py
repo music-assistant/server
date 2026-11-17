@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+import pytest
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, PlayerType
 
@@ -19,9 +20,20 @@ from music_assistant.models.plugin import PluginProvider
 _STRINGS_PATH = Path(_constants.__file__).resolve().parent / "strings.json"
 
 _PLAYER_ID = "test_player"
+# a player that was merged into the tested player, which answers to its id since
+_MERGED_PLAYER_ID = "merged_player"
 _PLUGIN_INSTANCE_ID = "spotify_connect--aabbcc"
 _PLUGIN_KEY = f"{_PLUGIN_INSTANCE_ID}{CONF_PLUGIN_KEY_SPLITTER}{CONF_ENABLED}"
 _CONNECTED_PLAYERS_KEY = f"{CONF_PROVIDERS}/{_PLUGIN_INSTANCE_ID}/values/{CONF_CONNECTED_PLAYERS}"
+
+
+@pytest.fixture(autouse=True)
+def _players(mass_minimal: MusicAssistant) -> None:
+    """Let player ids resolve like the players controller does, with one merged player."""
+    mass_minimal.players = MagicMock()
+    mass_minimal.players.resolve_player_id.side_effect = lambda player_id: (
+        _PLAYER_ID if player_id == _MERGED_PLAYER_ID else player_id
+    )
 
 
 def _make_plugin_provider(*, player_bound: bool = True) -> MagicMock:
@@ -39,7 +51,7 @@ def _make_player(player_type: PlayerType = PlayerType.PLAYER) -> MagicMock:
     """Return a player mock of the given type."""
     player = MagicMock()
     player.player_id = _PLAYER_ID
-    player.state.type = player_type
+    player.type = player_type
     return player
 
 
@@ -74,6 +86,16 @@ async def test_toggle_reads_off_for_an_unconnected_player(mass_minimal: MusicAss
     entries = _plugin_entries(mass_minimal, [_make_plugin_provider()])
     assert len(entries) == 1
     assert entries[0].value is False
+
+
+async def test_toggle_reads_on_for_a_player_a_connected_one_was_merged_into(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """The toggle reads on when a connected player was merged into the player."""
+    mass_minimal.config.set(_CONNECTED_PLAYERS_KEY, [_MERGED_PLAYER_ID])
+    entries = _plugin_entries(mass_minimal, [_make_plugin_provider()])
+    assert len(entries) == 1
+    assert entries[0].value is True
 
 
 async def test_unbound_plugin_and_non_plugin_provider_yield_no_entries(
@@ -131,6 +153,34 @@ async def test_toggle_off_removes_the_player_from_the_plugin(
         _PLUGIN_INSTANCE_ID, {CONF_CONNECTED_PLAYERS: ["other_player"]}
     )
     assert result == {}
+
+
+async def test_toggle_off_removes_the_id_of_a_player_merged_into_it(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Disabling the toggle also removes a connected player that was merged into this one."""
+    mass_minimal.config.set(_CONNECTED_PLAYERS_KEY, ["other_player", _MERGED_PLAYER_ID])
+    values: dict[str, ConfigValueType] = {_PLUGIN_KEY: False}
+    with patch.object(
+        mass_minimal.config, "_update_provider_config", new_callable=AsyncMock
+    ) as update_call:
+        await mass_minimal.config._update_plugin_provider_config(_PLAYER_ID, values)
+    update_call.assert_awaited_once_with(
+        _PLUGIN_INSTANCE_ID, {CONF_CONNECTED_PLAYERS: ["other_player"]}
+    )
+
+
+async def test_toggle_on_adds_no_second_entry_for_a_merged_player(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Enabling the toggle of a player a connected one was merged into changes nothing."""
+    mass_minimal.config.set(_CONNECTED_PLAYERS_KEY, [_MERGED_PLAYER_ID])
+    values: dict[str, ConfigValueType] = {_PLUGIN_KEY: True}
+    with patch.object(
+        mass_minimal.config, "_update_provider_config", new_callable=AsyncMock
+    ) as update_call:
+        await mass_minimal.config._update_plugin_provider_config(_PLAYER_ID, values)
+    update_call.assert_not_awaited()
 
 
 async def test_unchanged_toggle_makes_no_provider_call(mass_minimal: MusicAssistant) -> None:

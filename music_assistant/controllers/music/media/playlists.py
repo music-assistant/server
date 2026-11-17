@@ -36,10 +36,17 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.helpers import create_safe_string
-from music_assistant_models.media_items import Playlist, PlaylistSummary, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    Album,
+    Playlist,
+    PlaylistSummary,
+    ProviderMapping,
+    Track,
+)
 
 from music_assistant.constants import (
     DB_TABLE_PLAYLISTS,
+    EXTERNAL_ID_PROVIDER,
     HOMEASSISTANT_SYSTEM_USER,
     PLAYLIST_MEDIA_TYPES,
     PlaylistPlayableItem,
@@ -478,42 +485,54 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
 
     async def remove_playlist_tracks(
-        self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...]
+        self,
+        db_playlist_id: str | int,
+        positions_to_remove: tuple[int, ...],
+        uris: list[str] | None = None,
     ) -> BackgroundTask:
         """
         Queue removing items from a playlist.
 
         :param db_playlist_id: Library playlist id.
         :param positions_to_remove: Provider playlist positions to remove.
+        :param uris: The uri of the item the caller sees at each position, to refuse the
+            removal when the playlist changed since it was listed.
         :return: Managed background task for the requested playlist update.
         :raises ResourceBusyError: A move or removal of the playlist is still in progress.
+        :raises InvalidDataError: An item at the positions is not the one given in uris.
         """
         playlist = await self._get_editable_library_item(db_playlist_id)
         playlist_name = playlist.name
-        # positions only hold while nothing else changes the order, so nothing waits its turn
-        self._ensure_order_idle(playlist)
-        user = get_current_user()
-        user_id = user.user_id if user else None
-        return self.mass.tasks.run_background_task(
-            name=f"Remove items from playlist {playlist_name}",
-            handler=lambda: self._handle_remove_playlist_tracks(
-                db_playlist_id, positions_to_remove, user_id
-            ),
-            translation_key="remove_playlist_tracks",
-            translation_owner=self.translation_owner,
-            translation_args=[playlist_name],
-            user_id=user.user_id if user else None,
-            metadata={
-                "task_domain": _PLAYLIST_REMOVE_TASK_DOMAIN,
-                "playlist_id": playlist.item_id,
-                "playlist_name": playlist_name,
-                "item_count": len(positions_to_remove),
-            },
-            priority=True,
-        )
+        # positions only hold while nothing else changes the order, so nothing waits its turn;
+        # the queued task keeps refusing other edits until it is done
+        with self._moving_order(playlist):
+            await self._ensure_positions_hold(playlist, positions_to_remove, uris)
+            user = get_current_user()
+            user_id = user.user_id if user else None
+            return self.mass.tasks.run_background_task(
+                name=f"Remove items from playlist {playlist_name}",
+                handler=lambda: self._handle_remove_playlist_tracks(
+                    db_playlist_id, positions_to_remove, user_id
+                ),
+                translation_key="remove_playlist_tracks",
+                translation_owner=self.translation_owner,
+                translation_args=[playlist_name],
+                user_id=user.user_id if user else None,
+                metadata={
+                    "task_domain": _PLAYLIST_REMOVE_TASK_DOMAIN,
+                    "playlist_id": playlist.item_id,
+                    "playlist_name": playlist_name,
+                    "item_count": len(positions_to_remove),
+                },
+                priority=True,
+            )
 
     async def move_playlist_track(
-        self, db_playlist_id: str | int, from_position: int, to_position: int
+        self,
+        db_playlist_id: str | int,
+        from_position: int,
+        to_position: int,
+        uri: str | None = None,
     ) -> None:
         """
         Move one item of a playlist to another position.
@@ -523,7 +542,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param db_playlist_id: Library playlist id.
         :param from_position: The current position of the item, 1-based.
         :param to_position: The position the item ends up at after the move, 1-based.
+        :param uri: The uri of the item the caller sees at from_position, to refuse the move
+            when the playlist changed since it was listed.
         :raises ResourceBusyError: A move or removal of the playlist is still in progress.
+        :raises InvalidDataError: The item at from_position is not the one given in uri.
         """
         playlist, provider, playlist_prov_item_id = await self._get_reorderable_playlist(
             db_playlist_id
@@ -534,6 +556,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if from_position == to_position:
             return
         with self._moving_order(playlist):
+            await self._ensure_positions_hold(
+                playlist, (from_position,), None if uri is None else [uri]
+            )
             await provider.move_playlist_track(playlist_prov_item_id, from_position, to_position)
             await self._refresh_provider_playlist_tracks(
                 playlist_prov_item_id, provider.instance_id
@@ -541,7 +566,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
             await self._request_metadata_refresh(playlist)
 
     async def move_playlist_tracks(
-        self, db_playlist_id: str | int, positions: list[int], to_position: int | None = None
+        self,
+        db_playlist_id: str | int,
+        positions: list[int],
+        to_position: int | None = None,
+        uris: list[str] | None = None,
     ) -> None:
         """
         Move items of a playlist as one block to another position.
@@ -554,7 +583,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param positions: The current positions of the items, 1-based.
         :param to_position: The position the block's first item ends up at, 1-based. Omit it
             to move the items to the end of the playlist.
+        :param uris: The uri of the item the caller sees at each position, to refuse the move
+            when the playlist changed since it was listed.
         :raises ResourceBusyError: A move or removal of the playlist is still in progress.
+        :raises InvalidDataError: An item at the positions is not the one given in uris.
         """
         playlist, provider, playlist_prov_item_id = await self._get_reorderable_playlist(
             db_playlist_id
@@ -574,6 +606,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         ):
             return
         with self._moving_order(playlist):
+            await self._ensure_positions_hold(playlist, positions, uris)
             try:
                 await provider.move_playlist_tracks(playlist_prov_item_id, selected, to_position)
             finally:
@@ -1836,7 +1869,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def _add_audio_metadata(self, items: Sequence[PlaylistPlayableItem]) -> None:
         """
-        Fill in bpm and musical key from stored audio analysis on tracks that lack them.
+        Fill in bpm, musical key and energy level from stored audio analysis on tracks that lack them.
 
         :param items: One page of playlist items, updated in place.
         """
@@ -1968,8 +2001,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
             # special: the builtin provider can handle uri's from all providers (with uri as id)
             if playlist_prov.domain == "builtin":
-                # it stores the uri as given, so one naming a source the user may not see is
-                # left out here (it resolves the items itself, as this user, when read)
+                # it takes the uri as given, so one naming a source the user may not see is
+                # left out here (it resolves the items itself, as this user)
                 _, provider_instance_id_or_domain, _ = await parse_uri(uri)
                 if provider_instance_id_or_domain in hidden_sources:
                     self.logger.warning(
@@ -2023,7 +2056,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "AudiobooksController | RadioController | TracksController",
                 self.mass.music.get_controller(media_type),
             )
-            if media_type == MediaType.TRACK:
+            # a track known only by an external id costs its lookup and nothing more
+            looked_up: Track | None = None
+            if provider_instance_id_or_domain == EXTERNAL_ID_PROVIDER:
+                try:
+                    looked_up = await self.mass.music.tracks.get(
+                        item_id, EXTERNAL_ID_PROVIDER, allow_update_metadata=False, recursive=False
+                    )
+                except MediaNotFoundError as err:
+                    self.logger.warning("Can't add %s to playlist %s - %s", uri, playlist.name, err)
+                    report_current_task_failure(f"Can't add {uri} to playlist: {err}")
+                    continue
+                full_item = looked_up
+            elif media_type == MediaType.TRACK:
                 assert isinstance(controller, TracksController)  # for type checking
                 full_item = await controller.get(
                     item_id,
@@ -2043,13 +2088,22 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 and playlist_prov.domain not in track_prov_domains
             ):
                 # try to match the track to the playlist's provider
-                full_item.provider_mappings.update(
-                    await controller.match_provider(
+                if looked_up is not None:
+                    # the album the lookup found is the reference, so no album search runs
+                    album = looked_up.album
+                    matches = await self.mass.music.tracks.match_provider(
+                        looked_up,
+                        playlist_prov,
+                        strict=False,
+                        ref_albums=[album] if isinstance(album, Album) else [],
+                    )
+                else:
+                    matches = await controller.match_provider(
                         full_item,  # type: ignore[arg-type]
                         playlist_prov,
                         strict=False,
                     )
-                )
+                full_item.provider_mappings.update(matches)
 
             # a track can contain multiple versions on the same provider
             # simply sort by quality and just add the first available version
@@ -2101,10 +2155,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
         update_current_task_progress(90, f"Adding {len(ids_to_add)} item(s) to playlist")
         task = get_current_task()
         failures_before = task.failure_count if task else 0
-        await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
+        try:
+            await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
+        finally:
+            # an add that fails or is cancelled part way can leave some of the items added
+            await self._after_tracks_change(playlist, playlist_prov, playlist_prov_item_id)
         # the provider reports each item it could not add as a task failure
         skipped = task.failure_count - failures_before if task else 0
-        await self._request_metadata_refresh(playlist)
         update_current_task_progress(100, f"Added {len(ids_to_add) - skipped} item(s) to playlist")
 
     async def _handle_remove_playlist_tracks(
@@ -2126,8 +2183,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if ProviderFeature.PLAYLIST_TRACKS_EDIT not in provider.supported_features:
             msg = f"Provider {provider.name} does not support editing playlists"
             raise InvalidDataError(msg)
-        await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
-        await self._request_metadata_refresh(playlist)
+        try:
+            await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
+        finally:
+            # a removal that fails or is cancelled part way can leave some of the items removed
+            await self._after_tracks_change(playlist, provider, playlist_prov_item_id)
 
     async def _get_reorderable_playlist(
         self, db_playlist_id: str | int
@@ -2174,6 +2234,33 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 )
                 raise ResourceBusyError(msg)
 
+    async def _ensure_positions_hold(
+        self, playlist: Playlist, positions: Sequence[int], uris: Sequence[str] | None
+    ) -> None:
+        """
+        Refuse an edit by position when the playlist no longer holds the given items there.
+
+        :param playlist: Library playlist about to be edited.
+        :param positions: The positions to edit, 1-based.
+        :param uris: The uri the caller expects at each position; None skips the check.
+        :raises InvalidDataError: The number of uris does not match the positions, or an item
+            at the positions is not the one expected.
+        """
+        if uris is None:
+            return
+        if len(uris) != len(positions):
+            msg = "Pass one uri for each playlist position"
+            raise InvalidDataError(msg)
+        current = {
+            item.position: item.uri
+            for item in await self.tracks(playlist.item_id, "library", force_refresh=True, limit=0)
+        }
+        if any(current.get(pos) != uri for pos, uri in zip(positions, uris, strict=True)):
+            # announce the playlist, so a client showing an older listing reads it again
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, playlist.uri, playlist)
+            msg = f"Playlist {playlist.name} changed since it was listed"
+            raise InvalidDataError(msg, translation_key="playlist_changed")
+
     @contextmanager
     def _moving_order(self, playlist: Playlist) -> Iterator[None]:
         """
@@ -2215,6 +2302,29 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 provider_instance_id,
                 err,
             )
+
+    async def _after_tracks_change(
+        self, playlist: Playlist, provider: MusicProvider, prov_playlist_id: str
+    ) -> None:
+        """
+        Let the next look at a playlist see its tracks as they are after a change to them.
+
+        :param playlist: The library playlist whose tracks were changed.
+        :param provider: The provider the change was made on.
+        :param prov_playlist_id: The id of the playlist on that provider.
+        """
+        try:
+            await provider.forget_playlist_tracks(prov_playlist_id)
+        except Exception as err:
+            # the outcome of the change stands, only the kept copy may stay until it expires
+            self.logger.warning(
+                "Provider %s could not forget the tracks it kept of playlist %s: %s",
+                provider.name,
+                playlist.name,
+                err,
+            )
+        finally:
+            await self._request_metadata_refresh(playlist)
 
     async def _request_metadata_refresh(self, playlist: Playlist) -> None:
         """Have the next metadata run refresh the playlist, and announce its changed items."""

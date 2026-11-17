@@ -48,6 +48,9 @@ class MSXBridgeProvider(PlayerProvider):
     group_stream_mode: str = DEFAULT_GROUP_STREAM_MODE
     _player_last_activity: dict[str, float]
     _pending_unregisters: dict[str, asyncio.Event]
+    # the player of each TV that connected, also one that is not attached (idle, or its
+    # player is disabled), to attach again when the TV is back or its player is enabled
+    _tvs: dict[str, MSXPlayer]
     _stream_token_secret: bytes
     _timeout_task: asyncio.Task[None] | None = None
     _background_tasks: set[asyncio.Task[None]]  # fire-and-forget tasks (unregister, stream stop)
@@ -57,6 +60,7 @@ class MSXBridgeProvider(PlayerProvider):
         super().__init__(*args, **kwargs)
         self._player_last_activity = {}
         self._pending_unregisters = {}
+        self._tvs = {}
         # one secret per provider instance; the per-player tokens derive from it
         self._stream_token_secret = secrets.token_bytes(32)
         self._background_tasks = set()
@@ -119,7 +123,7 @@ class MSXBridgeProvider(PlayerProvider):
         self.logger.info("MSX Bridge provider loaded — players register on demand")
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload — stop timeout task, HTTP server, then unregister players."""
+        """Handle unload — stop timeout task and HTTP server."""
         if self._timeout_task and not self._timeout_task.done():
             self._timeout_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -136,82 +140,95 @@ class MSXBridgeProvider(PlayerProvider):
 
         if self.http_server:
             await self.http_server.stop()
-        players = self.mass.players.iter_players(
-            return_disabled=True,
-            provider_filter=self.instance_id,
-            return_protocol_players=True,
-        )
-        for player in players:
-            try:
-                self.logger.debug("Unloading player %s", player.display_name)
-                await self.mass.players.unregister(player.player_id)
-            except MusicAssistantError:
-                self.logger.exception("Error unregistering player %s", player.player_id)
         self._player_last_activity.clear()
         self.logger.info("MSX Bridge provider unloaded")
+
+    async def discover_players(self) -> None:
+        """Register the TVs that were active lately and are not attached, such as a re-enabled one."""
+        for player_id, player in list(self._tvs.items()):
+            if (
+                player_id in self._player_last_activity
+                and self.get_protocol(player_id) is None
+                and self.mass.players.wants_protocol(player_id)
+            ):
+                await self.mass.players.register(player)
 
     async def get_or_register_player(
         self,
         player_id: str,
         display_name: str | None = None,
         ip_address: str | None = None,
+        device_id: str | None = None,
     ) -> MSXPlayer:
-        """Return the MSX player for this ID, registering it if needed."""
+        """
+        Return the MSX player for this TV, registering it if needed.
+
+        The player of a TV the user disabled is returned without registering it.
+        """
         # Wait for any pending unregister to complete (race condition handling)
         if pending_event := self._pending_unregisters.get(player_id):
             self.logger.debug("Waiting for pending unregister of %s before registering", player_id)
             await pending_event.wait()
-        existing = self.mass.players.get_player(player_id, raise_unavailable=False)
+        existing = self.get_protocol(player_id)
         if existing and isinstance(existing, MSXPlayer):
-            if ip_address and not existing.device_info.ip_address:
+            if ip_address and existing.device_info.ip_address != ip_address:
                 existing.device_info.ip_address = ip_address
+                # publishes the identity of the TV under its new address
+                await self.mass.players.register(existing)
             self.on_player_activity(player_id)
             return existing
-        name = display_name or self.player_display_name(player_id)
-        player = MSXPlayer(
-            provider=self,
-            player_id=player_id,
-            name=name,
-            ip_address=ip_address,
-        )
-        await self.mass.players.register(player)
+        if (player := self._tvs.get(player_id)) is None:
+            name = display_name or self.player_display_name(player_id)
+            player = MSXPlayer(
+                provider=self,
+                protocol_id=player_id,
+                name=name,
+                ip_address=ip_address,
+                device_id=device_id,
+            )
+            self._tvs[player_id] = player
+        elif ip_address:
+            player.device_info.ip_address = ip_address
         self._player_last_activity[player_id] = time.monotonic()
-        self.logger.info("Registered MSX player: %s (%s)", name, player_id)
+        if self.mass.players.wants_protocol(player_id):
+            player.mark_available()
+            await self.mass.players.register(player)
+            self.logger.info("Registered MSX player: %s (%s)", player.display_name, player_id)
         return player
+
+    def get_player_id(self, player_id: str) -> str:
+        """
+        Return the id of the player a TV is attached to, for the player and queue commands.
+
+        Returns the given id while the TV is not attached.
+
+        :param player_id: The id of the TV.
+        """
+        if (player := self.get_protocol(player_id)) is not None and player.player is not None:
+            return player.player.player_id
+        return player_id
 
     def on_player_activity(self, player_id: str) -> None:
         """Record activity for a player (extends idle timeout)."""
         # Monotonic: a wall-clock NTP step must not age players past the cutoff
         self._player_last_activity[player_id] = time.monotonic()
-        player = self.mass.players.get_player(player_id, raise_unavailable=False)
+        player = self.get_protocol(player_id)
         if isinstance(player, MSXPlayer):
             player.mark_available()
 
-    def on_player_disabled(self, player_id: str) -> None:
-        """Disable the player and stop playback while retaining its registration."""
-        # MSX players are registered on demand; unregister on disable would remove them
-        # from the list. On enable, discovery is empty so the player would not come back
-        # until the TV reconnects. We keep the player registered but disabled so it stays
-        # visible in the list when re-enabled.
-        #
-        # Still stop playback on TV by broadcasting stop and cancelling streams.
+    def stop_tv(self, player_id: str) -> None:
+        """Stop playback on the TV by broadcasting stop and cancelling its streams."""
         if self.http_server:
             self.http_server.broadcast_stop(player_id)
             self.http_server.cancel_streams_for_player(player_id)
-        # Do NOT call super() — base PlayerProvider unregisters the player here.
 
-    def on_player_enabled(self, player_id: str) -> None:
-        """Handle player enabled: no-op, player already registered."""
-        # Player was never unregistered (see on_player_disabled), so nothing to do.
-
-    async def remove_player(self, player_id: str) -> None:
-        """Remove the player; it may register again when the TV reconnects."""
+    def forget_player(self, player_id: str) -> None:
+        """Stop the TV of a removed player; it may attach again when the TV reconnects."""
         # Called when user chooses to remove the player from MA.
-        # This fully unregisters the player. It will reappear if the TV reconnects.
-        if self.http_server:
-            self.http_server.broadcast_stop(player_id)
-            self.http_server.cancel_streams_for_player(player_id)
-        await self._handle_player_unregister(player_id)
+        # It will reappear if the TV reconnects.
+        self.stop_tv(player_id)
+        self._player_last_activity.pop(player_id, None)
+        self._tvs.pop(player_id, None)
         self.logger.info("Player %s removed by user", player_id)
 
     def notify_native_track_started(self, player_id: str) -> None:
@@ -304,7 +321,7 @@ class MSXBridgeProvider(PlayerProvider):
         """
         # Derived rather than stored, so a caller cannot grow provider state by asking for
         # tokens under new player ids. It stays the same for the provider's lifetime: an
-        # idle TV is unregistered after the configured timeout, and changing the token there
+        # idle TV is detached after the configured timeout, and changing the token there
         # would strand the URLs a long-running TV session has already cached.
         digest = hmac.new(self._stream_token_secret, player_id.encode(), hashlib.sha256)
         return digest.hexdigest()[:32]
@@ -412,16 +429,16 @@ class MSXBridgeProvider(PlayerProvider):
                 break
             now = time.monotonic()
             cutoff = now - (timeout_minutes * 60)
-            for player in list(self.players):
+            for player in list(self.protocols):
                 if not isinstance(player, MSXPlayer):
                     continue
-                last = self._player_last_activity.get(player.player_id, 0)
+                last = self._player_last_activity.get(player.protocol_id, 0)
                 if last > 0 and last < cutoff:
                     self.logger.info(
                         "Unregistering idle MSX player %s (no activity for %d min)",
-                        player.player_id,
+                        player.protocol_id,
                         timeout_minutes,
                     )
-                    task = self.mass.create_task(self._handle_player_unregister(player.player_id))
+                    task = self.mass.create_task(self._handle_player_unregister(player.protocol_id))
                     self._background_tasks.add(task)
                     task.add_done_callback(self._background_tasks.discard)

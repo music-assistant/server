@@ -8,10 +8,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
+from music_assistant_models.media_items import BrowseFolder
+from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.models.music_provider import (
     DEFAULT_MAX_CONCURRENT_STREAMS,
     MusicProvider,
+    ProviderStreamHeldError,
     ProviderStreamLimitError,
 )
 
@@ -68,6 +71,29 @@ def test_supported_media_types_default_follows_library_features() -> None:
     assert provider.supported_media_types == {MediaType.TRACK, MediaType.PLAYLIST}
 
 
+async def test_browse_root_library_folders_play_only_tracks() -> None:
+    """Of the library folders at the browse root, only the tracks folder is playable."""
+    provider = _make_provider(
+        _StreamingProvider,
+        supported_features={
+            ProviderFeature.BROWSE,
+            ProviderFeature.LIBRARY_ARTISTS,
+            ProviderFeature.LIBRARY_ALBUMS,
+            ProviderFeature.LIBRARY_TRACKS,
+            ProviderFeature.LIBRARY_PLAYLISTS,
+        },
+    )
+
+    folders = await provider.browse("test_provider--1://")
+
+    assert {f.item_id: f.is_playable for f in folders if isinstance(f, BrowseFolder)} == {
+        "artists": False,
+        "albums": False,
+        "tracks": True,
+        "playlists": False,
+    }
+
+
 def test_streaming_provider_has_conservative_default() -> None:
     """Unknown streaming providers default to five concurrent sources."""
     provider = _make_provider(_StreamingProvider)
@@ -100,6 +126,29 @@ async def test_stream_slot_is_scoped_per_provider_instance() -> None:
         assert exc_info.value.translation_args == ["Test Provider", 1]
 
     assert first.has_available_stream_slot
+
+
+def test_a_held_stream_slot_names_the_player_and_stays_a_capacity_error() -> None:
+    """The refusal tells the user and the client which player holds the slot."""
+    provider = _make_provider(_SingleStreamProvider)
+    holder = PlayerQueue(
+        queue_id="kitchen", active=True, display_name="Kitchen", available=True, items=1
+    )
+
+    err = ProviderStreamHeldError(provider, holder)
+
+    assert isinstance(err, ProviderStreamLimitError)
+    assert err.error_code == 29
+    assert str(err) == "Test Provider is already playing on Kitchen"
+    assert err.translation_key == "provider_stream_held"
+    assert err.translation_args == ["Test Provider", "Kitchen"]
+    assert err.data == {
+        "queue_id": "kitchen",
+        "player_name": "Kitchen",
+        "provider_instance": "test_provider--1",
+    }
+    assert err.provider_instance == "test_provider--1"
+    assert err.limit == 1
 
 
 async def test_stream_slot_is_granted_once_released() -> None:

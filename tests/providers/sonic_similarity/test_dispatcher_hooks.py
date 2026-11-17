@@ -65,7 +65,9 @@ class TestGetSimilarTracks:
         plugin._handle_similar.assert_awaited_once_with(
             item_id="seed_id", seed_provider="spotify", limit=10, preset="balanced", diversity=0.0
         )
-        mock_mass.music.tracks.get.assert_awaited_once_with("result1", "spotify")
+        mock_mass.music.tracks.get.assert_awaited_once_with(
+            "result1", "spotify", allow_update_metadata=False, recursive=False
+        )
 
     @pytest.mark.asyncio
     async def test_falls_back_to_signatures_by_id(

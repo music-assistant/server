@@ -1,10 +1,12 @@
 """Tests for utility/helper functions."""
 
+import asyncio
 import logging
 import os
 import signal
 import subprocess
 import sys
+import threading
 from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -588,6 +590,20 @@ def test_interface_name_for_ip_no_match() -> None:
         assert util.interface_name_for_ip("10.0.0.1") is None
 
 
+def test_interface_name_for_ip_matches_any_ipv6_notation() -> None:
+    """An IPv6 address written in a non-canonical notation still resolves to its interface."""
+    adapters = [
+        _make_mock_adapter("eth0", ipv6_addrs=[("2001:db8::10", 0, 2)]),
+    ]
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+        assert util.interface_name_for_ip("2001:DB8:0:0::10") == "eth0"
+
+
+def test_interface_name_for_ip_rejects_a_non_ip_value() -> None:
+    """A value that is not an IP address returns None."""
+    assert util.interface_name_for_ip("not-an-ip") is None
+
+
 @pytest.mark.parametrize("capability", ["DEFAULT", "NO AVX"])
 def test_ml_inference_probe_rejects_no_avx2(capability: str) -> None:
     """A no-AVX2 CPU is rejected before any kernel runs (safe to check in-process)."""
@@ -1060,3 +1076,31 @@ def test_encoded_request_url(url: str, expected: str | URL) -> None:
     assert type(result) is type(expected)
     # the percent-escapes must survive intact for auth-bearing stream URLs
     assert str(result) == url
+
+
+async def test_get_mac_address_gives_up_on_a_hanging_lookup() -> None:
+    """A hanging getmac lookup must not block callers, nor tie up a thread per call."""
+    release = threading.Event()
+    calls: list[str] = []
+
+    def hanging_lookup(ip: str) -> str:
+        calls.append(ip)
+        release.wait(5)
+        return "aa:bb:cc:dd:ee:ff"
+
+    try:
+        with (
+            patch("getmac.get_mac_address", new=hanging_lookup),
+            patch.object(util, "MAC_LOOKUP_TIMEOUT", 0.1),
+        ):
+            assert await util.get_mac_address("192.168.1.10") is None
+            assert await util.get_mac_address("192.168.1.10") is None
+            assert calls == ["192.168.1.10"]
+            release.set()
+            async with asyncio.timeout(2):
+                while util._PENDING_MAC_LOOKUPS:
+                    await asyncio.sleep(0.01)
+            assert await util.get_mac_address("192.168.1.10") == "aa:bb:cc:dd:ee:ff"
+            assert len(calls) == 2
+    finally:
+        release.set()

@@ -34,6 +34,16 @@ from .helpers import get_cli_binary
 # Timeout for the binary to complete the SRP exchange after the PIN is entered
 PAIR_SETUP_TIMEOUT = 60
 
+# Headers the receiver needs to show its PIN on /pair-pin-start: OS 27 receivers
+# refuse the request without HAP headers and only display the code when the
+# client names itself. Same values as the cliairplay binary sends.
+PAIR_PIN_START_HEADERS = {
+    "User-Agent": "AirPlay/670.6.2",
+    "X-Apple-HKP": "3",
+    "Content-Type": "application/octet-stream",
+    "X-Apple-Client-Name": "Music Assistant",
+}
+
 # HAP error tag in the binary's pair-setup stderr lines ("... error tag: 3 (backoff ...)")
 HAP_ERROR_TAG_RE = re.compile(r"error tag: (\d+)")
 
@@ -147,6 +157,7 @@ class AirPlayPairing:
             # Request PIN to be shown on device
             async with self._session.post(
                 f"{self._base_url}/pair-pin-start",
+                headers=PAIR_PIN_START_HEADERS,
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status != 200:

@@ -70,6 +70,7 @@ def _controller(item: QueueItem) -> PlayerQueuesController:
     ctrl._get_next_index = Mock(return_value=None)  # type: ignore[method-assign]
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     ctrl.mass.streams.is_smart_fades_active.return_value = False
     ctrl.mass.music.get_playback_speed = AsyncMock(return_value=1.0)
     ctrl.mass.players.play_media = AsyncMock()
@@ -83,18 +84,17 @@ def _member(state: PlaybackState, elapsed: float, *, synced_to: str | None = Non
         player_id=QUEUE_ID,
         type=PlayerType.PLAYER,
         extra_data={},
-        active_output_protocol=None,
-        current_media=SimpleNamespace(
-            source_id=source, queue_item_id="other" if synced_to else "own", uri=None
+        resolve_output_protocol=lambda: SimpleNamespace(
+            current_media=SimpleNamespace(
+                source_id=source, queue_item_id="other" if synced_to else "own", uri=None
+            )
         ),
-        state=SimpleNamespace(
-            name="Member",
-            available=True,
-            playback_state=state,
-            corrected_elapsed_time=elapsed,
-            group_members=[],
-            active_source=source,
-        ),
+        name="Member",
+        available=True,
+        playback_state=state,
+        corrected_elapsed_time=elapsed,
+        group_members=[],
+        active_source=source,
     )
     return cast("Player", player)
 
