@@ -4858,7 +4858,9 @@ class TestAddCurrentlyPlayingToFavoritesResolution:
     async def test_no_active_source(self, mock_mass: MagicMock) -> None:
         """A player without an active source has nothing to add."""
         _search_tracks(mock_mass)
-        idle = SimpleNamespace(player_id="player1", active_source=None, current_media=None)
+        idle = SimpleNamespace(
+            player_id="player1", name="Player 1", active_source=None, current_media=None
+        )
 
         with pytest.raises(PlayerCommandFailed, match="Player has no active source"):
             await self._add(mock_mass, idle, None)
