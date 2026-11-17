@@ -2625,7 +2625,7 @@ class StreamsAudio:
         session_id: str | None = None,
         protocol_player: PlayerProtocol | None = None,
         consumer_connected: Callable[[], bool] | None = None,
-        flow_sample_rate: Callable[[StreamDetails], Awaitable[int]] | None = None,
+        flow_restart: Callable[[StreamDetails], Awaitable[bool]] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get a flow stream of all tracks in the queue as raw PCM audio.
@@ -2644,10 +2644,9 @@ class StreamsAudio:
         :param consumer_connected: Reports whether the consumer of this stream is still
             connected; once it reports False, the stream ends before its next item and
             does not report the queue completed.
-        :param flow_sample_rate: Returns the rate the consumer starts a flow stream at for
-            an item, for a consumer that picks that rate itself (such as a group that serves
-            several players with one stream). The stream restarts for an item it returns a
-            higher rate for than the stream runs at.
+        :param flow_restart: Returns whether the stream restarts for an item, for a consumer
+            that picks the rate of its flow streams itself (such as a group that serves
+            several players with one stream). It takes the place of the sample rate check.
         """
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
@@ -2762,9 +2761,9 @@ class StreamsAudio:
                     if _consumer_left():
                         return
 
-                next_flow_sample_rate = (
-                    await flow_sample_rate(queue_track.streamdetails)
-                    if flow_sample_rate is not None
+                consumer_restarts = (
+                    await flow_restart(queue_track.streamdetails)
+                    if flow_restart is not None
                     and queue_track.streamdetails is not None
                     and queue_track is not start_queue_item
                     else None
@@ -2775,7 +2774,7 @@ class StreamsAudio:
                     flow_supported_sample_rates,
                     flow_mode_sample_rate_conf,
                     is_first_track=queue_track is start_queue_item,
-                    next_flow_sample_rate=next_flow_sample_rate,
+                    consumer_restarts=consumer_restarts,
                 ):
                     break
 
@@ -5900,7 +5899,7 @@ class StreamsAudio:
         supported_sample_rates: list[int],
         flow_mode_sample_rate_conf: str,
         is_first_track: bool,
-        next_flow_sample_rate: int | None = None,
+        consumer_restarts: bool | None = None,
     ) -> bool:
         """
         Return True if the upcoming queue track requires exiting the flow stream.
@@ -5912,9 +5911,9 @@ class StreamsAudio:
           the controller will fall back to a single-item stream.
         - Sample rate mismatch ('smart' / 'bit_perfect' modes only): the next
           track's sample rate (snapped up to the closest supported player rate,
-          mirroring select_flow_pcm_format's anchoring logic, or the rate the consumer
-          of the flow picks for it) is incompatible with the current flow rate, so a new
-          flow must be opened.
+          mirroring select_flow_pcm_format's anchoring logic) is incompatible with
+          the current flow rate, so a new flow must be opened. A consumer that decides
+          about restarts itself takes the place of this check.
 
         The first (anchor) track is always allowed to continue for the sample
         rate check; select_flow_pcm_format has already snapped the flow rate to it.
@@ -5924,8 +5923,8 @@ class StreamsAudio:
         :param supported_sample_rates: Sorted list of the player's supported rates.
         :param flow_mode_sample_rate_conf: The flow mode sample rate config value.
         :param is_first_track: Whether this is the first track of the flow stream.
-        :param next_flow_sample_rate: The rate the consumer of the flow starts a flow at for
-            the upcoming track, if it picks that rate itself.
+        :param consumer_restarts: Whether the consumer of the flow restarts it for the
+            upcoming track, if it decides that itself.
         """
         # live audio (radio, plugin or audio source) cannot be flowed; let the
         # queue controller fall back to single-item streaming for this item
@@ -5941,20 +5940,25 @@ class StreamsAudio:
 
         if is_first_track or queue_track.streamdetails is None:
             return False
+        if consumer_restarts is not None:
+            if consumer_restarts:
+                self.logger.info(
+                    "Track %s (%s) needs a new flow stream for the consumer of the flow "
+                    "- breaking out to restart flow stream",
+                    queue_track.queue_item_id,
+                    queue_track.name,
+                )
+            return consumer_restarts
         raw_next_rate = queue_track.streamdetails.audio_format.sample_rate
         if not raw_next_rate or not supported_sample_rates:
             return False
-        effective_next_rate = next_flow_sample_rate or _snap_supported_rate_up(
-            raw_next_rate, supported_sample_rates
-        )
+        effective_next_rate = _snap_supported_rate_up(raw_next_rate, supported_sample_rates)
 
         # branch order mirrors select_flow_pcm_format: fixed-rate modes resample
         # everything to the chosen rate (no restart); bit_perfect restarts on any
         # mismatch; anything else falls through to smart-anchor behavior so
         # unknown/legacy config values don't silently pin the flow forever.
-        # A fixed mode only fixes the rate of the protocol's own output, so a consumer
-        # that picks the flow rate itself restarts as in smart mode.
-        if next_flow_sample_rate is None and flow_mode_sample_rate_conf in (
+        if flow_mode_sample_rate_conf in (
             FLOW_MODE_SAMPLE_RATE_48000,
             FLOW_MODE_SAMPLE_RATE_96000,
             FLOW_MODE_SAMPLE_RATE_HIGHEST,

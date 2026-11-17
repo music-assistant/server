@@ -1832,7 +1832,7 @@ class StreamsController(CoreController):
         pcm_format: AudioFormat,
         player_id: str | None = None,
         force_flow_mode: bool = False,
-        flow_sample_rate: Callable[[StreamDetails], Awaitable[int]] | None = None,
+        flow_restart: Callable[[StreamDetails], Awaitable[bool]] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get a stream of the given media as raw PCM audio.
@@ -1846,8 +1846,8 @@ class StreamsController(CoreController):
             if flow mode should be used based on the player's capabilities.
         :param force_flow_mode: Force flow mode regardless of player capabilities.
             Used for multi-client streaming scenarios that require continuous streams.
-        :param flow_sample_rate: For a consumer that picks the rate of its flow stream
-            itself, see ``get_queue_flow_stream``.
+        :param flow_restart: For a consumer that picks the rate of its flow stream itself,
+            see ``get_queue_flow_stream``.
         """
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
@@ -1918,7 +1918,7 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,
                     session_id=queue_session_id,
                     protocol_player=protocol_player,
-                    flow_sample_rate=flow_sample_rate,
+                    flow_restart=flow_restart,
                 )
                 if mix_overlay:
                     flow_stream = self.audio.get_overlay_mixed_stream(

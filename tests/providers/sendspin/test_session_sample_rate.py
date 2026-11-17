@@ -55,6 +55,12 @@ _FLOW_MODES = (
     FLOW_MODE_SAMPLE_RATE_HIGHEST,
 )
 _FLOW_MODE_PAIRS = [(leader, member) for leader in _FLOW_MODES for member in _FLOW_MODES]
+_HAND_OVER_MODES = (
+    FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
+    FLOW_MODE_SAMPLE_RATE_SMART,
+    FLOW_MODE_SAMPLE_RATE_48000,
+)
+_HAND_OVER_MODE_PAIRS = [(old, new) for old in _HAND_OVER_MODES for new in _HAND_OVER_MODES]
 
 if TYPE_CHECKING:
     import pytest
@@ -67,6 +73,12 @@ FLAC_48K = SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=4
 FLAC_44K = SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=44100, bit_depth=16)
 FLAC_96K = SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=96000, bit_depth=24)
 OPUS_48K = SupportedAudioFormat(codec=AudioCodec.OPUS, channels=2, sample_rate=48000, bit_depth=16)
+# a member that stays in the group when its leader leaves
+_OTHER_MEMBER: tuple[list[SupportedAudioFormat], str, SupportedAudioFormat | None] = (
+    [FLAC_48K, FLAC_44K],
+    SENDSPIN_FORMAT_AUTOMATIC,
+    None,
+)
 # per member, leader first: its formats, its configured format and the format it asks for
 _MEMBER_SET_UPS: dict[
     str, list[tuple[list[SupportedAudioFormat], str, SupportedAudioFormat | None]]
@@ -386,33 +398,61 @@ async def test_predicted_rate_is_the_rate_a_session_start_picks() -> None:
     """For every member set-up and rate setting, the predicted rate is what a session start picks."""
     for name, members in _MEMBER_SET_UPS.items():
         for leader_mode, member_mode in _FLOW_MODE_PAIRS:
-            leader = _group_of(members, leader_mode, member_mode)
+            modes = [leader_mode] + [member_mode] * (len(members) - 1)
+            leader = _group_of(members, modes)[0]
             for previous_rate in (44100, 96000):
                 for item_rate in (32000, 44100, 48000, 88200, 96000, 192000):
                     running = await _start_session(leader, previous_rate)
-                    current = running._pcm_format
+                    current = running._pcm_format.sample_rate
                     item = _flow_item("next", item_rate)
 
-                    predicted = await _flow_sample_rate(running)(item.streamdetails)
-                    restarts = leader.mass.streams.audio._flow_stream_needs_restart(
-                        cast("Any", item),
-                        current,
-                        sorted({rate for rate, _ in leader.get_supported_sample_rates()}),
-                        leader_mode,
-                        is_first_track=False,
-                        next_flow_sample_rate=predicted,
-                    )
+                    predicted = await running.get_session_sample_rate(item.streamdetails)
+                    restarts = await _flow_restart(running)(item.streamdetails)
                     started = (await _start_session(leader, item_rate))._pcm_format.sample_rate
 
                     case = (name, leader_mode, member_mode, previous_rate, item_rate)
                     assert predicted == started, case
-                    assert restarts == (
-                        started > current.sample_rate
-                        or (
-                            leader_mode == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
-                            and started != current.sample_rate
-                        )
-                    ), case
+                    assert restarts == _restart_due(started, current, leader_mode), case
+
+
+async def test_restart_decision_follows_the_group_after_a_hand_over() -> None:
+    """After a hand-over, a flow restarts as the group that plays on would decide."""
+    for name, members in _MEMBER_SET_UPS.items():
+        for old_mode, new_mode in _HAND_OVER_MODE_PAIRS:
+            for previous_rate in (44100, 96000):
+                old_leader, new_leader, other = _group_of(
+                    [*members, _OTHER_MEMBER], [old_mode, new_mode, FLOW_MODE_SAMPLE_RATE_SMART]
+                )
+                running = await _start_session(old_leader, previous_rate)
+                current = running._pcm_format.sample_rate
+                flow_restart = _flow_restart(running)
+                await _hand_over(running, old_leader, new_leader, other)
+                for item_rate in (32000, 44100, 48000, 88200, 96000, 192000):
+                    item = _flow_item("next", item_rate)
+
+                    restarts = await flow_restart(item.streamdetails)
+                    started = (await _start_session(new_leader, item_rate))._pcm_format
+
+                    case = (name, old_mode, new_mode, previous_rate, item_rate)
+                    assert restarts == _restart_due(started.sample_rate, current, new_mode), case
+
+
+async def test_flow_restarts_by_the_mode_of_the_leader_that_plays_on() -> None:
+    """A 48 kHz flow handed from a bit-perfect leader to a smart one plays on into 44.1 kHz."""
+    leader, _ = _player([FLAC_48K], flow_mode=FLOW_MODE_SAMPLE_RATE_BIT_PERFECT)
+    member, _ = _player([FLAC_48K, FLAC_44K], player_id=MEMBER_ID)
+    _group(leader, member)
+    played_with_bit_perfect_leader = await _flow_items_played(leader, [48000, 44100])
+    session = await _start_session(leader, 48000)
+    flow_restart = _flow_restart(session)
+    await _hand_over(session, leader, member)
+
+    played = await _flow_items_played(
+        leader, [48000, 44100], flow_rate=48000, flow_restart=flow_restart
+    )
+
+    assert played_with_bit_perfect_leader == ["0"]
+    assert played == ["0", "1"]
 
 
 async def test_fixed_rate_leader_restarts_for_a_rate_a_member_plays() -> None:
@@ -437,7 +477,7 @@ async def test_session_follows_the_rate_the_audio_arrives_in() -> None:
         content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16
     )
 
-    predicted = await _flow_sample_rate(session)(item.streamdetails)
+    predicted = await session.get_session_sample_rate(item.streamdetails)
     session._start_streamdetails = item.streamdetails
     await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
     pcm_format, _ = session._select_session_pcm_formats()
@@ -447,18 +487,18 @@ async def test_session_follows_the_rate_the_audio_arrives_in() -> None:
     assert predicted == 48000
 
 
-async def test_playback_hands_its_flow_the_rate_of_its_session(
+async def test_playback_hands_its_flow_its_restart_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A playback asks its flow stream with the rate of its session, the stream rate once ended."""
+    """A playback hands its flow stream its restart decision, which is no once it ended."""
     session = _short_session(monkeypatch)
     session.playback_task = None
 
     await session._run_playback(MagicMock())
 
     get_stream = cast("MagicMock", session.player.mass.streams.get_stream)
-    flow_sample_rate = get_stream.call_args.kwargs["flow_sample_rate"]
-    assert await flow_sample_rate(_flow_item("next", 96000).streamdetails) == 48000
+    flow_restart = get_stream.call_args.kwargs["flow_restart"]
+    assert await flow_restart(_flow_item("next", 96000).streamdetails) is False
 
 
 def test_raw_stream_hands_its_flow_what_the_consumer_asks() -> None:
@@ -472,7 +512,7 @@ def test_raw_stream_hands_its_flow_what_the_consumer_asks() -> None:
     controller._get_flow_start_item = MagicMock()
     controller._update_audio_processing_context = MagicMock()
     controller._count_as_output_stream = lambda stream: stream
-    flow_sample_rate = AsyncMock(return_value=48000)
+    flow_restart = AsyncMock(return_value=False)
     media = PlayerMedia(uri="track-1", source_id="queue-1", queue_item_id="item-1")
 
     controller.get_stream(
@@ -480,11 +520,11 @@ def test_raw_stream_hands_its_flow_what_the_consumer_asks() -> None:
         AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=48000),
         player_id=PLAYER_ID,
         force_flow_mode=True,
-        flow_sample_rate=flow_sample_rate,
+        flow_restart=flow_restart,
     )
 
     flow_kwargs = controller.audio.get_queue_flow_stream.call_args.kwargs
-    assert flow_kwargs["flow_sample_rate"] is flow_sample_rate
+    assert flow_kwargs["flow_restart"] is flow_restart
 
 
 async def test_flow_of_an_ended_session_does_not_restart() -> None:
@@ -493,12 +533,12 @@ async def test_flow_of_an_ended_session_does_not_restart() -> None:
     member, _ = _player([FLAC_48K, FLAC_44K, FLAC_96K], player_id=MEMBER_ID)
     _group(leader, member)
     session = await _start_session(leader, 44100)
-    flow_sample_rate = _flow_sample_rate(session)
-    assert await flow_sample_rate(_flow_item("next", 96000).streamdetails) == 96000
+    flow_restart = _flow_restart(session)
+    assert await flow_restart(_flow_item("next", 96000).streamdetails) is True
 
     session.playback_task = None
     items = await _flow_items_played(
-        leader, [44100, 96000, 96000], flow_rate=44100, flow_sample_rate=flow_sample_rate
+        leader, [44100, 96000, 96000], flow_rate=44100, flow_restart=flow_restart
     )
 
     assert items == ["0", "1", "2"]
@@ -544,21 +584,17 @@ async def test_flow_follows_the_session_handed_to_a_new_leader() -> None:
     member, _ = _player([FLAC_48K, FLAC_44K], player_id=MEMBER_ID)
     _group(leader, member)
     session = await _start_session(leader, 44100)
-    flow_sample_rate = _flow_sample_rate(session)
-    _group(leader)
-    _group(member)
-    await session.transfer_to(member)
-    member.playback_session = session
-    leader.playback_session = SendspinPlaybackSession(leader)
+    flow_restart = _flow_restart(session)
+    await _hand_over(session, leader, member)
 
     played = await _flow_items_played(
-        leader, [44100, 44100, 44100], flow_rate=44100, flow_sample_rate=flow_sample_rate
+        leader, [44100, 44100, 44100], flow_rate=44100, flow_restart=flow_restart
     )
     # the departed leader plays something on its own while the group plays on
     solo = await _start_session(leader, 48000)
-    _flow_sample_rate(solo)
+    _flow_restart(solo)
     played_after_solo = await _flow_items_played(
-        leader, [44100, 44100, 44100], flow_rate=44100, flow_sample_rate=flow_sample_rate
+        leader, [44100, 44100, 44100], flow_rate=44100, flow_restart=flow_restart
     )
 
     assert played == ["0", "1", "2"]
@@ -573,23 +609,21 @@ async def test_group_of_48k_members_restarts_as_its_leader_alone() -> None:
     session = _session(leader, sample_rate=44100)
     await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
     pcm_format, _ = session._select_session_pcm_formats()
-    flow_sample_rate = _flow_sample_rate(session)
+    flow_restart = _flow_restart(session)
     audio = leader.mass.streams.audio
     supported = sorted({rate for rate, _ in leader.get_supported_sample_rates()})
 
     for next_rate in (22050, 44100, 48000, 88200, 96000, 192000):
         item = _flow_item("next", next_rate)
-        group_rate = await flow_sample_rate(item.streamdetails)
         decisions = [
+            await flow_restart(item.streamdetails),
             audio._flow_stream_needs_restart(
                 cast("Any", item),
                 pcm_format,
                 supported,
                 FLOW_MODE_SAMPLE_RATE_SMART,
                 is_first_track=False,
-                next_flow_sample_rate=flow_rate,
-            )
-            for flow_rate in (group_rate, None)
+            ),
         ]
         assert decisions == [False, False], next_rate
 
@@ -647,23 +681,23 @@ def _player(
 
 def _group_of(
     members: list[tuple[list[SupportedAudioFormat], str, SupportedAudioFormat | None]],
-    leader_mode: str,
-    member_mode: str,
-) -> SendspinPlayer:
+    modes: list[str],
+) -> list[SendspinPlayer]:
     """
-    Return the leader of a new group of players set up as described, leader first.
+    Return the players of a new group set up as described, leader first.
 
     :param members: Per player its formats, its configured format and the format it asks for.
-    :param leader_mode: The sample rate setting of the leader.
-    :param member_mode: The sample rate setting of the other members.
+    :param modes: Per player its sample rate setting.
     """
     players = []
-    for index, (formats, preferred_format, requested) in enumerate(members):
+    for index, ((formats, preferred_format, requested), mode) in enumerate(
+        zip(members, modes, strict=True)
+    ):
         player, role = _player(
             formats,
             player_id=f"client-{index}",
             preferred_format=preferred_format,
-            flow_mode=member_mode if index else leader_mode,
+            flow_mode=mode,
         )
         if requested is not None:
             role.on_initial_client_state(
@@ -671,7 +705,7 @@ def _group_of(
             )
         players.append(player)
     _group(*players)
-    return players[0]
+    return players
 
 
 def _group(*players: SendspinPlayer) -> None:
@@ -688,7 +722,7 @@ async def _flow_items_played(
     protocol: PlayerProtocol,
     item_rates: list[int],
     flow_rate: int | None = None,
-    flow_sample_rate: Callable[[StreamDetails], Awaitable[int]] | None = None,
+    flow_restart: Callable[[StreamDetails], Awaitable[bool]] | None = None,
 ) -> list[str]:
     """
     Return the items a flow stream for a protocol plays before it ends or restarts.
@@ -697,14 +731,14 @@ async def _flow_items_played(
     :param item_rates: The sample rates of the queue items, from the first on.
     :param flow_rate: The rate of the flow stream; by default the rate of the Sendspin
         session of the protocol for the first item.
-    :param flow_sample_rate: What the flow asks the rate of a next item; by default that
-        of the Sendspin session started for the first item.
+    :param flow_restart: What decides whether the flow restarts for a next item; by default
+        that of the Sendspin session started for the first item.
     """
     items = [_flow_item(str(index), rate) for index, rate in enumerate(item_rates)]
     if flow_rate is None:
         session = await _start_session(cast("SendspinPlayer", protocol), item_rates[0])
         flow_rate = session._pcm_format.sample_rate
-        flow_sample_rate = _flow_sample_rate(session)
+        flow_restart = _flow_restart(session)
 
     async def _load_next(_queue_id: str, current_id: str) -> Any:
         if (index := int(current_id) + 1) < len(items):
@@ -737,7 +771,7 @@ async def _flow_items_played(
         pcm_format,
         session_id="session-1",
         protocol_player=protocol,
-        flow_sample_rate=flow_sample_rate,
+        flow_restart=flow_restart,
     ):
         pass
     return [entry.queue_item_id for entry in queue_data.flow_mode_stream_log]
@@ -760,16 +794,50 @@ async def _start_session(leader: SendspinPlayer, sample_rate: int) -> SendspinPl
     return session
 
 
-def _flow_sample_rate(
+def _flow_restart(
     session: SendspinPlaybackSession,
-) -> Callable[[StreamDetails], Awaitable[int]]:
+) -> Callable[[StreamDetails], Awaitable[bool]]:
     """
     Return what the flow stream of a session asks, with the session playing in this task.
 
     :param session: The session that opens the flow stream.
     """
     session.playback_task = cast("asyncio.Task[None]", asyncio.current_task())
-    return session._flow_sample_rate_of_this_playback()
+    return session._flow_restart_of_this_playback()
+
+
+async def _hand_over(
+    session: SendspinPlaybackSession,
+    old_leader: SendspinPlayer,
+    new_leader: SendspinPlayer,
+    *others: SendspinPlayer,
+) -> None:
+    """
+    Hand a session over as a leader leaving its group does.
+
+    :param session: The session of the group.
+    :param old_leader: The leader that leaves the group.
+    :param new_leader: The member that leads the group from now on.
+    :param others: The other members that stay in the group.
+    """
+    _group(old_leader)
+    _group(new_leader, *others)
+    await session.transfer_to(new_leader)
+    new_leader.playback_session = session
+    old_leader.playback_session = SendspinPlaybackSession(old_leader)
+
+
+def _restart_due(started_rate: int, stream_rate: int, leader_mode: str) -> bool:
+    """
+    Return whether a flow is due to restart when a new session would start at a rate.
+
+    :param started_rate: The rate a session starting with the next item runs at.
+    :param stream_rate: The rate the flow runs at.
+    :param leader_mode: The sample rate setting of the leader of the group.
+    """
+    if leader_mode == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT:
+        return started_rate != stream_rate
+    return started_rate > stream_rate
 
 
 def _flow_item(item_id: str, sample_rate: int) -> SimpleNamespace:

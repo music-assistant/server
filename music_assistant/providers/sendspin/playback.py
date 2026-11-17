@@ -17,6 +17,11 @@ from aiosendspin.server.roles.player.v1 import PlayerV1Role
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
+from music_assistant.constants import (
+    CONF_FLOW_MODE_SAMPLE_RATE,
+    FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
+    FLOW_MODE_SAMPLE_RATE_SMART,
+)
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import arriving_audio_format, iter_pcm_slices
 from music_assistant.helpers.ffmpeg import FFMpeg
@@ -763,7 +768,7 @@ class SendspinPlaybackSession:
                 [client.client_id for client in self.player.api.group.clients]
             )
             self._pcm_format, self._sendspin_pcm_format = self._select_session_pcm_formats()
-            flow_sample_rate = self._flow_sample_rate_of_this_playback()
+            flow_restart = self._flow_restart_of_this_playback()
             self._queue_id = media.source_id
             self._queue_session_id = get_media_session_id(media)
             self._pipeline_config_cache.clear()
@@ -813,7 +818,7 @@ class SendspinPlaybackSession:
                     media,
                     self._pcm_format,
                     self.player.protocol_id,
-                    flow_sample_rate=flow_sample_rate,
+                    flow_restart=flow_restart,
                 )
             )
             completed = False
@@ -1443,26 +1448,35 @@ class SendspinPlaybackSession:
         )
         return pcm_format, sendspin_pcm_format
 
-    def _flow_sample_rate_of_this_playback(self) -> Callable[[StreamDetails], Awaitable[int]]:
+    def _flow_restart_of_this_playback(self) -> Callable[[StreamDetails], Awaitable[bool]]:
         """
-        Return what tells the flow stream of the running playback the rate it restarts at.
+        Return what tells the flow stream of the running playback whether it restarts for an item.
 
-        Call from the playback task. Once that playback has ended, the answer is the rate
-        the stream runs at, so a flow that is being torn down does not restart.
+        It restarts when a session starting with the item would run at a higher rate, or at
+        another rate while the leader of the group as it is then plays bit-perfect. Call from
+        the playback task. Once that playback has ended the answer is no, so a flow that is
+        being torn down plays out.
         """
         playback_task = asyncio.current_task()
         stream_rate = self._pcm_format.sample_rate
 
-        async def _flow_sample_rate(streamdetails: StreamDetails) -> int:
+        async def _flow_restart(streamdetails: StreamDetails) -> bool:
             if (
                 playback_task is None
                 or playback_task.done()
                 or self.playback_task is not playback_task
             ):
-                return stream_rate
-            return await self.get_session_sample_rate(streamdetails)
+                return False
+            sample_rate = await self.get_session_sample_rate(streamdetails)
+            # a fixed sample rate setting fixes only the leader's own output
+            leader_mode = self.player.config.get_value(
+                CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
+            )
+            if leader_mode == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT:
+                return sample_rate != stream_rate
+            return sample_rate > stream_rate
 
-        return _flow_sample_rate
+        return _flow_restart
 
     def _pick_session_sample_rate(self, source_rate: int, member_rates: list[int]) -> int:
         """
