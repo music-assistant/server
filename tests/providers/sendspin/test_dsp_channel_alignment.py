@@ -279,13 +279,13 @@ class _SessionHarness:
         self.returned += 1
 
     async def _until(self, condition: Callable[[], bool]) -> None:
-        # Bound by time rather than loop turns: the first commit waits on a worker thread.
-        try:
-            async with asyncio.timeout(5):
-                while not condition():
-                    await asyncio.sleep(0)
-        except TimeoutError:
-            raise AssertionError("playback loop stalled") from None
+        # bounded in time, not in loop turns: the first commit loads av on a worker thread
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5
+        while not condition():
+            if loop.time() > deadline:
+                raise AssertionError("playback loop stalled")
+            await asyncio.sleep(0)
 
     def _parked(self) -> bool:
         return self.returned == self.released and self.entered == self.released + 1

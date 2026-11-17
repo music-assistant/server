@@ -648,7 +648,9 @@ def test_reasons_match_the_texts() -> None:
 
 
 @pytest.mark.usefixtures("registry")
-async def test_client_reads_why_a_command_is_refused(mass: MusicAssistant) -> None:
+async def test_client_reads_why_a_command_is_refused(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """
     A client gets the reason of a refusal, in a language without a translation of it in English.
 
@@ -667,6 +669,10 @@ async def test_client_reads_why_a_command_is_refused(mass: MusicAssistant) -> No
     )
     reason = f"{DOMAIN} is not installed from the community catalog."
     await mass.translations.ensure_locale_loaded("nl")
+    # Dutch without a translation of the reason, whatever Lokalise has for it
+    monkeypatch.delitem(
+        mass.translations._locales["nl"], f"common.errors.{error.translation_key}", raising=False
+    )
 
     for locale in ("en", "nl"):
         token = TRANSLATION_RESOLVER.set(partial(mass.translations.get_translation, locale=locale))
