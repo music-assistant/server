@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Final
 
-from aiohttp import ClientError, ClientTimeout
+from aiohttp import ClientConnectorError, ClientError, ClientTimeout
 
 from music_assistant.providers.sendspin.token_auto_pair import TokenAutoPairer
 
@@ -79,7 +79,11 @@ class LocalAutoPairer(TokenAutoPairer):
                     chunk := await response.content.read(LOCAL_PAIRING_MAX_BODY + 1 - len(body))
                 ):
                     body += chunk
-        except (ClientError, TimeoutError) as err:
+        except (ClientConnectorError, TimeoutError) as err:
+            # expected for a player on another host that announces the role anyway
+            self.logger.debug("Fetching the local token of %s failed: %s", client_id, err)
+            return None
+        except ClientError as err:
             self.logger.warning("Fetching the local token of %s failed: %s", client_id, err)
             return None
         if len(body) > LOCAL_PAIRING_MAX_BODY:

@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, Any, Self, cast
 from unittest.mock import Mock
 
 import pytest
-from aiohttp import ClientConnectionError
+from aiohttp import ClientConnectionError, ClientConnectorError, ServerTimeoutError
+from aiohttp.client_reqrep import ConnectionKey
 from aiosendspin.models.types import PairMethod
 from aiosendspin.noise.keys import PSK_SIZE, b64url_encode
 from aiosendspin.noise.pairing import PairingError
@@ -250,8 +251,7 @@ async def test_a_token_of_another_client_is_rejected(
     [
         pytest.param(_FakeHttpSession(status=404), id="not_found"),
         pytest.param(_FakeHttpSession(status=302), id="redirect"),
-        pytest.param(_FakeHttpSession(error=ClientConnectionError("refused")), id="refused"),
-        pytest.param(_FakeHttpSession(error=TimeoutError()), id="timeout"),
+        pytest.param(_FakeHttpSession(error=ClientConnectionError("reset")), id="reset"),
         pytest.param(_FakeHttpSession(b"x" * (LOCAL_PAIRING_MAX_BODY + 1)), id="too_long"),
         pytest.param(_FakeHttpSession(b"\xff\xfe"), id="not_text"),
     ],
@@ -266,6 +266,35 @@ async def test_a_failed_fetch_is_logged_not_raised(
     assert api.attempts == []
     assert len(caplog.records) == 1
     assert "Fetching the local token" in caplog.text
+    assert TOKEN not in caplog.text
+
+
+def _refused() -> ClientConnectorError:
+    key = ConnectionKey("172.30.32.1", PORT, False, True, None, None, None, None)
+    return ClientConnectorError(cast("Any", key), ConnectionRefusedError(111, "refused"))
+
+
+@pytest.mark.parametrize(
+    "http",
+    [
+        pytest.param(_FakeHttpSession(error=_refused()), id="refused"),
+        pytest.param(_FakeHttpSession(error=TimeoutError()), id="timeout"),
+        pytest.param(_FakeHttpSession(error=ServerTimeoutError()), id="server_timeout"),
+    ],
+)
+async def test_an_unreachable_endpoint_is_logged_at_debug(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, http: _FakeHttpSession
+) -> None:
+    """A player on another host that announces the role does not warn on every connect."""
+    pairer, api, _ = _make_pairer(monkeypatch, http=http)
+    with caplog.at_level(logging.DEBUG, logger="test.sendspin.pin"):
+        await pairer._attempt(CLIENT_ID)
+    assert api.attempts == []
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(
+        r.levelno == logging.DEBUG and "Fetching the local token" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 async def test_a_failed_pairing_is_logged_not_raised(
