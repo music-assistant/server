@@ -187,6 +187,9 @@ class AudioBuffer:
         self._release_task: asyncio.Task[None] | None = None
         # whether this buffer may give up its source once it has no user; None means never
         self.may_release: Callable[[AudioBuffer], bool] | None = None
+        # the queue and the queue item this buffer was made for, if any
+        self.queue_id: str | None = None
+        self.queue_item_id: str | None = None
 
     # -- Properties --
 
@@ -529,6 +532,7 @@ class AudioBuffer:
         on_complete: Callable[[], None] | None = None,
         user: BufferUser | None = None,
         may_release: Callable[[AudioBuffer], bool] | None = None,
+        on_created: Callable[[AudioBuffer], None] | None = None,
     ) -> AudioBuffer:
         """
         Get or create an AudioBuffer for the given streamdetails.
@@ -550,6 +554,8 @@ class AudioBuffer:
             ``release``. Without one the buffer only counts as used while this call waits.
         :param may_release: Tells whether a newly created buffer may give up its source
             once it has no user. Not applied when an existing buffer is reused.
+        :param on_created: Called with a newly created buffer before its source starts to
+            fill it. Not called when an existing buffer is reused.
         :raises AudioError: If the buffer does not become ready, wrapping the typed
             producer error (e.g. ProviderStreamLimitError) when there is one.
         :raises ProviderStreamLimitError: If a source in an unknown format can not get a
@@ -607,6 +613,8 @@ class AudioBuffer:
         audio_buffer, buffer_seek_seconds = _new_buffer(
             mass, streamdetails, seek_position_ms, log_prefix, session_start=reason == "prepare"
         )
+        if on_created is not None:
+            on_created(audio_buffer)
 
         # start filling from the media stream (seek in seconds for FFmpeg)
         audio_source = mass.streams.audio.get_media_stream(
