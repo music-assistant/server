@@ -1222,6 +1222,16 @@ attaches, and Patio goes out of use.
   yet, and a stereo pair of it.
 - Proven by: `test_speaker_sets.py::test_a_set_reported_while_its_protocol_attaches_takes_its_speaker_out`
 
+### SET-12 · A report that comes while the server shuts down changes nothing
+
+The server shuts down, and the Sonos provider, whose connections go down with it, reports that
+Living delivers no set anymore. The report changes nothing: after the start Patio is still in the
+set of Living and no player.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by: `test_speaker_sets.py::test_a_report_while_the_server_shuts_down_changes_nothing`
+
 ## Browser and app players
 
 A browser or app player has the id of its client and is the same player in every session. Until

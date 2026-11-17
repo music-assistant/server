@@ -331,8 +331,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         it, it comes back under its id, unless the user disabled it.
         An id in the list is skipped when it has no stored config, or when its player is the
         player of this protocol, a group, or already part of another set. Nothing happens when
-        this protocol itself has no stored config, or when the list changes nothing. It may be
-        called from on_attach; calls are handled one after the other.
+        this protocol itself has no stored config, when the list changes nothing, or while the
+        server shuts down. It may be called from on_attach; calls are handled one after the
+        other.
 
         :param protocol_id: Id of the protocol that delivers the set.
         :param absorbed_protocol_ids: Ids of the protocols of the other speakers of the set,
@@ -340,6 +341,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         """
         # each report reads what the one before it stored and took out of use
         async with self._absorbed_protocols_lock:
+            # a list built while the connections of a provider go down with the server
+            if self.mass.closing:
+                return
             if (set_player_id := self._get_stored_player_id(protocol_id)) is None:
                 return
             absorbed_ids: set[str] = set()

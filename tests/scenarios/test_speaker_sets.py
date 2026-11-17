@@ -511,6 +511,36 @@ async def test_a_set_reported_while_its_protocol_attaches_takes_its_speaker_out(
     assert scenario.removals() == [(patio_id, None)]
 
 
+async def test_a_report_while_the_server_shuts_down_changes_nothing(scenario: Scenario) -> None:
+    """
+    A report that comes while the server shuts down changes nothing.
+
+    The provider reports that the set is gone while its connections go down with the server:
+    after the start the speaker is still in the set, and no player.
+    """
+    living, patio, patio_airplay = await _living_and_patio(scenario)
+    patio_id = scenario.single_player(patio, patio_airplay).player_id
+    await _report_set(scenario, living, patio)
+    sonos = scenario.provider("sonos")
+    unload = sonos.unload
+
+    async def _report_no_set_and_unload(is_removed: bool = False) -> None:
+        """Report that the set is gone, as a provider does whose connections go down."""
+        await _set_of(scenario, living)
+        await unload(is_removed)
+
+    sonos.unload = _report_no_set_and_unload  # type: ignore[method-assign]
+    scenario.clear_events()
+
+    await scenario.restart()
+    await scenario.idle()
+
+    assert Event(EventType.PLAYER_ADDED, patio_id) not in scenario.events(EventType.PLAYER_ADDED)
+    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{patio_id}/{CONF_ABSORBED_BY}") == (
+        "sonos_living"
+    )
+
+
 async def _living_and_patio(
     scenario: Scenario, *, grouping: bool = False
 ) -> tuple[FakeProtocol, FakeProtocol, FakeProtocol]:
