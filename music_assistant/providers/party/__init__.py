@@ -28,6 +28,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
+    MusicAssistantError,
     SetupFailedError,
 )
 
@@ -39,14 +40,20 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     has_player_access,
 )
 from music_assistant.helpers import guest_access
+from music_assistant.helpers.audio import decoded_pcm_format
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
+from music_assistant.helpers.util import verify_system_meets_requirements
 from music_assistant.models.plugin import PluginProvider
+
+from .audio_stems import STEM_VOCALS, DemucsStemSeparator, StemAttenuation, supports_pcm_format
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.queue_item import QueueItem
+    from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant.controllers.streams.audio_buffer import AudioBuffer, PCMTransform
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
@@ -75,6 +82,8 @@ CONF_BOOST_BADGE_COLOR = "boost_badge_color"
 # Lyrics / Karaoke
 CONF_PARTY_KARAOKE_MODE = "karaoke_mode"
 CONF_PARTY_HIGHLIGHT_AHEAD = "highlight_ahead"
+CONF_PARTY_REMOVE_VOCALS = "remove_vocals"
+CONF_PARTY_VOCAL_VOLUME = "vocal_volume"
 # Anti burn-in
 CONF_ANTI_BURN_IN = "anti_burn_in"
 # Custom party settings
@@ -260,6 +269,21 @@ class PartyPlugin(PluginProvider):
                 category="karaoke",
             ),
             ConfigEntry(
+                key=CONF_PARTY_REMOVE_VOCALS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                depends_on=CONF_PARTY_KARAOKE_MODE,
+                category="karaoke",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_VOCAL_VOLUME,
+                type=ConfigEntryType.INTEGER,
+                default_value=0,
+                range=(0, 100),
+                depends_on=CONF_PARTY_REMOVE_VOCALS,
+                category="karaoke",
+            ),
+            ConfigEntry(
                 key=CONF_PARTY_HIGHLIGHT_AHEAD,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
@@ -416,6 +440,7 @@ class PartyPlugin(PluginProvider):
         self._queue_lock = asyncio.Lock()
         self._session: SharedPlaybackSession | None = None
         self._session_lock = asyncio.Lock()
+        self._stem_separator: DemucsStemSeparator | None = None
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -470,6 +495,12 @@ class PartyPlugin(PluginProvider):
                 "party/can_listen_in", self.can_listen_in, required_scope=Scope.PLAYERS_CONTROL
             )
         )
+        if self._vocal_removal_enabled():
+            self._stem_separator = DemucsStemSeparator(self.logger)
+            self.mass.create_task(self._load_stem_separator(self._stem_separator))
+            self._unregister_handles.append(
+                self.mass.streams.audio.register_pcm_transform(self._resolve_vocal_removal)
+            )
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -483,6 +514,18 @@ class PartyPlugin(PluginProvider):
         for unregister in self._unregister_handles:
             unregister()
         self._unregister_handles.clear()
+        if self._stem_separator is not None:
+            self._stem_separator.close()
+            self._stem_separator = None
+            switched_off = (
+                is_removed
+                or not self.mass.config.get_raw_provider_config_value(
+                    self.instance_id, CONF_ENABLED, default=True
+                )
+                or not self._vocal_removal_enabled()
+            )
+            if switched_off and not self.mass.closing:
+                self.mass.create_task(self._sync_playing_track())
 
         # Tear down the shared playback session (detaches guest listeners and,
         # in remote mode, removes the virtual player)
@@ -1158,6 +1201,96 @@ class PartyPlugin(PluginProvider):
                 tokens_revoked,
                 PARTY_GUEST_USER,
             )
+
+    async def _load_stem_separator(self, separator: DemucsStemSeparator) -> None:
+        """
+        Load the vocal removal model; tracks play with their vocals until it is ready.
+
+        :param separator: The separator to load.
+        """
+        try:
+            # a CPU that cannot run torch crashes the probe's subprocess, not the server
+            await verify_system_meets_requirements(
+                feature_name="Vocal removal", require_ml_inference=True
+            )
+            # torch-backed work shares one process-wide runtime setup
+            self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
+            await separator.load()
+        except Exception as err:
+            self.logger.warning("Vocal removal is unavailable: %s", err)
+            return
+        await self._sync_playing_track()
+
+    def _vocal_removal_enabled(self) -> bool:
+        """Return whether karaoke mode is set to remove the vocals."""
+        return bool(
+            self.config.get_value(CONF_PARTY_KARAOKE_MODE)
+            and self.config.get_value(CONF_PARTY_REMOVE_VOCALS)
+        )
+
+    async def _sync_playing_track(self) -> None:
+        """
+        Restart the playing party track where it is when the settings ask for other audio.
+
+        Audio is rewritten when it is buffered, so a track that already plays keeps what it
+        buffered until its stream is rebuilt.
+        """
+        for queue in self.mass.player_queues:
+            item = queue.current_item
+            streamdetails = item.streamdetails if item else None
+            if not queue.active or queue.state != PlaybackState.PLAYING or streamdetails is None:
+                continue
+            buffer: AudioBuffer | None = streamdetails.buffer
+            if buffer is None:
+                continue
+            wanted = self._resolve_vocal_removal(streamdetails)
+            if buffer.pcm_transform == wanted:
+                continue
+            if wanted is None and not isinstance(buffer.pcm_transform, StemAttenuation):
+                continue
+            try:
+                await self.mass.player_queues.seek(
+                    queue.queue_id, int(queue.corrected_elapsed_time)
+                )
+            except MusicAssistantError as err:
+                self.logger.warning("Could not restart the playing track: %s", err)
+            return
+
+    def _resolve_vocal_removal(self, streamdetails: StreamDetails) -> PCMTransform | None:
+        """
+        Return the vocal removal for a track that plays on the party queue.
+
+        :param streamdetails: The stream details an audio buffer is created for.
+        """
+        separator = self._stem_separator
+        if (
+            separator is None
+            or not separator.ready
+            or streamdetails.media_type != MediaType.TRACK
+            or not streamdetails.queue_id
+            or not self._is_party_queue(streamdetails.queue_id)
+            or not supports_pcm_format(decoded_pcm_format(streamdetails))
+        ):
+            return None
+        vocal_volume = cast("int", self.config.get_value(CONF_PARTY_VOCAL_VOLUME) or 0)
+        return StemAttenuation(separator, self.logger, STEM_VOCALS, vocal_volume / 100)
+
+    def _is_party_queue(self, queue_id: str) -> bool:
+        """
+        Return whether the given queue is the one the party plays on.
+
+        :param queue_id: The queue to check.
+        """
+        if self.config.get_value(CONF_PARTY_MODE) == SharedPlaybackMode.REMOTE.value:
+            return self._session is not None and self._session.queue_id == queue_id
+        if configured := self._configured_player_id():
+            return configured == queue_id
+        # automatic selection settles on the first playing queue; when none plays yet,
+        # the queue that asks is the one about to
+        for queue in self.mass.player_queues:
+            if queue.active and queue.state == PlaybackState.PLAYING:
+                return bool(queue.queue_id == queue_id)
+        return True
 
     def _configured_player_id(self) -> str | None:
         """Return the id of the configured party player, or None for automatic selection."""
