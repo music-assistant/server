@@ -63,7 +63,7 @@ def _entry(
 
 
 @pytest.mark.parametrize(
-    ("folder_hash", "entry", "has_index", "own_line", "expected"),
+    ("folder_hash", "entry", "has_index", "own_channel", "expected"),
     # the installed version is VERSION, never failed
     [
         pytest.param(
@@ -107,7 +107,7 @@ def _entry(
             True,
             False,
             Decision(Verdict.BLOCKED, "Leaks the password", URL),
-            id="blocked version in a copy of another line",
+            id="blocked version in a copy of another channel",
         ),
         pytest.param(
             HASH,
@@ -115,16 +115,16 @@ def _entry(
             True,
             False,
             Decision(Verdict.BLOCKED, "Sends the library elsewhere", URL),
-            id="block in a copy of another line",
+            id="block in a copy of another channel",
         ),
-        pytest.param(HASH, _entry(), True, False, Decision(Verdict.LOAD), id="other line"),
+        pytest.param(HASH, _entry(), True, False, Decision(Verdict.LOAD), id="other channel"),
         pytest.param(
             "bbbb",
             _entry(),
             True,
             False,
             Decision(Verdict.CATALOG_UNREACHABLE),
-            id="other line, folder changed",
+            id="other channel, folder changed",
         ),
         pytest.param(HASH, None, True, True, Decision(Verdict.NOT_LISTED), id="not listed"),
         pytest.param(
@@ -217,11 +217,11 @@ def test_evaluate(
     folder_hash: str | None,
     entry: IndexProvider | None,
     has_index: bool,
-    own_line: bool,
+    own_channel: bool,
     expected: Decision,
 ) -> None:
     """The first rule that matches decides."""
-    decision = evaluate(INSTALLED, folder_hash, entry, has_index=has_index, own_line=own_line)
+    decision = evaluate(INSTALLED, folder_hash, entry, has_index=has_index, own_channel=own_channel)
 
     assert decision == expected
 
@@ -259,4 +259,4 @@ def test_evaluate_failed_version(entry: IndexProvider, expected: Decision) -> No
     """A version the server went back from is neither switched to nor offered."""
     installed = replace(INSTALLED, failed_version=NEWER)
 
-    assert evaluate(installed, HASH, entry, has_index=True, own_line=True) == expected
+    assert evaluate(installed, HASH, entry, has_index=True, own_channel=True) == expected

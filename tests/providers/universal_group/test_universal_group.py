@@ -48,6 +48,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL_CUTS_POWER,
     CONF_REQUIRES_FIXED_CONTENT_LENGTH,
 )
+from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
@@ -922,6 +923,8 @@ class _MemberQueue:
 
     def _drop_pending_step(self, queue_id: str) -> None:
         """Hold no step to drop."""
+
+    _show_play_action = PlayerQueuesController._show_play_action
 
 
 async def _transfer_to_the_group(players: PlayerController, member_id: str) -> None:

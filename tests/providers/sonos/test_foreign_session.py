@@ -82,7 +82,7 @@ def _speaker(
     """
     provider = MockProvider("sonos", instance_id="sonos", mass=mass)
     mass.config.get_base_protocol_config.return_value = _protocol_config(protocol_id)
-    discovery_info = cast("DiscoveryInfo", {"device": {}})
+    discovery_info = cast("DiscoveryInfo", {"device": {"capabilities": ["PLAYBACK"]}})
     player = SonosPlayer(cast("Any", provider), protocol_id, discovery_info)
     client = MagicMock()
     client.player_id = protocol_id
@@ -97,6 +97,9 @@ def _speaker(
     client.player.is_passive = False
     client.player.group_members = [protocol_id]
     client.player.has_fixed_volume = False
+    client.player.has_subwoofer = False
+    client.player.has_surrounds = False
+    client.player.is_stereo_pair = False
     client.player.volume_muted = False
     client.player.volume_level = 20
     client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "new"})

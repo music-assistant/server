@@ -561,7 +561,7 @@ def _tracker() -> Any:
     tracker._queue_data = {
         "q1": SimpleNamespace(
             flow_mode_stream_log=[],
-            served_item_ids={"i1"},
+            served_item_ids={"i1": None},
             sleep_timer_stopped_target=None,
             halted_by_command=False,
             started_session_id=None,

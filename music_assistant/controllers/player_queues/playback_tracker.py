@@ -44,7 +44,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.favorites import without_disliked_tracks
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
-from music_assistant.controllers.player_queues.constants import SLEEP_TIMER_NATURAL_END_MARGIN
+from music_assistant.controllers.player_queues.constants import (
+    PLAYED_TO_END_MARGIN,
+    SLEEP_TIMER_NATURAL_END_MARGIN,
+)
 from music_assistant.controllers.player_queues.helpers import (
     CompareState,
     build_queue_item,
@@ -910,7 +913,19 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         else:
             duration = int(item_to_report.duration or 3 * 3600)
 
-        if seconds_played < 5:
+        # a short item can end before a position past the floor below was ever reported. It played
+        # to its end when no load started a session since it was served and the queue moved on itself
+        played_to_end = (
+            seconds_played >= duration - PLAYED_TO_END_MARGIN
+            and queue_data.served_item_ids[item_to_report.queue_item_id]
+            == queue_data.started_session_id
+            and (
+                new_state["state"] == PlaybackState.PLAYING
+                if not is_current_item
+                else new_state["state"] == PlaybackState.IDLE and not queue_data.halted_by_command
+            )
+        )
+        if seconds_played < 5 and not played_to_end:
             # ignore items that have been played less than 5 seconds
             # this also filters out a bounce effect where the previous item
             # gets reported with 0 elapsed seconds after a new item starts playing
@@ -932,7 +947,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # determine if item is fully played
         # for podcasts and audiobooks we account for the last 60 seconds
         percentage_played = percentage(seconds_played, duration)
-        if not is_current_item and item_to_report.media_type in (
+        if played_to_end:
+            fully_played = True
+        elif not is_current_item and item_to_report.media_type in (
             MediaType.AUDIOBOOK,
             MediaType.PODCAST_EPISODE,
         ):
