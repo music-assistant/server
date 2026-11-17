@@ -27,6 +27,7 @@ from music_assistant.controllers.players.grouping_plan import (
     SetMembers,
     Ungroup,
 )
+from scripts.build_translations import build_translations_source
 
 CHANGE = GroupChange(kind=ChangeKind.MEMBERS, target_id="leader")
 EMPTY = GroupingSnapshot(players={}, protocols={})
@@ -43,7 +44,7 @@ class _Players:
         self.mass = MagicMock()
         self.mass.config.get = MagicMock(return_value={})
         self.logger = MagicMock()
-        self.translation_owner = "players"
+        self.translation_owner = "core.players"
         self.protocols: dict[str, Any] = {}
         self.player_objects: dict[str, Any] = {}
         self._handle_set_members = AsyncMock()
@@ -182,7 +183,9 @@ async def test_a_failing_own_side_ungroup_is_an_unavailable_player() -> None:
     ):
         await grouping.apply_group_change(players, CHANGE)  # type: ignore[arg-type]
     assert isinstance(err.value.__cause__, OSError)
-    assert err.value.translation_key == "group_leave_failed"
+    owner, key = err.value.translation_owner, err.value.translation_key
+    assert (owner, key) == ("core.players", "group_leave_failed")
+    assert f"{owner}.errors.{key}" in build_translations_source()
     assert err.value.translation_args == ["Den"]
 
 
