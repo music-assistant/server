@@ -2509,6 +2509,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         merged_item = await self.merge_library_items(db_item.item_id, holder.item_id)
         db_item.provider_mappings.update(merged_item.provider_mappings)
+        db_item.date_added = merged_item.date_added
         return True
 
     def _musicbrainz_link_provider(self) -> MusicbrainzProvider | None:
