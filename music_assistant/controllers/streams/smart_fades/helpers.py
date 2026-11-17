@@ -33,6 +33,9 @@ _LOCAL_BPM_MAX_RESIDUAL = 0.04
 _LOCAL_BPM_MAX_PHASE_ERROR = 0.25
 # Refits after outlier rejection; the inlier set settles within a few
 _LOCAL_BPM_FIT_PASSES = 3
+# With a smaller share of the window's beats on it, a fit reads a stretch of the
+# window, not the window
+_LOCAL_BPM_MIN_AGREEMENT = 0.8
 
 
 def detect_effective_audio_end(
@@ -110,9 +113,10 @@ def local_bpm(beats: npt.NDArray[np.float32], fallback_bpm: float) -> float:
     half = len(t) // 2
     slope = float(np.median((t[half : 2 * half] - t[:half]) / (idx[half : 2 * half] - idx[:half])))
     intercept = float(np.median(t - slope * idx))
+    min_inliers = max(_LOCAL_BPM_MIN_BEATS, _LOCAL_BPM_MIN_AGREEMENT * len(beats))
     for _ in range(_LOCAL_BPM_FIT_PASSES):
         inliers = np.abs(t - (slope * idx + intercept)) <= _LOCAL_BPM_MAX_RESIDUAL
-        if np.count_nonzero(inliers) < _LOCAL_BPM_MIN_BEATS:
+        if np.count_nonzero(inliers) < min_inliers:
             return fallback_bpm
         # centered least squares, so an exact grid reads its exact tempo
         x = idx[inliers] - idx[inliers].mean()

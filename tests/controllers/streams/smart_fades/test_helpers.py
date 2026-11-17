@@ -244,9 +244,21 @@ class TestLocalBpm:
 
         assert local_bpm(beats, 124.182) == pytest.approx(124.0, rel=2e-4)
 
-    def test_a_double_time_window_reads_the_base_tempo(self) -> None:
-        """An outro tracked at twice the stored tempo still reads the stored tempo."""
-        assert local_bpm(self._grid(248.0, 180), 124.0) == pytest.approx(124.0, rel=2e-4)
+    def test_double_time_bars_do_not_move_the_tempo(self) -> None:
+        """Three closing bars tracked at double time leave the tempo of the grid intact."""
+        grid = self._grid(124.0, 93, start=0.0)
+        offbeats = grid[-12:] + 30.0 / 124.0
+        beats = np.sort(np.concatenate((grid, offbeats)))
+
+        assert local_bpm(beats, 124.182) == pytest.approx(124.0, rel=2e-4)
+
+    def test_a_grid_most_beats_disagree_with_returns_the_fallback(self) -> None:
+        """Six steady bars before a wandering outro hold no tempo for the whole window."""
+        steady = np.arange(24) * 60.0 / 130.0
+        wandering = steady[-1] + np.cumsum(0.48 + 0.06 * np.sin(np.arange(1, 61) * 0.9))
+        beats = np.round(np.concatenate((steady, wandering)) / 0.02) * 0.02
+
+        assert local_bpm(beats, 126.3) == 126.3
 
     def test_too_few_beats_return_the_fallback(self) -> None:
         """Three bars of beats are too few to read a tempo from."""
