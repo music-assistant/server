@@ -2498,7 +2498,8 @@ class Player:
             ),
             standing_sources=self._collect_standing_sources(),
         )
-        # artwork is only looked up for the queue the player takes its media from
+        # stream metadata and artwork are only looked up for the queue the player takes its
+        # media from
         if queues and (media_queue := resolve_media_queue(inputs)):
             self._resolve_artwork(media_queue)
         return inputs
@@ -2708,12 +2709,14 @@ class Player:
         )
 
     def _resolve_artwork(self, snapshot: QueueSnapshot) -> None:
-        """Resolve the artwork of the current item of a queue into its snapshot."""
+        """Resolve the stream metadata and artwork of the current item of a queue into its snapshot."""
         if not (current_item := snapshot.queue.current_item):
             return
         # a stream that reports metadata shows its own image, or else that of the item
-        stream_metadata = (
-            current_item.streamdetails.stream_metadata if current_item.streamdetails else None
+        stream_metadata = snapshot.stream_metadata = (
+            self.mass.streams.audio_analysis.shown_stream_metadata(current_item.streamdetails)
+            if current_item.streamdetails
+            else None
         )
         # the image format needs to be 512x512 jpeg for maximum compatibility with players
         if current_item.image and not (stream_metadata and stream_metadata.image_url):
