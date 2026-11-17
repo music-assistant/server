@@ -460,7 +460,7 @@ class BrowseManager:
                     provider_mappings={
                         ProviderMapping(
                             item_id=station.item_id,
-                            provider_domain=self.instance_id,
+                            provider_domain=self.provider.domain,
                             provider_instance=self.provider.instance_id,
                         )
                     },
