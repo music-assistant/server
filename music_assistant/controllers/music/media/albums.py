@@ -1239,7 +1239,9 @@ class AlbumsController(MediaControllerBase[Album]):
                     continue
             if (recording := release_track.recording) is None:
                 continue
-            if missing := sorted(_isrcs(db_track) - _recording_isrcs(recording)):
+            if db_track.mbid in (None, recording.id) and (
+                missing := sorted(_isrcs(db_track) - _recording_isrcs(recording))
+            ):
                 # MagicISRC accepts one ISRC per track position
                 missing_isrcs[track_numbers[release_track.id]] = missing[0]
             changed = fill_track_from_recording(db_track, recording)
