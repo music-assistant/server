@@ -3086,7 +3086,8 @@ class TestExternalPowerControl:
         with virtual_loop_clock():
             started = loop.time()
             await controller._handle_cmd_power("player_1", True)
-            waited = loop.time() - started
+            # the clock adds up the sleeps of the wait, which leaves a rounding error
+            waited = round(loop.time() - started, 6)
 
         assert report_after <= waited < report_after + 0.5, (
             f"the power on went on after {waited:.1f}s, the control reported on "
@@ -3112,7 +3113,8 @@ class TestExternalPowerControl:
         with virtual_loop_clock():
             started = loop.time()
             await controller._handle_cmd_power("player_1", True)
-            waited = loop.time() - started
+            # the clock adds up the sleeps of the wait, which leaves a rounding error
+            waited = round(loop.time() - started, 6)
 
         power_on.assert_awaited_once()
         assert POWER_ON_REPORT_TIMEOUT <= waited < POWER_ON_REPORT_TIMEOUT + 0.5, (
