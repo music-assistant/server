@@ -1107,8 +1107,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 return
             count = 0
             pause_timeout = self._get_pause_timeout()
-            while count < pause_timeout and player.playback_state == PlaybackState.PAUSED:
-                count += 1
+            while player.playback_state == PlaybackState.PAUSED:
+                if self.mass.players._has_waiting_start(player):
+                    # a start that waits for players to start up is about to play: the
+                    # stop below would call it off, so the timeout counts from its end
+                    count = 0
+                elif count >= pause_timeout:
+                    break
+                else:
+                    count += 1
                 await asyncio.sleep(1)
             # if player is still paused when the limit is reached, send stop
             if player.playback_state == PlaybackState.PAUSED:
@@ -2329,6 +2336,36 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 continue
             return next_item
         return None
+
+    def plays_now_or_next(self, queue_item: QueueItem) -> bool:
+        """
+        Return whether its queue is playing the given item, or plays it next.
+
+        That is the item the queue is on, the item its player has started fetching, and
+        the item that follows either of them. A queue that is not playing plays next the
+        item it is on, and nothing after it.
+
+        :param queue_item: The queue item to check, on the queue it belongs to.
+        """
+        queue_id = queue_item.queue_id
+        queue_data = self._queue_data.get(queue_id)
+        if queue_data is None:
+            return False
+        if (index := self.index_by_id(queue_id, queue_item.queue_item_id)) is None:
+            return False
+        queue = queue_data.queue
+        if queue_data.session_id is None:
+            # what follows the item it starts with is only prepared once it plays
+            return index == queue.current_index
+        for position in (queue.current_index, queue.index_in_buffer):
+            if position is None:
+                continue
+            if index == position:
+                return True
+            next_item = self.get_next_item(queue_id, position)
+            if next_item is not None and next_item.queue_item_id == queue_item.queue_item_id:
+                return True
+        return False
 
     def store_sources(self, queue: PlayerQueue, items: list[MediaItemType]) -> None:
         """

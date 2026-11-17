@@ -245,6 +245,28 @@ def use_real_create_task(mass: MagicMock | MusicAssistant) -> None:
     mass.create_task = MagicMock(side_effect=_create_task)  # type: ignore[method-assign]
 
 
+def use_real_timers(mass: MagicMock) -> None:
+    """
+    Give a mocked MusicAssistant the real timers (call_later) and tasks of the server.
+
+    For tests of code that waits for a timer of the server to fire. Use it from a test
+    that runs in an event loop.
+
+    :param mass: The mock standing in for the MusicAssistant instance.
+    """
+    use_real_create_task(mass)
+    mass._tracked_timers = {}
+    real_call_later = MethodType(MusicAssistant.call_later, mass)
+
+    def _call_later(*args: Any, **kwargs: Any) -> Any:
+        mass.loop = asyncio.get_running_loop()
+        return real_call_later(*args, **kwargs)
+
+    mass.call_later = MagicMock(side_effect=_call_later)
+    mass.cancel_timer = MethodType(MusicAssistant.cancel_timer, mass)
+    mass.cancel_task = MethodType(MusicAssistant.cancel_task, mass)
+
+
 def bare_player_controller() -> PlayerController:
     """Return a bare players controller, carrying just enough state for its real player locks."""
     players = PlayerController.__new__(PlayerController)

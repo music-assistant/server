@@ -156,6 +156,17 @@ async def _empty_mix(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]
         yield chunk
 
 
+def _delivered_buffer() -> SimpleNamespace:
+    """Build the bare buffer of a source that delivered everything, which a flow stream uses."""
+    return SimpleNamespace(
+        eof=True,
+        cancelled=False,
+        has_error=False,
+        max_size_seconds=300,
+        release_if_unneeded=lambda: None,
+    )
+
+
 def _buffer(duration_available: float, ready: bool, eof: bool = False) -> AudioBuffer:
     """Build a valid buffer with the requested resident duration."""
     audio_buffer = MagicMock(spec=AudioBuffer)
@@ -1380,7 +1391,7 @@ async def test_flow_realtime_item_yields_all_audio_as_plain_concatenation(
     realtime_details = SimpleNamespace(
         tail_overlap=None,
         audio_format=pcm_format,
-        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        buffer=_delivered_buffer(),
         fade_in=False,
         stream_error=False,
         uri="test://realtime",
@@ -1754,7 +1765,7 @@ async def test_flow_reports_no_fade_for_a_realtime_item_until_one_renders(
     realtime_details = SimpleNamespace(
         tail_overlap=None,
         audio_format=pcm_format,
-        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        buffer=_delivered_buffer(),
         fade_in=False,
         stream_error=False,
         uri="test://realtime",
@@ -1826,7 +1837,7 @@ async def test_flow_standard_fade_only_holds_back_its_overlap(
     first_details = SimpleNamespace(
         tail_overlap=None,
         audio_format=pcm_format,
-        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        buffer=_delivered_buffer(),
         fade_in=False,
         stream_error=False,
         uri="test://first",
@@ -1946,7 +1957,7 @@ def _flow_waiting_for_its_source(
     first_details = SimpleNamespace(
         tail_overlap=None,
         audio_format=pcm_format,
-        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        buffer=_delivered_buffer(),
         fade_in=False,
         stream_error=False,
         uri="test://first",

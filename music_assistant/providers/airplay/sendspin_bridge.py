@@ -1225,6 +1225,13 @@ class SendspinAirPlayBridge:
                     self.airplay_player.display_name,
                 )
                 return
+            if (player := self.airplay_player.player) and player.offline_by_power_control:
+                # switched off on purpose, whatever the protocol still reads
+                self.logger.debug(
+                    "Not re-joining %s: it is switched off",
+                    self.airplay_player.display_name,
+                )
+                return
             if not self.airplay_player.available:
                 # a speaker that rebooted is missing from discovery for a while
                 # after it starts answering again, so this is worth another go

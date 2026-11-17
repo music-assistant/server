@@ -17,6 +17,7 @@ import time
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Collection, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from itertools import batched
 from math import isfinite
 from typing import TYPE_CHECKING, Any
@@ -277,6 +278,15 @@ class _LiveSourceAnalysis:
     reported_by: AudioAnalysisProvider | None = None
 
 
+@dataclasses.dataclass
+class _RadioAnalysis:
+    """The analysis of a radio station, shared by every buffer that plays it."""
+
+    session_key: str
+    # the playback buffers that play the station, in the order they joined
+    buffers: list[AudioBuffer] = dataclasses.field(default_factory=list)
+
+
 class AudioAnalysisController(AudioAnalysisDatabaseMixin):
     """Controller that distributes PCM chunks to all registered AudioAnalysisProviders."""
 
@@ -312,6 +322,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         self._finalize_tasks: set[asyncio.Task[None]] = set()
         # Live source sessions by session key, from their start until their worker ends.
         self._live_sources: dict[str, _LiveSourceAnalysis] = {}
+        # Radio sessions by station uri, from their start until their last buffer ends.
+        self._radio_analyses: dict[str, _RadioAnalysis] = {}
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -433,12 +445,18 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         """
         Start analysis session for a track across all providers.
 
+        A radio station has one session, which every buffer that plays the station joins.
+
         :param audio_buffer: The shared playback AudioBuffer the analysis reads PCM from.
         :param streamdetails: The stream details for the item being analyzed.
         """
         providers = self.providers
         if not providers:
             self.logger.debug("No audio analysis providers available")
+            return
+
+        if streamdetails.media_type == MediaType.RADIO:
+            await self._start_radio_analysis(audio_buffer, streamdetails, providers)
             return
 
         session_key = streamdetails.uri
@@ -1809,6 +1827,59 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         self._cancel_providers(session_key)
         self.logger.debug("Stopped realtime analysis session %s", session_key)
 
+    async def _start_radio_analysis(
+        self,
+        audio_buffer: AudioBuffer,
+        streamdetails: StreamDetails,
+        providers: list[AudioAnalysisProvider],
+    ) -> None:
+        """
+        Add a buffer of a radio station to its analysis, starting one when none runs.
+
+        :param audio_buffer: The playback buffer of the station.
+        :param streamdetails: The stream details of the station.
+        :param providers: The available analysis providers.
+        """
+        uri = streamdetails.uri
+        starting = uri not in self._radio_analyses
+        if starting:
+            # a key of its own, so the cancel of a stopped session never reaches a new one
+            self._radio_analyses[uri] = _RadioAnalysis(f"{uri}#{uuid4().hex[:8]}")
+        radio = self._radio_analyses[uri]
+        radio.buffers.append(audio_buffer)
+        audio_buffer.register_cancel_callback(
+            partial(self._leave_radio_analysis, uri, radio, audio_buffer)
+        )
+        if not starting:
+            return
+        session_key = radio.session_key
+        provider_ids = await self._start_analysis_on_providers(
+            session_key, streamdetails, audio_buffer.pcm_format, providers
+        )
+        if not provider_ids:
+            self.logger.debug("No providers accepted analysis for %s", session_key)
+            if self._radio_analyses.get(uri) is radio:
+                del self._radio_analyses[uri]
+            return
+        # radio sessions are not capped per queue: they last as long as their buffers
+        self._active_sessions[session_key] = provider_ids
+        worker = self.mass.create_task(self._radio_reader_worker(uri, radio))
+        if not worker.done():
+            # a station stopped while its providers started has nothing left to read
+            self._workers[session_key] = worker
+
+    def _leave_radio_analysis(
+        self, uri: str, radio: _RadioAnalysis, audio_buffer: AudioBuffer
+    ) -> None:
+        """Remove a torn-down buffer from the analysis of its station, ending it with the last."""
+        with contextlib.suppress(ValueError):
+            radio.buffers.remove(audio_buffer)
+        if radio.buffers:
+            return
+        if self._radio_analyses.get(uri) is radio:
+            del self._radio_analyses[uri]
+        self._evict_realtime_session(radio.session_key)
+
     def _mark_analysis_activity(self) -> None:
         """Record analysis activity and ensure the idle-model monitor is running."""
         self._last_analysis_activity = time.monotonic()
@@ -1935,8 +2006,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
         :param session_key: Active-session key for this worker.
         :param audio_buffer: The shared playback buffer to read PCM from.
-        :param expected_duration: Expected track duration in seconds (None when unknown,
-            e.g. radio), used to discard sessions of streams that ended prematurely.
+        :param expected_duration: Expected track duration in seconds (None when unknown),
+            used to discard sessions of streams that ended prematurely.
         """
         start_chunk = audio_buffer.first_buffered_chunk
         cursor = start_chunk
@@ -1985,6 +2056,65 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 self._finalize_providers(session_key)
             else:
                 self._cancel_providers(session_key)
+
+    async def _radio_reader_worker(self, uri: str, radio: _RadioAnalysis) -> None:
+        """
+        Read the PCM of a radio station from its buffers and distribute it to providers.
+
+        Reads one buffer at a time and goes on with another buffer of the station when it
+        ends or fails. Audio the reader fell behind on is skipped. Once no buffer is left, the
+        providers are finalized when the last buffer ended cleanly, and cancelled otherwise.
+
+        :param uri: The uri of the station.
+        :param radio: The analysis of the station.
+        """
+        session_key = radio.session_key
+        audio_buffer: AudioBuffer | None = None
+        cursor = 0
+        completed = False
+        skipped_seconds = 0
+        try:
+            while session_key in self._active_sessions:
+                if audio_buffer is None:
+                    audio_buffer = next((b for b in radio.buffers if not b.cancelled), None)
+                    if audio_buffer is None:
+                        break
+                    cursor = audio_buffer.first_buffered_chunk
+                    completed = False
+                try:
+                    chunk = await audio_buffer.read_chunk_for_analysis(cursor)
+                except AudioBufferEOF:
+                    completed = True
+                except AudioBufferDiscarded:
+                    if not audio_buffer.cancelled:
+                        # one chunk equals one second of audio
+                        skipped_seconds += audio_buffer.first_buffered_chunk - cursor
+                        cursor = audio_buffer.first_buffered_chunk
+                        continue
+                except Exception as err:
+                    self.logger.debug("Analysis read failed for %s: %s", session_key, err)
+                else:
+                    await self._distribute_chunk(session_key, chunk)
+                    cursor += 1
+                    continue
+                # this buffer ended: the next pass goes on with another buffer of the station
+                with contextlib.suppress(ValueError):
+                    radio.buffers.remove(audio_buffer)
+                audio_buffer = None
+        finally:
+            self._workers.pop(session_key, None)
+            if self._radio_analyses.get(uri) is radio:
+                del self._radio_analyses[uri]
+            if completed:
+                self._finalize_providers(session_key)
+            else:
+                self._cancel_providers(session_key)
+            if skipped_seconds:
+                self.logger.debug(
+                    "Analysis of %s skipped %ds of the station it fell behind on",
+                    session_key,
+                    skipped_seconds,
+                )
 
     async def _source_analysis_worker(
         self,

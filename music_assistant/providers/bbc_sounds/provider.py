@@ -18,6 +18,7 @@ from auntie_sounds.playback import PlayStatus
 from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
+    QueueOption,
 )
 from music_assistant_models.errors import (
     LoginFailed,
@@ -57,7 +58,7 @@ from music_assistant.providers.bbc_sounds.now_playing import NowPlayingManager
 from music_assistant.providers.bbc_sounds.streaming import StreamManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.config_entries import ConfigActionResult, ConfigEntry
     from music_assistant_models.streamdetails import StreamDetails
 
 SUPPORTED_FEATURES = {
@@ -303,6 +304,42 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         return await self.stream_manager.get_stream_details(item_id, media_type)
+
+    async def handle_menu_action(
+        self, action_id: str, uri: str, player_id: str | None
+    ) -> ConfigActionResult | None:
+        """Handle a menu action from manifest's menu_actions."""
+        if action_id != "listen_from_start":
+            return await super().handle_menu_action(action_id, uri, player_id)
+        return await self._listen_from_start(uri, player_id)
+
+    async def _listen_from_start(
+        self, uri: str, player_id: str | None
+    ) -> ConfigActionResult | None:
+        """Handle a 'listen from start' menu request."""
+        if not player_id:
+            return None
+        item = await self.mass.music.get_item_by_uri(uri)
+        if isinstance(item, BrowseFolder):
+            return None
+        provider_mapping = next(
+            (m for m in item.provider_mappings if m.provider_instance == self.instance_id), None
+        )
+        if provider_mapping is None:
+            raise MediaNotFoundError(f"Couldn't find station {item.name}")
+        try:
+            current_programme = await self.client.schedules.on_air(provider_mapping.item_id)
+            if current_programme is None:
+                raise MediaNotFoundError(f"Nothing is on air on {item.name}")
+            playable_version = await self.adaptor.new_live_programme(current_programme)
+        except (exceptions.SoundsException, ConversionError) as err:
+            raise MusicAssistantError(
+                f"Error when trying to play from start on {item.name}"
+            ) from err
+        await self.mass.player_queues.play_media(
+            player_id, playable_version, option=QueueOption.PLAY, start_position=0
+        )
+        return None
 
     def _create_managers(self) -> None:
         self.adaptor = Adaptor(self)
