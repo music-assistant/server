@@ -520,7 +520,7 @@ class MetaDataController(
                 track.item_id, track.provider
             )
             has_lrc, lyrics = self._select_track_lyrics(full_track.metadata, lyrics)
-            if has_lrc:
+            if has_lrc or (not track_provider.is_streaming_provider and full_track.metadata.lyrics):
                 return lyrics
 
         # fallback to other metadata providers

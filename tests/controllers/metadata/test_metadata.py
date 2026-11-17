@@ -371,6 +371,7 @@ async def test_track_lyrics_continues_after_plain_lyrics_from_own_provider(
     mass_minimal.music = MusicController(mass_minimal)
     own_provider = MagicMock(spec=MusicProvider)
     own_provider.supported_features = {ProviderFeature.LYRICS}
+    own_provider.is_streaming_provider = True
     full_track = create_track("spotify", "t1")
     full_track.metadata.lyrics = "own plain"
     lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
@@ -387,6 +388,48 @@ async def test_track_lyrics_continues_after_plain_lyrics_from_own_provider(
 
     assert result == ("own plain", "[00:01.00]sync")
     lyrics_provider.get_track_metadata.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("local_lyrics", "expected", "lookup_expected"),
+    [
+        ("embedded plain", ("embedded plain", None), False),
+        (None, (None, "[00:01.00]sync"), True),
+    ],
+)
+async def test_track_lyrics_skips_metadata_lookup_for_local_lyrics(
+    metadata_controller: MetaDataController,
+    mass_minimal: MusicAssistant,
+    local_lyrics: str | None,
+    expected: tuple[str | None, str | None],
+    lookup_expected: bool,
+) -> None:
+    """Embedded local lyrics are authoritative, while an empty local source falls back online."""
+    mass_minimal.music = MusicController(mass_minimal)
+    own_provider = MagicMock(spec=MusicProvider)
+    own_provider.supported_features = {ProviderFeature.LYRICS}
+    own_provider.is_streaming_provider = False
+    full_track = create_track("filesystem_local", "local-track")
+    full_track.metadata.lyrics = local_lyrics
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
+    track = create_track("filesystem_local", "local-track")
+
+    with (
+        patch.object(mass_minimal.music, "get_visible_provider", return_value=own_provider),
+        patch.object(
+            mass_minimal.music.tracks,
+            "get_provider_item",
+            new=AsyncMock(return_value=full_track),
+        ),
+        patch.object(mass_minimal, "get_providers", return_value=[lyrics_provider]),
+    ):
+        result = await metadata_controller.get_track_lyrics(track)
+
+    assert result == expected
+    if lookup_expected:
+        lyrics_provider.get_track_metadata.assert_awaited_once()
+    else:
+        lyrics_provider.get_track_metadata.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

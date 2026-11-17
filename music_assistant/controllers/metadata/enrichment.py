@@ -572,6 +572,7 @@ class MetadataEnrichmentMixin:
         self.logger.debug("Updating metadata for Track %s", track.name)
         sources: list[tuple[int, MediaItemMetadata]] = []
         source_missing = False
+        local_source_has_lyrics = False
 
         prev_lyrics = (track.metadata.lyrics, track.metadata.lrc_lyrics)
         if force_refresh:
@@ -605,6 +606,9 @@ class MetadataEnrichmentMixin:
                 # a provider miss hands back the stored library item, which is not fresh
                 if prov_item.provider != "library":
                     sources.append((_music_source_rank(prov), prov_item.metadata))
+                    local_source_has_lyrics |= not prov.is_streaming_provider and bool(
+                        prov_item.metadata.lyrics or prov_item.metadata.lrc_lyrics
+                    )
                 track.metadata.update(_without_description(prov_item.metadata))
                 # a provider's full track carries the ISRCs its album listing may leave out
                 for id_type, value in prov_item.external_ids:
@@ -651,6 +655,8 @@ class MetadataEnrichmentMixin:
                     )
                     continue
                 if metadata:
+                    if local_source_has_lyrics:
+                        metadata = replace(metadata, lyrics=None, lrc_lyrics=None)
                     if prefer_local_genres:
                         metadata = replace(metadata, genres=None)
                     sources.append((_metadata_source_rank(provider), metadata))
