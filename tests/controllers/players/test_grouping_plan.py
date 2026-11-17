@@ -807,13 +807,8 @@ def test_a_member_on_the_groups_protocol_leaves_it_there() -> None:
     assert _decided(world, "s", None, ("w",))[0] == [("airplay_s", (), ("airplay_w",))]
 
 
-def test_a_member_whose_output_went_away_is_removed_natively() -> None:
-    """
-    A member whose output went away is removed natively, not from the group that holds it.
-
-    An output that can not play never matches, so w stays in s's AirPlay group.
-    This is a known shortcoming, kept as it was; this test changes when it is fixed.
-    """
+def test_a_member_whose_output_went_away_leaves_the_group_that_holds_it() -> None:
+    """A member whose output can not play is removed from the protocol group that holds it."""
     world = _World()
     _mixed(world, active_output="airplay_s")
     world.protocols["airplay_s"] = replace(
@@ -827,9 +822,7 @@ def test_a_member_whose_output_went_away_is_removed_natively() -> None:
         outputs=tuple(replace(o, available=False) for o in world.players["w"].outputs),
     )
     world.players["s"] = replace(world.players["s"], group_members=("s", "w"))
-    calls, _ = _decided(world, "s", None, ("w",))
-    assert _members(calls, "airplay_s") == []
-    assert _members(calls, "sonos_s") == [((), ("wiim_w",))]
+    assert _decided(world, "s", None, ("w",))[0] == [("airplay_s", (), ("airplay_w",))]
 
 
 def test_a_native_airplay_leader_removes_the_audio_protocol_it_holds() -> None:

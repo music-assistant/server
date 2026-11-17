@@ -1131,7 +1131,8 @@ class GroupRules:
                 continue
             if domain and protocol:
                 output = child.output_by_domain(domain)
-                if output and output.available:
+                # the leader's protocol lets the member go, also one that can not be reached
+                if output:
                     member_id = self._member_protocol_id(child, output)
                     if member_id in protocol.group_members:
                         protocol_members.append(member_id)
