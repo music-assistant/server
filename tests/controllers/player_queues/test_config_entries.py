@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from music_assistant_models.enums import CrossfadeMode, ProviderFeature
+import pytest
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import (
+    CrossfadeMode,
+    ProviderFeature,
+    ProviderSharing,
+    ProviderType,
+)
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
@@ -16,6 +24,7 @@ from music_assistant.constants import (
     CONF_VALUE_GLOBAL,
     CONF_VOLUME_NORMALIZATION,
 )
+from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues.config import (
     CATEGORY_CLICK_ACTIONS,
     CATEGORY_DEFAULT_ENQUEUE_OPTION,
@@ -47,9 +56,12 @@ from music_assistant.controllers.player_queues.constants import (
     PLAY_ACTION_PLAY_FROM_HERE,
     PLAY_ACTION_PLAY_TRACK,
 )
+from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
+
+    from music_assistant.mass import MusicAssistant
 
 
 def _mass(*, similar_tracks: bool, smart_fades: bool) -> Mock:
@@ -58,6 +70,7 @@ def _mass(*, similar_tracks: bool, smart_fades: bool) -> Mock:
     provider.supported_features = {ProviderFeature.SIMILAR_TRACKS} if similar_tracks else set()
     mass = Mock()
     mass.music.providers = [provider]
+    mass.get_providers_supporting_feature.return_value = []
     mass.streams.smart_fades_available = smart_fades
     return mass
 
@@ -219,6 +232,89 @@ def test_queue_config_similar_autoplay_disabled_without_provider() -> None:
     autoplay = next(entry for entry in entries if entry.key == CONF_AUTOPLAY_MODE)
     similar = next(opt for opt in autoplay.options if opt.value == "similar")
     assert similar.disabled is True
+
+
+@pytest.mark.parametrize("per_queue", [False, True], ids=["global", "queue"])
+@pytest.mark.parametrize(
+    ("provider_type", "available", "feature", "expected"),
+    [
+        (ProviderType.METADATA, True, ProviderFeature.SIMILAR_TRACKS, True),
+        (ProviderType.MUSIC, True, ProviderFeature.SIMILAR_TRACKS, True),
+        (ProviderType.PLUGIN, True, ProviderFeature.SIMILAR_TRACKS, True),
+        (ProviderType.METADATA, False, ProviderFeature.SIMILAR_TRACKS, False),
+        (ProviderType.MUSIC, False, ProviderFeature.SIMILAR_TRACKS, False),
+        (ProviderType.PLUGIN, False, ProviderFeature.SIMILAR_TRACKS, False),
+        (ProviderType.METADATA, True, ProviderFeature.SEARCH, False),
+        (ProviderType.MUSIC, True, ProviderFeature.SEARCH, False),
+        (ProviderType.PLUGIN, True, ProviderFeature.SEARCH, False),
+        (ProviderType.PLAYER, True, ProviderFeature.SIMILAR_TRACKS, False),
+    ],
+)
+async def test_similar_autoplay_provider_availability(
+    mass_minimal: MusicAssistant,
+    per_queue: bool,
+    provider_type: ProviderType,
+    available: bool,
+    feature: ProviderFeature,
+    expected: bool,
+) -> None:
+    """Both schemas enable similar autoplay only for available, eligible similarity providers."""
+    mass = mass_minimal
+    mass.music = MusicController(mass)
+    mass.streams = Mock(smart_fades_available=False)
+    mass._providers = {
+        "search": Mock(
+            type=ProviderType.MUSIC,
+            instance_id="search",
+            available=True,
+            supported_features={ProviderFeature.SEARCH},
+            priority=50,
+        ),
+        "similar": Mock(
+            type=provider_type,
+            instance_id="similar",
+            available=available,
+            supported_features={feature},
+            priority=50,
+        ),
+    }
+
+    entries = queue_config_entries(mass) if per_queue else core_config_entries(mass)
+    autoplay = _by_key(entries)[CONF_AUTOPLAY_MODE]
+    similar = next(opt for opt in autoplay.options if opt.value == "similar")
+    assert similar.disabled is (not expected)
+
+
+@pytest.mark.parametrize("per_queue", [False, True], ids=["global", "queue"])
+@pytest.mark.parametrize("visible", [False, True], ids=["hidden", "visible"])
+async def test_similar_autoplay_respects_music_provider_visibility(
+    mass_minimal: MusicAssistant, per_queue: bool, visible: bool
+) -> None:
+    """A music source hidden from the current user cannot enable similar autoplay."""
+    mass = mass_minimal
+    mass.music = MusicController(mass)
+    mass.streams = Mock(smart_fades_available=False)
+    mass._providers = {
+        "similar": Mock(
+            type=ProviderType.MUSIC,
+            instance_id="similar",
+            available=True,
+            supported_features={ProviderFeature.SIMILAR_TRACKS},
+            priority=50,
+        )
+    }
+    set_music_source_access(
+        mass,
+        {"similar": None if visible else ProviderAccess(sharing=ProviderSharing.PRIVATE)},
+    )
+    user = User(user_id="listener", username="listener", role=UserRole.USER)
+
+    with patch("music_assistant.controllers.music.controller.get_current_user", return_value=user):
+        entries = queue_config_entries(mass) if per_queue else core_config_entries(mass)
+
+    autoplay = _by_key(entries)[CONF_AUTOPLAY_MODE]
+    similar = next(opt for opt in autoplay.options if opt.value == "similar")
+    assert similar.disabled is (not visible)
 
 
 def test_queue_config_similar_artists_autoplay_needs_a_provider() -> None:
