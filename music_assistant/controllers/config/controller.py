@@ -22,6 +22,7 @@ from music_assistant.constants import (
     CONF_ENCRYPTION_KEY,
     CONF_ENCRYPTION_KEY_MIGRATED,
     CONF_ONBOARD_DONE,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED,
     CONF_SERVER_ID,
     ENCRYPT_SUFFIX,
 )
@@ -332,6 +333,8 @@ class ConfigController(
         mark_player_split_done(self._data)
         # a new installation stores the AirPlay sync adjust with its current sign
         self._data[CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED] = True
+        # and one Sendspin output per player, with what a Cast bridge leaves off marked
+        self._data[CONF_SENDSPIN_ONE_OUTPUT_MIGRATED] = True
 
     async def _backup_before_player_split(self, loaded_filename: str) -> None:
         """

@@ -14,22 +14,33 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant.constants import (
     CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
     CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED,
+    CONF_CACHED_ARP_MAC,
     CONF_CORE,
     CONF_CROSSFADE_DURATION,
     CONF_CROSSFADE_MODE,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
     CONF_ENABLE_ICY_METADATA,
+    CONF_ENABLED,
     CONF_ICON,
+    CONF_MUTE_CONTROL,
     CONF_PLAYER_DSP,
     CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
+    CONF_PREFERRED_OUTPUT_PROTOCOL,
+    CONF_PROTOCOL_EXPERIMENTAL_NOTE,
+    CONF_PROTOCOL_IDENTIFIERS,
     CONF_PROTOCOL_KEY_SPLITTER,
+    CONF_PROTOCOL_OFF_BY_DEFAULT,
     CONF_PROVIDERS,
     CONF_RAUMFELD_ICY_BASIC_MIGRATED,
+    CONF_REPORTED_MAC,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED,
     CONF_SMART_FADES_MODE,
     CONF_SYNC_ADJUST,
+    CONF_UNDERLYING_PLAYER_ID,
+    CONF_VOLUME_CONTROL,
     CONF_VOLUME_NORMALIZATION,
 )
 from music_assistant.controllers.config.player_split import (
@@ -67,6 +78,30 @@ LEGACY_HTTP_PROFILE_KEY = "http_profile"
 
 # domains of the removed builtin providers, whose stored configs nothing can load anymore
 RETIRED_BUILTIN_PROVIDER_DOMAINS = ("builtin_player", "universal_player")
+
+# the order in which the Sendspin bridges took a device while each kept an output of its
+# own, only referenced by the migration that folds those outputs into one
+LEGACY_SENDSPIN_BRIDGE_ORDER = ("airplay", "squeezelite", "chromecast")
+
+# values of a Sendspin output that the migration to one output per player reads and writes
+_SENDSPIN_STATIC_DELAY = "sendspin_static_delay"
+_SENDSPIN_BRIDGE_STATIC_DELAYS = "sendspin_bridge_static_delays"
+_SENDSPIN_CAST_OPT_IN = "sendspin_cast_opt_in"
+
+# values of a Sendspin output that describe that output only, which no other one inherits
+_SENDSPIN_OUTPUT_OWN_KEYS = frozenset(
+    {
+        CONF_CACHED_ARP_MAC,
+        CONF_PROTOCOL_EXPERIMENTAL_NOTE,
+        CONF_PROTOCOL_IDENTIFIERS,
+        CONF_PROTOCOL_OFF_BY_DEFAULT,
+        CONF_REPORTED_MAC,
+        CONF_UNDERLYING_PLAYER_ID,
+        _SENDSPIN_BRIDGE_STATIC_DELAYS,
+        _SENDSPIN_CAST_OPT_IN,
+        _SENDSPIN_STATIC_DELAY,
+    }
+)
 
 
 # Canonical ids of the shared icon set (music-assistant/shared-icons v0.3.0);
@@ -499,7 +534,7 @@ PROVIDER_SETUP_FLOW_DEFAULTS: dict[str, dict[str, ConfigValueType]] = {
 }
 
 
-async def migrate(data: dict[str, Any]) -> bool:
+async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     """Migrate the persistent settings data in-place; return True if anything changed."""
     changed = False
 
@@ -641,6 +676,13 @@ async def migrate(data: dict[str, Any]) -> bool:
     # a set of speakers has. It reads the split tree, so it runs after the split.
     # TODO: remove after 2.13 release
     if _migrate_stereo_pair_player_type(data):
+        changed = True
+
+    # Give every player one Sendspin output for all its bridges: mark what a Cast bridge
+    # left switched off as its default, and fold the outputs of a player that has several
+    # into the one in use. It reads the split tree, so it runs after the split.
+    # TODO: remove after 2.13 release
+    if _migrate_sendspin_one_output(data):
         changed = True
 
     return changed
@@ -1641,3 +1683,201 @@ def _migrate_remove_retired_builtin_providers(data: dict[str, Any]) -> bool:
         del all_provider_configs[instance_id]
         LOGGER.info("Removed the config of the retired provider %s", instance_id)
     return bool(retired)
+
+
+def _migrate_sendspin_one_output(data: dict[str, Any]) -> bool:
+    """
+    Give every player one Sendspin output for all its bridges, once.
+
+    A Cast bridge left its output switched off until the user opted in, which the stored
+    output did not tell apart from a user who switched it off: every output a Cast protocol
+    carries is marked, as that default when it is off and as opted in when it is on. A
+    player whose bridges each stored an output keeps the one in use, with the settings of
+    the others. Guarded by CONF_SENDSPIN_ONE_OUTPUT_MIGRATED, which is claimed even when
+    nothing changed, so an output the user switches off afterwards is not read as a default.
+    Returns True when the settings were modified, including the first run's marker.
+    """
+    if data.get(CONF_SENDSPIN_ONE_OUTPUT_MIGRATED):
+        return False
+    try:
+        _mark_cast_sendspin_outputs(data)
+        for player_id, output_ids in _sendspin_outputs_by_player(data).items():
+            if len(output_ids) < 2:
+                continue
+            try:
+                _fold_sendspin_outputs(data, player_id, output_ids)
+            except Exception:
+                LOGGER.exception(
+                    "Could not fold the Sendspin outputs of player %s, skipping it", player_id
+                )
+    except Exception:
+        LOGGER.exception("Could not migrate the Sendspin outputs to one per player")
+    data[CONF_SENDSPIN_ONE_OUTPUT_MIGRATED] = True
+    return True
+
+
+def _sendspin_outputs(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return the stored Sendspin outputs that ride on another protocol, by their id."""
+    protocols = data.get(CONF_PLAYER_PROTOCOLS)
+    if not isinstance(protocols, dict):
+        return {}
+    return {
+        protocol_id: record
+        for protocol_id, record in protocols.items()
+        if isinstance(protocol_id, str)
+        and isinstance(record, dict)
+        and _provider_domain(data, record) == "sendspin"
+        and isinstance(values := record.get("values"), dict)
+        and isinstance(values.get(CONF_UNDERLYING_PLAYER_ID), str)
+    }
+
+
+def _sendspin_outputs_by_player(data: dict[str, Any]) -> dict[str, list[str]]:
+    """Return the ids of the stored Sendspin outputs of each stored player, by its id."""
+    players = data.get(CONF_PLAYERS)
+    by_player: dict[str, list[str]] = {}
+    for output_id, record in _sendspin_outputs(data).items():
+        player_id = record.get("player_id")
+        if (
+            isinstance(player_id, str)
+            and isinstance(players, dict)
+            and isinstance(players.get(player_id), dict)
+        ):
+            by_player.setdefault(player_id, []).append(output_id)
+    return by_player
+
+
+def _stored_provider(data: dict[str, Any], record: Any) -> tuple[str, dict[str, Any] | None]:
+    """
+    Return the instance id of the provider of a stored protocol, and its stored config.
+
+    :param data: The settings.
+    :param record: The stored record of the protocol, if there is one.
+    :return: The instance id, empty when the record names none, and the config of that
+        provider when it is stored.
+    """
+    instance_id = record.get("provider") if isinstance(record, dict) else None
+    if not isinstance(instance_id, str):
+        return "", None
+    providers = data.get(CONF_PROVIDERS)
+    provider = providers.get(instance_id) if isinstance(providers, dict) else None
+    return instance_id, provider if isinstance(provider, dict) else None
+
+
+def _provider_domain(data: dict[str, Any], record: Any) -> str:
+    """
+    Return the domain of the provider of a stored protocol, empty when it is not known.
+
+    :param data: The settings.
+    :param record: The stored record of the protocol, if there is one.
+    """
+    instance_id, provider = _stored_provider(data, record)
+    domain = provider.get("domain") if provider else None
+    return domain if isinstance(domain, str) else instance_id.split("--", maxsplit=1)[0]
+
+
+def _sendspin_carrier(data: dict[str, Any], output: dict[str, Any]) -> tuple[str, bool]:
+    """
+    Return the domain of the protocol a stored Sendspin output rides on, and whether it is on.
+
+    :param data: The settings.
+    :param output: The stored record of the output.
+    :return: The domain, empty when that protocol is not stored anymore, and whether the
+        user has that protocol and its provider switched on.
+    """
+    carrier = data[CONF_PLAYER_PROTOCOLS].get(output["values"][CONF_UNDERLYING_PLAYER_ID])
+    if not isinstance(carrier, dict):
+        return "", False
+    _, provider = _stored_provider(data, carrier)
+    switched_on = (
+        bool(carrier.get(CONF_ENABLED, True))
+        and provider is not None
+        and bool(provider.get(CONF_ENABLED, True))
+    )
+    return _provider_domain(data, carrier), switched_on
+
+
+def _mark_cast_sendspin_outputs(data: dict[str, Any]) -> None:
+    """Mark every Sendspin output a Cast protocol carries as left off by default, or opted in."""
+    for output in _sendspin_outputs(data).values():
+        values = output["values"]
+        domain, _ = _sendspin_carrier(data, output)
+        # an output whose carrier is gone still tells by the warning Cast stored with it
+        if domain != "chromecast" and (domain or not values.get(CONF_PROTOCOL_EXPERIMENTAL_NOTE)):
+            continue
+        if output.get(CONF_ENABLED, True):
+            values[_SENDSPIN_CAST_OPT_IN] = True
+        else:
+            values[CONF_PROTOCOL_OFF_BY_DEFAULT] = True
+
+
+def _fold_sendspin_outputs(data: dict[str, Any], player_id: str, output_ids: list[str]) -> None:
+    """
+    Fold the stored Sendspin outputs of a player into the one that is in use.
+
+    That is the output whose carrier comes first in LEGACY_SENDSPIN_BRIDGE_ORDER among the
+    protocols the user has switched on, so a player keeps the Sendspin output it has, or
+    has switched off. An output a Cast bridge left off by default only stays when the
+    player has no other. The one that stays takes the static delays of the others, by
+    their carrier, and the settings it has none of itself; a choice of the player that
+    names another one names it from then on.
+
+    :param data: The settings.
+    :param player_id: Id of the player.
+    :param output_ids: The ids of its stored Sendspin outputs.
+    """
+    protocols = data[CONF_PLAYER_PROTOCOLS]
+
+    def _rank(output_id: str) -> tuple[bool, bool, int, bool, str]:
+        output = protocols[output_id]
+        domain, switched_on = _sendspin_carrier(data, output)
+        return (
+            bool(output["values"].get(CONF_PROTOCOL_OFF_BY_DEFAULT)),
+            not switched_on,
+            LEGACY_SENDSPIN_BRIDGE_ORDER.index(domain)
+            if domain in LEGACY_SENDSPIN_BRIDGE_ORDER
+            else len(LEGACY_SENDSPIN_BRIDGE_ORDER),
+            not output.get(CONF_ENABLED, True),
+            output_id,
+        )
+
+    kept_id = min(output_ids, key=_rank)
+    kept_values = protocols[kept_id]["values"]
+    carrier_id = kept_values[CONF_UNDERLYING_PLAYER_ID]
+    stored_delays = kept_values.get(_SENDSPIN_BRIDGE_STATIC_DELAYS)
+    delays = dict(stored_delays) if isinstance(stored_delays, dict) else {}
+    player_values = data[CONF_PLAYERS][player_id].get("values")
+    for output_id in sorted(output_ids):
+        if output_id == kept_id:
+            continue
+        removed = protocols.pop(output_id)
+        values = removed["values"]
+        set_aside = values.get(_SENDSPIN_BRIDGE_STATIC_DELAYS)
+        if (delay := values.get(_SENDSPIN_STATIC_DELAY)) is not None:
+            delays.setdefault(values[CONF_UNDERLYING_PLAYER_ID], delay)
+        for other_carrier_id, delay in (set_aside if isinstance(set_aside, dict) else {}).items():
+            delays.setdefault(other_carrier_id, delay)
+        if values.get(_SENDSPIN_CAST_OPT_IN):
+            kept_values[_SENDSPIN_CAST_OPT_IN] = True
+        for key, value in values.items():
+            if key not in _SENDSPIN_OUTPUT_OWN_KEYS:
+                kept_values.setdefault(key, value)
+        if isinstance(player_values, dict):
+            for key in (CONF_PREFERRED_OUTPUT_PROTOCOL, CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL):
+                if player_values.get(key) == output_id:
+                    player_values[key] = kept_id
+        LOGGER.info(
+            "Player %s keeps the Sendspin output %s, removed its other one %s: %s",
+            player_id,
+            kept_id,
+            output_id,
+            removed,
+        )
+    if (delay := delays.pop(carrier_id, None)) is not None:
+        kept_values.setdefault(_SENDSPIN_STATIC_DELAY, delay)
+    if delays:
+        kept_values[_SENDSPIN_BRIDGE_STATIC_DELAYS] = delays
+    else:
+        kept_values.pop(_SENDSPIN_BRIDGE_STATIC_DELAYS, None)
+    if _sendspin_carrier(data, protocols[kept_id])[0] not in ("chromecast", ""):
+        kept_values.pop(CONF_PROTOCOL_EXPERIMENTAL_NOTE, None)
