@@ -202,6 +202,53 @@ def test_the_role_plays_the_first_format_of_the_hello_by_default() -> None:
 
 
 @pytest.mark.parametrize(
+    ("formats", "asked", "source_bit_depth", "plays"),
+    [
+        # no more bits than the source has, at the rate that is asked for
+        (FORMATS, None, 16, (44100, 16, 2)),
+        (FORMATS, _pcm(48000, 24), 16, (48000, 16, 2)),
+        (FORMATS, None, 24, (44100, 24, 2)),
+        (FORMATS, _pcm(48000, 24), 24, (48000, 24, 2)),
+        # nor more than was asked for: a format the user set is not raised
+        (FORMATS, _pcm(48000, 16), 24, (48000, 16, 2)),
+        # a source that is not known plays as it is asked for
+        (FORMATS, None, None, (44100, 24, 2)),
+        # a player that plays one depth plays that
+        ([(44100, 16), (48000, 16)], None, 24, (44100, 16, 2)),
+        ([(44100, 24), (48000, 24)], _pcm(48000, 24), 16, (48000, 24, 2)),
+    ],
+)
+def test_the_bit_depth_follows_the_source(
+    formats: list[tuple[int, int]],
+    asked: SendspinAudioFormat | None,
+    source_bit_depth: int | None,
+    plays: tuple[int, int, int],
+) -> None:
+    """A 16-bit source is played in 16 bits, also by a player that plays 24."""
+    role = _role(formats)
+    role.follow_source_bit_depth(lambda: source_bit_depth)
+
+    assert role.set_preferred_format(asked, AudioCodec.PCM if asked else None)
+
+    assert _plays(role) == plays
+
+
+def test_another_bit_depth_is_reported_to_the_group() -> None:
+    """A source of another depth makes Sendspin start the stream of the role again."""
+    client = MagicMock(info=_hello(FORMATS))
+    role = SlimprotoBridgeRole(client=client)
+    depths = iter([24, 16, 16])
+    role.follow_source_bit_depth(lambda: next(depths))
+    assert role.set_preferred_format(None)
+    client.group.on_role_format_changed.assert_not_called()
+
+    assert role.set_preferred_format(None)
+    client.group.on_role_format_changed.assert_called_once_with(role)
+    assert role.set_preferred_format(None)
+    client.group.on_role_format_changed.assert_called_once_with(role)
+
+
+@pytest.mark.parametrize(
     ("audio_format", "codec"),
     [
         (_pcm(96000, 24), AudioCodec.PCM),

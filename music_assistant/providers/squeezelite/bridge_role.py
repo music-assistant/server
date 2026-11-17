@@ -8,6 +8,7 @@ session, as it does for a Sendspin player that follows the sample rate of what i
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from aiosendspin.server.roles.registry import register_role
@@ -30,10 +31,22 @@ class SlimprotoBridgeRole(BridgePlayerRole):
     (``PlayerRoleProtocol``): that is what the Sendspin provider selects formats on.
     """
 
+    # returns the bit depth of what the next stream plays, None when that is not known
+    _source_bit_depth: Callable[[], int | None] | None = None
+
     @property
     def role_id(self) -> str:
         """Return role identifier."""
         return SLIMPROTO_BRIDGE_ROLE_ID
+
+    def follow_source_bit_depth(self, source_bit_depth: Callable[[], int | None]) -> None:
+        """
+        Let the bit depth of a format follow that of the audio it is asked for.
+
+        :param source_bit_depth: Returns the bit depth of what the next stream plays, None
+            when that is not known.
+        """
+        self._source_bit_depth = source_bit_depth
 
     @property
     def state_supported_commands(self) -> list[PlayerCommand]:
@@ -54,7 +67,9 @@ class SlimprotoBridgeRole(BridgePlayerRole):
         """
         Play another of the formats of the hello from the next stream on.
 
-        A stream that plays is started again by Sendspin, in the format asked for.
+        Where the bit depth of the audio is known, the format is played in no more bits
+        than its source has. A stream that plays is started again by Sendspin, in
+        the format asked for.
 
         :param audio_format: The format to play, None for the default format.
         :param codec: The codec of that format.
@@ -77,6 +92,20 @@ class SlimprotoBridgeRole(BridgePlayerRole):
         )
         if chosen is None:
             return False
+        source_bit_depth = self._source_bit_depth() if self._source_bit_depth else None
+        if source_bit_depth is not None and source_bit_depth < chosen.bit_depth:
+            # the highest depth the source fills, else the lowest the player plays
+            chosen = min(
+                (
+                    fmt
+                    for fmt in formats
+                    if (fmt.codec, fmt.sample_rate, fmt.channels)
+                    == (chosen.codec, chosen.sample_rate, chosen.channels)
+                ),
+                key=lambda fmt: (
+                    (0, -fmt.bit_depth) if fmt.bit_depth <= source_bit_depth else (1, fmt.bit_depth)
+                ),
+            )
         previous = self.preferred_format
         self.setup_audio_requirements(chosen.sample_rate, chosen.bit_depth, chosen.channels)
         if previous is not None and (

@@ -342,7 +342,7 @@ if TYPE_CHECKING:
     from aiosendspin.noise.trust_store import ServerPairingRecord
     from aiosendspin.server.client import SendspinClient
     from music_assistant_models.event import MassEvent
-    from music_assistant_models.media_items import MediaItemPalette
+    from music_assistant_models.media_items import AudioFormat, MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
@@ -1460,6 +1460,8 @@ class SendspinPlayer(SendspinBasePlayer):
     _stop_taking_volume_reports: Callable[[], None] | None = None
     # sample rate an automatic Sendspin format follows, set by the last playback session
     _session_sample_rate: int | None = None
+    # format of the first item of that session, None when it has none: a bridge reads it
+    session_source_format: AudioFormat | None = None
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -1843,6 +1845,9 @@ class SendspinPlayer(SendspinBasePlayer):
 
         :param start_streamdetails: Stream details of the first item of the session, if any.
         """
+        self.session_source_format = (
+            start_streamdetails.audio_format if start_streamdetails else None
+        )
         if start_streamdetails is None:
             self._session_sample_rate = None
         else:
