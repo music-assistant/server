@@ -60,8 +60,8 @@ present on their input. Per the spec the server decides what to do with that,
 and this provider turns it into playback: pick a target under the device's own
 settings and the source starts there when a signal appears, and stops again
 after the signal has been gone for a minute. The target list covers everything
-that renders audio, groups and stereo pairs included, and a device that is a
-player itself defaults to playing its own line-in.
+that renders audio, groups and multi-channel players included, and a device
+that is a player itself defaults to playing its own line-in.
 
 Only transitions act, and the first report after a connect is recorded
 without acting, so a restart with the needle already down starts nothing. A

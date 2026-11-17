@@ -20,7 +20,11 @@ from music_assistant_models.errors import (
     PlayerUnavailableError,
 )
 
-from music_assistant.controllers.players.constants import PlayerLockPurpose, SwitchedOffAction
+from music_assistant.controllers.players.constants import (
+    POWER_ON_REPORT_TIMEOUT,
+    PlayerLockPurpose,
+    SwitchedOffAction,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
@@ -213,7 +217,7 @@ async def wait_for_power_on(
     logger: logging.Logger,
     player: Player,
     player_control: PlayerControl | None = None,
-    timeout: float = 5.0,
+    timeout: float = POWER_ON_REPORT_TIMEOUT,
 ) -> None:
     """
     Wait for a player (or player control) to report powered on after a power on command.

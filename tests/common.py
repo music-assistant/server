@@ -805,6 +805,7 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "player_id": player_id,
         "provider": "test_prov",
         "player_type": PlayerType.PLAYER,
+        "channel_layout": None,
         "now": 1000.0,
         "previous_state": make_player_state(player_id),
         "enabled": True,

@@ -87,6 +87,7 @@ from music_assistant.controllers.players import playback as players_playback
 from music_assistant.controllers.players import power as players_power
 from music_assistant.controllers.players.constants import (
     PLAYER_LOCK_OWNER_ATTEMPTS,
+    POWER_ON_REPORT_TIMEOUT,
     POWER_RESTORE_TIMEOUT,
     PlayerLockPurpose,
 )
@@ -1484,9 +1485,9 @@ class TestPowerOffEndsTheQueue:
         player_stop.assert_awaited_once_with("player_1")
         queue_stop.assert_not_awaited()
 
-    # a stereo pair is a group member like any single speaker, so powering it off must
+    # a multi-channel player is a group member like any single speaker, so powering it off must
     # detach it from the group instead of leaving the group streaming to a dead speaker
-    @pytest.mark.parametrize("member_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("member_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     @pytest.mark.asyncio
     async def test_powering_off_a_group_member_does_not_end_the_groups_queue(
         self, mock_mass: MagicMock, member_type: PlayerType
@@ -1577,7 +1578,7 @@ class TestSyncLeaderPowerOffUngroup:
 
         leader_protocol.power = _power  # type: ignore[method-assign]
 
-    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     @pytest.mark.asyncio
     async def test_ma_power_off_ungroups_a_sync_leader(
         self, mock_mass: MagicMock, player_type: PlayerType
@@ -1596,7 +1597,7 @@ class TestSyncLeaderPowerOffUngroup:
 
         assert ungrouped == ["leader"]
 
-    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     def test_external_power_off_ungroups_a_sync_leader(
         self, mock_mass: MagicMock, player_type: PlayerType
     ) -> None:
@@ -1685,7 +1686,7 @@ class TestSyncLeaderPowerOffUngroup:
         controller.cmd_ungroup.assert_called_once_with("leader")
         assert leader.power_off_issued_at is None
 
-    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     @pytest.mark.asyncio
     async def test_power_off_leaves_the_synced_followers_powered(
         self,
@@ -1815,7 +1816,7 @@ class TestExternalPowerOffUnsync:
         controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
         return controller, player
 
-    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     def test_power_off_unsyncs_synced_player(
         self, mock_mass: MagicMock, player_type: PlayerType
     ) -> None:
@@ -1914,9 +1915,9 @@ class TestExternalPowerOffEndsTheQueue:
         mock_mass.player_queues._handle_stop = queue_stop
         return controller, player, protocol, queue_stop
 
-    # a stereo pair renders audio and owns a queue just like a single speaker does,
+    # a multi-channel player renders audio and owns a queue just like a single speaker does,
     # and an MA power off ends its queue without looking at the type either
-    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     def test_power_off_schedules_the_queue_stop(
         self, mock_mass: MagicMock, player_type: PlayerType
     ) -> None:
@@ -1975,9 +1976,9 @@ class TestExternalPowerOffEndsTheQueue:
 
         assert _scheduled_queue_stops(mock_mass) == []
 
-    # a stereo pair reaches the queue-stop gate (it renders audio) but must take the
+    # a multi-channel player reaches the queue-stop gate (it renders audio) but must take the
     # ungroup route, exactly like a single speaker that is part of a group
-    @pytest.mark.parametrize("member_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("member_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     def test_a_grouped_player_is_ungrouped_instead(
         self, mock_mass: MagicMock, member_type: PlayerType
     ) -> None:
@@ -3061,6 +3062,66 @@ class TestExternalPowerControl:
         wait_for_power_on.assert_awaited_once()
         assert wait_for_power_on.await_args is not None
         assert wait_for_power_on.await_args.args[2] is control
+
+    @pytest.mark.parametrize("report_after", [0.5, 10])
+    async def test_power_on_goes_on_once_the_control_reports_on(
+        self, mock_mass: MagicMock, report_after: float
+    ) -> None:
+        """A power on goes on as soon as the control reports on, also when that takes a while."""
+        loop = asyncio.get_running_loop()
+        control = PlayerControl(
+            id="ext_power",
+            provider="test",
+            name="External Power",
+            supports_power=True,
+            power_off=AsyncMock(),
+        )
+
+        async def _power_on() -> None:
+            loop.call_later(report_after, setattr, control, "power_state", True)
+
+        control.power_on = _power_on
+        controller, _ = self._make_player(mock_mass, control)
+
+        with virtual_loop_clock():
+            started = loop.time()
+            await controller._handle_cmd_power("player_1", True)
+            # the clock adds up the sleeps of the wait, which leaves a rounding error
+            waited = round(loop.time() - started, 6)
+
+        assert report_after <= waited < report_after + 0.5, (
+            f"the power on went on after {waited:.1f}s, the control reported on "
+            f"after {report_after}s"
+        )
+
+    async def test_power_on_goes_on_when_the_control_never_reports_on(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A power on whose control never reports on goes on without an error at the bound."""
+        loop = asyncio.get_running_loop()
+        power_on = AsyncMock()
+        control = PlayerControl(
+            id="ext_power",
+            provider="test",
+            name="External Power",
+            supports_power=True,
+            power_on=power_on,
+            power_off=AsyncMock(),
+        )
+        controller, player = self._make_player(mock_mass, control)
+
+        with virtual_loop_clock():
+            started = loop.time()
+            await controller._handle_cmd_power("player_1", True)
+            # the clock adds up the sleeps of the wait, which leaves a rounding error
+            waited = round(loop.time() - started, 6)
+
+        power_on.assert_awaited_once()
+        assert POWER_ON_REPORT_TIMEOUT <= waited < POWER_ON_REPORT_TIMEOUT + 0.5, (
+            f"the power on went on after {waited:.1f}s, not at the bound of "
+            f"{POWER_ON_REPORT_TIMEOUT}s"
+        )
+        assert player.powered is False
 
     async def test_power_off_forwards_to_control(self, mock_mass: MagicMock) -> None:
         """Powering off a player redirects to its external control's power_off callback."""
