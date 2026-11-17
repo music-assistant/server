@@ -196,6 +196,18 @@ class TestStretchScenarios:
         assert plan.crossfade_duration == pytest.approx(16.0)
         assert plan.fadein_trim_start == pytest.approx(13.77, abs=0.01)
 
+    def test_the_ramp_matches_the_beat_grids_not_the_stored_tempos(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stored tempos biased against their grids still ramp to the grid ratio."""
+        out = dataclasses.replace(_kicked(125.0), bpm=124.956)
+        inc = dataclasses.replace(_kicked(124.0), bpm=124.182)
+
+        plan = _plan_ramped_only(monkeypatch, out, inc)
+
+        assert plan.style is TransitionStyle.BLEND
+        assert plan.tempo_plan.steps[-1][1] == pytest.approx(124.0 / 125.0, rel=3e-4)
+
 
 class TestBothDecksKick:
     """Both decks kick in a blend's overlap with at least a beat of kick each."""

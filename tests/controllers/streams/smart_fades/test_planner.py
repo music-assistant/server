@@ -212,7 +212,7 @@ class TestSmartCrossFadePlanner:
         inc = _analysis(120.0, duration=240.0)
         # a beat-level entry is found at 20s (too few downbeats for the downbeat
         # branch), which fits the 8-bar (16s) overlap but not the 16-bar (32s) one
-        inc.beats = np.arange(20.0, 45.0, 0.1, dtype=np.float32).tolist()
+        inc.beats = np.arange(20.0, 45.0, 0.5, dtype=np.float32).tolist()
         inc.downbeats = [20.0]
         plan = _plan(out, inc)
         assert plan.crossfade_duration == pytest.approx(16.0)

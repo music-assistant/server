@@ -72,7 +72,9 @@ def _first_fitting_candidate(ctx: TransitionContext, factory: CandidateFactory) 
     raise AssertionError("the 1-bar rung must always yield a candidate")
 
 
-def _bands_pair(f_low_out: float, f_low_in: float) -> tuple[AudioAnalysisData, AudioAnalysisData]:
+def _bands_pair(
+    f_low_out: float, f_low_in: float, bpm_in: float = 120.0
+) -> tuple[AudioAnalysisData, AudioAnalysisData]:
     """Mirrors test_planner.py's ``_bands_pair``: an out/in pair with the given low-band fractions."""
 
     def _levels(f_low: float) -> tuple[float, float, float, float]:
@@ -81,17 +83,17 @@ def _bands_pair(f_low_out: float, f_low_in: float) -> tuple[AudioAnalysisData, A
         return low, rest, rest, rest
 
     out = _analysis_with_bands(*_levels(f_low_out), duration=240.0)
-    inc = _analysis_with_bands(*_levels(f_low_in), duration=240.0)
+    inc = _analysis_with_bands(*_levels(f_low_in), duration=240.0, bpm=bpm_in)
     return out, inc
 
 
-def _mastered_fade_pair() -> tuple[AudioAnalysisData, AudioAnalysisData]:
+def _mastered_fade_pair(bpm_in: float = 120.0) -> tuple[AudioAnalysisData, AudioAnalysisData]:
     """Build a -14dB frozen-spectrum ramp from media 210s, mirroring test_generators.py's fixture."""
     t = np.linspace(0.0, 240.0, 1800)
     gain_db = np.where(t < 210.0, 0.0, -(t - 210.0) / 30.0 * 14.0)
     band = (0.3 * 10.0 ** (gain_db / 20.0)).astype(np.float32)
     out = _analysis_with_bands(band, band, band, band, duration=240.0)
-    inc = _analysis(120.0, duration=240.0)
+    inc = _analysis(bpm_in, duration=240.0)
     return out, inc
 
 
@@ -304,8 +306,7 @@ class TestQuickFadeSkipsEq:
 
     def test_quick_fade_plans_a_neutral_eq(self) -> None:
         """A tempo-incompatible bass-heavy pair ships a QUICK_FADE without any shelf."""
-        out, inc = _bands_pair(0.6, 0.6)
-        inc.bpm = 150.0
+        out, inc = _bands_pair(0.6, 0.6, bpm_in=150.0)
 
         plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
 
@@ -403,8 +404,7 @@ class TestFinalizeDressed:
 
     def test_inside_a_mastered_fade_only_the_filter_out_drops_its_curve(self) -> None:
         """The record's own fade replaces a filter out's volume fade; the echo keeps nofade."""
-        out, inc = _mastered_fade_pair()
-        inc.bpm = 150.0
+        out, inc = _mastered_fade_pair(bpm_in=150.0)
         # anchored at the audible end, inside the fade detected from 17s on
         ctx = replace(_ctx(out, inc), default_anchor=43.0)
         assert ctx.fade_onset is not None

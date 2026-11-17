@@ -15,6 +15,7 @@ from music_assistant.controllers.streams.smart_fades.helpers import (
     detect_groove_entry,
     detect_mix_out_point,
     detect_rise_point,
+    local_bpm,
 )
 
 
@@ -220,3 +221,33 @@ class TestDbRamp:
         steps = db_ramp(0.0, 0.05, -26.0, 0.0)
         assert len(steps) >= 2
         assert steps[-1][1] == pytest.approx(0.0)
+
+
+class TestLocalBpm:
+    """local_bpm reads the tempo of a window from its beat grid."""
+
+    @staticmethod
+    def _grid(bpm: float, count: int, start: float = 195.0) -> np.ndarray:
+        """Build a beat grid quantized to the 20 ms frames of the beat tracker."""
+        return np.round((start + np.arange(count) * 60.0 / bpm) / 0.02) * 0.02
+
+    def test_a_quantized_grid_reads_its_own_tempo(self) -> None:
+        """A 45 s grid at 125 BPM reads 125, not the whole-track figure."""
+        assert local_bpm(self._grid(125.0, 94), 124.956) == pytest.approx(125.0, rel=2e-4)
+
+    def test_mistracked_beats_do_not_move_the_tempo(self) -> None:
+        """A dropped beat, a doubled beat and a ragged tail leave the tempo intact."""
+        grid = self._grid(124.0, 93, start=0.0)
+        beats = np.concatenate(
+            (grid[:20], grid[21:40], [grid[39] + 0.24], grid[40:85], grid[85:] + [0.12, -0.1] * 4)
+        )
+
+        assert local_bpm(beats, 124.182) == pytest.approx(124.0, rel=2e-4)
+
+    def test_a_double_time_window_reads_the_base_tempo(self) -> None:
+        """An outro tracked at twice the stored tempo still reads the stored tempo."""
+        assert local_bpm(self._grid(248.0, 180), 124.0) == pytest.approx(124.0, rel=2e-4)
+
+    def test_too_few_beats_return_the_fallback(self) -> None:
+        """Three bars of beats are too few to read a tempo from."""
+        assert local_bpm(self._grid(125.0, 12), 124.956) == 124.956
