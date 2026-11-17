@@ -714,6 +714,26 @@ class TestVolumeCommand:
 
         assert calls.mock_calls == [call.set_volume(30), call.set_mute(False)]
 
+    @pytest.mark.asyncio
+    async def test_unmute_on_device_drops_level_set_while_muted(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A speaker unmuted on the device itself should show the level it plays at."""
+        player = _wiim_player(
+            provider=mock_provider, protocol_id="uuid:test", device=mock_wiim_device
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        mock_wiim_device.is_muted = True
+        await player.volume_set(30)
+
+        mock_wiim_device.is_muted = False
+        mock_wiim_device.volume = 55
+        player._update_ma_state_from_sdk_cache()
+        await player.volume_mute(False)
+
+        assert player._attr_volume_level == 55
+        mock_wiim_device.async_set_volume.assert_not_awaited()
+
 
 class TestErrorHandling:
     """Test that command errors mark device unavailable."""
