@@ -978,7 +978,7 @@ class AriaCastReceiver(PluginProvider):
                 self.logger.warning(
                     "Ignoring AriaCast discovery requests: the streamserver publish IP (%s) "
                     "is not an IPv4 address senders can reach. Set the publish IP in "
-                    "Settings --> System --> Streams.",
+                    "Settings --> System --> Network.",
                     publish_ip,
                 )
             return None

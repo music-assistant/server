@@ -629,35 +629,35 @@ class StreamsController(CoreController):
                 type=ConfigEntryType.STRING,
                 default_value=DEFAULT_VOLUME_NORMALIZATION_MODE,
                 options=_volume_normalization_preference_options(),
-                category="playback",
+                category="volume_normalization",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_TRACKS,
                 type=ConfigEntryType.STRING,
                 default_value=DEFAULT_VOLUME_NORMALIZATION_MODE,
                 options=_volume_normalization_preference_options(),
-                category="playback",
+                category="volume_normalization",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
                 type=ConfigEntryType.FLOAT,
                 range=(-20, 10),
                 default_value=-6,
-                category="playback",
+                category="volume_normalization",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
                 type=ConfigEntryType.FLOAT,
                 range=(-20, 10),
                 default_value=-6,
-                category="playback",
+                category="volume_normalization",
             ),
             CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
             ConfigEntry(
                 key=CONF_ALLOW_CROSSFADE_SAME_ALBUM,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
-                category="playback",
+                category="crossfade",
             ),
             ConfigEntry(
                 key=CONF_STREAM_SOURCE_MODE,
@@ -737,7 +737,7 @@ class StreamsController(CoreController):
             # config parsing already swapped the invalid stored value for auto; reset the
             # stored value too, so the setting reads back as auto and this warns only once
             self.logger.warning(
-                "Published IP address %r in the streams settings is not an IP address, "
+                "Published IP address %r in the network settings is not an IP address, "
                 "resetting it to auto",
                 raw_publish_ip,
             )
@@ -794,7 +794,7 @@ class StreamsController(CoreController):
             "This is the IP address that is communicated to players.\n"
             "If this is incorrect, audio will not play!\n"
             "See the documentation for how to configure the publish IP for the Streamserver\n"
-            "in Settings --> System --> Streams\n"
+            "in Settings --> System --> Network\n"
             "################################################################################\n",
             self.publish_ip,
             self.publish_port,

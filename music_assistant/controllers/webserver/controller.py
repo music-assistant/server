@@ -503,7 +503,7 @@ class WebserverController(CoreController):
                 "Webserver available on: %s\n"
                 "\n"
                 "If this address is incorrect, see the documentation on how to configure\n"
-                "the Webserver in Settings --> System --> Webserver\n"
+                "the Webserver in Settings --> System --> Network\n"
                 "\n"
                 "################################################################################\n",
                 base_url,
@@ -516,8 +516,7 @@ class WebserverController(CoreController):
             # config parsing already dropped the invalid stored value; clear the stored
             # value too, so the setting reads back as empty and this warns only once
             self.logger.warning(
-                "External URL %r in the webserver settings is not a public http(s) URL, "
-                "clearing it",
+                "External URL %r in the network settings is not a public http(s) URL, clearing it",
                 raw_external_url,
             )
             self.mass.config.set_raw_core_config_value(self.domain, CONF_EXTERNAL_URL, None)
@@ -754,6 +753,7 @@ class WebserverController(CoreController):
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
                 hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
+                category="account_access",
                 requires_reload=False,
             ),
             ConfigEntry(

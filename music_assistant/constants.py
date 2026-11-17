@@ -580,7 +580,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(-30, -5),
     default_value=-14,
-    category="playback",
+    category="volume_normalization",
     advanced=True,
     requires_reload=True,
 )
