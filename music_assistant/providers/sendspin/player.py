@@ -1838,7 +1838,13 @@ class SendspinPlayer(SendspinBasePlayer):
                 abort_existing=True,
             )
 
-    async def follow_session_sample_rate(self, start_streamdetails: StreamDetails | None) -> None:
+    async def follow_session_sample_rate(
+        self,
+        start_streamdetails: StreamDetails | None,
+        *,
+        crossfade_enabled: bool = False,
+        overlay_active: bool = False,
+    ) -> None:
         """
         Match an automatic Sendspin format to the sample rate of a new playback session.
 
@@ -1848,13 +1854,18 @@ class SendspinPlayer(SendspinBasePlayer):
         in fewer bits when the audio of the session has no more.
 
         :param start_streamdetails: Stream details of the first item of the session, if any.
+        :param crossfade_enabled: Whether the session blends the audio of its items.
+        :param overlay_active: Whether an audio overlay is mixed into the session.
         """
         if start_streamdetails is None:
             self._session_sample_rate = None
             self.session_bit_depth = None
         else:
             pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
-                self, start_streamdetails=start_streamdetails
+                self,
+                start_streamdetails=start_streamdetails,
+                crossfade_enabled=crossfade_enabled,
+                overlay_active=overlay_active,
             )
             self._session_sample_rate = pcm_format.sample_rate
             # the codec only stands for a lossless one here
