@@ -507,7 +507,12 @@ class _GroupRun:
         except asyncio.CancelledError:
             raise
         except Exception as err:
-            raise PlayerUnavailableError(step.message) from err
+            raise PlayerUnavailableError(
+                step.message,
+                translation_key=step.translation_key,
+                translation_owner=self.players.translation_owner,
+                translation_args=list(step.translation_args),
+            ) from err
 
 
 def _lists(add: tuple[str, ...] | None, remove: tuple[str, ...] | None) -> dict[str, Any]:

@@ -1422,8 +1422,10 @@ class TestMuteControlGuard:
         volume_mute = AsyncMock()
         protocol.volume_mute = volume_mute  # type: ignore[method-assign]
 
-        with pytest.raises(UnsupportedFeaturedException):
+        with pytest.raises(UnsupportedFeaturedException) as error:
             await controller.cmd_volume_mute("player_1", True)
+        assert error.value.translation_key == "player_feature_unsupported"
+        assert error.value.translation_args == ["Player 1"]
         volume_mute.assert_not_awaited()
 
     async def test_fake_mute_without_volume_control_raises(self, mock_mass: MagicMock) -> None:

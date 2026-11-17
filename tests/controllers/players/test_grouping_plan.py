@@ -1029,6 +1029,7 @@ def test_a_member_leaves_on_its_own_side_when_its_leader_is_away() -> None:
     step = _calls(_plan(world, ChangeKind.DETACH, "b"))[0]
     assert isinstance(step, Ungroup)
     assert step.protocol_id == "sonos_b"
+    assert (step.translation_key, step.translation_args) == ("group_leave_failed", ("Player b",))
     no_protocol = GroupingSnapshot(
         players={**world.players, "b": replace(world.players["b"], own_protocol=None)},
         protocols=world.protocols,
@@ -1036,6 +1037,10 @@ def test_a_member_leaves_on_its_own_side_when_its_leader_is_away() -> None:
     refusal = _plan(no_protocol, ChangeKind.DETACH, "b").steps[-1]
     assert isinstance(refusal, Refuse)
     assert refusal.error is PlayerUnavailableError
+    assert (refusal.translation_key, refusal.translation_args) == (
+        "group_leave_failed",
+        ("Player b",),
+    )
 
 
 def test_a_player_that_went_away_leaves_its_group_or_nothing_happens() -> None:

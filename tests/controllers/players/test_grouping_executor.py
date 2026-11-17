@@ -165,17 +165,25 @@ async def test_a_cleanup_failure_is_logged_at_debug_and_other_errors_propagate()
 
 
 async def test_a_failing_own_side_ungroup_is_an_unavailable_player() -> None:
-    """The error of the ungroup is chained to a PlayerUnavailableError."""
+    """The error of the ungroup is chained to a PlayerUnavailableError with its translation."""
     players = _Players()
     players.protocols["airplay"] = _protocol()
     players.protocols["airplay"].ungroup.side_effect = OSError("down")
-    step = Ungroup(protocol_id="airplay", failure=Failure.UNAVAILABLE, message="could not leave")
+    step = Ungroup(
+        protocol_id="airplay",
+        failure=Failure.UNAVAILABLE,
+        message="could not leave",
+        translation_key="group_leave_failed",
+        translation_args=("Den",),
+    )
     with (
         _plans(GroupPlan((step,))),
         pytest.raises(PlayerUnavailableError, match="could not leave") as err,
     ):
         await grouping.apply_group_change(players, CHANGE)  # type: ignore[arg-type]
     assert isinstance(err.value.__cause__, OSError)
+    assert err.value.translation_key == "group_leave_failed"
+    assert err.value.translation_args == ["Den"]
 
 
 @pytest.mark.parametrize(

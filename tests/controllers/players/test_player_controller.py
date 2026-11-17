@@ -4525,6 +4525,42 @@ class TestAddCurrentlyPlayingToFavorites:
 
         assert acting_users == [expected]
 
+    @pytest.mark.parametrize(
+        ("media_type", "translation_key"),
+        [(None, "nothing_playing"), (MediaType.RADIO, "favorite_track_unknown")],
+        ids=["nothing-playing", "radio-without-track-info"],
+    )
+    async def test_a_track_that_can_not_be_told_is_refused(
+        self, mock_mass: MagicMock, media_type: MediaType | None, translation_key: str
+    ) -> None:
+        """
+        Test that nothing playing, or a radio station that names no track, says so.
+
+        :param mock_mass: The mocked MusicAssistant instance.
+        :param media_type: What the queue plays, None for nothing.
+        :param translation_key: The key of the refusal.
+        """
+        controller = _controller(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        player, _ = _attach(provider, "player1", "Player 1")
+        _refresh(player)
+        queue = MagicMock(queue_id="player1")
+        if media_type is None:
+            queue.current_item = None
+        else:
+            queue.current_item.media_item.media_type = media_type
+            queue.current_item.streamdetails = None
+
+        with (
+            patch.object(controller, "get_active_queue", return_value=queue),
+            patch.object(players_playback, "resolve_playback_user", AsyncMock(return_value=None)),
+            pytest.raises(PlayerCommandFailed) as error,
+        ):
+            await controller.add_currently_playing_to_favorites("player1")
+
+        assert error.value.translation_key == translation_key
+        assert error.value.translation_args == ["Player 1"]
+
 
 class TestPlayerLockTimeouts:
     """A command that cannot get a player lock in time fails; the warning names the holder."""

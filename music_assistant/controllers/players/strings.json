@@ -25,6 +25,17 @@
     "unlink_group": "{0} belongs to a group and can not be taken off it.",
     "unlink_only_protocol": "{0} is the only output of its player, which is a player of its own already.",
     "player_busy": "{0} is still busy with a previous command. Try again in a moment.",
-    "player_not_started_up": "{0} could not be reached {1} s after it was switched on. Raise its start-up time."
+    "player_not_started_up": "{0} could not be reached {1} s after it was switched on. Raise its start-up time.",
+    "player_switched_off": "{0} is switched off.",
+    "player_not_available": "{0} is unavailable.",
+    "player_feature_unsupported": "{0} does not support this.",
+    "source_control_unsupported": "The source playing on {0} does not support this.",
+    "source_no_longer_playing": "The source this was meant for no longer plays on {0}.",
+    "source_not_found": "{0} has no source called {1}.",
+    "sound_mode_not_found": "{0} has no sound mode called {1}.",
+    "nothing_playing": "Nothing is playing on {0}.",
+    "favorite_track_unknown": "Music Assistant can not tell which track is playing on {0}, so it can not be added to your favorites.",
+    "group_leave_failed": "{0} could not leave its group because the player it follows is unavailable.",
+    "tts_engine_unavailable": "No text-to-speech engine is available to speak the announcement."
   }
 }

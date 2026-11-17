@@ -132,8 +132,10 @@ async def test_a_speaker_whose_plug_cuts_its_power_is_off_while_the_plug_is_off(
         assert (state.available, state.powered) == (True, False)
         assert state.playback_state == PlaybackState.IDLE
         await players.cmd_volume_set(player_id, 30)
-        with pytest.raises(PlayerUnavailableError, match="is switched off"):
+        with pytest.raises(PlayerUnavailableError, match="is switched off") as error:
             await players.cmd_seek(player_id, 10)
+        assert error.value.translation_key == "player_switched_off"
+        assert error.value.translation_args == ["Den"]
         # the same once the power counts as cut
         await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY)
         await scenario.idle()

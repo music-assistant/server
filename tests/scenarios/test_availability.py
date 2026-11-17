@@ -252,8 +252,10 @@ async def test_command_to_an_unavailable_player_raises(
     player_id = await _detached_player(scenario)
 
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, False)]
-    with pytest.raises(PlayerUnavailableError):
+    with pytest.raises(PlayerUnavailableError) as error:
         await getattr(scenario.mass.players, command)(player_id, *args)
+    assert error.value.translation_key == "player_not_available"
+    assert error.value.translation_args == ["Den"]
 
 
 async def test_power_on_of_an_unavailable_player_is_accepted(scenario: Scenario) -> None:

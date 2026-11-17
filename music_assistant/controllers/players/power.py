@@ -640,7 +640,12 @@ class PowerMixin(_PlayerControllerBase):
                 del self._power_on_waits[player_id]
         if wait.called_off or player.offline_by_power_control:
             msg = f"Player {player.name} is switched off"
-            raise _PowerOnCalledOff(msg)
+            raise _PowerOnCalledOff(
+                msg,
+                translation_key="player_switched_off",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
         # a protocol that is still attaching may not be played to yet
         if not player.available_for_playback or self._is_attaching(player):
             seconds = self._get_startup_time(player)
