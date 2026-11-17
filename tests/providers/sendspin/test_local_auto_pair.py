@@ -189,6 +189,28 @@ async def test_an_invalid_port_is_never_asked(
     assert api.attempts == []
 
 
+@pytest.mark.parametrize(
+    "support",
+    [
+        pytest.param(None, id="no_role"),
+        pytest.param({"port": 80}, id="invalid_port"),
+    ],
+)
+async def test_a_connect_without_a_port_starts_nothing(
+    monkeypatch: pytest.MonkeyPatch, support: Any
+) -> None:
+    """A client that announces no valid port never gets a pairing task."""
+    pairer, api, http = _make_pairer(monkeypatch)
+    cast("Any", api._client).info_or_none.application_objects = (
+        {} if support is None else {LOCAL_PAIRING_SUPPORT_KEY: support}
+    )
+    pairer.on_client_connected(CLIENT_ID)
+    assert pairer._tasks == {}
+    await asyncio.sleep(0)
+    assert http.requests == []
+    assert api.attempts == []
+
+
 async def test_an_unannounced_client_is_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     """A client whose hello does not carry the local pairing role is not fetched for."""
     pairer, api, http = _make_pairer(monkeypatch)

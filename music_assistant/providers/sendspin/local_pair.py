@@ -33,7 +33,7 @@ class LocalAutoPairer(TokenAutoPairer):
 
     def on_client_connected(self, client_id: str) -> None:
         """Pair a client that just connected, if it serves its token locally."""
-        if self._enabled:
+        if self._enabled and self._token_port(client_id) is not None:
             self._request_attempt(client_id)
 
     @property
