@@ -64,8 +64,8 @@ class SwitchedOffAction(StrEnum):
 CACHE_CATEGORY_PLAYER_POWER = 1
 
 # Player types that must be detached from their (sync)group when they power off.
-# A stereo pair joins a group and leads a sync session exactly like a single speaker does.
+# A multi-channel player joins a group and leads a sync session exactly like a single speaker.
 # A GROUP player has no group of its own to leave: its members are released by its own
 # power off, and ungrouping one is defined as powering it off - which is what already
 # brought it here.
-UNGROUP_ON_POWER_OFF_TYPES = {PlayerType.PLAYER, PlayerType.STEREO_PAIR}
+UNGROUP_ON_POWER_OFF_TYPES = {PlayerType.PLAYER, PlayerType.MULTI_CHANNEL}

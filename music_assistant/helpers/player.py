@@ -72,7 +72,7 @@ def get_default_player_icon(
     :param manufacturer: The device manufacturer reported by the provider.
     :param model: The device model reported by the provider.
     """
-    if player_type in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
+    if player_type in (PlayerType.GROUP, PlayerType.MULTI_CHANNEL):
         return "speakers"
     if player_type_icon := _DEFAULT_ICONS_BY_PLAYER_TYPE.get(player_type):
         return player_type_icon

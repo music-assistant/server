@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 from uuid import UUID, uuid4
 
 import pytest
-from music_assistant_models.enums import IdentifierType, PlayerType, ProtocolRole
+from music_assistant_models.enums import ChannelLayout, IdentifierType, PlayerType, ProtocolRole
 from pychromecast.const import CAST_TYPE_AUDIO, CAST_TYPE_GROUP
 from pychromecast.controllers.multizone import MultizoneManager
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED
@@ -86,33 +86,43 @@ def _connect_client(*_args: object) -> MagicMock:
 
 
 @pytest.mark.parametrize(
-    ("cast_info", "role", "player_type"),
+    ("cast_info", "role", "player_type", "channel_layout"),
     [
-        (_cast_info(), ProtocolRole.NATIVE, PlayerType.PLAYER),
-        (_cast_info(manufacturer="Sonos"), ProtocolRole.AUDIO, PlayerType.PLAYER),
-        (_cast_info(cast_type=CAST_TYPE_GROUP), ProtocolRole.NATIVE, PlayerType.GROUP),
+        (_cast_info(), ProtocolRole.NATIVE, PlayerType.PLAYER, None),
+        (_cast_info(manufacturer="Sonos"), ProtocolRole.AUDIO, PlayerType.PLAYER, None),
+        (_cast_info(cast_type=CAST_TYPE_GROUP), ProtocolRole.NATIVE, PlayerType.GROUP, None),
         (
             _cast_info(cast_type=CAST_TYPE_GROUP, multichannel=True),
             ProtocolRole.NATIVE,
-            PlayerType.STEREO_PAIR,
+            PlayerType.MULTI_CHANNEL,
+            ChannelLayout.STEREO,
         ),
         # a group of speakers of another brand is still a Cast group
         (
             _cast_info(manufacturer="Sonos", cast_type=CAST_TYPE_GROUP),
             ProtocolRole.NATIVE,
             PlayerType.GROUP,
+            None,
         ),
     ],
     ids=["google-speaker", "other-brand", "cast-group", "stereo-pair", "other-brand-group"],
 )
 def test_a_cast_device_reports_its_role(
-    cast_info: ChromecastInfo, role: ProtocolRole, player_type: PlayerType
+    cast_info: ChromecastInfo,
+    role: ProtocolRole,
+    player_type: PlayerType,
+    channel_layout: ChannelLayout | None,
 ) -> None:
-    """Cast is native for a Google device and a Cast group, an audio output of any other."""
+    """
+    Cast is native for a Google device and a Cast group, an audio output of any other.
+
+    A stereo pair is a multi-channel player with a stereo layout.
+    """
     protocol = _cast_player(MagicMock(), cast_info)
 
     assert protocol.role == role
     assert protocol.type == player_type
+    assert protocol.channel_layout == channel_layout
 
 
 def _discovering_provider(attached: set[UUID], known: list[UUID]) -> Any:
