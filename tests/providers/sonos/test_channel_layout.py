@@ -29,17 +29,14 @@ PRIMARY = "RINCON_38420B9A1C2E01400"
         (2, False, True, True, ChannelLayout.LAYOUT_4_1),
         (3, False, True, False, ChannelLayout.LAYOUT_5_0),
         (3, False, True, True, ChannelLayout.LAYOUT_5_1),
-        (None, False, False, True, ChannelLayout.UNKNOWN),
-        (None, True, False, False, ChannelLayout.UNKNOWN),
         (1, False, True, False, ChannelLayout.UNKNOWN),
         (1, False, False, False, None),
         (2, False, False, False, None),
         (3, False, False, False, None),
-        (None, False, False, False, None),
     ],
 )
 def test_channel_layout(
-    front_channels: int | None,
+    front_channels: int,
     paired: bool,
     surrounds: bool,
     subwoofer: bool,
@@ -77,6 +74,19 @@ def _report_zone(client: MagicMock, *members: dict[str, Any]) -> None:
     zone = AioSonosPlayer(MagicMock(groups=[]), _player_data(*members))
     client.player.has_subwoofer = zone.has_subwoofer
     client.player.has_surrounds = zone.has_surrounds
+    client.player.is_stereo_pair = zone.is_stereo_pair
+
+
+def _zone(*channels: list[str]) -> list[dict[str, Any]]:
+    """
+    Return the members of a zone, the primary first.
+
+    :param channels: The channel map of each member.
+    """
+    return [
+        _member(PRIMARY if index == 0 else f"RINCON_5CAAFD0C1D2E0{index}400", *chans)
+        for index, chans in enumerate(channels)
+    ]
 
 
 def _speaker(
@@ -110,22 +120,24 @@ SPEAKER = ("Era 100", ["PLAYBACK", "AIRPLAY", "VOICE"])
 @pytest.mark.parametrize(
     ("device", "channels", "layout"),
     [
-        (SOUNDBAR, [["SW"]], ChannelLayout.LAYOUT_3_1),
-        (SOUNDBAR, [["LR"], ["RR"]], ChannelLayout.LAYOUT_5_0),
-        (SOUNDBAR, [["SW"], ["LR"], ["RR"]], ChannelLayout.LAYOUT_5_1),
-        (AMP, [["SW"]], ChannelLayout.LAYOUT_2_1),
-        (AMP, [["LR"], ["RR"], ["SW"]], ChannelLayout.LAYOUT_4_1),
-        (SPEAKER, [["SW"]], ChannelLayout.UNKNOWN),
+        (SPEAKER, [["LF", "LF"], ["RF", "RF"]], ChannelLayout.STEREO),
+        (SPEAKER, [["LF"], ["RF"]], ChannelLayout.STEREO),
+        (SPEAKER, [["LF", "LF"], ["RF", "RF"], ["SW"]], ChannelLayout.LAYOUT_2_1),
+        (SPEAKER, [["LF"], ["RF"], ["SW"]], ChannelLayout.LAYOUT_2_1),
+        (SPEAKER, [["LF", "RF"], ["SW"]], ChannelLayout.LAYOUT_1_1),
+        (SOUNDBAR, [["LF", "RF"], ["SW"]], ChannelLayout.LAYOUT_3_1),
+        (SOUNDBAR, [["LF", "RF"], ["LR"], ["RR"]], ChannelLayout.LAYOUT_5_0),
+        (SOUNDBAR, [["LF", "RF"], ["SW"], ["LR"], ["RR"]], ChannelLayout.LAYOUT_5_1),
+        (AMP, [["LF", "RF"], ["SW"]], ChannelLayout.LAYOUT_2_1),
+        (AMP, [["LF", "RF"], ["LR"], ["RR"]], ChannelLayout.LAYOUT_4_0),
+        (AMP, [["LF", "RF"], ["LR"], ["RR"], ["SW"]], ChannelLayout.LAYOUT_4_1),
     ],
 )
 def test_a_set_reports_its_layout(
     device: tuple[str, list[str]], channels: list[list[str]], layout: ChannelLayout
 ) -> None:
-    """A zone with a subwoofer or surrounds bonded to its primary is a multi-channel player."""
-    satellites = [
-        _member(f"RINCON_5CAAFD0C1D2E0{index}400", *chans) for index, chans in enumerate(channels)
-    ]
-    player, _ = _speaker(*device, _member(PRIMARY, "LF", "RF"), *satellites)
+    """A stereo pair, or a front with a subwoofer or surrounds, is a multi-channel player."""
+    player, _ = _speaker(*device, *_zone(*channels))
 
     player.update_attributes()
 
@@ -136,7 +148,7 @@ def test_a_set_reports_its_layout(
 @pytest.mark.parametrize("device", [SOUNDBAR, AMP, SPEAKER])
 def test_a_device_alone_is_a_plain_player(device: tuple[str, list[str]]) -> None:
     """A soundbar, an Amp or a speaker without bonded speakers is no set."""
-    player, _ = _speaker(*device, _member(PRIMARY, "LF", "RF"))
+    player, _ = _speaker(*device, *_zone(["LF", "RF"]))
 
     player.update_attributes()
 
@@ -164,5 +176,23 @@ def test_the_layout_follows_a_change_made_in_the_sonos_app() -> None:
     )
 
     _report_zone(client, _member(PRIMARY, "LF", "RF"))
+    player.on_player_event(None)
+    assert (player.type, player.channel_layout) == (PlayerType.PLAYER, None)
+
+
+def test_a_pair_made_in_the_sonos_app_becomes_a_multi_channel_player() -> None:
+    """Two speakers bonded into a pair in the Sonos app change the player, and back."""
+    player, client = _speaker(*SPEAKER, *_zone(["LF", "RF"]))
+    player.on_player_event(None)
+    assert (player.type, player.channel_layout) == (PlayerType.PLAYER, None)
+
+    _report_zone(client, *_zone(["LF", "LF"], ["RF", "RF"]))
+    player.on_player_event(None)
+    assert (player.type, player.channel_layout) == (
+        PlayerType.MULTI_CHANNEL,
+        ChannelLayout.STEREO,
+    )
+
+    _report_zone(client, *_zone(["LF", "RF"]))
     player.on_player_event(None)
     assert (player.type, player.channel_layout) == (PlayerType.PLAYER, None)

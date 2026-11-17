@@ -99,6 +99,7 @@ def _speaker(
     client.player.has_fixed_volume = False
     client.player.has_subwoofer = False
     client.player.has_surrounds = False
+    client.player.is_stereo_pair = False
     client.player.volume_muted = False
     client.player.volume_level = 20
     client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "new"})

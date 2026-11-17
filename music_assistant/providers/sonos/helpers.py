@@ -38,19 +38,17 @@ def get_primary_ip_address(discovery_info: AsyncServiceInfo) -> str | None:
 
 
 def get_channel_layout(
-    front_channels: int | None, paired: bool, surrounds: bool, subwoofer: bool
+    front_channels: int, paired: bool, surrounds: bool, subwoofer: bool
 ) -> ChannelLayout | None:
     """
     Return the channel layout of a set of Sonos speakers, None when the speakers are no set.
 
     :param front_channels: The channels of the front: 1 for a speaker, 2 for a stereo pair
-        or an Amp, 3 for a soundbar, None when the kind of front device is not known.
+        or an Amp, 3 for a soundbar.
     :param paired: Whether the front is a stereo pair of two speakers.
     :param surrounds: Whether surround speakers are bonded to the front.
     :param subwoofer: Whether a subwoofer is bonded to the front.
     """
     if not (paired or surrounds or subwoofer):
         return None
-    if front_channels is None:
-        return ChannelLayout.UNKNOWN
     return _CHANNEL_LAYOUTS.get((front_channels, surrounds, subwoofer), ChannelLayout.UNKNOWN)

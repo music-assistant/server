@@ -76,6 +76,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     )
     client.player.has_subwoofer = False
     client.player.has_surrounds = False
+    client.player.is_stereo_pair = False
     player.client = client
     player._provider = MagicMock(get_protocol=lambda pid: player.mass.players.get_protocol(pid))
     player._on_detach_callbacks = []

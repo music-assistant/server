@@ -2264,14 +2264,14 @@ class SonosPlayer(PlayerProtocol):
     def _channel_layout(self) -> ChannelLayout | None:
         """Return the channel layout of the speakers bonded into this player, None if no set."""
         device = self.discovery_info["device"]
+        paired = self.client.player.is_stereo_pair
         if SonosCapability.HT_PLAYBACK in device["capabilities"]:
-            front_channels: int | None = 2 if device.get("modelDisplayName") == AMP_MODEL else 3
+            front_channels = 2 if device.get("modelDisplayName") == AMP_MODEL else 3
         else:
-            # a speaker alone or a stereo pair: the zone members are not exposed by aiosonos
-            front_channels = None
+            front_channels = 2 if paired else 1
         return get_channel_layout(
             front_channels,
-            paired=False,
+            paired=paired,
             surrounds=self.client.player.has_surrounds,
             subwoofer=self.client.player.has_subwoofer,
         )
