@@ -30,7 +30,7 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Awaitable, Callable, Iterable
 
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -763,7 +763,7 @@ class SendspinPlaybackSession:
                 [client.client_id for client in self.player.api.group.clients]
             )
             self._pcm_format, self._sendspin_pcm_format = self._select_session_pcm_formats()
-            self.player.flow_session = self
+            flow_sample_rate = self._flow_sample_rate_of_this_playback()
             self._queue_id = media.source_id
             self._queue_session_id = get_media_session_id(media)
             self._pipeline_config_cache.clear()
@@ -810,7 +810,10 @@ class SendspinPlaybackSession:
                 source_stream.stream(self._pcm_format)
                 if source_stream is not None
                 else self.player.mass.streams.get_stream(
-                    media, self._pcm_format, self.player.protocol_id
+                    media,
+                    self._pcm_format,
+                    self.player.protocol_id,
+                    flow_sample_rate=flow_sample_rate,
                 )
             )
             completed = False
@@ -1439,6 +1442,27 @@ class SendspinPlaybackSession:
             sample_type="float",
         )
         return pcm_format, sendspin_pcm_format
+
+    def _flow_sample_rate_of_this_playback(self) -> Callable[[StreamDetails], Awaitable[int]]:
+        """
+        Return what tells the flow stream of the running playback the rate it restarts at.
+
+        Call from the playback task. Once that playback has ended, the answer is the rate
+        the stream runs at, so a flow that is being torn down does not restart.
+        """
+        playback_task = asyncio.current_task()
+        stream_rate = self._pcm_format.sample_rate
+
+        async def _flow_sample_rate(streamdetails: StreamDetails) -> int:
+            if (
+                playback_task is None
+                or playback_task.done()
+                or self.playback_task is not playback_task
+            ):
+                return stream_rate
+            return await self.get_session_sample_rate(streamdetails)
+
+        return _flow_sample_rate
 
     def _pick_session_sample_rate(self, source_rate: int, member_rates: list[int]) -> int:
         """

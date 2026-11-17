@@ -1484,9 +1484,8 @@ class SendspinPlayer(SendspinBasePlayer):
     # Server-clock time that metadata takes effect at, when it was scheduled ahead.
     _published_effective_us: int | None = None
     playback_session: SendspinPlaybackSession
-    # the session that consumes the flow streams opened for this player, which stays
-    # with that session when it is handed to another leader
-    flow_session: SendspinPlaybackSession
+    # set once the format a client asks for could not be read from its player role
+    _requested_format_unreadable: ClassVar[bool] = False
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
     # output delay the device reported before its config was loaded, stored once it is
     _reported_static_delay: int | None = None
@@ -1515,7 +1514,6 @@ class SendspinPlayer(SendspinBasePlayer):
         self._attr_can_group_with = {provider.instance_id}
         hello_payload = initial_hello or self.api.info
         self.playback_session = SendspinPlaybackSession(self)
-        self.flow_session = self.playback_session
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.SET_MEMBERS,
@@ -1923,14 +1921,6 @@ class SendspinPlayer(SendspinBasePlayer):
             ),
             default.codec,
         )
-
-    async def get_flow_sample_rate(self, streamdetails: StreamDetails) -> int:
-        """
-        Return the sample rate the Sendspin session of this player starts a flow at for an item.
-
-        :param streamdetails: Stream details of the item.
-        """
-        return await self.flow_session.get_session_sample_rate(streamdetails)
 
     async def on_group_content_takeover(self) -> object:
         """Clear the protocol snapshot before a new content owner joins."""
@@ -2652,21 +2642,39 @@ class SendspinPlayer(SendspinBasePlayer):
         )
         return audio_format, best.codec
 
-    @staticmethod
-    def _default_format(player_role: PlayerRoleProtocol) -> SupportedAudioFormat | None:
+    def _default_format(self, player_role: PlayerRoleProtocol) -> SupportedAudioFormat | None:
         """
         Return the format the client plays while the server sets none.
 
         :param player_role: The player role of this client.
         """
         formats = player_role.get_supported_formats() or []
-        # the player role picks the format the client asks for in its client/state, which
-        # it keeps to itself, before the client's own first choice
-        requested = player_role._client_format if isinstance(player_role, PlayerV1Role) else None
+        # the player role picks the format the client asks for before its first choice
+        requested = self._requested_format(player_role)
         return next(
             (fmt for fmt in formats if requested is not None and requested.matches(fmt)),
             formats[0] if formats else None,
         )
+
+    def _requested_format(self, player_role: PlayerRoleProtocol) -> SupportedAudioFormat | None:
+        """
+        Return the format the client asks for in its client/state, None without one.
+
+        :param player_role: The player role of this client.
+        """
+        if not isinstance(player_role, PlayerV1Role):
+            return None
+        # the player role keeps this format to itself
+        try:
+            return player_role._client_format
+        except AttributeError:
+            if not SendspinPlayer._requested_format_unreadable:
+                SendspinPlayer._requested_format_unreadable = True
+                self.logger.warning(
+                    "Cannot read the format Sendspin clients ask for, the sample rate of "
+                    "a group's next session is predicted from their first choice"
+                )
+            return None
 
     @staticmethod
     def _top_codec_formats(player_role: PlayerRoleProtocol) -> list[SupportedAudioFormat]:

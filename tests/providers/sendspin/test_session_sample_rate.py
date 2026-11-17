@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+import asyncio
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import numpy as np
-import pytest
 from aiosendspin.models import AudioCodec
 from aiosendspin.models.core import ClientStatePayload
 from aiosendspin.models.player import PlayerStatePayload, SupportedAudioFormat
@@ -34,6 +34,7 @@ from music_assistant.constants import (
     FLOW_MODE_SAMPLE_RATE_HIGHEST,
     FLOW_MODE_SAMPLE_RATE_SMART,
 )
+from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import PlayerMedia
@@ -44,6 +45,7 @@ from music_assistant.providers.sendspin.player import (
     SendspinPlayer,
 )
 from tests.common import MockProvider, attach_mock, mock_player_mass
+from tests.providers.sendspin.test_short_session_elapsed_anchor import _short_session
 
 _FLOW_MODES = (
     FLOW_MODE_SAMPLE_RATE_SMART,
@@ -55,6 +57,8 @@ _FLOW_MODES = (
 _FLOW_MODE_PAIRS = [(leader, member) for leader in _FLOW_MODES for member in _FLOW_MODES]
 
 if TYPE_CHECKING:
+    import pytest
+
     from music_assistant.models.player_protocol import PlayerProtocol
 
 PLAYER_ID = "client-1"
@@ -385,10 +389,11 @@ async def test_predicted_rate_is_the_rate_a_session_start_picks() -> None:
             leader = _group_of(members, leader_mode, member_mode)
             for previous_rate in (44100, 96000):
                 for item_rate in (32000, 44100, 48000, 88200, 96000, 192000):
-                    current = (await _start_session(leader, previous_rate))._pcm_format
+                    running = await _start_session(leader, previous_rate)
+                    current = running._pcm_format
                     item = _flow_item("next", item_rate)
 
-                    predicted = await leader.get_flow_sample_rate(item.streamdetails)
+                    predicted = await _flow_sample_rate(running)(item.streamdetails)
                     restarts = leader.mass.streams.audio._flow_stream_needs_restart(
                         cast("Any", item),
                         current,
@@ -432,7 +437,7 @@ async def test_session_follows_the_rate_the_audio_arrives_in() -> None:
         content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16
     )
 
-    predicted = await leader.get_flow_sample_rate(item.streamdetails)
+    predicted = await _flow_sample_rate(session)(item.streamdetails)
     session._start_streamdetails = item.streamdetails
     await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
     pcm_format, _ = session._select_session_pcm_formats()
@@ -442,22 +447,82 @@ async def test_session_follows_the_rate_the_audio_arrives_in() -> None:
     assert predicted == 48000
 
 
-async def test_playback_start_binds_the_flow_to_its_session(
+async def test_playback_hands_its_flow_the_rate_of_its_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A playback start makes its session the one the flow streams of its leader ask."""
-    leader, _ = _player([FLAC_48K])
-    session = _session(leader, sample_rate=44100)
-    leader.flow_session = SendspinPlaybackSession(leader)
-    push_stream = MagicMock()
-    push_stream.set_live_source.side_effect = RuntimeError("stop here")
-    monkeypatch.setattr(session, "_create_push_stream", MagicMock(return_value=push_stream))
+    """A playback asks its flow stream with the rate of its session, the stream rate once ended."""
+    session = _short_session(monkeypatch)
+    session.playback_task = None
+
+    await session._run_playback(MagicMock())
+
+    get_stream = cast("MagicMock", session.player.mass.streams.get_stream)
+    flow_sample_rate = get_stream.call_args.kwargs["flow_sample_rate"]
+    assert await flow_sample_rate(_flow_item("next", 96000).streamdetails) == 48000
+
+
+def test_raw_stream_hands_its_flow_what_the_consumer_asks() -> None:
+    """The raw PCM stream of a queue hands its flow what the consumer asks for a next item."""
+    controller: Any = StreamsController.__new__(StreamsController)
+    controller.mass = MagicMock()
+    source_protocol = controller.mass.players.get_player.return_value.own_protocol
+    source_protocol.get_shared_stream.return_value = None
+    controller.audio = MagicMock()
+    controller._get_live_audio_source_session = MagicMock(return_value=None)
+    controller._get_flow_start_item = MagicMock()
+    controller._update_audio_processing_context = MagicMock()
+    controller._count_as_output_stream = lambda stream: stream
+    flow_sample_rate = AsyncMock(return_value=48000)
     media = PlayerMedia(uri="track-1", source_id="queue-1", queue_item_id="item-1")
 
-    with pytest.raises(RuntimeError):
-        await session._run_playback(media)
+    controller.get_stream(
+        media,
+        AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=48000),
+        player_id=PLAYER_ID,
+        force_flow_mode=True,
+        flow_sample_rate=flow_sample_rate,
+    )
 
-    assert leader.flow_session is session
+    flow_kwargs = controller.audio.get_queue_flow_stream.call_args.kwargs
+    assert flow_kwargs["flow_sample_rate"] is flow_sample_rate
+
+
+async def test_flow_of_an_ended_session_does_not_restart() -> None:
+    """A flow whose session has ended plays on at its rate instead of restarting."""
+    leader, _ = _player([FLAC_48K])
+    member, _ = _player([FLAC_48K, FLAC_44K, FLAC_96K], player_id=MEMBER_ID)
+    _group(leader, member)
+    session = await _start_session(leader, 44100)
+    flow_sample_rate = _flow_sample_rate(session)
+    assert await flow_sample_rate(_flow_item("next", 96000).streamdetails) == 96000
+
+    session.playback_task = None
+    items = await _flow_items_played(
+        leader, [44100, 96000, 96000], flow_rate=44100, flow_sample_rate=flow_sample_rate
+    )
+
+    assert items == ["0", "1", "2"]
+
+
+def test_player_role_keeps_the_requested_format() -> None:
+    """The player role of the library still keeps the format a client asks for where it is read."""
+    _, role = _player([FLAC_96K, FLAC_48K])
+    role.on_initial_client_state(ClientStatePayload(player=PlayerStatePayload(format=FLAC_48K)))
+
+    assert role._client_format == FLAC_48K
+
+
+async def test_unreadable_requested_format_falls_back_to_first_choice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the format a client asks for, its first choice counts, with one warning."""
+    monkeypatch.setattr(SendspinPlayer, "_requested_format_unreadable", False)
+    player, role = _player([FLAC_96K, FLAC_48K])
+    del role._client_format
+
+    assert player._default_format(role) == FLAC_96K
+    assert player._default_format(role) == FLAC_96K
+    cast("MagicMock", player.logger).warning.assert_called_once()
 
 
 async def test_member_asking_48k_keeps_the_flow_at_96k_tracks() -> None:
@@ -479,15 +544,25 @@ async def test_flow_follows_the_session_handed_to_a_new_leader() -> None:
     member, _ = _player([FLAC_48K, FLAC_44K], player_id=MEMBER_ID)
     _group(leader, member)
     session = await _start_session(leader, 44100)
+    flow_sample_rate = _flow_sample_rate(session)
     _group(leader)
     _group(member)
     await session.transfer_to(member)
     member.playback_session = session
     leader.playback_session = SendspinPlaybackSession(leader)
 
-    items = await _flow_items_played(leader, [44100, 44100, 44100], flow_rate=44100)
+    played = await _flow_items_played(
+        leader, [44100, 44100, 44100], flow_rate=44100, flow_sample_rate=flow_sample_rate
+    )
+    # the departed leader plays something on its own while the group plays on
+    solo = await _start_session(leader, 48000)
+    _flow_sample_rate(solo)
+    played_after_solo = await _flow_items_played(
+        leader, [44100, 44100, 44100], flow_rate=44100, flow_sample_rate=flow_sample_rate
+    )
 
-    assert items == ["0", "1", "2"]
+    assert played == ["0", "1", "2"]
+    assert played_after_solo == ["0", "1", "2"]
 
 
 async def test_group_of_48k_members_restarts_as_its_leader_alone() -> None:
@@ -498,13 +573,13 @@ async def test_group_of_48k_members_restarts_as_its_leader_alone() -> None:
     session = _session(leader, sample_rate=44100)
     await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
     pcm_format, _ = session._select_session_pcm_formats()
-    leader.flow_session = session
+    flow_sample_rate = _flow_sample_rate(session)
     audio = leader.mass.streams.audio
     supported = sorted({rate for rate, _ in leader.get_supported_sample_rates()})
 
     for next_rate in (22050, 44100, 48000, 88200, 96000, 192000):
         item = _flow_item("next", next_rate)
-        group_rate = await leader.get_flow_sample_rate(item.streamdetails)
+        group_rate = await flow_sample_rate(item.streamdetails)
         decisions = [
             audio._flow_stream_needs_restart(
                 cast("Any", item),
@@ -525,7 +600,6 @@ async def test_flow_of_other_players_follows_their_supported_rates() -> None:
     _, protocol = attach_mock(MockProvider("test", mass=mass), "renderer-1")
     protocol._attr_supported_sample_rates = [(48000, 16), (96000, 24)]
 
-    assert await protocol.get_flow_sample_rate(_flow_item("0", 96000).streamdetails) is None
     assert await _flow_items_played(protocol, [44100, 48000, 44100], 48000) == ["0", "1", "2"]
     assert await _flow_items_played(protocol, [44100, 48000, 96000], 48000) == ["0", "1"]
 
@@ -611,7 +685,10 @@ def _group(*players: SendspinPlayer) -> None:
 
 
 async def _flow_items_played(
-    protocol: PlayerProtocol, item_rates: list[int], flow_rate: int | None = None
+    protocol: PlayerProtocol,
+    item_rates: list[int],
+    flow_rate: int | None = None,
+    flow_sample_rate: Callable[[StreamDetails], Awaitable[int]] | None = None,
 ) -> list[str]:
     """
     Return the items a flow stream for a protocol plays before it ends or restarts.
@@ -620,11 +697,14 @@ async def _flow_items_played(
     :param item_rates: The sample rates of the queue items, from the first on.
     :param flow_rate: The rate of the flow stream; by default the rate of the Sendspin
         session of the protocol for the first item.
+    :param flow_sample_rate: What the flow asks the rate of a next item; by default that
+        of the Sendspin session started for the first item.
     """
     items = [_flow_item(str(index), rate) for index, rate in enumerate(item_rates)]
     if flow_rate is None:
         session = await _start_session(cast("SendspinPlayer", protocol), item_rates[0])
         flow_rate = session._pcm_format.sample_rate
+        flow_sample_rate = _flow_sample_rate(session)
 
     async def _load_next(_queue_id: str, current_id: str) -> Any:
         if (index := int(current_id) + 1) < len(items):
@@ -657,6 +737,7 @@ async def _flow_items_played(
         pcm_format,
         session_id="session-1",
         protocol_player=protocol,
+        flow_sample_rate=flow_sample_rate,
     ):
         pass
     return [entry.queue_item_id for entry in queue_data.flow_mode_stream_log]
@@ -676,8 +757,19 @@ async def _start_session(leader: SendspinPlayer, sample_rate: int) -> SendspinPl
     )
     session._pcm_format, session._sendspin_pcm_format = session._select_session_pcm_formats()
     leader.playback_session = session
-    leader.flow_session = session
     return session
+
+
+def _flow_sample_rate(
+    session: SendspinPlaybackSession,
+) -> Callable[[StreamDetails], Awaitable[int]]:
+    """
+    Return what the flow stream of a session asks, with the session playing in this task.
+
+    :param session: The session that opens the flow stream.
+    """
+    session.playback_task = cast("asyncio.Task[None]", asyncio.current_task())
+    return session._flow_sample_rate_of_this_playback()
 
 
 def _flow_item(item_id: str, sample_rate: int) -> SimpleNamespace:
