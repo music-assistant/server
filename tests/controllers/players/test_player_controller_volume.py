@@ -1422,9 +1422,24 @@ class TestMuteControlGuard:
         volume_mute = AsyncMock()
         protocol.volume_mute = volume_mute  # type: ignore[method-assign]
 
-        with pytest.raises(UnsupportedFeaturedException):
+        with pytest.raises(UnsupportedFeaturedException) as error:
             await controller.cmd_volume_mute("player_1", True)
+        assert error.value.translation_key == "player_cannot_mute"
+        assert error.value.translation_args == ["Player 1"]
         volume_mute.assert_not_awaited()
+
+    async def test_volume_set_without_volume_control_raises(self, mock_mass: MagicMock) -> None:
+        """A player without volume control rejects a volume command with that reason."""
+        controller, _player, _protocol = self._make_player(
+            mock_mass,
+            mute_control=PLAYER_CONTROL_NONE,
+            volume_control=PLAYER_CONTROL_NONE,
+        )
+
+        with pytest.raises(UnsupportedFeaturedException) as error:
+            await controller.cmd_volume_set("player_1", 30)
+        assert error.value.translation_key == "player_no_volume_control"
+        assert error.value.translation_args == ["Player 1"]
 
     async def test_fake_mute_without_volume_control_raises(self, mock_mass: MagicMock) -> None:
         """Fake mute needs a volume control to drive, so it rejects the command outright."""
