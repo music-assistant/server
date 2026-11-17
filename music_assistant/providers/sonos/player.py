@@ -132,8 +132,6 @@ REPORTED_ERROR_HISTORY = 16
 
 # seconds for a woken speaker's radio to come up, and for a queue load to start it playing
 WAKE_TIMEOUT = 15
-# seconds a speaker gets to answer the request of a device check
-DEVICE_CHECK_TIMEOUT = 3
 WAKE_PLAY_KICK_TIMEOUT = 2
 # seconds the new coordinator of a group moved outside MA gets to report the role, and
 # our queue to stop playing here
@@ -419,35 +417,52 @@ class SonosPlayer(PlayerProtocol):
         self._mark_asleep()
         self.update_state()
 
-    async def check_device(self) -> bool:
-        """Ask the speaker over its connection, or connect to it now when it answers again."""
-        if not self.connected:
-            # a connect to a speaker that is not up hangs on its stale ARP entry, so probe first
-            if not await self._is_reachable():
-                return False
-            if self.player is None or self.connected:
-                # detached, or connected by its own reconnect, meanwhile
-                return self.connected
-            await self._connect()
-            return self.connected
+    async def on_power_cut(self) -> None:
+        """Let go of the speaker, whose power was cut: it reads unavailable and is not tried."""
+        if self.player is None:
+            return
+        task_id = f"sonos_reconnect_{self.protocol_id}"
+        # a timer that already fired lives on as a task under the same id
+        self.mass.cancel_timer(task_id)
+        self.mass.cancel_task(task_id)
+        try:
+            await self._disconnect()
+        finally:
+            # also when the close was ended before the speaker answered it. Not once it is
+            # detached, which lets go of the connection itself, nor when the speaker was
+            # connected to anew meanwhile
+            if self.player is not None and not self.connected:
+                self._attr_available = False
+                self.update_state()
+
+    async def on_power_restored(self) -> None:
+        """Connect to the speaker anew, now that its power is back and it has started up."""
+        if self.player is None:
+            return
         listener = self._listen_task
         try:
-            async with asyncio.timeout(DEVICE_CHECK_TIMEOUT):
-                await self.client.api.player_volume.get_volume(self.client.player_id)
-        except (TimeoutError, SonosException, ClientError) as err:
-            if self.player is None or self._listen_task is not listener or not self.connected:
-                # detached, or connected anew, meanwhile: the connection it asked is gone
-                return self.connected
-            self.logger.debug("Sonos player %s does not answer: %r", self.display_name, err)
-            # what the listener does once its connection dropped, without waiting for the
-            # close of a connection that nothing answers on
-            self.connected = False
-            self._attr_available = False
-            self.update_state()
-            self.mass.create_task(self._disconnect())
-            self.reconnect(5)
-            return False
-        return True
+            # from what a power cut leaves: a connection to the speaker as it was answers
+            # nothing, and a reconnect that still runs may hang on it
+            await self.on_power_cut()
+            if listener is not None:
+                # ended before the new connection is made, which its cleanup would take
+                # for its own
+                await asyncio.wait([listener])
+            # a connect to a speaker that is not up hangs on its stale ARP entry, so probe first
+            if await self._is_reachable() and self.player is not None:
+                with contextlib.suppress(ConnectionFailed, CannotConnect, ClientError):
+                    await self._connect()
+        finally:
+            if self.player is not None and not self.connected:
+                # not up yet, or the wait for it was ended before it answered
+                self.reconnect(5)
+        if not self.connected:
+            return
+        if self.player is None:
+            # detached while it connected: nothing else lets go of this connection
+            await self._disconnect()  # type: ignore[unreachable]
+            return
+        self.on_player_event(None)
 
     async def volume_set(self, volume_level: int) -> None:
         """

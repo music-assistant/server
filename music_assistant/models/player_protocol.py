@@ -920,32 +920,6 @@ class PlayerProtocol(ABC):
         """
         raise NotImplementedError("poll needs to be implemented when needs_poll is True")
 
-    async def check_device(self) -> bool | None:
-        """
-        Check now whether the device answers, and reach it now when it does.
-
-        Called by the players controller on the protocol that reports for a device behind an
-        external power control (a smart plug): a few seconds after that control reported off,
-        and every few seconds while a power on through it waits for the device. Override it
-        when the provider has a cheap way to reach its device; it notices a power cut sooner
-        than its own detection does, and a device that is back sooner than its reconnect does.
-
-        When the device does not answer, read unavailable the way the provider's own detection
-        does, and keep trying to reach it. When it answers, read available, connecting to it
-        now when the protocol lost it. Come back within a few seconds: a device that has not
-        answered by then does not answer, and the controller gives up on a check after 10
-        seconds.
-
-        A check runs next to the commands of the player and the provider's own reconnects, and
-        it can be cancelled: when its protocol is taken off its player, and when it does not
-        come back in time. After every await, look again before changing anything: once the
-        protocol is detached (self.player is None), or the connection that was asked is no
-        longer the current one, change nothing.
-
-        :return: Whether the device answered, or None when this protocol can not check.
-        """
-        return None
-
     async def get_config_entries(self) -> list[ConfigEntry]:
         """
         Return all (provider/player specific) Config Entries for the player.
@@ -1088,6 +1062,32 @@ class PlayerProtocol(ABC):
         device, such as an entry in its list of manually added devices. The players
         controller holds an object that is not attached only weakly, so a provider with
         such a list keeps a reference to the object of every device on it.
+        """
+        return
+
+    async def on_power_cut(self) -> None:
+        """
+        Handle the power of the device being cut at its external power control.
+
+        Called for a player whose power control (a smart plug) is set to cut the power of
+        the player itself: once that control has read off for a while, or right after a
+        power off through it. The device is gone, so drop what the protocol holds of it,
+        stop trying to reach it and read unavailable. Override this when the provider
+        would otherwise keep a dead connection, or read available for long.
+        """
+        return
+
+    async def on_power_restored(self) -> None:
+        """
+        Handle the power of the device being back, once its start-up time is over.
+
+        Called when the start-up time of the player has passed since its power control
+        came on, also when on_power_cut was not called before that. Connect to the device
+        now, without relying on what the protocol still holds of it, and return once it is
+        reached or can not be: the players controller waits at most 10 seconds before the
+        playback that waited for the start-up goes to the protocols that read available.
+        Override this when the provider would otherwise only reach the device again on a
+        reconnect of its own, which can be minutes away.
         """
         return
 

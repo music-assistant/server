@@ -49,6 +49,8 @@ from music_assistant.constants import (
     CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
+    CONF_ENTRY_POWER_CONTROL_CUTS_POWER,
+    CONF_ENTRY_POWER_ON_STARTUP_TIME,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
@@ -1450,9 +1452,16 @@ class PlayerConfigMixin:
             # group volume and mute are always fanned out to the members and use each
             # member's own control, so a group only gets the (opt-in) power control
             return [power_entry]
+        # only an external power control can cut the power of the player itself
+        cuts_power_entries = (
+            [CONF_ENTRY_POWER_CONTROL_CUTS_POWER, CONF_ENTRY_POWER_ON_STARTUP_TIME]
+            if any(control.id == player.power_control for control in power_controls)
+            else []
+        )
         # return final config entries for all options
         return [
             power_entry,
+            *cuts_power_entries,
             # Volume control config entry
             ConfigEntry(
                 key=CONF_VOLUME_CONTROL,

@@ -24,6 +24,7 @@
     "unlink_derived": "{0} rides on another output and follows it.",
     "unlink_group": "{0} belongs to a group and can not be taken off it.",
     "unlink_only_protocol": "{0} is the only output of its player, which is a player of its own already.",
-    "player_busy": "{0} is still busy with a previous command. Try again in a moment."
+    "player_busy": "{0} is still busy with a previous command. Try again in a moment.",
+    "player_not_started_up": "{0} could not be reached {1} s after it was switched on. Raise its start-up time."
   }
 }
