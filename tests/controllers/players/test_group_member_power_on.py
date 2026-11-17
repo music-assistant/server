@@ -18,18 +18,19 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.player_control import PlayerControl
 
-from music_assistant.constants import CONF_POWER_CONTROL
-from music_assistant.controllers.players import PlayerController
-from music_assistant.controllers.players.constants import (
-    OFFLINE_POWER_ON_TIMEOUT,
-    PlayerLockPurpose,
+from music_assistant.constants import (
+    CONF_POWER_CONTROL,
+    CONF_POWER_CONTROL_CUTS_POWER,
+    DEFAULT_POWER_ON_STARTUP_TIME,
 )
+from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from tests.common import (
     MockProtocol,
     MockProvider,
     as_user,
     attach_mock,
-    use_real_create_task,
+    use_real_timers,
     virtual_loop_clock,
 )
 
@@ -40,6 +41,8 @@ if TYPE_CHECKING:
 
 # seconds after its control was switched on that a device is back on the network
 BOOT_TIME = 2.0
+# seconds a member needs to start up after its control was switched on
+STARTUP_TIME = DEFAULT_POWER_ON_STARTUP_TIME
 
 
 class _Speaker(NamedTuple):
@@ -72,7 +75,7 @@ def mock_mass() -> MagicMock:
 
 @pytest.fixture(autouse=True)
 async def _virtual_clock() -> AsyncIterator[None]:
-    # a device comes online, and a wait for it gives up, at a time of the clock
+    # a device comes online, and its start-up time ends, at a time of the clock
     with virtual_loop_clock():
         yield
 
@@ -88,16 +91,21 @@ def _setup(
 
     :param mock_mass: The mocked MusicAssistant instance to attach the controller to.
     :param names: The names of the members, which are their player ids.
-    :param switched_off: The members that are switched off at their power control.
+    :param switched_off: The members that are switched off at their power control, which
+        cuts the power of every member.
     :param stays_away: The switched-off members whose device does not come back.
     """
     controls = {name: f"switch.{name}_plug" for name in names}
-    mock_mass.config.get_player_value = MagicMock(
-        side_effect=lambda player_id, key, default=None: (
-            controls.get(player_id, default) if key == CONF_POWER_CONTROL else default
-        )
-    )
-    use_real_create_task(mock_mass)
+
+    def _player_value(player_id: str, key: str, default: object = None) -> object:
+        if key == CONF_POWER_CONTROL:
+            return controls.get(player_id, default)
+        if key == CONF_POWER_CONTROL_CUTS_POWER:
+            return player_id in controls
+        return default
+
+    mock_mass.config.get_player_value = MagicMock(side_effect=_player_value)
+    use_real_timers(mock_mass)
     controller = PlayerController(mock_mass)
     mock_mass.players = controller
     provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -199,8 +207,8 @@ async def test_the_switched_off_members_are_powered_on_together_without_a_lock(
     assert not waiting.done()
     assert _locked(controller) == []
     assert await waiting == set()
-    # one boot time, not one per member; the device is looked for every 0.5 s
-    assert BOOT_TIME <= _elapsed(started) < BOOT_TIME + 1
+    # one start-up time, not one per member
+    assert _elapsed(started) == STARTUP_TIME
     assert all(speaker.player.available_for_playback for speaker in setup.speakers.values())
     assert controller._member_power_ons == {}
 
@@ -224,7 +232,7 @@ async def test_a_group_whose_members_are_on_waits_for_nothing(mock_mass: MagicMo
 async def test_a_member_that_stays_away_is_reported_and_logged_once(
     mock_mass: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A member that does not come online is waited for as long as a power on waits, no longer."""
+    """A member that does not come online is waited for its start-up time, no longer."""
     setup = _setup(
         mock_mass, "kitchen", "office", "den", switched_off=("office", "den"), stays_away=("den",)
     )
@@ -234,10 +242,10 @@ async def test_a_member_that_stays_away_is_reported_and_logged_once(
         left_out = await setup.controller._power_on_members(setup.group)
 
     assert left_out == {"den"}
-    waited = _elapsed(started)
-    assert OFFLINE_POWER_ON_TIMEOUT <= waited < OFFLINE_POWER_ON_TIMEOUT + 1
+    assert _elapsed(started) == STARTUP_TIME
     assert [record.getMessage() for record in caplog.records] == [
-        "Player Den is left out of Downstairs: Player Den did not come online after powering it on"
+        "Player Den is left out of Downstairs: "
+        "Player Den could not be reached 30s after it was switched on"
     ]
     assert setup.speakers["office"].player.available_for_playback
     assert setup.controller._member_power_ons == {}
@@ -259,7 +267,7 @@ async def test_a_power_control_that_fails_leaves_the_member_out_with_one_warning
         "Player Den is left out of Downstairs: No answer"
     ]
     assert setup.speakers["office"].player.available_for_playback
-    assert not den.player.power_on_in_progress
+    assert den.player.startup_ends_at is None
     assert den.player.offline_by_power_control
 
 
@@ -325,7 +333,7 @@ async def test_a_play_on_a_group_that_does_not_play_powers_on_its_members(
         # a group that plays nothing may refuse the command itself
         await setup.controller.cmd_play("downstairs")
 
-    assert _elapsed(started) >= BOOT_TIME
+    assert _elapsed(started) >= STARTUP_TIME
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
 
 
@@ -342,7 +350,7 @@ async def test_a_resume_of_a_group_that_plays_already_powers_on_its_members(
         # a group that plays no queue may refuse the command itself
         await setup.controller.cmd_resume("downstairs")
 
-    assert _elapsed(started) >= BOOT_TIME
+    assert _elapsed(started) >= STARTUP_TIME
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
 
 
@@ -373,7 +381,7 @@ async def test_calling_the_power_on_off_ends_the_wait_as_unavailable(
     den = setup.speakers["den"]
     waiting = asyncio.create_task(controller._power_on_members(setup.group))
     await asyncio.sleep(0.75)
-    waited_for = den.player.power_on_in_progress
+    waited_for = "den" in controller._power_on_waits
 
     with caplog.at_level(logging.DEBUG):
         controller._cancel_member_power_ons(setup.group)
@@ -382,7 +390,9 @@ async def test_calling_the_power_on_off_ends_the_wait_as_unavailable(
 
     assert _above_debug(caplog) == []
     assert waited_for
-    assert not den.player.power_on_in_progress
+    assert "den" not in controller._power_on_waits
+    # its start-up time runs on
+    assert den.player.startup_ends_at is not None
     assert den.control.power_state is True
     cast("AsyncMock", den.control.power_off).assert_not_awaited()
     assert controller._member_power_ons == {}
@@ -401,7 +411,7 @@ async def test_a_command_that_is_cancelled_ends_the_power_on_of_its_members(
     with pytest.raises(asyncio.CancelledError):
         await waiting
 
-    assert not setup.speakers["den"].player.power_on_in_progress
+    assert "den" not in controller._power_on_waits
     assert controller._member_power_ons == {}
 
 
@@ -471,35 +481,32 @@ async def _call_off(setup: _Setup, after: float) -> None:
         await waiting
 
 
-async def test_a_member_that_still_boots_is_waited_for_again_and_its_control_left_alone(
+async def test_a_member_that_still_starts_up_is_waited_for_again_and_its_control_left_alone(
     mock_mass: MagicMock,
 ) -> None:
-    """A new start of the group waits again for the member whose power on was called off."""
+    """A new start of the group waits for what is left of a start-up that was called off."""
     setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
     controller = setup.controller
     den = setup.speakers["den"]
-    await _call_off(setup, after=BOOT_TIME / 4)
-    await asyncio.sleep(BOOT_TIME / 4)
-    shown_as_available = den.player.available
-    started = asyncio.get_running_loop().time()
-
-    waiting = asyncio.create_task(controller._power_on_members(setup.group))
-    await asyncio.sleep(0.1)
-
-    assert not shown_as_available
-    assert den.player.power_on_in_progress
+    switched_on = asyncio.get_running_loop().time()
+    await _call_off(setup, after=STARTUP_TIME / 4)
+    await asyncio.sleep(STARTUP_TIME / 4)
+    # it keeps starting up, and shows as available meanwhile
+    assert den.player.startup_ends_at is not None
     assert den.player.available
-    assert await waiting == set()
-    # the device is back when its boot is over, which started with the first power on
-    assert asyncio.get_running_loop().time() - started < BOOT_TIME
+
+    assert await controller._power_on_members(setup.group) == set()
+
+    # its start-up time is counted from the first power on
+    assert _elapsed(switched_on) == STARTUP_TIME
     assert den.player.available_for_playback
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
 
 
-async def test_a_member_that_still_boots_gets_the_time_that_is_left_of_its_power_on(
+async def test_a_member_that_still_starts_up_gets_the_time_that_is_left_of_its_startup(
     mock_mass: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A member that is waited for again is given up when its first power on would have been."""
+    """A member that is waited for again is given up when its start-up time is over."""
     setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",), stays_away=("den",))
     controller = setup.controller
     started = asyncio.get_running_loop().time()
@@ -509,10 +516,10 @@ async def test_a_member_that_still_boots_gets_the_time_that_is_left_of_its_power
     with caplog.at_level(logging.WARNING):
         assert await controller._power_on_members(setup.group) == {"den"}
 
-    waited = _elapsed(started)
-    assert OFFLINE_POWER_ON_TIMEOUT <= waited < OFFLINE_POWER_ON_TIMEOUT + 1
+    assert _elapsed(started) == STARTUP_TIME
     assert _above_debug(caplog) == [
-        "Player Den is left out of Downstairs: Player Den did not come online after powering it on"
+        "Player Den is left out of Downstairs: "
+        "Player Den could not be reached 30s after it was switched on"
     ]
     # its time is over: a later start does not wait for it
     later = asyncio.get_running_loop().time()
@@ -524,7 +531,7 @@ async def test_a_member_that_still_boots_gets_the_time_that_is_left_of_its_power
 async def test_a_member_that_went_away_after_it_was_online_is_not_waited_for(
     mock_mass: MagicMock,
 ) -> None:
-    """Only a power on that was called off before the device was online is taken up again."""
+    """A member that drops off the network with its control on is not waited for."""
     setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
     controller = setup.controller
     den = setup.speakers["den"]
@@ -540,7 +547,7 @@ async def test_a_member_that_went_away_after_it_was_online_is_not_waited_for(
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
 
 
-async def test_a_member_is_waited_for_until_its_own_protocol_is_back(
+async def test_a_member_is_waited_for_whatever_its_second_protocol_reads(
     mock_mass: MagicMock,
 ) -> None:
     """A switched-off member is powered on and waited for, whatever its second protocol reads."""
@@ -550,14 +557,14 @@ async def test_a_member_is_waited_for_until_its_own_protocol_is_back(
 
     assert await setup.controller._power_on_members(setup.group) == set()
 
-    assert BOOT_TIME <= _elapsed(started) < BOOT_TIME + 1
+    assert _elapsed(started) == STARTUP_TIME
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
 
 
 async def test_a_member_that_is_called_off_is_left_out_whatever_its_second_protocol_reads(
     mock_mass: MagicMock,
 ) -> None:
-    """A power on that is called off does not end as online through a second protocol."""
+    """A power on that is called off does not end as started up through a second protocol."""
     setup = _setup(
         mock_mass, "kitchen", "office", "den", switched_off=("office", "den"), stays_away=("den",)
     )
@@ -572,24 +579,22 @@ async def test_a_member_that_is_called_off_is_left_out_whatever_its_second_proto
     assert await waiting == {"den"}
 
 
-async def test_a_member_that_still_boots_is_waited_for_again_whatever_its_second_protocol_reads(
+async def test_a_member_that_still_starts_up_is_waited_for_whatever_its_second_protocol_reads(
     mock_mass: MagicMock,
 ) -> None:
-    """A member whose own protocol is not back still boots, and its control is left alone."""
+    """A member that still starts up is not played to through a protocol that reads available."""
     setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
     controller = setup.controller
     den = setup.speakers["den"]
     _receiver(mock_mass, den)
-    await _call_off(setup, after=BOOT_TIME / 4)
-    await asyncio.sleep(BOOT_TIME / 4)
-    started = asyncio.get_running_loop().time()
+    switched_on = asyncio.get_running_loop().time()
+    await _call_off(setup, after=STARTUP_TIME / 4)
+    await asyncio.sleep(STARTUP_TIME / 4)
+    assert not den.player.available_for_playback
 
-    waiting = asyncio.create_task(controller._power_on_members(setup.group))
-    await asyncio.sleep(0.1)
+    assert await controller._power_on_members(setup.group) == set()
 
-    assert den.player.power_on_in_progress
-    assert await waiting == set()
-    assert BOOT_TIME / 4 < asyncio.get_running_loop().time() - started < BOOT_TIME
+    assert _elapsed(switched_on) == STARTUP_TIME
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
 
 
@@ -611,3 +616,53 @@ async def test_a_stop_of_a_group_that_plays_no_queue_calls_the_wait_off(
     with pytest.raises(PlayerUnavailableError, match="was called off"):
         await waiting
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("switched off", ["den"]),
+        ("still starts up", ["den"]),
+        ("all fine", []),
+        ("without a power control", []),
+    ],
+)
+async def test_the_question_whether_a_start_powers_on_agrees_with_the_members_it_powers_on(
+    mock_mass: MagicMock, case: str, expected: list[str]
+) -> None:
+    """A group counts as powering on exactly when a start powers a member on, and which."""
+    setup = _setup(
+        mock_mass,
+        "kitchen",
+        "den",
+        switched_off=("den",) if case in ("switched off", "still starts up") else (),
+    )
+    controller = setup.controller
+    member_ids = ["kitchen", "den"]
+    if case == "still starts up":
+        await _call_off(setup, after=BOOT_TIME / 4)
+        await asyncio.sleep(BOOT_TIME / 4)
+    if case == "without a power control":
+        porch, protocol = attach_mock(
+            MockProvider("test_provider", instance_id="test", mass=mock_mass),
+            "proto_porch",
+            "Porch",
+            player_id="porch",
+        )
+        protocol._attr_available = False
+        porch.update_state(signal_event=False, force_update=True)
+        member_ids.append("porch")
+    switched_on_before = _power_ons(setup)
+
+    selected = controller._members_to_power_on(setup.group, member_ids)
+    selected_of_group = controller._members_to_power_on(setup.group)
+    await controller._power_on_members(setup.group, member_ids)
+
+    assert [member.player_id for member in selected] == expected
+    assert bool(selected_of_group) is bool(expected)
+    # a start switches the control on of a member that is off, and only waits for one that
+    # starts up
+    switched_on = {
+        name for name, count in _power_ons(setup).items() if count > switched_on_before[name]
+    }
+    assert switched_on == (set(expected) if case == "switched off" else set())

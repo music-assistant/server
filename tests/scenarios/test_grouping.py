@@ -6,13 +6,15 @@ import logging
 from typing import TYPE_CHECKING
 
 import pytest
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import (
     InsufficientPermissions,
     PlayerCommandFailed,
     UnsupportedFeaturedException,
 )
 
+from music_assistant.constants import DEFAULT_POWER_ON_STARTUP_TIME
+from music_assistant.controllers.players.power import EXTERNAL_POWER_OFF_STOP_DELAY
 from tests.common import as_user
 
 from .harness import (
@@ -29,6 +31,9 @@ if TYPE_CHECKING:
     from music_assistant_models.player import Player as PlayerState
 
 GROUPING = frozenset({*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS})
+
+# the start-up time (in seconds) of a speaker on a smart plug that cuts its power
+STARTUP_TIME = DEFAULT_POWER_ON_STARTUP_TIME
 
 
 def _device(number: int) -> dict[IdentifierType, str]:
@@ -445,19 +450,28 @@ async def _sync_group(scenario: Scenario, *member_ids: str) -> str:
     return group.player_id
 
 
-async def _stop(scenario: Scenario, player_id: str) -> None:
-    """Stop what a player plays, letting the clock run for the stop to settle."""
+async def _stop(scenario: Scenario, player_id: str, *, idle: bool = True) -> None:
+    """
+    Stop what a player plays, letting the clock run for the stop to settle.
+
+    :param player_id: The player to stop.
+    :param idle: Whether the server has nothing left to do afterwards; False while a player
+        still starts up, which ends on a timer of the server.
+    """
     stop = await scenario.command(scenario.mass.players.cmd_stop(player_id))
     await scenario.advance(10)
     await stop
-    await scenario.idle()
+    if idle:
+        await scenario.idle()
 
 
 async def _switch_off(scenario: Scenario, speaker: FakeProtocol) -> FakePowerControl:
     """
-    Put a speaker on a smart plug and switch the plug off, which takes its device off the network.
+    Put a speaker on a smart plug that cuts its power, and switch the plug off.
 
-    Its player then shows as available and powered off.
+    That takes its device off the network. Its player then shows as available and powered
+    off, and its power counts as cut. The speaker needs STARTUP_TIME to start up, as any
+    player does unless the user sets another time.
 
     :param speaker: The speaker, which is registered.
     :return: The plug.
@@ -465,17 +479,34 @@ async def _switch_off(scenario: Scenario, speaker: FakeProtocol) -> FakePowerCon
     plug = await scenario.add_power_control(
         f"switch.{speaker.protocol_id}_plug", f"{speaker.protocol_id} plug", powered=True
     )
-    await scenario.configure_player(_player_id(scenario, speaker), power_control=plug.control_id)
+    player_id = _player_id(scenario, speaker)
+    await scenario.configure_player(player_id, power_control=plug.control_id)
+    # this setting is offered once the plug is the power control of the player
+    await scenario.configure_player(player_id, power_control_cuts_power=True)
     await scenario.switch(plug, False)
     await scenario.unregister(speaker)
+    await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY)
     await scenario.idle()
     return plug
 
 
 async def _come_back(scenario: Scenario, speaker: FakeProtocol) -> None:
-    """Let the device of a speaker that was switched on come back on the network."""
+    """
+    Let the device of a speaker that was switched on come back on the network.
+
+    The rest of the start-up time of its player passes with it.
+    """
     await scenario.register(speaker)
-    # a power on looks for the device every 0.5 s
+    await _start_up(scenario, _player_id(scenario, speaker))
+
+
+async def _start_up(scenario: Scenario, player_id: str) -> None:
+    """Let the rest of the start-up time of a player pass."""
+    player = scenario.mass.players.get_player(player_id)
+    assert player is not None
+    if (ends_at := player.startup_ends_at) is not None:
+        await scenario.advance(ends_at - scenario.mass.loop.time())
+    # also lets what the end of the start-up time started run
     await scenario.advance(1)
 
 
@@ -631,6 +662,68 @@ async def test_an_airplay_speaker_gives_up_its_own_group_before_it_joins_another
     assert _state(scenario, attic_id).synced_to == hall_id
 
 
+async def test_members_on_the_leaders_own_stream_follow_it_onto_airplay(
+    scenario: Scenario,
+) -> None:
+    """
+    Members that play from their leader's own stream follow it onto AirPlay, or leave its group.
+
+    Kitchen plays with Office and Den on HEOS, which can not pass AirPlay on to its members.
+    The user adds Office again and Patio, which only has AirPlay: Office follows over its AirPlay
+    receiver in the same call, Den has none and leaves the group with a warning.
+    """
+    heos = await scenario.add_provider("heos")
+    airplay = await scenario.add_provider("airplay")
+    ids = ["heos_kitchen", "heos_office", "heos_den"]
+    kitchen, office, den = (
+        heos.protocol(
+            protocol_id,
+            protocol_id.removeprefix("heos_").title(),
+            identifiers=_device(number),
+            supported_features=set(GROUPING),
+            can_group_with={other for other in ids if other != protocol_id},
+            native_grouping_requires_own_stream=True,
+        )
+        for number, protocol_id in enumerate(ids, start=70)
+    )
+    kitchen_airplay = airplay.protocol(
+        "airplay_kitchen",
+        "Kitchen",
+        role="audio",
+        identifiers=_device(70),
+        supported_features=set(GROUPING),
+        can_group_with={"airplay_office", "airplay_patio"},
+    )
+    office_airplay = airplay.protocol(
+        "airplay_office", "Office", role="audio", identifiers=_device(71)
+    )
+    patio = airplay.protocol("airplay_patio", "Patio", identifiers=_device(73))
+    for protocol in (kitchen, office, den, kitchen_airplay, office_airplay, patio):
+        await scenario.register(protocol)
+    await scenario.idle()
+    kitchen_id, office_id = _player_id(scenario, kitchen), _player_id(scenario, office)
+    den_id, patio_id = _player_id(scenario, den), _player_id(scenario, patio)
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[office_id, den_id])
+    await scenario.idle()
+    await scenario.play(kitchen_id)
+    assert _state(scenario, office_id).synced_to == kitchen_id
+    scenario.expect_log("Cannot group Den with Kitchen")
+
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[office_id, patio_id])
+    await scenario.idle()
+
+    assert _grouping_commands(kitchen_airplay) == [
+        ("set_members", ["airplay_patio", "airplay_office"], None)
+    ]
+    assert _grouping_commands(kitchen)[-1] == ("set_members", None, ["heos_office", "heos_den"])
+    assert _state(scenario, office_id).synced_to == kitchen_id
+    assert _state(scenario, patio_id).synced_to == kitchen_id
+    assert _state(scenario, den_id).synced_to is None
+    assert _active_output(scenario, office_id) == "airplay_office"
+    assert _active_output(scenario, kitchen_id) == "airplay_kitchen"
+    assert _state(scenario, kitchen_id).playback_state == PlaybackState.PLAYING
+
+
 async def test_a_protocol_switch_that_would_silence_a_member_is_refused(
     scenario: Scenario,
 ) -> None:
@@ -758,6 +851,80 @@ async def test_a_returning_member_of_a_fixed_group_rejoins_its_leader(
     assert _state(scenario, office_id).synced_to == kitchen_id
     assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
     await _stop(scenario, group_id)
+
+
+async def test_an_offline_member_its_leader_still_lists_is_removed(scenario: Scenario) -> None:
+    """
+    A member that dropped off and that its leader's device still lists is removed on request.
+
+    The leader's own protocol is asked to let it go, and nothing is sent to the member.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[office_id, den_id])
+    await scenario.idle()
+    await scenario.report(office, available=False)
+    await scenario.idle()
+    # the leader's device lists the member it lost again
+    await scenario.report(kitchen, group_members=["sonos_kitchen", "sonos_office", "sonos_den"])
+    await scenario.idle()
+    assert _state(scenario, kitchen_id).group_members == [kitchen_id, office_id, den_id]
+
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_remove=[office_id])
+    await scenario.idle()
+
+    assert _grouping_commands(kitchen)[-1] == ("set_members", None, ["sonos_office"])
+    assert _state(scenario, kitchen_id).group_members == [kitchen_id, den_id]
+    assert office.commands == []
+
+
+@pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
+@pytest.mark.parametrize("playing", [False, True], ids=["idle", "playing"])
+async def test_an_offline_member_is_removed_from_a_group_player(
+    scenario: Scenario, group_type: str, playing: bool
+) -> None:
+    """A member of a group player that dropped off is removed, and nothing is sent to it."""
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    group_id = await _group(scenario, group_type, kitchen_id, office_id, den_id)
+    if playing:
+        await scenario.play(group_id)
+    sent = len(office.commands)
+
+    await scenario.report(office, available=False)
+    await scenario.idle()
+    await scenario.mass.players.cmd_set_members(group_id, player_ids_to_remove=[office_id])
+    await scenario.idle()
+
+    assert _state(scenario, group_id).group_members == [kitchen_id, den_id]
+    assert len(office.commands) == sent
+    if playing:
+        await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
+async def test_an_offline_member_of_a_fixed_group_is_refused_as_an_online_one(
+    scenario: Scenario, group_type: str
+) -> None:
+    """A member of a group with a fixed member list can not be removed, offline or online."""
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    group_id = await _group(scenario, group_type, kitchen_id, office_id, den_id, dynamic=False)
+    await scenario.report(office, available=False)
+    await scenario.idle()
+
+    refusals: list[tuple[str, str | None]] = []
+    for member_id in (office_id, den_id):
+        with pytest.raises(UnsupportedFeaturedException) as refusal:
+            await scenario.mass.players.cmd_set_members(group_id, player_ids_to_remove=[member_id])
+        refusals.append((str(refusal.value), refusal.value.translation_key))
+    await scenario.idle()
+
+    assert refusals[0] == refusals[1]
+    assert _state(scenario, group_id).group_members == [kitchen_id, office_id, den_id]
 
 
 async def _garden(scenario: Scenario) -> tuple[FakeProtocol, str]:
@@ -1118,3 +1285,29 @@ async def test_a_first_member_that_plays_an_input_of_its_own_keeps_leading_the_s
     assert _state(scenario, den_id).synced_to == garden_id
     assert _state(scenario, kitchen_id).active_group is None
     await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("leader_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
+async def test_a_leader_counts_its_own_level_in_the_group_volume(
+    scenario: Scenario, leader_type: PlayerType
+) -> None:
+    """
+    A speaker or a multi-channel player that leads a group counts its own level.
+
+    The group volume is the level of the loudest member, the leader included, and a step up
+    of the group volume turns every member up, keeping their balance.
+    """
+    _, (living, office) = await _speakers(scenario, "Living", "Office")
+    await scenario.report(living, type=leader_type, volume_level=60)
+    await scenario.report(office, volume_level=30)
+    living_id, office_id = _player_id(scenario, living), _player_id(scenario, office)
+    await scenario.mass.players.cmd_set_members(living_id, player_ids_to_add=[office_id])
+    await scenario.idle()
+
+    assert _state(scenario, living_id).group_volume == 60
+
+    await scenario.mass.players.cmd_group_volume_up(living_id)
+    await scenario.idle()
+
+    assert _state(scenario, living_id).volume_level == 63
+    assert _state(scenario, office_id).volume_level == 35

@@ -918,6 +918,7 @@ async def test_add_task_does_not_count_items_the_provider_skipped(
     provider.available = True
     provider.supported_features = {ProviderFeature.PLAYLIST_TRACKS_EDIT}
     provider.get_playlist_tracks = AsyncMock(return_value=[])
+    provider.forget_playlist_tracks = AsyncMock()
 
     async def add_tracks(_prov_playlist_id: str, uris: list[str]) -> None:
         report_current_task_failure(f"Can't add {uris[-1]}")
@@ -1052,6 +1053,7 @@ async def test_collaborator_edit_completes_its_bookkeeping(
     provider.available = True
     provider.supported_features = {ProviderFeature.PLAYLIST_TRACKS_EDIT}
     provider.remove_playlist_tracks = AsyncMock()
+    provider.forget_playlist_tracks = AsyncMock()
 
     with (
         patch.object(music_mass_module, "get_provider", return_value=provider),

@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
 import pytest
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import ProviderMapping, Track
 
+from music_assistant.constants import DB_TABLE_CACHE
 from music_assistant.providers.deezer import browse
+from music_assistant.providers.deezer.browse import DeezerBrowseManager
 from music_assistant.providers.deezer.media import DeezerMediaManager
 from music_assistant.providers.deezer.provider import DeezerProvider
 from tests.common import use_real_create_task
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 
 def _edge(track_id: str | None, added_at: str | None) -> SimpleNamespace:
@@ -101,3 +108,50 @@ async def test_move_to_top_past_an_unavailable_track(
     await provider.move_playlist_tracks("123", [2], 1)
 
     move.assert_awaited_once_with(playlist_id="123", track_id="2", after_track_id=None)
+
+
+@pytest.mark.asyncio
+async def test_a_change_deezer_failed_to_confirm_is_read_anew_once_forgotten(
+    provider: DeezerProvider, mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The kept tracks of a playlist are dropped through the provider after a failed change."""
+    await mass_minimal.cache._setup_database()
+    monkeypatch.setattr(browse, "parse_track", _parse_track)
+    provider.mass = mass_minimal
+    provider.browse_manager = DeezerBrowseManager(provider)
+    provider.media_manager = DeezerMediaManager(provider)
+    edges = [_edge("1", None)]
+
+    async def _get_playlist(**_kwargs: Any) -> SimpleNamespace:
+        return _page(list(edges))
+
+    async def _add_tracks(**_kwargs: Any) -> None:
+        # Deezer applies the change but its answer gets lost
+        edges.append(_edge("2", None))
+        raise ResourceTemporarilyUnavailable("Deezer did not answer")
+
+    provider.gql_client.get_playlist = AsyncMock(side_effect=_get_playlist)  # type: ignore[method-assign]
+    provider.gql_client.add_tracks_to_playlist = AsyncMock(side_effect=_add_tracks)  # type: ignore[method-assign]
+
+    async def _listed() -> list[str]:
+        return [track.item_id for track in await provider.get_playlist_tracks("123")]
+
+    assert await _listed() == ["1"]
+    await _wait_for_kept(mass_minimal, provider.instance_id)
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await provider.add_playlist_tracks("123", ["2"])
+    assert await _listed() == ["1"]
+    # what the playlist controller does after every change, however it ended
+    await provider.forget_playlist_tracks("123")
+    assert await _listed() == ["1", "2"]
+
+
+async def _wait_for_kept(mass: MusicAssistant, provider_id: str) -> None:
+    """Wait until a result is kept in the cache for the provider."""
+    assert mass.cache.database is not None
+    query = f"SELECT key FROM {DB_TABLE_CACHE} WHERE provider = :provider"
+    for _ in range(200):
+        if await mass.cache.database.get_count_from_query(query, {"provider": provider_id}):
+            return
+        await asyncio.sleep(0.01)
+    pytest.fail(f"nothing was ever kept for {provider_id}")

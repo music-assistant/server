@@ -290,6 +290,9 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider running librosa scalars + CLAP zero-shot per track."""
 
     analysis_version: int = 1
+    # the embeddings only serve music similarity, nothing reads them for audiobooks,
+    # podcasts or radio
+    media_types = frozenset({MediaType.TRACK})
     max_analysis_duration = ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS
     has_unloadable_models = True
 
@@ -506,10 +509,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :param streamdetails: Stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
-        if streamdetails.media_type != MediaType.TRACK:
-            # the embeddings only serve music similarity, nothing reads them for
-            # audiobooks, podcasts or radio
-            return False
         if self._clap_model is None:
             self.logger.debug(
                 "Skipping analysis for %s: CLAP model not yet available",

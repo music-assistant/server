@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 114
+API_SCHEMA_VERSION: Final[int] = 119
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -126,6 +126,7 @@ CONF_ENCRYPTION_KEY_MIGRATED: Final[str] = "encryption_key_migrated"
 CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED: Final[str] = "apple_music_sync_schedule_migrated"
 CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED: Final[str] = "emby_album_artists_heal_migrated"
 CONF_RAUMFELD_ICY_BASIC_MIGRATED: Final[str] = "raumfeld_icy_basic_migrated"
+CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: Final[str] = "airplay_sync_adjust_sign_migrated"
 CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING: Final[str] = "emby_album_artists_heal_pending"
 CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
@@ -170,6 +171,8 @@ WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")  # noqa: S104 - th
 SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_IDLE_POWER_OFF: Final[str] = "idle_power_off"
+CONF_POWER_CONTROL_CUTS_POWER: Final[str] = "power_control_cuts_power"
+CONF_POWER_ON_STARTUP_TIME: Final[str] = "power_on_startup_time"
 CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
@@ -491,6 +494,28 @@ CONF_ENTRY_IDLE_POWER_OFF = ConfigEntry(
     depends_on=CONF_POWER_CONTROL,
     depends_on_value_not="none",
     category="player_controls",
+)
+
+CONF_ENTRY_POWER_CONTROL_CUTS_POWER = ConfigEntry(
+    key=CONF_POWER_CONTROL_CUTS_POWER,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    category="player_controls",
+)
+
+# The start-up time (in seconds) of a player whose power control cuts its power: what a
+# player gets unless the user sets it, and the shortest and longest that can be set.
+DEFAULT_POWER_ON_STARTUP_TIME: Final[int] = 30
+POWER_ON_STARTUP_TIME_RANGE: Final[tuple[int, int]] = (5, 300)
+
+CONF_ENTRY_POWER_ON_STARTUP_TIME = ConfigEntry(
+    key=CONF_POWER_ON_STARTUP_TIME,
+    type=ConfigEntryType.INTEGER,
+    default_value=DEFAULT_POWER_ON_STARTUP_TIME,
+    range=POWER_ON_STARTUP_TIME_RANGE,
+    depends_on=CONF_POWER_CONTROL_CUTS_POWER,
+    category="player_controls",
+    advanced=True,
 )
 
 CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP = ConfigEntry(
@@ -1001,7 +1026,6 @@ ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
 ATTR_IDLE_SINCE: Final[str] = "idle_since"
-ATTR_POWER_ON_DEADLINE: Final[str] = "power_on_deadline"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
