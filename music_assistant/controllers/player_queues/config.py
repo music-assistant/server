@@ -380,13 +380,9 @@ def _autoplay_entries(
     mass: MusicAssistant, playlist_options: list[ConfigValueOption] | None, *, per_queue: bool
 ) -> list[ConfigEntry]:
     """Autoplay entries: the global on/off default, mode select and its playlist companion."""
-    similar_available = any(
-        ProviderFeature.SIMILAR_TRACKS in provider.supported_features
-        for provider in mass.music.providers
-    )
-    similar_artists_available = any(
-        ProviderFeature.SIMILAR_ARTISTS in provider.supported_features
-        for provider in mass.music.providers
+    similar_available = bool(mass.get_providers_supporting_feature(ProviderFeature.SIMILAR_TRACKS))
+    similar_artists_available = bool(
+        mass.get_providers_supporting_feature(ProviderFeature.SIMILAR_ARTISTS)
     )
     mode_options = [
         ConfigValueOption(AutoplayMode.AUTO.value),

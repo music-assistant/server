@@ -889,7 +889,7 @@ class AirPlayPlayer(PlayerProtocol):
                     and ipaddress.ip_address(new_address) in _DOCKER_SUBNET
                     and ipaddress.ip_address(cur_address) not in _DOCKER_SUBNET
                 ):
-                    self.logger.warning(
+                    self.logger.debug(
                         "Ignoring mDNS update from %s to Docker address %s",
                         cur_address,
                         new_address,
