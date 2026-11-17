@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 from music_assistant_models.enums import PlaybackState
@@ -12,6 +13,9 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+
+if TYPE_CHECKING:
+    import pytest
 
 QUEUE_ID = "player_1"
 ITEM_ID = "track-1"
@@ -76,7 +80,9 @@ async def test_resume_during_announcement_uses_parked_resume_pos() -> None:
     ctrl.play_index.assert_awaited_once_with(QUEUE_ID, ITEM_ID, 90, False)  # type: ignore[attr-defined]
 
 
-async def test_resume_while_playing_without_announcement_uses_live_clock() -> None:
+async def test_resume_while_playing_without_announcement_uses_live_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Resume while playing without announce still uses the live clock."""
     ctrl, queue = _controller(
         queue_state=PlaybackState.PLAYING,
@@ -84,6 +90,9 @@ async def test_resume_while_playing_without_announcement_uses_live_clock() -> No
         elapsed_time=90,
         announcement_in_progress=False,
     )
+    # the test and resume() read the same instant, however slow the runner is
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
     live_pos = int(queue.corrected_elapsed_time)
     assert live_pos > 110
 
