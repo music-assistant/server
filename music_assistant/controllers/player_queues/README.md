@@ -256,8 +256,9 @@ waits for the first audio of a buffer, as the preparation of the next track does
 A buffer that is out of scope gives its audio up, whether its source still fills or has delivered
 everything, and whether or not its provider has a slot to spare; whoever waits for it gets no audio.
 The queue asks its buffers whenever its scope can change: when a session starts or ends, when its
-items change, when its player fetches another item or reports another one as playing, when the
-repeat mode or the sleep timer target changes, and before it gets audio for an item. A buffer is
+items change, when its player fetches another item or reports another one as playing, when a fade
+takes the next track, when the repeat mode or the sleep timer target changes, and before it gets
+audio for an item. A buffer is
 also asked when a user leaves it, when the claim on its item ends, when another buffer takes its
 place on the item, and when a track asks the provider for a slot and none is free. The queue is
 asked once more before audio is made: before a buffer is created, before a source in an unknown
