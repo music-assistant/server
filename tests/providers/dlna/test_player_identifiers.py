@@ -11,6 +11,7 @@ from async_upnp_client.client_factory import UpnpFactory
 from async_upnp_client.const import HttpRequest, HttpResponse
 from music_assistant_models.enums import IdentifierType
 
+from music_assistant.constants import MAIN_ZONE
 from music_assistant.providers.dlna.player import DLNAPlayer
 from tests.common import MockProvider
 
@@ -94,3 +95,28 @@ async def test_uuid_identifier_from_udn(player_id: str, expected_uuid: str) -> N
         await player._device_connect()
 
     assert player.device_info.identifiers.get(IdentifierType.UUID) == expected_uuid
+
+
+@pytest.mark.parametrize(
+    ("player_id", "expected_zone"),
+    [
+        ("uuid:dlna-player", None),
+        # the renderer of a Sonos player's own zone is in the main zone
+        ("uuid:RINCON_000E5812345601400_MR", MAIN_ZONE),
+        # an extra zone of the same chassis, like the headphone zone of an Amp or soundbar
+        ("uuid:RINCON_000E5812345601500_MR", "RINCON_000E5812345601500"),
+    ],
+)
+async def test_zone_identifier_of_a_sonos_renderer(
+    player_id: str, expected_zone: str | None
+) -> None:
+    """A Sonos renderer reports the zone of its chassis it plays, another renderer none."""
+    provider: Any = MockProvider("dlna", instance_id="dlna_test")
+    provider.upnp_factory = UpnpFactory(_Requester(DESCRIPTION_XML.format(presentation="/")))
+    provider.notify_server = MagicMock()
+    player = DLNAPlayer(provider, player_id, DESCRIPTION_URL)
+
+    with patch("music_assistant.providers.dlna.player.DmrDevice", _dmr):
+        await player._device_connect()
+
+    assert player.device_info.identifiers.get(IdentifierType.ZONE) == expected_zone

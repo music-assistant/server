@@ -11,7 +11,7 @@ from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import IdentifierType, MediaType, ProtocolRole
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.constants import CONF_POWER_CONTROL
+from music_assistant.constants import CONF_POWER_CONTROL, MAIN_ZONE
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.sonos.const import DEVICE_FEATURE_WAKEABLE
 from music_assistant.providers.sonos.player import SonosPlayer
@@ -99,6 +99,7 @@ async def test_a_new_speaker_is_the_native_protocol_of_a_minted_player(
     assert player.get_role(UID) == ProtocolRole.NATIVE
     assert (IdentifierType.UUID, UID) in protocol.identifiers
     assert (IdentifierType.MAC_ADDRESS, "F0:F6:C1:CC:8D:04") in protocol.identifiers
+    assert (IdentifierType.ZONE, MAIN_ZONE) in protocol.identifiers
 
 
 async def test_a_new_speaker_sleeps_as_powered_off_by_the_power_control_of_its_player(

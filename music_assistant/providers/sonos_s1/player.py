@@ -30,7 +30,7 @@ from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.upnp import create_didl_metadata
+from music_assistant.helpers.upnp import create_didl_metadata, get_sonos_zone
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 
@@ -103,6 +103,9 @@ class SonosPlayer(PlayerProtocol):
         )
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, soco.ip_address)
         self._attr_device_info.add_identifier(IdentifierType.UUID, soco.uid)
+        # a renderer of another zone of the chassis shares its MAC address
+        if zone := get_sonos_zone(soco.uid):
+            self._attr_device_info.add_identifier(IdentifierType.ZONE, zone)
         mac_address = self._extract_mac_from_player_id()
         if mac_address:
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
@@ -423,6 +426,8 @@ class SonosPlayer(PlayerProtocol):
         )
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, soco.ip_address)
         self._attr_device_info.add_identifier(IdentifierType.UUID, self.protocol_id)
+        if zone := get_sonos_zone(self.protocol_id):
+            self._attr_device_info.add_identifier(IdentifierType.ZONE, zone)
         mac_address = self._extract_mac_from_player_id()
         if mac_address:
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)

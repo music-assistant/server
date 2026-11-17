@@ -56,6 +56,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
+from music_assistant.helpers.upnp import get_sonos_zone
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.helpers.wake_on_lan import send_magic_packet
 from music_assistant.models.player import PlayerSource
@@ -300,6 +301,9 @@ class SonosPlayer(PlayerProtocol):
         # Add identifiers for matching with other protocols (like AirPlay, DLNA)
         # The protocol_id is the Sonos UUID (e.g., RINCON_xxxxxxxxxxxx)
         self._attr_device_info.add_identifier(IdentifierType.UUID, self.protocol_id)
+        # a renderer of another zone of the chassis shares its MAC address
+        if zone := get_sonos_zone(self.protocol_id):
+            self._attr_device_info.add_identifier(IdentifierType.ZONE, zone)
         # Extract MAC address from Sonos player_id (RINCON_XXXXXXXXXXXX01400)
         # The middle part contains the MAC address (last 6 bytes in hex)
         mac_address = self._extract_mac_from_player_id()

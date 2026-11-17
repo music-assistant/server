@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -11,7 +12,7 @@ from xml.sax.saxutils import escape as xmlescape
 import aiohttp
 from music_assistant_models.enums import MediaType
 
-from music_assistant.constants import MASS_LOGO_ONLINE
+from music_assistant.constants import MAIN_ZONE, MASS_LOGO_ONLINE
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.player import served_duration
 
@@ -19,6 +20,22 @@ if TYPE_CHECKING:
     from music_assistant.models.player import PlayerMedia
 
 LOGGER = logging.getLogger(__name__)
+
+# RINCON_<MAC address><port>: port 01400 is the speaker itself, another port an extra
+# zone of the same chassis (such as the headphone zone of an Amp or soundbar)
+SONOS_UUID_PATTERN = re.compile(r"RINCON_[0-9A-F]{12}(?P<port>\d{5})", re.IGNORECASE)
+SONOS_MAIN_ZONE_PORT = "01400"
+
+
+def get_sonos_zone(sonos_uuid: str) -> str | None:
+    """
+    Return the zone of the Sonos chassis a Sonos UUID belongs to, None for another UUID.
+
+    :param sonos_uuid: The UUID of a Sonos player, or of its renderer without the "_MR" suffix.
+    """
+    if not (match := SONOS_UUID_PATTERN.fullmatch(sonos_uuid)):
+        return None
+    return MAIN_ZONE if match["port"] == SONOS_MAIN_ZONE_PORT else sonos_uuid
 
 
 # XML

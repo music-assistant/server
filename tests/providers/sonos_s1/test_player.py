@@ -15,6 +15,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from soco.core import SoCo
 from soco.exceptions import SoCoException
 
+from music_assistant.constants import MAIN_ZONE
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sonos_s1 import player as player_module
@@ -651,6 +652,7 @@ async def test_update_ip_talks_to_the_rediscovered_speaker(sonos_player: SonosPl
     assert sonos_player.soco is new_soco
     setup.assert_awaited_once()
     assert sonos_player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "127.0.0.2"
+    assert sonos_player.device_info.identifiers[IdentifierType.ZONE] == MAIN_ZONE
 
 
 async def test_update_ip_probes_the_speaker_off_the_event_loop(sonos_player: SonosPlayer) -> None:
