@@ -18,7 +18,7 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
-from music_assistant.helpers.audio import iter_pcm_slices
+from music_assistant.helpers.audio import arriving_audio_format, iter_pcm_slices
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.util import import_module_in_thread
 from music_assistant.models.player import PlayerMedia
@@ -446,7 +446,7 @@ class SendspinPlaybackSession:
             elif rate := self._get_member_sample_rate(client.client_id):
                 member_rates.append(rate)
         return self._pick_session_sample_rate(
-            start_streamdetails.audio_format.sample_rate, member_rates
+            arriving_audio_format(start_streamdetails).sample_rate, member_rates
         )
 
     async def add_member(self, player_id: str) -> None:
@@ -763,6 +763,7 @@ class SendspinPlaybackSession:
                 [client.client_id for client in self.player.api.group.clients]
             )
             self._pcm_format, self._sendspin_pcm_format = self._select_session_pcm_formats()
+            self.player.flow_session = self
             self._queue_id = media.source_id
             self._queue_session_id = get_media_session_id(media)
             self._pipeline_config_cache.clear()
@@ -1422,7 +1423,8 @@ class SendspinPlaybackSession:
         ]
         streamdetails = self._start_streamdetails
         sample_rate = self._pick_session_sample_rate(
-            streamdetails.audio_format.sample_rate if streamdetails else 0, member_rates
+            arriving_audio_format(streamdetails).sample_rate if streamdetails else 0,
+            member_rates,
         )
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_F32LE,
@@ -1442,7 +1444,8 @@ class SendspinPlaybackSession:
         """
         Return the session sample rate for a source rate and the rates the members play.
 
-        :param source_rate: The sample rate of the first item, 0 when unknown.
+        :param source_rate: The sample rate the audio of the first item arrives in, 0 when
+            unknown.
         :param member_rates: The rates the members count with, see _get_member_sample_rate.
         """
         if not member_rates:

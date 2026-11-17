@@ -9,8 +9,10 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 
 import numpy as np
+import pytest
 from aiosendspin.models import AudioCodec
-from aiosendspin.models.player import SupportedAudioFormat
+from aiosendspin.models.core import ClientStatePayload
+from aiosendspin.models.player import PlayerStatePayload, SupportedAudioFormat
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.push_stream import (
     _create_resampler_state,
@@ -24,7 +26,14 @@ from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
+from music_assistant.constants import (
+    CONF_FLOW_MODE_SAMPLE_RATE,
+    FLOW_MODE_SAMPLE_RATE_48000,
+    FLOW_MODE_SAMPLE_RATE_96000,
+    FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
+    FLOW_MODE_SAMPLE_RATE_HIGHEST,
+    FLOW_MODE_SAMPLE_RATE_SMART,
+)
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import PlayerMedia
@@ -36,9 +45,16 @@ from music_assistant.providers.sendspin.player import (
 )
 from tests.common import MockProvider, attach_mock, mock_player_mass
 
-if TYPE_CHECKING:
-    import pytest
+_FLOW_MODES = (
+    FLOW_MODE_SAMPLE_RATE_SMART,
+    FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
+    FLOW_MODE_SAMPLE_RATE_48000,
+    FLOW_MODE_SAMPLE_RATE_96000,
+    FLOW_MODE_SAMPLE_RATE_HIGHEST,
+)
+_FLOW_MODE_PAIRS = [(leader, member) for leader in _FLOW_MODES for member in _FLOW_MODES]
 
+if TYPE_CHECKING:
     from music_assistant.models.player_protocol import PlayerProtocol
 
 PLAYER_ID = "client-1"
@@ -47,6 +63,39 @@ FLAC_48K = SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=4
 FLAC_44K = SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=44100, bit_depth=16)
 FLAC_96K = SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=96000, bit_depth=24)
 OPUS_48K = SupportedAudioFormat(codec=AudioCodec.OPUS, channels=2, sample_rate=48000, bit_depth=16)
+# per member, leader first: its formats, its configured format and the format it asks for
+_MEMBER_SET_UPS: dict[
+    str, list[tuple[list[SupportedAudioFormat], str, SupportedAudioFormat | None]]
+] = {
+    "48k leader, 44.1/48k member": [
+        ([FLAC_48K], SENDSPIN_FORMAT_AUTOMATIC, None),
+        ([FLAC_48K, FLAC_44K], SENDSPIN_FORMAT_AUTOMATIC, None),
+    ],
+    "member asks 48k of 96/48k": [
+        ([FLAC_48K], SENDSPIN_FORMAT_AUTOMATIC, None),
+        ([FLAC_96K, FLAC_48K], SENDSPIN_FORMAT_AUTOMATIC, FLAC_48K),
+    ],
+    "member asks 44.1k of 48/44.1k": [
+        ([FLAC_48K], SENDSPIN_FORMAT_AUTOMATIC, None),
+        ([FLAC_48K, FLAC_44K], SENDSPIN_FORMAT_AUTOMATIC, FLAC_44K),
+    ],
+    "hi-res member": [
+        ([FLAC_48K], SENDSPIN_FORMAT_AUTOMATIC, None),
+        ([FLAC_48K, FLAC_96K, FLAC_44K], SENDSPIN_FORMAT_AUTOMATIC, None),
+    ],
+    "hand-picked 48k member of 96/48k": [
+        ([FLAC_48K, FLAC_44K], SENDSPIN_FORMAT_AUTOMATIC, None),
+        ([FLAC_96K, FLAC_48K], "flac:48000:16:2", None),
+    ],
+    "hand-picked 96k leader": [
+        ([FLAC_48K, FLAC_96K], "flac:96000:24:2", None),
+        ([FLAC_48K, FLAC_44K], SENDSPIN_FORMAT_AUTOMATIC, None),
+    ],
+    "lossy leader, hi-res member": [
+        ([OPUS_48K, FLAC_44K], SENDSPIN_FORMAT_AUTOMATIC, None),
+        ([FLAC_96K, FLAC_48K], SENDSPIN_FORMAT_AUTOMATIC, None),
+    ],
+}
 
 
 async def test_session_follows_first_track_rate() -> None:
@@ -325,6 +374,120 @@ async def test_96k_track_lifts_a_44k_flow_to_48k_as_for_a_lone_player() -> None:
 
     assert await _flow_items_played(leader, [44100, 96000]) == ["0"]
     assert await _flow_items_played(lone_player, [44100, 96000]) == ["0"]
+    assert (await _start_session(leader, 96000))._pcm_format.sample_rate == 48000
+    assert (await _start_session(lone_player, 96000))._pcm_format.sample_rate == 48000
+
+
+async def test_predicted_rate_is_the_rate_a_session_start_picks() -> None:
+    """For every member set-up and rate setting, the predicted rate is what a session start picks."""
+    for name, members in _MEMBER_SET_UPS.items():
+        for leader_mode, member_mode in _FLOW_MODE_PAIRS:
+            leader = _group_of(members, leader_mode, member_mode)
+            for previous_rate in (44100, 96000):
+                for item_rate in (32000, 44100, 48000, 88200, 96000, 192000):
+                    current = (await _start_session(leader, previous_rate))._pcm_format
+                    item = _flow_item("next", item_rate)
+
+                    predicted = await leader.get_flow_sample_rate(item.streamdetails)
+                    restarts = leader.mass.streams.audio._flow_stream_needs_restart(
+                        cast("Any", item),
+                        current,
+                        sorted({rate for rate, _ in leader.get_supported_sample_rates()}),
+                        leader_mode,
+                        is_first_track=False,
+                        next_flow_sample_rate=predicted,
+                    )
+                    started = (await _start_session(leader, item_rate))._pcm_format.sample_rate
+
+                    case = (name, leader_mode, member_mode, previous_rate, item_rate)
+                    assert predicted == started, case
+                    assert restarts == (
+                        started > current.sample_rate
+                        or (
+                            leader_mode == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
+                            and started != current.sample_rate
+                        )
+                    ), case
+
+
+async def test_fixed_rate_leader_restarts_for_a_rate_a_member_plays() -> None:
+    """A leader fixed at 48 kHz restarts a 48 kHz flow for a 96 kHz track a member plays."""
+    leader, _ = _player([FLAC_96K, FLAC_48K], flow_mode=FLOW_MODE_SAMPLE_RATE_48000)
+    member, _ = _player([FLAC_48K, FLAC_96K], player_id=MEMBER_ID)
+    _group(leader, member)
+
+    assert await _flow_items_played(leader, [48000, 96000]) == ["0"]
+    assert (await _start_session(leader, 96000))._pcm_format.sample_rate == 96000
+    assert await _flow_items_played(leader, [48000, 48000, 44100]) == ["0", "1", "2"]
+
+
+async def test_session_follows_the_rate_the_audio_arrives_in() -> None:
+    """A 96 kHz track that arrives decoded at 48 kHz runs at 48 kHz, and is predicted so."""
+    leader, _ = _player([FLAC_48K])
+    member, member_role = _player([FLAC_48K, FLAC_96K], player_id=MEMBER_ID)
+    _group(leader, member)
+    session = await _start_session(leader, 44100)
+    item = _flow_item("next", 96000)
+    item.streamdetails.decoded_audio_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16
+    )
+
+    predicted = await leader.get_flow_sample_rate(item.streamdetails)
+    session._start_streamdetails = item.streamdetails
+    await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
+    pcm_format, _ = session._select_session_pcm_formats()
+
+    assert member_role.preferred_format == SendspinAudioFormat(96000, 24, 2)
+    assert pcm_format.sample_rate == 48000
+    assert predicted == 48000
+
+
+async def test_playback_start_binds_the_flow_to_its_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A playback start makes its session the one the flow streams of its leader ask."""
+    leader, _ = _player([FLAC_48K])
+    session = _session(leader, sample_rate=44100)
+    leader.flow_session = SendspinPlaybackSession(leader)
+    push_stream = MagicMock()
+    push_stream.set_live_source.side_effect = RuntimeError("stop here")
+    monkeypatch.setattr(session, "_create_push_stream", MagicMock(return_value=push_stream))
+    media = PlayerMedia(uri="track-1", source_id="queue-1", queue_item_id="item-1")
+
+    with pytest.raises(RuntimeError):
+        await session._run_playback(media)
+
+    assert leader.flow_session is session
+
+
+async def test_member_asking_48k_keeps_the_flow_at_96k_tracks() -> None:
+    """A member that asks for 48 kHz of its 96/48 kHz formats does not restart 96 kHz tracks."""
+    leader, _ = _player([FLAC_48K])
+    member, member_role = _player([FLAC_96K, FLAC_48K], player_id=MEMBER_ID)
+    member_role.on_initial_client_state(
+        ClientStatePayload(player=PlayerStatePayload(format=FLAC_48K))
+    )
+    _group(leader, member)
+
+    assert await _flow_items_played(leader, [48000, 96000, 96000]) == ["0", "1", "2"]
+    assert await _flow_items_played(leader, [96000, 96000]) == ["0", "1"]
+
+
+async def test_flow_follows_the_session_handed_to_a_new_leader() -> None:
+    """After its leader leaves, a flow restarts by the rates of the group that plays on."""
+    leader, _ = _player([FLAC_48K])
+    member, _ = _player([FLAC_48K, FLAC_44K], player_id=MEMBER_ID)
+    _group(leader, member)
+    session = await _start_session(leader, 44100)
+    _group(leader)
+    _group(member)
+    await session.transfer_to(member)
+    member.playback_session = session
+    leader.playback_session = SendspinPlaybackSession(leader)
+
+    items = await _flow_items_played(leader, [44100, 44100, 44100], flow_rate=44100)
+
+    assert items == ["0", "1", "2"]
 
 
 async def test_group_of_48k_members_restarts_as_its_leader_alone() -> None:
@@ -335,7 +498,7 @@ async def test_group_of_48k_members_restarts_as_its_leader_alone() -> None:
     session = _session(leader, sample_rate=44100)
     await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
     pcm_format, _ = session._select_session_pcm_formats()
-    leader.playback_session = session
+    leader.flow_session = session
     audio = leader.mass.streams.audio
     supported = sorted({rate for rate, _ in leader.get_supported_sample_rates()})
 
@@ -372,6 +535,7 @@ def _player(
     *,
     player_id: str = PLAYER_ID,
     preferred_format: str = SENDSPIN_FORMAT_AUTOMATIC,
+    flow_mode: str = FLOW_MODE_SAMPLE_RATE_SMART,
 ) -> tuple[SendspinPlayer, PlayerV1Role]:
     """Build an un-initialized SendspinPlayer around a real player role."""
     client = MagicMock(client_id=player_id)
@@ -389,7 +553,7 @@ def _player(
     )
     config_values = {
         CONF_PREFERRED_SENDSPIN_FORMAT: preferred_format,
-        CONF_FLOW_MODE_SAMPLE_RATE: FLOW_MODE_SAMPLE_RATE_SMART,
+        CONF_FLOW_MODE_SAMPLE_RATE: flow_mode,
     }
     player = SendspinPlayer.__new__(SendspinPlayer)
     player._protocol_id = player_id
@@ -405,6 +569,35 @@ def _player(
     player.mass.streams.audio = audio
     player.mass.players.get_player.return_value = player
     return player, role
+
+
+def _group_of(
+    members: list[tuple[list[SupportedAudioFormat], str, SupportedAudioFormat | None]],
+    leader_mode: str,
+    member_mode: str,
+) -> SendspinPlayer:
+    """
+    Return the leader of a new group of players set up as described, leader first.
+
+    :param members: Per player its formats, its configured format and the format it asks for.
+    :param leader_mode: The sample rate setting of the leader.
+    :param member_mode: The sample rate setting of the other members.
+    """
+    players = []
+    for index, (formats, preferred_format, requested) in enumerate(members):
+        player, role = _player(
+            formats,
+            player_id=f"client-{index}",
+            preferred_format=preferred_format,
+            flow_mode=member_mode if index else leader_mode,
+        )
+        if requested is not None:
+            role.on_initial_client_state(
+                ClientStatePayload(player=PlayerStatePayload(format=requested))
+            )
+        players.append(player)
+    _group(*players)
+    return players[0]
 
 
 def _group(*players: SendspinPlayer) -> None:
@@ -430,14 +623,8 @@ async def _flow_items_played(
     """
     items = [_flow_item(str(index), rate) for index, rate in enumerate(item_rates)]
     if flow_rate is None:
-        leader = cast("SendspinPlayer", protocol)
-        session = SendspinPlaybackSession(leader)
-        session._start_streamdetails = items[0].streamdetails
-        await session._follow_session_sample_rate(
-            [client.client_id for client in leader.api.group.clients]
-        )
-        flow_rate = session._select_session_pcm_formats()[0].sample_rate
-        leader.playback_session = session
+        session = await _start_session(cast("SendspinPlayer", protocol), item_rates[0])
+        flow_rate = session._pcm_format.sample_rate
 
     async def _load_next(_queue_id: str, current_id: str) -> Any:
         if (index := int(current_id) + 1) < len(items):
@@ -473,6 +660,24 @@ async def _flow_items_played(
     ):
         pass
     return [entry.queue_item_id for entry in queue_data.flow_mode_stream_log]
+
+
+async def _start_session(leader: SendspinPlayer, sample_rate: int) -> SendspinPlaybackSession:
+    """
+    Start the Sendspin session of a leader for a first item of a sample rate, as playback does.
+
+    :param leader: The player that leads the group.
+    :param sample_rate: The sample rate of the first item.
+    """
+    session = SendspinPlaybackSession(leader)
+    session._start_streamdetails = _flow_item("first", sample_rate).streamdetails
+    await session._follow_session_sample_rate(
+        [client.client_id for client in leader.api.group.clients]
+    )
+    session._pcm_format, session._sendspin_pcm_format = session._select_session_pcm_formats()
+    leader.playback_session = session
+    leader.flow_session = session
+    return session
 
 
 def _flow_item(item_id: str, sample_rate: int) -> SimpleNamespace:

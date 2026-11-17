@@ -5947,7 +5947,9 @@ class StreamsAudio:
         # everything to the chosen rate (no restart); bit_perfect restarts on any
         # mismatch; anything else falls through to smart-anchor behavior so
         # unknown/legacy config values don't silently pin the flow forever.
-        if flow_mode_sample_rate_conf in (
+        # A fixed mode only fixes the rate of the protocol's own output, so a protocol
+        # that picks the flow rate itself restarts as in smart mode.
+        if next_flow_sample_rate is None and flow_mode_sample_rate_conf in (
             FLOW_MODE_SAMPLE_RATE_48000,
             FLOW_MODE_SAMPLE_RATE_96000,
             FLOW_MODE_SAMPLE_RATE_HIGHEST,
