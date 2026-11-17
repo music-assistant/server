@@ -113,8 +113,9 @@ For every new minor version `X.Y`:
    on `dev` that moves a provider out of the server needs this line once `X.(Y-1).0` is
    out (`scripts/check_moved_providers.py`), so it waits until the line is added.
 2. **Before the stable release:** open `https://catalog.music-assistant.io/v1/X.Y.json`
-   (for example `v1/2.11.json`). Release `X.Y.0` only when it loads, its `server_line` is
-   `X.Y`, and every provider with `status` `listed` has a `latest` version.
+   (for example `v1/2.11.json`) and `v1/beta.json`; until now both lines run in the beta
+   image. Release `X.Y.0` only when `v1/X.Y.json` loads, its `server_line` is `X.Y`, and
+   every provider with a `latest` version in `v1/beta.json` has one there too.
 3. **After the stable release:** once `ghcr.io/music-assistant/server:X.Y` exists, set the
    image of the `X.Y` line to it.
 4. **Stable release of the next minor version:** mark the `X.Y` line `frozen` (2.11 is
