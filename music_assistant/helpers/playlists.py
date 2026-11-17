@@ -721,12 +721,19 @@ def playlist_block_move_steps(
 def _resolve_provider_mappings(item: PlaylistItem, mass: MusicAssistant) -> set[ProviderMapping]:
     """Resolve provider mappings from playlist item, checking loaded providers."""
     provider_mappings: set[ProviderMapping] = set()
+    loaded_instances = {
+        p.instance_id for p in item.providers if p.instance_id and mass.get_provider(p.instance_id)
+    }
     for prov_info in item.providers:
         prov = None
         if prov_info.instance_id:
             prov = mass.get_provider(prov_info.instance_id)
         if not prov:
             prov = mass.get_provider(prov_info.domain)
+            # item ids can differ per instance, so don't move this one onto an
+            # instance that has its own line in this entry
+            if prov and prov.instance_id in loaded_instances:
+                prov = None
         audio_format = AudioFormat(
             content_type=ContentType.try_parse(prov_info.content_type),
             sample_rate=prov_info.sample_rate,
@@ -1011,17 +1018,17 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     ):
         metadata["mb_track"] = mb_track
 
-    # collect one provider mapping per domain (highest quality)
+    # collect one provider mapping per instance (highest quality): instances of one
+    # domain can belong to different users, who each need their own mapping to play it
     prov_infos: list[ProviderMappingInfo] = []
-    seen_domains: set[str] = set()
+    seen_instances: set[str] = set()
     for prov_mapping in sorted_mappings:
-        domain = prov_mapping.provider_domain
-        if domain in seen_domains:
+        if prov_mapping.provider_instance in seen_instances:
             continue
-        seen_domains.add(domain)
+        seen_instances.add(prov_mapping.provider_instance)
         prov_infos.append(
             ProviderMappingInfo(
-                domain=domain,
+                domain=prov_mapping.provider_domain,
                 item_id=prov_mapping.item_id,
                 instance_id=prov_mapping.provider_instance,
                 content_type=prov_mapping.audio_format.content_type.value,

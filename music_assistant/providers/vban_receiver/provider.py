@@ -129,6 +129,7 @@ class VBANReceiverProvider(PluginProvider):
             exclusive=True,
             allow_external_trigger=False,
             can_initiate=True,
+            allow_audio_analysis=True,
         )
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:

@@ -39,7 +39,7 @@ class AuthProvider(Provider):
 
     @property
     def icon(self) -> str:
-        """Return the icon of the sign-in button: an mdi icon name or a preset slug."""
+        """Return the icon of the sign-in button: an icon name or a preset slug."""
         return self.manifest.icon or DEFAULT_SIGN_IN_ICON
 
     @property

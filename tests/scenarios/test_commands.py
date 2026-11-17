@@ -17,7 +17,8 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed, RateLimited, ResourceBusyError
 from music_assistant_models.player import PlayerMedia, PlayerSource
 
-from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
+from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, DEFAULT_POWER_ON_STARTUP_TIME
+from music_assistant.controllers.players.power import EXTERNAL_POWER_OFF_STOP_DELAY
 from music_assistant.models.music_provider import MusicProvider
 from tests.common import record_lock_waits
 
@@ -346,8 +347,8 @@ async def test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it
     """
     A queue moved to a player switched off at its plug switches the plug on first, holding nothing.
 
-    The device takes its time to come back. A seek on the source meanwhile runs at once, and
-    once the device is back the queue moves there and plays.
+    The player takes its time to start up. A seek on the source meanwhile runs at once, and
+    once the player has started up the queue moves there and plays.
     """
     _den, den_id, _kitchen, _kitchen_id = await _two_speakers(scenario)
     squeezelite = await scenario.add_provider("squeezelite")
@@ -356,8 +357,10 @@ async def test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it
     bathroom_id = scenario.single_player(pi).player_id
     plug = await scenario.add_power_control("switch.bathroom_plug", "Bathroom plug", powered=True)
     await scenario.configure_player(bathroom_id, power_control=plug.control_id)
+    await scenario.configure_player(bathroom_id, power_control_cuts_power=True)
     await scenario.switch(plug, False)
     await scenario.unregister(pi)
+    await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY)
     await scenario.idle()
     await scenario.play(den_id)
     transfer = await scenario.command(
@@ -373,8 +376,9 @@ async def test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it
     await seek
     assert waits == []
     await scenario.register(pi)
-    # the power on looks for the device every 0.5 s
-    await scenario.advance(1)
+    await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME - 1)
+    assert not transfer.done()
+    await scenario.advance(2)
     await transfer
     await scenario.idle()
 

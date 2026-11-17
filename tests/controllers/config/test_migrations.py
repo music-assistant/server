@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
     CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
@@ -19,6 +20,7 @@ from music_assistant.controllers.config.migrations import (
     PROVIDER_SETUP_FLOW_DEFAULTS,
     PROVIDER_SETUP_FLOW_KEYS,
     _migrate_airplay_apple_power_control,
+    _migrate_airplay_sync_adjust_sign,
     _migrate_apple_music_sync_schedule,
     _migrate_artist_catalogue_selection,
     _migrate_bluesound_http_profile,
@@ -30,6 +32,8 @@ from music_assistant.controllers.config.migrations import (
     _migrate_player_icons,
     _migrate_player_setup_data,
     _migrate_raumfeld_icy_basic,
+    _migrate_remove_retired_builtin_providers,
+    _migrate_stereo_pair_player_type,
     _migrate_unrenamed_player_names,
     migrate,
     migrate_connected_player_plugins,
@@ -1472,6 +1476,91 @@ def test_migrate_raumfeld_icy_basic_survives_malformed_players() -> None:
     assert data["players"]["raumfeld_bar"] == "broken"
 
 
+def test_migrate_airplay_sync_adjust_sign_negates_once() -> None:
+    """Every stored AirPlay sync adjust is negated once; garbage and other protocols stay."""
+    data: dict[str, Any] = {
+        "players": {
+            # a record the split could not convert keeps its values on the player
+            "ap_unsplit": {"provider": "airplay", "values": {"sync_adjust": -120}},
+            "sonos_1": {"provider": "sonos", "values": {"icon": "speaker"}},
+            "broken": "not a mapping",
+        },
+        "player_protocols": {
+            "ap_tv": {"provider": "airplay", "player_id": "pl_a", "values": {"sync_adjust": -150}},
+            "ap_late": {"provider": "airplay", "player_id": "pl_b", "values": {"sync_adjust": 90}},
+            "ap_zero": {"provider": "airplay", "values": {"sync_adjust": 0}},
+            "ap_none": {"provider": "airplay", "values": {"sync_adjust": None}},
+            "ap_text": {"provider": "airplay", "values": {"sync_adjust": "-50"}},
+            "ap_unset": {"provider": "airplay", "values": {"output_codec": "flac"}},
+            "ap_no_values": {"provider": "airplay"},
+            "ap_bad_values": {"provider": "airplay", "values": ["sync_adjust"]},
+            "ap_no_provider": {"values": {"sync_adjust": -30}},
+            "sq_amp": {"provider": "squeezelite", "values": {"sync_adjust": 30}},
+        },
+    }
+    expected = deepcopy(data)
+    expected["players"]["ap_unsplit"]["values"]["sync_adjust"] = 120
+    expected["player_protocols"]["ap_tv"]["values"]["sync_adjust"] = 150
+    expected["player_protocols"]["ap_late"]["values"]["sync_adjust"] = -90
+    expected[CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED] = True
+
+    assert _migrate_airplay_sync_adjust_sign(data) is True
+    assert data == expected
+
+    # the marker makes a second run a no-op
+    assert _migrate_airplay_sync_adjust_sign(data) is False
+    assert data == expected
+
+
+def test_migrate_airplay_sync_adjust_sign_claims_the_marker_without_airplay() -> None:
+    """A config without AirPlay is marked too, so an AirPlay value stored later keeps its sign."""
+    data: dict[str, Any] = {"players": "broken", "player_protocols": None}
+
+    assert _migrate_airplay_sync_adjust_sign(data) is True
+    assert data[CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED] is True
+
+    data["player_protocols"] = {"ap_tv": {"provider": "airplay", "values": {"sync_adjust": 100}}}
+    assert _migrate_airplay_sync_adjust_sign(data) is False
+    assert data["player_protocols"]["ap_tv"]["values"]["sync_adjust"] == 100
+
+
+async def test_migrate_negates_the_airplay_sync_adjust_of_a_config_from_before_the_split() -> None:
+    """A config from before the split gets the AirPlay sync adjust negated in the split records."""
+    data: dict[str, Any] = {
+        "players": {
+            # an AirPlay device without another provider
+            "ap_tv": {
+                "provider": "airplay",
+                "player_type": "player",
+                "values": {"sync_adjust": -150, "hide_in_ui": True},
+            },
+            # an AirPlay output of a Sonos speaker
+            "sonos_1": {"provider": "sonos", "player_type": "player", "values": {}},
+            "ap_sonos": {
+                "provider": "airplay",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "sonos_1", "sync_adjust": 40},
+            },
+            "sq_amp": {
+                "provider": "squeezelite",
+                "player_type": "player",
+                "values": {"sync_adjust": 30},
+            },
+        }
+    }
+
+    assert await migrate(data) is True
+
+    protocols = data["player_protocols"]
+    assert protocols["ap_tv"]["values"]["sync_adjust"] == 150
+    assert protocols["ap_sonos"]["values"]["sync_adjust"] == -40
+    assert protocols["sq_amp"]["values"]["sync_adjust"] == 30
+    assert not [record for record in data["players"].values() if "sync_adjust" in record["values"]]
+    stored = deepcopy(data)
+    assert await migrate(data) is False
+    assert data == stored
+
+
 async def test_migrate_artist_catalogue_selection_moves_to_library_album_tracks() -> None:
     """A stored artist selection that listed the whole catalogue plays the library albums."""
     for stored in ("all_tracks", "all_album_tracks"):
@@ -1584,3 +1673,88 @@ def test_migrate_provider_setup_data_moves_opensubsonic_legacy_auth() -> None:
     assert second["values"] == {}
     assert second["setup_data"]["enable_legacy_auth"] is True
     assert migrate_provider_setup_data(data, _fake_encrypt) is False
+
+
+async def test_migrate_removes_the_retired_builtin_provider_configs() -> None:
+    """The configs of the retired builtin providers go, every other provider config stays."""
+    data: dict[str, Any] = {
+        CONF_PLAYER_SPLIT_SESSION_ONLY: True,
+        CONF_PLAYER_SPLIT_TREE: True,
+        "providers": {
+            "builtin_player": {"domain": "builtin_player", "type": "player", "values": {}},
+            "universal_player": {"domain": "universal_player", "type": "player", "values": {}},
+            # a community provider that is not installed keeps its settings
+            "community_provider--a": {
+                "domain": "community_provider",
+                "type": "music",
+                "values": {"username": "me"},
+            },
+            "sonos": {"domain": "sonos", "type": "player", "values": {}},
+        },
+    }
+    kept = deepcopy({key: data["providers"][key] for key in ("community_provider--a", "sonos")})
+
+    await migrate(data)
+
+    assert data["providers"] == kept
+    # a second run has nothing left to remove
+    assert _migrate_remove_retired_builtin_providers(data) is False
+    assert await migrate(data) is False
+    assert data["providers"] == kept
+
+
+def test_migrate_remove_retired_builtin_providers_leaves_other_data_alone() -> None:
+    """Settings without a retired provider config, or with malformed ones, are left as they are."""
+    cases: list[dict[str, Any]] = [
+        {},
+        {"providers": "broken"},
+        {"providers": None},
+        {"providers": {}},
+        {
+            "providers": {
+                "sonos": {"domain": "sonos", "type": "player"},
+                "broken": "builtin_player",
+                "no_domain": {"type": "player", "values": {}},
+                "odd_domain": {"domain": ["universal_player"]},
+                "none_domain": {"domain": None},
+            }
+        },
+    ]
+    for data in cases:
+        before = deepcopy(data)
+        assert _migrate_remove_retired_builtin_providers(data) is False
+        assert data == before
+
+
+def test_migrate_stereo_pair_player_type_stores_a_multi_channel_player() -> None:
+    """A player stored as a stereo pair becomes a multi-channel player; other types stay."""
+    data: dict[str, Any] = {
+        "players": {
+            "cast_pair": {"provider": "chromecast", "player_type": "stereo_pair"},
+            "cast_speaker": {"provider": "chromecast", "player_type": "player"},
+            "cast_group": {"provider": "chromecast", "player_type": "group"},
+            "no_type": {"provider": "sonos"},
+        }
+    }
+    players = data["players"]
+
+    assert _migrate_stereo_pair_player_type(data) is True
+    assert players["cast_pair"]["player_type"] == "multi_channel"
+    assert players["cast_speaker"]["player_type"] == "player"
+    assert players["cast_group"]["player_type"] == "group"
+    assert "player_type" not in players["no_type"]
+
+    assert _migrate_stereo_pair_player_type(data) is False
+
+
+def test_migrate_stereo_pair_player_type_survives_malformed_players() -> None:
+    """Malformed player configs are skipped without raising."""
+    cases: list[dict[str, Any]] = [
+        {},
+        {"players": "broken"},
+        {"players": {"cast_pair": "broken", "cast_other": {"player_type": 1}}},
+    ]
+    for data in cases:
+        before = deepcopy(data)
+        assert _migrate_stereo_pair_player_type(data) is False
+        assert data == before

@@ -486,6 +486,8 @@ class MetadataEnrichmentMixin:
                 album.metadata.update(_without_description(prov_item.metadata))
                 # backfill identifiers (e.g. barcode) missing on a sparse library add
                 album.external_ids.update(prov_item.external_ids)
+                if not album.artists and prov_item.artists:
+                    album.artists = UniqueList(prov_item.artists)
                 if album.year is None and prov_item.year:
                     album.year = prov_item.year
                 if album.album_type == AlbumType.UNKNOWN:

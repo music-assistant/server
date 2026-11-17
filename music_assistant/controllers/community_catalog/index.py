@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from music_assistant.controllers.community_catalog.store import CatalogStore
     from music_assistant.mass import MusicAssistant
 
-INDEX_URL: Final = "https://music-assistant.github.io/community-catalog/v1/{line}.json"
+INDEX_URL: Final = "https://catalog.music-assistant.io/v1/{line}.json"
 _TIMEOUT: Final = ClientTimeout(total=10)
 
 
@@ -64,6 +64,12 @@ class IndexClient:
             async with self.mass.http_session.get(
                 url, headers=headers, timeout=_TIMEOUT
             ) as response:
+                # the index decides what this server installs, so no hop may go over plain http
+                if any(hop.url.scheme != "https" for hop in (*response.history, response)):
+                    self.logger.warning(
+                        "Could not fetch the community catalog from %s: not served over https", url
+                    )
+                    return None
                 if response.status == HTTPStatus.NOT_MODIFIED:
                     return False
                 response.raise_for_status()

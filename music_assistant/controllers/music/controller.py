@@ -1427,14 +1427,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "WHERE p.media_type IN ('audiobook', 'podcast_episode') "
             "AND p.fully_played = 0 "
             "AND p.seconds_played > 0 "
-            f"AND (p.media_type != 'podcast_episode' OR p.timestamp >= {one_week_ago}) "
+            # an episode shows for a week, or as long as its podcast is in the library
+            f"AND (p.media_type != 'podcast_episode' OR p.timestamp >= {one_week_ago} "
+            f"OR EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
+            "WHERE pm.media_type = 'podcast' AND pm.provider_instance = p.provider "
+            "AND pm.provider_item_id = p.podcast_item_id AND pm.in_library = 1)) "
         )
         query += (
             "AND ( "
             "CASE WHEN p.provider = 'library' THEN "
             f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} m "
             "WHERE m.item_id = p.item_id AND m.media_type = p.media_type "
-            "AND m.available = 1 "
+            # a library row that only holds a dislike is not in the library
+            "AND m.available = 1 AND m.in_library = 1 "
         )
         if not all_users and (user := get_current_user()):
             filter_for_str = available_providers_str
@@ -2274,8 +2279,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         artist_name: str | None = None,
         album_name: str | None = None,
         track_version: str | None = None,
+        library_only: bool = False,
     ) -> Track | None:
-        """Get a track by its name, optionally with artist and album."""
+        """
+        Get a track by its name, optionally with artist and album.
+
+        :param track_name: The name of the track.
+        :param artist_name: The name of (one of) the track's artists.
+        :param album_name: The name of the track's album.
+        :param track_version: The version of the track, taken from its name when omitted.
+        :param library_only: Look in the library only, without asking any music provider.
+        """
         if track_version is None:
             track_name, version = parse_title_and_version(track_name)
         else:
@@ -2284,6 +2298,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         search_result = await self.mass.music.search(
             search_query=search_query,
             media_types=[MediaType.TRACK],
+            providers=["library"] if library_only else None,
         )
         for allow_item_mapping in (False, True):
             for search_track in search_result.tracks:
@@ -2327,6 +2342,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     artist_name=artist_name,
                     album_name=None,
                     track_version=track_version,
+                    library_only=library_only,
                 )
         # try to handle case where multiple artists are given as single string
         if artist_name and (artists := split_artists(artist_name, True)) and len(artists) > 1:
@@ -2336,6 +2352,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     artist_name=single_artist.split(splitter)[0].strip(),
                     album_name=None,
                     track_version=track_version,
+                    library_only=library_only,
                 )
         # allow non-exact album match as fallback
         if album_name:
@@ -2344,6 +2361,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 artist_name=artist_name,
                 album_name=None,
                 track_version=track_version,
+                library_only=library_only,
             )
         # no match found
         return None
