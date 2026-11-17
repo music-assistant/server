@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 import pychromecast
 from music_assistant_models.enums import (
+    ChannelLayout,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -102,7 +103,8 @@ class ChromecastPlayer(PlayerProtocol):
         """Init."""
         super().__init__(provider, protocol_id)
         if cast_info.is_audio_group and cast_info.is_multichannel_group:
-            player_type = PlayerType.STEREO_PAIR
+            player_type = PlayerType.MULTI_CHANNEL
+            self._attr_channel_layout = ChannelLayout.STEREO
         elif cast_info.is_audio_group:
             player_type = PlayerType.GROUP
         else:
@@ -662,7 +664,8 @@ class ChromecastPlayer(PlayerProtocol):
         )
         # handle stereo pairs
         if self.cast_info.is_multichannel_group:
-            self._attr_type = PlayerType.STEREO_PAIR
+            self._attr_type = PlayerType.MULTI_CHANNEL
+            self._attr_channel_layout = ChannelLayout.STEREO
             self._attr_group_members.clear()
         # handle cast groups
         if self.cast_info.is_audio_group and not self.cast_info.is_multichannel_group:

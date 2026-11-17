@@ -191,7 +191,7 @@ SENDSPIN_FORMAT_AUTOMATIC = "automatic"
 # Player types that can render a line-in, so groups and pairs stay selectable.
 SOURCE_AUTOSTART_TARGET_TYPES = {
     PlayerType.PLAYER,
-    PlayerType.STEREO_PAIR,
+    PlayerType.MULTI_CHANNEL,
     PlayerType.GROUP,
 }
 

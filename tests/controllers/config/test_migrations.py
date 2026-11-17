@@ -33,6 +33,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_player_setup_data,
     _migrate_raumfeld_icy_basic,
     _migrate_remove_retired_builtin_providers,
+    _migrate_stereo_pair_player_type,
     _migrate_unrenamed_player_names,
     migrate,
     migrate_connected_player_plugins,
@@ -1722,4 +1723,38 @@ def test_migrate_remove_retired_builtin_providers_leaves_other_data_alone() -> N
     for data in cases:
         before = deepcopy(data)
         assert _migrate_remove_retired_builtin_providers(data) is False
+        assert data == before
+
+
+def test_migrate_stereo_pair_player_type_stores_a_multi_channel_player() -> None:
+    """A player stored as a stereo pair becomes a multi-channel player; other types stay."""
+    data: dict[str, Any] = {
+        "players": {
+            "cast_pair": {"provider": "chromecast", "player_type": "stereo_pair"},
+            "cast_speaker": {"provider": "chromecast", "player_type": "player"},
+            "cast_group": {"provider": "chromecast", "player_type": "group"},
+            "no_type": {"provider": "sonos"},
+        }
+    }
+    players = data["players"]
+
+    assert _migrate_stereo_pair_player_type(data) is True
+    assert players["cast_pair"]["player_type"] == "multi_channel"
+    assert players["cast_speaker"]["player_type"] == "player"
+    assert players["cast_group"]["player_type"] == "group"
+    assert "player_type" not in players["no_type"]
+
+    assert _migrate_stereo_pair_player_type(data) is False
+
+
+def test_migrate_stereo_pair_player_type_survives_malformed_players() -> None:
+    """Malformed player configs are skipped without raising."""
+    cases: list[dict[str, Any]] = [
+        {},
+        {"players": "broken"},
+        {"players": {"cast_pair": "broken", "cast_other": {"player_type": 1}}},
+    ]
+    for data in cases:
+        before = deepcopy(data)
+        assert _migrate_stereo_pair_player_type(data) is False
         assert data == before
