@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer">
+    <title>Signing in</title>
+    <link rel="stylesheet" href="../resources/common.css">
+    <style>
+        body {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <p id="message">Completing the sign-in...</p>
+    <script>
+        const code = {CODE};
+        const state = {STATE};
+        // hand the one-time code only to a window of this server's own origin
+        if (window.opener && !window.opener.closed) {
+            window.opener.postMessage({ type: "ma-auth-code", code, state }, window.location.origin);
+            window.close();
+        }
+        document.getElementById("message").textContent =
+            "The sign-in is complete. You can close this window.";
+    </script>
+</body>
+</html>

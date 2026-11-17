@@ -63,10 +63,13 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
 )
 from music_assistant.controllers.webserver.helpers.login_flow import (
     AUTH_CODE_RE,
+    MAX_CLIENT_STATE_LENGTH,
     PKCE_CHALLENGE_RE,
+    AuthorizationCodeStore,
     AuthTransport,
     ExternalIdentity,
     LoginFlowError,
+    LoginPurpose,
     PendingLogin,
     PendingLoginStore,
     RedirectTarget,
@@ -163,6 +166,7 @@ class AuthenticationManager:
         # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()
         self.pending_logins = PendingLoginStore()
+        self.authorization_codes = AuthorizationCodeStore()
         self._auth_exchange_rate_limiter = LoginRateLimiter(subject="client")
         # Serialises the read-modify-write of the user access filters
         self._user_filter_lock = asyncio.Lock()
@@ -1138,6 +1142,9 @@ class AuthenticationManager:
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         redirect_target: str = "server",
+        client_state: str | None = None,
+        device_name: str | None = None,
+        purpose: str = "login",
     ) -> dict[str, str | None]:
         """
         Get OAuth authorization URL for authentication.
@@ -1148,11 +1155,16 @@ class AuthenticationManager:
         :param provider_id: The provider ID (e.g., "hass").
         :param return_url: URL to redirect to after OAuth completes.
         :param code_challenge: PKCE code challenge (unpadded base64url SHA-256) of the
-            client's code verifier, which auth/exchange checks; only with redirect_target "app".
+            client's code verifier, which auth/exchange checks. With a code_challenge the
+            sign-in returns a one-time code instead of an access token.
         :param code_challenge_method: Method of code_challenge, only "S256" is supported.
         :param redirect_target: Where the browser returns to: "server" (default), or "app"
             for the remote app, which is only allowed over Remote Access, requires a
             code_challenge and is completed with auth/exchange.
+        :param client_state: The client's own state, echoed back to return_url as state
+            (at most 256 characters).
+        :param device_name: Optional device name for the access token (e.g., "iPhone 15").
+        :param purpose: What the sign-in is for, only "login" is supported.
         :return: Dictionary with authorization_url, the state of the sign-in and when it
             expires (ISO 8601), or authorization_url None plus an error when the request is
             invalid or the provider does not support it.
@@ -1180,11 +1192,16 @@ class AuthenticationManager:
             return {"authorization_url": None, "error": "Invalid code_challenge"}
         if redirect_target not in ("server", "app"):
             return {"authorization_url": None, "error": "Invalid redirect_target"}
-        if code_challenge and redirect_target != "app":
+        if client_state is not None and len(client_state) > MAX_CLIENT_STATE_LENGTH:
+            return {"authorization_url": None, "error": "Invalid client_state"}
+        if purpose == "link":
+            # linking needs the identity store of the accounts work, which is not there yet
             return {
                 "authorization_url": None,
-                "error": "code_challenge is only supported with redirect_target app",
+                "error": "Linking an identity is not supported yet",
             }
+        if purpose != "login":
+            return {"authorization_url": None, "error": "Invalid purpose"}
 
         if redirect_target == "app":
             if transport is not AuthTransport.REMOTE or not code_challenge:
@@ -1206,6 +1223,8 @@ class AuthenticationManager:
             origin=origin,
             redirect_target=cast("RedirectTarget", redirect_target),
             code_challenge=code_challenge,
+            client_state=client_state,
+            device_name=device_name,
         )
         if not started:
             return {
@@ -1230,6 +1249,9 @@ class AuthenticationManager:
         origin: str | None = None,
         redirect_target: RedirectTarget = "server",
         code_challenge: str | None = None,
+        purpose: LoginPurpose = "login",
+        client_state: str | None = None,
+        device_name: str | None = None,
     ) -> tuple[str, PendingLogin] | None:
         """
         Start a sign-in with a redirect provider and return its authorization URL.
@@ -1240,6 +1262,9 @@ class AuthenticationManager:
         :param origin: The origin (scheme and host) the client says it used to reach the server.
         :param redirect_target: Where the browser returns to; "app" must be validated first.
         :param code_challenge: The client's (validated) PKCE S256 code challenge, if any.
+        :param purpose: What the sign-in is for.
+        :param client_state: The client's (validated) own state, echoed back to return_url.
+        :param device_name: The device name for the access token of the sign-in.
         :return: The authorization URL and the started sign-in, or None when the provider
             does not exist, needs no redirect, is not reachable or the transport offers no
             redirect sign-in.
@@ -1267,6 +1292,9 @@ class AuthenticationManager:
             return_url=return_url,
             client_code_challenge=code_challenge,
             idp_code_verifier=secrets.token_urlsafe(64),
+            purpose=purpose,
+            client_state=client_state,
+            device_name=device_name,
         )
         auth_url = None
         try:
@@ -1286,8 +1314,9 @@ class AuthenticationManager:
         :param state: OAuth state parameter.
         """
         pending = self.pending_logins.pop(state)
-        # a sign-in that returns to the app is completed by the app itself (auth/exchange)
-        if not pending or pending.redirect_target != "server":
+        # a sign-in that returns to the app is completed by the app itself (auth/exchange),
+        # one with a code challenge never hands out its access token here
+        if not pending or pending.redirect_target != "server" or pending.client_code_challenge:
             return AuthResult(success=False, error="Invalid or expired state parameter")
         provider = self._get_auth_provider_by_instance_id(pending.provider_id)
         if not provider:
@@ -1305,15 +1334,49 @@ class AuthenticationManager:
             provider_id=provider.sign_in_method_id,
         )
 
+    async def issue_authorization_code(self, pending: PendingLogin, code: str) -> str:
+        """
+        Complete a sign-in the client started with a code challenge, for a one-time code.
+
+        The client exchanges the one-time code with auth/exchange or POST /auth/token.
+
+        :param pending: The sign-in the browser returned for, taken from the pending sign-ins.
+        :param code: The authorization code the identity provider returned.
+        :raises AuthenticationFailed: If the sign-in can not be completed.
+        :raises RateLimited: If too many one-time codes are open.
+        """
+        if (
+            pending.purpose != "login"
+            or pending.redirect_target != "server"
+            or not pending.client_code_challenge
+        ):
+            raise AuthenticationFailed("This sign-in can not be completed here")
+        provider = self._get_auth_provider_by_instance_id(pending.provider_id)
+        if not provider:
+            raise AuthenticationFailed("The login provider of this sign-in is not available")
+        if not AUTH_CODE_RE.fullmatch(code):
+            raise AuthenticationFailed("Invalid authorization code")
+        user = await self._complete_redirect_sign_in(provider, pending, {"code": code})
+        return self.authorization_codes.issue(
+            pending.state,
+            user.user_id,
+            pending.client_code_challenge,
+            purpose=pending.purpose,
+            device_name=pending.device_name,
+        )
+
     @api_command("auth/exchange", authenticated=False)
     async def exchange_authorization_code(
         self, state: str, code: str, code_verifier: str, device_name: str | None = None
     ) -> dict[str, Any] | AuthFailure:
         """
-        Complete a sign-in that returned to the remote app, for an access token.
+        Complete a sign-in that was started with a code challenge, for an access token.
+
+        The code is the one-time code the sign-in returned with, or for a sign-in that
+        returned to the remote app, the authorization code of the identity provider.
 
         :param state: The state of the sign-in, as returned by auth/authorization_url.
-        :param code: The authorization code the browser returned with.
+        :param code: The code the browser returned with.
         :param code_verifier: The PKCE code verifier of the code_challenge the sign-in was
             started with.
         :param device_name: Optional device name for the token (e.g., "iPhone 15").
@@ -1336,9 +1399,15 @@ class AuthenticationManager:
             )
 
         try:
-            user = await self._complete_app_sign_in(
-                self.pending_logins.pop(state), code, code_verifier
-            )
+            # an open sign-in is one that returned to the remote app, else the sign-in
+            # finished at the callback and the code is its one-time code
+            if pending := self.pending_logins.pop(state):
+                user = await self._complete_app_sign_in(pending, code, code_verifier)
+                sign_in_device_name = pending.device_name
+            else:
+                user, sign_in_device_name = await self._redeem_authorization_code(
+                    state, code, code_verifier
+                )
         except AuthenticationFailed as err:
             await self._auth_exchange_rate_limiter.record_failed_attempt(rate_limit_key)
             self.logger.warning("Sign-in exchange failed: %s", err)
@@ -1347,9 +1416,11 @@ class AuthenticationManager:
             await self._auth_exchange_rate_limiter.clear_attempts(rate_limit_key)
 
         token = await self.create_token(
-            user, is_long_lived=False, name=device_name or f"WebSocket Session - {user.username}"
+            user,
+            is_long_lived=False,
+            name=device_name or sign_in_device_name or f"WebSocket Session - {user.username}",
         )
-        self.logger.info("User '%s' signed in through the remote app", user.username)
+        self.logger.info("User '%s' signed in with a code exchange", user.username)
         return {
             "success": True,
             "access_token": token,
@@ -2876,6 +2947,31 @@ class AuthenticationManager:
         if not provider:
             raise AuthenticationFailed("The login provider of this sign-in is not available")
         return await self._complete_redirect_sign_in(provider, pending, {"code": code})
+
+    async def _redeem_authorization_code(
+        self, state: str, code: str, code_verifier: str
+    ) -> tuple[User, str | None]:
+        """
+        Use up the one-time code of a finished sign-in and return its user and device name.
+
+        :param state: The state of the sign-in.
+        :param code: The one-time code the browser returned with.
+        :param code_verifier: The client's PKCE code verifier.
+        :raises AuthenticationFailed: If the code is unknown, expired, used, does not match
+            the state or verifier, is not for a login, or its user may no longer sign in.
+        """
+        entry = self.authorization_codes.redeem(code, state, code_verifier)
+        # unknown, expired, used, mismatched and wrong purpose codes fail alike
+        if entry is None or entry.purpose != "login":
+            raise AuthenticationFailed(
+                "This sign-in is invalid or has expired", translation_key="sign_in_expired"
+            )
+        user = await self.get_user(entry.user_id)
+        if not user:
+            raise AuthenticationFailed(
+                "User account is disabled", translation_key="user_account_disabled"
+            )
+        return user, entry.device_name
 
 
 def _client_rate_limit_key() -> tuple[str, bool]:

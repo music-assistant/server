@@ -160,10 +160,22 @@ def build_code_redirect_url(
     :param token: The auth token to pass along as the ``code`` query parameter.
     :param extra_params: Optional additional query parameters to append.
     """
-    params = f"code={quote(token, safe='')}"
-    if extra_params:
-        for key, value in extra_params.items():
-            params += f"&{quote(key, safe='')}={quote(value, safe='')}"
+    return build_query_redirect_url(return_url, {"code": token, **(extra_params or {})})
+
+
+def build_query_redirect_url(return_url: str, query: dict[str, str]) -> str:
+    """
+    Build a redirect URL with query parameters appended to the query string.
+
+    The parameters are inserted before a possible hash fragment so they end up in the
+    query string rather than inside the fragment.
+
+    :param return_url: The validated destination URL to redirect to.
+    :param query: The query parameters to append.
+    """
+    params = "&".join(
+        f"{quote(key, safe='')}={quote(value, safe='')}" for key, value in query.items()
+    )
 
     if "#" in return_url:
         base_part, hash_part = return_url.split("#", 1)

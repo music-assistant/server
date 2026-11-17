@@ -16,8 +16,11 @@ from music_assistant_models.errors import RateLimited
 from music_assistant.controllers.webserver import websocket_client
 from music_assistant.controllers.webserver.helpers import login_flow
 from music_assistant.controllers.webserver.helpers.login_flow import (
+    AUTHORIZATION_CODE_TTL,
+    MAX_AUTHORIZATION_CODES,
     MAX_PENDING_LOGINS,
     PENDING_LOGIN_TTL,
+    AuthorizationCodeStore,
     AuthTransport,
     PendingLoginStore,
     verify_pkce,
@@ -115,6 +118,87 @@ def test_starts_beyond_the_limit_are_refused_until_some_expire() -> None:
         )
 
     assert list(store._pending) == [pending.state]
+
+
+def test_a_pending_sign_in_carries_what_the_client_started_it_with() -> None:
+    """The purpose, client state and device name of a start are kept, get does not use it up."""
+    store = PendingLoginStore()
+    pending = store.start(
+        "homeassistant",
+        AuthTransport.DIRECT,
+        "http://ma.local/cb",
+        "verifier",
+        client_code_challenge=RFC_7636_CHALLENGE,
+        client_state="client-state",
+        device_name="Phone",
+    )
+
+    assert store.get(pending.state) is pending
+    assert store.pop(pending.state) is pending
+    assert (pending.purpose, pending.client_state, pending.device_name) == (
+        "login",
+        "client-state",
+        "Phone",
+    )
+    assert store.get(pending.state) is None
+
+
+def test_a_one_time_code_is_redeemed_once_with_its_verifier() -> None:
+    """A code is good for one exchange with its state and verifier, and is stored hashed."""
+    store = AuthorizationCodeStore()
+    code = store.issue("w.state", "user-1", RFC_7636_CHALLENGE, device_name="Phone")
+
+    assert len(code) >= 43
+    assert code not in store._codes
+    entry = store.redeem(code, "w.state", RFC_7636_VERIFIER)
+    assert entry is not None
+    assert (entry.user_id, entry.purpose, entry.device_name) == ("user-1", "login", "Phone")
+    assert store.redeem(code, "w.state", RFC_7636_VERIFIER) is None
+
+
+@pytest.mark.parametrize(
+    ("code", "state", "verifier", "age"),
+    [
+        (None, "w.state", "x" * 43, 0),
+        (None, "w.other", RFC_7636_VERIFIER, 0),
+        ("unknown-code", "w.state", RFC_7636_VERIFIER, 0),
+        (None, "w.state", RFC_7636_VERIFIER, AUTHORIZATION_CODE_TTL),
+    ],
+    ids=["wrong_verifier", "wrong_state", "unknown_code", "expired"],
+)
+def test_a_one_time_code_fails_alike_and_is_spent_by_any_attempt(
+    code: str | None, state: str, verifier: str, age: float
+) -> None:
+    """
+    A wrong verifier or state, an unknown code and an expired one fail, and spend the code.
+
+    :param code: The code presented, None for the one that was issued.
+    :param state: The state presented with the code.
+    :param verifier: The code verifier presented with the code.
+    :param age: How many seconds after the code was issued it is presented.
+    """
+    store = AuthorizationCodeStore()
+    issued = store.issue("w.state", "user-1", RFC_7636_CHALLENGE)
+
+    with _monotonic_after(age):
+        assert store.redeem(code or issued, state, verifier) is None
+    if code is None:
+        # a later attempt with the right state and verifier no longer works
+        assert store.redeem(issued, "w.state", RFC_7636_VERIFIER) is None
+
+
+def test_codes_beyond_the_limit_are_refused_until_some_expire() -> None:
+    """Issuing a code at the limit is refused, and accepted again once the open ones expired."""
+    store = AuthorizationCodeStore()
+    for _ in range(MAX_AUTHORIZATION_CODES):
+        store.issue("w.state", "user-1", RFC_7636_CHALLENGE)
+
+    with pytest.raises(RateLimited):
+        store.issue("w.state", "user-1", RFC_7636_CHALLENGE)
+    with _monotonic_after(AUTHORIZATION_CODE_TTL):
+        code = store.issue("w.state", "user-1", RFC_7636_CHALLENGE)
+        assert len(store._codes) == 1
+        assert store.redeem(code, "w.state", RFC_7636_VERIFIER) is not None
 
 
 @pytest.mark.parametrize(

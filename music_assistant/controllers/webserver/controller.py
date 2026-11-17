@@ -87,6 +87,7 @@ from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import (
     build_code_redirect_url,
+    build_query_redirect_url,
     is_allowed_redirect_url,
 )
 from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
@@ -111,11 +112,10 @@ from .helpers.auth_middleware import (
     set_current_user,
     set_impersonated_user,
 )
-from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
+from .helpers.auth_providers import AuthFailure, BuiltinLoginProvider, get_ha_user_role
 from .helpers.login_flow import (
     AuthTransport,
     RedirectTarget,
-    current_auth_origin,
     current_auth_transport,
     get_request_origin,
     set_auth_request_context,
@@ -125,6 +125,7 @@ from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
     from music_assistant_models.auth import User
@@ -132,6 +133,8 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.api import APICommandHandler
+
+    from .helpers.login_flow import PendingLogin
 
 DEFAULT_SERVER_PORT = 8095
 CONF_BASE_URL = "base_url"
@@ -152,6 +155,12 @@ PREVIEW_TOKEN_TTL = 60
 MAX_PREVIEW_TOKENS = 500
 # a bare origin: scheme and host (name, IPv4 or bracketed IPv6) with an optional port
 _ORIGIN_RE: Final = re.compile(r"https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:\d{1,5})?")
+# CORS headers of the sign-in endpoints a client on any origin may call
+_AUTH_CORS_HEADERS: Final = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+}
 
 
 def _get_publish_addresses(
@@ -415,6 +424,9 @@ class WebserverController(CoreController):
         routes.append(("GET", "/auth/providers", self._handle_auth_providers))
         routes.append(("GET", "/auth/authorize", self._handle_auth_authorize))
         routes.append(("GET", "/auth/callback", self._handle_auth_callback))
+        routes.append(("POST", "/auth/callback", self._handle_auth_callback))
+        routes.append(("POST", "/auth/token", self._handle_auth_token))
+        routes.append(("OPTIONS", "/auth/token", self._handle_cors_preflight))
         # add first-time setup routes
         routes.append(("GET", "/setup", self._handle_setup_page))
         routes.append(("POST", "/setup", self._handle_setup))
@@ -1342,15 +1354,21 @@ class WebserverController(CoreController):
                 return web.Response(
                     status=400, text="Sign-in with a redirect is not available over Ingress"
                 )
-            started = await self.auth.get_authorization_url(
-                provider_id, return_url, transport=transport, origin=current_auth_origin.get()
+            query = request.query
+            started = await self.auth.get_auth_url(
+                provider_id,
+                return_url,
+                code_challenge=query.get("code_challenge"),
+                code_challenge_method=query.get("code_challenge_method"),
+                redirect_target=query.get("redirect_target", "server"),
+                client_state=query.get("client_state"),
+                device_name=query.get("device_name"),
+                purpose=query.get("purpose", "login"),
             )
-            if not started:
-                return web.Response(
-                    status=400, text="Provider does not support OAuth or is not configured"
-                )
+            if not started["authorization_url"]:
+                return web.Response(status=400, text=str(started.get("error")))
 
-            return web.json_response({"authorization_url": started[0]})
+            return web.json_response(started)
         except RateLimited:
             return web.Response(status=429, text="Too many sign-ins are pending, try again later")
         except Exception:
@@ -1358,14 +1376,28 @@ class WebserverController(CoreController):
             return web.json_response({"error": "Authorization failed"}, status=500)
 
     async def _handle_auth_callback(self, request: web.Request) -> web.Response:
-        """Handle OAuth callback."""
+        """Handle OAuth callback (GET, or POST for response_mode form_post)."""
         try:
             # the provider comes from the sign-in that state names; a provider_id query of
             # callback URLs from older versions is ignored
-            code = request.query.get("code")
-            state = request.query.get("state")
+            if request.method == "POST":
+                params: Mapping[str, str] = {
+                    key: value
+                    for key, value in (await request.post()).items()
+                    if isinstance(value, str)
+                }
+            else:
+                params = request.query
+            code = params.get("code")
+            state = params.get("state")
 
-            if error := request.query.get("error"):
+            pending = self.auth.pending_logins.get(state) if state else None
+            if pending and pending.redirect_target == "server" and pending.client_code_challenge:
+                return await self._hand_back_authorization_code(
+                    self.auth.pending_logins.pop(pending.state), params
+                )
+
+            if error := params.get("error"):
                 if state:
                     self.auth.pending_logins.pop(state)
                 self.logger.warning("Sign-in not completed, provider returned: %r", error[:100])
@@ -1446,6 +1478,105 @@ class WebserverController(CoreController):
             </html>
             """
             return web.Response(text=error_html, content_type="text/html", status=500)
+
+    async def _hand_back_authorization_code(
+        self, pending: PendingLogin | None, params: Mapping[str, str]
+    ) -> web.Response:
+        """
+        Finish a sign-in the client started with a code challenge, handing back a one-time code.
+
+        The browser returns to the return URL of the sign-in with the one-time code, or with
+        the error, and the client's state. Without a return URL, a page hands the code to the
+        window that opened the sign-in.
+
+        :param pending: The sign-in the browser returned for, None when it expired meanwhile.
+        :param params: The parameters the browser returned with.
+        """
+        if pending is None:
+            return await self._render_error_page("This sign-in is invalid or has expired", 400)
+        if error := params.get("error"):
+            self.logger.warning("Sign-in not completed, provider returned: %r", error[:100])
+            return await self._hand_back_sign_in_error(
+                pending, error, params.get("error_description")
+            )
+        try:
+            code = await self.auth.issue_authorization_code(pending, params.get("code", ""))
+        except AuthenticationFailed as err:
+            self.logger.warning("Sign-in not completed: %s", err)
+            return await self._hand_back_sign_in_error(pending, "access_denied", str(err))
+        except RateLimited as err:
+            return await self._hand_back_sign_in_error(pending, "temporarily_unavailable", str(err))
+
+        if pending.return_url:
+            query = {"code": code}
+            if pending.client_state is not None:
+                query["state"] = pending.client_state
+            location = build_query_redirect_url(pending.return_url, query)
+            return web.Response(
+                status=302, headers={"Location": location, "Cache-Control": "no-store"}
+            )
+        async with aiofiles.open(RESOURCES_DIR.joinpath("auth_code.html")) as f:
+            page = await f.read()
+        client_state = pending.client_state
+        page = page.replace(
+            "{STATE}", "null" if client_state is None else _serialize_script_value(client_state)
+        )
+        page = page.replace("{CODE}", _serialize_script_value(code))
+        return web.Response(
+            text=page, content_type="text/html", headers={"Cache-Control": "no-store"}
+        )
+
+    async def _hand_back_sign_in_error(
+        self, pending: PendingLogin, error: str, description: str | None
+    ) -> web.Response:
+        """
+        Send the browser back to the return URL of a sign-in with an error and the client's state.
+
+        Without a return URL, the error page is shown.
+
+        :param pending: The sign-in that failed.
+        :param error: The OAuth error code.
+        :param description: A description of the error, if any.
+        """
+        if not pending.return_url:
+            return await self._render_error_page("The sign-in was cancelled or refused", 400)
+        query = {"error": error[:100]}
+        if description:
+            query["error_description"] = description[:500]
+        if pending.client_state is not None:
+            query["state"] = pending.client_state
+        location = build_query_redirect_url(pending.return_url, query)
+        return web.Response(status=302, headers={"Location": location})
+
+    async def _handle_auth_token(self, request: web.Request) -> web.Response:
+        """Complete a sign-in that was started with a code challenge, like auth/exchange."""
+        # the peer address keys the rate limit of failed exchanges, like the JSON RPC API
+        set_current_peer_address(request.remote)
+        self._set_auth_request_context(request)
+        try:
+            body = await request.json() if request.can_read_body else None
+        except json.JSONDecodeError, UnicodeDecodeError, LookupError:
+            body = None
+        if not (
+            isinstance(body, dict)
+            and all(isinstance(body.get(key), str) for key in ("state", "code", "code_verifier"))
+            and isinstance(body.get("device_name"), str | None)
+        ):
+            return web.json_response(
+                {"success": False, "error": "Invalid request body"},
+                status=400,
+                headers=_AUTH_CORS_HEADERS,
+            )
+        result = await self.auth.exchange_authorization_code(
+            body["state"], body["code"], body["code_verifier"], body.get("device_name")
+        )
+        status = 200
+        if isinstance(result, AuthFailure):
+            status = 429 if result.translation_key == RateLimited.translation_key else 400
+        locale = _locale_from_request(request)
+        await self.mass.translations.ensure_locale_loaded(locale)
+        headers = {**_AUTH_CORS_HEADERS, "Cache-Control": "no-store"}
+        return self._localized_json_response(result, locale, status=status, headers=headers)
 
     async def _handle_setup_page(self, request: web.Request) -> web.StreamResponse:
         """Handle request for the first-time setup page (the frontend's account step)."""

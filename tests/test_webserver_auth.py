@@ -12,9 +12,11 @@ from functools import partial
 from sqlite3 import IntegrityError
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
+from urllib.parse import urlencode
 
 import pytest
 from aiohttp import web
+from aiohttp.streams import StreamReader
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.api import SuccessResultMessage
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
@@ -1838,12 +1840,10 @@ async def test_get_auth_url_returns_to_the_app_over_remote_access(
             True,
             "Invalid code_challenge",
         ),
-        (
-            "live",
-            {"code_challenge": CLIENT_CHALLENGE, "code_challenge_method": "S256"},
-            True,
-            "only supported with redirect_target app",
-        ),
+        ("live", {"client_state": "x" * 257}, True, "Invalid client_state"),
+        ("live", {"purpose": "link"}, True, "Linking an identity is not supported yet"),
+        ("live", {"purpose": "test"}, True, "Invalid purpose"),
+        ("live", {"purpose": "other"}, True, "Invalid purpose"),
     ],
     ids=[
         "app_without_challenge",
@@ -1854,7 +1854,10 @@ async def test_get_auth_url_returns_to_the_app_over_remote_access(
         "plain_challenge",
         "challenge_without_method",
         "malformed_challenge",
-        "challenge_for_the_server",
+        "client_state_too_long",
+        "link_not_built_yet",
+        "internal_test_purpose",
+        "unknown_purpose",
     ],
 )
 async def test_get_auth_url_refuses_an_invalid_sign_in_request(
@@ -2124,6 +2127,326 @@ async def test_sign_in_failure_args_fill_the_error_but_are_not_sent(
         "error": "Unknown or disabled user: bob",
         "translation_key": "unknown_or_disabled_user",
     }
+
+
+async def test_get_auth_url_starts_a_server_sign_in_with_a_challenge(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock
+) -> None:
+    """A browser sign-in with a code challenge returns to the server with the client's args."""
+    with _webserver_urls(None):
+        result = await auth_manager.get_auth_url(
+            "oauth",
+            "http://192.168.1.10:8095/#/login",
+            code_challenge=CLIENT_CHALLENGE,
+            code_challenge_method="S256",
+            client_state="client-state",
+            device_name="Laptop",
+        )
+
+    pending = _started_login(oauth_provider)
+    assert result["state"] == pending.state
+    assert pending.redirect_uri == "http://192.168.1.10:8095/auth/callback"
+    assert pending.redirect_target == "server"
+    assert pending.purpose == "login"
+    assert pending.client_code_challenge == CLIENT_CHALLENGE
+    assert (pending.client_state, pending.device_name) == ("client-state", "Laptop")
+
+
+async def test_auth_authorize_takes_the_sign_in_arguments(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock
+) -> None:
+    """GET /auth/authorize starts a sign-in with the new arguments and answers with its state."""
+    query = urlencode(
+        {
+            "provider_id": "oauth",
+            "return_url": "http://192.168.1.10:8095/#/login",
+            "code_challenge": CLIENT_CHALLENGE,
+            "code_challenge_method": "S256",
+            "client_state": "client-state",
+            "device_name": "Laptop",
+        }
+    )
+    request = make_mocked_request(
+        "GET", f"/auth/authorize?{query}", headers={"Host": "192.168.1.10:8095"}
+    )
+    with _webserver_urls(None):
+        response = await auth_manager.webserver._handle_auth_authorize(request)
+
+    assert response.status == 200
+    assert response.text is not None
+    body = json_loads(response.text)
+    pending = _started_login(oauth_provider)
+    assert body["authorization_url"] == "https://idp.example.com/authorize"
+    assert body["state"] == pending.state
+    assert pending.client_code_challenge == CLIENT_CHALLENGE
+    assert (pending.client_state, pending.device_name) == ("client-state", "Laptop")
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"purpose": "link"},
+        APP_SIGN_IN_ARGS,
+        {"code_challenge": CLIENT_CHALLENGE, "code_challenge_method": "plain"},
+    ],
+    ids=["link", "app_target_over_http", "plain_challenge"],
+)
+async def test_auth_authorize_refuses_invalid_sign_in_arguments(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock, args: dict[str, str]
+) -> None:
+    """
+    GET /auth/authorize refuses what the websocket start refuses, without starting a sign-in.
+
+    :param args: The sign-in arguments next to the provider id.
+    """
+    query = urlencode({"provider_id": "oauth", **args})
+    request = make_mocked_request("GET", f"/auth/authorize?{query}")
+    response = await auth_manager.webserver._handle_auth_authorize(request)
+
+    assert response.status == 400
+    oauth_provider.build_authorization_url.assert_not_awaited()
+    assert not auth_manager.pending_logins._pending
+
+
+@pytest.mark.parametrize("remote", [False, True], ids=["direct", "remote_data_channel"])
+async def test_exchange_signs_in_with_a_one_time_code(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock, remote: bool
+) -> None:
+    """
+    A one-time code is exchanged once, with the matching verifier, also over Remote Access.
+
+    :param remote: Whether the exchange comes in over the remote access data channel.
+    """
+    user = await auth_manager.create_user(username="browser", display_name="Browser User")
+    state, code = await _finish_code_sign_in(auth_manager, oauth_provider, user)
+    path = "/ws?webrtc_session_id=live" if remote else "/ws"
+
+    with (
+        _remote_access_gateway(auth_manager, "127.0.0.1", {"live"}),
+        _calling_client(auth_manager, path, {}, "127.0.0.1") as client,
+    ):
+        assert (client.auth_transport is AuthTransport.REMOTE) is remote
+        result = _as_sent(
+            await auth_manager.exchange_authorization_code(state, code, CLIENT_VERIFIER)
+        )
+        again = _as_sent(
+            await auth_manager.exchange_authorization_code(state, code, CLIENT_VERIFIER)
+        )
+
+    assert result["success"] is True
+    assert result["user"]["user_id"] == user.user_id
+    token_user = await auth_manager.authenticate_with_token(result["access_token"])
+    assert token_user is not None
+    assert token_user.user_id == user.user_id
+    tokens = await auth_manager.database.get_rows("auth_tokens", {"user_id": user.user_id})
+    assert [row["name"] for row in tokens] == ["Laptop"]
+    assert again["translation_key"] == "sign_in_expired"
+
+
+@pytest.mark.parametrize(
+    "mistake", ["wrong_verifier", "wrong_state", "unknown_code", "expired", "wrong_purpose"]
+)
+async def test_exchange_refuses_a_wrong_one_time_code_alike(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock, mistake: str
+) -> None:
+    """
+    A wrong verifier, state, purpose, or an unknown or expired code fail alike and count.
+
+    :param mistake: What is wrong with the exchange.
+    """
+    user = await auth_manager.create_user(username="browser")
+    state, code = await _finish_code_sign_in(auth_manager, oauth_provider, user)
+    verifier = CLIENT_VERIFIER
+    if mistake == "wrong_verifier":
+        verifier = "wrong-verifier-" + "w" * 40
+    elif mistake == "wrong_state":
+        state = "w.other"
+    elif mistake == "unknown_code":
+        code = "unknown-code"
+    elif mistake == "expired":
+        next(iter(auth_manager.authorization_codes._codes.values())).expires_at = 0
+    else:
+        code = auth_manager.authorization_codes.issue(
+            state, user.user_id, CLIENT_CHALLENGE, purpose="test"
+        )
+
+    set_current_client_id("connection-a")
+    try:
+        result = _as_sent(await auth_manager.exchange_authorization_code(state, code, verifier))
+    finally:
+        set_current_client_id(None)
+
+    assert result == {
+        "success": False,
+        "error": "This sign-in is invalid or has expired",
+        "translation_key": "sign_in_expired",
+    }
+    assert auth_manager._auth_exchange_rate_limiter.get_attempt_count("connection-a") == 1
+
+
+async def test_a_challenge_sign_in_never_hands_out_a_token_at_the_callback(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock
+) -> None:
+    """The legacy callback completion refuses a sign-in that was started with a challenge."""
+    oauth_provider.complete_authorization = AsyncMock()
+    pending = auth_manager.pending_logins.start(
+        "oauth",
+        AuthTransport.DIRECT,
+        "http://192.168.1.10:8095/auth/callback",
+        idp_code_verifier="idp_verifier",
+        client_code_challenge=CLIENT_CHALLENGE,
+    )
+
+    result = await auth_manager.handle_oauth_callback("idp_code", pending.state)
+
+    assert result.success is False
+    assert result.user is None
+    oauth_provider.complete_authorization.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("redirect_target", "challenge"),
+    [("server", None), ("app", CLIENT_CHALLENGE)],
+    ids=["without_challenge", "app_target"],
+)
+async def test_no_one_time_code_for_a_sign_in_it_does_not_belong_to(
+    auth_manager: AuthenticationManager,
+    oauth_provider: MagicMock,
+    redirect_target: str,
+    challenge: str | None,
+) -> None:
+    """
+    A one-time code is only issued for a server sign-in that was started with a challenge.
+
+    :param redirect_target: Where the sign-in returns to.
+    :param challenge: The client's code challenge, if any.
+    """
+    oauth_provider.complete_authorization = AsyncMock()
+    pending = auth_manager.pending_logins.start(
+        "oauth",
+        AuthTransport.REMOTE,
+        "https://app.music-assistant.io/auth/callback/",
+        idp_code_verifier="idp_verifier",
+        redirect_target="app" if redirect_target == "app" else "server",
+        client_code_challenge=challenge,
+    )
+
+    with pytest.raises(AuthenticationFailed):
+        await auth_manager.issue_authorization_code(pending, "idp_code")
+    oauth_provider.complete_authorization.assert_not_awaited()
+    assert not auth_manager.authorization_codes._codes
+
+
+async def test_auth_token_signs_in_with_a_one_time_code(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock
+) -> None:
+    """POST /auth/token exchanges a one-time code like auth/exchange, with CORS headers."""
+    user = await auth_manager.create_user(username="browser")
+    state, code = await _finish_code_sign_in(auth_manager, oauth_provider, user)
+    body = {"state": state, "code": code, "code_verifier": CLIENT_VERIFIER, "device_name": "Tab"}
+
+    response = await _post_auth_token(auth_manager, body)
+    again = await _post_auth_token(auth_manager, body)
+
+    assert response.status == 200
+    assert response.headers["Access-Control-Allow-Origin"] == "*"
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.text is not None
+    result = json_loads(response.text)
+    assert result["success"] is True
+    assert await auth_manager.authenticate_with_token(result["access_token"]) is not None
+    tokens = await auth_manager.database.get_rows("auth_tokens", {"user_id": user.user_id})
+    assert [row["name"] for row in tokens] == ["Tab"]
+    assert again.status == 400
+    assert again.text is not None
+    assert json_loads(again.text)["translation_key"] == "sign_in_expired"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [None, {"state": "w.x", "code": "c"}, {"state": "w.x", "code": 1, "code_verifier": "v"}],
+    ids=["no_body", "missing_verifier", "code_not_a_string"],
+)
+async def test_auth_token_refuses_an_invalid_body(
+    auth_manager: AuthenticationManager, body: dict[str, Any] | None
+) -> None:
+    """
+    POST /auth/token without a state, code and verifier is refused.
+
+    :param body: The JSON body of the request.
+    """
+    response = await _post_auth_token(auth_manager, body)
+
+    assert response.status == 400
+    assert response.headers["Access-Control-Allow-Origin"] == "*"
+
+
+async def test_failed_auth_token_requests_are_rate_limited(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Failed exchanges over POST /auth/token count per peer, and are throttled with a 429."""
+    body = {"state": "w.unknown", "code": "code", "code_verifier": CLIENT_VERIFIER}
+    statuses = [(await _post_auth_token(auth_manager, body)).status for _ in range(4)]
+
+    assert statuses == [400, 400, 400, 429]
+
+
+async def _finish_code_sign_in(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock, user: User
+) -> tuple[str, str]:
+    """
+    Run a browser sign-in with a code challenge through the callback for a user.
+
+    :param auth_manager: The authentication manager to sign in on.
+    :param oauth_provider: The stub login provider that signs the user in.
+    :param user: The user the sign-in resolves to.
+    :return: The state of the sign-in and the one-time code it handed back.
+    """
+    oauth_provider.complete_authorization = AsyncMock(
+        return_value=await _ha_identity(auth_manager, user)
+    )
+    pending = auth_manager.pending_logins.start(
+        "oauth",
+        AuthTransport.DIRECT,
+        "http://192.168.1.10:8095/auth/callback",
+        idp_code_verifier="idp_verifier",
+        client_code_challenge=CLIENT_CHALLENGE,
+        device_name="Laptop",
+    )
+    popped = auth_manager.pending_logins.pop(pending.state)
+    assert popped is not None
+    return pending.state, await auth_manager.issue_authorization_code(popped, "idp_code")
+
+
+async def _post_auth_token(
+    auth_manager: AuthenticationManager, body: dict[str, Any] | None
+) -> web.Response:
+    """
+    Send a request to POST /auth/token from one peer address.
+
+    :param auth_manager: The authentication manager whose webserver handles the request.
+    :param body: The JSON body of the request, None for no body.
+    """
+    auth_manager.mass.translations = TranslationController(auth_manager.mass)
+    auth_manager.mass.metadata = MagicMock()
+    transport = MagicMock()
+    transport.get_extra_info.side_effect = {"peername": ("192.168.1.20", 54321)}.get
+    payload = StreamReader(MagicMock(), limit=2**16)
+    if body is not None:
+        payload.feed_data(json_dumps(body).encode())
+    payload.feed_eof()
+    request = make_mocked_request(
+        "POST",
+        "/auth/token",
+        headers={"Content-Type": "application/json"},
+        transport=transport,
+        payload=payload,
+    )
+    try:
+        return await auth_manager.webserver._handle_auth_token(request)
+    finally:
+        set_current_peer_address(None)
+        set_auth_request_context(AuthTransport.DIRECT, None)
 
 
 def _as_sent(result: dict[str, Any] | AuthFailure) -> dict[str, Any]:
