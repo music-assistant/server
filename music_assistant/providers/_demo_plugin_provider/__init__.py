@@ -59,7 +59,8 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.models.plugin import PluginProvider, SourceControlValue
+from music_assistant.models.media_capabilities import SourceControlValue
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -80,7 +81,7 @@ if TYPE_CHECKING:
 
 # stable id for the single AudioSource this demo provider exposes;
 # combined with the provider instance_id this forms the persistent browse/play uri
-# (e.g. `<instance_id>://audio_source/main`) listed under "Live Inputs". AudioSource
+# (e.g. `<instance_id>://audio_source/main`) listed when browsing this provider. AudioSource
 # items are not favoritable / library-backed in MA core today.
 AUDIO_SOURCE_ID = "main"
 
@@ -205,8 +206,8 @@ class MyDemoPluginprovider(PluginProvider):
         # Will only be called if ProviderFeature.AUDIO_SOURCE is declared.
         #
         # Return one or more AudioSource MediaItems describing the live
-        # inputs this plugin offers. AudioSources show up under the global
-        # "Live Inputs" browse node and can be played on any player via
+        # inputs this plugin offers. AudioSources are listed when browsing this
+        # provider and can be played on any player via
         # the standard play_media flow. Capability flags (can_play_pause,
         # can_seek, can_next_previous) drive which control buttons the UI
         # surfaces and which commands the server proxies through to
