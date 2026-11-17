@@ -2044,7 +2044,12 @@ class SpotifyProvider(MusicProvider):
         # a failed reconfiguration rolls the setup back to the previous app, limit included
         throttler = _THROTTLERS.setdefault(
             (self.instance_id, name, client_id),
-            ThrottlerManager(rate_limit=rate_limit, period=period),
+            ThrottlerManager(
+                rate_limit=rate_limit,
+                period=period,
+                # a request the other session serves meanwhile does not wait out a cooldown
+                foreground_waits_out_cooldown=not has_fallback,
+            ),
         )
         throttler.set_rate_limit(rate_limit=rate_limit, period=period)
         return SpotifySession(

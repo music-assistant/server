@@ -417,3 +417,25 @@ async def test_a_limit_and_the_move_to_the_shared_client_are_both_logged() -> No
     logged = [call.args for call in provider.logger.info.call_args_list]  # type: ignore[attr-defined]
     assert ("Spotify rate limited the custom Client ID (SOME_REASON)",) in logged
     assert _fallback_logs(provider) == 1
+
+
+async def test_user_action_that_stood_in_line_moves_on_without_waiting() -> None:
+    """A user action that waited for its turn when the limit came goes to the shared client."""
+    provider = await _make_provider()
+    request = _stub_http(provider, {})
+    dev_throttler = provider._dev_session.throttler
+    take_slot = dev_throttler.throttler.acquire
+
+    async def _limited_meanwhile(priority: RequestPriority | None = None) -> float:
+        delay = await take_slot(priority)
+        # another request was told to wait while this one stood in line
+        dev_throttler.set_cooldown(30)
+        return delay
+
+    with (
+        patch.object(dev_throttler.throttler, "acquire", _limited_meanwhile),
+        patch("music_assistant.helpers.throttle_retry.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        await provider._get_data("me/tracks")
+    assert _tokens_used(request) == ["global"]
+    sleep.assert_not_awaited()
