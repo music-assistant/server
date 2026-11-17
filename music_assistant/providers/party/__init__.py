@@ -43,6 +43,7 @@ from music_assistant.helpers import guest_access
 from music_assistant.helpers.audio import decoded_pcm_format
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
+from music_assistant.helpers.util import verify_system_meets_requirements
 from music_assistant.models.plugin import PluginProvider
 
 from .audio_stems import STEM_VOCALS, DemucsStemSeparator, StemAttenuation, supports_pcm_format
@@ -1208,6 +1209,10 @@ class PartyPlugin(PluginProvider):
         :param separator: The separator to load.
         """
         try:
+            # a CPU that cannot run torch crashes the probe's subprocess, not the server
+            await verify_system_meets_requirements(
+                feature_name="Vocal removal", require_ml_inference=True
+            )
             # torch-backed work shares one process-wide runtime setup
             self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
             await separator.load()

@@ -12,6 +12,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, PlaybackState, StreamType
+from music_assistant_models.errors import UnsupportedSystemError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -349,3 +350,20 @@ async def test_playing_track_restarts_only_when_the_settings_ask_for_other_audio
         player_queues.seek.assert_awaited_once_with("party_player", 42)
     else:
         player_queues.seek.assert_not_awaited()
+
+
+async def test_model_is_not_loaded_on_a_cpu_that_cannot_run_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed CPU check leaves the model alone, so the tracks keep their vocals."""
+    plugin = _create_plugin({})
+    separator = MagicMock(load=AsyncMock())
+    verify = AsyncMock(side_effect=UnsupportedSystemError("no ML inference"))
+    monkeypatch.setattr("music_assistant.providers.party.verify_system_meets_requirements", verify)
+
+    await plugin._load_stem_separator(separator)
+
+    verify.assert_awaited_once_with(feature_name="Vocal removal", require_ml_inference=True)
+    separator.load.assert_not_awaited()
+    audio_analysis = cast("MagicMock", plugin.mass.streams.audio_analysis)
+    audio_analysis.ensure_inference_runtime_configured.assert_not_called()
