@@ -977,8 +977,8 @@ class SendspinSqueezeliteBridge:
         """
         Return the most bits a sample of the next stream has, None when that is not known.
 
-        That is what the audio of its playback session has before it is sent out: the bits
-        of its first item, and all of them once volume normalization or DSP works on it. A
+        That is what a lossless output of its playback session has: the bits of its first
+        item, and for a track all of them once volume normalization or DSP works on it. A
         player that is set to a lossy output codec gets PCM in its place, in 16 bits
         whatever plays.
         """

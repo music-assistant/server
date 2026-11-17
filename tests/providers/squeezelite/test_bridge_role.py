@@ -145,18 +145,25 @@ def _sendspin_player(role: SlimprotoBridgeRole, config: dict[str, str]) -> Any:
     player.mass.streams.audio.select_flow_pcm_format = StreamsAudio.select_flow_pcm_format.__get__(
         audio, StreamsAudio
     )
+    player.mass.streams.audio.get_output_format = StreamsAudio.get_output_format.__get__(
+        audio, StreamsAudio
+    )
     return player
 
 
 def _track(
-    sample_rate: int, content_type: ContentType = ContentType.FLAC, bit_depth: int = 16
+    sample_rate: int,
+    content_type: ContentType = ContentType.FLAC,
+    bit_depth: int = 16,
+    media_type: MediaType = MediaType.TRACK,
 ) -> StreamDetails:
     """
-    Return the stream details of a track.
+    Return the stream details of a track, or of another item.
 
     :param sample_rate: The sample rate of its source.
     :param content_type: What its source is.
     :param bit_depth: The bit depth its source is probed as.
+    :param media_type: What the item is.
     """
     return StreamDetails(
         provider="test",
@@ -164,7 +171,7 @@ def _track(
         audio_format=AudioFormat(
             content_type=content_type, sample_rate=sample_rate, bit_depth=bit_depth
         ),
-        media_type=MediaType.TRACK,
+        media_type=media_type,
         stream_type=StreamType.HTTP,
         path="http://example.local/track",
     )
@@ -223,28 +230,38 @@ def test_the_role_plays_the_first_format_of_the_hello_by_default() -> None:
     assert _plays(role) == (44100, 24, 2)
 
 
+TRACK = MediaType.TRACK
+RADIO = MediaType.RADIO
+PLAIN = VolumeNormalizationMode.DISABLED
+NORMALIZED = VolumeNormalizationMode.DYNAMIC
+
+
 @pytest.mark.parametrize(
-    ("content_type", "bit_depth", "normalization", "dsp", "session_bit_depth", "plays"),
+    ("media_type", "content_type", "bit_depth", "normalization", "dsp", "session_bit_depth"),
     [
         # nothing works on the audio: the bits its first item is decoded to
-        (ContentType.FLAC, 16, VolumeNormalizationMode.DISABLED, False, 16, (48000, 16, 2)),
-        (ContentType.FLAC, 24, VolumeNormalizationMode.DISABLED, False, 24, (48000, 24, 2)),
-        (ContentType.MP3, 16, VolumeNormalizationMode.DISABLED, False, 16, (48000, 16, 2)),
+        (TRACK, ContentType.FLAC, 16, PLAIN, False, 16),
+        (TRACK, ContentType.FLAC, 24, PLAIN, False, 24),
+        (TRACK, ContentType.MP3, 16, PLAIN, False, 16),
         # DSD is probed as 8 bits and decoded to more than a player takes
-        (ContentType.DSF, 8, VolumeNormalizationMode.DISABLED, False, 32, (48000, 24, 2)),
-        (ContentType.WAVPACK, 8, VolumeNormalizationMode.DISABLED, False, 32, (48000, 24, 2)),
-        # volume normalization or DSP works on it: all the bits
-        (ContentType.FLAC, 16, VolumeNormalizationMode.DYNAMIC, False, 32, (48000, 24, 2)),
-        (ContentType.FLAC, 16, VolumeNormalizationMode.DISABLED, True, 32, (48000, 24, 2)),
+        (TRACK, ContentType.DSF, 8, PLAIN, False, 24),
+        (TRACK, ContentType.WAVPACK, 8, PLAIN, False, 24),
+        # volume normalization or DSP works on a track: all the bits of the player
+        (TRACK, ContentType.FLAC, 16, NORMALIZED, False, 24),
+        (TRACK, ContentType.FLAC, 16, PLAIN, True, 24),
+        # a radio station has the bits of its source, whatever works on it
+        (RADIO, ContentType.MP3, 16, NORMALIZED, False, 16),
+        (RADIO, ContentType.AAC, 16, PLAIN, True, 16),
+        (RADIO, ContentType.FLAC, 24, NORMALIZED, False, 24),
     ],
 )
 async def test_a_session_keeps_its_bit_depth_for_the_bridge(
+    media_type: MediaType,
     content_type: ContentType,
     bit_depth: int,
     normalization: VolumeNormalizationMode,
     dsp: bool,
     session_bit_depth: int,
-    plays: tuple[int, int, int],
 ) -> None:
     """The Sendspin provider hands the bit depth of a session on, and the role plays no more."""
     role = _role()
@@ -254,13 +271,13 @@ async def test_a_session_keeps_its_bit_depth_for_the_bridge(
     audio._pick_pcm_bit_depth = StreamsAudio._pick_pcm_bit_depth.__get__(audio, StreamsAudio)
     audio._resolve_player_dsp_config.return_value.enabled = dsp
     role.limit_bit_depth(lambda: player.session_bit_depth)
-    streamdetails = _track(48000, content_type, bit_depth)
+    streamdetails = _track(48000, content_type, bit_depth, media_type)
     streamdetails.volume_normalization_mode = normalization
 
     await player.follow_session_sample_rate(streamdetails)
 
     assert player.session_bit_depth == session_bit_depth
-    assert _plays(role) == plays
+    assert _plays(role) == (48000, session_bit_depth, 2)
     await player.follow_session_sample_rate(None)
     assert player.session_bit_depth is None
     assert _plays(role) == (44100, 24, 2)

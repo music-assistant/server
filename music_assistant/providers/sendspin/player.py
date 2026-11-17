@@ -1462,8 +1462,8 @@ class SendspinPlayer(SendspinBasePlayer):
     _stop_taking_volume_reports: Callable[[], None] | None = None
     # sample rate an automatic Sendspin format follows, set by the last playback session
     _session_sample_rate: int | None = None
-    # bit depth of the audio of that session before it is sent out, None when it has no
-    # first item: a bridge reads it
+    # bit depth a lossless output of that session has, None when it has no first item: a
+    # bridge reads it
     session_bit_depth: int | None = None
 
     @property
@@ -1857,7 +1857,16 @@ class SendspinPlayer(SendspinBasePlayer):
                 self, start_streamdetails=start_streamdetails
             )
             self._session_sample_rate = pcm_format.sample_rate
-            self.session_bit_depth = pcm_format.bit_depth
+            # the codec only stands for a lossless one here
+            output_format = await self.mass.streams.audio.get_output_format(
+                "flac",
+                self,
+                pcm_format.sample_rate,
+                pcm_format.bit_depth,
+                media_type=start_streamdetails.media_type,
+                source_bit_depth=start_streamdetails.audio_format.bit_depth,
+            )
+            self.session_bit_depth = output_format.bit_depth
         await self._apply_preferred_format()
 
     async def get_session_format(
