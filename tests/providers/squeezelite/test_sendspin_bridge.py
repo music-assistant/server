@@ -525,7 +525,7 @@ class _Rig:
         )
         # the Sendspin protocol of the bridge client, which knows no source yet
         self.sendspin_player = mass.players.get_protocol.return_value
-        self.sendspin_player.session_source_format = None
+        self.sendspin_player.session_bit_depth = None
         protocol.get_supported_sample_rates.return_value = [(44100, 16)]
         protocol.volume_set = AsyncMock()
         protocol.release_native_playback = AsyncMock()
@@ -957,7 +957,7 @@ async def test_the_bridge_goes_when_airplay_shows_up_and_returns_when_it_goes(ri
     assert rig.manager.get_bridge(PLAYER_ID) is not None
     # the Sendspin protocol of the bridge client, which rides on the squeezelite protocol
     rig.mass.players.get_protocol.return_value = MagicMock(
-        underlying_protocol_id=PLAYER_ID, session_source_format=None
+        underlying_protocol_id=PLAYER_ID, session_bit_depth=None
     )
 
     rig.protocol.player.get_output_protocol_by_domain.return_value = MagicMock()
@@ -1492,133 +1492,89 @@ async def test_a_stream_is_in_the_format_sendspin_prefers(rig: _Rig) -> None:
     assert bytes(response.body) == session.preroll
 
 
-def _source(
-    content_type: ContentType, bit_depth: int, codec_type: ContentType = ContentType.UNKNOWN
-) -> AudioFormat:
-    """
-    Return the format of the first item of a playback session.
-
-    :param content_type: Its container, which is its codec too where it holds only one.
-    :param bit_depth: Its bit depth: 16 where a provider does not tell.
-    :param codec_type: The codec in a container that holds more than one.
-    """
-    return AudioFormat(
-        content_type=content_type, sample_rate=44100, bit_depth=bit_depth, codec_type=codec_type
-    )
-
-
 FLAC_PLAYER = ["flc", "pcm", "mp3"]
 # what a player plays that sends no capabilities
 PLAIN_PLAYER = ["pcm", "mp3"]
 PCM_16 = "audio/pcm;rate=44100;bitrate=16;channels=2"
 PCM_24 = "audio/pcm;rate=44100;bitrate=24;channels=2"
 FLAC = "audio/flac"
-LOSSLESS_16 = _source(ContentType.FLAC, 16)
-LOSSLESS_24 = _source(ContentType.FLAC, 24)
 
-# The output codec setting of a player, the codecs it says it plays, the first item of the
-# playback session and the bit depths the player plays, with what the player is sent.
+# The output codec setting of a player, the codecs it says it plays, the bit depth of the
+# audio of the playback session and the bit depths the player plays, with what the player
+# is sent.
 SENT = [
-    # FLAC for a player that plays it, in the bit depth of the source
-    ("flac", FLAC_PLAYER, LOSSLESS_16, (16, 24), FLAC, 16),
-    ("flac", FLAC_PLAYER, LOSSLESS_24, (16, 24), FLAC, 24),
-    ("flac", FLAC_PLAYER, LOSSLESS_16, (16,), FLAC, 16),
-    ("flac", FLAC_PLAYER, LOSSLESS_24, (16,), FLAC, 16),
+    # FLAC for a player that plays it, in the bit depth of the session
+    ("flac", FLAC_PLAYER, 16, (16, 24), FLAC, 16),
+    ("flac", FLAC_PLAYER, 24, (16, 24), FLAC, 24),
+    ("flac", FLAC_PLAYER, 16, (16,), FLAC, 16),
+    ("flac", FLAC_PLAYER, 24, (16,), FLAC, 16),
     # PCM for a player that does not say it plays FLAC
-    ("flac", PLAIN_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
-    ("flac", PLAIN_PLAYER, LOSSLESS_24, (16, 24), PCM_24, 24),
-    ("flac", PLAIN_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
-    ("flac", PLAIN_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
+    ("flac", PLAIN_PLAYER, 16, (16, 24), PCM_16, 16),
+    ("flac", PLAIN_PLAYER, 24, (16, 24), PCM_24, 24),
+    ("flac", PLAIN_PLAYER, 16, (16,), PCM_16, 16),
+    ("flac", PLAIN_PLAYER, 24, (16,), PCM_16, 16),
     # PCM for the setting that asks for it
-    ("wav", FLAC_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
-    ("wav", FLAC_PLAYER, LOSSLESS_24, (16, 24), PCM_24, 24),
-    ("wav", FLAC_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
-    ("wav", FLAC_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
-    ("wav", PLAIN_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
-    ("wav", PLAIN_PLAYER, LOSSLESS_24, (16, 24), PCM_24, 24),
-    ("wav", PLAIN_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
-    ("wav", PLAIN_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
-    # never FLAC for a lossy setting: PCM in 16 bits, whatever the source and the player
-    ("mp3", FLAC_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
-    ("mp3", FLAC_PLAYER, LOSSLESS_24, (16, 24), PCM_16, 16),
-    ("mp3", FLAC_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
-    ("mp3", FLAC_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
-    ("mp3", PLAIN_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
-    ("mp3", PLAIN_PLAYER, LOSSLESS_24, (16, 24), PCM_16, 16),
-    ("mp3", PLAIN_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
-    ("mp3", PLAIN_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
-    ("aac", FLAC_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
-    ("aac", FLAC_PLAYER, LOSSLESS_24, (16, 24), PCM_16, 16),
-    ("aac", FLAC_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
-    ("aac", FLAC_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
-    ("aac", PLAIN_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
-    ("aac", PLAIN_PLAYER, LOSSLESS_24, (16, 24), PCM_16, 16),
-    ("aac", PLAIN_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
-    ("aac", PLAIN_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
-    # a source of more than 16 bits fills 24
-    ("flac", FLAC_PLAYER, _source(ContentType.FLAC, 20), (16, 24), FLAC, 24),
-    ("flac", FLAC_PLAYER, _source(ContentType.FLAC, 32), (16, 24), FLAC, 24),
-    # DSD comes in the bits it is decoded to
-    ("flac", FLAC_PLAYER, _source(ContentType.DSF, 32), (16, 24), FLAC, 24),
-    ("wav", PLAIN_PLAYER, _source(ContentType.DSF, 32), (16, 24), PCM_24, 24),
-    # a lossy source has 16 bits, whatever its decoder makes of it
-    ("flac", FLAC_PLAYER, _source(ContentType.MP3, 24), (16, 24), FLAC, 16),
-    ("wav", PLAIN_PLAYER, _source(ContentType.AAC, 24), (16, 24), PCM_16, 16),
-    ("flac", FLAC_PLAYER, _source(ContentType.MP3, 24), (16,), FLAC, 16),
-    # a container is as lossless as the codec in it
-    ("flac", FLAC_PLAYER, _source(ContentType.M4A, 24, ContentType.ALAC), (16, 24), FLAC, 24),
-    ("wav", PLAIN_PLAYER, _source(ContentType.M4A, 24, ContentType.ALAC), (16, 24), PCM_24, 24),
-    ("flac", FLAC_PLAYER, _source(ContentType.M4A, 16, ContentType.ALAC), (16, 24), FLAC, 16),
-    ("flac", FLAC_PLAYER, _source(ContentType.M4A, 24, ContentType.AAC), (16, 24), FLAC, 16),
-    ("flac", FLAC_PLAYER, _source(ContentType.UNKNOWN, 24, ContentType.AAC), (16, 24), FLAC, 16),
-    ("flac", FLAC_PLAYER, _source(ContentType.UNKNOWN, 24, ContentType.FLAC), (16, 24), FLAC, 24),
-    # a source that is not known plays in all the bits of the player: no item, or one
-    # whose provider does not tell what it is
+    ("wav", FLAC_PLAYER, 16, (16, 24), PCM_16, 16),
+    ("wav", FLAC_PLAYER, 24, (16, 24), PCM_24, 24),
+    ("wav", FLAC_PLAYER, 16, (16,), PCM_16, 16),
+    ("wav", FLAC_PLAYER, 24, (16,), PCM_16, 16),
+    ("wav", PLAIN_PLAYER, 16, (16, 24), PCM_16, 16),
+    ("wav", PLAIN_PLAYER, 24, (16, 24), PCM_24, 24),
+    ("wav", PLAIN_PLAYER, 16, (16,), PCM_16, 16),
+    ("wav", PLAIN_PLAYER, 24, (16,), PCM_16, 16),
+    # never FLAC for a lossy setting: PCM in 16 bits, whatever the session and the player
+    ("mp3", FLAC_PLAYER, 16, (16, 24), PCM_16, 16),
+    ("mp3", FLAC_PLAYER, 24, (16, 24), PCM_16, 16),
+    ("mp3", FLAC_PLAYER, 32, (16, 24), PCM_16, 16),
+    ("mp3", FLAC_PLAYER, 24, (16,), PCM_16, 16),
+    ("mp3", PLAIN_PLAYER, 16, (16, 24), PCM_16, 16),
+    ("mp3", PLAIN_PLAYER, 24, (16, 24), PCM_16, 16),
+    ("aac", FLAC_PLAYER, 16, (16, 24), PCM_16, 16),
+    ("aac", FLAC_PLAYER, 24, (16, 24), PCM_16, 16),
+    ("aac", PLAIN_PLAYER, 32, (16, 24), PCM_16, 16),
+    ("aac", PLAIN_PLAYER, 24, (16,), PCM_16, 16),
+    # a session whose audio is processed on its way has 32 bits, which fill the 24 of a player
+    ("flac", FLAC_PLAYER, 32, (16, 24), FLAC, 24),
+    ("wav", PLAIN_PLAYER, 32, (16, 24), PCM_24, 24),
+    ("flac", FLAC_PLAYER, 32, (16,), FLAC, 16),
+    # a session without a first item plays in all the bits of the player
     ("flac", FLAC_PLAYER, None, (16, 24), FLAC, 24),
     ("wav", PLAIN_PLAYER, None, (16, 24), PCM_24, 24),
     ("mp3", FLAC_PLAYER, None, (16, 24), PCM_16, 16),
     ("aac", PLAIN_PLAYER, None, (16, 24), PCM_16, 16),
     ("flac", FLAC_PLAYER, None, (16,), FLAC, 16),
-    ("flac", FLAC_PLAYER, _source(ContentType.UNKNOWN, 16), (16, 24), FLAC, 24),
-    ("wav", PLAIN_PLAYER, _source(ContentType.UNKNOWN, 16), (16, 24), PCM_24, 24),
-    ("flac", FLAC_PLAYER, _source(ContentType.UNKNOWN, 16), (16,), FLAC, 16),
-    ("mp3", FLAC_PLAYER, _source(ContentType.UNKNOWN, 16), (16, 24), PCM_16, 16),
 ]
 
 
-def _sent_id(case: tuple[str, list[str], AudioFormat | None, tuple[int, ...], str, int]) -> str:
-    """Return the name of a case: its setting, its player and its source."""
-    output_codec, codecs, source, depths, _mime_type, _bit_depth = case
+def _sent_id(case: tuple[str, list[str], int | None, tuple[int, ...], str, int]) -> str:
+    """Return the name of a case: its setting, its player and the bit depth of its session."""
+    output_codec, codecs, session_bit_depth, depths, _mime_type, _bit_depth = case
     player = f"{'flac' if 'flc' in codecs else 'plain'} player of {max(depths)} bits"
-    if source is None:
-        return f"{output_codec}, {player}, source unknown"
-    kind = source.content_type.value
-    if source.codec_type != ContentType.UNKNOWN:
-        kind += f" with {source.codec_type.value}"
-    return f"{output_codec}, {player}, {kind} source of {source.bit_depth} bits"
+    session = f"session of {session_bit_depth} bits" if session_bit_depth else "no first item"
+    return f"{output_codec}, {player}, {session}"
 
 
 @pytest.mark.parametrize(
-    ("output_codec", "codecs", "source", "depths", "mime_type", "bit_depth"),
+    ("output_codec", "codecs", "session_bit_depth", "depths", "mime_type", "bit_depth"),
     SENT,
     ids=[_sent_id(case) for case in SENT],
 )
-async def test_the_output_codec_and_the_source_decide_what_a_player_is_sent(
+async def test_the_output_codec_and_the_session_decide_what_a_player_is_sent(
     output_codec: str,
     codecs: list[str],
-    source: AudioFormat | None,
+    session_bit_depth: int | None,
     depths: tuple[int, ...],
     mime_type: str,
     bit_depth: int,
 ) -> None:
-    """The setting of the player picks FLAC or PCM, and the source the bit depth."""
+    """The setting of the player picks FLAC or PCM, and the playback session the bit depth."""
     rig = _Rig(output_codec=output_codec)
     try:
         rig.client.supported_codecs = codecs
         rig.protocol.get_supported_sample_rates.return_value = [(44100, depth) for depth in depths]
         await rig.bridge.start()
         # a playback session starts: Sendspin has the player follow its first item
-        rig.sendspin_player.session_source_format = source
+        rig.sendspin_player.session_bit_depth = session_bit_depth
         assert rig.role.set_preferred_format(None)
 
         session = await rig.start_stream()
@@ -1739,11 +1695,11 @@ async def test_a_stream_keeps_its_codec_and_bit_depth_while_it_plays(flac_rig: _
     rig = flac_rig
     rig.protocol.get_supported_sample_rates.return_value = [(44100, 16), (44100, 24)]
     await rig.bridge.start()
-    rig.sendspin_player.session_source_format = _source(ContentType.FLAC, 16)
+    rig.sendspin_player.session_bit_depth = 16
     assert rig.role.set_preferred_format(None)
     session = await rig.start_playing()
 
-    rig.sendspin_player.session_source_format = _source(ContentType.FLAC, 24)
+    rig.sendspin_player.session_bit_depth = 24
     rig.config[CONF_OUTPUT_CODEC] = "wav"
     rig.bridge._on_audio_chunk(_chunk(rig.origin_us, 4 * SECOND, SECOND))
     rig.bridge.update_now_playing()
@@ -4917,7 +4873,7 @@ async def test_a_group_is_only_returned_to_after_a_reconnect(rig: _Rig, case: st
     group = MagicMock(clients=[rig.sendspin_client, MagicMock()], add_client=AsyncMock())
     rig.sendspin_client.group = group
     rig.mass.players.get_protocol.return_value = MagicMock(
-        underlying_protocol_id=None, session_source_format=None
+        underlying_protocol_id=None, session_bit_depth=None
     )
     if case == "solo":
         group.clients = [rig.sendspin_client]

@@ -99,7 +99,6 @@ from music_assistant.constants import (
     CONF_UNDERLYING_PLAYER_ID,
 )
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
-from music_assistant.helpers.audio import decoded_pcm_format
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import (
     MEDIA_IDENTITY_KEYS,
@@ -343,7 +342,7 @@ if TYPE_CHECKING:
     from aiosendspin.noise.trust_store import ServerPairingRecord
     from aiosendspin.server.client import SendspinClient
     from music_assistant_models.event import MassEvent
-    from music_assistant_models.media_items import AudioFormat, MediaItemPalette
+    from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
@@ -1463,9 +1462,9 @@ class SendspinPlayer(SendspinBasePlayer):
     _stop_taking_volume_reports: Callable[[], None] | None = None
     # sample rate an automatic Sendspin format follows, set by the last playback session
     _session_sample_rate: int | None = None
-    # format of the first item of that session in the bit depth its audio is decoded to,
-    # None when it has none: a bridge reads it
-    session_source_format: AudioFormat | None = None
+    # bit depth of the audio of that session before it is sent out, None when it has no
+    # first item: a bridge reads it
+    session_bit_depth: int | None = None
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -1845,24 +1844,20 @@ class SendspinPlayer(SendspinBasePlayer):
 
         The rate follows the player's sample rate setting for the first item of the session.
         Without a first item, the client's own default format is used.
-        An explicitly configured Sendspin format keeps its sample rate; a bridge that plays
-        no more bits than its source has may lower its bit depth to that of the first item.
+        An explicitly configured Sendspin format keeps its sample rate; a bridge may play it
+        in fewer bits when the audio of the session has no more.
 
         :param start_streamdetails: Stream details of the first item of the session, if any.
         """
         if start_streamdetails is None:
-            self.session_source_format = None
             self._session_sample_rate = None
+            self.session_bit_depth = None
         else:
-            # DSD is probed as fewer bits than its audio is decoded to
-            self.session_source_format = replace(
-                start_streamdetails.audio_format,
-                bit_depth=decoded_pcm_format(start_streamdetails).bit_depth,
-            )
             pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
                 self, start_streamdetails=start_streamdetails
             )
             self._session_sample_rate = pcm_format.sample_rate
+            self.session_bit_depth = pcm_format.bit_depth
         await self._apply_preferred_format()
 
     async def get_session_format(

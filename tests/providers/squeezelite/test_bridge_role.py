@@ -26,7 +26,12 @@ from aiosendspin.noise.trust_store import InMemoryServerPairingStore
 from aiosendspin.server import ClientUpdatedEvent, SendspinServer
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.enums import (
+    ContentType,
+    MediaType,
+    StreamType,
+    VolumeNormalizationMode,
+)
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -219,34 +224,45 @@ def test_the_role_plays_the_first_format_of_the_hello_by_default() -> None:
 
 
 @pytest.mark.parametrize(
-    ("content_type", "bit_depth", "decoded_bit_depth", "plays"),
+    ("content_type", "bit_depth", "normalization", "dsp", "session_bit_depth", "plays"),
     [
-        (ContentType.FLAC, 16, 16, (48000, 16, 2)),
-        (ContentType.FLAC, 24, 24, (48000, 24, 2)),
-        (ContentType.MP3, 24, 24, (48000, 24, 2)),
+        # nothing works on the audio: the bits its first item is decoded to
+        (ContentType.FLAC, 16, VolumeNormalizationMode.DISABLED, False, 16, (48000, 16, 2)),
+        (ContentType.FLAC, 24, VolumeNormalizationMode.DISABLED, False, 24, (48000, 24, 2)),
+        (ContentType.MP3, 16, VolumeNormalizationMode.DISABLED, False, 16, (48000, 16, 2)),
         # DSD is probed as 8 bits and decoded to more than a player takes
-        (ContentType.DSF, 8, 32, (48000, 24, 2)),
-        (ContentType.WAVPACK, 8, 32, (48000, 24, 2)),
+        (ContentType.DSF, 8, VolumeNormalizationMode.DISABLED, False, 32, (48000, 24, 2)),
+        (ContentType.WAVPACK, 8, VolumeNormalizationMode.DISABLED, False, 32, (48000, 24, 2)),
+        # volume normalization or DSP works on it: all the bits
+        (ContentType.FLAC, 16, VolumeNormalizationMode.DYNAMIC, False, 32, (48000, 24, 2)),
+        (ContentType.FLAC, 16, VolumeNormalizationMode.DISABLED, True, 32, (48000, 24, 2)),
     ],
 )
-async def test_a_session_keeps_the_format_of_its_first_item_for_the_bridge(
-    content_type: ContentType, bit_depth: int, decoded_bit_depth: int, plays: tuple[int, int, int]
+async def test_a_session_keeps_its_bit_depth_for_the_bridge(
+    content_type: ContentType,
+    bit_depth: int,
+    normalization: VolumeNormalizationMode,
+    dsp: bool,
+    session_bit_depth: int,
+    plays: tuple[int, int, int],
 ) -> None:
-    """The Sendspin provider hands the source of a session on, and the role plays no more bits."""
+    """The Sendspin provider hands the bit depth of a session on, and the role plays no more."""
     role = _role()
     player = _sendspin_player(role, {})
-    # as the bridge reads it: the bit depth of the source the player was told about
-    role.limit_bit_depth(lambda: getattr(player.session_source_format, "bit_depth", None))
+    # the bit depth as Music Assistant picks it for the audio of a session
+    audio = player.mass.streams.audio.select_flow_pcm_format.__self__
+    audio._pick_pcm_bit_depth = StreamsAudio._pick_pcm_bit_depth.__get__(audio, StreamsAudio)
+    audio._resolve_player_dsp_config.return_value.enabled = dsp
+    role.limit_bit_depth(lambda: player.session_bit_depth)
     streamdetails = _track(48000, content_type, bit_depth)
+    streamdetails.volume_normalization_mode = normalization
 
     await player.follow_session_sample_rate(streamdetails)
 
-    assert player.session_source_format == replace(
-        streamdetails.audio_format, bit_depth=decoded_bit_depth
-    )
+    assert player.session_bit_depth == session_bit_depth
     assert _plays(role) == plays
     await player.follow_session_sample_rate(None)
-    assert player.session_source_format is None
+    assert player.session_bit_depth is None
     assert _plays(role) == (44100, 24, 2)
 
 

@@ -16,8 +16,8 @@ of what the player plays, as far as Sendspin delivered its audio, so the player 
 through a stall of its network.
 
 The stream is FLAC or PCM, by the output codec setting of the player and what the player
-says it plays, in no more bits than the source of what plays has. A player whose FLAC
-stream fails before it played ``MIN_PLAYED_US`` is sent PCM from then on.
+says it plays, in no more bits than the audio of its playback session has. A player whose
+FLAC stream fails before it played ``MIN_PLAYED_US`` is sent PCM from then on.
 
 Audio flow:
 Sendspin PushStream -> BridgePlayerRole.on_audio_chunk -> session -> HTTP stream -> player
@@ -47,7 +47,6 @@ from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_OUTPUT_CODEC, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
-from music_assistant.controllers.streams.stream_sources import QualityTier, quality_tier
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -976,10 +975,11 @@ class SendspinSqueezeliteBridge:
 
     def _bit_depth_limit(self) -> int | None:
         """
-        Return the most bits a sample of the next stream has, None when its source is not known.
+        Return the most bits a sample of the next stream has, None when that is not known.
 
-        That is what its source has: 16 for a lossy one, by its container or the codec in
-        it. A player that is set to a lossy output codec gets PCM in its place, in 16 bits
+        That is what the audio of its playback session has before it is sent out: the bits
+        of its first item, and all of them once volume normalization or DSP works on it. A
+        player that is set to a lossy output codec gets PCM in its place, in 16 bits
         whatever plays.
         """
         if self.protocol.config.get_value(CONF_OUTPUT_CODEC, "flac") in ("mp3", "aac"):
@@ -987,12 +987,7 @@ class SendspinSqueezeliteBridge:
         if not (client_id := self._bridge_client_id):
             return None
         bridge_client = cast("SendspinPlayer | None", self.mass.players.get_protocol(client_id))
-        if bridge_client is None or (source := bridge_client.session_source_format) is None:
-            return None
-        tier = quality_tier(source)
-        if tier == QualityTier.UNKNOWN:
-            return None
-        return 24 if tier >= QualityTier.LOSSLESS and source.bit_depth > 16 else 16
+        return bridge_client.session_bit_depth if bridge_client else None
 
     def _role_format(self) -> AudioFormat:
         """
