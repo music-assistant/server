@@ -99,7 +99,10 @@ def _cached_tokens(provider: SpotifyProvider) -> tuple[Any, Any]:
 def _fallback_logs(provider: SpotifyProvider) -> int:
     """Return how often the fallback to the global session was logged."""
     info = provider.logger.info
-    return sum("custom Client ID" in call.args[0] for call in info.call_args_list)  # type: ignore[attr-defined]
+    return sum(
+        "user actions use the shared client" in call.args[0]
+        for call in info.call_args_list  # type: ignore[attr-defined]
+    )
 
 
 async def test_dev_session_is_active_without_an_account_lookup() -> None:
@@ -173,13 +176,16 @@ async def test_long_dev_cooldown_keeps_background_work_on_dev() -> None:
     assert _fallback_logs(provider) == 0
 
 
-async def test_short_dev_cooldown_keeps_the_dev_session() -> None:
-    """A cooldown short enough to wait out does not move requests to the shared client."""
+async def test_short_dev_cooldown_keeps_background_work_on_dev() -> None:
+    """Background work sits out a short limit of the custom Client ID, user actions move."""
     provider = await _make_provider()
     provider._dev_session.throttler.set_cooldown(30)
 
-    assert provider._session_for(use_global_session=False) is provider._dev_session
+    with request_priority(RequestPriority.LOW):
+        assert provider._session_for(use_global_session=False) is provider._dev_session
     assert _fallback_logs(provider) == 0
+    assert provider._session_for(use_global_session=False) is provider._global_session
+    assert _fallback_logs(provider) == 1
 
 
 def _stub_http_per_token(provider: SpotifyProvider, statuses: dict[str, int]) -> MagicMock:
@@ -228,19 +234,31 @@ async def test_background_work_that_runs_into_a_long_limit_fails() -> None:
     assert _tokens_used(request) == ["dev"]
 
 
-def _stub_http_sequence(provider: SpotifyProvider, dev_statuses: list[int]) -> MagicMock:
+def _stub_http_sequence(
+    provider: SpotifyProvider,
+    dev_statuses: list[int],
+    global_statuses: list[int] | None = None,
+    body_429: Any = None,
+) -> MagicMock:
     """
-    Answer dev requests with a sequence of statuses and shared requests with 200.
+    Answer requests with a sequence of statuses per session.
 
     :param provider: The provider whose requests to answer.
     :param dev_statuses: HTTP status of each dev request in order, 429 carries a 5 s Retry-After.
+    :param global_statuses: HTTP status of each shared request in order, None to answer all
+        with 200.
+    :param body_429: JSON body of a 429 answer.
     """
     remaining = list(dev_statuses)
+    remaining_global = None if global_statuses is None else list(global_statuses)
 
     def _respond(_method: str, _url: str, headers: dict[str, str], **_kwargs: Any) -> MagicMock:
-        status = remaining.pop(0) if headers["Authorization"].endswith("dev") else 200
+        if headers["Authorization"].endswith("dev"):
+            status = remaining.pop(0)
+        else:
+            status = 200 if remaining_global is None else remaining_global.pop(0)
         response = MagicMock(status=status, headers={"Retry-After": "5"} if status == 429 else {})
-        response.json = AsyncMock(return_value={})
+        response.json = AsyncMock(return_value=body_429 if status == 429 else {})
         return MagicMock(
             __aenter__=AsyncMock(return_value=response), __aexit__=AsyncMock(return_value=None)
         )
@@ -265,27 +283,95 @@ async def test_playback_that_meets_a_short_limit_switches_at_once() -> None:
     sleep.assert_not_awaited()
 
 
-async def test_user_action_that_meets_a_short_limit_waits_and_retries() -> None:
-    """A user action sits out a short limit of the custom Client ID and retries there."""
+async def test_user_action_that_meets_a_short_limit_switches_at_once() -> None:
+    """A user action that meets a short limit of the custom Client ID switches without waiting."""
     provider = await _make_provider()
-    request = _stub_http_sequence(provider, [429, 200])
+    request = _stub_http_sequence(provider, [429])
 
     with patch("music_assistant.helpers.throttle_retry.asyncio.sleep", AsyncMock()) as sleep:
         await provider._get_data("me/tracks")
+        # a second user action during the limit sends nothing to the custom Client ID
+        await provider._get_data("me/albums")
+    assert _tokens_used(request) == ["dev", "global", "global"]
+    assert provider._dev_session.throttler.cooldown_remaining > 0
+    sleep.assert_not_awaited()
+    assert _fallback_logs(provider) == 1
+
+
+async def test_background_work_that_meets_a_short_limit_waits_on_dev() -> None:
+    """Background work sits out a short limit of the custom Client ID and never takes the shared."""
+    provider = await _make_provider()
+    request = _stub_http_sequence(provider, [429, 200])
+
+    with (
+        patch("music_assistant.helpers.throttle_retry.asyncio.sleep", AsyncMock()) as sleep,
+        request_priority(RequestPriority.LOW),
+    ):
+        await provider._get_data("me/tracks")
     assert _tokens_used(request) == ["dev", "dev"]
+    # the pacer of background work sleeps as well, so look for the retry wait among them
+    assert any(5 <= call.args[0] <= 5.5 for call in sleep.await_args_list)
+
+
+async def test_user_action_without_a_custom_client_id_waits_and_retries() -> None:
+    """Without a custom Client ID a user action sits out a short limit on the shared client."""
+    provider = await _make_provider()
+    provider.dev_session_active = False
+    request = _stub_http_sequence(provider, [], global_statuses=[429, 200])
+
+    with patch("music_assistant.helpers.throttle_retry.asyncio.sleep", AsyncMock()) as sleep:
+        await provider._get_data("me/tracks")
+    assert _tokens_used(request) == ["global", "global"]
     assert sleep.await_count == 1
     assert 5 <= sleep.await_args_list[0].args[0] <= 5.5
 
 
-async def test_playback_leaves_a_limited_dev_session_at_once() -> None:
-    """Playback takes the shared client during any limit of the custom Client ID, however short."""
+@pytest.mark.parametrize("priority", [RequestPriority.NORMAL, RequestPriority.HIGH])
+async def test_user_actions_leave_a_limited_dev_session_at_once(priority: RequestPriority) -> None:
+    """User actions and playback take the shared client during any limit of the custom Client ID."""
     provider = await _make_provider()
     provider._dev_session.throttler.set_cooldown(30)
     request = _stub_http(provider, {})
 
-    with request_priority(RequestPriority.HIGH):
+    with request_priority(priority):
         await provider._get_data("tracks/abc")
     assert _tokens_used(request) == ["global"]
+
+
+async def test_quota_of_the_custom_client_id_moves_user_actions() -> None:
+    """A used up quota of the custom Client ID moves user actions and shows in diagnostics."""
+    provider = await _make_provider()
+    provider.backend.get_diagnostics = AsyncMock(return_value={})  # type: ignore[method-assign]
+    request = _stub_http_sequence(provider, [429], body_429={"error": {"reason": "QUOTA_EXCEEDED"}})
+
+    await provider._get_data("me/tracks")
+    assert _tokens_used(request) == ["dev", "global"]
+    provider.logger.warning.assert_called_once_with(  # type: ignore[attr-defined]
+        "The %s has used up its Spotify quota, %s",
+        "custom Client ID",
+        "Spotify asks to wait 5 seconds",
+    )
+    diagnostics = await provider.get_diagnostics()
+    dev = diagnostics["dev_session_rate_limit"]
+    assert isinstance(dev, dict)
+    assert dev["last_rate_limit_reason"] == "QUOTA_EXCEEDED"
+    assert dev["last_rate_limit_at"] is not None
+    assert 4 <= dev["cooldown_remaining_sec"] <= 5
+    assert diagnostics["global_session_rate_limit"] == {
+        "cooldown_remaining_sec": 0,
+        "last_rate_limit_reason": None,
+        "last_rate_limit_at": None,
+    }
+
+
+async def test_quota_of_the_custom_client_id_fails_background_work() -> None:
+    """Background work that meets a used up quota fails without a retry or the shared client."""
+    provider = await _make_provider()
+    request = _stub_http_sequence(provider, [429], body_429={"error": {"reason": "QUOTA_EXCEEDED"}})
+
+    with request_priority(RequestPriority.LOW), pytest.raises(RetriesExhausted):
+        await provider._get_data("me/tracks")
+    assert _tokens_used(request) == ["dev"]
 
 
 async def test_failed_dev_login_falls_back_to_global() -> None:
@@ -319,3 +405,37 @@ async def test_unauthorized_clears_only_its_own_token(use_global_session: bool) 
         await provider._get_data("me/tracks", use_global_session=use_global_session)
     expected = (None, DEV_TOKEN) if use_global_session else (GLOBAL_TOKEN, None)
     assert _cached_tokens(provider) == expected
+
+
+async def test_a_limit_and_the_move_to_the_shared_client_are_both_logged() -> None:
+    """A limit of the custom Client ID is logged with its reason, and so is the move."""
+    provider = await _make_provider()
+    request = _stub_http_sequence(provider, [429], body_429={"error": {"reason": "SOME_REASON"}})
+
+    await provider._get_data("me/tracks")
+    assert _tokens_used(request) == ["dev", "global"]
+    logged = [call.args for call in provider.logger.info.call_args_list]  # type: ignore[attr-defined]
+    assert ("Spotify rate limited the custom Client ID (SOME_REASON)",) in logged
+    assert _fallback_logs(provider) == 1
+
+
+async def test_user_action_that_stood_in_line_moves_on_without_waiting() -> None:
+    """A user action that waited for its turn when the limit came goes to the shared client."""
+    provider = await _make_provider()
+    request = _stub_http(provider, {})
+    dev_throttler = provider._dev_session.throttler
+    take_slot = dev_throttler.throttler.acquire
+
+    async def _limited_meanwhile(priority: RequestPriority | None = None) -> float:
+        delay = await take_slot(priority)
+        # another request was told to wait while this one stood in line
+        dev_throttler.set_cooldown(30)
+        return delay
+
+    with (
+        patch.object(dev_throttler.throttler, "acquire", _limited_meanwhile),
+        patch("music_assistant.helpers.throttle_retry.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        await provider._get_data("me/tracks")
+    assert _tokens_used(request) == ["global"]
+    sleep.assert_not_awaited()
