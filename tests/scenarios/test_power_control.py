@@ -850,8 +850,10 @@ async def test_a_stop_while_the_plug_of_a_member_is_switched_on_loses_no_power_c
     stop = await scenario.command(scenario.mass.players.cmd_stop(group_id))
     await scenario.advance(2)
     await stop
-    with pytest.raises(PlayerUnavailableError, match="was called off"):
+    with pytest.raises(PlayerUnavailableError, match="was called off") as error:
         await play
+    assert error.value.translation_key == "player_stopped_during_startup"
+    assert error.value.translation_args == ["Downstairs"]
     if on_report == "after the stop":
         switched_on_at = scenario.mass.loop.time()
         await scenario.switch(plug, True)

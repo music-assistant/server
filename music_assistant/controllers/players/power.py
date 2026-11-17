@@ -643,7 +643,12 @@ class PowerMixin(_PlayerControllerBase):
             control = self._controls.get(player.power_control)
             if control is None or control.power_state:
                 # called off while its control reads on, such as by a stop
-                raise _PowerOnCalledOff(msg)
+                raise _PowerOnCalledOff(
+                    msg,
+                    translation_key="player_stopped_during_startup",
+                    translation_owner=self.translation_owner,
+                    translation_args=[player.name],
+                )
             raise _PowerOnCalledOff(
                 msg,
                 translation_key="player_switched_off",
@@ -814,7 +819,12 @@ class PowerMixin(_PlayerControllerBase):
                 raise
             # only the wait was cancelled, which is how it is called off
             msg = f"The power on of the members of {owner.name} was called off"
-            raise _PowerOnCalledOff(msg) from None
+            raise _PowerOnCalledOff(
+                msg,
+                translation_key="player_stopped_during_startup",
+                translation_owner=self.translation_owner,
+                translation_args=[owner.name],
+            ) from None
         finally:
             del self._member_power_ons[power_ons]
         # what the members of the owner can group with includes these players again, and
