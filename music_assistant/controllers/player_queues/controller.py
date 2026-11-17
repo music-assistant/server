@@ -1167,9 +1167,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
         starts_player = queue.state != PlaybackState.PLAYING
-        if self._announcement_in_progress(queue_id):
-            # parked for the clip: a step starts no player, so a group's members stay off
-            starts_player = False
         self._set_transitioning(queue_id, True)
         idx = self._queue_data[queue_id].queue.current_index
         if idx is None:
@@ -1216,9 +1213,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
         starts_player = queue.state != PlaybackState.PLAYING
-        if self._announcement_in_progress(queue_id):
-            # parked for the clip: a step starts no player, so a group's members stay off
-            starts_player = False
         self._set_transitioning(queue_id, True)
         current_index = self._queue_data[queue_id].queue.current_index
         if current_index is None:
@@ -3098,7 +3092,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         player = self.mass.players.get_player(queue_id)
         # the group player itself, or the group that the playback of a member goes to
         target = self.mass.players._resolve_play_media_target(player) if player else None
-        if starts_player and target is not None and target.type == PlayerType.GROUP:
+        if (
+            starts_player
+            and target is not None
+            and target.type == PlayerType.GROUP
+            # parked for an announcement: a step during the clip starts no player
+            and not (player and player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS))
+        ):
             # the wait is a task of its own: the move of a further step replaces this move
             # and joins that wait, so the members are powered on and waited for once
             power_on = self.mass.create_task(

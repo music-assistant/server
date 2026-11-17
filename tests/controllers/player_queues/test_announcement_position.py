@@ -485,3 +485,21 @@ async def test_a_step_during_an_announcement_powers_no_member_on(
 
     ctrl.mass.players._power_on_members.assert_not_awaited()  # type: ignore[attr-defined]
     ctrl.play_index.assert_awaited_once_with(QUEUE_ID, played_index)
+
+
+async def test_a_seek_during_an_announcement_powers_no_member_on() -> None:
+    """A seek on the group while the clip plays leaves its switched-off members off."""
+    queue = _queue(PlaybackState.PAUSED)
+    queue.current_index = 0
+    queue.current_item = _item(TRACK_A)
+    queue.elapsed_time = 12
+    player = _player(player_type=PlayerType.GROUP)
+    ctrl = _controller(queue, player=player)
+    use_real_create_task(ctrl.mass)
+    ctrl._check_player_permission = Mock()  # type: ignore[method-assign]
+    ctrl._play_index = AsyncMock()  # type: ignore[method-assign]
+
+    await ctrl.seek(QUEUE_ID, 60)
+
+    ctrl.mass.players._power_on_members.assert_not_awaited()  # type: ignore[attr-defined]
+    ctrl._play_index.assert_awaited_once_with(QUEUE_ID, 0, 60, fade_in=False)

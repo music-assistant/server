@@ -20,7 +20,11 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
-from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, EXTERNAL_ID_PROVIDER
+from music_assistant.constants import (
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    ATTR_PLAY_ACTION_IN_PROGRESS,
+    EXTERNAL_ID_PROVIDER,
+)
 from music_assistant.controllers.player_queues.constants import (
     PLAY_REQUEST_RESOLVE_TIMEOUT,
     ArtistOrder,
@@ -175,6 +179,8 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                     starts_unless_playing
                     and queue_data.queue.active
                     and queue_data.queue.state != PlaybackState.PLAYING
+                    # parked for an announcement: a seek during the clip starts no player
+                    and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
                 )
             ):
                 # the group player itself, or the group that the playback of a member goes to
