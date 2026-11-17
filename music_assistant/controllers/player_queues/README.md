@@ -267,6 +267,17 @@ change moved away from the head or took off the queue gives up its audio and its
 change, while a track that is in use or about to play keeps both. The releases of a stop, a clear, a
 replace and the start of an item do not ask for users or claims.
 
+A source that delivers at playback pace holds its provider's slot for as long as its track plays.
+When such a source gives the slot back and the playback session of its queue goes on with that
+provider (a track the queue plays now or next, or one a stream of that session claims, still gets
+audio from there), the slot stays reserved for that queue for a few seconds. The queue's next source
+takes it at once; to every other taker, a preview or another queue, it is taken that much longer.
+So a queue that moves to its next track, skips or seeks does not lose its stream to a queue that
+asks in that moment. The other one waits within its own budget and gets the slot when the
+reservation lapses, or the refusal it gets at any other moment of the track. Nothing is reserved
+after the last track of a queue, when the next track comes from another provider, for a source that
+loads ahead of playback, or once the session ended; the end of a session also ends its reservation.
+
 A paused queue keeps its session and its buffers until the pause watcher stops it once the
 configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread
 buffer releases its audio). The watcher leaves the queue alone while a command still waits for

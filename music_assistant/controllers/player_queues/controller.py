@@ -119,7 +119,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.uri import parse_uri
-from music_assistant.models.music_provider import ProviderStreamLimitError
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
@@ -1946,6 +1946,48 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         for _queue_item, audio_buffer in self._audio_buffers(queue_data):
             audio_buffer.release_if_unneeded()
 
+    def keeps_stream_slot(
+        self, audio_buffer: AudioBuffer, provider_instance: str, delivered: bool
+    ) -> bool:
+        """
+        Return whether a stream slot stays reserved for a queue when a buffer gives it back.
+
+        It does when the source of the buffer delivers at playback pace and the playback
+        session of its queue goes on with that provider: a track it plays now or next, or
+        one a stream of that session decided to play, still gets audio from there.
+
+        :param audio_buffer: The buffer whose source gives its slot back.
+        :param provider_instance: The provider instance the slot is of.
+        :param delivered: Whether the source delivered all of its audio.
+        """
+        queue_id = audio_buffer.queue_id
+        if not audio_buffer.is_realtime or queue_id is None:
+            return False
+        queue_data = self._queue_data.get(queue_id)
+        if queue_data is None or queue_data.session_id is None:
+            return False
+        queue = queue_data.queue
+        items: list[QueueItem | None] = list(self.mass.streams.audio.claimed_items(queue_id))
+        for position in {queue.current_index, queue.index_in_buffer}:
+            if position is not None:
+                items += [self.get_item(queue_id, position), self.get_next_item(queue_id, position)]
+        for item in items:
+            if item is None:
+                continue
+            if (streamdetails := item.streamdetails) is None:
+                # its source is not chosen yet, so it can turn out to be this provider
+                return True
+            if streamdetails.provider != provider_instance:
+                continue
+            buffer = streamdetails.buffer
+            if buffer is audio_buffer:
+                # the track this source was for is done once all of its audio arrived
+                if not delivered:
+                    return True
+            elif buffer is None or not buffer.eof:
+                return True
+        return False
+
     async def release_failed_item_source(self, queue_id: str, queue_item_id: str) -> None:
         """
         Cancel the still-filling source of an item the player gave up on.
@@ -2724,6 +2766,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_id = queue_data.queue.queue_id
         if queue_data.session_id == session_id:
             queue_data.session_id = None
+            # a stream slot that was kept for this playback is free to everyone again
+            for provider in self.mass.providers:
+                if isinstance(provider, MusicProvider):
+                    provider.end_stream_slot_reservation(queue_id)
         self.mass.streams.audio_processing.clear(queue_id, session_id)
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id, session_id))
         self.release_unneeded_audio(queue_id)

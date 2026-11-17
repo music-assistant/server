@@ -912,8 +912,21 @@ class StreamsAudio:
         # resolve the exact owning instance (even when flagged unavailable) so the
         # slot is charged to the account that issued the streamdetails
         provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+        delivered = False
+
+        def _keeps_slot() -> bool:
+            # asked when the slot goes back: the queue of the buffer may go on with the
+            # provider, and then finds the slot there for its next source
+            return slot_holder is not None and self.mass.player_queues.keeps_stream_slot(
+                slot_holder, streamdetails.provider, delivered
+            )
+
+        # taken for the queue the audio is for, to which a slot kept for it is free
+        queue_id = slot_holder.queue_id if slot_holder is not None else streamdetails.queue_id
         stream_slot = (
-            provider.acquire_stream_slot(source_wait_timeout, slot_holder)
+            provider.acquire_stream_slot(
+                source_wait_timeout, slot_holder, queue_id=queue_id, reserve=_keeps_slot
+            )
             if isinstance(provider, MusicProvider)
             else nullcontext()
         )
@@ -924,6 +937,7 @@ class StreamsAudio:
                 return
             async for chunk in media_stream:
                 yield chunk
+            delivered = True
 
     async def resolve_radio_stream(self, url: str) -> tuple[str, StreamType]:
         """
@@ -3640,6 +3654,20 @@ class StreamsAudio:
         :param queue_item: The queue item to check.
         """
         return any(self._claim_holds(claim, queue_item) for claim in self._item_claims)
+
+    def claimed_items(self, queue_id: str) -> list[QueueItem]:
+        """
+        Return the items a stream of the given queue's playback session decided to play.
+
+        :param queue_id: The queue to look at.
+        """
+        return [
+            queue_item
+            for claim in self._item_claims
+            if (queue_item := claim.queue_item) is not None
+            and queue_item.queue_id == queue_id
+            and self._claim_holds(claim, queue_item)
+        ]
 
     def get_stream_providers(
         self, mapping: ProviderMapping, allowed: list[str] | None

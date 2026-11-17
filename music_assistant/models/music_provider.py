@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import Sequence
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
@@ -65,7 +66,7 @@ from .media_capabilities import AudioStreamMixin, MediaCatalogMixin, Recommendat
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Callable
 
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import PlaybackState
@@ -85,6 +86,10 @@ if TYPE_CHECKING:
 
 CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
 DEFAULT_MAX_CONCURRENT_STREAMS: Final[int] = 5
+# seconds a source-stream slot stays reserved for the queue whose source gave it back,
+# so the next source of that queue finds it: longer than a queue takes to ask for its
+# next track, shorter than another queue's playback start waits for a slot
+STREAM_SLOT_RESERVATION: Final[float] = 5.0
 # a music service stops paging through an artist's discography at this many releases, so
 # one user action never costs a number of requests that grows with the catalogue (usage policy)
 ARTIST_ALBUMS_LIMIT: Final[int] = 100
@@ -247,6 +252,116 @@ def describe_sync_error(err: Exception) -> str:
     return f"{type(err).__name__}: {detail}"
 
 
+class _StreamSlots:
+    """
+    The source-stream slots of one music provider.
+
+    Hands out a fixed number of slots, in the order they are asked for. A slot that is given
+    back can stay reserved for a queue for a moment: to that queue it is free, to every
+    other taker it is taken.
+    """
+
+    def __init__(self, limit: int) -> None:
+        """
+        Initialize the slots.
+
+        :param limit: The number of slots.
+        """
+        self._limit = limit
+        self._taken = 0
+        # who waits for a slot, in the order they asked, each with the queue it asks for
+        self._waiters: deque[tuple[asyncio.Future[None], str | None]] = deque()
+        # the queues a slot is reserved for, each with the timer that ends its reservation
+        self._reservations: dict[str, asyncio.TimerHandle] = {}
+
+    @property
+    def has_free(self) -> bool:
+        """Return whether fewer slots are taken than there are."""
+        return self._taken < self._limit
+
+    async def take(self, queue_id: str | None) -> None:
+        """
+        Take a slot, waiting until one is free for the given queue.
+
+        :param queue_id: The queue the slot is taken for, if any. Taking a slot ends the
+            reservation of that queue.
+        """
+        if self._is_free_for(queue_id):
+            self._grant(queue_id)
+            return
+        granted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        waiter = (granted, queue_id)
+        self._waiters.append(waiter)
+        try:
+            await granted
+        except asyncio.CancelledError:
+            if granted.cancelled():
+                self._waiters.remove(waiter)
+            else:
+                # the slot was granted in the moment the wait was given up: pass it on
+                self.give_back()
+            raise
+
+    def give_back(
+        self, queue_id: str | None = None, reserve: Callable[[], bool] | None = None
+    ) -> None:
+        """
+        Give a slot back.
+
+        :param queue_id: The queue the slot was taken for, if any.
+        :param reserve: Tells whether the slot stays reserved for that queue.
+        """
+        self._taken -= 1
+        if queue_id is not None and reserve is not None and reserve():
+            if (timer := self._reservations.get(queue_id)) is not None:
+                timer.cancel()
+            self._reservations[queue_id] = asyncio.get_running_loop().call_later(
+                STREAM_SLOT_RESERVATION, self.end_reservation, queue_id
+            )
+        self._serve_waiters()
+
+    def end_reservation(self, queue_id: str) -> None:
+        """
+        End the reservation of the given queue, if it has one.
+
+        :param queue_id: The queue whose reservation to end.
+        """
+        if (timer := self._reservations.pop(queue_id, None)) is None:
+            return
+        timer.cancel()
+        self._serve_waiters()
+
+    def _is_free_for(self, queue_id: str | None) -> bool:
+        """
+        Return whether a slot is free for the given queue.
+
+        :param queue_id: The queue that asks, if any.
+        """
+        reserved_for_others = len(self._reservations) - (queue_id in self._reservations)
+        return self._taken + reserved_for_others < self._limit
+
+    def _grant(self, queue_id: str | None) -> None:
+        """
+        Count a slot as taken, which ends the reservation of the queue that takes it.
+
+        :param queue_id: The queue the slot is taken for, if any.
+        """
+        self._taken += 1
+        if queue_id is not None and (timer := self._reservations.pop(queue_id, None)):
+            timer.cancel()
+
+    def _serve_waiters(self) -> None:
+        """Grant a slot to every waiter one is free for, the longest wait first."""
+        for waiter in tuple(self._waiters):
+            granted, queue_id = waiter
+            # a wait that was given up takes itself out of the line
+            if granted.cancelled() or not self._is_free_for(queue_id):
+                continue
+            self._waiters.remove(waiter)
+            self._grant(queue_id)
+            granted.set_result(None)
+
+
 class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, Provider):
     """
     Base representation of a Music Provider (controller).
@@ -270,10 +385,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         max_concurrent_streams = self.max_concurrent_streams
         if max_concurrent_streams is not None and max_concurrent_streams < 1:
             raise ValueError("max_concurrent_streams must be at least 1 or None")
-        self._stream_semaphore = (
-            asyncio.BoundedSemaphore(max_concurrent_streams)
-            if max_concurrent_streams is not None
-            else None
+        self._stream_slots = (
+            _StreamSlots(max_concurrent_streams) if max_concurrent_streams is not None else None
         )
         self._stream_slot_holders: set[AudioBuffer] = set()
 
@@ -319,8 +432,13 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
 
     @property
     def has_available_stream_slot(self) -> bool:
-        """Return whether a source stream can start without waiting."""
-        return self._stream_semaphore is None or not self._stream_semaphore.locked()
+        """
+        Return whether fewer source streams are open than this provider allows.
+
+        A slot that is reserved for a queue counts as free here, though only that queue
+        gets it without waiting.
+        """
+        return self._stream_slots is None or self._stream_slots.has_free
 
     @property
     def stream_slot_holders(self) -> tuple[AudioBuffer, ...]:
@@ -329,7 +447,11 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
 
     @asynccontextmanager
     async def acquire_stream_slot(
-        self, wait_timeout: float | None, holder: AudioBuffer | None = None
+        self,
+        wait_timeout: float | None,
+        holder: AudioBuffer | None = None,
+        queue_id: str | None = None,
+        reserve: Callable[[], bool] | None = None,
     ) -> AsyncGenerator[None]:
         """
         Acquire one source-stream slot for the duration of the context.
@@ -337,18 +459,23 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         :param wait_timeout: Maximum seconds to wait, or None to wait without a timeout.
         :param holder: The audio buffer the slot is for, listed in ``stream_slot_holders``
             for as long as it holds the slot.
+        :param queue_id: The queue the slot is taken for, if any. A slot that is reserved
+            for this queue is free to it, and taking a slot ends that reservation.
+        :param reserve: Asked when the slot is given back: whether it stays reserved for the
+            queue. A reserved slot is taken to every other taker for
+            ``STREAM_SLOT_RESERVATION`` seconds, or until ``end_stream_slot_reservation``.
         :raises ProviderStreamLimitError: If no slot becomes available before the timeout.
         """
-        semaphore = self._stream_semaphore
-        if semaphore is None:
+        slots = self._stream_slots
+        if slots is None:
             yield
             return
         try:
             if wait_timeout is None:
-                await semaphore.acquire()
+                await slots.take(queue_id)
             else:
                 async with asyncio.timeout(wait_timeout):
-                    await semaphore.acquire()
+                    await slots.take(queue_id)
         except TimeoutError as err:
             raise ProviderStreamLimitError(self, wait_timeout) from err
         if holder is not None:
@@ -358,7 +485,16 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         finally:
             if holder is not None:
                 self._stream_slot_holders.discard(holder)
-            semaphore.release()
+            slots.give_back(queue_id, reserve)
+
+    def end_stream_slot_reservation(self, queue_id: str) -> None:
+        """
+        End the reservation of a source-stream slot for the given queue, if it has one.
+
+        :param queue_id: The queue whose reservation to end.
+        """
+        if self._stream_slots is not None:
+            self._stream_slots.end_reservation(queue_id)
 
     @property
     def is_streaming_provider(self) -> bool:

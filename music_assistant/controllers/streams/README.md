@@ -145,7 +145,9 @@ item's buffer before the stream has it and when someone else creates it: the ite
 whole life, the flow stream from the moment it selects a track. A claim counts for the playback
 session its stream is part of, and no longer once the queue the item is on plays in another session
 or in none. The source of a buffer that still fills holds a stream slot of its provider, which lists
-those buffers in `stream_slot_holders`. `release_if_unneeded()` gives up the audio and the source of
+those buffers in `stream_slot_holders`. The slot is taken in the name of the buffer's queue, and a
+source that delivers at playback pace can leave it reserved for that queue when it gives it back
+(the player queues README says when). `release_if_unneeded()` gives up the audio and the source of
 a buffer that no stream reads or holds to read and that left its queue's scope (the player queues
 README says when that is), whether its source still fills or has delivered everything. It makes the
 buffer invalid on the spot, so nobody takes it while its source unwinds, and a caller that only

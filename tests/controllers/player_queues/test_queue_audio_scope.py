@@ -37,6 +37,9 @@ from tests.controllers.streams.stream_slot_rig import (
     SlotRig,
     TwoStreamProvider,
     UnlimitedProvider,
+    allow_commands,
+    allow_starts,
+    count_starts,
     drain,
     install_mixer,
     source,
@@ -73,26 +76,6 @@ async def _given_up(buffer: AudioBuffer) -> bool:
         return False
     await release
     return buffer.cancelled and buffer.seconds_available == 0
-
-
-def _count_starts(rig: SlotRig, name: str) -> list[str]:
-    """
-    Record every time the source of the given track really starts to deliver.
-
-    :param rig: The rig whose source to watch.
-    :param name: Neutral name of the track.
-    :return: A list that gets the name for every start of the source.
-    """
-    started: list[str] = []
-    inner = rig.sources.get(name)
-
-    async def _source() -> AsyncGenerator[bytes]:
-        started.append(name)
-        async for chunk in (inner or partial(source, 3, 0, asyncio.Event()))():
-            yield chunk
-
-    rig.sources[name] = _source
-    return started
 
 
 def _move_to(rig: SlotRig, index: int) -> None:
@@ -285,7 +268,7 @@ async def test_a_track_removed_while_its_source_waits_for_a_slot_is_let_go_at_th
     playing, prepared, _later = rig.play("track 0", "track 1", "track 2", realtime=False)
     ended = asyncio.Event()
     rig.sources["track 0"] = partial(source, 3, 0, ended)
-    started = _count_starts(rig, "track 1")
+    started = count_starts(rig, "track 1")
     await rig.ask(playing)
     preparation = rig.queues.prepare_next_audio_buffer(QUEUE_ID, playing.queue_item_id)
     assert preparation is not None
@@ -328,7 +311,7 @@ async def test_a_source_that_gets_its_slot_after_its_track_left_is_not_opened(
     playing, prepared, later = rig.play("track 0", "track 1", "track 2", realtime=False)
     ended = asyncio.Event()
     rig.sources["track 0"] = partial(source, 3, 0, ended)
-    started = _count_starts(rig, "track 1")
+    started = count_starts(rig, "track 1")
     arrived: list[str] = []
     monkeypatch.setattr(
         rig.queues, "track_fully_buffered", lambda _queue_id, item_id: arrived.append(item_id)
@@ -507,14 +490,6 @@ async def test_a_fade_into_the_next_track_lets_go_of_the_track_before_the_playin
 # --- what plays next changes while the queue and its position stay
 
 
-def _allow_commands(rig: SlotRig) -> None:
-    """Let the rig's queue take commands without players, users or settings behind it."""
-    rig.queues._check_player_permission = MagicMock()  # type: ignore[method-assign]
-    rig.queues._resolve_queue_id = lambda queue_id: queue_id  # type: ignore[method-assign]
-    rig.queues._resolve_default_toggles = MagicMock()  # type: ignore[method-assign]
-    rig.queues._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
-
-
 @NO_LIMIT
 async def test_repeating_the_playing_track_releases_the_track_prepared_to_follow_it(
     rig: SlotRig,
@@ -522,7 +497,7 @@ async def test_repeating_the_playing_track_releases_the_track_prepared_to_follow
     """Repeat one makes the playing track its own successor, so the prepared one goes."""
     playing, _prepared, _later = rig.play("track 0", "track 1", "track 2")
     capture = await rig.prepare_next(playing)
-    _allow_commands(rig)
+    allow_commands(rig)
 
     await rig.queues.set_repeat(QUEUE_ID, RepeatMode.ONE)
 
@@ -566,14 +541,6 @@ async def test_a_sleep_timer_that_moves_to_the_playing_track_releases_the_prepar
 # --- the start of a track
 
 
-def _allow_starts(rig: SlotRig) -> None:
-    """Let the rig's queue start a track without a player behind it."""
-    _allow_commands(rig)
-    rig.queues.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
-    rig.mass.players.get_player.return_value.offline_by_power_control = False
-    rig.mass.players.play_media = AsyncMock()
-
-
 @NO_LIMIT
 async def test_a_start_releases_what_only_a_stream_of_the_playback_before_it_held(
     rig: SlotRig,
@@ -585,7 +552,7 @@ async def test_a_start_releases_what_only_a_stream_of_the_playback_before_it_hel
     held = await rig.audio.get_audio_buffer(tracks[3], reason="streaming")
     assert held is not None
     assert rig.fills(held)
-    _allow_starts(rig)
+    allow_starts(rig)
     rig.queues._load_item = AsyncMock()  # type: ignore[method-assign]
 
     await rig.queues.play_index(QUEUE_ID, 0)
@@ -600,7 +567,7 @@ async def test_a_start_that_skips_failing_tracks_wants_the_audio_of_the_track_it
 ) -> None:
     """Every track a start tries, also after two that failed, is one the queue wants audio for."""
     tracks = rig.play("track 0", "track 1", "track 2", "track 3", "track 4")
-    _allow_starts(rig)
+    allow_starts(rig)
     tried: list[tuple[str, bool]] = []
 
     async def _load(queue_item: QueueItem, **_kwargs: object) -> None:
