@@ -114,6 +114,8 @@ from .helpers.auth_middleware import (
 )
 from .helpers.auth_providers import AuthFailure, BuiltinLoginProvider, get_ha_user_role
 from .helpers.login_flow import (
+    MAX_CLIENT_STATE_LENGTH,
+    PKCE_CHALLENGE_RE,
     AuthTransport,
     RedirectTarget,
     current_auth_transport,
@@ -1177,6 +1179,11 @@ class WebserverController(CoreController):
             }
             setup_url = str(URL("/setup").with_query(hand_back))
             return web.Response(status=302, headers={"Location": setup_url})
+        if not request.query.get("return_url"):
+            # the app signs in itself, so the login page only serves external clients; the
+            # query travels along, so an old link such as /login?join=<code> keeps working
+            query = request.rel_url.raw_query_string
+            return web.Response(status=302, headers={"Location": f"./?{query}" if query else "./"})
         # Serve login page for external clients
         login_html_path = str(RESOURCES_DIR.joinpath("login.html"))
         async with aiofiles.open(login_html_path) as f:
@@ -1219,6 +1226,10 @@ class WebserverController(CoreController):
             provider_id = body.get("provider_id", "builtin")  # Default to built-in provider
             credentials = body.get("credentials", {})
             return_url = body.get("return_url")  # Optional return URL for redirect after login
+            try:
+                client_challenge = _get_client_challenge(body)
+            except ValueError as err:
+                return web.Response(status=400, text=str(err), headers=_AUTH_CORS_HEADERS)
 
             # Authenticate with provider
             auth_result = await self.auth.authenticate_with_credentials(provider_id, credentials)
@@ -1260,12 +1271,22 @@ class WebserverController(CoreController):
                 if category != "trusted":
                     return web.Response(status=400, text="Invalid return_url")
 
-                redirect_url = build_code_redirect_url(return_url, token)
+                if client_challenge:
+                    code = self._issue_redirect_code(
+                        auth_result.user, client_challenge, device_name
+                    )
+                    redirect_url = build_query_redirect_url(
+                        return_url, {"code": code, "state": client_challenge[1]}
+                    )
+                    secret = code
+                else:
+                    redirect_url = build_code_redirect_url(return_url, token)
+                    secret = token
 
                 response_data["redirect_to"] = redirect_url
                 self.logger.debug(
                     "Login successful, returning redirect_to: %s",
-                    redirect_url.replace(token, "***TOKEN***"),
+                    redirect_url.replace(secret, "***TOKEN***"),
                 )
 
             # Add CORS headers to allow login from any origin
@@ -1276,6 +1297,10 @@ class WebserverController(CoreController):
                     "Access-Control-Allow-Methods": "POST, OPTIONS",
                     "Access-Control-Allow-Headers": "Content-Type, Authorization",
                 },
+            )
+        except RateLimited as err:
+            return web.json_response(
+                {"success": False, "error": str(err)}, status=429, headers=_AUTH_CORS_HEADERS
             )
         except Exception:
             self.logger.exception("Error during login")
@@ -1627,6 +1652,10 @@ class WebserverController(CoreController):
             and (device_name is None or isinstance(device_name, str))
         ):
             return web.Response(status=400, text="Invalid request body")
+        try:
+            client_challenge = _get_client_challenge(body)
+        except ValueError as err:
+            return web.Response(status=400, text=str(err))
         username = username.strip()
         display_name = (display_name or "").strip() or None
 
@@ -1683,7 +1712,18 @@ class WebserverController(CoreController):
                 _, category = is_allowed_redirect_url(
                     return_url, request, self.base_url, self.external_url
                 )
-                if category == "trusted":
+                if category == "trusted" and client_challenge:
+                    try:
+                        code = self._issue_redirect_code(user, client_challenge, device_name)
+                    except RateLimited as err:
+                        # the admin exists by now, the client signs in on its own instead
+                        self.logger.warning("No one-time code for the setup return_url: %s", err)
+                    else:
+                        response_data["redirect_to"] = build_query_redirect_url(
+                            return_url,
+                            {"code": code, "state": client_challenge[1], "onboard": "true"},
+                        )
+                elif category == "trusted":
                     response_data["redirect_to"] = build_code_redirect_url(
                         return_url, token, {"onboard": "true"}
                     )
@@ -1721,6 +1761,27 @@ class WebserverController(CoreController):
             return await provider.create_user_with_password(
                 username, password, role=UserRole.ADMIN, display_name=display_name
             )
+
+    def _issue_redirect_code(
+        self, user: User, client_challenge: tuple[str, str], device_name: Any
+    ) -> str:
+        """
+        Issue the one-time code a password sign-in hands back in its redirect_to.
+
+        The code is bound to the client state, which the client exchanges it with.
+
+        :param user: The user who signed in.
+        :param client_challenge: The client's code challenge and client state.
+        :param device_name: The device name the client sent, if any.
+        :raises RateLimited: If too many one-time codes are open.
+        """
+        challenge, client_state = client_challenge
+        return self.auth.authorization_codes.issue(
+            client_state,
+            user.user_id,
+            challenge,
+            device_name=device_name if isinstance(device_name, str) else None,
+        )
 
     def _resolve_preview_token(self, token: str) -> tuple[str, str] | None:
         """Return the provider and item a preview token grants, or None when it is not valid."""
@@ -1825,6 +1886,29 @@ def _error_status(error: MusicAssistantError) -> int:
     # the caller's own sign-in was checked before the command ran, so an authentication
     # error raised by a command concerns another account (a provider's) and is no 401
     return 400
+
+
+def _get_client_challenge(body: Mapping[str, Any]) -> tuple[str, str] | None:
+    """
+    Return the code challenge and client state of a sign-in request body, if it has a challenge.
+
+    :param body: The JSON body of the request.
+    :raises ValueError: If the challenge, its method or the client state is invalid.
+    """
+    challenge = body.get("code_challenge")
+    method = body.get("code_challenge_method")
+    if challenge is None and method is None:
+        return None
+    if (
+        method != "S256"
+        or not isinstance(challenge, str)
+        or not PKCE_CHALLENGE_RE.fullmatch(challenge)
+    ):
+        raise ValueError("Invalid code_challenge")
+    client_state = body.get("client_state")
+    if not isinstance(client_state, str) or not 0 < len(client_state) <= MAX_CLIENT_STATE_LENGTH:
+        raise ValueError("Invalid client_state")
+    return challenge, client_state
 
 
 def _serialize_script_value(value: str) -> str:
