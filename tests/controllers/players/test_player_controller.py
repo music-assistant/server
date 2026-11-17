@@ -2418,6 +2418,12 @@ class TestOwnerChangesWhileWaitingForTheLock:
         monkeypatch.setattr(players_locks, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
         monkeypatch.setattr(players_locks, "PLAYER_LOCK_TIMEOUT", 0.5)
 
+    @pytest.fixture(autouse=True)
+    async def _virtual_clock(self) -> AsyncIterator[None]:
+        # a runner stall can't time out the lock wait before the test releases the lock
+        with virtual_loop_clock():
+            yield
+
     @staticmethod
     def _member(
         mock_mass: MagicMock, *, captured: bool
