@@ -152,6 +152,38 @@ def test_a_cast_output_that_is_on_is_marked_as_opted_in() -> None:
     assert output["values"] == {CONF_UNDERLYING_PLAYER_ID: CAST_ID, CONF_SENDSPIN_CAST_OPT_IN: True}
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_a_cast_output_never_offered_to_the_user_is_marked_as_its_default(enabled: bool) -> None:
+    """A Cast output the bridge had yet to switch off is left off, not read as opted in."""
+    data = _settings("chromecast")
+    data["player_protocols"][CAST_ID]["values"]["sendspin_opt_out_pending"] = True
+    output = _output(data, PLAIN_OUTPUT, "chromecast", enabled=enabled)
+
+    _migrate_sendspin_one_output(data)
+
+    assert output["enabled"] is False
+    assert output["values"] == {
+        CONF_UNDERLYING_PLAYER_ID: CAST_ID,
+        CONF_PROTOCOL_OFF_BY_DEFAULT: True,
+    }
+    assert data["player_protocols"][CAST_ID]["values"] == {}, "the Cast marker is left behind"
+
+
+def test_a_cast_output_with_its_warning_is_settled_whatever_its_carrier_still_has() -> None:
+    """The warning is stored when the bridge is done with an output, the Cast marker after it."""
+    data = _settings("chromecast")
+    data["player_protocols"][CAST_ID]["values"]["sendspin_opt_out_pending"] = True
+    output = _output(
+        data, PLAIN_OUTPUT, "chromecast", values={CONF_PROTOCOL_EXPERIMENTAL_NOTE: NOTE}
+    )
+
+    _migrate_sendspin_one_output(data)
+
+    assert output["enabled"] is True
+    assert output["values"][CONF_SENDSPIN_CAST_OPT_IN] is True
+    assert data["player_protocols"][CAST_ID]["values"] == {}, "the Cast marker is left behind"
+
+
 # ---------------------------------------------------------------- several outputs
 
 
@@ -261,6 +293,42 @@ def test_an_output_that_is_switched_on_stays_among_those_no_protocol_carries() -
     _migrate_sendspin_one_output(data)
 
     assert list(_outputs(data)) == ["spb_2"]
+
+
+def test_the_order_of_the_bridges_does_not_count_among_carriers_that_are_switched_off() -> None:
+    """Outputs whose stored carriers are all switched off: the one that is on stays."""
+    data = _settings("airplay", "squeezelite")
+    for domain in ("airplay", "squeezelite"):
+        data["player_protocols"][IDS[domain]]["enabled"] = False
+    _output(data, AIRPLAY_OUTPUT, "airplay", enabled=False)
+    _output(data, PLAIN_OUTPUT, "squeezelite")
+
+    _migrate_sendspin_one_output(data)
+
+    assert list(_outputs(data)) == [PLAIN_OUTPUT], "the output that is switched on was removed"
+    assert _outputs(data)[PLAIN_OUTPUT]["enabled"] is True
+
+
+def test_the_off_of_the_user_stays_next_to_a_cast_default_on_a_carrier_that_is_on() -> None:
+    """A Cast default never wins over an output the user switched off, whichever carrier is on."""
+    data = _settings("airplay", "chromecast")
+    data["player_protocols"][AIRPLAY_ID]["enabled"] = False
+    _output(data, AIRPLAY_OUTPUT, "airplay", enabled=False)
+    _output(
+        data,
+        PLAIN_OUTPUT,
+        "chromecast",
+        enabled=False,
+        values={CONF_PROTOCOL_EXPERIMENTAL_NOTE: NOTE},
+    )
+
+    _migrate_sendspin_one_output(data)
+
+    (output_id, output), *others = _outputs(data).items()
+    assert not others, "the player still has more than one Sendspin output"
+    assert output_id == AIRPLAY_OUTPUT, "the Cast default was kept instead of the off of the user"
+    assert output["enabled"] is False
+    assert CONF_PROTOCOL_OFF_BY_DEFAULT not in output["values"]
 
 
 def test_the_output_that_stays_takes_the_settings_it_has_none_of() -> None:
@@ -456,6 +524,39 @@ def test_malformed_records_are_passed_over() -> None:
     assert {key: protocols[key] for key in malformed} == malformed, "a malformed record changed"
     # the three outputs that can be read are folded all the same
     assert [key for key in protocols if key.startswith("spb_")] == [AIRPLAY_OUTPUT]
+
+
+@pytest.mark.parametrize(
+    "carrier_values",
+    [None, [], "garbage", {"sendspin_opt_out_pending": "yes"}, {"sendspin_opt_out_pending": None}],
+)
+def test_a_damaged_cast_marker_never_makes_the_migration_raise(carrier_values: Any) -> None:
+    """Damaged values of a Cast protocol, and outputs that miss what is read, are passed over."""
+    never_offered = isinstance(carrier_values, dict) and bool(
+        carrier_values["sendspin_opt_out_pending"]
+    )
+    data = _settings("chromecast")
+    data["player_protocols"][CAST_ID]["values"] = carrier_values
+    _output(data, PLAIN_OUTPUT, "chromecast")
+    # an output without a stored switch, and one whose player is gone
+    del data["player_protocols"][PLAIN_OUTPUT]["enabled"]
+    gone = _output(data, "spb_gone", "chromecast", values={"sendspin_opt_out_pending": True})
+    gone["player_id"] = "pl_removed"
+
+    assert _migrate_sendspin_one_output(data) is True
+
+    assert data[CONF_SENDSPIN_ONE_OUTPUT_MIGRATED] is True
+    output = _outputs(data)[PLAIN_OUTPUT]
+    assert output.get("enabled", True) is not never_offered
+    assert (CONF_SENDSPIN_CAST_OPT_IN in output["values"]) is not never_offered
+    if isinstance(carrier_values, dict):
+        assert "sendspin_opt_out_pending" not in carrier_values
+    else:
+        assert data["player_protocols"][CAST_ID]["values"] == carrier_values
+    after_first = deepcopy(data)
+    del data[CONF_SENDSPIN_ONE_OUTPUT_MIGRATED]
+    _migrate_sendspin_one_output(data)
+    assert data == after_first, "a second run changed the settings"
 
 
 def test_a_player_that_can_not_be_folded_is_skipped(

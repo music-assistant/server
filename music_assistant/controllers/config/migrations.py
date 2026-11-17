@@ -87,6 +87,8 @@ LEGACY_SENDSPIN_BRIDGE_ORDER = ("airplay", "squeezelite", "chromecast")
 _SENDSPIN_STATIC_DELAY = "sendspin_static_delay"
 _SENDSPIN_BRIDGE_STATIC_DELAYS = "sendspin_bridge_static_delays"
 _SENDSPIN_CAST_OPT_IN = "sendspin_cast_opt_in"
+# value of a Cast protocol whose bridge had yet to switch its new output off
+_LEGACY_SENDSPIN_OPT_OUT_PENDING = "sendspin_opt_out_pending"
 
 # values of a Sendspin output that describe that output only, which no other one inherits
 _SENDSPIN_OUTPUT_OWN_KEYS = frozenset(
@@ -1691,10 +1693,11 @@ def _migrate_sendspin_one_output(data: dict[str, Any]) -> bool:
 
     A Cast bridge left its output switched off until the user opted in, which the stored
     output did not tell apart from a user who switched it off: every output a Cast protocol
-    carries is marked, as that default when it is off and as opted in when it is on. A
-    player whose bridges each stored an output keeps the one in use, with the settings of
-    the others. Guarded by CONF_SENDSPIN_ONE_OUTPUT_MIGRATED, which is claimed even when
-    nothing changed, so an output the user switches off afterwards is not read as a default.
+    carries is marked, as that default when it is off or was never offered to the user,
+    and as opted in when it is on. A player whose bridges each stored an output keeps the
+    one in use, with the settings of the others. Guarded by
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED, which is claimed even when nothing changed, so an
+    output the user switches off afterwards is not read as a default.
     Returns True when the settings were modified, including the first run's marker.
     """
     if data.get(CONF_SENDSPIN_ONE_OUTPUT_MIGRATED):
@@ -1805,10 +1808,24 @@ def _mark_cast_sendspin_outputs(data: dict[str, Any]) -> None:
         # an output whose carrier is gone still tells by the warning Cast stored with it
         if domain != "chromecast" and (domain or not values.get(CONF_PROTOCOL_EXPERIMENTAL_NOTE)):
             continue
-        if output.get(CONF_ENABLED, True):
+        carrier = data[CONF_PLAYER_PROTOCOLS].get(values[CONF_UNDERLYING_PLAYER_ID])
+        carrier_values = carrier.get("values") if isinstance(carrier, dict) else None
+        # the warning is stored once the output is switched off, so an output without it
+        # whose carrier still has the marker was never offered to the user
+        never_offered = (
+            isinstance(carrier_values, dict)
+            and bool(carrier_values.get(_LEGACY_SENDSPIN_OPT_OUT_PENDING))
+            and not values.get(CONF_PROTOCOL_EXPERIMENTAL_NOTE)
+        )
+        if output.get(CONF_ENABLED, True) and not never_offered:
             values[_SENDSPIN_CAST_OPT_IN] = True
         else:
+            output[CONF_ENABLED] = False
             values[CONF_PROTOCOL_OFF_BY_DEFAULT] = True
+    protocols = data.get(CONF_PLAYER_PROTOCOLS)
+    for record in protocols.values() if isinstance(protocols, dict) else ():
+        if isinstance(record, dict) and isinstance(values := record.get("values"), dict):
+            values.pop(_LEGACY_SENDSPIN_OPT_OUT_PENDING, None)
 
 
 def _fold_sendspin_outputs(data: dict[str, Any], player_id: str, output_ids: list[str]) -> None:
@@ -1834,8 +1851,9 @@ def _fold_sendspin_outputs(data: dict[str, Any], player_id: str, output_ids: lis
         return (
             bool(output["values"].get(CONF_PROTOCOL_OFF_BY_DEFAULT)),
             not switched_on,
+            # the order only applies among the carriers that are switched on
             LEGACY_SENDSPIN_BRIDGE_ORDER.index(domain)
-            if domain in LEGACY_SENDSPIN_BRIDGE_ORDER
+            if switched_on and domain in LEGACY_SENDSPIN_BRIDGE_ORDER
             else len(LEGACY_SENDSPIN_BRIDGE_ORDER),
             not output.get(CONF_ENABLED, True),
             output_id,
