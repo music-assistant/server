@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import random
 import struct
 from collections.abc import AsyncGenerator, Callable
@@ -70,6 +71,7 @@ from music_assistant.providers.squeezelite.sendspin_bridge import (
     PREROLL_US,
     RECONNECT_REJOIN_WINDOW,
     START_LEAD_US,
+    STARVED_DECODE_LEAD_US,
     STARVED_LEAD_US,
     STATUS_POLL_INTERVAL,
     STATUS_POLL_INTERVAL_FAST,
@@ -163,6 +165,56 @@ def _chunk(origin_us: int, first: int, count: int, *, shift_us: int = 0) -> Audi
 def _frames(pcm: bytes) -> list[int]:
     """Return the source frame number of every frame of PCM, -1 for silence."""
     return [value - 1 for (value,) in struct.iter_unpack("<I", pcm)]
+
+
+def _music(
+    seconds: float, ending: str = "tone", level: int = 8000, noise: int = 16
+) -> Callable[..., AudioChunk]:
+    """
+    Return what makes the chunks of a source of a 1 kHz tone that ends after a while.
+
+    The tone carries a little noise, as one from a lossy source does: an encoder makes a
+    fifth to a seventh of it, and a player leaves about a second of it undecoded.
+
+    :param seconds: How long the source lasts.
+    :param ending: How it ends: on the tone, on a fade-out over its last second, or on
+        50 ms of digital silence.
+    :param level: The peak of the tone.
+    :param noise: The peak of the noise.
+    """
+    rng = random.Random(level)  # noqa: S311
+    total = round(seconds * SECOND)
+    levels = [1.0] * total
+    if ending == "fade-out":
+        levels[-SECOND:] = [(SECOND - at) / SECOND for at in range(SECOND)]
+    elif ending == "digital silence":
+        levels[-SECOND // 20 :] = [0.0] * (SECOND // 20)
+    values = [
+        round(
+            levels[at]
+            * (level * math.sin(2 * math.pi * 1000 * at / SECOND) + rng.randint(-noise, noise))
+        )
+        for at in range(total)
+    ]
+    pcm = struct.pack(f"<{2 * total}h", *(value for value in values for _ in range(2)))
+
+    def chunk(origin_us: int, first: int, count: int) -> AudioChunk:
+        """Return the chunk of the source from a frame on, as far as the source goes."""
+        data = pcm[first * FRAME_SIZE : min(first + count, total) * FRAME_SIZE]
+        return AudioChunk(
+            data=data,
+            timestamp_us=origin_us + _frame_us(first),
+            duration_us=_frame_us(len(data) // FRAME_SIZE),
+            byte_count=len(data),
+        )
+
+    return chunk
+
+
+def _last_sound(pcm: bytes) -> int:
+    """Return the index of the last frame of 16-bit stereo PCM that is not silence."""
+    samples = struct.unpack(f"<{len(pcm) // 2}h", pcm)
+    return max(at for at, sample in enumerate(samples) if sample) // 2
 
 
 def _chunk_24(origin_us: int, first: int, count: int) -> AudioChunk:
@@ -374,6 +426,8 @@ class _BufferedPlayer(_Response):
         self.capacity_us = capacity_us
         # its connection takes nothing
         self.stalled = False
+        # the least audio it held as it played, before the bridge wrote more
+        self.least_held_us = 1 << 62
         self._rig = rig
         self._session = session
         # the sizes of the frames of a FLAC stream as they were made, and how many of
@@ -442,6 +496,7 @@ class _BufferedPlayer(_Response):
                 # it reports what it played, which is no more than it got
                 elapsed_us = min(played_us, _frame_us(self.frames))
                 self._rig.bridge.handle_slim_event(self._rig.status(elapsed_ms=elapsed_us // 1000))
+            self.least_held_us = min(self.least_held_us, self.held_us)
             await _settle()
             held.append(self.held_us)
         return held
@@ -1860,6 +1915,85 @@ async def test_silence_keeps_a_flac_player_fed_that_sendspin_has_nothing_for(
     assert rig.client.play_url.await_count == 1
 
 
+@pytest.mark.parametrize("ending", ["tone", "fade-out", "digital silence"])
+async def test_a_flac_player_plays_a_source_that_ends_to_its_last_sample(
+    flac_rig: _Rig, ending: str
+) -> None:
+    """The end of a source is decoded before it plays: the player does not run dry on it."""
+    rig = flac_rig
+    source = _music(4, ending)
+    session = await rig.start_playing(frames=4 * SECOND, chunk=source)
+    session.claimed = session.preroll_sent = False
+    player = _BufferedPlayer(rig, session)
+    rig.serve(session, player)
+    await _settle()
+    await rig.align_served(session)
+
+    await player.play(6)
+
+    # what it can decode is kept ahead of what it plays, in silence after the source,
+    # less what it played since the last write
+    assert player.least_held_us > STARVED_DECODE_LEAD_US - 50_000 - _frame_us(BLOCK_FRAMES)
+    assert rig.session is session
+    # it decoded the source to its last sample, where its timestamp puts it after the
+    # frames the sync loop repeated: the last ones of a fade-out are 0
+    end = round((rig.origin_us - session.start_us) * SECOND / 1_000_000) + 4 * SECOND
+    if ending == "digital silence":
+        end -= SECOND // 20
+    pcm = player.pcm()[: player.frames * FRAME_SIZE]
+    assert abs(_last_sound(pcm) + 1 - (end - rig.dropped(session))) < 10
+
+
+async def test_a_flac_player_rides_out_a_source_that_stalls_after_audio_that_compresses_well(
+    flac_rig: _Rig,
+) -> None:
+    """A source that stops for a while leaves the player silence, and what comes after it plays."""
+    rig = flac_rig
+    source = _music(12, noise=2)
+    session = await rig.start_playing(frames=6 * SECOND, chunk=source)
+    session.claimed = session.preroll_sent = False
+    player = _BufferedPlayer(rig, session)
+    rig.serve(session, player)
+    await _settle()
+    await rig.align_served(session)
+    # the player can not decode more of it yet than a PCM player is kept ahead
+    await player.play(4)
+    assert session.frames_held > 2 * STARVED_LEAD_FRAMES
+
+    # the source stops after 6 seconds for a while, then delivers the rest
+    await player.play(4)
+    rig.bridge._on_audio_chunk(source(rig.origin_us, 6 * SECOND, 6 * SECOND))
+    await player.play(6)
+
+    assert player.least_held_us > STARVED_DECODE_LEAD_US - 50_000 - _frame_us(BLOCK_FRAMES)
+    assert rig.session is session
+    # the source plays on from where the stream is, to its last sample
+    end = round((rig.origin_us - session.start_us) * SECOND / 1_000_000) + 12 * SECOND
+    pcm = player.pcm()[: player.frames * FRAME_SIZE]
+    assert abs(_last_sound(pcm) + 1 - (end - rig.dropped(session))) < 10
+
+
+async def test_a_flac_player_is_stopped_at_once_at_the_end_of_its_source(flac_rig: _Rig) -> None:
+    """A stop as the source ends stops the player, which holds the silence after it."""
+    rig = flac_rig
+    session = await rig.start_playing(frames=2 * SECOND, chunk=_music(2, "fade-out"))
+    session.claimed = session.preroll_sent = False
+    player = _BufferedPlayer(rig, session)
+    task = rig.serve(session, player)
+    await _settle()
+    await rig.align_served(session)
+    end_us = rig.origin_us + 2_000_000
+    await player.play((end_us - rig.now_us) / 1_000_000)
+
+    rig.bridge._on_stream_end()
+    rig.bridge._on_explicit_stop()
+    await _settle()
+
+    assert task.done()
+    assert rig.bridge._session is None
+    rig.client.stop.assert_awaited_once()
+
+
 async def test_a_flac_stream_decodes_to_what_the_writer_made(flac_rig: _Rig) -> None:
     """Every frame of the PCM is in the stream once, the ones the sync loop repeated or dropped too."""
     rig = flac_rig
@@ -2330,6 +2464,22 @@ async def test_silence_keeps_a_player_fed_that_sendspin_has_nothing_for(rig: _Ri
     late_from = loop.frames_consumed - LEAD_IN_FRAMES
     rig.bridge._on_audio_chunk(_chunk(rig.origin_us, SECOND, SECOND))
     assert _frames(rig.drain(session))[0] == late_from
+
+
+async def test_a_pcm_player_is_kept_the_starved_lead_after_a_source_that_ends(rig: _Rig) -> None:
+    """A PCM player decodes all it got: silence keeps its stream half a second ahead, no more."""
+    session = await rig.start_playing(frames=2 * SECOND, chunk=_music(2, "fade-out"))
+    session.claimed = session.preroll_sent = False
+    player = _BufferedPlayer(rig, session)
+    rig.serve(session, player)
+    await _settle()
+    await rig.align_served(session)
+
+    await player.play(4)
+
+    assert player.least_held_us > STARVED_LEAD_US - 50_000 - _frame_us(BLOCK_FRAMES)
+    assert rig.lead_frames(session) == STARVED_LEAD_FRAMES
+    assert rig.session is session
 
 
 async def test_audio_that_is_still_to_arrive_is_not_replaced_by_silence(rig: _Rig) -> None:

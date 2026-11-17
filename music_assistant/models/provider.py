@@ -117,6 +117,25 @@ class Provider:
         """
         raise ActionUnavailable(f"Unknown menu action: {action_id}")
 
+    async def handle_mcp_tool(
+        self, tool_id: str, arguments: dict[str, Any], player_id: str | None
+    ) -> dict[str, Any]:
+        """
+        Run a tool this provider declares in its manifest, for an AI assistant.
+
+        Override when the manifest declares ``mcp_tools``. The server only calls this for a user
+        who may use this provider instance and holds the scope of the tool, with arguments that
+        match its input schema (every declared property present: the passed value, else its
+        default, else None), and for a tool that requires a player with a player that user may
+        use. Return a dict of JSON values for the model to read; refer to media items by uri.
+        Raise a ``MusicAssistantError`` to report a failure.
+
+        :param tool_id: The id of the tool in the manifest.
+        :param arguments: The arguments of the call.
+        :param player_id: The player to act on for a tool that requires a player, else None.
+        """
+        raise ActionUnavailable(f"Unknown tool: {tool_id}")
+
     async def handle_async_init(self) -> None:
         """
         Handle async initialization of the provider.
