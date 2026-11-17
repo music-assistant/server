@@ -105,6 +105,9 @@ class WiimPlayer(Player):
         # a copy of the low-level client's detected capabilities, reused to pre-seed each
         # fresh command client so topology reads do not re-probe the device
         self._command_capabilities: dict[str, Any] | None = None
+        # the firmware lifts the mute on any volume command, so a level set while muted
+        # is held here and only sent at the unmute
+        self._volume_while_muted: int | None = None
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
@@ -313,6 +316,10 @@ class WiimPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
+        if self.device.is_muted:
+            self._volume_while_muted = volume_level
+            self._update_ma_state_from_sdk_cache()
+            return
         try:
             await self.device.async_set_volume(volume_level)
         except WiimException as err:
@@ -323,6 +330,10 @@ class WiimPlayer(Player):
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
         try:
+            if not muted and self._volume_while_muted is not None:
+                # sent first, so the speaker never plays at the level it was muted at
+                await self.device.async_set_volume(self._volume_while_muted)
+                self._volume_while_muted = None
             await self.device.async_set_mute(muted)
         except WiimException as err:
             self._handle_command_error("volume_mute", err)
@@ -449,8 +460,7 @@ class WiimPlayer(Player):
             self.update_state()
             return
 
-        self._attr_volume_level = self.device.volume
-        self._attr_volume_muted = self.device.is_muted
+        self._update_volume_from_sdk_cache()
 
         # The coordinator is the single native topology authority across both backends; this
         # mapper only reads the role, never writes it. The self-follower signal is fed from a
@@ -649,3 +659,13 @@ class WiimPlayer(Player):
             task_id=f"wiim_topology_{self.player_id}",
             force=True,
         )
+
+    def _update_volume_from_sdk_cache(self) -> None:
+        """Update the level and mute from the SDK cache, keeping a level set while muted."""
+        if not self.device.is_muted:
+            # unmuted on the device itself, which then plays at the level it reports
+            self._volume_while_muted = None
+        self._attr_volume_level = (
+            self.device.volume if self._volume_while_muted is None else self._volume_while_muted
+        )
+        self._attr_volume_muted = self.device.is_muted
