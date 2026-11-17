@@ -223,18 +223,23 @@ class ThrottlerManager:
         retry_attempts: int = 5,
         initial_backoff: int = 5,
         low_priority_retry_attempts: int | None = None,
+        foreground_waits_out_cooldown: bool = True,
     ):
         """
         Initialize the AsyncThrottledContextManager.
 
         :param low_priority_retry_attempts: Attempts a low priority call gets, None for
             retry_attempts.
+        :param foreground_waits_out_cooldown: Whether a call that is not background work
+            waits out a short cooldown. False when such a call can be served elsewhere
+            meanwhile: it then fails on any cooldown instead of waiting.
         """
         self.retry_attempts = retry_attempts
         self.low_priority_retry_attempts = (
             retry_attempts if low_priority_retry_attempts is None else low_priority_retry_attempts
         )
         self.initial_backoff = initial_backoff
+        self._foreground_waits_out_cooldown = foreground_waits_out_cooldown
         self.throttler = Throttler(rate_limit, period)
         self._cooldown_until: float = 0.0
 
@@ -255,7 +260,7 @@ class ThrottlerManager:
         priority = current_priority()
         if priority is RequestPriority.HIGH:
             # playback does not sit out a short cooldown, but sends nothing into a long one
-            self._raise_on_long_cooldown()
+            self._raise_on_cooldown(priority)
             yield await self.throttler.acquire(priority)
             return
         delay = 0.0
@@ -263,7 +268,7 @@ class ThrottlerManager:
         while True:
             # each deadline is waited out once, however often it is extended meanwhile
             while (target := self._cooldown_until) > honored:
-                self._raise_on_long_cooldown()
+                self._raise_on_cooldown(priority)
                 delay += await self._wait_until(target)
                 honored = target
             delay += await self.throttler.acquire(priority)
@@ -291,9 +296,18 @@ class ThrottlerManager:
         self.throttler.rate_limit = rate_limit
         self.throttler.period = period
 
-    def _raise_on_long_cooldown(self) -> None:
-        """Raise RateLimited when the cooldown holds for longer than MAX_WAIT_TIME."""
-        if (remaining := self.cooldown_remaining) > MAX_WAIT_TIME:
+    def _raise_on_cooldown(self, priority: RequestPriority) -> None:
+        """
+        Raise RateLimited when the cooldown holds for longer than a call of this priority waits.
+
+        :param priority: Priority of the call at the gate.
+        """
+        longest_wait = (
+            MAX_WAIT_TIME
+            if priority is RequestPriority.LOW or self._foreground_waits_out_cooldown
+            else 0
+        )
+        if (remaining := self.cooldown_remaining) > longest_wait:
             msg = f"Rate limited for another {remaining:.0f} seconds"
             raise RateLimited(msg, backoff_time=round(remaining))
 

@@ -83,6 +83,8 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
     """Audio analysis provider that identifies tracks via AcoustID/Chromaprint."""
 
     analysis_version: int = 1
+    # tracks only: podcasts and audiobooks must not reach the fingerprinter
+    media_types = frozenset({MediaType.TRACK})
     throttler = ThrottlerManager(rate_limit=3, period=1)
 
     def __init__(
@@ -305,9 +307,6 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         :param streamdetails: Stream details for the track being analysed.
         :param audio_format: PCM format of the incoming audio stream.
         """
-        # Tracks only — podcasts and audiobooks must not reach the fingerprinter.
-        if streamdetails.media_type != MediaType.TRACK:
-            return False
         # Streaming-provider tracks are opt-in — local files always analyse.
         if streamdetails.stream_type != StreamType.LOCAL_FILE and not self.config.get_value(
             CONF_ANALYSE_STREAMING

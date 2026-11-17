@@ -341,6 +341,28 @@ class CacheController(CoreController):
             match["provider"] = provider
         await self.database.delete(DB_TABLE_CACHE, match)
 
+    async def delete_prefix(self, prefix: str, provider: str, category: int = 0) -> None:
+        """
+        Delete the cache entries of a provider whose key starts with the given prefix.
+
+        :param prefix: The start of the keys to delete.
+        :param provider: Provider id the entries are grouped by.
+        :param category: Category the entries are grouped by.
+        """
+        assert self.database is not None
+        assert prefix, "No prefix provided"
+        # a key range rather than LIKE keeps the delete on the (category, key, provider) index
+        await self.database.execute_write(
+            f"DELETE FROM {DB_TABLE_CACHE} WHERE category = :category AND provider = :provider "
+            "AND key >= :prefix AND key < :end",
+            {
+                "category": category,
+                "provider": provider,
+                "prefix": prefix,
+                "end": prefix[:-1] + chr(ord(prefix[-1]) + 1),
+            },
+        )
+
     async def clear(
         self,
         key_filter: str | None = None,

@@ -925,6 +925,51 @@ class TestThrottlerManagerPriority:
             async with throttler.acquire() as delay:
                 assert delay == pytest.approx(10)
 
+    @pytest.mark.parametrize("priority", [RequestPriority.NORMAL, RequestPriority.HIGH])
+    async def test_foreground_that_does_not_wait_fails_on_any_cooldown(
+        self, fake_clock: FakeClock, priority: RequestPriority
+    ) -> None:
+        """A call that can be served elsewhere fails on a short cooldown instead of waiting."""
+        throttler = ThrottlerManager(rate_limit=1, period=10, foreground_waits_out_cooldown=False)
+        throttler.set_cooldown(5)
+        with request_priority(priority), pytest.raises(RateLimited) as exc_info:
+            async with throttler.acquire():
+                pytest.fail("a request went out during a cooldown")
+        assert exc_info.value.backoff_time == 5
+        assert fake_clock.now == 0
+
+    async def test_background_waits_out_a_short_cooldown_either_way(
+        self, fake_clock: FakeClock
+    ) -> None:
+        """Background work waits out a short cooldown, also when foreground calls do not."""
+        throttler = ThrottlerManager(rate_limit=1, period=10, foreground_waits_out_cooldown=False)
+        throttler.set_cooldown(5)
+        with request_priority(RequestPriority.LOW):
+            async with throttler.acquire() as delay:
+                assert delay == pytest.approx(5)
+        assert fake_clock.now == pytest.approx(5)
+
+    async def test_foreground_that_stood_in_line_fails_on_a_cooldown_armed_meanwhile(
+        self, fake_clock: FakeClock
+    ) -> None:
+        """A cooldown armed while a call waited for a free slot fails it instead of holding it."""
+        throttler = ThrottlerManager(rate_limit=1, period=10, foreground_waits_out_cooldown=False)
+        take_slot = throttler.throttler.acquire
+
+        async def _limited_meanwhile(priority: RequestPriority | None = None) -> float:
+            delay = await take_slot(priority)
+            throttler.set_cooldown(5)
+            return delay
+
+        with (
+            patch.object(throttler.throttler, "acquire", _limited_meanwhile),
+            request_priority(RequestPriority.NORMAL),
+            pytest.raises(RateLimited),
+        ):
+            async with throttler.acquire():
+                pytest.fail("a request went out during a cooldown")
+        assert fake_clock.now == 0
+
     async def test_set_rate_limit_changes_the_low_limit(self, fake_clock: FakeClock) -> None:
         """A raised rate limit raises the share of low priority requests along with it."""
         throttler = ThrottlerManager(rate_limit=2, period=100)

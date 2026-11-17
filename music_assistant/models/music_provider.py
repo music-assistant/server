@@ -54,6 +54,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     PlaylistPlayableItem,
 )
+from music_assistant.controllers.cache.helpers import forget_cached
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_text,
@@ -67,6 +68,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import PlaybackState
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
@@ -77,6 +80,7 @@ if TYPE_CHECKING:
         PodcastSyncDetails,
         TrackSyncDetails,
     )
+    from music_assistant.controllers.streams.audio_buffer import AudioBuffer
     from music_assistant.mass import MusicAssistant
 
 CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
@@ -271,6 +275,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             if max_concurrent_streams is not None
             else None
         )
+        self._stream_slot_holders: set[AudioBuffer] = set()
 
     def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool:
         """
@@ -317,12 +322,21 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """Return whether a source stream can start without waiting."""
         return self._stream_semaphore is None or not self._stream_semaphore.locked()
 
+    @property
+    def stream_slot_holders(self) -> tuple[AudioBuffer, ...]:
+        """Return the audio buffers whose sources hold a source-stream slot right now."""
+        return tuple(self._stream_slot_holders)
+
     @asynccontextmanager
-    async def acquire_stream_slot(self, wait_timeout: float | None) -> AsyncGenerator[None]:
+    async def acquire_stream_slot(
+        self, wait_timeout: float | None, holder: AudioBuffer | None = None
+    ) -> AsyncGenerator[None]:
         """
         Acquire one source-stream slot for the duration of the context.
 
         :param wait_timeout: Maximum seconds to wait, or None to wait without a timeout.
+        :param holder: The audio buffer the slot is for, listed in ``stream_slot_holders``
+            for as long as it holds the slot.
         :raises ProviderStreamLimitError: If no slot becomes available before the timeout.
         """
         semaphore = self._stream_semaphore
@@ -337,9 +351,13 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     await semaphore.acquire()
         except TimeoutError as err:
             raise ProviderStreamLimitError(self, wait_timeout) from err
+        if holder is not None:
+            self._stream_slot_holders.add(holder)
         try:
             yield
         finally:
+            if holder is not None:
+                self._stream_slot_holders.discard(holder)
             semaphore.release()
 
     @property
@@ -722,6 +740,17 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """
         raise NotImplementedError
 
+    async def forget_playlist_tracks(self, prov_playlist_id: str) -> None:
+        """
+        Drop what the provider keeps of a playlist's tracks, so the next read fetches them anew.
+
+        Called once Music Assistant changed the playlist. The default drops what use_cache
+        keeps of get_playlist_tracks; override it when the provider keeps them another way.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        """
+        await forget_cached(self.get_playlist_tracks, prov_playlist_id)
+
     async def move_playlist_track(
         self, prov_playlist_id: str, from_position: int, to_position: int
     ) -> None:
@@ -936,6 +965,26 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         media_item is the full media item details of the played/playing track.
 
         is_playing is True when the track is currently playing.
+        """
+
+    async def on_playback_progress(
+        self,
+        report: MediaItemPlaybackProgressReport,
+        prov_item_id: str,
+        state: PlaybackState,
+    ) -> None:
+        """
+        Handle callback when the playback of an item this provider streamed progresses.
+
+        Meant for reporting playback back to the provider's own service, such as the device
+        and position a service shows as playing now. Called only on the provider instance
+        that streamed the item, and only once a player received audio of it: when it starts,
+        pauses, resumes or stops, when the next item starts and every 30s while it plays.
+
+        :param report: The playback progress report; ``player_id`` names the playing player.
+        :param prov_item_id: The provider-specific id of the streamed item.
+        :param state: PLAYING or PAUSED while the item is current, IDLE once it stopped,
+            ended or was skipped.
         """
 
     async def on_item_updated(self, item: MediaItemType) -> None:

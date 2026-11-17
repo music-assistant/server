@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     from music_assistant_models.enums import QueueOption
     from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.player_queue import PlayerQueue
@@ -88,6 +90,9 @@ class _PlayerQueuesBase(CoreController):
         def _update_player_sleep_timer(self, queue: PlayerQueue) -> float | None: ...
         def _set_transitioning(self, queue_id: str, value: bool) -> None: ...
         def _drop_pending_step(self, queue_id: str) -> None: ...
+        def _show_play_action(
+            self, queue_id: str, *, while_playing: bool = False
+        ) -> AbstractContextManager[None]: ...
         def _clear(self, queue_id: str, skip_stop: bool = False) -> None: ...
         async def _cleanup_queue_audio_data(
             self, queue_id: str, session_id: str | None = None

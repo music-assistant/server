@@ -1201,12 +1201,18 @@ def interface_name_for_ip(ip: str) -> str | None:
     their mDNS/zeroconf advertisement interface by name (e.g. shairport-sync and
     go-librespot), so the advertisement stays on the intended network.
 
-    :param ip: The IPv4/IPv6 address to look up.
+    :param ip: The IPv4/IPv6 address to look up, in any notation; None is returned for a
+        value that is not an IP address.
     """
+    try:
+        # ifaddr reports addresses in their canonical notation
+        wanted = str(ip_address(ip))
+    except ValueError:
+        return None
     for adapter in ifaddr.get_adapters():
         for ip_config in adapter.ips:
             addr = ip_config.ip if isinstance(ip_config.ip, str) else ip_config.ip[0]
-            if addr == ip:
+            if addr == wanted:
                 return adapter.name
     return None
 

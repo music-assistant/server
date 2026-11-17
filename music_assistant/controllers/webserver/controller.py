@@ -326,10 +326,15 @@ class WebserverController(CoreController):
         if action == CONF_ACTION_VERIFY_SSL:
             # the certificate/key are read from the stored config, so they must be saved
             # before verifying - the action no longer receives the (unsaved) form values
-            cert_info = await verify_ssl_certificate(
-                str(self.get_config_value(CONF_SSL_CERTIFICATE, "")),
-                str(self.get_config_value(CONF_SSL_PRIVATE_KEY, "")),
-            )
+            certificate = str(self.get_config_value(CONF_SSL_CERTIFICATE) or "")
+            private_key = str(self.get_config_value(CONF_SSL_PRIVATE_KEY) or "")
+            if not certificate or not private_key:
+                raise InvalidDataError(
+                    "Save the certificate and private key first, then press Verify",
+                    translation_key="ssl_not_saved",
+                    translation_owner=self.translation_owner,
+                )
+            cert_info = await verify_ssl_certificate(certificate, private_key)
             if not cert_info.is_valid:
                 # a result only ever reports success, so an unusable certificate must raise
                 raise InvalidDataError(

@@ -502,3 +502,75 @@ def test_live_source_recognised_by_the_uri_it_publishes() -> None:
 
     ctrl._end_audio_source_session(PLAYER_ID)
     assert not ctrl.is_live_audio_source(session.source_uri)
+
+
+def _claimed_session(ctrl: _Controller) -> AudioSourceSession:
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+    ctrl.claim_audio_source_session(session, session.playback_session_id, "tok-1")
+    ctrl.updated_players.clear()
+    return session
+
+
+def test_analysis_metadata_shows_without_counting_as_the_sources_own() -> None:
+    """A recognised song is shown, and the plugin's next report still replaces it."""
+    ctrl = _Controller(_plugin_provider())
+    session = _claimed_session(ctrl)
+    recognised = StreamMetadata(title="Take Five")
+
+    ctrl.show_analysis_metadata(session, session.playback_session_id, "tok-1", recognised)
+
+    assert session.stream_metadata is recognised
+    assert session.stream_metadata_reported is False
+    assert ctrl.updated_players == [PLAYER_ID]
+    session.attach_streamdetails(_streamdetails(StreamMetadata(title="Turntable")))
+    assert session.stream_metadata is not None
+    assert session.stream_metadata.title == "Turntable"
+
+
+def test_analysis_metadata_never_replaces_what_the_plugin_reported() -> None:
+    """Once the plugin reported, what analysis recognises is not shown."""
+    ctrl = _Controller(_plugin_provider())
+    session = _claimed_session(ctrl)
+    owners = StreamMetadata(title="From the plugin")
+    ctrl.update_source_metadata(PLAYER_ID, SOURCE_ID, PROVIDER_INSTANCE, owners)
+
+    ctrl.show_analysis_metadata(
+        session, session.playback_session_id, "tok-1", StreamMetadata(title="Recognised")
+    )
+
+    assert session.stream_metadata is owners
+
+
+def test_analysis_metadata_of_a_superseded_stream_is_dropped() -> None:
+    """A report about a stream that no longer serves the session is not shown."""
+    ctrl = _Controller(_plugin_provider())
+    session = _claimed_session(ctrl)
+    first_playback = session.playback_session_id
+    # the same source reselected keeps the session object with fresh tokens
+    ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+    ctrl.claim_audio_source_session(session, session.playback_session_id, "tok-2")
+
+    ctrl.show_analysis_metadata(session, first_playback, "tok-1", StreamMetadata(title="Old"))
+    ctrl.show_analysis_metadata(
+        session, session.playback_session_id, "tok-1", StreamMetadata(title="Old")
+    )
+
+    assert session.stream_metadata is None
+    assert not ctrl.updated_players
+
+
+def test_withdrawn_analysis_metadata_falls_back_to_the_placeholder() -> None:
+    """Withdrawing restores what the stream details carry, and nothing else is touched."""
+    ctrl = _Controller(_plugin_provider())
+    session = _claimed_session(ctrl)
+    placeholder = StreamMetadata(title="Turntable")
+    session.attach_streamdetails(_streamdetails(placeholder))
+    recognised = StreamMetadata(title="Take Five")
+    ctrl.show_analysis_metadata(session, session.playback_session_id, "tok-1", recognised)
+
+    ctrl.withdraw_analysis_metadata(session, StreamMetadata(title="Another report"))
+    assert session.stream_metadata is recognised
+    ctrl.withdraw_analysis_metadata(session, recognised)
+
+    assert session.stream_metadata is placeholder
+    assert ctrl.updated_players == [PLAYER_ID, PLAYER_ID]

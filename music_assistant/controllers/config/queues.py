@@ -18,7 +18,10 @@ from music_assistant.controllers.config.constants import (
     PLAYER_QUEUE_CONFIG_OWNER,
     _ConfigValueT,
 )
-from music_assistant.controllers.config.helpers import _with_translation_owner
+from music_assistant.controllers.config.helpers import (
+    _raw_config_to_store,
+    _with_translation_owner,
+)
 from music_assistant.controllers.player_queues.constants import CONF_AUTOPLAY_PLAYLIST
 from music_assistant.helpers.api import api_command
 
@@ -131,12 +134,15 @@ class PlayerQueueConfigMixin:
     ) -> PlayerQueueConfig:
         """Save/update PlayerQueueConfig."""
         config = self.get_player_queue_config(queue_id)
-        changed_keys = config.update(values)
         conf_key = f"{CONF_PLAYER_QUEUES}/{queue_id}"
-        if not changed_keys and self.get(conf_key) is not None:
+        stored_conf = self.get(conf_key)
+        stored_values = (stored_conf or {}).get("values", {})
+        changed_keys = config.update(values)
+        raw_conf = _raw_config_to_store(config, stored_values, values)
+        if not changed_keys and stored_conf is not None and raw_conf["values"] == stored_values:
             # no changes
             return config
-        self.set(conf_key, config.to_raw())
+        self.set(conf_key, raw_conf)
         if changed_keys and (queue := self.mass.player_queues.get(queue_id)):
             # refresh derived queue state (e.g. the effective smart-fades indicator) and notify
             # clients so they don't see a stale value until the next unrelated queue update

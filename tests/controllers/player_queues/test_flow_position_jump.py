@@ -161,7 +161,8 @@ def test_correction_into_the_previous_track_then_pause_resumes_there() -> None:
     assert ctrl._last_played_position(queue) == pytest.approx(90)
     # The second track's progress is still reported with its own position.
     report = cast("MagicMock", ctrl._handle_playback_progress_report)
-    prev_state = report.call_args.args[1]
+    recorded = [call for call in report.call_args_list if call.kwargs.get("record_play", True)]
+    prev_state = recorded[-1].args[1]
     assert (prev_state["current_item_id"], prev_state["last_playing_elapsed_time"]) == ("b", 120)
 
 

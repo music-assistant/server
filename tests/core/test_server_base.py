@@ -271,21 +271,23 @@ async def test_stop_logs_a_failed_provider_unload(
 
 
 async def test_stop_cancels_tracked_timers(mass_minimal: MusicAssistant) -> None:
-    """A timer scheduled through call_later, also during the shutdown, does not fire after a stop."""
+    """A timer scheduled through call_later, also during the shutdown, is cancelled by a stop."""
     callback = MagicMock()
-    mass_minimal.call_later(0.05, callback, task_id="before_stop")
+    # far enough out that no timer is due before the stop cancels it, on any runner
+    timers = [mass_minimal.call_later(60, callback, task_id="before_stop")]
     config_close = mass_minimal.config.close
 
     async def close_scheduling_a_timer() -> None:
-        mass_minimal.call_later(0.05, callback, task_id="during_stop")
+        timers.append(mass_minimal.call_later(60, callback, task_id="during_stop"))
         await config_close()
 
     with patch.object(mass_minimal.config, "close", close_scheduling_a_timer):
         await mass_minimal.stop()
-    await asyncio.sleep(0.1)
 
-    callback.assert_not_called()
+    assert len(timers) == 2
+    assert all(timer.cancelled() for timer in timers)
     assert not mass_minimal._tracked_timers
+    callback.assert_not_called()
 
 
 async def test_stop_closes_the_queues_while_tasks_and_timers_still_run(

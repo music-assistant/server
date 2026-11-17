@@ -324,8 +324,8 @@ SONOS_OPTIONS: tuple[SonosOption, ...] = (
         sends_events=False,
     ),
     _on_off_option(
-        "remote_led_feedback",
-        "Status light on remote control",
+        "ir_signal_light",
+        "IR signal light",
         HT_CONTROL_SERVICE,
         "LEDFeedbackState",
         available=lambda device: device.is_home_theater,
