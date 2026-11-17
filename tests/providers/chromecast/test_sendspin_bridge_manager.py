@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiosendspin.server import ClientRemovedEvent
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import (
@@ -130,6 +131,24 @@ class TestCastBridgePolicy:
         assert await manager._try_claim_existing(cast_protocol) is True
         assert manager._claimed_clients == {CAST_ID: client_id}
         assert sendspin.apply_bridge_claim.call_args.kwargs["underlying_protocol_id"] == CAST_ID
+
+    async def test_a_claimed_receiver_that_leaves_is_bridged_by_an_evaluation(self) -> None:
+        """Test the bridge after a claimed receiver goes is decided with the rest of the player."""
+        manager, mass, cast_protocol = _make_cast_environment()
+        sendspin = mass.get_provider.return_value
+        sendspin.apply_bridge_claim = AsyncMock(return_value=True)
+        assert await manager._try_claim_existing(cast_protocol) is True
+        client_id = manager._claimed_clients[CAST_ID]
+        (listener,) = (
+            call.args[0] for call in sendspin.server_api.add_event_listener.call_args_list
+        )
+
+        listener(sendspin.server_api, ClientRemovedEvent(client_id))
+
+        mass.create_task.assert_called_once()
+        name, arguments = scheduled_call(mass.create_task.call_args.args[0])
+        assert name.endswith(".evaluate_bridge"), "the bridge is set up outside the player lock"
+        assert arguments["protocol"] is cast_protocol
 
     async def test_a_claimed_client_goes_with_its_protocol_for_good(self) -> None:
         """Test a permanent removal takes the claimed client along when it rides on the protocol."""

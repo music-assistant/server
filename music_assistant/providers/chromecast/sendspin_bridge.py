@@ -989,12 +989,12 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         self, cast_player: ChromecastPlayer, client_id: str
     ) -> None:
         """
-        Subscribe a one-shot listener that re-runs setup_bridge on client disconnect.
+        Subscribe a one-shot listener that evaluates the bridge again on client disconnect.
 
         After claiming an already-registered external client (JS Cast receiver),
         the bridge's on_stream_start launch handler is not wired. When the JS
-        client eventually disconnects (idle exit, device reboot), re-run
-        setup_bridge so the fresh-client path registers the external player with
+        client eventually disconnects (idle exit, device reboot), evaluate the
+        bridge again so the fresh-client path registers the external player with
         a proper launch handler.
         """
         sendspin_provider = self.sendspin_provider
@@ -1019,7 +1019,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                 return
             if cast_player.protocol_id in self._bridges:
                 return
-            self.mass.create_task(self.setup_bridge(cast_player))
+            self.mass.create_task(self.evaluate_bridge(cast_player))
 
         event_unsub = server_api.add_event_listener(_listener)
 
