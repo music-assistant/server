@@ -299,6 +299,18 @@ class _Device:
         """Return the stored protocols, by their id."""
         return {key: value for key, value in self.configs.items() if "/" not in key}
 
+    async def load_provider(self, domain: str, provider: Any) -> None:
+        """
+        Load a provider that was not loaded yet, which every manager hears of.
+
+        :param domain: The domain of the provider.
+        :param provider: The provider.
+        """
+        self.providers[domain] = provider
+        for manager in self.managers:
+            await manager._on_providers_updated(MagicMock())
+        await self.settle()
+
     def manager_of(self, protocol: Any) -> Any:
         """Return the bridge manager of a protocol."""
         return protocol.provider.bridge_manager
@@ -1280,14 +1292,15 @@ async def test_switching_squeezelite_off_for_the_device_hands_it_to_airplay_and_
     _assert_carried_by(device, SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
 
 
-@pytest.mark.parametrize("stored", [True, False], ids=["provider not loaded", "never bridged"])
+@pytest.mark.parametrize("stored", [True, False], ids=["provider disabled", "never bridged"])
 async def test_a_squeezelite_player_that_is_away_without_its_bridge_leaves_the_device_to_airplay(
     stored: bool,
 ) -> None:
-    """AirPlay carries a device whose squeezelite side has no provider loaded or never had a bridge."""
+    """AirPlay carries a device whose squeezelite provider is disabled or that never had a bridge."""
     device = _Device()
     if stored:
         device.store_output(SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
+        device.configs["providers/squeezelite"]["enabled"] = False
         del device.providers["squeezelite"]
 
     await device.attach(device.airplay)
@@ -1559,3 +1572,94 @@ async def test_a_switched_off_cast_output_of_the_same_client_id_passes_to_airpla
     _assert_carried_by(device, CAST_CLIENT, SAME_ID_AIRPLAY_ID)
     assert output["values"][CONF_SENDSPIN_BRIDGE_STATIC_DELAYS] == {CAST_ID: 123}
     assert not output["values"].get(CONF_PROTOCOL_EXPERIMENTAL_NOTE)
+
+
+@pytest.mark.parametrize("comes_back", [True, False], ids=["player connects", "player stays away"])
+@pytest.mark.parametrize(
+    "airplay_id", [AIRPLAY_ID, SAME_ID_AIRPLAY_ID], ids=["other id form", "same id"]
+)
+async def test_a_start_with_airplay_before_the_squeezelite_provider_keeps_the_device(
+    airplay_id: str, comes_back: bool
+) -> None:
+    """AirPlay does not take the device while the squeezelite provider is still loading."""
+    device = _Device(airplay_id=airplay_id)
+    device.store_output(SQUEEZELITE_CLIENT, SQUEEZELITE_ID, sendspin_static_delay=120)
+    output = device.configs[SQUEEZELITE_CLIENT]
+    # switched on in the config, and not loaded yet
+    squeezelite_provider = device.providers.pop("squeezelite")
+
+    await device.attach(device.airplay)
+
+    assert device.timeline == []
+    assert device.configs.get(SQUEEZELITE_CLIENT) is output, "the output of squeezelite was removed"
+
+    await device.load_provider("squeezelite", squeezelite_provider)
+
+    assert device.timeline == []
+    if comes_back:
+        await device.attach(device.squeezelite)
+        assert device.timeline == [("registered", "squeezelite")]
+        _assert_carried_by(device, SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
+    assert device.configs[SQUEEZELITE_CLIENT] is output
+    assert output["values"][CONF_SENDSPIN_STATIC_DELAY] == 120
+
+
+@pytest.mark.parametrize(
+    "airplay_id", [AIRPLAY_ID, SAME_ID_AIRPLAY_ID], ids=["other id form", "same id"]
+)
+async def test_a_start_with_squeezelite_before_the_airplay_provider_keeps_the_device(
+    airplay_id: str,
+) -> None:
+    """Squeezelite keeps the device when the AirPlay provider loads after it."""
+    device = _Device(airplay_id=airplay_id)
+    device.store_output(SQUEEZELITE_CLIENT, SQUEEZELITE_ID, sendspin_static_delay=120)
+    output = device.configs[SQUEEZELITE_CLIENT]
+    airplay_provider = device.providers.pop("airplay")
+
+    await device.attach(device.squeezelite)
+    await device.load_provider("airplay", airplay_provider)
+    await device.attach(device.airplay)
+
+    assert device.timeline == [("registered", "squeezelite")]
+    assert device.configs[SQUEEZELITE_CLIENT] is output
+    assert output["values"][CONF_SENDSPIN_STATIC_DELAY] == 120
+    _assert_carried_by(device, SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
+
+
+async def test_a_switched_off_airplay_output_keeps_counting_while_its_provider_loads() -> None:
+    """Squeezelite does not register while the AirPlay provider that has its off is loading."""
+    device = _Device()
+    device.store_output(AIRPLAY_CLIENT, AIRPLAY_ID, sendspin_static_delay=77)
+    output: dict[str, Any] = device.configs[AIRPLAY_CLIENT]
+    output["enabled"] = False
+    airplay_provider = device.providers.pop("airplay")
+
+    await device.attach(device.squeezelite)
+    await device.load_provider("airplay", airplay_provider)
+    await device.attach(device.airplay)
+
+    assert device.timeline == []
+    assert set(_sendspin_records(device)) == {AIRPLAY_CLIENT}
+    assert device.configs[AIRPLAY_CLIENT] is output
+    assert output["enabled"] is False
+
+
+async def test_a_cast_output_off_by_default_keeps_squeezelite_waiting_only_while_cast_loads() -> (
+    None
+):
+    """A Cast output that is off counts while Cast loads, and no longer once it can answer."""
+    device = _Device(airplay=False, cast=True)
+    # a client id of its own, so squeezelite registers under another one
+    cast_client = "spb_a8bbccddee00"
+    device.store_output(cast_client, CAST_ID)
+    device.configs[cast_client]["enabled"] = False
+    device.cast.cast_info.mac_address = "A8:BB:CC:DD:EE:00"
+    cast_provider = device.providers.pop("chromecast")
+
+    await device.attach(device.squeezelite)
+
+    assert device.timeline == []
+
+    await device.load_provider("chromecast", cast_provider)
+
+    _assert_carried_by(device, SQUEEZELITE_CLIENT, SQUEEZELITE_ID)

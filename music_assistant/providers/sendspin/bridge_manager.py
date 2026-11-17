@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from contextlib import suppress
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from music_assistant_models.enums import EventType
 
@@ -415,9 +415,21 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         """
         Return whether a bridge before this one in BRIDGE_ORDER carries the Sendspin output.
 
+        A provider that is switched on in the config but not loaded yet, as during a start-up,
+        keeps the place of a Sendspin output its bridge stored for the player, as long as the
+        protocol that output rides on is switched on.
+
         :param player: The player to look at.
         """
-        return self._earlier_carrier(player) is not None
+        if self._earlier_carrier(player) is not None:
+            return True
+        for domain in BRIDGE_ORDER[: _bridge_rank(self.provider.domain)]:
+            if self._bridge_manager_of(domain) is None and any(
+                self.mass.config.is_protocol_switched_on(underlying_id)
+                for _, _, underlying_id in self._stored_outputs(player, domain)
+            ):
+                return True
+        return False
 
     def _earlier_carrier_shares_client(
         self, protocol: PlayerProtocol, client_id: str | None
@@ -437,17 +449,13 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         """
         Return the manager of the bridge before this one in BRIDGE_ORDER that carries the player.
 
-        A provider that is not loaded carries nothing.
+        Only a loaded provider is looked at.
 
         :param player: The player to look at.
         """
-        for domain in BRIDGE_ORDER:
-            if domain == self.provider.domain:
-                return None
-            manager = getattr(self.mass.get_provider(domain), "bridge_manager", None)
-            if isinstance(manager, SendspinBridgeManagerBase) and (
-                manager.carries_sendspin_output(player)
-            ):
+        for domain in BRIDGE_ORDER[: _bridge_rank(self.provider.domain)]:
+            manager = self._bridge_manager_of(domain)
+            if manager is not None and manager.carries_sendspin_output(player):
                 return manager
         return None
 
@@ -460,9 +468,19 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
 
         :param player: The player to look at.
         """
-        output_ids: list[str] = []
+        return [output_id for output_id, _, _ in self._stored_outputs(player, self.provider.domain)]
+
+    def _stored_outputs(self, player: Player, domain: str) -> list[tuple[str, dict[str, Any], str]]:
+        """
+        Return the stored Sendspin outputs of a player that ride on a protocol of a provider.
+
+        :param player: The player to look at.
+        :param domain: The domain of the provider of the protocol the outputs ride on.
+        :return: The id and the record of each output, and the id of the protocol it rides on.
+        """
+        outputs: list[tuple[str, dict[str, Any], str]] = []
         if (sendspin_provider := self.sendspin_provider) is None:
-            return output_ids
+            return outputs
         config = self.mass.config
         for output_id in config.get_protocol_ids_of_player(player.player_id):
             record = config.get_protocol_record(output_id) or {}
@@ -471,23 +489,39 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             underlying_id = (record.get("values") or {}).get(CONF_UNDERLYING_PLAYER_ID)
             if not isinstance(underlying_id, str):
                 continue
-            underlying = config.get_protocol_record(underlying_id) or {}
-            if underlying.get("provider") == self.provider.instance_id:
-                output_ids.append(output_id)
-        return output_ids
+            # the provider of a protocol is stored by its instance id: its domain, or that
+            # domain with a suffix for another instance
+            underlying_provider = (config.get_protocol_record(underlying_id) or {}).get("provider")
+            if str(underlying_provider or "").split("--", maxsplit=1)[0] == domain:
+                outputs.append((output_id, record, underlying_id))
+        return outputs
+
+    def _bridge_manager_of(self, domain: str) -> SendspinBridgeManagerBase[SendspinBridge] | None:
+        """
+        Return the bridge manager of the loaded provider of a domain, if there is one.
+
+        :param domain: The domain of the provider.
+        """
+        manager = getattr(self.mass.get_provider(domain), "bridge_manager", None)
+        return manager if isinstance(manager, SendspinBridgeManagerBase) else None
 
     def _later_bridge_output_switched_off(self, player: Player) -> bool:
         """
         Return whether the user switched off a Sendspin output of a later bridge in BRIDGE_ORDER.
 
-        A provider that is not loaded is not looked at.
+        Of a provider that is switched on in the config but not loaded yet, every switched-off
+        output counts until it can tell whether the user switched it off.
 
         :param player: The player to look at.
         """
         for domain in BRIDGE_ORDER[_bridge_rank(self.provider.domain) + 1 :]:
-            manager = getattr(self.mass.get_provider(domain), "bridge_manager", None)
-            if isinstance(manager, SendspinBridgeManagerBase) and (
-                manager.has_output_switched_off_by_user(player)
+            if (manager := self._bridge_manager_of(domain)) is not None:
+                if manager.has_output_switched_off_by_user(player):
+                    return True
+            elif any(
+                not record.get("enabled", True)
+                and self.mass.config.is_protocol_switched_on(underlying_id)
+                for _, record, underlying_id in self._stored_outputs(player, domain)
             ):
                 return True
         return False
