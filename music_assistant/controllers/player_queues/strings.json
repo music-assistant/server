@@ -320,6 +320,8 @@
     "dynamic_queue_order_fixed": "Shuffle and repeat can not be changed while {0} plays a dynamic playlist.",
     "autoplay_needs_repeat_off": "Autoplay can not be turned on while repeat is on. Turn off repeat first.",
     "playback_speed_not_supported": "The playback speed can only be changed for audiobooks and podcasts.",
-    "length_unknown": "The length of {0} is unknown, so this is not possible."
+    "length_unknown": "The length of {0} is unknown, so this is not possible.",
+    "seek_past_end": "That position is past the end of {0}.",
+    "live_input_plays_alone": "A live input can only be played on its own, not together with other items."
   }
 }

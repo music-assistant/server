@@ -244,6 +244,7 @@ async def _resolve_start_position(
 
 async def _resolve_audio_source_request(
     media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
+    translation_owner: str,
 ) -> str | None:
     """
     Return the uri of the live audio source a play request names, if it names one.
@@ -253,6 +254,7 @@ async def _resolve_audio_source_request(
     rather than a request to interpret.
 
     :param media: The media a play request was given.
+    :param translation_owner: The owner of the translated error.
     :raises InvalidCommand: When a live source is named among other media.
     """
     items = media if isinstance(media, list) else [media]
@@ -261,7 +263,9 @@ async def _resolve_audio_source_request(
         return None
     if len(items) > 1:
         raise InvalidCommand(
-            "A live audio source plays on its own: it can not be combined with other media"
+            "A live audio source plays on its own: it can not be combined with other media",
+            translation_key="live_input_plays_alone",
+            translation_owner=translation_owner,
         )
     item = sources[0]
     return item if isinstance(item, str) else item.uri
@@ -827,7 +831,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # A live source is not queue content: it plays on the player while the queue
         # keeps its own items. Selecting it is the real operation, so a play request
         # naming one is forwarded there rather than enqueued.
-        if (source_uri := await _resolve_audio_source_request(media)) is not None:
+        if (
+            source_uri := await _resolve_audio_source_request(media, self.translation_owner)
+        ) is not None:
             await self.mass.players.select_source(queue_id, source_uri)
             return
         queue_id, option = await self._get_play_media_target(queue_id, media, option, radio_mode)
@@ -1366,7 +1372,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             )
         position = max(0, int(position))
         if position > queue.current_item.duration:
-            raise InvalidCommand("Can not seek outside of duration range.")
+            raise InvalidCommand(
+                "Can not seek outside of duration range.",
+                translation_key="seek_past_end",
+                translation_owner=self.translation_owner,
+                translation_args=[queue.current_item.name],
+            )
         if queue.current_index is None:
             raise InvalidCommand(f"Queue {queue_player.name} has no current index.")
         # Publish the seek target before rebuilding the stream to prevent progress snapback.
