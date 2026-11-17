@@ -1224,6 +1224,19 @@ def test_an_airplay_sender_of_its_own_is_reported_as_the_airplay_source() -> Non
     )
 
 
+def test_a_sender_that_takes_over_while_we_stream_keeps_the_session_ours() -> None:
+    """Test a phone that takes the speaker over mid-stream is not told apart from our stream."""
+    player, client = _speaker_on_airplay()
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=True)
+    # the speaker keeps playing through the takeover and our output stays the active one
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=True)
+
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PAUSED, our_output=True)
+
+    assert player._attr_playback_state is PlaybackState.IDLE
+    assert player._attr_active_source is None
+
+
 def test_other_speaker_events_keep_our_airplay_session() -> None:
     """Test an event that leaves the playback alone, such as a volume change, keeps our session."""
     player, client = _speaker_on_airplay()
