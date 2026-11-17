@@ -1558,6 +1558,9 @@ SENT = [
     # a source of more than 16 bits fills 24
     ("flac", FLAC_PLAYER, _source(ContentType.FLAC, 20), (16, 24), FLAC, 24),
     ("flac", FLAC_PLAYER, _source(ContentType.FLAC, 32), (16, 24), FLAC, 24),
+    # DSD comes in the bits it is decoded to
+    ("flac", FLAC_PLAYER, _source(ContentType.DSF, 32), (16, 24), FLAC, 24),
+    ("wav", PLAIN_PLAYER, _source(ContentType.DSF, 32), (16, 24), PCM_24, 24),
     # a lossy source has 16 bits, whatever its decoder makes of it
     ("flac", FLAC_PLAYER, _source(ContentType.MP3, 24), (16, 24), FLAC, 16),
     ("wav", PLAIN_PLAYER, _source(ContentType.AAC, 24), (16, 24), PCM_16, 16),
@@ -1845,8 +1848,9 @@ async def test_a_flac_player_has_silence_to_play_until_its_start_is_corrected(
     assert session.loop.start_error_ms == pytest.approx(-0.5)
     block_us = _frame_us(BLOCK_FRAMES)
     assert min(held) >= ALIGN_LEAD_US
-    # all of the lead-in but the room for a late start went out at once, as it does for
-    # a PCM player: the 7 blocks at the end of it are what this one can not decode yet
+    # all of the lead-in but the room for a late start went out before the player played
+    # any of it, as it does for a PCM player: the 7 blocks at the end of it are what this
+    # one can not decode yet
     at_once_us = LEAD_IN_US - ALIGN_ROOM_US - 7 * block_us
     assert held[0] == pytest.approx(at_once_us - 50_000, abs=block_us)
     assert rig.client.play_url.await_count == 1

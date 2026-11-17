@@ -99,6 +99,7 @@ from music_assistant.constants import (
     CONF_UNDERLYING_PLAYER_ID,
 )
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
+from music_assistant.helpers.audio import decoded_pcm_format
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import (
     MEDIA_IDENTITY_KEYS,
@@ -1462,7 +1463,8 @@ class SendspinPlayer(SendspinBasePlayer):
     _stop_taking_volume_reports: Callable[[], None] | None = None
     # sample rate an automatic Sendspin format follows, set by the last playback session
     _session_sample_rate: int | None = None
-    # format of the first item of that session, None when it has none: a bridge reads it
+    # format of the first item of that session in the bit depth its audio is decoded to,
+    # None when it has none: a bridge reads it
     session_source_format: AudioFormat | None = None
 
     @property
@@ -1848,12 +1850,15 @@ class SendspinPlayer(SendspinBasePlayer):
 
         :param start_streamdetails: Stream details of the first item of the session, if any.
         """
-        self.session_source_format = (
-            start_streamdetails.audio_format if start_streamdetails else None
-        )
         if start_streamdetails is None:
+            self.session_source_format = None
             self._session_sample_rate = None
         else:
+            # DSD is probed as fewer bits than its audio is decoded to
+            self.session_source_format = replace(
+                start_streamdetails.audio_format,
+                bit_depth=decoded_pcm_format(start_streamdetails).bit_depth,
+            )
             pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
                 self, start_streamdetails=start_streamdetails
             )

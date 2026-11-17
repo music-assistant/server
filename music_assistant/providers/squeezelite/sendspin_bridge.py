@@ -17,7 +17,7 @@ through a stall of its network.
 
 The stream is FLAC or PCM, by the output codec setting of the player and what the player
 says it plays, in no more bits than the source of what plays has. A player whose FLAC
-stream fails before it played is sent PCM from then on.
+stream fails before it played ``MIN_PLAYED_US`` is sent PCM from then on.
 
 Audio flow:
 Sendspin PushStream -> BridgePlayerRole.on_audio_chunk -> session -> HTTP stream -> player
@@ -1000,7 +1000,7 @@ class SendspinSqueezeliteBridge:
 
         That is the PCM format the role of the bridge asks Sendspin for, sent as FLAC to a
         player that is set to it and says that it plays it, unless a FLAC stream failed
-        on it before it played.
+        on it before it played ``MIN_PLAYED_US``.
         """
         requirements = self._bridge_role.preferred_format if self._bridge_role else None
         sample_rate = requirements.sample_rate if requirements else BRIDGE_SAMPLE_RATE
@@ -1427,7 +1427,7 @@ class SendspinSqueezeliteBridge:
         """
         Restart a session that failed, unless the player keeps failing before it plays.
 
-        A FLAC stream that failed before it played is restarted as PCM.
+        A FLAC stream that failed before it played ``MIN_PLAYED_US`` is restarted as PCM.
 
         :param session: The session that failed.
         :param reason: What the player did, for the log.

@@ -26,7 +26,9 @@ from aiosendspin.noise.trust_store import InMemoryServerPairingStore
 from aiosendspin.server import ClientUpdatedEvent, SendspinServer
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
-from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_FLOW_MODE_SAMPLE_RATE
 from music_assistant.controllers.streams.audio import StreamsAudio
@@ -141,11 +143,26 @@ def _sendspin_player(role: SlimprotoBridgeRole, config: dict[str, str]) -> Any:
     return player
 
 
-def _track(sample_rate: int) -> MagicMock:
-    """Return the stream details of a track with a sample rate."""
-    streamdetails = MagicMock(media_type=MediaType.TRACK)
-    streamdetails.audio_format.sample_rate = sample_rate
-    return streamdetails
+def _track(
+    sample_rate: int, content_type: ContentType = ContentType.FLAC, bit_depth: int = 16
+) -> StreamDetails:
+    """
+    Return the stream details of a track.
+
+    :param sample_rate: The sample rate of its source.
+    :param content_type: What its source is.
+    :param bit_depth: The bit depth its source is probed as.
+    """
+    return StreamDetails(
+        provider="test",
+        item_id="track",
+        audio_format=AudioFormat(
+            content_type=content_type, sample_rate=sample_rate, bit_depth=bit_depth
+        ),
+        media_type=MediaType.TRACK,
+        stream_type=StreamType.HTTP,
+        path="http://example.local/track",
+    )
 
 
 async def test_sendspin_makes_this_role_for_a_bridge_client(server: SendspinServer) -> None:
@@ -202,28 +219,31 @@ def test_the_role_plays_the_first_format_of_the_hello_by_default() -> None:
 
 
 @pytest.mark.parametrize(
-    ("content_type", "bit_depth", "plays"),
+    ("content_type", "bit_depth", "decoded_bit_depth", "plays"),
     [
-        (ContentType.FLAC, 16, (48000, 16, 2)),
-        (ContentType.FLAC, 24, (48000, 24, 2)),
-        (ContentType.MP3, 24, (48000, 24, 2)),
+        (ContentType.FLAC, 16, 16, (48000, 16, 2)),
+        (ContentType.FLAC, 24, 24, (48000, 24, 2)),
+        (ContentType.MP3, 24, 24, (48000, 24, 2)),
+        # DSD is probed as 8 bits and decoded to more than a player takes
+        (ContentType.DSF, 8, 32, (48000, 24, 2)),
+        (ContentType.WAVPACK, 8, 32, (48000, 24, 2)),
     ],
 )
 async def test_a_session_keeps_the_format_of_its_first_item_for_the_bridge(
-    content_type: ContentType, bit_depth: int, plays: tuple[int, int, int]
+    content_type: ContentType, bit_depth: int, decoded_bit_depth: int, plays: tuple[int, int, int]
 ) -> None:
     """The Sendspin provider hands the source of a session on, and the role plays no more bits."""
     role = _role()
     player = _sendspin_player(role, {})
     # as the bridge reads it: the bit depth of the source the player was told about
     role.limit_bit_depth(lambda: getattr(player.session_source_format, "bit_depth", None))
-    streamdetails = _track(48000)
-    streamdetails.audio_format.content_type = content_type
-    streamdetails.audio_format.bit_depth = bit_depth
+    streamdetails = _track(48000, content_type, bit_depth)
 
     await player.follow_session_sample_rate(streamdetails)
 
-    assert player.session_source_format is streamdetails.audio_format
+    assert player.session_source_format == replace(
+        streamdetails.audio_format, bit_depth=decoded_bit_depth
+    )
     assert _plays(role) == plays
     await player.follow_session_sample_rate(None)
     assert player.session_source_format is None
