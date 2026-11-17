@@ -19,7 +19,8 @@ MAX_MCP_TOOL_PROPERTY_NAME_LENGTH: Final = 32
 MAX_MCP_TOOL_PROPERTY_DESCRIPTION_LENGTH: Final = 200
 MAX_MCP_TOOL_ENUM_VALUES: Final = 50
 MAX_MCP_TOOL_ENUM_VALUE_LENGTH: Final = 64
-MCP_TOOL_ID_PATTERN: Final = re.compile(rf"[a-z0-9_]{{1,{MAX_MCP_TOOL_ID_LENGTH}}}")
+# single underscores only, so that no two providers can make the same name "<domain>__<id>"
+MCP_TOOL_ID_PATTERN: Final = re.compile(r"[a-z0-9]+(?:_[a-z0-9]+)*")
 MCP_TOOL_PROPERTY_NAME_PATTERN: Final = re.compile(
     rf"[a-z][a-z0-9_]{{0,{MAX_MCP_TOOL_PROPERTY_NAME_LENGTH - 1}}}"
 )
@@ -82,10 +83,10 @@ def _find_problem(tool: ProviderMCPTool, kept: list[ProviderMCPTool], domain: st
     :param kept: The tools of the provider that were kept so far.
     :param domain: The domain of the provider.
     """
-    if not MCP_TOOL_ID_PATTERN.fullmatch(tool.id):
+    if len(tool.id) > MAX_MCP_TOOL_ID_LENGTH or not MCP_TOOL_ID_PATTERN.fullmatch(tool.id):
         return (
-            "needs an id of lower case letters, digits and underscores "
-            f"(at most {MAX_MCP_TOOL_ID_LENGTH})"
+            "needs an id of lower case letters and digits, in groups joined by single "
+            f"underscores (at most {MAX_MCP_TOOL_ID_LENGTH})"
         )
     if any(other.id == tool.id for other in kept):
         return "another MCP tool of this provider has the same id"

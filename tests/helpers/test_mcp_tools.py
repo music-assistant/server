@@ -154,6 +154,10 @@ def test_tool_of_wrong_type_left_out(item: object) -> None:
         ({"id": ""}, "needs an id"),
         ({"id": "play-station"}, "needs an id"),
         ({"id": "x" * 33}, "needs an id"),
+        ({"id": "_a"}, "needs an id"),
+        ({"id": "a_"}, "needs an id"),
+        ({"id": "a__b"}, "needs an id"),
+        ({"id": "_"}, "needs an id"),
         ({"description": ""}, "needs a description"),
         ({"description": "x" * (MAX_MCP_TOOL_DESCRIPTION_LENGTH + 1)}, "needs a description"),
         ({"description": "Play\na station"}, "needs a description"),
@@ -267,6 +271,27 @@ def test_property_breaking_a_rule_left_out(prop: object, problem: str) -> None:
     assert problems[0].startswith(
         f"MCP tool 'play_station': input_schema property 'value' {problem}"
     )
+
+
+@pytest.mark.parametrize("tool_id", ["a", "a_b", "play_station_2", "9"])
+def test_id_of_groups_joined_by_single_underscores_accepted(tool_id: str) -> None:
+    """An id of letters and digits, in groups joined by single underscores, is kept."""
+    kept, problems = read_mcp_tools([_tool(id=tool_id)], DOMAIN)
+    assert [tool.id for tool in kept] == [tool_id]
+    assert problems == []
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [(("a", "_b"), ("a_", "b")), (("a", "b__c"), ("a__b", "c"))],
+)
+def test_two_providers_never_make_the_same_tool_name(
+    first: tuple[str, str], second: tuple[str, str]
+) -> None:
+    """Of two (domain, id) pairs that would give the same tool name, at most one is kept."""
+    assert "__".join(first) == "__".join(second)
+    kept = [read_mcp_tools([_tool(id=tool_id)], domain)[0] for domain, tool_id in (first, second)]
+    assert sum(len(tools) for tools in kept) <= 1
 
 
 def test_tool_name_limit() -> None:
