@@ -312,6 +312,23 @@ async def test_track_refresh_that_is_not_forced_adds_lrc_to_stored_plain_lyrics(
 
 
 @pytest.mark.asyncio
+async def test_recent_track_refresh_skips_lyrics_lookup() -> None:
+    """A recent non-forced refresh skips providers even when synchronized lyrics are missing."""
+    enrichment = _enrichment()
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
+    enrichment.providers = [lyrics_provider]  # type: ignore[misc]
+    track = _track_with_lyrics("stored plain", None)
+    track.metadata.last_refresh = NOW - 1
+
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_track_metadata(track, force_refresh=False)
+
+    lyrics_provider.get_track_metadata.assert_not_awaited()
+    _replaced_lyrics(enrichment).assert_not_awaited()
+    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == ("stored plain", None)
+
+
+@pytest.mark.asyncio
 async def test_forced_track_refresh_takes_the_lyrics_of_the_local_file_first() -> None:
     """The lyrics are read again from the music providers, a local file first."""
     enrichment = _enrichment()

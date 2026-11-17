@@ -23,6 +23,8 @@ from tests.common import set_music_source_access
 from tests.controllers.music.helpers import create_track
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import Track
+
     from music_assistant.controllers.metadata import MetaDataController
     from music_assistant.mass import MusicAssistant
 
@@ -387,28 +389,48 @@ async def test_track_lyrics_continues_after_plain_lyrics_from_own_provider(
     lyrics_provider.get_track_metadata.assert_awaited_once()
 
 
-async def test_track_lyrics_continues_after_plain_lyrics_from_library_refresh(
+@pytest.mark.parametrize(
+    ("refreshed_lyrics", "refreshed_lrc", "expected"),
+    [
+        ("refreshed plain", None, ("refreshed plain", None)),
+        ("refreshed plain", "[00:02.00]sync", ("refreshed plain", "[00:02.00]sync")),
+        ("[00:03.00]sync", None, ("[00:03.00]sync", "[00:03.00]sync")),
+        (None, None, (None, None)),
+    ],
+)
+async def test_track_lyrics_returns_library_lyrics_after_refresh(
     metadata_controller: MetaDataController,
     mass_minimal: MusicAssistant,
+    refreshed_lyrics: str | None,
+    refreshed_lrc: str | None,
+    expected: tuple[str | None, str | None],
 ) -> None:
-    """Plain lyrics after a library refresh do not prevent searching metadata providers."""
+    """A library track returns lyrics updated by refresh without an additional lookup."""
     mass_minimal.music = MusicController(mass_minimal)
     track = create_track("library", "1")
     track.provider = "library"
-    track.metadata.lyrics = "library plain"
-    lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
+    track.metadata.lyrics = "caller plain"
     stored_track = create_track("spotify", "t1")
     stored_track.item_id, stored_track.provider = "1", "library"
-    stored_track.metadata.lyrics = "refreshed plain"
-    refresh = AsyncMock()
+    stored_track.metadata.lyrics = "stored plain"
+
+    async def _refresh(refreshed_track: Track, **_kwargs: object) -> None:
+        refreshed_track.metadata.lyrics = refreshed_lyrics
+        refreshed_track.metadata.lrc_lyrics = refreshed_lrc
+
+    refresh = AsyncMock(side_effect=_refresh)
+    own_provider_lookup = MagicMock(return_value=None)
+    metadata_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]live sync"))
 
     with (
         patch.object(mass_minimal.music.tracks, "get", new=AsyncMock(return_value=stored_track)),
         patch.object(metadata_controller, "_update_track_metadata", new=refresh),
-        patch.object(mass_minimal, "get_providers", return_value=[lyrics_provider]),
+        patch.object(mass_minimal.music, "get_visible_provider", new=own_provider_lookup),
+        patch.object(mass_minimal, "get_providers", return_value=[metadata_provider]),
     ):
         result = await metadata_controller.get_track_lyrics(track)
 
-    assert result == ("library plain", "[00:01.00]sync")
-    refresh.assert_awaited_once()
-    lyrics_provider.get_track_metadata.assert_awaited_once()
+    assert result == expected
+    refresh.assert_awaited_once_with(stored_track, force_refresh=False)
+    own_provider_lookup.assert_not_called()
+    metadata_provider.get_track_metadata.assert_not_awaited()

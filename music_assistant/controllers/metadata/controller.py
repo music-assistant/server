@@ -506,9 +506,8 @@ class MetaDataController(
             )
             with system_auth_context():
                 await self._update_track_metadata(track, force_refresh=False)
-            has_lrc, lyrics = self._select_track_lyrics(track.metadata, lyrics)
-            if has_lrc:
-                return lyrics
+            _, lyrics = self._select_track_lyrics(track.metadata, (None, None))
+            return lyrics
 
         # prefer lyrics from the track's own provider
         full_track = track
