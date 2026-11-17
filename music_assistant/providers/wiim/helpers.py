@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.enums import ChannelLayout
 from pywiim.model_names import is_known_wiim_model
 from wiim.consts import MANUFACTURER_AUDIO_PRO, MANUFACTURER_WIIM
 
@@ -20,6 +21,10 @@ if TYPE_CHECKING:
 OFFICIAL_MANUFACTURERS = (MANUFACTURER_WIIM, MANUFACTURER_AUDIO_PRO)
 
 _HEX = re.compile(r"^[0-9a-fA-F]+$")
+
+# The channel a speaker plays in a native stereo pair (getSlaveList group_channel).
+SET_CHANNEL_LEFT = 1
+SET_CHANNEL_RIGHT = 2
 
 
 def linkplay_group_compatible(
@@ -45,6 +50,34 @@ def linkplay_group_compatible(
     first_major = _wmrm_major(first)
     second_major = _wmrm_major(second)
     return first_major is not None and first_major == second_major
+
+
+def native_set_channel(slave: dict[str, Any]) -> int | None:
+    """
+    Return the channel of a slave in its leader's native set, None for an ordinary group member.
+
+    A native set is a stereo pair (or another multichannel set) made in the WiiM Home app.
+
+    :param slave: One entry of the slave list a leader reports.
+    """
+    try:
+        channel = int(slave.get("group_channel", 0))
+    except TypeError, ValueError:
+        return None
+    return channel if channel > 0 else None
+
+
+def native_set_layout(channels: list[int]) -> ChannelLayout | None:
+    """
+    Return the channel layout of the native set a leader leads, None when it leads none.
+
+    :param channels: The set channels of the leader's slaves that belong to its set.
+    """
+    if not channels:
+        return None
+    if channels in ([SET_CHANNEL_LEFT], [SET_CHANNEL_RIGHT]):
+        return ChannelLayout.STEREO
+    return ChannelLayout.UNKNOWN
 
 
 def is_official_manufacturer(manufacturer: str | None) -> bool:
