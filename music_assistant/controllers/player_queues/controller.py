@@ -136,6 +136,7 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.constants import PlaylistPlayableItem
     from music_assistant.controllers.music.recency import RecencyWindows
+    from music_assistant.controllers.streams.audio_buffer import AudioBuffer
     from music_assistant.helpers.json import SerializableType
     from music_assistant.models.player import Player
     from music_assistant.models.player_protocol import PlayerProtocol
@@ -329,6 +330,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             "flow_mode_active": sum(queue.flow_mode for queue in queues),
             "dynamic_mode_active": sum(queue.is_dynamic for queue in queues),
             "total_items": sum(queue.items for queue in queues),
+            "audio_buffers": sum(
+                len(self._audio_buffers(queue_data)) for queue_data in self._queue_data.values()
+            ),
         }
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -1882,6 +1886,25 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.served_item_ids.add(item_id)
 
+    def register_audio_buffer(self, queue_item: QueueItem, audio_buffer: AudioBuffer) -> None:
+        """
+        Record an audio buffer that was made for an item of a queue.
+
+        The buffer gets to know the queue and the item it was made for, and that queue keeps
+        it on record for as long as it holds audio.
+
+        :param queue_item: The queue item the buffer was made for.
+        :param audio_buffer: The buffer, before its source starts to fill it.
+        """
+        audio_buffer.queue_id = queue_item.queue_id
+        audio_buffer.queue_item_id = queue_item.queue_item_id
+        if (queue_data := self._queue_data.get(queue_item.queue_id)) is None:
+            return
+        queue_data.audio_buffers = [
+            *self._audio_buffers(queue_data),
+            (queue_item, audio_buffer),
+        ]
+
     async def release_failed_item_source(self, queue_id: str, queue_item_id: str) -> None:
         """
         Cancel the still-filling source of an item the player gave up on.
@@ -2696,6 +2719,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if (streamdetails := item.streamdetails) and (buffer := streamdetails.buffer):
                 streamdetails.buffer = None
                 self.mass.create_task(buffer.clear())
+
+    def _audio_buffers(self, queue_data: PlayerQueueData) -> list[tuple[QueueItem, AudioBuffer]]:
+        """
+        Return the buffers on a queue's record that still hold audio, each with its item.
+
+        :param queue_data: The data of the queue.
+        """
+        # a buffer that was cleared stays cancelled, so its entry is of no use any more
+        return [entry for entry in queue_data.audio_buffers if not entry[1].cancelled]
 
     def _cancel_pending_playback(self, queue_id: str) -> None:
         """Cancel the queue's pending play_index, preload, enqueue-next and prewarm work."""

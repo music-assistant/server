@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from music_assistant_models.enums import SleepTimerMode
 
     from music_assistant.controllers.player_queues.helpers import CompareState
+    from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.player_queues")
 
@@ -105,6 +106,10 @@ class PlayerQueueData:
     next_item_id_enqueued: str | None = None
     # queue_item_id whose audio was most recently asked to be prepared ahead of its playback
     next_item_id_preparing: str | None = None
+    # the audio buffers made for items of this queue, each with the item it was made for: an
+    # item that left the queue keeps its buffer here. The entry of a buffer that was cleared
+    # goes when the next buffer is recorded
+    audio_buffers: list[tuple[QueueItem, AudioBuffer]] = field(default_factory=list)
     # queue_item_id of the last upcoming item placed by Smart Fades ordering; playback orders the
     # next batch behind it
     fade_ordered_until: str | None = None
