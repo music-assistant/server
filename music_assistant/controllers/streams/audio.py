@@ -14,7 +14,7 @@ import os
 import re
 import time
 from collections import OrderedDict, deque
-from collections.abc import AsyncGenerator, Callable, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import aclosing, asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass, replace
 from functools import partial
@@ -2679,6 +2679,7 @@ class StreamsAudio:
         session_id: str | None = None,
         protocol_player: PlayerProtocol | None = None,
         consumer_connected: Callable[[], bool] | None = None,
+        flow_restart: Callable[[StreamDetails], Awaitable[bool]] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get a flow stream of all tracks in the queue as raw PCM audio.
@@ -2697,6 +2698,9 @@ class StreamsAudio:
         :param consumer_connected: Reports whether the consumer of this stream is still
             connected; once it reports False, the stream ends before its next item and
             does not report the queue completed.
+        :param flow_restart: Returns whether the stream restarts for an item, for a consumer
+            that picks the rate of its flow streams itself (such as a group that serves
+            several players with one stream). It takes the place of the sample rate check.
         """
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
@@ -2816,12 +2820,20 @@ class StreamsAudio:
                 # yet, and while the fade into it is still being built
                 self._claim_item(flow_claim, queue_track)
 
+                consumer_restarts = (
+                    await flow_restart(queue_track.streamdetails)
+                    if flow_restart is not None
+                    and queue_track.streamdetails is not None
+                    and queue_track is not start_queue_item
+                    else None
+                )
                 if self._flow_stream_needs_restart(
                     queue_track,
                     pcm_format,
                     flow_supported_sample_rates,
                     flow_mode_sample_rate_conf,
                     is_first_track=queue_track is start_queue_item,
+                    consumer_restarts=consumer_restarts,
                 ):
                     break
 
@@ -6084,6 +6096,7 @@ class StreamsAudio:
         supported_sample_rates: list[int],
         flow_mode_sample_rate_conf: str,
         is_first_track: bool,
+        consumer_restarts: bool | None = None,
     ) -> bool:
         """
         Return True if the upcoming queue track requires exiting the flow stream.
@@ -6096,7 +6109,8 @@ class StreamsAudio:
         - Sample rate mismatch ('smart' / 'bit_perfect' modes only): the next
           track's sample rate (snapped up to the closest supported player rate,
           mirroring select_flow_pcm_format's anchoring logic) is incompatible with
-          the current flow rate, so a new flow must be opened.
+          the current flow rate, so a new flow must be opened. A consumer that decides
+          about restarts itself takes the place of this check.
 
         The first (anchor) track is always allowed to continue for the sample
         rate check; select_flow_pcm_format has already snapped the flow rate to it.
@@ -6106,6 +6120,8 @@ class StreamsAudio:
         :param supported_sample_rates: Sorted list of the player's supported rates.
         :param flow_mode_sample_rate_conf: The flow mode sample rate config value.
         :param is_first_track: Whether this is the first track of the flow stream.
+        :param consumer_restarts: Whether the consumer of the flow restarts it for the
+            upcoming track, if it decides that itself.
         """
         # live audio (radio, plugin or audio source) cannot be flowed; let the
         # queue controller fall back to single-item streaming for this item
@@ -6121,6 +6137,15 @@ class StreamsAudio:
 
         if is_first_track or queue_track.streamdetails is None:
             return False
+        if consumer_restarts is not None:
+            if consumer_restarts:
+                self.logger.info(
+                    "Track %s (%s) needs a new flow stream for the consumer of the flow "
+                    "- breaking out to restart flow stream",
+                    queue_track.queue_item_id,
+                    queue_track.name,
+                )
+            return consumer_restarts
         raw_next_rate = queue_track.streamdetails.audio_format.sample_rate
         if not raw_next_rate or not supported_sample_rates:
             return False
