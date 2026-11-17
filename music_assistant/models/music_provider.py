@@ -16,7 +16,11 @@ from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ArtistType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     AudioError,
+    AuthenticationFailed,
+    AuthenticationRequired,
     InvalidDataError,
+    InvalidToken,
+    LoginFailed,
     MediaNotFoundError,
     MusicAssistantError,
     ProviderPermissionDenied,
@@ -112,6 +116,17 @@ PROVIDER_FETCH_ERRORS: Final[tuple[type[Exception], ...]] = (
     aiohttp.ContentTypeError,
     aiohttp.ClientConnectionError,
     aiohttp.ClientPayloadError,
+)
+# the failures that say the provider itself can serve no item at all: it is unreachable
+# or it does not accept our credentials. A caller that walks many items stops asking it
+# instead of paying the same failure once per remaining item
+PROVIDER_UNUSABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
+    AuthenticationFailed,
+    AuthenticationRequired,
+    InvalidToken,
+    LoginFailed,
+    ProviderPermissionDenied,
+    ProviderUnavailableError,
 )
 
 LIBRARY_FEATURE_BY_MEDIA_TYPE: Final[dict[MediaType, ProviderFeature]] = {

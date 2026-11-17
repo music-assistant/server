@@ -18,6 +18,7 @@ from types import TracebackType
 from typing import Any, Concatenate, Protocol
 
 from music_assistant_models.errors import (
+    MusicAssistantError,
     RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
@@ -132,6 +133,29 @@ def parse_retry_after(value: str | None) -> int:
         return max(0, int(delta))
     except ValueError, TypeError:
         return 0
+
+
+def is_rate_limit_error(error: BaseException) -> bool:
+    """
+    Return whether a failed call was rate limited by the server.
+
+    :param error: The error the call failed with.
+    """
+    # a rate limit the retry helper gave up on arrives as RetriesExhausted, which carries
+    # the limit over as its translation key alone
+    return isinstance(error, RateLimited) or (
+        isinstance(error, MusicAssistantError)
+        and error.translation_key == RateLimited.translation_key
+    )
+
+
+def rate_limit_retry_after(error: BaseException) -> int:
+    """
+    Return the seconds a rate limited server asked for, 0 when it named none.
+
+    :param error: The error the call failed with.
+    """
+    return max(0, int(getattr(error, "backoff_time", 0)))
 
 
 class Throttler:
@@ -413,12 +437,16 @@ def _give_up(err: ResourceTemporarilyUnavailable, wait: float) -> RetriesExhaust
     :param err: The error that asked for the wait, its localization is carried over.
     :param wait: The wait that was asked for, in seconds.
     """
-    return RetriesExhausted(
+    give_up = RetriesExhausted(
         f"Not retrying, asked to wait {wait:.0f} seconds",
         translation_key=err.translation_key,
         translation_args=err.translation_args,
         translation_owner=err.translation_owner,
     )
+    # RetriesExhausted holds no backoff of its own, while a caller reporting the failure
+    # still needs the wait it did not sit out to tell the user when to try again
+    give_up.backoff_time = round(wait)  # type: ignore[attr-defined]
+    return give_up
 
 
 @dataclass
