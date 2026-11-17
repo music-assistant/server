@@ -11,8 +11,10 @@ from music_assistant_models.enums import EventType, IdentifierType
 
 from music_assistant.constants import (
     CONF_OUTPUT_CHANNELS,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PROTOCOL_KEY_SPLITTER,
     CONF_PROTOCOL_OFF_BY_DEFAULT,
+    CONF_UNDERLYING_PLAYER_ID,
 )
 from music_assistant.providers.sendspin import provider as provider_module
 from music_assistant.providers.sendspin.provider import SendspinProvider
@@ -26,6 +28,8 @@ KITCHEN = {
 }
 OUTPUT_ID = "ap_kitchen"
 SWITCH = f"{OUTPUT_ID}{CONF_PROTOCOL_KEY_SPLITTER}enabled"
+BRIDGE_OUTPUT_ID = "spb_5478c9e60da0"
+BRIDGE_SWITCH = f"{BRIDGE_OUTPUT_ID}{CONF_PROTOCOL_KEY_SPLITTER}enabled"
 
 
 async def _player_with_an_output(scenario: Scenario) -> tuple[str, FakeProtocol]:
@@ -98,6 +102,56 @@ async def test_a_save_that_changes_no_output_is_not_signalled(scenario: Scenario
     await _save(scenario, player_id, {SWITCH: True})
 
     assert scenario.events(EventType.PLAYER_CONFIG_UPDATED, object_id=player_id) == []
+
+
+# ---------------------------------------------------------------- a save of the whole form
+
+
+def _store_bridge_output(scenario: Scenario, player_id: str, *, enabled: bool) -> None:
+    """
+    Store the Sendspin output a bridge of the AirPlay output of the player registered.
+
+    :param scenario: The running server.
+    :param player_id: Id of the player.
+    :param enabled: Whether the Sendspin output is switched on.
+    """
+    scenario.mass.config.set(
+        f"{CONF_PLAYER_PROTOCOLS}/{BRIDGE_OUTPUT_ID}",
+        {
+            "protocol_id": BRIDGE_OUTPUT_ID,
+            "provider": "sendspin",
+            "player_id": player_id,
+            "enabled": enabled,
+            "values": {CONF_UNDERLYING_PLAYER_ID: OUTPUT_ID},
+        },
+    )
+
+
+async def test_a_form_that_switches_the_carrier_off_sends_the_output_switch_as_it_was(
+    scenario: Scenario,
+) -> None:
+    """The form sends every switch: one it leaves as it was asks for nothing."""
+    player_id, _output = await _player_with_an_output(scenario)
+    _store_bridge_output(scenario, player_id, enabled=True)
+
+    await _save(scenario, player_id, {SWITCH: False, BRIDGE_SWITCH: True})
+
+    assert scenario.mass.config.is_protocol_switched_on(OUTPUT_ID) is False
+    record = scenario.mass.config.get_protocol_record(BRIDGE_OUTPUT_ID) or {}
+    assert record["enabled"] is True
+
+
+async def test_switching_an_output_on_while_its_carrier_goes_off_is_refused(
+    scenario: Scenario,
+) -> None:
+    """An output that is off can not be switched on in the save that switches its carrier off."""
+    player_id, _output = await _player_with_an_output(scenario)
+    _store_bridge_output(scenario, player_id, enabled=False)
+
+    with pytest.raises(RuntimeError, match="underlying player"):
+        await _save(scenario, player_id, {SWITCH: False, BRIDGE_SWITCH: True})
+
+    assert scenario.mass.config.is_protocol_switched_on(OUTPUT_ID) is True
 
 
 # ---------------------------------------------------------------- whose off it is
