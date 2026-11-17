@@ -22,6 +22,7 @@ from music_assistant.constants import (
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
     FLOW_MODE_SAMPLE_RATE_SMART,
 )
+from music_assistant.controllers.streams.audio import overlay_mixed_in
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import arriving_audio_format, iter_pcm_slices
 from music_assistant.helpers.ffmpeg import FFMpeg
@@ -337,6 +338,8 @@ class SendspinPlaybackSession:
         self._queue_session_id: str | None = None
         # stream details of the session's first item, which the session sample rate follows
         self._start_streamdetails: StreamDetails | None = None
+        # whether the session blends the audio of its items, and whether it mixes an overlay in
+        self._start_mixes: tuple[bool, bool] = (False, False)
 
     def flow_track_anchor_us(self, track_start_offset_us: int) -> int | None:
         """
@@ -773,6 +776,7 @@ class SendspinPlaybackSession:
                 if source_stream is not None
                 else self._get_start_streamdetails(media)
             )
+            self._start_mixes = self._get_start_mixes(media)
             await self._follow_session_sample_rate(
                 [client.client_id for client in self.player.api.group.clients]
             )
@@ -1485,14 +1489,39 @@ class SendspinPlaybackSession:
         queue_item = self.player.mass.player_queues.get_item(media.source_id, media.queue_item_id)
         return queue_item.streamdetails if queue_item else None
 
+    def _get_start_mixes(self, media: PlayerMedia) -> tuple[bool, bool]:
+        """
+        Return whether a session blends the audio of its items, and whether it mixes an overlay in.
+
+        :param media: The media the session starts with.
+        """
+        if not media.source_id or not media.queue_item_id:
+            return False, False
+        mass = self.player.mass
+        queue = mass.player_queues.get(media.source_id)
+        queue_item = mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        if queue is None or queue_item is None:
+            return False, False
+        # a station or a line-in is a stream of its own, not the flow stream of the queue
+        flow_mode = queue_item.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
+        return (
+            flow_mode and mass.streams.flow_stream_blends_items(queue, queue_item),
+            overlay_mixed_in(queue, queue_item, flow_mode=flow_mode),
+        )
+
     async def _follow_session_sample_rate(self, player_ids: Iterable[str]) -> None:
         """Let the given players' Sendspin formats follow the sample rate of this session."""
         from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
 
+        crossfade_enabled, overlay_active = self._start_mixes
         for player_id in player_ids:
             player = self.player.provider.get_protocol(player_id)
             if isinstance(player, SendspinPlayer):
-                await player.follow_session_sample_rate(self._start_streamdetails)
+                await player.follow_session_sample_rate(
+                    self._start_streamdetails,
+                    crossfade_enabled=crossfade_enabled,
+                    overlay_active=overlay_active,
+                )
 
     def _select_session_pcm_formats(self) -> tuple[AudioFormat, SendspinAudioFormat]:
         """
@@ -1745,6 +1774,7 @@ class SendspinPlaybackSession:
             self._produced_audio_us = 0
             self._history.clear()
             self._start_streamdetails = None
+            self._start_mixes = (False, False)
             # Drop cached DSP decisions so next playback reflects latest config.
             self._pipeline_config_cache.clear()
 
