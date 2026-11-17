@@ -127,7 +127,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
         ):
             raise PlayerCommandFailed("Invalid pre-announce chime URL specified.")
         # a player switched off at its power control is powered on for the announcement (and
-        # then stays on), before the lock is taken: waiting for it to come online takes far
+        # then stays on), before the lock is taken: waiting for it to start up takes far
         # longer than other commands wait for the lock
         player = await self._power_on_switched_off_player(player.player_id)
         # A member's announcement detaches it from its (sync)group and joins it back

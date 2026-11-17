@@ -1107,8 +1107,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 return
             count = 0
             pause_timeout = self._get_pause_timeout()
-            while count < pause_timeout and player.playback_state == PlaybackState.PAUSED:
-                count += 1
+            while player.playback_state == PlaybackState.PAUSED:
+                if self.mass.players._has_waiting_start(player):
+                    # a start that waits for players to start up is about to play: the
+                    # stop below would call it off, so the timeout counts from its end
+                    count = 0
+                elif count >= pause_timeout:
+                    break
+                else:
+                    count += 1
                 await asyncio.sleep(1)
             # if player is still paused when the limit is reached, send stop
             if player.playback_state == PlaybackState.PAUSED:

@@ -3031,6 +3031,8 @@ def _make_rejoin_bridge(
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     cast("MagicMock", bridge.airplay_player).stream = None
+    # A real False: a MagicMock reads as a speaker switched off at its power control.
+    cast("MagicMock", bridge.airplay_player).player.offline_by_power_control = False
     client = _make_grouped_client(group_members=group_members, has_active_stream=has_active_stream)
     bridge._sendspin_client = client
     group = MagicMock()
@@ -3118,6 +3120,27 @@ async def test_an_offline_speaker_is_looked_for_again_before_giving_up() -> None
     assert logger.debug.call_count == 2
     # the give-up is only reached once the attempts run out
     logger.warning.assert_called_once()
+
+
+async def test_a_switched_off_speaker_is_not_rejoined() -> None:
+    """
+    A speaker switched off at its power control is left out of the group for good.
+
+    Its protocol still reads available: a device without power says no goodbye.
+    Returning on the first look, rather than running out of attempts, is what
+    shows the bridge gave up instead of looking for it again.
+    """
+    bridge, _, group = _make_rejoin_bridge()
+    cast("MagicMock", bridge.airplay_player).player.offline_by_power_control = True
+    logger = MagicMock()
+    bridge.logger = logger
+
+    with patch(_NO_REJOIN_DELAYS, (0, 0)):
+        await bridge._rejoin_attempts(group)
+
+    group.add_client.assert_not_awaited()
+    logger.debug.assert_called_once()
+    logger.warning.assert_not_called()
 
 
 async def test_a_rejoin_is_abandoned_when_the_group_is_gone() -> None:

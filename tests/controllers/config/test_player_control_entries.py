@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from music_assistant_models.constants import (
@@ -11,11 +11,15 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import PlayerFeature, PlayerType, ProtocolRole
+from music_assistant_models.player_control import PlayerControl
 
 from music_assistant.constants import (
     CONF_IDLE_POWER_OFF,
     CONF_MUTE_CONTROL,
+    CONF_PLAYERS,
     CONF_POWER_CONTROL,
+    CONF_POWER_CONTROL_CUTS_POWER,
+    CONF_POWER_ON_STARTUP_TIME,
     CONF_VOLUME_CONTROL,
 )
 from music_assistant.mass import MusicAssistant
@@ -23,6 +27,8 @@ from music_assistant.mass import MusicAssistant
 from .helpers import attach_on_config
 
 if TYPE_CHECKING:
+    from unittest.mock import MagicMock
+
     from music_assistant_models.config_entries import ConfigEntry
 
 # each control select and the player feature that enables its native option
@@ -39,6 +45,7 @@ def _entries_by_key(
     features: set[PlayerFeature],
     audio_features: set[PlayerFeature] | None = None,
     player_type: PlayerType = PlayerType.PLAYER,
+    power_control: str | None = None,
 ) -> dict[str, ConfigEntry]:
     """
     Build the player-control config entries for a player.
@@ -47,6 +54,7 @@ def _entries_by_key(
     :param features: The features the own protocol of the player supports.
     :param audio_features: The features of an audio protocol of the player, if it has one.
     :param player_type: The type of the player.
+    :param power_control: The power control stored for the player, if any.
     """
     is_group = player_type == PlayerType.GROUP
     player, _ = attach_on_config(
@@ -66,8 +74,28 @@ def _entries_by_key(
             player=player,
             features=audio_features,
         )
+    if power_control is not None:
+        mass.config.set(
+            f"{CONF_PLAYERS}/{player.player_id}/values", {CONF_POWER_CONTROL: power_control}
+        )
+        player.refresh_state(signal_event=False)
     entries = mass.config._create_player_control_config_entries(player)
     return {entry.key: entry for entry in entries}
+
+
+def _add_smart_plug(mass: MusicAssistant) -> str:
+    """Register an external power control on the server and return its id."""
+    # a first player brings the stand-in for the players controller
+    attach_on_config(mass, "test", "other_1", player_id="other")
+    plug = PlayerControl(
+        id="switch.plug", provider="hass", name="Plug", supports_power=True, power_state=True
+    )
+    players = cast("MagicMock", mass.players)
+    players.player_controls.return_value = [plug]
+    players.get_player_control.side_effect = lambda control_id: (
+        plug if control_id == plug.id else None
+    )
+    return plug.id
 
 
 @pytest.mark.parametrize(("conf_key", "feature"), _CONTROL_FEATURES)
@@ -140,3 +168,50 @@ async def test_idle_power_off_follows_the_power_control(mass_minimal: MusicAssis
     assert entry.default_value == 0
     assert entry.depends_on == CONF_POWER_CONTROL
     assert entry.depends_on_value_not == PLAYER_CONTROL_NONE
+
+
+async def test_an_external_power_control_brings_the_cuts_power_option(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A player on an external power control can be told that the control cuts its power."""
+    plug_id = _add_smart_plug(mass_minimal)
+
+    entries = _entries_by_key(mass_minimal, _ALL_FEATURES, power_control=plug_id)
+
+    option = entries[CONF_POWER_CONTROL_CUTS_POWER]
+    assert (option.default_value, option.advanced, option.depends_on) == (False, False, None)
+    startup_time = entries[CONF_POWER_ON_STARTUP_TIME]
+    assert (startup_time.default_value, startup_time.range) == (30, (5, 300))
+    assert (startup_time.advanced, startup_time.depends_on) == (True, CONF_POWER_CONTROL_CUTS_POWER)
+    # right below the power control they belong to
+    assert list(entries)[:3] == [
+        CONF_POWER_CONTROL,
+        CONF_POWER_CONTROL_CUTS_POWER,
+        CONF_POWER_ON_STARTUP_TIME,
+    ]
+
+
+@pytest.mark.parametrize(
+    "power_control", [PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE, None]
+)
+async def test_no_cuts_power_option_without_an_external_power_control(
+    mass_minimal: MusicAssistant, power_control: str | None
+) -> None:
+    """A native, fake or absent power control can not cut the power of the player itself."""
+    _add_smart_plug(mass_minimal)
+
+    entries = _entries_by_key(mass_minimal, _ALL_FEATURES, power_control=power_control)
+
+    assert CONF_POWER_CONTROL_CUTS_POWER not in entries
+    assert CONF_POWER_ON_STARTUP_TIME not in entries
+
+
+async def test_a_group_player_gets_no_cuts_power_option(mass_minimal: MusicAssistant) -> None:
+    """A group player has no device that starts up, also on an external power control."""
+    plug_id = _add_smart_plug(mass_minimal)
+
+    entries = _entries_by_key(
+        mass_minimal, _ALL_FEATURES, player_type=PlayerType.GROUP, power_control=plug_id
+    )
+
+    assert set(entries) == {CONF_POWER_CONTROL}

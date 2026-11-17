@@ -167,7 +167,7 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                     return None
                 if switched_off == SwitchedOffAction.POWER_ON:
                     await self.mass.players._power_on_switched_off_player(queue_id)
-                    # the queue can register anew while its device comes online
+                    # the queue can register anew while its player starts up
                     queue_data = self._queue_data[queue_id]
             elif player is not None and (
                 switched_off == SwitchedOffAction.POWER_ON

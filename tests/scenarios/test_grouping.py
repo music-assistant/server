@@ -13,6 +13,8 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from music_assistant.constants import DEFAULT_POWER_ON_STARTUP_TIME
+from music_assistant.controllers.players.power import EXTERNAL_POWER_OFF_STOP_DELAY
 from tests.common import as_user
 
 from .harness import (
@@ -29,6 +31,9 @@ if TYPE_CHECKING:
     from music_assistant_models.player import Player as PlayerState
 
 GROUPING = frozenset({*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS})
+
+# the start-up time (in seconds) of a speaker on a smart plug that cuts its power
+STARTUP_TIME = DEFAULT_POWER_ON_STARTUP_TIME
 
 
 def _device(number: int) -> dict[IdentifierType, str]:
@@ -445,19 +450,28 @@ async def _sync_group(scenario: Scenario, *member_ids: str) -> str:
     return group.player_id
 
 
-async def _stop(scenario: Scenario, player_id: str) -> None:
-    """Stop what a player plays, letting the clock run for the stop to settle."""
+async def _stop(scenario: Scenario, player_id: str, *, idle: bool = True) -> None:
+    """
+    Stop what a player plays, letting the clock run for the stop to settle.
+
+    :param player_id: The player to stop.
+    :param idle: Whether the server has nothing left to do afterwards; False while a player
+        still starts up, which ends on a timer of the server.
+    """
     stop = await scenario.command(scenario.mass.players.cmd_stop(player_id))
     await scenario.advance(10)
     await stop
-    await scenario.idle()
+    if idle:
+        await scenario.idle()
 
 
 async def _switch_off(scenario: Scenario, speaker: FakeProtocol) -> FakePowerControl:
     """
-    Put a speaker on a smart plug and switch the plug off, which takes its device off the network.
+    Put a speaker on a smart plug that cuts its power, and switch the plug off.
 
-    Its player then shows as available and powered off.
+    That takes its device off the network. Its player then shows as available and powered
+    off, and its power counts as cut. The speaker needs STARTUP_TIME to start up, as any
+    player does unless the user sets another time.
 
     :param speaker: The speaker, which is registered.
     :return: The plug.
@@ -465,17 +479,34 @@ async def _switch_off(scenario: Scenario, speaker: FakeProtocol) -> FakePowerCon
     plug = await scenario.add_power_control(
         f"switch.{speaker.protocol_id}_plug", f"{speaker.protocol_id} plug", powered=True
     )
-    await scenario.configure_player(_player_id(scenario, speaker), power_control=plug.control_id)
+    player_id = _player_id(scenario, speaker)
+    await scenario.configure_player(player_id, power_control=plug.control_id)
+    # this setting is offered once the plug is the power control of the player
+    await scenario.configure_player(player_id, power_control_cuts_power=True)
     await scenario.switch(plug, False)
     await scenario.unregister(speaker)
+    await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY)
     await scenario.idle()
     return plug
 
 
 async def _come_back(scenario: Scenario, speaker: FakeProtocol) -> None:
-    """Let the device of a speaker that was switched on come back on the network."""
+    """
+    Let the device of a speaker that was switched on come back on the network.
+
+    The rest of the start-up time of its player passes with it.
+    """
     await scenario.register(speaker)
-    # a power on looks for the device every 0.5 s
+    await _start_up(scenario, _player_id(scenario, speaker))
+
+
+async def _start_up(scenario: Scenario, player_id: str) -> None:
+    """Let the rest of the start-up time of a player pass."""
+    player = scenario.mass.players.get_player(player_id)
+    assert player is not None
+    if (ends_at := player.startup_ends_at) is not None:
+        await scenario.advance(ends_at - scenario.mass.loop.time())
+    # also lets what the end of the start-up time started run
     await scenario.advance(1)
 
 
