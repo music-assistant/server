@@ -121,6 +121,7 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.auth_provider import AuthProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider
@@ -183,6 +184,11 @@ def is_audio_analysis_provider(
 ) -> TypeGuard[AudioAnalysisProvider]:
     """Type guard that returns true if a provider is an audio analysis provider."""
     return provider.type == ProviderType.AUDIO_ANALYSIS
+
+
+def is_auth_provider(provider: ProviderInstanceType) -> TypeGuard[AuthProvider]:
+    """Type guard that returns true if a provider is an auth provider."""
+    return provider.type == ProviderType.AUTH
 
 
 class _UnexpectedSetupError(SetupFailedError):
@@ -432,6 +438,8 @@ class MusicAssistant:
         await self.music.cleanup_stale_provider_shortcuts()
         # load builtin providers (always needed, also in safe mode)
         await self._load_builtin_providers()
+        # load auth providers (also in safe mode), so the login page offers every sign-in method
+        await self._load_auth_providers()
         # load regular providers (skip when in safe mode)
         # providers are loaded in background tasks so they won't block
         # the startup if they fail or take a long time to load
@@ -1411,6 +1419,8 @@ class MusicAssistant:
                 if provider.domain in self._provider_ready_events:
                     self._provider_ready_events[provider.domain].clear()
                 self._providers.pop(instance_id, None)
+                if is_auth_provider(provider):
+                    self.webserver.auth.on_auth_provider_changed(instance_id, loaded=False)
                 self.discovery.on_provider_unload(instance_id)
                 await self._update_available_providers_cache()
                 self.signal_event(EventType.PROVIDERS_UPDATED, data=self.providers)
@@ -1566,6 +1576,25 @@ class MusicAssistant:
             for conf in builtin_configs:
                 tg.create_task(self.load_provider(conf.instance_id, allow_retry=True))
 
+    async def _load_auth_providers(self) -> None:
+        """
+        Load the regular (non-builtin) auth providers and wait for them to complete.
+
+        They load in safe mode too, so no sign-in method is missing from the login page.
+        A failing auth provider does not fail the setup.
+        """
+        prov_configs = await self.config.get_provider_configs(provider_type=ProviderType.AUTH)
+        auth_configs = [
+            prov_conf
+            for prov_conf in prov_configs
+            if prov_conf.enabled
+            and (manifest := self._provider_manifests.get(prov_conf.domain))
+            and not manifest.builtin
+        ]
+        async with asyncio.TaskGroup() as tg:
+            for conf in auth_configs:
+                tg.create_task(self.load_provider(conf.instance_id, allow_retry=True))
+
     async def _load_providers(self) -> None:
         """
         Load regular (non-builtin) providers from config.
@@ -1612,6 +1641,7 @@ class MusicAssistant:
             prov_conf
             for prov_conf in prov_configs
             if prov_conf.enabled
+            and prov_conf.type != ProviderType.AUTH
             and (
                 not (manifest := self._provider_manifests.get(prov_conf.domain))
                 or not manifest.builtin
@@ -1773,6 +1803,8 @@ class MusicAssistant:
                 )
             provider.initialized.set()
             self.get_provider_ready_event(provider.domain).set()
+            if is_auth_provider(provider):
+                self.webserver.auth.on_auth_provider_changed(provider.instance_id, loaded=True)
             # announce the provider to clients only now: loaded_in_mass() is where a
             # provider registers its API commands, so signalling any earlier lets a client
             # reacting to the event call a command that is not registered yet

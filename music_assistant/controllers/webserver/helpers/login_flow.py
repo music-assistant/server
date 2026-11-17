@@ -6,13 +6,20 @@ import hmac
 import re
 import secrets
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
+from urllib.parse import urlparse
 
-from music_assistant_models.errors import RateLimited
+from music_assistant_models.errors import MusicAssistantError, RateLimited
 
 from music_assistant.helpers.pkce import pkce_challenge
+
+if TYPE_CHECKING:
+    from aiohttp import web
+    from music_assistant_models.auth import AuthProviderType
 
 # Seconds a sign-in may take, and how many may be pending at once
 PENDING_LOGIN_TTL: Final = 600
@@ -37,6 +44,15 @@ class AuthTransport(StrEnum):
     INGRESS = "ingress"  # Home Assistant ingress (already signed in)
 
 
+# How the client of the current HTTP request or websocket command reaches the server, and the
+# origin (scheme and host) it says it used, which is untrusted until checked against known hosts
+# It is held as a resolver, so a websocket command that never starts a sign-in does not pay
+# for working it out
+_current_auth_request_context: ContextVar[Callable[[], tuple[AuthTransport, str | None]] | None] = (
+    ContextVar("current_auth_request_context", default=None)
+)
+
+
 @dataclass
 class PendingLogin:
     """A sign-in that was started and waits for the browser to return."""
@@ -50,6 +66,35 @@ class PendingLogin:
     idp_code_verifier: str
     return_url: str | None = None
     client_code_challenge: str | None = None  # S256 only
+
+
+@dataclass
+class ExternalIdentity:
+    """A verified identity that an auth provider returns at the end of a sign-in."""
+
+    provider_type: AuthProviderType
+    issuer: str
+    subject: str
+    email: str | None = None
+    email_verified: bool = False
+    username: str | None = None
+    display_name: str | None = None
+    avatar_url: str | None = None  # https only
+    groups: list[str] = field(default_factory=list)
+    claims: dict[str, Any] = field(default_factory=dict)  # snapshot, size-capped
+
+
+class LoginFlowError(MusicAssistantError):
+    """A sign-in that cannot be completed, with a translation key that tells the user why."""
+
+    def __init__(self, translation_key: str, message: str | None = None) -> None:
+        """
+        Initialize the error.
+
+        :param translation_key: The translation key of the reason shown to the user.
+        :param message: Optional message for the log, the translation key if omitted.
+        """
+        super().__init__(message or translation_key, translation_key=translation_key)
 
 
 class PendingLoginStore:
@@ -115,6 +160,75 @@ class PendingLoginStore:
             return None
         return pending
 
+    def drop_provider(self, provider_id: str) -> int:
+        """
+        Remove the pending sign-ins of a login provider and return how many were removed.
+
+        :param provider_id: The id of the login provider.
+        """
+        states = [key for key, entry in self._pending.items() if entry.provider_id == provider_id]
+        for state in states:
+            del self._pending[state]
+        return len(states)
+
+
+def set_auth_request_context(transport: AuthTransport, origin: str | None) -> None:
+    """
+    Set how the client of the current request or command reaches the server.
+
+    :param transport: How the client reaches the server.
+    :param origin: The origin the client says it used, if any.
+    """
+    _current_auth_request_context.set(lambda: (transport, origin))
+
+
+def set_auth_request_context_resolver(
+    resolver: Callable[[], tuple[AuthTransport, str | None]],
+) -> None:
+    """
+    Set how to find out how the client of the current request or command reaches the server.
+
+    :param resolver: Returns the transport and the origin the client says it used, if any.
+    """
+    _current_auth_request_context.set(resolver)
+
+
+def get_auth_request_context() -> tuple[AuthTransport, str | None]:
+    """Return how the client of the current request or command reaches the server."""
+    if resolver := _current_auth_request_context.get():
+        return resolver()
+    return AuthTransport.DIRECT, None
+
+
+def get_request_origin(request: web.Request) -> str | None:
+    """
+    Return the origin (scheme and host) a client says it used to reach the server.
+
+    The Origin header wins, else the (forwarded) scheme and host of the request. The result
+    is untrusted: it must match a known host before it is used.
+
+    :param request: The HTTP request, or the websocket upgrade request.
+    """
+    if (origin := request.headers.get("Origin")) and origin != "null":
+        return origin
+    host = _first_header_value(request, "X-Forwarded-Host") or request.host
+    scheme = _first_header_value(request, "X-Forwarded-Proto") or request.scheme
+    return f"{scheme}://{host}" if host else None
+
+
+def get_origin_host(origin: str | None) -> str | None:
+    """
+    Return the host (and any port) of an origin, None when absent or malformed.
+
+    :param origin: The origin (scheme and host).
+    """
+    if not origin:
+        return None
+    try:
+        return urlparse(origin).netloc or None
+    except ValueError:
+        return None
+
 
 def verify_pkce(code_verifier: str, code_challenge: str) -> bool:
     """
@@ -126,3 +240,14 @@ def verify_pkce(code_verifier: str, code_challenge: str) -> bool:
     if not PKCE_VERIFIER_RE.fullmatch(code_verifier):
         return False
     return hmac.compare_digest(pkce_challenge(code_verifier), code_challenge)
+
+
+def _first_header_value(request: web.Request, name: str) -> str | None:
+    """
+    Return the first value of a header that proxies may send as a comma separated list.
+
+    :param request: The HTTP request.
+    :param name: The name of the header.
+    """
+    value = request.headers.get(name, "").split(",")[0].strip()
+    return value or None

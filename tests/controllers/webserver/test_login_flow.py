@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from music_assistant_models.api import CommandMessage
 from music_assistant_models.errors import RateLimited
 
 from music_assistant.controllers.webserver import websocket_client
@@ -178,8 +179,67 @@ async def test_an_ingress_connection_is_ingress(webserver: WebserverController) 
     assert client.auth_transport is AuthTransport.INGRESS
 
 
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"Host": "192.168.1.10:8095"}, "http://192.168.1.10:8095"),
+        (
+            {"Host": "192.168.1.10:8095", "Origin": "https://ma.example.com"},
+            "https://ma.example.com",
+        ),
+        ({"Host": "192.168.1.10:8095", "Origin": "null"}, "http://192.168.1.10:8095"),
+        (
+            {
+                "Host": "127.0.0.1:8095",
+                "X-Forwarded-Host": "ma.example.com, proxy.local",
+                "X-Forwarded-Proto": "https, http",
+            },
+            "https://ma.example.com",
+        ),
+    ],
+    ids=["host", "origin_header", "opaque_origin", "forwarded"],
+)
+def test_request_origin(headers: dict[str, str], expected: str) -> None:
+    """
+    The origin is the Origin header, else the (forwarded) scheme and host of the request.
+
+    :param headers: The request headers.
+    :param expected: The expected origin.
+    """
+    request = make_mocked_request("GET", "/ws", headers=headers)
+
+    assert login_flow.get_request_origin(request) == expected
+
+
+async def test_a_websocket_command_carries_the_transport_and_origin(
+    webserver: WebserverController,
+) -> None:
+    """Each websocket command sets the transport and origin of its own connection."""
+    client = _ws_client(webserver, "192.168.1.20", None, {"Host": "192.168.1.10:8095"})
+    login_flow.set_auth_request_context(AuthTransport.INGRESS, "https://stale.example")
+    msg = CommandMessage(message_id="1", command="auth/providers", args={})
+    seen: list[tuple[AuthTransport, str | None]] = []
+
+    def _run_handler(*_args: object) -> None:
+        seen.append(login_flow.get_auth_request_context())
+
+    handler = MagicMock(authenticated=False, required_scope=None)
+    with (
+        patch.object(webserver.mass, "command_handlers", {"auth/providers": handler}),
+        patch.object(webserver.mass, "create_task"),
+        patch.object(client, "_run_handler", MagicMock(side_effect=_run_handler)),
+    ):
+        await client._handle_command(msg)
+    login_flow.set_auth_request_context(AuthTransport.DIRECT, None)
+
+    assert seen == [(AuthTransport.DIRECT, "http://192.168.1.10:8095")]
+
+
 def _ws_client(
-    webserver: WebserverController, peer_ip: str, session_id: str | None
+    webserver: WebserverController,
+    peer_ip: str,
+    session_id: str | None,
+    headers: dict[str, str] | None = None,
 ) -> WebsocketClientHandler:
     """
     Return a websocket connection from the given address, claiming the given session.
@@ -187,11 +247,14 @@ def _ws_client(
     :param webserver: The webserver the connection is made to.
     :param peer_ip: The address the connection came from.
     :param session_id: The WebRTC session id the connection claims, if any.
+    :param headers: The headers of the websocket upgrade request, if any.
     """
     transport = MagicMock()
     transport.get_extra_info.side_effect = {"peername": (peer_ip, 54321)}.get
     path = f"/ws?webrtc_session_id={session_id}" if session_id else "/ws"
-    request = make_mocked_request("GET", path, app=web.Application(), transport=transport)
+    request = make_mocked_request(
+        "GET", path, headers=headers, app=web.Application(), transport=transport
+    )
     return WebsocketClientHandler(webserver, request)
 
 

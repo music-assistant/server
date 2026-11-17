@@ -37,6 +37,8 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.translations import TranslationController
+from music_assistant.controllers.webserver import auth as auth_module
+from music_assistant.controllers.webserver import controller as webserver_controller
 from music_assistant.controllers.webserver.auth import (
     JOIN_CODE_GLOBAL_FAILURE_CEILING,
     JOIN_CODE_GLOBAL_RATE_LIMIT_KEY,
@@ -71,13 +73,17 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
 )
 from music_assistant.controllers.webserver.helpers.login_flow import (
     AuthTransport,
+    ExternalIdentity,
     PendingLogin,
+    set_auth_request_context,
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.pkce import pkce_challenge
+from music_assistant.helpers.redirect_validation import is_allowed_redirect_url_for_host
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.auth_provider import AuthProvider
 from tests.common import set_music_source_access
 
 # a client's PKCE pair, and the arguments of a valid sign-in for the remote app
@@ -597,6 +603,18 @@ async def test_disable_enable_user(auth_manager: AuthenticationManager) -> None:
     # Verify user is enabled
     enabled_user = await auth_manager.get_user(user.user_id)
     assert enabled_user is not None
+
+
+async def test_unknown_provider_type_is_never_linked(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the UNKNOWN provider type can not be linked and never resolves a user.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="unknownlink", role=UserRole.USER)
+    with pytest.raises(InvalidDataError):
+        await auth_manager.link_user_to_provider(user, AuthProviderType.UNKNOWN, "someone")
+    assert await auth_manager.get_user_by_provider_link(AuthProviderType.UNKNOWN, "someone") is None
 
 
 async def test_user_lookups_include_a_disabled_user_only_on_request(
@@ -1420,69 +1438,45 @@ async def test_get_login_providers(auth_manager: AuthenticationManager) -> None:
     assert any(p["provider_id"] == "builtin" for p in providers)
 
 
-class _FakeHassProvider:
-    """Minimal stand-in for the Home Assistant provider."""
-
-    domain = "hass"
-    available = True
-
-    def __init__(self, url: str | None) -> None:
-        self._url = url
-
-    @property
-    def url(self) -> str | None:
-        """Return the configured Home Assistant URL, or None if not configured."""
-        return self._url
-
-
-async def test_get_login_providers_with_ha_provider(
-    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
-) -> None:
-    """
-    Test that the HA OAuth login provider is registered when the HA provider has a URL.
-
-    :param auth_manager: AuthenticationManager instance.
-    :param mass_minimal: Minimal MusicAssistant instance.
-    """
-    mass_minimal._providers["hass"] = _FakeHassProvider("http://homeassistant.local:8123")  # type: ignore[assignment]
-
-    providers = await auth_manager.get_login_providers()
-
-    assert any(p["provider_id"] == "homeassistant" for p in providers)
-
-
-async def test_get_login_providers_ha_provider_without_url(
-    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
-) -> None:
-    """
-    Test that a HA provider without a URL does not break the login providers endpoint.
-
-    Regression test for the HA provider storing its URL in setup data instead of
-    config: builtin login must remain available and the endpoint must not raise.
-
-    :param auth_manager: AuthenticationManager instance.
-    :param mass_minimal: Minimal MusicAssistant instance.
-    """
-    mass_minimal._providers["hass"] = _FakeHassProvider(None)  # type: ignore[assignment]
-
-    providers = await auth_manager.get_login_providers()
-
-    assert any(p["provider_id"] == "builtin" for p in providers)
-    assert not any(p["provider_id"] == "homeassistant" for p in providers)
-
-
 @pytest.fixture
 def oauth_provider(auth_manager: AuthenticationManager) -> MagicMock:
     """
-    Register a stub OAuth login provider as "oauth" on the auth manager.
+    Load a stub auth provider with the sign-in method id and instance id "oauth".
 
     :param auth_manager: AuthenticationManager instance.
     """
-    provider = MagicMock(requires_redirect=True)
+    provider = MagicMock(
+        spec=AuthProvider,
+        instance_id="oauth",
+        domain="oauth",
+        sign_in_method_id="oauth",
+        available=True,
+        unloading=False,
+        sign_in_available=True,
+        requires_redirect=True,
+        supports_remote_app=True,
+    )
     provider.build_authorization_url = AsyncMock(return_value="https://idp.example.com/authorize")
-    provider.supports_remote_app = AsyncMock(return_value=True)
-    auth_manager.login_providers["oauth"] = provider
+    auth_manager.mass._providers["oauth"] = provider
     return provider
+
+
+async def _ha_identity(auth_manager: AuthenticationManager, user: User) -> ExternalIdentity:
+    """
+    Link the user to a Home Assistant account and return the identity of that account.
+
+    :param auth_manager: The authentication manager of the user.
+    :param user: The user to link.
+    """
+    ha_user_id = f"ha_{user.username}"
+    await auth_manager.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, ha_user_id)
+    return ExternalIdentity(
+        provider_type=AuthProviderType.HOME_ASSISTANT,
+        issuer="http://ha.local:8123",
+        subject=ha_user_id,
+        username=user.username,
+        display_name=user.display_name,
+    )
 
 
 @pytest.mark.parametrize("return_url", ["javascript:alert(1)", "https:///no-host"])
@@ -1519,52 +1513,177 @@ async def test_get_auth_url_passes_valid_return_url(
 
 
 @pytest.mark.parametrize(
-    ("external_url", "return_url", "expected_callback_base"),
+    ("external_url", "origin", "expected_callback_base"),
     [
-        (None, "https://ma.example.com/#/home", "http://192.168.1.10:8095"),
-        (None, "https://app.music-assistant.io/#/home", "http://192.168.1.10:8095"),
-        ("https://ma.example.com", None, "http://192.168.1.10:8095"),
-        ("https://ma.example.com", "http://192.168.1.10:8095/#/home", "http://192.168.1.10:8095"),
-        ("https://ma.example.com", "https://ma.example.com/#/home", "https://ma.example.com"),
-        ("https://example.com/ma", "https://example.com/ma/#/home", "https://example.com/ma"),
-        (
-            "https://ma.example.com",
-            "https://app.music-assistant.io/#/home",
-            "https://ma.example.com",
-        ),
-        ("https://ma.example.com", "https://other.example.com/#/home", "http://192.168.1.10:8095"),
+        (None, None, "http://192.168.1.10:8095"),
+        ("https://ma.example.com", None, "https://ma.example.com"),
+        ("https://ma.example.com", "http://192.168.1.10:8095", "http://192.168.1.10:8095"),
+        ("https://ma.example.com", "http://192.168.1.11:8095", "http://192.168.1.11:8095"),
+        ("https://ma.example.com", "http://[fd00::11]:8095", "http://[fd00::11]:8095"),
+        (None, "http://localhost:3000", "http://localhost:3000"),
+        (None, "http://[::1]:8095", "http://[::1]:8095"),
+        ("https://ma.example.com", "https://ma.example.com", "https://ma.example.com"),
+        ("https://ma.example.com", "http://MA.example.com", "https://ma.example.com"),
+        ("https://ma.example.com", "https://ma.example.com:8443", "https://ma.example.com:8443"),
+        ("https://example.com/ma", "https://example.com", "https://example.com/ma"),
+        ("https://ma.example.com", "https://evil.example.com", "https://ma.example.com"),
+        (None, "https://evil.example.com", "http://192.168.1.10:8095"),
+        ("https://ma.example.com", "https://app.music-assistant.io", "https://ma.example.com"),
+        ("https://ma.example.com", "http://user@192.168.1.10:8095", "https://ma.example.com"),
+        ("https://ma.example.com", "http://192.168.1.10:8095/x", "https://ma.example.com"),
+        ("https://ma.example.com", "http://192.168.1.10:99999", "https://ma.example.com"),
+        ("https://ma.example.com", "javascript://192.168.1.10", "https://ma.example.com"),
     ],
     ids=[
-        "no_external_url",
-        "remote_app_without_external_url",
-        "no_return_url",
-        "local_return_url",
-        "external_url_return_url",
+        "no_origin",
+        "no_origin_with_external_url",
+        "hairpin_nat_lan_origin",
+        "publish_address",
+        "ipv6_publish_address",
+        "loopback",
+        "ipv6_loopback",
+        "external_url_origin",
+        "external_url_host_without_tls",
+        "external_url_host_other_port",
         "external_url_with_path",
-        "remote_app",
-        "other_origin",
+        "unknown_origin",
+        "unknown_origin_without_external_url",
+        "app_origin",
+        "userinfo",
+        "path",
+        "invalid_port",
+        "other_scheme",
     ],
 )
 async def test_get_authorization_url_picks_callback_base(
     auth_manager: AuthenticationManager,
     oauth_provider: MagicMock,
     external_url: str | None,
-    return_url: str | None,
+    origin: str | None,
     expected_callback_base: str,
 ) -> None:
     """
-    Test that the OAuth callback is on the External URL for sign-ins started there or in the app.
+    A direct sign-in calls back on the origin the client used when its host is known.
+
+    An unknown or malformed origin is never echoed, the External URL or base URL is used.
 
     :param external_url: The configured External URL.
-    :param return_url: The URL the sign-in returns to.
+    :param origin: The origin the client says it used.
     :param expected_callback_base: The server URL the callback is expected on.
     """
-    with _webserver_urls(external_url):
-        await auth_manager.get_authorization_url("oauth", return_url)
+    return_url = "https://ma.example.com/#/home"
+    with (
+        _webserver_urls(external_url),
+        patch.object(auth_manager.webserver, "publish_addresses", ["192.168.1.11", "fd00:0:0::11"]),
+    ):
+        await auth_manager.get_authorization_url("oauth", return_url, origin=origin)
 
     pending = _started_login(oauth_provider)
-    assert pending.redirect_uri == f"{expected_callback_base}/auth/callback?provider_id=oauth"
+    assert pending.redirect_uri == f"{expected_callback_base}/auth/callback"
     assert pending.return_url == return_url
+
+
+@pytest.mark.parametrize("origin", [None, "http://192.168.1.10:8095"])
+async def test_get_authorization_url_over_remote_access_keeps_the_external_url(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock, origin: str | None
+) -> None:
+    """
+    A remote sign-in without a challenge calls back on the External URL, whatever the origin.
+
+    :param origin: The origin the client says it used.
+    """
+    with _webserver_urls("https://ma.example.com"):
+        await auth_manager.get_authorization_url(
+            "oauth", transport=AuthTransport.REMOTE, origin=origin
+        )
+
+    assert _started_login(oauth_provider).redirect_uri == "https://ma.example.com/auth/callback"
+
+
+async def test_no_redirect_sign_in_over_ingress(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock
+) -> None:
+    """Over Ingress a redirect sign-in is refused before a sign-in is started."""
+    started = await auth_manager.get_authorization_url(
+        "oauth", transport=AuthTransport.INGRESS, origin="http://192.168.1.10:8095"
+    )
+    set_auth_request_context(AuthTransport.INGRESS, "http://192.168.1.10:8095")
+    try:
+        result = await auth_manager.get_auth_url("oauth")
+    finally:
+        set_auth_request_context(AuthTransport.DIRECT, None)
+
+    assert started is None
+    assert result["authorization_url"] is None
+    assert "Ingress" in str(result["error"])
+    oauth_provider.build_authorization_url.assert_not_awaited()
+    assert not auth_manager.pending_logins._pending
+
+
+async def test_no_redirect_sign_in_over_ingress_http(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock
+) -> None:
+    """GET /auth/authorize from the Ingress proxy is refused with a 400."""
+    request = make_mocked_request("GET", "/auth/authorize?provider_id=oauth")
+    with patch.object(webserver_controller, "is_request_from_ingress_proxy", return_value=True):
+        response = await auth_manager.webserver._handle_auth_authorize(request)
+
+    assert response.status == 400
+    oauth_provider.build_authorization_url.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("return_url", "valid"),
+    [
+        ("https://music.example.net/#/home", True),
+        ("https://other.example.net/#/home", True),
+        ("https://evil.example@music.example.net/", False),
+        ("https://music.example.net\\@evil.example/", False),
+        ("https://music.example.net/\x00", False),
+        ("javascript:alert(1)", False),
+    ],
+)
+@pytest.mark.usefixtures("oauth_provider")
+async def test_get_auth_url_validates_the_return_url_with_the_connection_origin(
+    auth_manager: AuthenticationManager,
+    return_url: str,
+    valid: bool,
+) -> None:
+    """
+    The websocket start validates return_url like GET /auth/authorize, with its origin host.
+
+    :param return_url: The URL the sign-in returns to.
+    :param valid: Whether the return URL is accepted.
+    """
+    validate = MagicMock(wraps=is_allowed_redirect_url_for_host)
+    with (
+        patch.object(auth_module, "is_allowed_redirect_url_for_host", validate),
+        _calling_client(
+            auth_manager, "/ws", {"Origin": "https://music.example.net"}, "192.168.1.20"
+        ),
+    ):
+        result = await auth_manager.get_auth_url("oauth", return_url)
+
+    assert validate.call_args.args[:2] == (return_url, "music.example.net")
+    assert (result["authorization_url"] is not None) is valid
+
+
+async def test_auth_authorize_calls_back_on_the_request_origin(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock
+) -> None:
+    """GET /auth/authorize from a LAN browser calls back on the LAN origin, not the External URL."""
+    request = make_mocked_request(
+        "GET",
+        "/auth/authorize?provider_id=oauth",
+        headers={"Host": "192.168.1.10:8095"},
+    )
+    with _webserver_urls("https://ma.example.com"):
+        response = await auth_manager.webserver._handle_auth_authorize(request)
+
+    assert response.status == 200
+    pending = _started_login(oauth_provider)
+    assert pending.redirect_uri == "http://192.168.1.10:8095/auth/callback"
+    assert pending.transport is AuthTransport.DIRECT
 
 
 @pytest.mark.parametrize(
@@ -1603,7 +1722,7 @@ async def test_get_authorization_url_picks_callback_base(
             "/ws?webrtc_session_id=gone",
             {"Host": "127.0.0.1:8095"},
             "127.0.0.1",
-            "http://192.168.1.10:8095",
+            "http://127.0.0.1:8095",
         ),
         (
             None,
@@ -1611,6 +1730,20 @@ async def test_get_authorization_url_picks_callback_base(
             {"Host": "127.0.0.1:8095"},
             "127.0.0.1",
             "http://192.168.1.10:8095",
+        ),
+        (
+            "https://ma.example.com",
+            "/ws",
+            {"Host": "192.168.1.10:8095", "Origin": "http://192.168.1.10:8095"},
+            "192.168.1.20",
+            "http://192.168.1.10:8095",
+        ),
+        (
+            "https://ma.example.com",
+            "/ws",
+            {"Host": "192.168.1.10:8095", "Origin": "https://evil.example.com"},
+            "192.168.1.20",
+            "https://ma.example.com",
         ),
     ],
     ids=[
@@ -1620,6 +1753,8 @@ async def test_get_authorization_url_picks_callback_base(
         "remote_access",
         "spoofed_remote_access",
         "remote_access_without_external_url",
+        "browser_origin",
+        "unknown_browser_origin",
     ],
 )
 async def test_get_authorization_url_picks_callback_base_for_app(
@@ -1632,7 +1767,7 @@ async def test_get_authorization_url_picks_callback_base_for_app(
     expected_callback_base: str,
 ) -> None:
     """
-    Test that an app sign-in gets its callback on the External URL when it connected through it.
+    Test that a websocket sign-in calls back on how its connection came in.
 
     :param external_url: The configured External URL.
     :param path: The websocket request path the app connected on.
@@ -1649,7 +1784,7 @@ async def test_get_authorization_url_picks_callback_base_for_app(
         await auth_manager.get_auth_url("oauth", return_url)
 
     pending = _started_login(oauth_provider)
-    assert pending.redirect_uri == f"{expected_callback_base}/auth/callback?provider_id=oauth"
+    assert pending.redirect_uri == f"{expected_callback_base}/auth/callback"
 
 
 @pytest.mark.parametrize("external_url", [None, "https://ma.example.com"])
@@ -1738,7 +1873,7 @@ async def test_get_auth_url_refuses_an_invalid_sign_in_request(
     :param supports_remote_app: Whether the login provider supports the remote app.
     :param error: Part of the expected error.
     """
-    oauth_provider.supports_remote_app.return_value = supports_remote_app
+    oauth_provider.supports_remote_app = supports_remote_app
     path = f"/ws?webrtc_session_id={session_id}" if session_id else "/ws"
     with (
         _remote_access_gateway(auth_manager, "127.0.0.1", {"live"}),
@@ -1757,7 +1892,9 @@ async def test_exchange_signs_in_the_user_of_an_app_sign_in(
 ) -> None:
     """An app sign-in is exchanged once, with the matching verifier, for a token of its user."""
     user = await auth_manager.create_user(username="remote", display_name="Remote User")
-    oauth_provider.complete_authorization = AsyncMock(return_value=user)
+    oauth_provider.complete_authorization = AsyncMock(
+        return_value=await _ha_identity(auth_manager, user)
+    )
     pending = _start_app_sign_in(auth_manager)
 
     result = _as_sent(
@@ -1871,7 +2008,9 @@ async def test_failed_exchanges_are_rate_limited_per_connection(
 ) -> None:
     """After repeated failures a connection is throttled, while other connections are not."""
     user = await auth_manager.create_user(username="remote")
-    oauth_provider.complete_authorization = AsyncMock(return_value=user)
+    oauth_provider.complete_authorization = AsyncMock(
+        return_value=await _ha_identity(auth_manager, user)
+    )
     set_current_client_id("connection-a")
     try:
         for _ in range(3):
@@ -2099,10 +2238,12 @@ def _calling_client(
     client = WebsocketClientHandler(auth_manager.webserver, request)
     auth_manager.webserver.register_websocket_client(client)
     set_current_client_id(client.client_id)
+    set_auth_request_context(client.auth_transport, client.auth_origin)
     try:
         yield client
     finally:
         set_current_client_id(None)
+        set_auth_request_context(AuthTransport.DIRECT, None)
         auth_manager.webserver.unregister_websocket_client(client)
 
 

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import pytest
+from aiohttp.test_utils import make_mocked_request
 
 from music_assistant.helpers.redirect_validation import (
     build_code_redirect_url,
     is_allowed_redirect_url,
+    is_allowed_redirect_url_for_host,
 )
 
 
@@ -93,3 +97,121 @@ def test_is_allowed_redirect_url_trusts_the_external_url(
         is_allowed_redirect_url(url, base_url="http://192.168.1.10:8095", external_url=external_url)
         == expected
     )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # backslash in the authority and in the path
+        "http://evil.example\\@192.168.1.5/",
+        "http://evil.example\\@localhost:8095/x",
+        "https://evil.example\\@127.0.0.1/",
+        "http://192.168.1.10:8095\\evil.example/",
+        "http://192.168.1.10:8095/\\evil.example/",
+        "https://my.home-assistant.io/\\evil.example",
+        "musicassistant://auth\\callback",
+        # userinfo, with and without a password
+        "http://evil.example@192.168.1.5/",
+        "http://user@localhost:8095/",
+        "http://user:pass@127.0.0.1/",
+        "https://user:pass@ma.example.com/",
+        "http://evil%5C@10.0.0.1/",
+        "http://@10.0.0.1/",
+        # control characters and whitespace
+        "http://evil.example\t@10.0.0.1/",
+        "http://10.0.0.1/\tx",
+        "http://10.0.0.1\r\n/",
+        "http://10.0.0.1/\n",
+        "http://10.0.0.1/a\x00b",
+        "http://10.0.0.1/\x1f",
+        "http://10.0.0.1/\x7f",
+        " http://10.0.0.1/",
+        "http://10.0.0.1/ ",
+        "http://10.0.0.1/a b",
+        "\thttps://my.home-assistant.io/",
+    ],
+)
+def test_is_allowed_redirect_url_blocks_ambiguous_urls(url: str) -> None:
+    """URLs that browsers and urlparse read differently are refused outright."""
+    assert is_allowed_redirect_url(
+        url, base_url="https://ma.example.com", external_url="https://ma.example.com"
+    ) == (False, "blocked")
+    # the websocket variant refuses them too, even when the client claims that very host
+    assert is_allowed_redirect_url_for_host(
+        url,
+        urlparse(url).netloc,
+        base_url="https://ma.example.com",
+        external_url="https://ma.example.com",
+    ) == (False, "blocked")
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("musicassistant://auth/callback", (True, "trusted")),
+        ("https://my.home-assistant.io/redirect/oauth?x=1", (True, "trusted")),
+        ("http://homeassistant.local/", (True, "trusted")),
+        ("https://homeassistant.local/lovelace", (True, "trusted")),
+        ("http://localhost:8095/#/home", (True, "trusted")),
+        ("http://127.0.0.1:8095/?a=1&b=2", (True, "trusted")),
+        ("http://[::1]:8095/x?a=1", (True, "trusted")),
+        ("http://[fd00::1]:8095/", (True, "trusted")),
+        ("http://192.168.1.20:8095/path?q=1#/frag", (True, "trusted")),
+        ("http://10.0.0.1/", (True, "trusted")),
+        ("https://ma.example.com/#/home", (True, "trusted")),
+        ("https://other.example.com/cb?a=%40b%5C", (True, "external")),
+        ("https://other.example.com/cb?email=a@b.example", (True, "external")),
+        ("/relative/path", (False, "blocked")),
+        ("javascript:alert(1)", (False, "blocked")),
+    ],
+)
+def test_is_allowed_redirect_url_keeps_legitimate_urls(
+    url: str, expected: tuple[bool, str]
+) -> None:
+    """Legitimate return URLs keep their classification."""
+    assert (
+        is_allowed_redirect_url(
+            url, base_url="http://192.168.1.10:8095", external_url="https://ma.example.com"
+        )
+        == expected
+    )
+
+
+def test_is_allowed_redirect_url_same_origin_request() -> None:
+    """A same-origin URL stays trusted, one with userinfo is refused."""
+    request = make_mocked_request("GET", "/", headers={"Host": "ma.example.com:8095"})
+    assert is_allowed_redirect_url("https://ma.example.com:8095/#/home", request) == (
+        True,
+        "trusted",
+    )
+    assert is_allowed_redirect_url("https://evil.example@ma.example.com:8095/", request) == (
+        False,
+        "blocked",
+    )
+
+
+@pytest.mark.parametrize(
+    ("url", "request_host", "expected"),
+    [
+        ("https://music.example.net/#/home", "music.example.net", (True, "trusted")),
+        ("https://music.example.net/#/home", None, (True, "external")),
+        ("https://music.example.net/#/home", "other.example.net", (True, "external")),
+        ("https://music.example.net:8443/", "music.example.net", (True, "external")),
+        ("https://evil.example@music.example.net/", "music.example.net", (False, "blocked")),
+        ("javascript:alert(1)", "music.example.net", (False, "blocked")),
+    ],
+)
+def test_is_allowed_redirect_url_for_host(
+    url: str, request_host: str | None, expected: tuple[bool, str]
+) -> None:
+    """
+    The websocket variant trusts the host the client used, exactly like the HTTP variant.
+
+    :param url: The return URL.
+    :param request_host: The host the client used to reach the server.
+    :param expected: The expected validity and category.
+    """
+    assert is_allowed_redirect_url_for_host(url, request_host) == expected
+    if request_host:
+        request = make_mocked_request("GET", "/", headers={"Host": request_host})
+        assert is_allowed_redirect_url(url, request) == expected
