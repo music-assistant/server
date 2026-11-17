@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 from collections import deque
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
@@ -36,6 +37,7 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
+from aiosendspin.server.events import ClientGroupChangedEvent
 from aioslimproto.models import SQUEEZEBOX2_PLAYER_TYPES, PlayerStatus
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import PlayerState as SlimPlayerState
@@ -64,6 +66,7 @@ from .player import is_bridge_tool
 
 if TYPE_CHECKING:
     from aiosendspin.server import (
+        ClientEvent,
         ExternalStreamStartRequest,
         SendspinClient,
         SendspinGroup,
@@ -199,7 +202,7 @@ MIN_PLAYED_US: int = 10_000_000
 MAX_QUICK_FAILURES: int = 3
 # Delays (seconds) before each attempt to put a bridge back into the Sendspin group a
 # give-up took it out of. A bridge that gives up again before a stream played that much
-# since it was put back stays out.
+# since it was put back stays out, until its player is taken out of a group or put into one.
 REJOIN_ATTEMPT_DELAYS: tuple[int, ...] = (5, 30)
 # The same for the bridge of a player that connected again: it only has to wait for its
 # Sendspin protocol to be attached.
@@ -316,6 +319,9 @@ class BridgeSession:
         self.starved = False
         # the last status of the player while it played the stream
         self.status: PlayerStatus | None = None
+        # the most the player reported to have played of the stream: its elapsed time
+        # starts over when the counter of its frames wraps
+        self.played_us = 0
         self.tasks: list[asyncio.Task[None]] = []
         self._shift_us = timeline_shift_us
         # frames of the first chunk that were played already
@@ -498,6 +504,7 @@ class SendspinSqueezeliteBridge:
 
         self._clock = provider.clock
         self._sendspin_client: SendspinClient | None = None
+        self._unsub_client_events: Callable[[], None] | None = None
         self._bridge_client_id: str | None = None
         self._bridge_role: SlimprotoBridgeRole | None = None
         # the mapping of the player's clock is kept for as long as its connection lasts
@@ -514,7 +521,8 @@ class SendspinSqueezeliteBridge:
         self._rejoin_task: asyncio.Task[None] | None = None
         # the group a pending re-join returns the bridge to
         self._rejoin_group: SendspinGroup | None = None
-        # put back into a group, with no stream that played long enough since
+        # put back into a group by the bridge, with no stream that played long enough and
+        # no other change of its group since
         self._rejoined = False
 
     @property
@@ -599,6 +607,7 @@ class SendspinSqueezeliteBridge:
             hello, on_stream_start=self._on_stream_start
         )
         self._bridge_client_id = bridge_client_id
+        self._unsub_client_events = self._sendspin_client.add_event_listener(self._on_client_event)
 
         # Role is created by register_external_player via the factory registry.
         # Retrieve it and wire up the bridge callbacks.
@@ -636,6 +645,9 @@ class SendspinSqueezeliteBridge:
             self._close_session(session, stop_player=True)
         if self.protocol.sendspin_bridge is self:
             self.protocol.sendspin_bridge = None
+        if self._unsub_client_events is not None:
+            self._unsub_client_events()
+            self._unsub_client_events = None
         if self._sendspin_client is not None and (client_id := self._bridge_client_id):
             holds_client = holds_bridge_client(self.mass, client_id, self.protocol.protocol_id)
             self._sendspin_client = None
@@ -815,6 +827,14 @@ class SendspinSqueezeliteBridge:
         # Joining a session by any means supersedes a pending re-join.
         self._cancel_rejoin()
         self._begin_session()
+
+    def _on_client_event(self, _client: SendspinClient, event: ClientEvent) -> None:
+        """Handle an event of the Sendspin client of the bridge."""
+        if isinstance(event, ClientGroupChangedEvent):
+            # Taken out of a group or put into one: a return that did not work out says
+            # nothing about the player there. A return of the bridge itself is noted once
+            # the client is in its group.
+            self._rejoined = False
 
     def _on_role_stream_start(self) -> None:
         """Start a session for a stream that begins without a stream start request."""
@@ -1176,7 +1196,7 @@ class SendspinSqueezeliteBridge:
 
     def _played_us(self, session: BridgeSession) -> int:
         """
-        Return how much of its stream a player reported to have played, in microseconds.
+        Return how much of its stream a player has played by its last status, in microseconds.
 
         :param session: The session of the stream.
         """
@@ -1297,7 +1317,8 @@ class SendspinSqueezeliteBridge:
             self._decide_start(session)
             return
         session.status = status
-        if self._played_us(session) >= MIN_PLAYED_US:
+        session.played_us = max(session.played_us, self._played_us(session))
+        if session.played_us >= MIN_PLAYED_US:
             # the player plays what it is sent: what failed before says nothing now
             self._quick_failures = 0
             self._rejoined = False
@@ -1392,15 +1413,15 @@ class SendspinSqueezeliteBridge:
         """
         if session is not self._session or session.ended:
             return
-        played_us = self._played_us(session)
+        played_us = session.played_us
         if quick := played_us < MIN_PLAYED_US:
             self._quick_failures += 1
         played_s = played_us / 1_000_000
         min_played_s = MIN_PLAYED_US / 1_000_000
         if self._quick_failures >= MAX_QUICK_FAILURES:
             self.logger.error(
-                "Sendspin stream on %s failed %d times in a row before it played %.0f s, now "
-                "after %.1f s (%s): giving up and taking it out of the Sendspin session",
+                "Giving up on %s and taking it out of the Sendspin session: its stream failed "
+                "%d times in a row before it played %.0f s, now after %.1f s: %s",
                 self.protocol.display_name,
                 self._quick_failures,
                 min_played_s,
@@ -1440,8 +1461,10 @@ class SendspinSqueezeliteBridge:
         """
         if not (client := self._sendspin_client):
             return
-        # Captured before leaving, which is what moves the client to a solo group.
+        # Captured before leaving, which is what moves the client to a solo group and has
+        # its return forgotten with that.
         group = client.group
+        rejoined = self._rejoined
         try:
             previous_group_id = await client.quiesce_to_solo_stopped()
         except Exception as err:
@@ -1457,7 +1480,7 @@ class SendspinSqueezeliteBridge:
         self._cancel_rejoin()
         if not rejoin:
             return
-        if self._rejoined:
+        if rejoined:
             self.logger.warning(
                 "%s gave up again before it played %.0f s since it was re-joined, leaving it "
                 "out of the group until it is grouped again",
