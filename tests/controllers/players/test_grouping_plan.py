@@ -247,6 +247,8 @@ def test_a_target_without_grouping_is_refused() -> None:
     plan = _plan(world, ChangeKind.ROUTE, "a", ("b",))
     assert isinstance(plan.steps[-1], Refuse)
     assert plan.steps[-1].error is UnsupportedFeaturedException
+    assert plan.steps[-1].translation_key == "player_cannot_group"
+    assert plan.steps[-1].translation_args == ("Player a",)
 
 
 def test_a_member_change_on_a_held_target_goes_to_its_group() -> None:

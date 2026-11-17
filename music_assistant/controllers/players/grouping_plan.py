@@ -1485,7 +1485,7 @@ class _Planner(GroupRules):
             self._refuse(
                 UnsupportedFeaturedException,
                 f"Player {target.name} does not support group commands",
-                "player_feature_unsupported",
+                "player_cannot_group",
                 (target.name,),
             )
         # if the target player is a member of an active group player (e.g. a syncgroup),

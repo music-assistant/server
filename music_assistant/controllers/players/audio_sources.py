@@ -986,7 +986,7 @@ class AudioSourceMixin(_PlayerControllerBase):
         if PlayerFeature.SELECT_SOURCE not in player.supported_features:
             raise UnsupportedFeaturedException(
                 f"Player {player.name} does not support source selection",
-                translation_key="player_feature_unsupported",
+                translation_key="player_no_sources",
                 translation_owner=self.translation_owner,
                 translation_args=[player.name],
             )

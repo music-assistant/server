@@ -221,7 +221,7 @@ class VolumeMixin(_PlayerControllerBase):
         if mute_control == PLAYER_CONTROL_NONE:
             raise UnsupportedFeaturedException(
                 f"Player {player.name} does not support muting",
-                translation_key="player_feature_unsupported",
+                translation_key="player_cannot_mute",
                 translation_owner=self.translation_owner,
                 translation_args=[player.name],
             )
@@ -539,7 +539,7 @@ class VolumeMixin(_PlayerControllerBase):
         if player.volume_control == PLAYER_CONTROL_NONE:
             raise UnsupportedFeaturedException(
                 f"Player {player.name} does not support volume control",
-                translation_key="player_feature_unsupported",
+                translation_key="player_no_volume_control",
                 translation_owner=self.translation_owner,
                 translation_args=[player.name],
             )
@@ -681,7 +681,7 @@ class VolumeMixin(_PlayerControllerBase):
         # the configured control disappeared after the mute control was resolved
         raise UnsupportedFeaturedException(
             f"Player {player.name} does not support muting",
-            translation_key="player_feature_unsupported",
+            translation_key="player_cannot_mute",
             translation_owner=self.translation_owner,
             translation_args=[player.name],
         )

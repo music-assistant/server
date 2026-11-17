@@ -206,7 +206,7 @@ class PlaybackMixin(_PlayerControllerBase):
             msg = f"Player {player.name} does not support seeking"
             raise UnsupportedFeaturedException(
                 msg,
-                translation_key="player_feature_unsupported",
+                translation_key="player_cannot_seek",
                 translation_owner=self.translation_owner,
                 translation_args=[player.name],
             )
@@ -335,7 +335,7 @@ class PlaybackMixin(_PlayerControllerBase):
         msg = f"Player {player.name} does not support skipping to the next track."
         raise UnsupportedFeaturedException(
             msg,
-            translation_key="player_feature_unsupported",
+            translation_key="player_cannot_skip_tracks",
             translation_owner=self.translation_owner,
             translation_args=[player.name],
         )
@@ -369,7 +369,7 @@ class PlaybackMixin(_PlayerControllerBase):
         msg = f"Player {player.name} does not support skipping to the previous track."
         raise UnsupportedFeaturedException(
             msg,
-            translation_key="player_feature_unsupported",
+            translation_key="player_cannot_skip_tracks",
             translation_owner=self.translation_owner,
             translation_args=[player.name],
         )
@@ -433,7 +433,7 @@ class PlaybackMixin(_PlayerControllerBase):
         if protocol is None or PlayerFeature.SELECT_SOUND_MODE not in protocol.supported_features:
             raise UnsupportedFeaturedException(
                 f"Player {player.name} does not support sound mode selection",
-                translation_key="player_feature_unsupported",
+                translation_key="player_no_sound_modes",
                 translation_owner=self.translation_owner,
                 translation_args=[player.name],
             )
