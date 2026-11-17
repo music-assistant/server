@@ -288,6 +288,24 @@ class TestBothDecksKick:
 
         assert planner._both_decks_kick(ctx, _blend(ratio=None)) is kicks
 
+    @pytest.mark.parametrize(
+        ("hats_in", "beat"),
+        [(((0.0, 7.9),), False), (((0.0, 8.0),), True)],
+        ids=["under half the overlap", "half the overlap"],
+    )
+    def test_hats_keep_a_beat_through_half_the_overlap(
+        self, hats_in: tuple[tuple[float, float], ...], beat: bool
+    ) -> None:
+        """
+        A kickless deck needs high-band energy through half the 16 s overlap.
+
+        :param hats_in: Incoming high-band runs.
+        :param beat: Whether both decks count as keeping a beat.
+        """
+        ctx = dataclasses.replace(_kick_ctx(self.everywhere, ()), hats_out=(), hats_in=hats_in)
+
+        assert planner._both_decks_kick(ctx, _blend(ratio=None)) is beat
+
     def test_the_incoming_overlap_counts_from_the_trim(self) -> None:
         """An incoming kick before the trim is not in the overlap."""
         ctx = _kick_ctx(self.everywhere, ((0.0, 8.0),))

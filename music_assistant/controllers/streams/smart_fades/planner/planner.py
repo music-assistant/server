@@ -55,6 +55,10 @@ if TYPE_CHECKING:
     from .candidates import Candidate, CandidateSpec
     from .context import TransitionContext
 
+# High-band energy is weaker evidence of a beat than a kick: it has to run through
+# at least this share of the overlap
+_HAT_MIN_OVERLAP_SHARE: float = 0.5
+
 
 class TransitionPlanner(ABC):
     """Abstract base class for transition planners."""
@@ -329,13 +333,14 @@ def _has_beat(
     end_s: float,
     bpm: float,
 ) -> bool:
-    """Whether a deck's kick or hat runs cover at least a beat of the window; True without band data."""
+    """Whether a deck's kick covers a beat of the window or its hats half of it; True without band data."""
     if kicks is None:
         return True
-    # a window that only grazes a kick or hat bar, by less than a beat, holds no beat to match
-    beat = 60.0 / bpm
-    return _run_seconds(kicks, start_s, end_s) >= beat or (
-        hats is not None and _run_seconds(hats, start_s, end_s) >= beat
+    # a window that only grazes a kick bar, by less than a beat, holds no beat to match
+    if _run_seconds(kicks, start_s, end_s) >= 60.0 / bpm:
+        return True
+    return hats is not None and (
+        _run_seconds(hats, start_s, end_s) >= _HAT_MIN_OVERLAP_SHARE * (end_s - start_s)
     )
 
 
