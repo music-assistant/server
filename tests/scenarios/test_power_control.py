@@ -508,8 +508,10 @@ async def test_a_plug_switched_off_during_the_startup_ends_the_play_that_waits(
     await scenario.switch(plug, False)
 
     assert play.done()
-    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+    with pytest.raises(PlayerUnavailableError, match="is switched off") as error:
         await play
+    assert error.value.translation_key == "player_switched_off"
+    assert error.value.translation_args == ["Den"]
     state = _state(scenario, player_id)
     assert (state.available, state.powered) == (True, False)
     await scenario.advance(5)

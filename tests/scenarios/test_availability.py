@@ -217,8 +217,11 @@ async def test_a_stop_of_a_queue_whose_player_waits_for_its_device_goes_to_no_de
         await scenario.settle()
 
     stop_player.assert_not_awaited()
-    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+    with pytest.raises(PlayerUnavailableError, match="is switched off") as error:
         await play
+    # its plug is on: the generic text of the error type, not that it is switched off
+    assert error.value.translation_key == PlayerUnavailableError.translation_key
+    assert error.value.translation_args == []
     assert plug.commands == [True]
 
 

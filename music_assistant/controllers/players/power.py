@@ -640,6 +640,10 @@ class PowerMixin(_PlayerControllerBase):
                 del self._power_on_waits[player_id]
         if wait.called_off or player.offline_by_power_control:
             msg = f"Player {player.name} is switched off"
+            control = self._controls.get(player.power_control)
+            if control is None or control.power_state:
+                # called off while its control reads on, such as by a stop
+                raise _PowerOnCalledOff(msg)
             raise _PowerOnCalledOff(
                 msg,
                 translation_key="player_switched_off",
