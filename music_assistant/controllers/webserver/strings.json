@@ -40,7 +40,7 @@
     },
     "verify_ssl": {
       "label": "Verify SSL Certificate",
-      "description": "Test your certificate and private key to verify they are valid and match each other.",
+      "description": "Test your certificate and private key to verify they are valid and match each other. Save the certificate and private key first.",
       "action_label": "Verify"
     },
     "bind_ip": {
@@ -53,6 +53,7 @@
     "description": "Configuration of the webserver and API"
   },
   "errors": {
+    "ssl_not_saved": "Save the certificate and private key first, then press Verify.",
     "ssl_verification_failed": "Certificate verification failed: {0}"
   }
 }
