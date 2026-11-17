@@ -76,6 +76,10 @@ _OUTLIER_MIN_POINTS = 20
 _OUTLIER_SIGMAS = 3
 _OUTLIER_MIN_MS = 1.5
 _OUTLIER_MIN_KEPT = 10
+# a player is on its timeline once this many reports in a row leave the loop no more than
+# this (ms) to correct: a few times what is left of the error of a player that is followed
+_ON_TIMELINE_MS = 1.0
+_ON_TIMELINE_REPORTS = 4
 
 
 class PlayerClock:
@@ -301,6 +305,9 @@ class SyncLoop:
         self._error_ms: float | None = None
         self._predicted_ms: float | None = None
         self._start_error_ms: float | None = None
+        # reports in a row that left next to nothing to correct, and whether enough did
+        self._settled_reports = 0
+        self._on_timeline = False
 
     @property
     def rate_ppm(self) -> float:
@@ -321,6 +328,16 @@ class SyncLoop:
     def start_error_ms(self) -> float | None:
         """Return the error the session started with, or None until it is measured."""
         return self._start_error_ms
+
+    @property
+    def on_timeline(self) -> bool:
+        """
+        Return whether the player has been brought onto its timeline.
+
+        From then on only small corrections are left, which may be heard later: the
+        stream can be sent further ahead.
+        """
+        return self._on_timeline
 
     @property
     def start_reports(self) -> tuple[float, ...]:
@@ -367,6 +384,7 @@ class SyncLoop:
             self._start_reports.clear()
             self._rate_ppm = self._drift_ppm = 0.0
             self._error_ms = self._predicted_ms = None
+            self._settled_reports = 0
         previous, self._last_report = self._last_report, (server_us, elapsed_ms)
         if previous is not None and elapsed_ms < previous[1] - self._wrap_ms / 2:
             self._wrapped_ms += self._wrap_ms
@@ -429,6 +447,11 @@ class SyncLoop:
             )
             rate_ppm = self._drift_ppm + self._gain_ppm_per_ms * self._predicted_ms
             self._rate_ppm = max(-self._max_rate_ppm, min(self._max_rate_ppm, rate_ppm))
+            if abs(self._predicted_ms) <= _ON_TIMELINE_MS:
+                self._settled_reports += 1
+                self._on_timeline |= self._settled_reports >= _ON_TIMELINE_REPORTS
+            else:
+                self._settled_reports = 0
         return raw_ms - played_ms
 
     def process(self, pcm: bytes) -> bytes:

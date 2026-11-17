@@ -10,9 +10,10 @@ Every Sendspin stream is a session: one PCM stream over HTTP that the player sta
 at an instant of its own clock, on silence. A player starts later than it is told, by
 an amount that differs from start to start: the bridge measures that from the first
 positions the player reports and corrects it in the silence, so the first audio is
-heard on the timeline. From then on it keeps the stream seconds ahead of what the player
-plays, as far as Sendspin delivered its audio, so the player plays on through a stall of
-its network. The sync loop holds it on the timeline from the positions the player reports.
+heard on the timeline. The sync loop holds it there from the positions the player
+reports, and once it has little left to correct the bridge keeps the stream seconds ahead
+of what the player plays, as far as Sendspin delivered its audio, so the player plays on
+through a stall of its network.
 
 Audio flow:
 Sendspin PushStream -> BridgePlayerRole.on_audio_chunk -> session -> HTTP stream -> player
@@ -79,14 +80,16 @@ if TYPE_CHECKING:
 # The stream of a session is served on this path, to the player and session of its query.
 BRIDGE_STREAM_PATH = "/slimproto/bridge"
 
-# Audio the stream is kept ahead of what the player plays, as far as there is audio for
-# it: what a player holds to play on while nothing reaches it. A correction of the sync
-# loop is only heard once this much has played. At 96 kHz / 24 bit it is 3.5 MB, which the
-# stream and output buffers of a player hold together; a player that holds less takes it
-# as it plays.
+# Audio the stream is kept ahead of what a player on its timeline plays, as far as there
+# is audio for it: what the player holds to play on while nothing reaches it. A correction
+# of the sync loop is only heard once this much has played. At 96 kHz / 24 bit it is
+# 3.5 MB, which the stream and output buffers of a player hold together; a player that
+# holds less takes it as it plays.
 STREAM_LEAD_US: int = 6_000_000
-# The same until the start error is measured: one that is corrected in the audio is heard
-# once this much has played, so it is short.
+# The same until the sync loop has the player on its timeline: what it corrects of the
+# start is heard once this much has played, so it is short. A stream stays at its long
+# lead once it is there, as a correction goes into the audio that follows what was sent
+# and is heard no sooner for sending that later.
 START_LEAD_US: int = 1_500_000
 
 # Silence the stream opens with. A player only reports its buffer ready once it holds
@@ -1013,7 +1016,7 @@ class SendspinSqueezeliteBridge:
         played = session.frames(max(0, since_start_us))
         cursor = loop.frames_consumed
         max_frames = session.frames(MAX_BLOCK_US)
-        lead_us = STREAM_LEAD_US if loop.start_error_ms is not None else START_LEAD_US
+        lead_us = STREAM_LEAD_US if loop.on_timeline else START_LEAD_US
         # counted from the timeline, not from what went out before: after a write the
         # player kept waiting, the stream is back at its lead in blocks of this size
         if (frames := min(played + session.frames(lead_us) - cursor, max_frames)) <= 0:

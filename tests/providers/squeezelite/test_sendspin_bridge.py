@@ -372,7 +372,7 @@ class _BufferedPlayer(_Response):
 
     async def play(self, seconds: float) -> list[int]:
         """
-        Play on for a while, in steps of 50 ms.
+        Play on for a while, in steps of 50 ms, and report four times a second.
 
         :param seconds: How long it plays.
         :return: The audio it held after every step, in microseconds.
@@ -380,6 +380,11 @@ class _BufferedPlayer(_Response):
         held = []
         for _ in range(round(seconds * 20)):
             self._rig.clock.advance_us(50_000)
+            played_us = self._rig.now_us - self._session.start_us
+            if played_us % 250_000 == 0:
+                # it reports what it played, which is no more than it got
+                elapsed_us = min(played_us, _frame_us(len(self.body) // FRAME_SIZE))
+                self._rig.bridge.handle_slim_event(self._rig.status(elapsed_ms=elapsed_us // 1000))
             await _settle()
             held.append(self.held_us)
         return held
@@ -387,6 +392,18 @@ class _BufferedPlayer(_Response):
     def audio(self) -> list[int]:
         """Return the source frames it got, without the silence."""
         return [frame for frame in _frames(bytes(self.body)) if frame >= 0]
+
+    def left_out(self) -> int:
+        """
+        Return how many frames its audio leaves out, less the ones it has twice.
+
+        Only single frames are, which is how the sync loop corrects. The rig reports
+        whole milliseconds, which the loop takes for half a millisecond early: it sends
+        that many frames twice.
+        """
+        steps = [second - first for first, second in pairwise(self.audio())]
+        assert set(steps) <= {0, 1, 2}
+        return steps.count(2) - steps.count(0)
 
 
 class _Rig:
@@ -622,6 +639,17 @@ class _Rig:
             await _settle()
         assert not session.aligning, "the start was not corrected"
 
+    def follow(self, session: BridgeSession) -> None:
+        """
+        Let the player play on its timeline and report, until the sync loop has it there.
+
+        :param session: The session it plays.
+        """
+        assert session.loop is not None
+        while not session.loop.on_timeline:
+            self.play(session, 0.25)
+            assert self.now_us - session.start_us < 10_000_000, "the player is not followed"
+
     def first_audio(
         self, session: BridgeSession, sent: bytes, *, late_ms: int = 0
     ) -> tuple[int, int]:
@@ -684,10 +712,15 @@ class _Rig:
         return session, player
 
     def lead_frames(self, session: BridgeSession) -> int:
-        """Return how far ahead of what plays now the stream of a session was written, in frames."""
+        """Return how far ahead of what is due now the stream of a session was written, in frames."""
         assert session.loop is not None
         played = (self.now_us - session.start_us) * BRIDGE_SAMPLE_RATE // 1_000_000
-        return session.loop.frames_sent - played
+        return session.loop.frames_consumed - played
+
+    def dropped(self, session: BridgeSession) -> int:
+        """Return the number of frames the sync loop of a session left out, less the ones it sent twice."""
+        assert session.loop is not None
+        return session.loop.frames_consumed - session.loop.frames_sent
 
     async def close(self) -> None:
         """Stop the bridge and everything that was started around it."""
@@ -1119,7 +1152,7 @@ async def test_the_role_starts_a_stream_that_came_without_a_request(rig: _Rig) -
 
 async def test_the_stream_is_served_to_the_player_that_asks_for_the_session(rig: _Rig) -> None:
     """The player gets the preroll at once, and what it is allowed as it plays."""
-    session = await rig.start_playing(frames=6 * SECOND)
+    session = await rig.start_playing(frames=9 * SECOND)
     session.claimed = session.preroll_sent = False
     response = _Response()
 
@@ -1131,10 +1164,18 @@ async def test_the_stream_is_served_to_the_player_that_asks_for_the_session(rig:
     assert _frames(bytes(response.body)) == [-1] * (LEAD_IN_FRAMES - ALIGN_ROOM_FRAMES)
     await rig.align_served(session)
     await _settle()
-    # then the rest of the lead-in and its audio, the lead ahead of the 300 ms it played
+    # then the rest of the lead-in and its audio, a short lead ahead of the 300 ms it played
     audio = response.body[LEAD_IN_FRAMES * 4 :]
     assert _frames(bytes(response.body[: LEAD_IN_FRAMES * 4])) == [-1] * LEAD_IN_FRAMES
-    assert _frames(bytes(audio)) == list(range(13230 + STREAM_LEAD_FRAMES - LEAD_IN_FRAMES))
+    assert _frames(bytes(audio)) == list(range(13230 + START_LEAD_FRAMES - LEAD_IN_FRAMES))
+    # and the long lead once the sync loop has the player on its timeline, 2.8 seconds in
+    rig.follow(session)
+    await _settle()
+    await _settle()
+    assert rig.lead_frames(session) == STREAM_LEAD_FRAMES
+    assert len(response.body) == (round(2.8 * SECOND) + STREAM_LEAD_FRAMES) * FRAME_SIZE + (
+        -rig.dropped(session) * FRAME_SIZE
+    )
     rig.bridge._on_stream_end()
     await serving
 
@@ -1380,19 +1421,19 @@ async def test_24_bit_audio_reaches_the_player_in_3_bytes_per_sample(rig: _Rig) 
     """Sendspin delivers a 24-bit sample in 32 bits, of which a slimproto player takes 24."""
     await rig.start_hires()
 
-    session = await rig.start_playing(frames=8 * 48000, chunk=_chunk_24)
+    session = await rig.start_playing(frames=4 * 48000, chunk=_chunk_24)
 
     # on the timeline as any stream: its first frame a lead-in after its start
     assert session.start_us == rig.origin_us - LEAD_IN_US
     assert session.loop is not None
     assert session.loop.frames_sent == 12000
     # the lead-in of 1.45 seconds in frames of this stream, less the preroll, and then the
-    # lead of six seconds ahead of the 300 ms it played
+    # lead of a second and a half ahead of the 300 ms it played
     lead = rig.align(session) + rig.drain(session)
-    assert _frames_24(lead) == [-1] * (69600 - 12000) + list(range(14400 + 288000 - 69600))
+    assert _frames_24(lead) == [-1] * (69600 - 12000) + list(range(14400 + 72000 - 69600))
     # and a second more for every second that it plays
     rig.clock.advance_us(1_000_000)
-    assert _frames_24(rig.drain(session)) == list(range(232800, 280800))
+    assert _frames_24(rig.drain(session)) == list(range(16800, 64800))
 
 
 async def test_corrections_are_frames_of_the_format_of_the_stream(rig: _Rig) -> None:
@@ -1624,14 +1665,13 @@ async def test_a_late_join_backlog_is_paced(rig: _Rig) -> None:
 
     # the preroll counts: with it the player holds the lead ahead of the 300 ms it played,
     # and no more
-    assert len(sent) == (13230 + STREAM_LEAD_FRAMES - PREROLL_FRAMES) * FRAME_SIZE
-    assert _frames(sent)[-1] == 13230 + STREAM_LEAD_FRAMES - LEAD_IN_FRAMES - 1
-    # 4.85 seconds of the 30
-    assert len(session.chunks) == 26
+    assert len(sent) == (13230 + START_LEAD_FRAMES - PREROLL_FRAMES) * FRAME_SIZE
+    assert _frames(sent)[-1] == 13230 + START_LEAD_FRAMES - LEAD_IN_FRAMES - 1
+    assert len(session.chunks) == 30
     # a second later it is given a second more
     rig.clock.advance_us(1_000_000)
     assert len(rig.drain(session)) == SECOND * FRAME_SIZE
-    assert len(session.chunks) == 25
+    assert len(session.chunks) == 29
 
 
 # ---------------------------------------------------------------- pacing
@@ -1701,7 +1741,7 @@ async def test_after_its_start_the_player_is_kept_the_lead_ahead(rig: _Rig) -> N
     rig.clock.advance_us(3_000_000)
     rig.drain(session)
 
-    assert session.loop.frames_sent == round(3.32 * SECOND) + STREAM_LEAD_FRAMES
+    assert session.loop.frames_sent == round(3.32 * SECOND) + START_LEAD_FRAMES
 
 
 async def test_corrections_count_in_what_the_player_is_allowed(rig: _Rig) -> None:
@@ -1720,7 +1760,7 @@ async def test_corrections_count_in_what_the_player_is_allowed(rig: _Rig) -> Non
     assert loop.rate_ppm > 0
     assert dropped > 0
     played = (rig.now_us - session.start_us) * BRIDGE_SAMPLE_RATE // 1_000_000
-    assert loop.frames_sent == played + STREAM_LEAD_FRAMES - dropped
+    assert loop.frames_sent == played + START_LEAD_FRAMES - dropped
 
 
 async def test_silence_keeps_a_player_fed_that_sendspin_has_nothing_for(rig: _Rig) -> None:
@@ -1771,9 +1811,56 @@ async def test_audio_that_is_still_to_arrive_is_not_replaced_by_silence(rig: _Ri
     assert loop.frames_consumed == round(1.2 * SECOND) + STARVED_LEAD_FRAMES
 
 
-async def test_the_lead_is_short_until_the_start_error_is_measured(rig: _Rig) -> None:
+async def test_a_player_on_its_timeline_gets_the_long_lead_within_three_seconds(
+    rig: _Rig,
+) -> None:
+    """Once the sync loop has little left to correct, the stream goes seconds ahead and stays there."""
+    session = await rig.start_playing(frames=40 * SECOND)
+    loop = session.loop
+    assert loop is not None
+    rig.align(session)
+    rig.drain(session)
+    assert rig.lead_frames(session) == START_LEAD_FRAMES
+
+    rig.follow(session)
+    assert rig.now_us - session.start_us == 2_800_000
+    sent = _frames(rig.drain(session))
+
+    assert rig.lead_frames(session) == STREAM_LEAD_FRAMES
+    assert sent[-1] - sent[0] == len(sent) - 1 + rig.dropped(session)
+    # reports that are off after that take none of it back: the stream follows the timeline
+    for _ in range(40):
+        rig.play(session, 0.25, late_ms=8)
+        rig.drain(session)
+        assert rig.lead_frames(session) == STREAM_LEAD_FRAMES
+    assert loop.error_ms is not None
+    assert loop.error_ms > 5.0
+    assert loop.on_timeline
+
+
+@pytest.mark.parametrize("late_ms", [8, -8])
+async def test_a_player_that_is_still_corrected_keeps_the_short_lead(
+    rig: _Rig, late_ms: int
+) -> None:
+    """What the sync loop corrects is heard within a second and a half until the player is there."""
+    session = await rig.start_playing(frames=40 * SECOND)
+    loop = session.loop
+    assert loop is not None
+    rig.align(session)
+
+    for _ in range(40):
+        rig.play(session, 0.25, late_ms=late_ms)
+        rig.drain(session)
+
+    # ten seconds on, the loop took out 4 of its 8 ms
+    assert not loop.on_timeline
+    assert rig.lead_frames(session) == START_LEAD_FRAMES
+    assert abs(rig.dropped(session)) == pytest.approx(4.0 * 44.1, abs=30)
+
+
+async def test_a_player_that_does_not_show_its_start_keeps_the_short_lead(rig: _Rig) -> None:
     """A start error that is corrected in the audio is heard soon: the long lead comes after it."""
-    session = await rig.start_playing(frames=30 * SECOND)
+    session = await rig.start_playing(frames=40 * SECOND)
     loop = session.loop
     assert loop is not None
     # a player that does not show where it plays gets its audio after two seconds
@@ -1789,7 +1876,7 @@ async def test_the_lead_is_short_until_the_start_error_is_measured(rig: _Rig) ->
     assert loop.start_error_ms == pytest.approx(49.5)
     assert after[0] == before[-1] + 1 + round(49.5 * 44.1)
     assert after == list(range(after[0], after[0] + len(after)))
-    assert rig.lead_frames(session) == STREAM_LEAD_FRAMES - round(49.5 * 44.1)
+    assert rig.lead_frames(session) == START_LEAD_FRAMES
 
 
 async def test_a_source_that_delivers_late_at_a_start_is_played_from_where_it_is(rig: _Rig) -> None:
@@ -1814,7 +1901,7 @@ async def test_a_source_that_delivers_late_at_a_start_is_played_from_where_it_is
     # each frame at its own time: 2.35 seconds into the stream is 0.9 seconds into its audio
     assert late[0] == round(0.9 * SECOND)
     assert late == list(range(late[0], late[0] + len(late)))
-    assert rig.lead_frames(session) == STREAM_LEAD_FRAMES
+    assert rig.lead_frames(session) == START_LEAD_FRAMES
 
 
 async def test_a_live_source_goes_to_the_player_as_it_arrives(rig: _Rig) -> None:
@@ -1833,13 +1920,19 @@ async def test_a_live_source_goes_to_the_player_as_it_arrives(rig: _Rig) -> None
 
     sent = rig.align(session)
     for _ in range(50):
-        rig.clock.advance_us(100_000)
+        rig.play(session, 0.1, every_us=100_000)
         deliver()
         sent += rig.drain(session)
-        assert not session.chunks
+    assert session.loop is not None
+    assert session.loop.on_timeline
+    assert not session.chunks
 
     # the lead-in and then its audio without a gap, as far as the lead of the group
-    assert _frames(sent) == [-1] * (LEAD_IN_FRAMES - PREROLL_FRAMES) + list(range(delivered))
+    audio = [frame for frame in _frames(sent) if frame >= 0]
+    assert _frames(sent)[: LEAD_IN_FRAMES - PREROLL_FRAMES] == [-1] * (
+        LEAD_IN_FRAMES - PREROLL_FRAMES
+    )
+    assert (audio[0], audio[-1], len(audio)) == (0, delivered - 1, delivered - rig.dropped(session))
     assert 0 <= rig.lead_frames(session) - SECOND * ahead_us // 1_000_000 < tenth
 
 
@@ -1870,36 +1963,61 @@ async def test_a_player_plays_on_while_its_connection_takes_nothing(
 
         assert (min(held) > 0) is plays_on
         await player.play(1)
-        # no more than the lead again, with no audio lost or sent twice
         assert rig.lead_frames(session) == lead_frames
         assert session.write_started_us is None
-        assert player.held_us == lead_us
-        assert player.audio() == list(range(len(player.audio())))
-        assert len(player.audio()) == round((stall_s + 4.3) * SECOND) + lead_frames - LEAD_IN_FRAMES
+        # no more than the lead again, with no audio lost or sent twice but for the
+        # single frames of the sync loop
+        assert player.left_out() == rig.dropped(session)
+        assert (
+            player.audio()[-1] + 1 == round((stall_s + 4.3) * SECOND) + lead_frames - LEAD_IN_FRAMES
+        )
+
+
+async def test_a_stall_three_seconds_after_a_start_is_ridden_out(rig: _Rig) -> None:
+    """A player that starts on its timeline holds the long lead 3 seconds after its start instant."""
+    session, player = await rig.serve_player()
+    assert session.loop is not None
+    await player.play(2.4)
+    assert not session.loop.on_timeline
+    assert rig.lead_frames(session) == START_LEAD_FRAMES
+
+    await player.play(0.3)
+    assert rig.now_us - session.start_us == 3_000_000
+    assert rig.lead_frames(session) == STREAM_LEAD_FRAMES
+    player.stalled = True
+    held = await player.play(4)
+    player.stalled = False
+
+    assert min(held) > 1_900_000
+    await player.play(1)
+    assert rig.lead_frames(session) == STREAM_LEAD_FRAMES
+    assert player.left_out() == rig.dropped(session)
 
 
 async def test_a_player_whose_buffers_are_full_gets_its_stream_as_it_plays(rig: _Rig) -> None:
     """A player that holds less than the lead is written to as it makes room, without a gap."""
     session, player = await rig.serve_player(capacity_us=2_000_000)
+    # the long lead comes when the player is on its timeline
+    await player.play(3)
 
     held = await player.play(5)
 
     # it holds what its buffers take, and the writer waits with one block for the room
-    assert min(held[20:]) > 2_000_000 - 50_000
+    assert min(held) > 2_000_000 - 50_000
     assert max(held) < 2_000_000 + MAX_BLOCK_US
     assert session.write_started_us is not None
     assert session.loop is not None
     waiting = session.loop.frames_sent * FRAME_SIZE - len(player.body)
-    assert 0 < waiting <= MAX_BLOCK_FRAMES * FRAME_SIZE
+    # a block, with the frames the sync loop sent twice in it
+    assert 0 < waiting <= (MAX_BLOCK_FRAMES + SECOND // 1000) * FRAME_SIZE
     assert rig.lead_frames(session) < STREAM_LEAD_FRAMES
-    assert player.audio() == list(range(len(player.audio())))
 
     # with room for all of it the stream is at its lead again, and nothing was lost
     player.capacity_us = None
     await player.play(1)
     assert rig.lead_frames(session) == STREAM_LEAD_FRAMES
-    assert player.held_us == STREAM_LEAD_US
-    assert player.audio() == list(range(round(6.3 * SECOND) + STREAM_LEAD_FRAMES - LEAD_IN_FRAMES))
+    assert player.left_out() == rig.dropped(session)
+    assert player.audio()[-1] + 1 == round(9.3 * SECOND) + STREAM_LEAD_FRAMES - LEAD_IN_FRAMES
 
 
 @pytest.mark.parametrize(("stall_s", "logged"), [(0.5, 0), (2, 1)])
@@ -3416,8 +3534,6 @@ async def test_an_underrun_restarts_the_stream_on_the_timeline(rig: _Rig) -> Non
     rig.align(first)
     rig.clock.advance_us(first.start_us - rig.now_us + 1_950_000)
     rig.drain(first)
-    # all of its audio went out
-    assert not first.chunks
 
     rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
     await _settle()
@@ -3428,7 +3544,7 @@ async def test_an_underrun_restarts_the_stream_on_the_timeline(rig: _Rig) -> Non
     assert rig.client.play_url.await_count == 2
     rig.client.stop.assert_not_called()
     # the audio that was not played out yet goes on in the new stream, at its own time:
-    # the player was half a second into it
+    # 2 seconds of it went out, and the player was half a second into it
     assert len(second_session.chunks) == 6
     rig.fetched(second_session)
     rig.event(SlimEventType.PLAYER_BUFFER_READY)
@@ -3447,8 +3563,12 @@ async def test_an_underrun_tells_what_the_bridge_knew(
     """The restart is logged with the supply of the player: what was written, taken, held and left."""
     session, player = await rig.serve_player()
     await player.play(3)
+    player.stalled = True
+    await player.play(1.25)
+    written = len(player.body)
+    # its last status, 100 ms before it reports that it ran dry
     status = replace(
-        rig.status(elapsed_ms=4750).data,
+        rig.status(elapsed_ms=4550).data,
         bytes_received=1_000_000,
         stream_buffer_size=3_145_728,
         stream_buffer_fullness=65_536,
@@ -3456,9 +3576,7 @@ async def test_an_underrun_tells_what_the_bridge_knew(
         output_buffer_fullness=1_234,
     )
     rig.bridge.handle_slim_event(SlimEvent(SlimEventType.PLAYER_HEARTBEAT, PLAYER_ID, status))
-    player.stalled = True
-    await player.play(1.25)
-    written = len(player.body)
+    rig.clock.advance_us(100_000)
 
     rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
     await _settle()
@@ -3466,12 +3584,11 @@ async def test_an_underrun_tells_what_the_bridge_knew(
     assert rig.session is not session
     # the stream was 6 seconds ahead when the player stopped taking it, and the block of
     # 50 ms after that waits: 7 of the 30 chunks of a second went out whole
-    assert written == (LEAD_IN_FRAMES + round(7.85 * SECOND)) * FRAME_SIZE
     assert (
-        "Sendspin stream on Kitchen is restarted: it ran out of audio (prepared 4800 ms ahead, "
-        f"{written} bytes written, a write waits for 1200 ms, 23000 ms of audio waiting, the player "
+        "Sendspin stream on Kitchen is restarted: it ran out of audio (prepared 4700 ms ahead, "
+        f"{written} bytes written, a write waits for 1300 ms, 23000 ms of audio waiting, the player "
         "got 1000000 bytes and held 65536 of 3145728 in its stream buffer and 1234 of 3528000 "
-        "in its output buffer 1250 ms ago)"
+        "in its output buffer 100 ms ago)"
     ) in caplog.text
 
 
@@ -3487,13 +3604,12 @@ async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(sync_a
         player.stalled = True
         while player.held_us > 0:
             await player.play(0.05)
-            elapsed_ms = (rig.now_us - first.start_us) // 1000
-            rig.bridge.handle_slim_event(rig.status(elapsed_ms=elapsed_ms))
         assert rig.session is first
         played = player.audio()
         # 6 seconds after the 3.3 it played: in the middle of the chunk that was partly taken
-        assert rig.now_us - first.start_us == 9_300_000
-        assert played == list(range(round(7.85 * SECOND)))
+        assert rig.now_us - first.start_us == pytest.approx(9_300_000, abs=50_000)
+        assert played[-1] + 1 == round(7.85 * SECOND)
+        assert -22 <= player.left_out() <= 0
         assert len(first.chunks) == 8
         rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
         await _settle()
@@ -3513,8 +3629,10 @@ async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(sync_a
         # nothing twice, and all of it from where the new stream could begin: 0.8 seconds
         # for its start and its correction, in the chunk the first stream had begun
         audio = restarted.audio()
-        assert audio == list(range(round(8.65 * SECOND), audio[0] + len(audio)))
-        assert rig.lead_frames(second) == STREAM_LEAD_FRAMES
+        assert played[-1] < audio[0] < 9 * SECOND
+        assert audio[0] == pytest.approx(8.65 * SECOND, abs=SECOND // 10)
+        assert audio == list(range(audio[0], audio[0] + len(audio)))
+        assert rig.lead_frames(second) == START_LEAD_FRAMES
         # each frame at its own time, the sync delay of the player included
         index = _frames(bytes(restarted.body)).index(audio[0])
         heard_us = second.start_us + _frame_us(index)
