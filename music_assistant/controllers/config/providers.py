@@ -444,17 +444,19 @@ class ProviderConfigMixin:
         "config/providers/share_candidates",
         required_scope=(Scope.CONFIG_PROVIDERS_OWN, Scope.LIBRARY_WRITE),
     )
-    async def get_share_candidates(self) -> list[UserSummary]:
+    async def get_share_candidates(self, include_guests: bool = False) -> list[UserSummary]:
         """
         Return the users a music source or playlist can be shared with.
 
         Every enabled member and the Home Assistant system user are listed, without their role
-        or settings. Guests are left out.
+        or settings. Guests are left out unless requested.
+
+        :param include_guests: Include guest accounts as sharing recipients.
         """
         return [
             UserSummary.from_user(user)
             for user in await self.mass.webserver.auth.list_users()
-            if user.enabled and user.role != UserRole.GUEST
+            if user.enabled and (include_guests or user.role != UserRole.GUEST)
         ]
 
     def release_user_sources(self, user_id: str) -> None:
