@@ -156,6 +156,16 @@ app: the player and its queue take the new name, and it is stored as the name of
 - End-to-end: **yes**. Rename a shairport-sync receiver and restart it.
 - Proven by: `test_attach_detach.py::test_a_player_of_an_audio_receiver_alone_follows_its_name`
 
+### APPEAR-10 · A set of speakers is a multi-channel player with the layout of its speakers
+
+The Cast provider finds the Living stereo pair. Clients see one player, Living, of the type
+multi-channel with the layout stereo; the Den speaker next to it has no layout. A layout the
+provider reports later, such as 5.1, shows right away. A provider that still reports a stereo
+pair gives a multi-channel player as well.
+
+- End-to-end: **possible with** a Cast stereo pair, or a virtual device that reports one.
+- Proven by: `test_lifecycle.py::test_a_multi_channel_player_shows_the_layout_of_its_speakers`
+
 ## A device goes away and comes back
 
 A device can go away: switched off, off the network, or its provider reloads. It can also stay
@@ -350,6 +360,16 @@ until the start-up time of the player is over, counted from the moment the plug 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
 - Proven by: `test_power_control.py::test_a_play_switches_the_plug_on_and_waits_for_the_startup_time`
+
+### AWAY-34 · The play button shows the play while the speaker starts up
+
+Den's plug, which cuts its power, is off, and Den holds the track it played before. The play
+button is pressed: for the whole start-up time Den's queue shows that a play is in progress, so
+the button spins in the app. Once Den plays, it shows that no more.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_power_control.py::test_the_play_button_shows_the_play_while_the_speaker_starts_up`
 
 ### AWAY-26 · A plug that is switched on elsewhere lets the start-up time run as well
 
@@ -969,6 +989,14 @@ the provider is removed again, Patio says again that its provider is not install
 
 - End-to-end: **no**: nothing installs a provider into a running server yet.
 - Proven by: `test_lifecycle.py::test_a_stored_player_follows_a_provider_installed_or_removed_while_the_server_runs`
+
+### RESTART-9 · A player stored as a stereo pair is a multi-channel player
+
+An older version stored the Living pair with the type stereo pair. After the start Living is a
+multi-channel player, also while its device is away, and it is stored as one.
+
+- End-to-end: **no**: the lab has no settings of an older version.
+- Proven by: `test_lifecycle.py::test_a_player_stored_as_a_stereo_pair_is_a_multi_channel_player`
 
 ## Removing and disabling
 
@@ -2207,6 +2235,16 @@ a volume command reaches it.
 - End-to-end: **possible with** a Sendspin client of the lab that opens a second connection right
   after its first one, checked after a restart of the server.
 - Proven by: `tests/providers/sendspin/test_reported_volume.py::test_a_device_keeps_its_reported_volume_when_a_second_connection_replaces_the_first`
+
+### VOLUME-6 · A speaker or a multi-channel player that leads a group counts its own level
+
+Living, a single speaker or a multi-channel player at level 60, leads a group with Office at level
+30. The group volume is 60, the level of the loudest member with Living included. A step up of
+the group volume turns both up and keeps their balance: Living to 63, Office to 35. A group player
+has no level of its own; only its members count.
+
+- End-to-end: **possible with** two players of one make that group, one of them a set of speakers.
+- Proven by: `test_grouping.py::test_a_leader_counts_its_own_level_in_the_group_volume`
 
 ## A pause, a stop and the end of a queue
 

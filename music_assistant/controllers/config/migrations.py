@@ -637,6 +637,12 @@ async def migrate(data: dict[str, Any]) -> bool:
     if _migrate_remove_retired_builtin_providers(data):
         changed = True
 
+    # Store every player that is stored as a stereo pair as a multi-channel player, the type
+    # a set of speakers has. It reads the split tree, so it runs after the split.
+    # TODO: remove after 2.13 release
+    if _migrate_stereo_pair_player_type(data):
+        changed = True
+
     return changed
 
 
@@ -1584,6 +1590,23 @@ def _migrate_airplay_sync_adjust_sign(data: dict[str, Any]) -> bool:
         )
     data[CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED] = True
     return True
+
+
+def _migrate_stereo_pair_player_type(data: dict[str, Any]) -> bool:
+    """
+    Store every player that is stored as a stereo pair as a multi-channel player.
+
+    Returns True when the settings were modified.
+    """
+    all_player_configs = data.get(CONF_PLAYERS)
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_cfg in all_player_configs.values():
+        if isinstance(player_cfg, dict) and player_cfg.get("player_type") == "stereo_pair":
+            player_cfg["player_type"] = "multi_channel"
+            changed = True
+    return changed
 
 
 def _migrate_artist_catalogue_selection(data: dict[str, Any]) -> bool:

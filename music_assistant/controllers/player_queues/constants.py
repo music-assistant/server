@@ -187,6 +187,10 @@ SKIP_END_MARGIN = 1
 # point a sleep timer stops at ended there. One that changed earlier was skipped on the device.
 SLEEP_TIMER_NATURAL_END_MARGIN = 5
 
+# An item no command cut off counts as played to its end once its last reported position is
+# this close to its duration: the last report lags the end and is truncated to whole seconds.
+PLAYED_TO_END_MARGIN = 2
+
 # A player counts as having played a fully streamed flow stream session once its position is
 # this close to the end of it: position reports are not exact down to the last audio frame.
 FLOW_PLAYED_OUT_MARGIN = 0.5

@@ -196,9 +196,12 @@ Dependencies point one way:
 
 ## Player Types and Protocol Roles
 
-The type of a player (`PlayerType.PLAYER`, `GROUP`, `STEREO_PAIR`, and the kinds of Sendspin
+The type of a player (`PlayerType.PLAYER`, `GROUP`, `MULTI_CHANNEL`, and the kinds of Sendspin
 clients) is that of its own protocol, else the one stored for it. A player is never of the type
-`PROTOCOL`.
+`PROTOCOL`, and a `STEREO_PAIR` reads as `MULTI_CHANNEL`. A multi-channel player is one set of
+speakers that belong together (a stereo pair, a home theater set) and acts like a single speaker:
+it joins groups, leads a sync session and counts with its own level in the group volume. Its own
+protocol reports the layout of its speakers (`channel_layout`: stereo, 2.1, 5.1, ...).
 
 What a protocol is for its device is its role (`ProtocolRole`):
 - `NATIVE`: the vendor's own control plane (Sonos, Bluesound, an Apple device over AirPlay, ...).
@@ -580,7 +583,7 @@ player itself, as a smart plug does (`power_control_cuts_power`, offered with th
 `power_on_startup_time` once an external control is the power control of the player, never for a
 group player). As a plain switch it changes nothing else about the player: the player is
 available while one of its protocols reaches its device, and a power on switches the control on
-and waits a few seconds for it to report on.
+and waits up to 15 seconds (`POWER_ON_REPORT_TIMEOUT`) for it to report on.
 
 A player whose power control cuts its power is off, starting up or on
 (`Player.offline_by_power_control` is true while it is off or starting up):
@@ -888,9 +891,10 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
 `providers/_demo_player_provider` is the annotated example. In short:
 
 1. Implement one `PlayerProtocol` per device and report its role (`_attr_role`) and its type
-   (`PlayerType.PLAYER`, unless it is a group, a stereo pair or another kind of client the enum
-   names). Report besides, where it applies: `session_only` for something that is no device to
-   keep track of (a browser tab, an app), `underlying_protocol_id` for a transport that rides on
+   (`PlayerType.PLAYER`, unless it is a group, a set of speakers or another kind of client the
+   enum names), and for a set of speakers its layout (`_attr_channel_layout`). Report besides,
+   where it applies: `session_only` for something that is no device to keep track of (a browser
+   tab, an app), `underlying_protocol_id` for a transport that rides on
    another protocol, `enabled_by_default` for a device that starts out disabled,
    `default_output_protocol_domain` for a control protocol
    whose device plays best over one audio protocol, `prefer_native_grouping` for a device that runs
