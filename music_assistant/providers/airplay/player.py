@@ -236,10 +236,13 @@ class AirPlayPlayer(PlayerProtocol):
         """Return if 24-bit hi-res playback is possible and enabled for this player."""
         if not self._hires_route:
             return False
-        # the stored toggle is read raw: its parsed default dates from registration,
-        # before the receiver's formats were probed
-        stored = self.mass.config.get_protocol_value(self.protocol_id, CONF_ENABLE_HIRES)
-        return self._hires_default_enabled if stored is None else bool(stored)
+        # a stored toggle is the user's choice; without one it follows the probed formats,
+        # which the config parsed at registration predates
+        return bool(
+            self.mass.config.get_protocol_value(
+                self.protocol_id, CONF_ENABLE_HIRES, self._hires_default_enabled
+            )
+        )
 
     @property
     def supported_sample_rates(self) -> list[tuple[int, int]]:
@@ -1027,13 +1030,16 @@ class AirPlayPlayer(PlayerProtocol):
         late-join path after a short backoff. Any user action on the player (or it
         joining a session by other means) cancels the re-join; when the group is
         no longer playing, its membership was changed meanwhile or the device is
-        offline, the re-join is abandoned and the player simply stays idle.
+        offline or switched off at its power control, the re-join is abandoned and
+        the player simply stays idle.
 
         :param candidate_ids: Protocol ids of the AirPlay players that led or shared
             the group at the moment the stream was lost, used to resolve the re-join
             target (the leadership may transfer while the backoff runs).
         """
         self.cancel_group_rejoin()
+        if self.player is not None and self.player.offline_by_power_control:
+            return
         self.logger.info(
             "Scheduling automatic re-join of %s to its group after unexpected stream loss",
             self.display_name,
@@ -1443,6 +1449,13 @@ class AirPlayPlayer(PlayerProtocol):
                 # may well have switched it off on purpose
                 self.logger.debug(
                     "Automatic group re-join for %s cancelled: player is unavailable",
+                    self.display_name,
+                )
+                return
+            if self.player is not None and self.player.offline_by_power_control:
+                # the protocol may read available long after the power was cut
+                self.logger.debug(
+                    "Automatic group re-join for %s cancelled: player is switched off",
                     self.display_name,
                 )
                 return

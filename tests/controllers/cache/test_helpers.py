@@ -14,7 +14,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant.constants import DB_TABLE_CACHE
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.cache.constants import BYPASS_CACHE
-from music_assistant.controllers.cache.helpers import use_cache
+from music_assistant.controllers.cache.helpers import forget_cached, use_cache
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     current_priority,
@@ -69,6 +69,15 @@ class _FakeProvider:
     @use_cache(3600, allow_expired_cache=True)
     async def fetch_swr(self, item_id: str) -> str | None:
         """Return the preset result, counting invocations."""
+        return await self._result()
+
+    @use_cache(3600)
+    async def fetch_page(self, item_id: str, page: int = 0) -> str | None:
+        """Return the preset result for one page of an item, counting invocations."""
+        return await self._result()
+
+    async def fetch_uncached(self, item_id: str) -> str | None:
+        """Return the preset result without keeping it, counting invocations."""
         return await self._result()
 
     @use_cache(3600)
@@ -570,6 +579,147 @@ async def test_completed_fetch_is_not_reused(
     provider.result = "value"
     assert await provider.fetch("a") == "value"
     assert provider.calls == 1
+
+
+# --- forgetting ---
+
+
+async def test_forget_drops_the_calls_that_start_with_the_arguments(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """Test that a forget drops the calls with these leading arguments and keeps the others."""
+    provider.result = "kept"
+    await provider.fetch_page("a")
+    await provider.fetch_page("a", page=1)
+    await provider.fetch_page("ab")
+    for key in ("fetch_page.a", "fetch_page.a.page1", "fetch_page.ab"):
+        await _wait_for_stored(cache_controller, key)
+    await forget_cached(provider.fetch_page, "a")
+    provider.result = "fresh"
+    assert await provider.fetch_page("a") == "fresh"
+    assert await provider.fetch_page("a", page=1) == "fresh"
+    assert await provider.fetch_page("ab") == "kept"
+
+
+async def test_a_fetch_on_its_way_is_not_kept_after_a_forget(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """Test that what a call started before a forget fetches is returned but not kept."""
+    provider.result = "before"
+    provider.gate.clear()
+    with patch.object(cache_controller, "set", wraps=cache_controller.set) as store:
+        fetch = asyncio.create_task(provider.fetch("a"))
+        await _wait_for_flight(provider)
+        await forget_cached(provider.fetch, "a")
+        provider.gate.set()
+        assert await fetch == "before"
+        assert store.await_count == 0
+    provider.result = "after"
+    assert await provider.fetch("a") == "after"
+
+
+async def test_a_call_after_a_forget_does_not_join_a_fetch_from_before_it(
+    provider: _FakeProvider,
+) -> None:
+    """Test that a call made after a forget fetches itself instead of joining an older fetch."""
+    provider.result = "value"
+    provider.gate.clear()
+    before = asyncio.create_task(provider.fetch("a"))
+    await _wait_for_flight(provider)
+    await forget_cached(provider.fetch, "a")
+    after = asyncio.create_task(provider.fetch("a"))
+    # let the later call reach the fetch it would join
+    await asyncio.sleep(0.05)
+    provider.gate.set()
+    assert list(await asyncio.gather(before, after)) == ["value", "value"]
+    assert provider.calls == 2
+
+
+async def test_a_store_being_written_when_forgotten_leaves_nothing_behind(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """Test that a forget waits for a store being written and then drops what it wrote."""
+    writing, release, written = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    write = cache_controller.set
+
+    async def _set(key: str, data: Any, **kwargs: Any) -> None:
+        writing.set()
+        await release.wait()
+        await write(key, data, **kwargs)
+        written.set()
+
+    provider.result = "before"
+    with patch.object(cache_controller, "set", side_effect=_set):
+        await provider.fetch("a")
+        await writing.wait()
+        forget = asyncio.create_task(forget_cached(provider.fetch, "a"))
+        await asyncio.sleep(0.05)
+        release.set()
+        await forget
+        await written.wait()
+    assert await _get_row(cache_controller, "fetch.a") is None
+
+
+async def test_a_store_after_a_forget_is_kept_while_an_older_one_was_written(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """Test that an older store being written never overwrites or drops a later result."""
+    writing, release = asyncio.Event(), asyncio.Event()
+    write = cache_controller.set
+
+    async def _set(key: str, data: Any, **kwargs: Any) -> None:
+        if data == "before":
+            writing.set()
+            await release.wait()
+        await write(key, data, **kwargs)
+
+    provider.result = "before"
+    with patch.object(cache_controller, "set", side_effect=_set):
+        await provider.fetch("a")
+        await writing.wait()
+        # the older store finishes its write a moment after the forget started
+        asyncio.get_running_loop().call_later(0.05, release.set)
+        await forget_cached(provider.fetch, "a")
+        provider.result = "after"
+        assert await provider.fetch("a") == "after"
+        await release.wait()
+        await asyncio.sleep(0.05)
+    await _wait_for_stored(cache_controller, "fetch.a")
+    assert await cache_controller.get("fetch.a", provider=_PROVIDER) == "after"
+
+
+async def test_stores_of_two_keys_of_one_method_both_land(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """Test that a store waiting for a store of another key of the method is still written."""
+    release = asyncio.Event()
+    write = cache_controller.set
+
+    async def _set(key: str, data: Any, **kwargs: Any) -> None:
+        if key == "fetch.a":
+            await release.wait()
+        await write(key, data, **kwargs)
+
+    provider.result = "value"
+    with patch.object(cache_controller, "set", side_effect=_set):
+        await provider.fetch("a")
+        await provider.fetch("b")
+        release.set()
+        await _wait_for_stored(cache_controller, "fetch.a")
+        await _wait_for_stored(cache_controller, "fetch.b")
+
+
+async def test_forget_of_a_method_without_use_cache_drops_nothing(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """Test that a method that keeps nothing costs the cache nothing to forget."""
+    with (
+        patch.object(cache_controller, "delete") as delete,
+        patch.object(cache_controller, "delete_prefix") as delete_prefix,
+    ):
+        await forget_cached(provider.fetch_uncached, "a")
+    delete.assert_not_called()
+    delete_prefix.assert_not_called()
 
 
 # --- get_with_freshness ---

@@ -49,6 +49,8 @@ from music_assistant.constants import (
     CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
+    CONF_ENTRY_POWER_CONTROL_CUTS_POWER,
+    CONF_ENTRY_POWER_ON_STARTUP_TIME,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
@@ -80,6 +82,7 @@ from music_assistant.controllers.config.constants import (
 )
 from music_assistant.controllers.config.helpers import (
     _mask_encrypted,
+    _raw_config_to_store,
     _reject_encrypted_values,
     _with_translation_owner,
 )
@@ -835,7 +838,8 @@ class PlayerConfigMixin:
             msg = f"No config found for protocol id {protocol_id}"
             raise KeyError(msg)
         new_raw = deepcopy(existing_raw)
-        new_values = dict(new_raw.get("values") or {})
+        stored_values = dict(new_raw.get("values") or {})
+        new_values = dict(stored_values)
         changed_keys: set[str] = set()
         values = dict(values)
         if CONF_ENABLED in values:
@@ -846,21 +850,23 @@ class PlayerConfigMixin:
         if protocol := self.mass.players.get_protocol(protocol_id):
             config = await self.get_protocol_config(protocol)
             changed_keys.update(config.update(values))
-            # Preserve values from storage that don't have config entries in current context.
-            new_values = {
-                **{key: value for key, value in new_values.items() if key not in config.values},
-                **config.to_raw().get("values", {}),
-            }
+            new_values = _raw_config_to_store(config, stored_values, values)["values"]
         else:
             # a protocol that is not attached declares no entries to validate against
             for key, value in values.items():
-                if new_values.get(key) != value:
+                if value is None:
+                    if new_values.pop(key, None) is not None:
+                        changed_keys.add(f"values/{key}")
+                elif new_values.get(key) != value:
                     new_values[key] = value
                     changed_keys.add(f"values/{key}")
-        if not changed_keys:
+        if not changed_keys and new_values == stored_values:
             return
         new_raw["values"] = new_values
         self.set(conf_key, new_raw)
+        if not changed_keys:
+            # only the storage changed, not the config: nothing to apply
+            return
         try:
             await self.mass.players.on_protocol_config_change(protocol_id, changed_keys)
         except Exception:
@@ -948,19 +954,14 @@ class PlayerConfigMixin:
             values = {key: value for key, value in values.items() if key != CONF_ICON}
         config = await self.get_player_config(player_id)
         changed_keys = config.update(values)
-        new_raw = config.to_raw()
+        new_raw = _raw_config_to_store(config, existing_values, values)
         # the config shows the display name as default name; the stored one is what the
         # device reported
         if "default_name" in existing_raw:
             new_raw["default_name"] = existing_raw["default_name"]
         # what a setup flow collected belongs to a protocol
         new_raw.pop("setup_data", None)
-        new_values = new_raw.get("values", {})
-        # Preserve values from storage that don't have config entries in current context.
-        config_entry_keys = set(config.values.keys())
-        for key, value in existing_values.items():
-            if key not in new_values and key not in config_entry_keys:
-                new_values[key] = value
+        new_values = new_raw["values"]
         # never persist protocol- or plugin-prefixed (virtual) entries on this player; the
         # protocol resp. the plugin provider is the canonical store (handled above). Storing
         # a copy here would shadow the canonical value once it is reset back to its default.
@@ -972,7 +973,7 @@ class PlayerConfigMixin:
         if _reconcile_player_icon_value(values, existing_values, new_values):
             changed_keys.add(f"values/{CONF_ICON}")
         _apply_raw_player_icon_value(config, new_values)
-        if not changed_keys:
+        if not changed_keys and new_values == existing_values:
             # no changes
             return config
         # store updated config first (to prevent issues with enabling/disabling players),
@@ -983,6 +984,9 @@ class PlayerConfigMixin:
         self.set(conf_key, new_raw)
         for values_key, protocol_values in values_by_key.items():
             self.set(values_key, protocol_values)
+        if not changed_keys:
+            # only the storage changed, not the config: nothing to apply
+            return config
         try:
             # validate/handle the update in the players controller
             await self.mass.players.on_player_config_change(config, changed_keys)
@@ -1448,9 +1452,16 @@ class PlayerConfigMixin:
             # group volume and mute are always fanned out to the members and use each
             # member's own control, so a group only gets the (opt-in) power control
             return [power_entry]
+        # only an external power control can cut the power of the player itself
+        cuts_power_entries = (
+            [CONF_ENTRY_POWER_CONTROL_CUTS_POWER, CONF_ENTRY_POWER_ON_STARTUP_TIME]
+            if any(control.id == player.power_control for control in power_controls)
+            else []
+        )
         # return final config entries for all options
         return [
             power_entry,
+            *cuts_power_entries,
             # Volume control config entry
             ConfigEntry(
                 key=CONF_VOLUME_CONTROL,

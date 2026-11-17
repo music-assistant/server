@@ -192,8 +192,8 @@ class StateInputs:
     :param powered: Power state the power control reports.
     :param volume_level: Volume level the volume control reports.
     :param volume_muted: Mute state the mute control reports.
-    :param offline_by_power_control: Whether the device is offline because it is
-        switched off at its power control.
+    :param offline_by_power_control: Whether the device is off, or starting up, at a
+        power control that cuts its power.
     :param own: What the player's own protocol reports: its native protocol, one that
         controls it without an audio path, or the virtual one of a group.
     :param device_info: Device info of the player.

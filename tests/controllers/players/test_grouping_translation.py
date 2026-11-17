@@ -1059,6 +1059,60 @@ class TestProtocolSwitchingDuringPlayback:
         assert group.leader.active_output_protocol == "bridge_leader"
         controller.cmd_resume.assert_not_awaited()
 
+    async def test_member_passed_again_follows_the_leader_onto_airplay(self) -> None:
+        """
+        A native member passed again with an AirPlay-only speaker joins it over AirPlay.
+
+        The member is grouped already, so only the AirPlay-only speaker is admitted. The member
+        rides the leader's own stream, so it moves onto AirPlay in the same call and leaves the
+        native group, rather than staying behind with nothing to play.
+        """
+        controller, mass, _ = _controller()
+        heos = MockProvider("heos", instance_id="heos_instance", mass=mass)
+        airplay = MockProvider("airplay", instance_id="airplay_instance", mass=mass)
+        soundbar, soundbar_heos = attach_mock(
+            heos,
+            "heos_soundbar",
+            "Soundbar",
+            identifiers=MAC_1,
+            protocol_class=_SessionBoundProtocol,
+        )
+        soundbar_heos._attr_supported_features |= {
+            PlayerFeature.SET_MEMBERS,
+            PlayerFeature.PLAY_MEDIA,
+        }
+        soundbar_heos._attr_can_group_with = {"heos_bedroom"}
+        soundbar_heos._attr_group_members = ["heos_soundbar", "heos_bedroom"]
+        soundbar_heos._attr_playback_state = PlaybackState.PLAYING
+        bedroom, bedroom_heos = attach_mock(heos, "heos_bedroom", "Bedroom", identifiers=MAC_2)
+        bedroom_heos._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        soundbar_airplay = _attach_audio(
+            airplay, "airplay_soundbar", soundbar, "Soundbar (AirPlay)", MAC_1
+        )
+        soundbar_airplay._attr_can_group_with = {"airplay_bedroom", "airplay_homepod"}
+        _attach_audio(airplay, "airplay_bedroom", bedroom, "Bedroom (AirPlay)", MAC_2)
+        homepod, homepod_airplay = attach_mock(
+            airplay, "airplay_homepod", "HomePod", identifiers=MAC_3
+        )
+        homepod_airplay._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        _refresh(controller)
+        soundbar.set_active_output_protocol("native")
+        assert bedroom.state.synced_to == soundbar.player_id
+        airplay_set_members = AsyncMock(wraps=soundbar_airplay.set_members)
+        soundbar_airplay.set_members = airplay_set_members  # type: ignore[method-assign]
+        heos_set_members = AsyncMock(wraps=soundbar_heos.set_members)
+        soundbar_heos.set_members = heos_set_members  # type: ignore[method-assign]
+        controller.cmd_resume = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_set_members(soundbar, [bedroom.player_id, homepod.player_id])
+
+        airplay_set_members.assert_awaited_once_with(
+            player_ids_to_add=["airplay_homepod", "airplay_bedroom"], player_ids_to_remove=None
+        )
+        heos_set_members.assert_awaited_once_with(player_ids_to_remove=["heos_bedroom"])
+        assert soundbar.active_output_protocol == "airplay_soundbar"
+        controller.cmd_resume.assert_awaited_once_with(soundbar.player_id)
+
     @staticmethod
     def _build_protocol_group(mass: MagicMock) -> dict[str, Any]:
         """

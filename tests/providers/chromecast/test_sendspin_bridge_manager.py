@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.errors import PlayerCommandFailed
@@ -31,7 +31,7 @@ from music_assistant.providers.sendspin.bridge_manager import (
 from music_assistant.providers.squeezelite.sendspin_bridge import (
     SendspinBridgeManager as SqueezeliteSendspinBridgeManager,
 )
-from tests.common import scheduled_call, use_real_create_task
+from tests.common import scheduled_call, use_real_bridge_holders, use_real_create_task
 
 CAST_ID = "cc_player"
 # the player of the Cast protocol has an id of its own
@@ -62,6 +62,7 @@ def _make_cast_environment() -> tuple[CastSendspinBridgeManager, MagicMock, Magi
     mass.players.subscribe_player_state_update = MagicMock(return_value=MagicMock())
     mass.create_task = MagicMock()
     mass.config.get_protocol_value = MagicMock(return_value=None)
+    use_real_bridge_holders(mass.get_provider.return_value)
     external_clients: set[str] = set()
     sendspin_server = mass.get_provider.return_value.server_api
     sendspin_server.is_external_player = MagicMock(side_effect=external_clients.__contains__)
@@ -96,7 +97,7 @@ class TestCastBridgePolicy:
         """Test the cast bridge is denied when the device has AirPlay at all."""
         manager, _, cast_protocol = _make_cast_environment()
         airplay_output = MagicMock()
-        # AirPlay output listed but NOT available (e.g. disabled by user)
+        # AirPlay output listed but NOT available (e.g. its device is away)
         airplay_output.available = False
         cast_protocol.player = _player(airplay=airplay_output)
 
@@ -188,6 +189,25 @@ class TestCastBridgePolicy:
         )
 
         assert manager._should_have_bridge(cast_protocol) is False
+
+    def test_unsupported_skip_is_logged_once_at_info(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Test a device flagged unsupported logs why its bridge is skipped, once."""
+        manager, mass, cast_protocol = _make_cast_environment()
+        mass.config.get_protocol_value = MagicMock(
+            side_effect=lambda protocol_id, key, default=None: (
+                True if protocol_id == CAST_ID and key == CONF_SENDSPIN_UNSUPPORTED else default
+            )
+        )
+
+        with caplog.at_level(logging.INFO, logger=manager.logger.name):
+            assert manager._should_have_bridge(cast_protocol) is False
+            assert manager._should_have_bridge(cast_protocol) is False
+
+        records = [r for r in caplog.records if "cannot run Sendspin" in r.message]
+        assert len(records) == 1
+        assert records[0].levelno == logging.INFO
 
     def test_blocklist_message_only_repeats_after_policy_change(
         self, caplog: pytest.LogCaptureFixture
@@ -338,6 +358,52 @@ class TestCastBridgeYieldsToSqueezelite:
         assert not manager._has_bridge(CAST_ID)
         cast_bridge.stop.assert_awaited_once()
         mass.players.remove_protocol.assert_awaited_once_with(client_id)
+
+    @pytest.mark.parametrize("permanent", [True, False])
+    async def test_a_claimed_client_that_steps_back_lets_the_other_bridges_take_over(
+        self, permanent: bool
+    ) -> None:
+        """Test a claimed receiver that goes for good frees the output for the other bridges."""
+        manager, mass, cast_protocol = _make_cast_environment()
+        client_id = manager._bridge_client_id(cast_protocol)
+        assert client_id is not None
+        manager._client_ids[CAST_ID] = client_id
+        # the Sendspin Cast receiver connected on its own and was claimed
+        manager._claimed_clients[CAST_ID] = client_id
+        mass.get_provider.return_value.hold_bridge_client(client_id, CAST_ID)
+        sendspin_server = mass.get_provider.return_value.server_api
+        sendspin_server.remove_client = AsyncMock()
+        records = {client_id: {"values": {CONF_UNDERLYING_PLAYER_ID: CAST_ID}}}
+        mass.config.get_protocol_record = MagicMock(side_effect=records.get)
+        mass.players.remove_protocol = AsyncMock(side_effect=records.pop)
+
+        with patch.object(manager, "_evaluate_other_bridges", new=MagicMock()) as evaluate:
+            await manager.remove_bridge(CAST_ID, permanent=permanent)
+
+        sendspin_server.remove_client.assert_awaited_once_with(client_id)
+        assert evaluate.call_args_list == ([call(CAST_ID)] if permanent else []), (
+            "the other bridges were not let to take over"
+            if permanent
+            else "a removal that is not for good frees nothing"
+        )
+
+    async def test_a_claimed_client_another_bridge_registered_since_is_left_alone(self) -> None:
+        """Test the Cast manager leaves a client the AirPlay bridge registered after its claim."""
+        manager, mass, cast_protocol = _make_cast_environment()
+        client_id = manager._bridge_client_id(cast_protocol)
+        assert client_id is not None
+        manager._client_ids[CAST_ID] = client_id
+        manager._claimed_clients[CAST_ID] = client_id
+        sendspin = mass.get_provider.return_value
+        sendspin.hold_bridge_client(client_id, CAST_ID)
+        # the receiver left, and the AirPlay bridge of the device registered the client id
+        sendspin.hold_bridge_client(client_id, "apaabbccddeeff")
+        sendspin.server_api.remove_client = AsyncMock()
+
+        await manager.remove_bridge(CAST_ID)
+
+        sendspin.server_api.remove_client.assert_not_awaited()
+        assert sendspin.get_bridge_holder(client_id) == "apaabbccddeeff"
 
     def test_the_cast_bridge_returns_when_the_squeezelite_player_disconnects(self) -> None:
         """Test the Cast bridge is wanted again once the squeezelite protocol is detached."""
@@ -912,6 +978,49 @@ class TestCastBridgeOptIn:
 
         mass.config.set_protocol_value.assert_not_called()
         mass.config.save_protocol_config.assert_not_awaited()
+
+    async def test_bridge_removed_during_the_opt_out_save_is_not_written_to(self) -> None:
+        """Test a bridge removed while the opt-out saves leaves no note on its removed client."""
+        manager, mass, cast_protocol, configs, _, _ = _make_opt_in_environment()
+        client_id = manager._bridge_client_id(cast_protocol)
+        assert client_id is not None
+        _store_attached_client(configs, client_id)
+        manager._bridges[CAST_ID] = MagicMock()
+
+        async def save_while_removed(protocol_id: str, _values: dict[str, Any]) -> None:
+            # AirPlay discovery permanently removes the bridge and its client meanwhile
+            manager._bridges.pop(CAST_ID, None)
+            configs.pop(protocol_id, None)
+
+        mass.config.save_protocol_config = AsyncMock(side_effect=save_while_removed)
+
+        await manager._flag_bridge_experimental(CAST_ID, client_id, disable=True)
+
+        mass.config.set_protocol_value.assert_not_called()
+        assert client_id not in configs
+
+    async def test_opt_out_that_stops_its_own_bridge_is_still_settled(self) -> None:
+        """Test the note and marker are written when switching the output off stops the bridge."""
+        manager, mass, cast_protocol, configs, _, _ = _make_opt_in_environment()
+        client_id = manager._bridge_client_id(cast_protocol)
+        assert client_id is not None
+        configs[CAST_ID] = {"enabled": True, "values": {CONF_SENDSPIN_OPT_OUT_PENDING: True}}
+        _store_attached_client(configs, client_id)
+        manager._bridges[CAST_ID] = MagicMock()
+
+        async def save_and_stop(protocol_id: str, values: dict[str, Any]) -> None:
+            # the switched-off output detaches, which stops the bridge but keeps its config
+            configs[protocol_id].update(values)
+            manager._bridges.pop(CAST_ID, None)
+
+        mass.config.save_protocol_config = AsyncMock(side_effect=save_and_stop)
+
+        await manager._flag_bridge_experimental(CAST_ID, client_id, disable=True)
+
+        assert configs[client_id]["values"][CONF_PROTOCOL_EXPERIMENTAL_NOTE] == (
+            SENDSPIN_CAST_EXPERIMENTAL_NOTE
+        )
+        assert not configs[CAST_ID]["values"][CONF_SENDSPIN_OPT_OUT_PENDING]
 
 
 class TestCastFatalAudioError:

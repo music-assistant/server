@@ -8,12 +8,17 @@ from functools import partial
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
 from pyheos import PlayState as HeosPlayState
 from pyheos import const as heos_const
 
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.heos.player import HeosPlayer
+
+HIRES_SAMPLE_RATES = [
+    (sr, bd) for sr in (44100, 48000, 88200, 96000, 176400, 192000) for bd in (16, 24)
+]
 
 
 def _url_stream_now_playing() -> MagicMock:
@@ -337,3 +342,29 @@ def test_missing_progress_stays_none() -> None:
     assert protocol._attr_current_media.elapsed_time is None
     assert protocol._attr_current_media.duration is None
     assert protocol._attr_elapsed_time is None
+
+
+def test_group_members_need_the_stream_of_their_leader() -> None:
+    """Members are moved along when their leader renders through another protocol."""
+    player = HeosPlayer.__new__(HeosPlayer)
+
+    assert player.native_grouping_requires_own_stream is True
+
+
+@pytest.mark.parametrize(
+    ("device_model", "expected_rates"),
+    [
+        ("HEOS 3", [(44100, 16), (48000, 16)]),
+        ("HEOS 3 HS2", HIRES_SAMPLE_RATES),
+    ],
+)
+def test_sample_rates_follow_heos_generation(
+    device_model: str, expected_rates: list[tuple[int, int]]
+) -> None:
+    """Gen 1 HEOS speakers are capped at 48kHz/16-bit, HS2 models get hi-res."""
+    player = _make_player(_url_stream_now_playing())
+    player._device.model = device_model
+
+    player.set_device_info()
+
+    assert player._attr_supported_sample_rates == expected_rates

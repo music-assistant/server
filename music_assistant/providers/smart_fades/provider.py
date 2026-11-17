@@ -115,6 +115,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
     max_analysis_duration = ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS
     # v3: FireRed AED vocal activity
     analysis_version = 3
+    # We only want to analyze tracks
+    media_types = frozenset({MediaType.TRACK})
     has_unloadable_models = True
 
     def __init__(
@@ -251,10 +253,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
         audio_format: AudioFormat,
     ) -> bool:
         """Start beat tracking analysis for a new track."""
-        if streamdetails.media_type != MediaType.TRACK:
-            # We only want to analyze tracks
-            return False
-
         models = self._require_models()
         block_seconds = 10.0
 

@@ -96,6 +96,7 @@ from music_assistant.controllers.player_queues.helpers import (
     handle_play_action,
     is_dynamic_source,
     is_finite_radio,
+    play_request_deadline,
 )
 from music_assistant.controllers.player_queues.managed_pool import ManagedPool
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
@@ -813,10 +814,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._drop_pending_step(queue_id)
             # powered on before the play action takes its locks, and so are the switched-off
             # members of a group; media that is only enqueued leaves the player switched off
-            if player.offline_by_power_control:
-                await self.mass.players._power_on_switched_off_player(queue_id)
-            elif player.type == PlayerType.GROUP:
-                await self.mass.players._power_on_members(player)
+            if (
+                player.offline_by_power_control
+                or (
+                    player.type == PlayerType.GROUP
+                    and self.mass.players._members_to_power_on(player)
+                )
+            ) and not await self._only_enqueues_by_default(media, option, radio_mode):
+                if player.offline_by_power_control:
+                    await self.mass.players._power_on_switched_off_player(queue_id)
+                else:
+                    await self.mass.players._power_on_members(player)
         # Lock is acquired by the @handle_play_action decorator on the internal handler
         await self._handle_play_media(
             queue_id,
@@ -1099,8 +1107,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 return
             count = 0
             pause_timeout = self._get_pause_timeout()
-            while count < pause_timeout and player.playback_state == PlaybackState.PAUSED:
-                count += 1
+            while player.playback_state == PlaybackState.PAUSED:
+                if self.mass.players._has_waiting_start(player):
+                    # a start that waits for players to start up is about to play: the
+                    # stop below would call it off, so the timeout counts from its end
+                    count = 0
+                elif count >= pause_timeout:
+                    break
+                else:
+                    count += 1
                 await asyncio.sleep(1)
             # if player is still paused when the limit is reached, send stop
             if player.playback_state == PlaybackState.PAUSED:
@@ -3225,6 +3240,31 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 self.signal_update(queue_id)
         finally:
             self._set_transitioning(queue_id, False)
+
+    async def _only_enqueues_by_default(
+        self,
+        media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
+        option: QueueOption | None,
+        radio_mode: bool,
+    ) -> bool:
+        """
+        Return whether a request without an option only adds its media, as the user's default says.
+
+        :param media: The media of the play request.
+        :param option: The enqueue option of the play request.
+        :param radio_mode: The deprecated radio mode of the play request.
+        :raises PlayerCommandFailed: When looking up the media takes longer than the deadline
+            of a play request.
+        """
+        if option is not None:
+            return False
+        default: QueueOption | None
+        if radio_mode:
+            default = self._default_enqueue_option(MediaType.PLAYLIST)
+        else:
+            async with play_request_deadline(self.translation_owner):
+                default = await self._get_default_play_option(media)
+        return default in (QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT)
 
     def _resolve_queue_id(self, queue_id: str) -> str:
         """

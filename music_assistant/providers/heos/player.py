@@ -70,6 +70,11 @@ class HeosPlayer(PlayerProtocol):
         """Return if the player requires flow mode."""
         return True
 
+    @property
+    def native_grouping_requires_own_stream(self) -> bool:
+        """Return True: HEOS can not pass an AirPlay input on to its group members."""
+        return True
+
     def __init__(self, provider: HeosPlayerProvider, device: PyHeosPlayer) -> None:
         """Initialize the Player."""
         super().__init__(provider, str(device.player_id))
@@ -151,7 +156,7 @@ class HeosPlayer(PlayerProtocol):
 
         # Gen 1 HEOS hardware is capped at 48kHz/16-bit; HS2 and newer models
         # are hi-res capable up to 192kHz/24-bit
-        if model in NON_HIRES_HEOS_MODELS:
+        if self._device.model in NON_HIRES_HEOS_MODELS:
             self._attr_supported_sample_rates = [(44100, 16), (48000, 16)]
         else:
             self._attr_supported_sample_rates = [

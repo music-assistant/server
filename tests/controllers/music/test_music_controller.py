@@ -156,6 +156,20 @@ async def test_get_track_by_name_matches_requested_version() -> None:
     assert await controller.get_track_by_name("Some Song", track_version="Live") is live
 
 
+async def test_get_track_by_name_library_only_never_asks_a_provider() -> None:
+    """A library only lookup restricts every search, also those of its fallbacks, to the library."""
+    controller = MusicController.__new__(MusicController)
+    controller.mass = MagicMock()
+    controller.mass.music.search = AsyncMock(return_value=SearchResults())
+
+    assert (
+        await controller.get_track_by_name("Some Song | Extra", "Artist", library_only=True) is None
+    )
+    searches = controller.mass.music.search.await_args_list
+    assert len(searches) == 2
+    assert all(search.kwargs["providers"] == ["library"] for search in searches)
+
+
 async def test_add_to_favorites_rejects_sound_effect() -> None:
     """add_item_to_favorites raises UnsupportedFeaturedException for SOUND_EFFECT."""
     controller = MusicController.__new__(MusicController)
