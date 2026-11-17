@@ -382,6 +382,7 @@ class SendspinProvider(PlayerProvider):
     _bridge_identifiers: dict[str, dict[IdentifierType, str]]
     _bridge_underlying_protocols: dict[str, str]
     _bridge_holders: dict[str, str]
+    _bridge_waiters: dict[str, dict[str, Callable[[], None]]]
     _bridge_locks: dict[str, asyncio.Lock]
     _bridge_static_delay_defaults: dict[str, int]
     _client_event_versions: dict[str, int]
@@ -414,6 +415,8 @@ class SendspinProvider(PlayerProvider):
         self._bridge_underlying_protocols = {}
         # bridge client id -> the protocol whose bridge registered or claimed it last
         self._bridge_holders = {}
+        # bridge client id -> protocol id -> what to do once its holder lets it go
+        self._bridge_waiters = {}
         # player id -> the lock its bridges hand its Sendspin output over under
         self._bridge_locks = {}
         self._bridge_static_delay_defaults = {}
@@ -677,6 +680,37 @@ class SendspinProvider(PlayerProvider):
         """
         if self._bridge_holders.get(client_id) == protocol_id:
             del self._bridge_holders[client_id]
+            for callback in self._bridge_waiters.pop(client_id, {}).values():
+                callback()
+
+    def wait_for_bridge_client(
+        self, client_id: str, protocol_id: str, callback: Callable[[], None]
+    ) -> bool:
+        """
+        Call back once, when the bridge that holds a bridge client lets it go.
+
+        :param client_id: The bridge client id.
+        :param protocol_id: The id of the protocol that waits for it; a later wait of the same
+            protocol replaces this one.
+        :param callback: What to call.
+        :return: Whether the protocol did not wait for the client yet.
+        """
+        waiters = self._bridge_waiters.setdefault(client_id, {})
+        is_new = protocol_id not in waiters
+        waiters[protocol_id] = callback
+        return is_new
+
+    def stop_waiting_for_bridge_client(self, client_id: str, protocol_id: str) -> None:
+        """
+        Forget that a protocol waits for a bridge client.
+
+        :param client_id: The bridge client id.
+        :param protocol_id: The id of the protocol that waits for it.
+        """
+        if (waiters := self._bridge_waiters.get(client_id)) is not None:
+            waiters.pop(protocol_id, None)
+            if not waiters:
+                del self._bridge_waiters[client_id]
 
     def bridge_lock(self, player_id: str) -> asyncio.Lock:
         """

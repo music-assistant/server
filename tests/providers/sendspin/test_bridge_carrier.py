@@ -7,7 +7,7 @@ import itertools
 import logging
 from collections.abc import AsyncGenerator, Callable
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -623,6 +623,55 @@ async def test_a_bridge_does_not_register_the_client_of_another_player_before_it
 
     assert device.state() == ("airplay", SQUEEZELITE_CLIENT, "airplay", "on")
     assert device.output()["player_id"] == PLAYER_ID
+
+
+async def test_a_bridge_refused_for_another_player_registers_once_that_bridge_is_gone() -> None:
+    """The bridge of another player that lets go of the client id lets the refused one in."""
+    device = _device(airplay_id=SAME_ID_AIRPLAY_ID)
+    store = asyncio.Event()
+    client_added = device._client_added
+
+    async def _store_later(client_id: str) -> None:
+        await store.wait()
+        await client_added(client_id)
+
+    with patch.object(device, "_client_added", _store_later):
+        await device.attach(device.airplay)
+        await device.attach(device.squeezelite, device.other_player)
+        assert device.timeline == [("registered", "airplay")]
+
+        # the player of AirPlay goes for good before its output was stored
+        await device.detach(device.airplay)
+        await device.manager_of(device.airplay).remove_bridge(AIRPLAY_ID, permanent=True)
+        await asyncio.wait_for(
+            _until(lambda: device.manager_of(device.squeezelite).get_bridge(SQUEEZELITE_ID)),
+            timeout=1,
+        )
+        store.set()
+        await asyncio.wait_for(_until(device.outputs), timeout=1)
+
+    assert device.timeline[-1] == ("registered", "squeezelite")
+    assert device.output()["player_id"] == OTHER_PLAYER_ID
+    assert device.rides_on(SQUEEZELITE_CLIENT) == SQUEEZELITE_ID
+
+
+async def test_a_refused_bridge_that_left_is_not_woken_by_the_other_bridge_going() -> None:
+    """A protocol that was refused and detached since waits for nothing anymore."""
+    device = _device(airplay_id=SAME_ID_AIRPLAY_ID)
+    with patch.object(device, "_client_added", AsyncMock()):
+        await device.attach(device.airplay)
+        await device.attach(device.squeezelite, device.other_player)
+        sendspin = device.providers["sendspin"]
+        assert sendspin._bridge_waiters == {SQUEEZELITE_CLIENT: {SQUEEZELITE_ID: ANY}}
+
+        await device.detach(device.squeezelite)
+        assert sendspin._bridge_waiters == {}, "the detached protocol still waits"
+
+        with patch.object(device.manager_of(device.squeezelite), "evaluate_bridge") as evaluate:
+            await device.detach(device.airplay)
+
+    evaluate.assert_not_called()
+    assert device.timeline == [("registered", "airplay"), ("stopped", "airplay")]
 
 
 async def test_a_bridge_adopts_an_output_of_its_id_that_belongs_to_no_player() -> None:

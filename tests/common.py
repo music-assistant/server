@@ -216,11 +216,14 @@ def use_real_bridge_holders(sendspin_provider: Any) -> None:
     :param sendspin_provider: The mocked or fake Sendspin provider.
     """
     sendspin_provider._bridge_holders = {}
+    sendspin_provider._bridge_waiters = {}
     sendspin_provider._bridge_locks = {}
     for name in (
         "hold_bridge_client",
         "get_bridge_holder",
         "release_bridge_client",
+        "wait_for_bridge_client",
+        "stop_waiting_for_bridge_client",
         "bridge_lock",
     ):
         method = MethodType(getattr(SendspinProvider, name), sendspin_provider)

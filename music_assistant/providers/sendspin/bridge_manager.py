@@ -308,6 +308,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
                     protocol.display_name,
                     client_id,
                 )
+                self._evaluate_on_release(protocol, client_id)
                 return
             bridge: BridgeT | None = None
             try:
@@ -545,6 +546,28 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         return holder not in player.attached_protocols and holder not in (
             self.mass.config.get_protocol_ids_of_player(player.player_id)
         )
+
+    def _evaluate_on_release(self, protocol: PlayerProtocol, client_id: str) -> None:
+        """
+        Evaluate the bridge of a protocol again once the bridge that holds its client id lets go.
+
+        Nothing happens when the protocol was detached before.
+
+        :param protocol: The protocol to bridge, which is attached to its player.
+        :param client_id: The client id its bridge registers under.
+        """
+        if (sendspin_provider := self.sendspin_provider) is None:
+            return
+        protocol_id = protocol.protocol_id
+
+        def _on_release() -> None:
+            if self.provider.get_protocol(protocol_id) is protocol:
+                self.mass.create_task(self.evaluate_bridge(protocol))
+
+        if sendspin_provider.wait_for_bridge_client(client_id, protocol_id, _on_release):
+            protocol._on_detach_callbacks.append(
+                lambda: sendspin_provider.stop_waiting_for_bridge_client(client_id, protocol_id)
+            )
 
     def _is_only_connection(self, protocol: PlayerProtocol) -> bool:
         """
