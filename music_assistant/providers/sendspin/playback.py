@@ -86,6 +86,12 @@ _PRODUCER_SLICE_US = 100_000
 _PRODUCER_BACKLOG_SIZE = 64
 # Backpressure threshold: push stream sleeps when buffered audio exceeds this.
 _PRODUCER_BUFFER_LIMIT_US = 30_000_000
+# PCM a buffered source queues before its first commit, which carries all of it. That schedules
+# this much audio ahead of real time at once, so neither a producer that lags right after the
+# start nor a slow first commit moves the play timeline.
+_START_QUEUE_US = 500_000
+# Commits from the start of a stream in which a moved play timeline is logged.
+_START_LOG_COMMITS = 20
 # Start join promotion once catchup processor lag is within this window of the history tail.
 _JOIN_PROMOTE_ARM_WINDOW_US = 2_000_000
 # Accept catchup output within this margin of the promotion target.
@@ -294,6 +300,9 @@ class SendspinPlaybackSession:
       output from each processor (transform read), prepares all channels on
       the push stream, commits audio, and applies backpressure via
       ``sleep_to_limit_buffer``.
+
+    The first commit of a buffered source waits until ``_START_QUEUE_US`` of audio is
+    queued and carries all of it, so the start is scheduled ahead of real time.
 
     When a new member joins mid-playback, a *join-catchup* processor replays
     committed history through the member's DSP chain so it can be promoted
@@ -810,6 +819,10 @@ class SendspinPlaybackSession:
         # Shadow deque mirroring pending_chunks for join-catchup backlog peeking.
         pending_backlog: deque[_PendingChunk] = deque()
         pending_duration_us = 0
+        # Set once the first commit may go out. Live audio has nothing ahead to wait for.
+        start_queued = asyncio.Event()
+        if self._plays_live_audio(media):
+            start_queued.set()
         last_elapsed_update_s: float | None = None
         reported_anchor_us: int | None = None
 
@@ -843,6 +856,9 @@ class SendspinPlaybackSession:
                         await pending_chunks.put(pending)
                         pending_backlog.append(pending)
                         pending_duration_us += duration_us
+                        # A full queue blocks the producer, so it cannot grow any further.
+                        if pending_duration_us >= _START_QUEUE_US or pending_chunks.full():
+                            start_queued.set()
                         join_pending_ids, pipelines = await self._snapshot_active_pipelines()
                         transform_pipelines: list[_MemberPipeline] = []
                         for member_id, pipeline in pipelines:
@@ -866,6 +882,8 @@ class SendspinPlaybackSession:
                                     result,
                                 )
                 completed = True
+                # A source shorter than the start queue plays what it has.
+                start_queued.set()
             finally:
                 if not completed:
                     close_task = asyncio.create_task(audio_source.aclose())
@@ -962,14 +980,51 @@ class SendspinPlaybackSession:
                 self._timeline_start_us = anchor_us
             await _report_timeline(anchor_us, now_us)
 
-        async def _commit_pending_chunks() -> None:
+        def _take_start_queue(first: _PendingChunk) -> tuple[_PendingChunk, bool]:
+            """
+            Join the audio queued for the start of the stream to its first chunk.
+
+            :param first: The first chunk of the stream, already taken from the queue.
+            :return: The joined chunk, and whether the source ended with it.
+            """
             nonlocal pending_duration_us
-            while True:
+            chunks = [first]
+            queued_us = first.duration_us
+            source_ended = False
+            while queued_us < _START_QUEUE_US and not pending_chunks.empty():
+                pending = pending_chunks.get_nowait()
+                if pending is None:
+                    source_ended = True
+                    break
+                pending_backlog.popleft()
+                pending_duration_us = max(0, pending_duration_us - pending.duration_us)
+                chunks.append(pending)
+                queued_us += pending.duration_us
+            if len(chunks) == 1:
+                return first, source_ended
+            pcm = b"".join(chunk.pcm for chunk in chunks)
+            return _PendingChunk(pcm, self._duration_us(pcm, self._pcm_format)), source_ended
+
+        async def _commit_pending_chunks() -> None:  # noqa: PLR0915
+            nonlocal pending_duration_us
+            commit_count = 0
+            previous_timeline_start_us: int | None = None
+            # Clock times of the commit loop, for the debug line about a moved timeline.
+            first_lead_us = 0
+            previous_commit_called_us = 0
+            await start_queued.wait()
+            source_ended = False
+            while not source_ended:
+                waiting_since_us = push_stream.now_us()
                 pending = await pending_chunks.get()
                 if pending is None:
                     break
                 pending_backlog.popleft()
                 pending_duration_us = max(0, pending_duration_us - pending.duration_us)
+                # a member that joined before the start gets its audio in the commits after
+                # the first, so those are left to come
+                if commit_count == 0 and not self._join_catchup:
+                    pending, source_ended = _take_start_queue(pending)
                 await self._inject_ready_join_historical(push_stream, pending_backlog, pending.pcm)
                 push_stream.prepare_audio(
                     pending.pcm, self._sendspin_pcm_format, channel_id=MAIN_CHANNEL
@@ -1006,6 +1061,7 @@ class SendspinPlaybackSession:
                         self._sendspin_pcm_format,
                         channel_id=pipeline.channel_id,
                     )
+                commit_called_us = push_stream.now_us()
                 try:
                     commit_start_us = await push_stream.commit_audio()
                 except StreamStoppedError:
@@ -1035,6 +1091,31 @@ class SendspinPlaybackSession:
                     self._timeline_start_us = anchor_us
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
+                commit_count += 1
+                timeline_start_us = committed_history_chunk.timeline_start_us
+                lead_us = int(commit_start_us) - commit_called_us
+                if commit_count == 1:
+                    first_lead_us = lead_us
+                elif (
+                    commit_count <= _START_LOG_COMMITS
+                    and previous_timeline_start_us is not None
+                    # anything smaller is rounding
+                    and abs(timeline_start_us - previous_timeline_start_us) >= 1_000
+                ):
+                    self.player.logger.debug(
+                        "Play timeline moved %+.1f ms at commit %d of the stream: the commit "
+                        "before it and what follows it took %.1f ms, then getting the audio "
+                        "of this one ready %.1f ms; scheduled %.1f ms ahead, the first commit "
+                        "%.1f ms",
+                        (timeline_start_us - previous_timeline_start_us) / 1000,
+                        commit_count,
+                        (waiting_since_us - previous_commit_called_us) / 1000,
+                        (commit_called_us - waiting_since_us) / 1000,
+                        lead_us / 1000,
+                        first_lead_us / 1000,
+                    )
+                previous_timeline_start_us = timeline_start_us
+                previous_commit_called_us = commit_called_us
                 await _report_timeline(anchor_us, commit_now_us)
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
 
@@ -1769,6 +1850,23 @@ class SendspinPlaybackSession:
         :param media: The media about to be played.
         """
         return media.media_type in _LIVE_MEDIA_TYPES
+
+    def _plays_live_audio(self, media: PlayerMedia) -> bool:
+        """
+        Return whether the audio of this media arrives live, also when a group streams it.
+
+        :param media: The media about to be played.
+        """
+        if self._is_live_source(media):
+            return True
+        if media.media_type != MediaType.FLOW_STREAM or not media.source_id:
+            return False
+        # A group that streams one source to all its members (a Universal Group) hands each
+        # member a flow stream of it, under the id of the group player as source_id.
+        group_player = self.player.mass.players.get_player(media.source_id)
+        group_protocol = group_player.own_protocol if group_player else None
+        group_media = group_protocol.current_media if group_protocol else None
+        return group_media is not None and self._is_live_source(group_media)
 
 
 def _to_audio_format(audio_format: SendspinAudioFormat, codec: SendspinAudioCodec) -> AudioFormat:
