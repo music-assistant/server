@@ -488,7 +488,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue.is_dynamic:
             # a dynamic queue is an always-on, recency-orchestrated smart mix; manual shuffle
             # (and plain linear order) have no meaning here so the toggle is locked
-            raise InvalidCommand("Cannot change shuffle while the queue is in dynamic mode")
+            raise InvalidCommand(
+                "Cannot change shuffle while the queue is in dynamic mode",
+                translation_key="dynamic_queue_order_fixed",
+                translation_owner=self.translation_owner,
+                translation_args=[queue.display_name],
+            )
         await self._apply_local_shuffle(queue_id, shuffle_enabled)
 
     def is_smart_shuffle_active(self, queue: PlayerQueue) -> bool:
@@ -517,7 +522,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
         if autoplay_enabled and queue.repeat_mode in (RepeatMode.ONE, RepeatMode.ALL):
-            raise InvalidCommand("Cannot enable autoplay while repeat is on")
+            raise InvalidCommand(
+                "Cannot enable autoplay while repeat is on",
+                translation_key="autoplay_needs_repeat_off",
+                translation_owner=self.translation_owner,
+            )
         queue_data.autoplay_override = autoplay_enabled
         self._resolve_default_toggles(queue_data)
         self._schedule_autoplay_fill(queue_id)
@@ -548,7 +557,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return  # no change; asking for the state it is already in is never a failure
         if queue.is_dynamic:
             # a dynamic queue is an always-on flowing mix of its sources; repeat has no meaning here
-            raise InvalidCommand("Cannot change repeat while the queue is in dynamic mode")
+            raise InvalidCommand(
+                "Cannot change repeat while the queue is in dynamic mode",
+                translation_key="dynamic_queue_order_fixed",
+                translation_owner=self.translation_owner,
+                translation_args=[queue.display_name],
+            )
         autoplay_was_enabled = queue.autoplay_enabled
         queue.repeat_mode = repeat_mode
         self._resolve_default_toggles(queue_data)
@@ -712,17 +726,29 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise InvalidDataError(f"Playback speed must be between 0.5 and 3.0, got {speed}")
         queue = self._queue_data[queue_id].queue
         if not queue.current_item:
-            raise QueueEmpty("Cannot set playback speed: queue is empty")
+            raise QueueEmpty(
+                "Cannot set playback speed: queue is empty",
+                translation_key="player_queue_empty",
+                translation_owner=self.translation_owner,
+                translation_args=[queue.display_name],
+            )
         queue_item_id = queue_item_id or queue.current_item.queue_item_id
         queue_item = self.get_item(queue_id, queue_item_id)
         if not queue_item:
             raise InvalidDataError(f"Queue item {queue_item_id} not found in queue")
         if queue_item.media_type not in (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE):
             raise InvalidCommand(
-                "Variable playback speed is only supported for audiobooks and podcast episodes"
+                "Variable playback speed is only supported for audiobooks and podcast episodes",
+                translation_key="playback_speed_not_supported",
+                translation_owner=self.translation_owner,
             )
         if not queue_item.duration:
-            raise InvalidCommand("Cannot set playback speed for items with unknown duration")
+            raise InvalidCommand(
+                "Cannot set playback speed for items with unknown duration",
+                translation_key="length_unknown",
+                translation_owner=self.translation_owner,
+                translation_args=[queue_item.name],
+            )
         current_speed = float(queue_item.extra_attributes.get("playback_speed") or 1.0)
         if abs(current_speed - speed) < 0.001:
             return  # no change
@@ -1162,7 +1188,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         self._check_player_permission(queue_id)
         if (queue := self.get(queue_id)) is None or not queue.active:
-            raise InvalidCommand(f"Queue {queue_id} is not active")
+            raise InvalidCommand(
+                f"Queue {queue_id} is not active",
+                translation_key="queue_not_active",
+                translation_owner=self.translation_owner,
+                translation_args=[queue.display_name if queue else queue_id],
+            )
         starts_player = queue.state != PlaybackState.PLAYING
         self._set_transitioning(queue_id, True)
         idx = self._queue_data[queue_id].queue.current_index
@@ -1208,7 +1239,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         self._check_player_permission(queue_id)
         if (queue := self.get(queue_id)) is None or not queue.active:
-            raise InvalidCommand(f"Queue {queue_id} is not active")
+            raise InvalidCommand(
+                f"Queue {queue_id} is not active",
+                translation_key="queue_not_active",
+                translation_owner=self.translation_owner,
+                translation_args=[queue.display_name if queue else queue_id],
+            )
         starts_player = queue.state != PlaybackState.PLAYING
         self._set_transitioning(queue_id, True)
         current_index = self._queue_data[queue_id].queue.current_index
@@ -1256,11 +1292,26 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_id = self._resolve_queue_id(queue_id)
         self._check_player_permission(queue_id)
         if (queue := self.get(queue_id)) is None or not queue.active:
-            raise InvalidCommand(f"Queue {queue_id} is not active")
+            raise InvalidCommand(
+                f"Queue {queue_id} is not active",
+                translation_key="queue_not_active",
+                translation_owner=self.translation_owner,
+                translation_args=[queue.display_name if queue else queue_id],
+            )
         if (current_item := queue.current_item) is None:
-            raise InvalidCommand(f"Queue {queue.display_name} has no item(s) loaded.")
+            raise InvalidCommand(
+                f"Queue {queue.display_name} has no item(s) loaded.",
+                translation_key="player_queue_empty",
+                translation_owner=self.translation_owner,
+                translation_args=[queue.display_name],
+            )
         if not current_item.duration:
-            raise InvalidCommand("Can not skip in items without duration.")
+            raise InvalidCommand(
+                "Can not skip in items without duration.",
+                translation_key="length_unknown",
+                translation_owner=self.translation_owner,
+                translation_args=[current_item.name],
+            )
         queue_data = self._queue_data[queue_id]
         if queue_data.pending_skip_item_id != current_item.queue_item_id:
             queue_data.pending_skip_seconds = 0
@@ -1290,14 +1341,29 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         self._check_player_permission(queue_id)
         if (queue := self.get(queue_id)) is None or not queue.active:
-            raise InvalidCommand(f"Queue {queue_id} is not active")
+            raise InvalidCommand(
+                f"Queue {queue_id} is not active",
+                translation_key="queue_not_active",
+                translation_owner=self.translation_owner,
+                translation_args=[queue.display_name if queue else queue_id],
+            )
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
         if not queue.current_item:
-            raise InvalidCommand(f"Queue {queue_player.name} has no item(s) loaded.")
+            raise InvalidCommand(
+                f"Queue {queue_player.name} has no item(s) loaded.",
+                translation_key="player_queue_empty",
+                translation_owner=self.translation_owner,
+                translation_args=[queue.display_name],
+            )
         if not queue.current_item.duration:
-            raise InvalidCommand("Can not seek items without duration.")
+            raise InvalidCommand(
+                "Can not seek items without duration.",
+                translation_key="length_unknown",
+                translation_owner=self.translation_owner,
+                translation_args=[queue.current_item.name],
+            )
         position = max(0, int(position))
         if position > queue.current_item.duration:
             raise InvalidCommand("Can not seek outside of duration range.")
@@ -1376,7 +1442,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             )
         else:
             msg = f"Resume queue requested but queue {queue.display_name} is empty"
-            raise QueueEmpty(msg)
+            raise QueueEmpty(
+                msg,
+                translation_key="player_queue_empty",
+                translation_owner=self.translation_owner,
+                translation_args=[queue.display_name],
+            )
 
     @api_command(
         "player_queues/play_index",
@@ -1446,11 +1517,21 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # refuse targets that can never render audio (display/visualizer/lighting clients)
             # before anything is mutated, so a bad target does not destroy the source queue
             if target_player.type not in PLAYBACK_TARGET_TYPES:
-                raise PlayerCommandFailed(f"Player {target_player.name} is not capable of playback")
+                raise PlayerCommandFailed(
+                    f"Player {target_player.name} is not capable of playback",
+                    translation_key="player_cannot_play_audio",
+                    translation_owner=self.translation_owner,
+                    translation_args=[target_player.name],
+                )
             if auto_play and target_player.offline_by_power_control:
                 # switched off again, or the source started to play while the locks were awaited
                 msg = f"Player {target_player.name} is switched off"
-                raise PlayerUnavailableError(msg)
+                raise PlayerUnavailableError(
+                    msg,
+                    translation_key="player_switched_off",
+                    translation_owner=self.mass.players.translation_owner,
+                    translation_args=[target_player.name],
+                )
             if target_player.active_group or target_player.synced_to:
                 # edge case: the user wants to move playback from the group as a whole, to a
                 # single player in the group or it is grouped and the command targeted at the
@@ -2676,7 +2757,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             ):
                 if (output_protocol := queue_player.resolve_output_protocol()) is None:
                     msg = f"Player {queue_player.name} is not available"
-                    raise PlayerUnavailableError(msg)
+                    raise PlayerUnavailableError(
+                        msg,
+                        translation_key="player_not_available",
+                        translation_owner=self.mass.players.translation_owner,
+                        translation_args=[queue_player.name],
+                    )
                 await output_protocol.play()
             return
         # player is not paused, perform resume instead
@@ -3279,11 +3365,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     def _playlist_uris(self, queue_id: str) -> list[str]:
         """Return the URIs of the queue's playlist-compatible items, checking player access."""
         self._check_player_permission(queue_id)
-        if not self.get(queue_id):
+        if not (queue := self.get(queue_id)):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
         if not queue_items:
-            raise QueueEmpty("Cannot save an empty queue as a playlist.")
+            raise QueueEmpty(
+                "Cannot save an empty queue as a playlist.",
+                translation_key="player_queue_empty",
+                translation_owner=self.translation_owner,
+                translation_args=[queue.display_name],
+            )
         uris = [
             item.uri for item in queue_items if item.uri and item.media_type in PLAYLIST_MEDIA_TYPES
         ]

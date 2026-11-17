@@ -313,6 +313,13 @@
     }
   },
   "errors": {
-    "play_request_timeout": "Loading what you asked to play took longer than {0} seconds and was cancelled."
+    "play_request_timeout": "Loading what you asked to play took longer than {0} seconds and was cancelled.",
+    "player_queue_empty": "The queue of {0} is empty.",
+    "queue_not_active": "{0} is not playing from its queue.",
+    "player_cannot_play_audio": "{0} can not play audio.",
+    "dynamic_queue_order_fixed": "Shuffle and repeat can not be changed while {0} plays a dynamic playlist.",
+    "autoplay_needs_repeat_off": "Autoplay can not be turned on while repeat is on. Turn off repeat first.",
+    "playback_speed_not_supported": "The playback speed can only be changed for audiobooks and podcasts.",
+    "length_unknown": "The length of {0} is unknown, so this is not possible."
   }
 }

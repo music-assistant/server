@@ -227,10 +227,22 @@ async def test_skip_requires_an_item_with_a_duration() -> None:
     """Radio and not-yet-probed items have no range to skip within."""
     ctrl, _queue, seek = _controller(duration=None)
 
-    with pytest.raises(InvalidCommand, match="without duration"):
+    with pytest.raises(InvalidCommand, match="without duration") as error:
         await ctrl.skip(QUEUE_ID, 10)
 
+    assert error.value.translation_key == "length_unknown"
+    assert error.value.translation_args == ["chapter one"]
     seek.assert_not_awaited()
+
+
+async def test_the_playback_speed_of_a_track_can_not_change() -> None:
+    """Only audiobooks and podcasts play at another speed."""
+    ctrl, _queue, _seek = _controller()
+
+    with pytest.raises(InvalidCommand, match="only supported for audiobooks") as error:
+        await ctrl.set_playback_speed(QUEUE_ID, 1.5)
+
+    assert error.value.translation_key == "playback_speed_not_supported"
 
 
 async def test_skip_requires_an_active_queue() -> None:
@@ -238,9 +250,11 @@ async def test_skip_requires_an_active_queue() -> None:
     ctrl, queue, seek = _controller()
     queue.active = False
 
-    with pytest.raises(InvalidCommand, match="not active"):
+    with pytest.raises(InvalidCommand, match="not active") as error:
         await ctrl.skip(QUEUE_ID, 10)
 
+    assert error.value.translation_key == "queue_not_active"
+    assert error.value.translation_args == ["Q1"]
     seek.assert_not_awaited()
 
 
