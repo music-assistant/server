@@ -217,7 +217,9 @@ async def test_a_stop_of_a_queue_whose_player_waits_for_its_device_goes_to_no_de
         await scenario.settle()
 
     stop_player.assert_not_awaited()
-    with pytest.raises(PlayerUnavailableError, match="is switched off") as error:
+    with pytest.raises(
+        PlayerUnavailableError, match="power on of player Bathroom was called off"
+    ) as error:
         await play
     # its plug is on: it was stopped, not switched off
     assert error.value.translation_key == "player_stopped_during_startup"

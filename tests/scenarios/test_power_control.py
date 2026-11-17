@@ -629,7 +629,7 @@ async def test_a_change_of_the_power_setting_during_the_startup_ends_the_play_th
 
     Den's plug, which cuts its power, is off. A play switches it on and waits for the
     start-up time. The user switches the setting off, or picks another plug, which is off:
-    the play fails as switched off, and nothing is left of the start-up. With the setting
+    the play fails, as called off or as switched off, and nothing is left of the start-up. With the setting
     off, Den is a speaker on a plain switch that is on: a new play starts at once. With the
     other plug, a new play switches that plug on and waits for a whole start-up time.
 
@@ -651,7 +651,9 @@ async def test_a_change_of_the_power_setting_during_the_startup_ends_the_play_th
         await scenario.configure_player(player_id, power_control=other_plug.control_id)
 
     assert play.done()
-    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+    # the plug of the setting reads on, the other plug off
+    failure = "power on of player Den was called off" if other_plug is None else "is switched off"
+    with pytest.raises(PlayerUnavailableError, match=failure):
         await play
     assert den.commands == den_airplay.commands == []
     if other_plug is None:
@@ -682,7 +684,7 @@ async def test_protocols_told_of_a_power_cut_are_told_it_is_back_once_nothing_fo
     picks another plug, or the plug goes with its provider: nothing tells the protocols any
     more when the power is back, so they are told at once and reach Den by themselves
     again. The same when the setting is switched off while Den starts up for a play, which
-    fails as switched off.
+    fails as called off.
 
     :param change: What happens after the power was cut.
     """
@@ -710,7 +712,7 @@ async def test_protocols_told_of_a_power_cut_are_told_it_is_back_once_nothing_fo
 
     assert den.power_reports[1:] == den_airplay.power_reports[1:] == [("restored", changed_at)]
     if play is not None:
-        with pytest.raises(PlayerUnavailableError, match="is switched off"):
+        with pytest.raises(PlayerUnavailableError, match="power on of player Den was called off"):
             await play
     # told once: nothing follows the power of Den any more
     await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME + EXTERNAL_POWER_OFF_STOP_DELAY)
