@@ -1017,7 +1017,9 @@ class SendspinPlaybackSession:
                     break
                 pending_backlog.popleft()
                 pending_duration_us = max(0, pending_duration_us - pending.duration_us)
-                if commit_count == 0:
+                # a member that joined before the start gets its audio in the commits after
+                # the first, so those are left to come
+                if commit_count == 0 and not self._join_catchup:
                     pending, source_ended = _take_start_queue(pending)
                 await self._inject_ready_join_historical(push_stream, pending_backlog, pending.pcm)
                 push_stream.prepare_audio(
@@ -1098,8 +1100,9 @@ class SendspinPlaybackSession:
                 ):
                     self.player.logger.debug(
                         "Play timeline moved %+.1f ms at commit %d of the stream: the commit "
-                        "before it took %.1f ms, then %.1f ms went to waiting for audio; "
-                        "scheduled %.1f ms ahead, the first commit %.1f ms",
+                        "before it and what follows it took %.1f ms, then getting the audio "
+                        "of this one ready %.1f ms; scheduled %.1f ms ahead, the first commit "
+                        "%.1f ms",
                         (timeline_start_us - previous_timeline_start_us) / 1000,
                         commit_count,
                         (waiting_since_us - previous_commit_called_us) / 1000,

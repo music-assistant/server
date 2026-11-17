@@ -47,14 +47,16 @@ if TYPE_CHECKING:
     from pathlib import Path
     from uuid import UUID
 
+    from music_assistant.providers.sendspin.playback import _HistoryChunk
+
 SLICE_US = 100_000
 START_SLICES = _START_QUEUE_US // SLICE_US
 # The time the producer needed for slices 2 to 5 of a start after a server start.
 COLD_START_SLICE_TIMES_US = (157_400, 100_000, 107_700, 114_600)
 MOVE_LOG = (
-    "Play timeline moved %+.1f ms at commit %d of the stream: the commit before it took "
-    "%.1f ms, then %.1f ms went to waiting for audio; scheduled %.1f ms ahead, the first "
-    "commit %.1f ms"
+    "Play timeline moved %+.1f ms at commit %d of the stream: the commit before it and what "
+    "follows it took %.1f ms, then getting the audio of this one ready %.1f ms; scheduled "
+    "%.1f ms ahead, the first commit %.1f ms"
 )
 # How far ahead PushStream schedules audio when no player asks for more.
 LEAD_MS = DEFAULT_INITIAL_DELAY_US / 1000
@@ -463,6 +465,53 @@ async def test_member_joining_while_the_first_commit_waits_gets_the_start(
         channel_id = harness.session._member_pipelines[DSP_ID].channel_id
         _assert_aligned(harness.offsets_us(channel_id))
         assert harness.chunks(channel_id)[0] == harness.chunks(MAIN_CHANNEL)[0]
+    finally:
+        await harness.close()
+
+
+async def test_member_joining_before_the_start_of_a_short_source_gets_its_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member that joins before the first commit plays a source shorter than the start queue."""
+    harness = _SessionHarness(monkeypatch, dsp_ids={DSP_ID})
+    session = harness.session
+    fanout = session._fanout_history_chunk_to_join_processors
+
+    async def _fanout_and_wait(chunk: _HistoryChunk) -> None:
+        """Hand a commit on to the joining member and wait until it processed it."""
+        await fanout(chunk)
+        if (state := session._join_catchup.get(DSP_ID)) is None:
+            return
+        assert state.fed_until_us is not None
+        assert state.first_history_start_us is not None
+        processor = state.processor
+        fed_us = state.fed_until_us - state.first_history_start_us
+        await _wait_for(
+            lambda: processor.produced_output_us >= fed_us,
+            lambda: f"processed {processor.produced_output_us} us of {fed_us}",
+        )
+
+    monkeypatch.setattr(session, "_fanout_history_chunk_to_join_processors", _fanout_and_wait)
+    try:
+        harness.allow_source(2)
+        await session.start(MagicMock())
+        await harness._until(lambda: harness.source_reads == 3)
+        assert harness.entered == 0
+
+        await harness.add_member(DSP_ID)
+        channel_id = session._member_pipelines[DSP_ID].channel_id
+        harness.allow_source(3)
+        await harness._until(lambda: harness.source_reads == 4)
+        harness.end_source()
+        await harness.finish()
+
+        played_us = {
+            channel: sum(
+                chunk.duration_us for chunk in harness.push_stream.get_cached_pcm_chunks(channel)
+            )
+            for channel in (MAIN_CHANNEL, channel_id)
+        }
+        assert played_us == {MAIN_CHANNEL: 3 * SLICE_US, channel_id: 3 * SLICE_US}
     finally:
         await harness.close()
 
