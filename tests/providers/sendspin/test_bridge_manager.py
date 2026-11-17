@@ -51,17 +51,17 @@ class FakeBridgeManager(SendspinBridgeManagerBase[FakeBridge]):
 
     policy_result = True
 
-    def _bridge_client_id(self, protocol: Any) -> str | None:
-        """Return the Sendspin client_id used to bridge the given protocol."""
+    def qualifies(self, protocol: Any) -> bool:
+        """Return whether provider policy wants a bridge for this protocol."""
+        return self.policy_result
+
+    def _own_client_id(self, protocol: Any) -> str | None:
+        """Return the Sendspin client_id a bridge gives the device of the given protocol."""
         return f"spb_{protocol.protocol_id}"
 
     def _create_bridge(self, protocol: Any) -> FakeBridge:
         """Create a (not yet started) bridge instance for the given protocol."""
         return FakeBridge(self.sendspin_server, protocol)
-
-    def _should_have_bridge(self, protocol: Any) -> bool:
-        """Return whether provider policy wants a bridge for this protocol."""
-        return self.policy_result
 
 
 class _Environment:
@@ -90,13 +90,30 @@ class _Environment:
             side_effect=lambda protocol_id: protocol_id not in self.unwanted
         )
         mass.players.remove_protocol = AsyncMock()
+        # the player of the protocols, with those that are attached to it
+        self.player = MagicMock(player_id=PLAYER_ID, attached_protocols={})
+        mass.players.get_player = MagicMock(return_value=self.player)
+        mass.players.get_player_id_of_protocol = MagicMock(return_value=PLAYER_ID)
         mass.config.get_protocol_record = MagicMock(side_effect=self.records.get)
+        mass.config.get_protocol_ids_of_player = MagicMock(
+            side_effect=lambda player_id: [
+                protocol_id
+                for protocol_id, record in self.records.items()
+                if record["player_id"] == player_id
+            ]
+        )
+        mass.config.get_protocol_value = MagicMock(
+            side_effect=lambda protocol_id, key, default=None: (
+                self.records.get(protocol_id) or {"values": {}}
+            )["values"].get(key, default)
+        )
+        mass.config.is_protocol_switched_on = MagicMock(return_value=True)
         mass.config.get = MagicMock(
             side_effect=lambda key, default=None: self.player_records.get(key, default)
         )
         mass.config.save_protocol_config = AsyncMock()
         self.mass = mass
-        provider = MagicMock()
+        provider = MagicMock(domain="fake")
         provider.mass = mass
         provider.get_protocol = lambda protocol_id: self.protocols.get(protocol_id)
         provider.logger = logging.getLogger("test.bridge_manager")
@@ -115,9 +132,10 @@ class _Environment:
         protocol.protocol_id = protocol_id
         protocol.display_name = "Test Player"
         protocol.provider = self.provider
-        protocol.player = MagicMock(player_id=PLAYER_ID)
+        protocol.player = self.player
         protocol._on_detach_callbacks = []
         self.protocols[protocol_id] = protocol
+        self.player.attached_protocols[protocol_id] = protocol
         self.provider.protocols = list(self.protocols.values())
         return protocol
 
@@ -128,6 +146,7 @@ class _Environment:
         :param protocol: The protocol object to detach.
         """
         self.protocols.pop(protocol.protocol_id, None)
+        self.player.attached_protocols.pop(protocol.protocol_id, None)
         protocol.player = None
         callbacks, protocol._on_detach_callbacks = protocol._on_detach_callbacks, []
         for callback in callbacks:
@@ -142,6 +161,7 @@ class _Environment:
         """
         self.records[CLIENT_ID] = {
             "protocol_id": CLIENT_ID,
+            "provider": "sendspin",
             "player_id": PLAYER_ID,
             "enabled": enabled,
             "values": {CONF_UNDERLYING_PLAYER_ID: underlying_id},
@@ -366,6 +386,7 @@ async def test_provider_change_evaluates_the_attached_protocols_only() -> None:
     """A provider (un)loading re-evaluates the protocols that are attached to a player."""
     env = _Environment()
     waiting = env.attach("base_2")
+    del env.player.attached_protocols["base_2"]
     waiting.player = None
 
     await env.manager._on_providers_updated(MagicMock())

@@ -88,7 +88,10 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import OWN_PROTOCOL_ROLES
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.providers.sendspin.bridge_manager import evaluate_bridge_of
+from music_assistant.providers.sendspin.bridge_manager import (
+    evaluate_bridge_of,
+    evaluate_bridges_of_player,
+)
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
     BRIDGE_CHANNELS,
@@ -379,6 +382,7 @@ class SendspinProvider(PlayerProvider):
     _bridge_identifiers: dict[str, dict[IdentifierType, str]]
     _bridge_underlying_protocols: dict[str, str]
     _bridge_holders: dict[str, str]
+    _bridge_locks: dict[str, asyncio.Lock]
     _bridge_static_delay_defaults: dict[str, int]
     _client_event_versions: dict[str, int]
     _client_event_task_counts: dict[str, int]
@@ -410,6 +414,8 @@ class SendspinProvider(PlayerProvider):
         self._bridge_underlying_protocols = {}
         # bridge client id -> the protocol whose bridge registered or claimed it last
         self._bridge_holders = {}
+        # player id -> the lock its bridges hand its Sendspin output over under
+        self._bridge_locks = {}
         self._bridge_static_delay_defaults = {}
         self._bridge_player_types: dict[str, PlayerType] = {}
         self._client_event_versions = {}
@@ -503,6 +509,7 @@ class SendspinProvider(PlayerProvider):
             self.server_api.add_event_listener(self.event_cb),
             self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED),
             self.mass.subscribe(self._on_queue_updated, EventType.QUEUE_UPDATED),
+            self.mass.subscribe(self._on_player_config_updated, EventType.PLAYER_CONFIG_UPDATED),
         ]
         # seed the hass availability snapshot so the first (un)load is seen as a change
         hass = self.mass.get_provider("hass")
@@ -670,6 +677,14 @@ class SendspinProvider(PlayerProvider):
         """
         if self._bridge_holders.get(client_id) == protocol_id:
             del self._bridge_holders[client_id]
+
+    def bridge_lock(self, player_id: str) -> asyncio.Lock:
+        """
+        Return the lock under which the bridges of a player hand its Sendspin output over.
+
+        :param player_id: Id of the player.
+        """
+        return self._bridge_locks.setdefault(player_id, asyncio.Lock())
 
     def refresh_bridge_client(self, client_id: str) -> None:
         """
@@ -2056,6 +2071,12 @@ class SendspinProvider(PlayerProvider):
         for player in self.protocols:
             if isinstance(player, SendspinPlayer):
                 player.on_queue_updated(queue_id)
+
+    async def _on_player_config_updated(self, event: MassEvent) -> None:
+        """Let the bridges of a player follow a saved config, such as an output switched off."""
+        if self._unloading or self.mass.closing or (player_id := event.object_id) is None:
+            return
+        await evaluate_bridges_of_player(self.mass, player_id)
 
     async def _remove_orphan_virtual_player_configs(self) -> None:
         """Delete stored configs of virtual players whose owner provider is gone."""

@@ -439,7 +439,7 @@ class _Rig:
         self.sendspin_client.roles_by_family.return_value = [self.role]
         mass.get_provider.return_value = self.sendspin
         # the squeezelite provider, its player and the slimproto client of that player
-        self.provider = provider = MagicMock()
+        self.provider = provider = MagicMock(domain="squeezelite")
         provider.mass = mass
         provider.clock = self.clock
         provider.instance_id = "squeezelite"
@@ -458,7 +458,7 @@ class _Rig:
         protocol.volume_set = AsyncMock()
         protocol.release_native_playback = AsyncMock()
         protocol.sendspin_bridge = None
-        protocol.player.get_output_protocol_by_domain.return_value = None
+        protocol.player.attached_protocols = {PLAYER_ID: protocol}
         protocol.player.current_media = None
         protocol._on_detach_callbacks = []
         provider.get_protocol.side_effect = {PLAYER_ID: protocol}.get
@@ -760,8 +760,8 @@ def _timing() -> Any:
 
 async def test_a_player_with_a_timed_start_gets_a_bridge(rig: _Rig) -> None:
     """A player with a MAC address as id that can start at a set instant is bridged."""
-    assert rig.manager._bridge_client_id(rig.protocol) == CLIENT_ID
-    assert rig.manager._should_have_bridge(rig.protocol) is True
+    assert rig.manager.bridge_client_id(rig.protocol) == CLIENT_ID
+    assert rig.manager.qualifies(rig.protocol) is True
 
 
 @pytest.mark.parametrize("protocol_id", ["kitchen", "00:00:00:00:00:00", ""])
@@ -769,8 +769,8 @@ async def test_a_player_without_a_mac_address_gets_no_bridge(rig: _Rig, protocol
     """The bridge client id comes from the MAC address, so there is none without one."""
     rig.protocol.protocol_id = protocol_id
 
-    assert rig.manager._bridge_client_id(rig.protocol) is None
-    assert rig.manager._should_have_bridge(rig.protocol) is False
+    assert rig.manager.bridge_client_id(rig.protocol) is None
+    assert rig.manager.qualifies(rig.protocol) is False
 
 
 @pytest.mark.parametrize(
@@ -793,62 +793,7 @@ async def test_only_a_device_with_a_timed_start_gets_a_bridge(
     """The bridge starts a stream at a set instant, which not every device type can do."""
     rig.client.device_type = device_type
 
-    assert rig.manager._should_have_bridge(rig.protocol) is bridged
-
-
-async def test_a_player_with_an_airplay_output_gets_no_bridge(rig: _Rig) -> None:
-    """A device with AirPlay gets its Sendspin support over AirPlay."""
-    outputs = rig.protocol.player.get_output_protocol_by_domain
-    outputs.return_value = MagicMock()
-
-    assert rig.manager._should_have_bridge(rig.protocol) is False
-    outputs.assert_called_once_with("airplay")
-
-
-@pytest.mark.parametrize(
-    ("registered", "bridged"),
-    [
-        (CLIENT_ID, False),
-        # the same MAC address with its locally administered bit set
-        ("spb_a8bbccddeeff", False),
-        ("spb_aabbccddee00", True),
-    ],
-)
-async def test_a_device_another_bridge_registered_gets_no_bridge(
-    rig: _Rig, registered: str, bridged: bool
-) -> None:
-    """One device has one Sendspin client, whichever form of its MAC address that is under."""
-    rig.server.is_external_player.side_effect = lambda client_id: client_id == registered
-
-    assert rig.manager._should_have_bridge(rig.protocol) is bridged
-
-
-async def test_its_own_client_does_not_deny_the_bridge(rig: _Rig) -> None:
-    """The client of the bridge that is in place is not that of another bridge."""
-    await rig.manager.evaluate_bridge(rig.protocol)
-    rig.server.is_external_player.return_value = True
-
-    assert rig.manager._should_have_bridge(rig.protocol) is True
-
-
-async def test_the_bridge_goes_when_airplay_shows_up_and_returns_when_it_goes(rig: _Rig) -> None:
-    """The bridge follows the outputs of its player."""
-    await rig.manager.evaluate_bridge(rig.protocol)
-    assert rig.manager.get_bridge(PLAYER_ID) is not None
-    # the Sendspin protocol of the bridge client, which rides on the squeezelite protocol
-    rig.mass.players.get_protocol.return_value = MagicMock(underlying_protocol_id=PLAYER_ID)
-
-    rig.protocol.player.get_output_protocol_by_domain.return_value = MagicMock()
-    await rig.manager.evaluate_bridge(rig.protocol)
-
-    assert rig.manager.get_bridge(PLAYER_ID) is None
-    rig.server.remove_client.assert_awaited_once_with(CLIENT_ID)
-    rig.mass.players.remove_protocol.assert_awaited_once_with(CLIENT_ID)
-
-    rig.protocol.player.get_output_protocol_by_domain.return_value = None
-    await rig.manager.evaluate_bridge(rig.protocol)
-
-    assert rig.manager.get_bridge(PLAYER_ID) is not None
+    assert rig.manager.qualifies(rig.protocol) is bridged
 
 
 @pytest.mark.parametrize(
@@ -858,7 +803,7 @@ async def test_the_bridge_goes_when_airplay_shows_up_and_returns_when_it_goes(ri
 async def test_a_change_of_outputs_evaluates_the_bridge_again(
     rig: _Rig, changed: str, evaluated: bool
 ) -> None:
-    """A player whose outputs change may have gained or lost its AirPlay output."""
+    """A player whose outputs change may have another protocol to carry its Sendspin output."""
     other = MagicMock(provider=MagicMock())
     player = MagicMock(attached_protocols={PLAYER_ID: rig.protocol, "other": other})
 
@@ -885,26 +830,7 @@ async def test_a_bridge_tool_gets_no_bridge(rig: _Rig, device_model: str, bridge
     """A squeezelite player that is a bridge to a device of another protocol is not bridged."""
     rig.client.device_model = device_model
 
-    assert rig.manager.is_bridgeable(rig.protocol) is bridged
-    assert rig.manager._should_have_bridge(rig.protocol) is bridged
-
-
-@pytest.mark.parametrize("registered", [CLIENT_ID, "spb_a8bbccddeeff"])
-async def test_a_client_another_bridge_registered_leaves_the_player_bridgeable(
-    rig: _Rig, registered: str
-) -> None:
-    """Whether the player qualifies does not depend on the bridge that holds the device now."""
-    rig.server.is_external_player.side_effect = lambda client_id: client_id == registered
-
-    assert rig.manager._should_have_bridge(rig.protocol) is False
-    assert rig.manager.is_bridgeable(rig.protocol) is True
-
-
-async def test_a_player_with_an_airplay_output_is_not_bridgeable(rig: _Rig) -> None:
-    """AirPlay takes the device ahead of every other bridge."""
-    rig.protocol.player.get_output_protocol_by_domain.return_value = MagicMock()
-
-    assert rig.manager.is_bridgeable(rig.protocol) is False
+    assert rig.manager.qualifies(rig.protocol) is bridged
 
 
 # ---------------------------------------------------------------- registration
@@ -3908,8 +3834,7 @@ async def test_the_bridge_of_a_reconnected_player_returns_to_its_group(rig: _Rig
     new_client.group = MagicMock(clients=[new_client], has_active_stream=False)
     new_client.roles_by_family.return_value = [SlimprotoBridgeRole(client=new_client)]
     rig.server.register_external_player.return_value = new_client
-    rig.protocol.player = MagicMock()
-    rig.protocol.player.get_output_protocol_by_domain.return_value = None
+    rig.protocol.player = MagicMock(attached_protocols={PLAYER_ID: rig.protocol})
     with patch(f"{MODULE}.RECONNECT_REJOIN_DELAYS", (0,)):
         await rig.manager.evaluate_bridge(rig.protocol)
         await _settle()
@@ -3946,8 +3871,7 @@ async def test_a_group_is_only_returned_to_after_a_reconnect(rig: _Rig, case: st
     new_client.group = MagicMock(clients=[new_client], has_active_stream=False)
     new_client.roles_by_family.return_value = [SlimprotoBridgeRole(client=new_client)]
     rig.server.register_external_player.return_value = new_client
-    rig.protocol.player = MagicMock()
-    rig.protocol.player.get_output_protocol_by_domain.return_value = None
+    rig.protocol.player = MagicMock(attached_protocols={PLAYER_ID: rig.protocol})
     with patch(f"{MODULE}.RECONNECT_REJOIN_DELAYS", (0,)):
         await rig.manager.evaluate_bridge(rig.protocol)
         await _settle()

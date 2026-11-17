@@ -127,6 +127,7 @@ CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED: Final[str] = "apple_music_sync_schedule
 CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED: Final[str] = "emby_album_artists_heal_migrated"
 CONF_RAUMFELD_ICY_BASIC_MIGRATED: Final[str] = "raumfeld_icy_basic_migrated"
 CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: Final[str] = "airplay_sync_adjust_sign_migrated"
+CONF_SENDSPIN_ONE_OUTPUT_MIGRATED: Final[str] = "sendspin_one_output_migrated"
 CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING: Final[str] = "emby_album_artists_heal_pending"
 CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
@@ -230,6 +231,9 @@ CONF_UNDERLYING_PLAYER_ID: Final[str] = (
 # experimental. Its presence also makes the output's enable entry default to disabled;
 # a stored enabled state still wins, so the provider persists that one itself.
 CONF_PROTOCOL_EXPERIMENTAL_NOTE: Final[str] = "protocol_experimental_note"
+# Marker a provider stores on a protocol it switched off itself as its default. Without
+# it a protocol that is switched off was switched off by the user.
+CONF_PROTOCOL_OFF_BY_DEFAULT: Final[str] = "protocol_off_by_default"
 CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
 CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"

@@ -63,6 +63,7 @@ from music_assistant.providers.airplay.sendspin_bridge import (
     SendspinAirPlayBridge,
     SendspinBridgeManager,
     device_buffer_ahead_seconds,
+    get_bridge_client_id,
     sendspin_audible_instant_to_unix_ms,
     unix_ms_to_sendspin_audible_instant,
 )
@@ -215,6 +216,8 @@ def _make_bridge(
     # whatever was resolved. None models a group with no live decision.
     provider.bridge_manager.resolve_shared_ptp = MagicMock(return_value=False)
     provider.bridge_manager.group_shared_ptp = MagicMock(return_value=None)
+    # the player has no Sendspin output yet: its bridge registers one under the id of its device
+    provider.bridge_manager.bridge_client_id = get_bridge_client_id
     airplay_player = MagicMock()
     airplay_player.protocol_id = "apc43875e9e53a"
     airplay_player.display_name = "Test Player"
