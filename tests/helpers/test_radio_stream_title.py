@@ -152,3 +152,13 @@ def test_parse_station_stream_title() -> None:
 
     # conventional "Artist - Track" is not a station format
     assert parse_station_stream_title("Tori Amos - Cornflake Girl") is None
+
+
+def test_cleaning_streamtitle_html_entities() -> None:
+    """Test that HTML entities in stream titles are decoded."""
+    line = "John Lennon - I&apos;m Losing You"
+    assert clean_stream_title(line) == "John Lennon - I'm Losing You"
+
+    line = "&quot;Cornflake Girl&quot; by Tori Amos"
+    assert clean_stream_title(line) == "Tori Amos - Cornflake Girl"
+    assert parse_station_stream_title(line) == ("Cornflake Girl", "Tori Amos", None)

@@ -956,7 +956,8 @@ def parse_station_stream_title(line: str) -> tuple[str, str, str | None] | None:
     :returns: Tuple of (title, artist, album), or None when the line is not in one of
         these formats. ``album`` is None when the station omits it.
     """
-    stripped = line.strip()
+    # some stations (e.g. WXPN) entity-encode their titles: "I&apos;m Losing You"
+    stripped = html.unescape(line).strip()
     if match := english_by_pattern.match(stripped):
         title = multi_strip(match.group("title"))
         artist = multi_strip(match.group("artist")).strip('"')
@@ -981,6 +982,7 @@ def clean_stream_title(line: str) -> str:
     """Strip junk text from radio streamtitle."""
     title: str = ""
     artist: str = ""
+    line = html.unescape(line)
 
     if not keyword_pattern.search(line):
         if parsed := parse_station_stream_title(line):
