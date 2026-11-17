@@ -24,6 +24,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerType,
     ProviderType,
+    QueueOption,
     RepeatMode,
     StreamType,
     VolumeNormalizationMode,
@@ -40,6 +41,7 @@ from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.music_quiz import MusicQuizPlugin
 
 if TYPE_CHECKING:
     import pytest
@@ -284,6 +286,55 @@ class SlotRig:
             queue=queue, items=list(items), session_id=session_id
         )
         return items
+
+    def idle_queue(self, queue_id: str = QUEUE_ID) -> PlayerQueueData:
+        """
+        Put a queue on the rig that holds no items and is not playing.
+
+        :param queue_id: The queue to put on the rig.
+        """
+        queue_data = PlayerQueueData(
+            queue=PlayerQueue(
+                queue_id=queue_id,
+                active=True,
+                display_name=f"Queue {queue_id[-1].upper()}",
+                available=True,
+                items=0,
+            )
+        )
+        self.queues._queue_data[queue_id] = queue_data
+        return queue_data
+
+    async def warm_first_quiz_track(self, name: str, queue_id: str = QUEUE_ID) -> QueueItem:
+        """
+        Let the music quiz stage and buffer the first track of a round, as it does in its lobby.
+
+        The quiz's own staging runs over the queue's real clear and enqueue paths.
+
+        :param name: Neutral name of the round's track.
+        :param queue_id: The queue of the quiz's playback target, which is not playing.
+        :return: The queue item the quiz staged.
+        """
+        staged = self.track(name, queue_id=queue_id)
+
+        async def _play_media(target_id: str, _uri: str, option: QueueOption) -> None:
+            # the track is resolved up front; the queue's own enqueue does the rest
+            await self.queues._enqueue_with_option(target_id, [staged], option)
+
+        self.queues.play_media = _play_media  # type: ignore[method-assign,assignment]
+        self.queues.is_smart_shuffle_active = MagicMock(return_value=False)  # type: ignore[method-assign]
+        self.queues._managed_pool = MagicMock()
+        quiz = SimpleNamespace(
+            mass=self.mass,
+            logger=MagicMock(),
+            _game=SimpleNamespace(config=SimpleNamespace(playback_mode=None)),
+            _get_playback_session=AsyncMock(return_value=SimpleNamespace(queue_id=queue_id)),
+            _snapshot_venue_queue=MagicMock(),
+            _is_round_track=AsyncMock(return_value=True),
+        )
+        await MusicQuizPlugin._warm_first_track(cast("MusicQuizPlugin", quiz), staged.uri)
+        await self.settle()
+        return staged
 
     def track(self, name: str, realtime: bool = True, queue_id: str = QUEUE_ID) -> QueueItem:
         """

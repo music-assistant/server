@@ -717,6 +717,62 @@ async def test_a_stream_of_an_earlier_playback_holds_no_track_of_the_one_that_fo
     await old_stream.aclose()
 
 
+# --- audio buffered ahead for a queue that is not playing yet
+
+
+@pytest.mark.parametrize(
+    "rig",
+    [SingleStreamProvider, TwoStreamProvider, UnlimitedProvider],
+    ids=["one slot", "a slot to spare", "no limit"],
+    indirect=True,
+)
+async def test_a_track_the_quiz_buffered_in_its_lobby_keeps_its_audio(rig: SlotRig) -> None:
+    """The first track of a quiz round, staged on a queue that is not playing, stays buffered."""
+    queue_data = rig.idle_queue()
+
+    staged = await rig.warm_first_quiz_track("track 1")
+
+    assert queue_data.items == [staged]
+    assert queue_data.session_id is None
+    buffer = rig.buffer(staged)
+    assert not buffer.cancelled
+    assert rig.fills(buffer)
+    # the capture goes on behind the quiz's back
+    while buffer.seconds_available < 3:
+        await asyncio.sleep(0)
+
+    # the round starts: the queue plays the staged track from the audio it has
+    queue_data.session_id = SESSION_ID
+    queue_data.queue.index_in_buffer = queue_data.queue.current_index
+    stream = rig.audio.get_queue_item_stream(staged, PCM_FORMAT, session_id=SESSION_ID)
+    await anext(stream)
+    await stream.aclose()
+
+    assert rig.buffer(staged) is buffer
+    assert rig.opened["track 1"] == 1
+
+
+async def test_a_staged_track_keeps_the_only_stream_until_its_queue_is_cleared(
+    rig: SlotRig,
+) -> None:
+    """On a service with one stream the staged track holds it, until the staging is dropped."""
+    rig.idle_queue()
+    staged = await rig.warm_first_quiz_track("track 1")
+    capture = rig.buffer(staged)
+    (other_track,) = rig.play("track 7", queue_id=OTHER_QUEUE_ID, session_id="session-b")
+
+    with pytest.raises(ProviderStreamLimitError):
+        await rig.ask(other_track, wait=0.2)
+    assert rig.fills(capture)
+
+    rig.queues.clear(QUEUE_ID, skip_stop=True)
+    await rig.settle()
+    buffer = await rig.ask(other_track)
+
+    assert buffer is not None
+    assert not rig.fills(capture)
+
+
 # --- what the rule leaves alone
 
 
@@ -813,6 +869,54 @@ async def test_a_moved_track_gives_way_once_the_provider_has_no_slot_left(rig: S
 
     assert buffer is not None
     assert not rig.fills(moved_capture)
+    # the track that plays next keeps its own
+    assert rig.fills(next_capture)
+
+
+@pytest.mark.parametrize(
+    "rig",
+    [TwoStreamProvider, UnlimitedProvider],
+    ids=["a slot to spare", "no limit"],
+    indirect=True,
+)
+@pytest.mark.parametrize("change", ["removed", "stopped"])
+async def test_a_provider_with_a_slot_to_spare_keeps_a_capture_nothing_will_play(
+    rig: SlotRig, change: str
+) -> None:
+    """A capture nothing will play goes on as before while its provider has a slot to spare."""
+    playing, prepared, _later = rig.play("track 0", "track 1", "track 2")
+    capture = await rig.prepare_next(playing)
+    stream = rig.audio.get_queue_item_stream(prepared, PCM_FORMAT)
+    await anext(stream)
+
+    if change == "removed":
+        rig.queues.delete_item(QUEUE_ID, prepared.queue_item_id)
+    else:
+        rig.queues._queue_data[QUEUE_ID].session_id = None
+    # its last user leaves
+    await stream.aclose()
+    await rig.settle()
+
+    assert rig.fills(capture)
+    assert not capture.cancelled
+
+
+@pytest.mark.parametrize("rig", [TwoStreamProvider], indirect=True)
+async def test_a_removed_track_gives_way_once_the_provider_has_no_slot_left(rig: SlotRig) -> None:
+    """A prepared track that left the queue gives its slot up when a track needs it."""
+    playing, prepared, _later = rig.play("track 0", "track 1", "track 2")
+    removed_capture = await rig.prepare_next(playing)
+    rig.queues.delete_item(QUEUE_ID, prepared.queue_item_id)
+    next_capture = await rig.prepare_next(playing)
+    assert rig.fills(removed_capture)
+    assert not rig.slot_free()
+    another = rig.track("track 6")
+
+    await rig.queues._enqueue_with_option(QUEUE_ID, [another], QueueOption.ADD)
+    buffer = await rig.ask(another)
+
+    assert buffer is not None
+    assert not rig.fills(removed_capture)
     # the track that plays next keeps its own
     assert rig.fills(next_capture)
 

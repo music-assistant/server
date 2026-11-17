@@ -4259,7 +4259,9 @@ class StreamsAudio:
                         queue_item.queue_item_id,
                     ),
                     user=user,
-                    may_release=partial(self._may_release_source, queue_item),
+                    may_release=partial(
+                        self._may_release_source, queue_item, streamdetails.provider
+                    ),
                 )
             except ProviderStreamLimitError as err:
                 last_capacity_error = err
@@ -4309,13 +4311,20 @@ class StreamsAudio:
                 queue_item.streamdetails = last_failed_streamdetails
                 final_pass = True
 
-    def _may_release_source(self, queue_item: QueueItem, audio_buffer: AudioBuffer) -> bool:
+    def _may_release_source(
+        self, queue_item: QueueItem, provider_instance: str, audio_buffer: AudioBuffer
+    ) -> bool:
         """
         Return whether a buffer that has no user may give up its source.
 
         :param queue_item: The queue item the buffer was created for.
+        :param provider_instance: The provider instance the buffer's source streams from.
         :param audio_buffer: The buffer, which still fills.
         """
+        provider = self.mass.get_provider(provider_instance, return_unavailable=True)
+        if not isinstance(provider, MusicProvider) or provider.has_available_stream_slot:
+            # a provider with a slot to spare keeps every source it has
+            return False
         streamdetails = queue_item.streamdetails
         if streamdetails is None or streamdetails.buffer is not audio_buffer:
             # another buffer took its place on the item, so nothing reads this one again
@@ -4325,19 +4334,14 @@ class StreamsAudio:
             # this buffer yet
             return False
         queues = self.mass.player_queues
-        queue_data = queues.queue_data_or_none(queue_item.queue_id)
         if (
-            queue_data is None
-            or queue_data.session_id is None
+            queues.queue_data_or_none(queue_item.queue_id) is None
             or queues.get_item(queue_item.queue_id, queue_item.queue_item_id) is None
         ):
-            # its item is on no queue, or its queue plays nothing
+            # its item is on no queue
             return True
-        if queues.plays_now_or_next(queue_item):
-            return False
-        # its item waits further down the queue: it keeps its audio until the slot is needed
-        provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
-        return isinstance(provider, MusicProvider) and not provider.has_available_stream_slot
+        # on its queue, it is needed while that queue plays it now or next
+        return not queues.plays_now_or_next(queue_item)
 
     def _claim_item(self, claim: _ItemClaim, queue_item: QueueItem | None) -> None:
         """

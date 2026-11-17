@@ -147,10 +147,10 @@ session its stream is part of, and no longer once the queue the item is on plays
 or in none. The source of a buffer that still fills holds a stream slot of its provider, which lists
 those buffers in `stream_slot_holders`. `release_if_unneeded()` stops the source of a buffer that has
 no user and that neither a claim nor its queue needs (the player queues README says when that is),
-and makes the buffer invalid on the spot, so nobody takes it while its source unwinds. It runs when
-the last user of a buffer leaves, when a claim ends, and for every holder of a provider's slots when
-a track needs one and none is free; when none of them gives way, a debug line names the holders,
-their users and the streams that claim their items.
+but only when its provider has no slot to spare, and makes the buffer invalid on the spot, so nobody
+takes it while its source unwinds. It runs when the last user of a buffer leaves, when a claim ends,
+and for every holder of a provider's slots when a track needs one and none is free; when none of them
+gives way, a debug line names the holders, their users and the streams that claim their items.
 
 ### Error Handling
 

@@ -246,19 +246,21 @@ and plays them in a session of its own), a stream that is still open from before
 playback that followed. The buffer such a stream still reads keeps it as a user. A buffer is needed
 while it has a user, while a stream of its queue's session claims its item, or while its queue plays
 its item now or next (`plays_now_or_next`: the item the queue is on, the item its player has started
-fetching, and the item that follows either of them). A buffer that is not needed gives its source up
-at three moments: when a track asks the provider for a slot and none is free, when its last user
-leaves, and when the claim on its item ends. It does so whenever nothing reaches it any more (its
-item left the queue, its queue has no session, or another buffer took its place on the item); a
-buffer whose item only waits further down the queue gives way when its provider has no free slot. On
-a provider with a single slot that is always so for a source that still fills, as it holds that slot
-itself: such a track is released the moment its last user leaves, whether or not another track is
-asking for the slot. From the moment a buffer is told to give its source up it is no longer valid, so
-nobody takes it while the source unwinds: whoever wants that item's audio after that gets a buffer of
-its own, through the provider's slots like any other. So a prepared track that a queue change moved
-away from the head or took off the queue hands its slot to the track that plays next, while a track
-that is in use or about to play keeps it. The releases of a stop, a clear, a replace and the start of
-an item do not ask for users or claims.
+fetching, and the item that follows either of them). A queue that is not playing plays next the item
+it is on, and nothing after it: audio that is buffered ahead of its start, as the music quiz does for
+the first track of a round while its lobby is open, is needed until the queue starts and takes it
+over. A buffer that is not needed gives its source up only when its provider has no free slot: a
+provider with a slot to spare, or without a limit, keeps every source it has. The buffer is asked at
+three moments: when a track asks the provider for a slot and none is free, when its last user leaves,
+and when the claim on its item ends. On a provider with a single slot there is no slot to spare while
+a source still fills, as that source holds the slot itself: there a source that is not needed is
+released the moment its last user leaves, whether or not another track is asking for the slot. From
+the moment a buffer is told to give its source up it is no longer valid, so nobody takes it while the
+source unwinds: whoever wants that item's audio after that gets a buffer of its own, through the
+provider's slots like any other. So a prepared track that a queue change moved away from the head or
+took off the queue hands its slot to the track that plays next, while a track that is in use or about
+to play keeps it. The releases of a stop, a clear, a replace and the start of an item do not ask for
+users or claims.
 
 A paused queue keeps its session and its buffers until the pause watcher stops it once the
 configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread

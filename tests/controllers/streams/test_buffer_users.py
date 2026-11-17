@@ -265,12 +265,9 @@ async def test_a_queue_plays_next_what_its_repeat_and_its_available_items_say(
     assert rig.queues.plays_now_or_next(third)
 
 
-async def test_a_queue_without_a_session_or_without_the_item_plays_it_neither_now_nor_next(
-    rig: SlotRig,
-) -> None:
-    """Nothing plays on a queue that has no playback session, and nothing that left the queue."""
+async def test_a_queue_plays_neither_now_nor_next_what_is_not_on_it(rig: SlotRig) -> None:
+    """Nothing that left the queue, or that belongs to a queue the rig does not know, plays."""
     playing, upcoming = rig.play("track 0", "track 1")
-    queue_data = rig.queues._queue_data[QUEUE_ID]
     stranger = rig.track("track 5")
     elsewhere = rig.track("track 6", queue_id=OTHER_QUEUE_ID)
 
@@ -278,53 +275,99 @@ async def test_a_queue_without_a_session_or_without_the_item_plays_it_neither_no
     assert rig.queues.plays_now_or_next(upcoming)
     assert not rig.queues.plays_now_or_next(stranger)
     assert not rig.queues.plays_now_or_next(elsewhere)
+
+
+async def test_a_queue_that_is_not_playing_plays_next_the_item_it_is_on(rig: SlotRig) -> None:
+    """A queue without a playback session starts with the item it is on, and prepares no other."""
+    first, second = rig.play("track 0", "track 1")
+    queue_data = rig.queues._queue_data[QUEUE_ID]
     queue_data.session_id = None
-    assert not rig.queues.plays_now_or_next(playing)
-    assert not rig.queues.plays_now_or_next(upcoming)
+
+    assert rig.queues.plays_now_or_next(first)
+    assert not rig.queues.plays_now_or_next(second)
+    queue_data.queue.current_index = 1
+    assert not rig.queues.plays_now_or_next(first)
+    assert rig.queues.plays_now_or_next(second)
+    # a queue that was cleared is on no item
+    queue_data.queue.current_index = None
+    assert not rig.queues.plays_now_or_next(first)
+    assert not rig.queues.plays_now_or_next(second)
+
+
+def _may_release_in_every_state(rig: SlotRig, capture: AudioBuffer) -> dict[str, bool]:
+    """
+    Ask the rule about the capture of a queue's second track in every state its item can be in.
+
+    :param rig: The rig, whose queue holds three tracks and is on the first.
+    :param capture: The capture of the second track, which has no user.
+    :return: Whether the capture may give its source up, by state.
+    """
+    queue_data = rig.queues._queue_data[QUEUE_ID]
+    playing, prepared, later = queue_data.items
+    details = prepared.streamdetails
+    may_release = capture.may_release
+    assert details is not None
+    assert may_release is not None
+    verdicts = {"it plays next": may_release(capture)}
+    queue_data.items = [playing, later, prepared]
+    verdicts["it waits further down"] = may_release(capture)
+    queue_data.items = [playing, prepared, later]
+    queue_data.session_id = None
+    verdicts["its queue is not playing, and is on another item"] = may_release(capture)
+    queue_data.queue.current_index = 1
+    verdicts["its queue is not playing, and is on it"] = may_release(capture)
+    queue_data.queue.current_index = 0
+    queue_data.session_id = SESSION_ID
+    queue_data.items = [playing, later]
+    verdicts["its item left the queue"] = may_release(capture)
+    queue_data.items = [playing, prepared, later]
+    del rig.queues._queue_data[QUEUE_ID]
+    verdicts["its queue is gone"] = may_release(capture)
+    rig.queues._queue_data[QUEUE_ID] = queue_data
+    details.buffer = MagicMock(spec=AudioBuffer)
+    verdicts["another buffer took its place"] = may_release(capture)
+    details.buffer = capture
+    prepared.streamdetails = None
+    verdicts["its item lost its stream details"] = may_release(capture)
+    prepared.streamdetails = details
+    return verdicts
+
+
+@pytest.mark.parametrize(
+    "rig",
+    [TwoStreamProvider, UnlimitedProvider],
+    ids=["a slot to spare", "no limit"],
+    indirect=True,
+)
+async def test_a_provider_with_a_slot_to_spare_keeps_every_source(rig: SlotRig) -> None:
+    """Nothing may give its source up while its provider has a slot to spare."""
+    playing, _prepared, _later = rig.play("track 0", "track 1", "track 2")
+    capture = await rig.prepare_next(playing)
+    assert rig.slot_free()
+
+    assert not any(_may_release_in_every_state(rig, capture).values())
 
 
 @pytest.mark.parametrize("rig", [TwoStreamProvider], indirect=True)
-async def test_a_buffer_without_a_user_may_release_what_its_queue_no_longer_plays(
+async def test_a_provider_without_a_free_slot_keeps_only_what_a_queue_plays_now_or_next(
     rig: SlotRig,
 ) -> None:
-    """What nothing reaches any more may go; what waits further down only when slots run out."""
-    playing, prepared, later = rig.play("track 0", "track 1", "track 2")
-    queue_data = rig.queues._queue_data[QUEUE_ID]
+    """Out of slots, a source without a user may go unless its queue plays it now or next."""
+    playing, _prepared, later = rig.play("track 0", "track 1", "track 2")
     capture = await rig.prepare_next(playing)
-    may_release = capture.may_release
-    assert may_release is not None
-
-    # it plays next
-    assert not may_release(capture)
-    # it waits further down, while its provider has a slot to spare
-    queue_data.items = [playing, later, prepared]
-    assert not may_release(capture)
-    # it waits further down, and the provider is out of slots
-    other_capture = await rig.capture(later)
+    await rig.capture(later)
     assert not rig.slot_free()
-    assert may_release(capture)
-    assert not may_release.func(later, other_capture)  # type: ignore[attr-defined]
-    await other_capture.clear()
 
-    # its queue plays nothing
-    queue_data.items = [playing, prepared, later]
-    queue_data.session_id = None
-    assert may_release(capture)
-    queue_data.session_id = SESSION_ID
-    assert not may_release(capture)
-    # its item left the queue
-    queue_data.items = [playing, later]
-    assert may_release(capture)
-    queue_data.items = [playing, prepared, later]
-    # the queue itself is gone
-    del rig.queues._queue_data[QUEUE_ID]
-    assert may_release(capture)
-    rig.queues._queue_data[QUEUE_ID] = queue_data
-    # another buffer took its place on the item
-    assert prepared.streamdetails is not None
-    prepared.streamdetails.buffer = MagicMock(spec=AudioBuffer)
-    assert may_release(capture)
-    prepared.streamdetails.buffer = capture
+    assert _may_release_in_every_state(rig, capture) == {
+        "it plays next": False,
+        "it waits further down": True,
+        "its queue is not playing, and is on another item": True,
+        "its queue is not playing, and is on it": False,
+        "its item left the queue": True,
+        "its queue is gone": True,
+        "another buffer took its place": True,
+        "its item lost its stream details": True,
+    }
 
 
 async def test_a_claim_holds_its_item_for_the_playback_it_was_made_in_only(rig: SlotRig) -> None:
