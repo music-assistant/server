@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
+
 
 import pytest
 from auntie_sounds.models import (
     Container,
     Menu,
     MenuItem,
+    Network,
     Playlist,
     Podcast,
     RadioClip,
+    ScheduleItem,
     Segment,
     SegmentOffset,
     Synopses,
@@ -21,11 +25,19 @@ from auntie_sounds.models import (
 )
 from auntie_sounds.playback import PlayStatus
 from auntie_sounds.schedule import catch_up_dates, schedule_dates
-from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import BrowseFolder, PodcastEpisode, Track
+from music_assistant_models.enums import MediaType, QueueOption
+from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import (
+    BrowseFolder,
+    PodcastEpisode,
+    ProviderMapping,
+    Radio,
+    Track,
+)
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
+from music_assistant.providers.bbc_sounds.live_rewind import LiveProgrammeId
 
 from .conftest import RADIO_FOUR_SERVICE_ID
 
@@ -49,6 +61,26 @@ def _segment() -> Segment:
         image_url="https://example.com/song.jpg",
         offset=SegmentOffset(start=0, end=60),
     )
+
+
+def _open_radio_four(provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """Resolve any uri to Radio 4 in the library, and return the queue's mocked play_media."""
+    station = Radio(
+        item_id="1",
+        provider="library",
+        name="BBC Radio 4",
+        provider_mappings={
+            ProviderMapping(
+                item_id=RADIO_FOUR_SERVICE_ID,
+                provider_domain="bbc_sounds",
+                provider_instance=provider.instance_id,
+            )
+        },
+    )
+    monkeypatch.setattr(provider.mass.music, "get_item_by_uri", AsyncMock(return_value=station))
+    play_media = AsyncMock()
+    monkeypatch.setattr(provider.mass.player_queues, "play_media", play_media)
+    return play_media
 
 
 class TestOnPlayed:
@@ -236,3 +268,49 @@ class TestProgrammeSegments:
 
         _mock(provider.client.content).get_show_segments.assert_awaited_once()
         cache_set.assert_not_awaited()
+
+
+class TestMenuActionsListenFromStart:
+    """Tests for the menu action that plays a station's currently on-air programme."""
+
+    async def test_programme_on_air_is_played(
+        self, provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test the programme on air is played on the player as a live programme."""
+        play_media = _open_radio_four(provider, monkeypatch)
+        start = datetime.now(UTC) - timedelta(minutes=30)
+        end = start + timedelta(hours=1)
+        _mock(provider.client.schedules).on_air.return_value = ScheduleItem(
+            id="p0p6m2kp",
+            urn="urn:bbc:radio:episode:m0031hzl",
+            titles=Titles(primary="Today"),
+            network=Network(id=RADIO_FOUR_SERVICE_ID),
+            start=start,
+            end=end,
+        )
+
+        await provider.handle_menu_action("listen_from_start", "library://radio/1", "player")
+
+        _mock(provider.client.schedules).on_air.assert_awaited_once_with(RADIO_FOUR_SERVICE_ID)
+        play_media.assert_awaited_once_with(
+            "player", ANY, option=QueueOption.PLAY, start_position=0
+        )
+        assert play_media.await_args is not None
+        episode = play_media.await_args.args[1]
+        assert isinstance(episode, PodcastEpisode)
+        programme = LiveProgrammeId(
+            RADIO_FOUR_SERVICE_ID, "m0031hzl", int(start.timestamp()), int(end.timestamp())
+        )
+        assert episode.item_id == programme.item_id
+
+    async def test_nothing_on_air_is_an_error(
+        self, provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test a station with nothing on air raises an error and doesn't play."""
+        play_media = _open_radio_four(provider, monkeypatch)
+        _mock(provider.client.schedules).on_air.return_value = None
+
+        with pytest.raises(MediaNotFoundError, match="Nothing is on air on BBC Radio 4"):
+            await provider.handle_menu_action("listen_from_start", "library://radio/1", "player")
+
+        play_media.assert_not_awaited()
