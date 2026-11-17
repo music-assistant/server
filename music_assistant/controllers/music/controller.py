@@ -189,6 +189,7 @@ from music_assistant.models.music_provider import (
     NothingToSync,
 )
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.providers.musicbrainz.api_client import refresh_musicbrainz
 
 if TYPE_CHECKING:
     from music_assistant_models.api import SortOptionInfo
@@ -2010,7 +2011,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                             album_track.item_id, prov_track
                         )
         await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(library_item)
-        await self.mass.metadata.update_metadata(library_item, force_refresh=True)
+        async with refresh_musicbrainz():
+            await self.mass.metadata.update_metadata(library_item, force_refresh=True)
         if isinstance(library_item, Artist):
             library_item = await self.artists.get_merged_library_item(library_item)
         # the item's listings (album tracks, ...) are assembled anew from here on, after
