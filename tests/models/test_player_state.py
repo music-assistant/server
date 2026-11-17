@@ -120,11 +120,20 @@ def _queue(queue_id: str = PLAYER_ID, **values: Any) -> QueueSnapshot:
     """
     Return a queue.
 
+    Its stream metadata is that of the stream of its current item, unless given.
+
     :param queue_id: Id of the queue.
     :param values: Values of the snapshot; any other value is one of the queue itself.
     """
     item_image_url = values.pop("item_image_url", None)
     media_item_image_url = values.pop("media_item_image_url", None)
+    current_item = values.get("current_item")
+    stream_metadata = values.pop(
+        "stream_metadata",
+        current_item.streamdetails.stream_metadata
+        if current_item and current_item.streamdetails
+        else None,
+    )
     queue_values: dict[str, Any] = {
         "active": True,
         "display_name": queue_id,
@@ -137,6 +146,7 @@ def _queue(queue_id: str = PLAYER_ID, **values: Any) -> QueueSnapshot:
         queue=PlayerQueue(queue_id=queue_id, **(queue_values | values)),
         item_image_url=item_image_url,
         media_item_image_url=media_item_image_url,
+        stream_metadata=stream_metadata,
     )
 
 
