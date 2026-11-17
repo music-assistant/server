@@ -1,6 +1,5 @@
 """Now-playing code for the BBC Sounds provider."""
 
-import asyncio
 from typing import TYPE_CHECKING
 
 from auntie_sounds.models import (
@@ -32,6 +31,10 @@ def station_programme_display(
             title = f"{title}: {station.synopses.short}"
         return StreamMetadata(title=title, artist=None, image_url=station.image_url)
     return None
+
+
+def _segments_cache_key(vpid: str) -> str:
+    return f"programme_segments_v3_{vpid}"
 
 
 def _find_segment(segments: list[Segment], elapsed_time: int) -> Segment | None:
@@ -97,8 +100,7 @@ class NowPlayingManager:
 
     async def _get_programme_segments(self, vpid: str) -> list[Segment]:
         """Get on demand segments from cache or API."""
-        cache_key = f"programme_segments_v3_{vpid}"
-        cached = await self.mass.cache.get(provider=self.domain, key=cache_key)
+        cached = await self.mass.cache.get(provider=self.domain, key=_segments_cache_key(vpid))
         if isinstance(cached, list):
             self.logger.debug("Cache hit for programme segments for %s", vpid)
             return [Segment.from_dict(item) for item in cached]
@@ -106,11 +108,7 @@ class NowPlayingManager:
         segments = await self.client.content.get_show_segments(vpid)
         # The track list can be published after the programme, so an empty one isn't cached
         if segments:
-            await self.mass.cache.set(
-                provider=self.domain,
-                key=cache_key,
-                data=[segment.to_dict() for segment in segments],
-            )
+            await self._cache_programme_segments(vpid, segments)
         return segments
 
     async def _update_on_demand_stream_metadata(
@@ -144,18 +142,18 @@ class NowPlayingManager:
         segment = _find_segment(segments, elapsed_time)
 
         if segment:
-            metadata = _segment_to_metadata(segment)
-            if metadata:
-                stream_details.stream_metadata = metadata
-            # As of June 2026, the API currently doesn't return images from this endpoint
-            # We fill in missing images with the Spotify API, if any are still blank
-            # then use the MA helpers here
-            if not stream_details.stream_metadata.image_url:
-                try:
-                    async with asyncio.timeout(Constants.ARTWORK_TIMEOUT):
-                        await self.mass.metadata.update_radio_stream_artwork(stream_details)
-                except TimeoutError:
-                    self.logger.debug("Timeout while waiting for artwork")
+            # Spotify has no thumbnail for some tracks, so only ask once per segment
+            image_lookups: set[str] = stream_details.data.setdefault("image_lookups", set())
+            if segment.id not in image_lookups:
+                self.logger.debug("No image lookups for current segment.")
+                image_lookups.add(segment.id)
+                image_before = segment.image_url
+                await self.client.content.ensure_segment_image(segment)
+                if segment.image_url != image_before:
+                    self.logger.debug("Updated image lookup for current segment.")
+                    await self._cache_programme_segments(vpid, segments)
+
+            stream_details.stream_metadata = _segment_to_metadata(segment)
             return
 
         # No song playing, so show episode metadata
@@ -178,3 +176,11 @@ class NowPlayingManager:
         if station_metadata := station_programme_display(station, detailed=True):
             return station_metadata
         return None
+
+    async def _cache_programme_segments(self, vpid: str, segments: list[Segment]) -> None:
+        """To cache segments initially, but also after any segment is updated."""
+        await self.mass.cache.set(
+            provider=self.domain,
+            key=_segments_cache_key(vpid),
+            data=[segment.to_dict() for segment in segments],
+        )
