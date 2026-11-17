@@ -908,18 +908,18 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         else:
             duration = int(item_to_report.duration or 3 * 3600)
 
-        # a short item can end before a position past the floor below was ever reported
+        # a short item can end before a position past the floor below was ever reported. It played
+        # to its end when no load started a session since it was served and the queue moved on itself
         played_to_end = (
             seconds_played >= duration - PLAYED_TO_END_MARGIN
+            and queue_data.served_item_ids[item_to_report.queue_item_id]
+            == queue_data.started_session_id
             and (
-                not is_current_item
-                or (new_state["state"] == PlaybackState.IDLE and not queue_data.halted_by_command)
+                new_state["state"] == PlaybackState.PLAYING
+                if not is_current_item
+                else new_state["state"] == PlaybackState.IDLE and not queue_data.halted_by_command
             )
-            and item_to_report.queue_item_id != queue_data.cut_off_item_id
         )
-        if not is_current_item and item_to_report.queue_item_id == queue_data.cut_off_item_id:
-            # an item is reported as the previous one only once
-            queue_data.cut_off_item_id = None
         if seconds_played < 5 and not played_to_end:
             # ignore items that have been played less than 5 seconds
             # this also filters out a bounce effect where the previous item

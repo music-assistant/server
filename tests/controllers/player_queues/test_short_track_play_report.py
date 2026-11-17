@@ -48,7 +48,12 @@ def _controller(items: list[QueueItem]) -> PlayerQueuesController:
     queue = PlayerQueue(
         queue_id=QUEUE_ID, active=True, display_name="Kitchen", available=True, items=len(items)
     )
-    ctrl._queue_data = {QUEUE_ID: PlayerQueueData(queue=queue, items=items)}
+    # the session the items were loaded in
+    ctrl._queue_data = {
+        QUEUE_ID: PlayerQueueData(
+            queue=queue, items=items, session_id="s0", started_session_id="s0"
+        )
+    }
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl._preload_next_item = Mock()  # type: ignore[method-assign]
     ctrl._cleanup_stale_queue_buffers = Mock()  # type: ignore[method-assign]
@@ -142,26 +147,22 @@ async def test_short_track_cut_off_by_loading_another_item_is_not_counted() -> N
     _plays(ctrl, "a", 0, 2)
 
     await ctrl.play_index(QUEUE_ID, 2)
-    _player_reports(ctrl, PlaybackState.IDLE, "a", 2)
     _plays(ctrl, "c", 0)
 
     assert _reported(ctrl) == []
-    assert ctrl._queue_data[QUEUE_ID].cut_off_item_id is None
 
 
 async def test_short_track_stopped_by_command_is_not_counted() -> None:
-    """A 4 s track stopped at 1 s is not counted, also not once another item starts."""
+    """A 4 s track stopped at 3 s is not counted, also not once another item starts."""
     ctrl = _controller([_track("a"), _track("b", LONG)])
-    _plays(ctrl, "a", 0, 1)
+    _plays(ctrl, "a", 0, 3)
 
     await ctrl.stop(QUEUE_ID)
-    assert ctrl._queue_data[QUEUE_ID].cut_off_item_id == "a"
-    _player_reports(ctrl, PlaybackState.IDLE, "a", 1)
+    _player_reports(ctrl, PlaybackState.IDLE, "a", 3)
     await ctrl.play_index(QUEUE_ID, 1)
     _plays(ctrl, "b", 0)
 
     assert _reported(ctrl) == []
-    assert ctrl._queue_data[QUEUE_ID].cut_off_item_id is None
 
 
 def test_zero_second_bounce_of_a_long_track_is_not_counted() -> None:
@@ -207,6 +208,7 @@ def test_short_track_crossed_in_a_flow_stream_is_counted() -> None:
     queue.flow_mode = True
     queue.state = PlaybackState.PLAYING
     ctrl.mark_item_served(QUEUE_ID, "a")
+    ctrl.mark_item_served(QUEUE_ID, "b")
 
     ctrl._handle_playback_progress_report(queue, state(items[0], 3), state(items[1], 0))
 

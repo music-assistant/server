@@ -1878,7 +1878,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param item_id: The queue item whose first chunk of audio went out to the player.
         """
         if (queue_data := self._queue_data.get(queue_id)) is not None:
-            queue_data.served_item_ids.add(item_id)
+            queue_data.served_item_ids[item_id] = queue_data.session_id
 
     async def release_failed_item_source(self, queue_id: str, queue_item_id: str) -> None:
         """
@@ -2563,13 +2563,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         session_id = queue_data.session_id
         halts_playback = False
-        prev_cut_off_item_id = queue_data.cut_off_item_id
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = int(queue.corrected_elapsed_time)
-            if queue.state != PlaybackState.IDLE and queue.current_item:
-                # a stop of a paused item cuts it off too
-                queue_data.cut_off_item_id = queue.current_item.queue_item_id
             if (
                 queue.state != PlaybackState.IDLE
                 and queue_data.items
@@ -2594,7 +2590,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # which would loop back here indefinitely.
                 await self.mass.players._handle_cmd_stop(queue_id)
         except Exception:
-            queue_data.cut_off_item_id = prev_cut_off_item_id
             if halts_playback:
                 # the stop did not go through, so the queue plays on
                 queue_data.halted_by_command = False
@@ -2870,9 +2865,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.ended = False
         if queue.state != PlaybackState.IDLE and not skip_stop:
             self.mass.create_task(self.stop(queue_id))
-        if queue.state != PlaybackState.IDLE and queue.current_item:
-            # the stop no longer finds the item it cuts off
-            self._queue_data[queue_id].cut_off_item_id = queue.current_item.queue_item_id
         queue.current_index = None
         queue.current_item = None
         queue.next_item = None
@@ -3123,15 +3115,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 and prev_state["state"] in (PlaybackState.PLAYING, PlaybackState.PAUSED)
                 else None
             )
-            queue_data.served_item_ids.intersection_update(
-                {playing_item_id} if playing_item_id else ()
-            )
+            queue_data.served_item_ids = {
+                item_id: session_id
+                for item_id, session_id in queue_data.served_item_ids.items()
+                if item_id == playing_item_id
+            }
             loading_item = self.get_item(queue_id, index)
             loading_item_id = loading_item.queue_item_id if loading_item else None
-            # an item loaded again (a seek, a resume) plays on, so its next end is a natural one
-            queue_data.cut_off_item_id = (
-                playing_item_id if playing_item_id != loading_item_id else None
-            )
             if not seek_position and queue_data.last_counted_play == loading_item_id:
                 # started over, so its next end is another play of it
                 queue_data.last_counted_play = None
