@@ -2563,9 +2563,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         session_id = queue_data.session_id
         halts_playback = False
+        prev_cut_off_item_id = queue_data.cut_off_item_id
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = int(queue.corrected_elapsed_time)
+            if queue.state != PlaybackState.IDLE and queue.current_item:
+                # a stop of a paused item cuts it off too
+                queue_data.cut_off_item_id = queue.current_item.queue_item_id
             if (
                 queue.state != PlaybackState.IDLE
                 and queue_data.items
@@ -2590,6 +2594,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # which would loop back here indefinitely.
                 await self.mass.players._handle_cmd_stop(queue_id)
         except Exception:
+            queue_data.cut_off_item_id = prev_cut_off_item_id
             if halts_playback:
                 # the stop did not go through, so the queue plays on
                 queue_data.halted_by_command = False
@@ -3117,6 +3122,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             )
             queue_data.served_item_ids.intersection_update(
                 {playing_item_id} if playing_item_id else ()
+            )
+            loading_item = self.get_item(queue_id, index)
+            loading_item_id = loading_item.queue_item_id if loading_item else None
+            # an item loaded again (a seek, a resume) plays on, so its next end is a natural one
+            queue_data.cut_off_item_id = (
+                playing_item_id if playing_item_id != loading_item_id else None
             )
             queue_data.flow_mode_stream_log = []
             queue_data.flow_buffer_completed = None

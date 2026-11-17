@@ -78,6 +78,9 @@ class PlayerQueueData:
     # a command (a pause, a stop) halted the playback of the queue's items and it has not played
     # since: the queue keeps its place, and its player going idle is not the end of the queue
     halted_by_command: bool = False
+    # queue_item_id of the item a command (a stop, a load of another item) cut off while it
+    # played or was paused: its playback did not reach its end, however close it got
+    cut_off_item_id: str | None = None
     # the stream session that started last, kept when it ends, and the one the queue was last
     # seen playing or paused
     started_session_id: str | None = None
