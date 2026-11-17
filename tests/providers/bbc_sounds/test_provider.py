@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any, TYPE_CHECKING
 from unittest.mock import ANY, AsyncMock, Mock
 
 
