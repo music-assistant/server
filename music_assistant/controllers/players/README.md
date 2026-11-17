@@ -618,8 +618,11 @@ and waits for the rest of the start-up time. When no protocol can play by then, 
 attaching, the command fails with the hint to raise the start-up time, and the player reads
 unavailable until a protocol reaches its device. A stop or a pause fails the commands that wait
 and leaves the control on: the start-up time runs on, and a later command waits for what is left
-of it. A power off fails them too, switches the control off and ends the start-up. So does a
-change of the power control of the player, or of the setting that says it cuts its power: what
+of it. A switch-on that fails, or whose command is cancelled, ends the start-up only while the
+control still reads off, and the power is then cut as it was; once the control reads on, the
+start-up time runs on. A power off fails them too, switches the control off and ends the
+start-up. So does a change of the power control of the player, or of the setting that says it
+cuts its power: what
 the controller kept belongs to the control the player had (`_drop_power_state`), so a start-up
 time that runs ends, and a control that read off is no longer waited for to count as a cut.
 Protocols that were told of a power cut are then told that the power is back, as they are when

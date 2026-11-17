@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -700,6 +701,169 @@ async def test_a_switch_on_that_fails_leaves_the_power_cut_as_it_was(scenario: S
     # what Den's protocols were told about its power
     assert [kind for kind, _ in den.power_reports] == ["cut", "restored"]
     assert den.power_reports[1:] == den_airplay.power_reports[1:] == [("restored", changed_at)]
+    await scenario.idle()
+
+
+def _answer_late(scenario: Scenario, plug: FakePowerControl) -> asyncio.Event:
+    """
+    Let the switch-on of a plug wait for its answer, which is that the plug does not answer.
+
+    :param plug: The plug.
+    :return: The event that lets the answer come.
+    """
+    control = scenario.mass.players.get_player_control(plug.control_id)
+    assert control is not None
+    answer = asyncio.Event()
+
+    async def _fail_late() -> None:
+        await answer.wait()
+        raise PlayerCommandFailed("The plug does not answer")
+
+    control.power_on = _fail_late
+    scenario.expect_log("The plug does not answer")
+    return answer
+
+
+@pytest.mark.parametrize("end", ["fails", "is cancelled", "fails once the plug is gone"])
+async def test_a_switch_on_that_ends_badly_once_the_plug_switched_lets_the_startup_time_run(
+    scenario: Scenario, end: str
+) -> None:
+    """
+    A switch-on that fails after the plug switched leaves the start-up time running.
+
+    Den's plug, which cuts its power, is off, and Den's protocols were told that its power
+    was cut. A power on of Den switches the plug, which reports on, and then the switch-on
+    fails, or its command is cancelled, before Home Assistant answered. The power is on, so
+    the start-up time runs on: when it is over Den's protocols are told that the power is
+    back, and Den is on and available. The start-up time also runs on when the plug went
+    with its provider before the switch-on failed: nothing says any more whether it is on.
+
+    :param end: How the switch-on ends.
+    """
+    (den, den_airplay), plug, player_id = await _den(
+        scenario, ("sonos", "native"), ("airplay", "audio")
+    )
+    den.connects_when_power_is_back = True
+    await _cut(scenario, plug, den, den_airplay)
+    answer = _answer_late(scenario, plug)
+
+    power_on = await scenario.command(scenario.mass.players.cmd_power(player_id, True))
+    switched_on_at = scenario.mass.loop.time()
+    if end == "fails once the plug is gone":
+        scenario.mass.players.remove_player_control(plug.control_id)
+        await scenario.settle()
+    else:
+        await scenario.switch(plug, True)
+    if end == "is cancelled":
+        power_on.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await power_on
+    else:
+        answer.set()
+        await scenario.settle()
+        with pytest.raises(PlayerCommandFailed, match="The plug does not answer"):
+            await power_on
+    await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME + EXTERNAL_POWER_OFF_STOP_DELAY)
+
+    # what Den's protocols were told about its power
+    assert [kind for kind, _ in den.power_reports] == ["cut", "restored"]
+    back_at = switched_on_at + DEFAULT_POWER_ON_STARTUP_TIME
+    assert den.power_reports[1:] == den_airplay.power_reports[1:] == [("restored", back_at)]
+    if end != "fails once the plug is gone":
+        state = _state(scenario, player_id)
+        assert (state.available, state.powered) == (True, True)
+    await scenario.idle()
+
+
+async def test_a_switch_on_that_fails_keeps_a_power_cut_that_was_told_meanwhile(
+    scenario: Scenario,
+) -> None:
+    """
+    A switch-on that fails does not undo a power cut that was told while it was under way.
+
+    Den's plug, which cuts its power, is switched off. Before that counts as a cut, a power
+    on of Den switches the plug: it reports on, and off again, and Den's protocols are told
+    that its power is cut. Then the switch-on fails. The cut that was told is kept: when the
+    user switches the setting off, Den's protocols are told that the power is back.
+    """
+    (den, den_airplay), plug, player_id = await _den(
+        scenario, ("sonos", "native"), ("airplay", "audio")
+    )
+    await scenario.switch(plug, False)
+    answer = _answer_late(scenario, plug)
+
+    power_on = await scenario.command(scenario.mass.players.cmd_power(player_id, True))
+    await scenario.switch(plug, True)
+    await scenario.switch(plug, False)
+    assert [kind for kind, _ in den.power_reports] == ["cut"]
+    answer.set()
+    await scenario.settle()
+    with pytest.raises(PlayerCommandFailed, match="The plug does not answer"):
+        await power_on
+    changed_at = scenario.mass.loop.time()
+    await scenario.configure_player(player_id, power_control_cuts_power=False)
+
+    # what Den's protocols were told about its power
+    assert [kind for kind, _ in den.power_reports] == ["cut", "restored"]
+    assert den.power_reports[1:] == den_airplay.power_reports[1:] == [("restored", changed_at)]
+    await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY)
+    assert len(den.power_reports) == 2
+    await scenario.idle()
+
+
+@pytest.mark.parametrize("on_report", ["before the stop", "after the stop", "never"])
+async def test_a_stop_while_the_plug_of_a_member_is_switched_on_loses_no_power_cut(
+    scenario: Scenario, on_report: str
+) -> None:
+    """
+    A stop of a group while the plug of a member is being switched on loses no power cut.
+
+    Den, a member of Downstairs, is on a smart plug that cuts its power, and its protocol
+    was told that the power was cut. A play of Downstairs switches the plug on, and Home
+    Assistant has not answered that when the user stops Downstairs: the play is called off.
+    When the plug reported on before the stop, Den starts up all the same: once its start-up
+    time is over its protocol is told that the power is back, and Den is on and available.
+    When the plug reports on after the stop, the start-up time runs from then. When it
+    never does, the power of Den is still cut, and its protocol still told so.
+
+    :param on_report: When the plug reports that it is on.
+    """
+    group_id, speakers, player_ids = await _downstairs(
+        scenario, "universal group", "Kitchen", "Office", "Den"
+    )
+    den, den_id = speakers[2], player_ids[2]
+    den.connects_when_power_is_back = True
+    plug = await _plug(scenario, den_id)
+    await _cut(scenario, plug, den)
+    assert [kind for kind, _ in den.power_reports] == ["cut"]
+    # the answer to the switch-on never comes
+    _answer_late(scenario, plug)
+
+    play = await _play(scenario, group_id)
+    switched_on_at = scenario.mass.loop.time()
+    if on_report == "before the stop":
+        await scenario.switch(plug, True)
+    stop = await scenario.command(scenario.mass.players.cmd_stop(group_id))
+    await scenario.advance(2)
+    await stop
+    with pytest.raises(PlayerUnavailableError, match="was called off"):
+        await play
+    if on_report == "after the stop":
+        switched_on_at = scenario.mass.loop.time()
+        await scenario.switch(plug, True)
+    await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME + EXTERNAL_POWER_OFF_STOP_DELAY)
+
+    if on_report == "never":
+        assert [kind for kind, _ in den.power_reports] == ["cut"]
+        await scenario.configure_player(den_id, power_control_cuts_power=False)
+        # what Den's protocol was told about its power
+        assert [kind for kind, _ in den.power_reports] == ["cut", "restored"]
+    else:
+        # what Den's protocol was told about its power
+        assert [kind for kind, _ in den.power_reports] == ["cut", "restored"]
+        assert den.power_reports[1][1] == switched_on_at + DEFAULT_POWER_ON_STARTUP_TIME
+        state = _state(scenario, den_id)
+        assert (state.available, state.powered) == (True, True)
     await scenario.idle()
 
 

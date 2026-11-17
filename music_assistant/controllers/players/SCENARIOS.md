@@ -439,13 +439,15 @@ The user switches the setting off, sets Den's power control to none or picks ano
 plug goes with its provider. Nothing tells the protocols any more when the power is back, so they
 are told at once and reach Den by themselves again. The same when the setting is switched off
 while Den starts up for a play, which fails as switched off, and after a power on of Den that
-failed because the plug did not answer: the power is still cut, and the protocols still told so.
+failed because the plug did not answer: the power is still cut, and the protocols still told so,
+also when they were told while that power on was under way.
 
 - End-to-end: **possible with** a power control the lab can switch, a speaker behind it whose
   provider lets go of it when its power is cut, and a change of the player settings while it is off.
 - Proven by:
   - `test_power_control.py::test_protocols_told_of_a_power_cut_are_told_it_is_back_once_nothing_follows_it`
   - `test_power_control.py::test_a_switch_on_that_fails_leaves_the_power_cut_as_it_was`
+  - `test_power_control.py::test_a_switch_on_that_fails_keeps_a_power_cut_that_was_told_meanwhile`
 
 ## Several devices on one host
 
@@ -2066,6 +2068,23 @@ is still paused, and it is stopped when the pause timeout has passed since that 
   - `test_group_power_on.py::test_a_play_of_a_paused_group_that_waits_for_a_member_outlasts_the_pause_timeout`
   - `test_group_power_on.py::test_a_paused_group_that_nobody_plays_is_stopped_at_the_pause_timeout`
   - `test_group_power_on.py::test_a_play_of_a_paused_group_that_is_called_off_leaves_the_pause_timeout_in_force`
+
+### GROUP-60 · A switch-on that ends badly once the plug switched lets the member start up
+
+Den, a member of Downstairs, is on a smart plug that cuts its power, and its protocol was told
+that the power was cut. A play of Downstairs switches the plug on, and Home Assistant has not
+answered that when the user stops Downstairs: the play is called off. When the plug reported on
+before the stop, the power is on and Den starts up all the same: once its start-up time is over
+its protocol is told that the power is back, and Den is on and available. When the plug reports on
+after the stop, the start-up time runs from then, and when it never does, the power of Den is
+still cut. A power on of Den alone that fails, or is cancelled, once the plug reported on lets the
+start-up time run in the same way.
+
+- End-to-end: **possible with** a power control whose answer the lab can hold back while it
+  switches, and a stop of the group in that moment.
+- Proven by:
+  - `test_power_control.py::test_a_stop_while_the_plug_of_a_member_is_switched_on_loses_no_power_cut`
+  - `test_power_control.py::test_a_switch_on_that_ends_badly_once_the_plug_switched_lets_the_startup_time_run`
 
 ## Where playback goes
 

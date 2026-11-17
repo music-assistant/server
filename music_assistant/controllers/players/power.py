@@ -622,10 +622,14 @@ class PowerMixin(_PlayerControllerBase):
                     assert player_control.power_on is not None  # for type checking
                     await player_control.power_on()
                 except BaseException:
-                    self._end_startup(player, called_off=True)
-                    if power_cut is not None:
-                        # the control was not switched on: the power is cut as it was
-                        self._power_cuts[player_id] = power_cut
+                    control = self._controls.get(player_control.id)
+                    if control is not None and not control.power_state:
+                        # not switched on: the power is cut as it was, unless a newer
+                        # cut was recorded meanwhile. A control that reads on did switch,
+                        # so the start-up time runs on and only this command ends
+                        self._end_startup(player, called_off=True)
+                        if power_cut is not None:
+                            self._power_cuts.setdefault(player_id, power_cut)
                     raise
             self.logger.debug("Waiting for player %s to start up", player.name)
             await wait.over.wait()
