@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import logging
 from contextlib import contextmanager
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
@@ -49,7 +51,8 @@ from scripts.build_translations import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
+
+CONTROLLERS_PATH = Path(translations_module.__file__).parents[1]
 
 
 def _make_controller() -> TranslationController:
@@ -711,6 +714,62 @@ def test_provider_specific_error_keys_resolve_with_params() -> None:
         resolved = ctrl.get_translation(key, params=[arg])
         assert resolved is not None, f"{key} did not resolve"
         assert arg in resolved, f"{key} did not fill its param: {resolved!r}"
+
+
+def _error_keys_of(package: str) -> list[tuple[str, str, str]]:
+    """
+    Return the namespace, key and place of every constant translation key a controller raises.
+
+    The namespace is the one its translation owner names, or common without an owner.
+
+    :param package: The folder of the controller.
+    """
+    own = f"core.{package}"
+    owners = {
+        "self.translation_owner": own,
+        "translation_owner": own,
+        "self.mass.players.translation_owner": "core.players",
+        "self.players.translation_owner": "core.players",
+    }
+    # the players controller raises the refusals and steps of these with its own namespace,
+    # by keyword or at this position
+    players_owned = {"Refuse": None, "Ungroup": None, "_refuse": 2, "_refused": 1}
+    keys: list[tuple[str, str, str]] = []
+    for path in sorted((CONTROLLERS_PATH / package).glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+            key = keywords.get("translation_key")
+            if (position := players_owned.get(name)) is not None and len(node.args) > position:
+                key = node.args[position]
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                continue
+            if name in players_owned:
+                namespace = "core.players"
+            elif (owner := keywords.get("translation_owner")) is None:
+                namespace = "common"
+            else:
+                namespace = owners[ast.unparse(owner)]
+            keys.append((namespace, key.value, f"{path.name}:{node.lineno}"))
+    return keys
+
+
+@pytest.mark.parametrize("package", ["players", "player_queues"])
+def test_every_error_key_of_the_player_controllers_has_a_text(package: str) -> None:
+    """A key without a text shows the generic message of its error type instead of the reason."""
+    source = build_translations_source()
+    keys = _error_keys_of(package)
+
+    assert keys
+    missing = [
+        f"{place}: {namespace}.errors.{key}"
+        for namespace, key, place in keys
+        if f"{namespace}.errors.{key}" not in source and f"common.errors.{key}" not in source
+    ]
+    assert not missing
 
 
 def test_media_item_without_translation_key_is_untouched() -> None:
