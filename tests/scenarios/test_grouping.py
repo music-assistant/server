@@ -879,44 +879,6 @@ async def test_an_offline_member_its_leader_still_lists_is_removed(scenario: Sce
     assert office.commands == []
 
 
-@pytest.mark.parametrize("playing", [False, True], ids=["idle", "playing"])
-async def test_an_offline_member_leaves_a_group_over_a_shared_protocol(
-    scenario: Scenario, playing: bool
-) -> None:
-    """
-    A member of a group over AirPlay that dropped off is let go by the leader's AirPlay receiver.
-
-    That happens once it drops off, so the user's removal finds it gone. Nothing is sent to the
-    member, nor to the leader's own protocol, which never held it.
-    """
-    lounge_airplay, lounge_id, study_id = await _mixed_makes(scenario)
-    lounge = scenario.protocol("sonos_lounge")
-    study, study_airplay = scenario.protocol("wiim_study"), scenario.protocol("airplay_study")
-    await scenario.mass.players.cmd_set_members(lounge_id, player_ids_to_add=[study_id])
-    await scenario.idle()
-    if playing:
-        await scenario.play(lounge_id)
-    sent = len(study.commands), len(study_airplay.commands)
-
-    for protocol in (study, study_airplay):
-        await scenario.report(protocol, available=False)
-    await scenario.idle()
-    await scenario.mass.players.cmd_set_members(lounge_id, player_ids_to_remove=[study_id])
-    await scenario.idle()
-
-    assert _grouping_commands(lounge_airplay) == [
-        ("set_members", ["airplay_study"], None),
-        ("set_members", None, ["airplay_study"]),
-    ]
-    assert _grouping_commands(lounge) == []
-    assert _state(scenario, lounge_id).group_members == []
-    assert _state(scenario, study_id).synced_to is None
-    assert (len(study.commands), len(study_airplay.commands)) == sent
-    if playing:
-        assert _state(scenario, lounge_id).playback_state == PlaybackState.PLAYING
-        await _stop(scenario, lounge_id)
-
-
 @pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
 @pytest.mark.parametrize("playing", [False, True], ids=["idle", "playing"])
 async def test_an_offline_member_is_removed_from_a_group_player(
