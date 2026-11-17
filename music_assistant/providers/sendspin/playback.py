@@ -80,6 +80,12 @@ _PRODUCER_SLICE_US = 100_000
 _PRODUCER_BACKLOG_SIZE = 64
 # Backpressure threshold: push stream sleeps when buffered audio exceeds this.
 _PRODUCER_BUFFER_LIMIT_US = 30_000_000
+# PCM a buffered source queues before its first commit. The first commits then follow each
+# other without waiting, which schedules that much audio ahead of real time, so a producer
+# that lags right after the start does not move the play timeline.
+_START_QUEUE_US = 500_000
+# Commits from the start of a stream in which a moved play timeline is logged.
+_START_LOG_COMMITS = 20
 # Start join promotion once catchup processor lag is within this window of the history tail.
 _JOIN_PROMOTE_ARM_WINDOW_US = 2_000_000
 # Accept catchup output within this margin of the promotion target.
@@ -288,6 +294,9 @@ class SendspinPlaybackSession:
       output from each processor (transform read), prepares all channels on
       the push stream, commits audio, and applies backpressure via
       ``sleep_to_limit_buffer``.
+
+    The first commit of a buffered source waits until ``_START_QUEUE_US`` of audio is
+    queued, so the start is scheduled ahead of real time.
 
     When a new member joins mid-playback, a *join-catchup* processor replays
     committed history through the member's DSP chain so it can be promoted
@@ -747,7 +756,8 @@ class SendspinPlaybackSession:
                 self._pcm_format.sample_rate,
             )
             push_stream = self._create_push_stream()
-            push_stream.set_live_source(self._is_live_source(media))
+            is_live = self._is_live_source(media)
+            push_stream.set_live_source(is_live)
             async with self._state_lock:
                 self._push_stream = push_stream
                 self._playback_running = True
@@ -776,6 +786,10 @@ class SendspinPlaybackSession:
         # Shadow deque mirroring pending_chunks for join-catchup backlog peeking.
         pending_backlog: deque[_PendingChunk] = deque()
         pending_duration_us = 0
+        # Set once the first commit may go out. A live source has no audio ahead to wait for.
+        start_queued = asyncio.Event()
+        if is_live:
+            start_queued.set()
         last_elapsed_update_s: float | None = None
         reported_anchor_us: int | None = None
 
@@ -806,6 +820,9 @@ class SendspinPlaybackSession:
                         await pending_chunks.put(pending)
                         pending_backlog.append(pending)
                         pending_duration_us += duration_us
+                        # A full queue blocks the producer, so it cannot grow any further.
+                        if pending_duration_us >= _START_QUEUE_US or pending_chunks.full():
+                            start_queued.set()
                         join_pending_ids, pipelines = await self._snapshot_active_pipelines()
                         transform_pipelines: list[_MemberPipeline] = []
                         for member_id, pipeline in pipelines:
@@ -829,6 +846,8 @@ class SendspinPlaybackSession:
                                     result,
                                 )
                 completed = True
+                # A source shorter than the start queue plays what it has.
+                start_queued.set()
             finally:
                 if not completed:
                     close_task = asyncio.create_task(audio_source.aclose())
@@ -927,6 +946,9 @@ class SendspinPlaybackSession:
 
         async def _commit_pending_chunks() -> None:
             nonlocal pending_duration_us
+            commit_count = 0
+            previous_timeline_start_us: int | None = None
+            await start_queued.wait()
             while True:
                 pending = await pending_chunks.get()
                 if pending is None:
@@ -998,6 +1020,20 @@ class SendspinPlaybackSession:
                     self._timeline_start_us = anchor_us
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
+                commit_count += 1
+                timeline_start_us = committed_history_chunk.timeline_start_us
+                if (
+                    commit_count <= _START_LOG_COMMITS
+                    and previous_timeline_start_us is not None
+                    # anything smaller is rounding
+                    and abs(timeline_start_us - previous_timeline_start_us) >= 1_000
+                ):
+                    self.player.logger.debug(
+                        "Play timeline moved %+.1f ms at commit %d of the stream",
+                        (timeline_start_us - previous_timeline_start_us) / 1000,
+                        commit_count,
+                    )
+                previous_timeline_start_us = timeline_start_us
                 await _report_timeline(anchor_us, commit_now_us)
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
 
