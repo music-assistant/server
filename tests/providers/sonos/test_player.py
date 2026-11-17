@@ -32,6 +32,7 @@ from music_assistant.providers.sonos.const import (
 from music_assistant.providers.sonos.player import SonosPlayer, _is_wakeable
 
 if TYPE_CHECKING:
+    from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
     from aiosonos.api.models import PlaybackActions as PlaybackActionsData
 
 
@@ -69,6 +70,13 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
         follow=AsyncMock(), unfollow=AsyncMock(), follows=False, player_ip="192.168.1.20"
     )
     player._attr_options = []
+    player.discovery_info = cast(
+        "SonosDiscoveryInfo",
+        {"device": {"modelDisplayName": "Era 100", "capabilities": ["PLAYBACK"]}},
+    )
+    client.player.has_subwoofer = False
+    client.player.has_surrounds = False
+    client.player.is_stereo_pair = False
     player.client = client
     player._provider = MagicMock(get_protocol=lambda pid: player.mass.players.get_protocol(pid))
     player._on_detach_callbacks = []

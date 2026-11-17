@@ -39,12 +39,14 @@ from aiosonos.exceptions import (
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
+    ChannelLayout,
     ConfigEntryType,
     EventType,
     IdentifierType,
     MediaType,
     PlaybackState,
     PlayerFeature,
+    PlayerType,
     RepeatMode,
 )
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
@@ -61,6 +63,7 @@ from music_assistant.helpers.wake_on_lan import send_magic_packet
 from music_assistant.models.player import PlayerSource
 from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 from music_assistant.providers.sonos.const import (
+    AMP_MODEL,
     CONF_SHOW_DEVICE_SETTINGS,
     DEVICE_FEATURE_WAKEABLE,
     NON_HIRES_MODELS,
@@ -80,6 +83,7 @@ from music_assistant.providers.sonos.const import (
     UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS,
     UPCOMING_ITEMS,
 )
+from music_assistant.providers.sonos.helpers import get_channel_layout
 from music_assistant.providers.sonos.options import (
     SONOS_OPTIONS,
     SonosDevice,
@@ -1211,6 +1215,10 @@ class SonosPlayer(PlayerProtocol):
             self._attr_available = self.connected
         if not self.connected:
             return
+        self._attr_channel_layout = self._channel_layout()
+        self._attr_type = (
+            PlayerType.PLAYER if self._attr_channel_layout is None else PlayerType.MULTI_CHANNEL
+        )
         # guard against the race where a volume event arrives before aiosonos'
         # async_init has populated _volume_data (the accessors raise AttributeError
         # on None). The next event re-runs once the data is there.
@@ -2285,6 +2293,21 @@ class SonosPlayer(PlayerProtocol):
             await asyncio.sleep(0.25)
         with contextlib.suppress(FailedCommand):
             await self.group_controller.play()
+
+    def _channel_layout(self) -> ChannelLayout | None:
+        """Return the channel layout of the speakers bonded into this player, None if no set."""
+        device = self.discovery_info["device"]
+        paired = self.client.player.is_stereo_pair
+        if SonosCapability.HT_PLAYBACK in device["capabilities"]:
+            front_channels = 2 if device.get("modelDisplayName") == AMP_MODEL else 3
+        else:
+            front_channels = 2 if paired else 1
+        return get_channel_layout(
+            front_channels,
+            paired=paired,
+            surrounds=self.client.player.has_surrounds,
+            subwoofer=self.client.player.has_subwoofer,
+        )
 
     @property
     def _options_device(self) -> SonosDevice:
