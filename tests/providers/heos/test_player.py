@@ -378,6 +378,17 @@ async def test_previous_stream_progress_is_ignored_while_restarting() -> None:
     assert protocol._attr_elapsed_time == 2
 
 
+async def test_previous_stream_position_is_cleared_when_new_playback_starts() -> None:
+    """Do not publish the previous stream's cached position with the new media."""
+    protocol = _make_player(_external_now_playing(244000))
+    protocol._attr_active_source = protocol.protocol_id
+
+    await _start_ma_playback(protocol)
+
+    assert protocol._attr_elapsed_time is None
+    assert protocol._attr_elapsed_time_last_updated is None
+
+
 async def test_play_before_restart_stop_does_not_end_progress_wait() -> None:
     """Keep ignoring progress when HEOS still reports the old stream as playing."""
     protocol = _make_player(_url_stream_now_playing())

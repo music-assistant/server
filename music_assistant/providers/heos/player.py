@@ -411,6 +411,8 @@ class HeosPlayer(PlayerProtocol):
         self._ma_stream_started = False
         # Only a playing player stops while it restarts on the new stream
         self._ma_awaiting_restart_stop = self._device.state == HeosPlayState.PLAY
+        # Drop the cached position of the previous stream before the new media is published
+        self._update_player_playing_progress()
         self._ma_controls_playback = True
         try:
             await self._device.play_url(url)
