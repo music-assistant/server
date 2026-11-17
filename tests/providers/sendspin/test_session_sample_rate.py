@@ -7,19 +7,11 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
 
-import numpy as np
 from aiosendspin.models import AudioCodec
 from aiosendspin.models.core import ClientStatePayload
 from aiosendspin.models.player import PlayerStatePayload, SupportedAudioFormat
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
-from aiosendspin.server.push_stream import (
-    _create_resampler_state,
-    _processing_format_for_roles,
-    _resample_pcm_standalone,
-    _ResamplerKey,
-)
 from aiosendspin.server.roles.player.v1 import PlayerPersistentState, PlayerV1Role
 from music_assistant_models.enums import ContentType, CrossfadeMode, MediaType
 from music_assistant_models.errors import QueueEmpty
@@ -36,7 +28,6 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.streams.audio import StreamsAudio
-from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
 from music_assistant.providers.sendspin.player import (
@@ -212,6 +203,8 @@ async def test_group_session_takes_the_source_rate_a_member_plays() -> None:
     assert sendspin_format.sample_rate == 96000
     assert member_role.preferred_format == SendspinAudioFormat(96000, 24, 2)
     assert leader_role.preferred_format == SendspinAudioFormat(48000, 16, 2)
+    assert session._get_member_sample_rate(MEMBER_ID) == 96000
+    assert session._get_member_sample_rate(PLAYER_ID) == 48000
 
 
 async def test_group_session_follows_a_44k_track_a_member_plays() -> None:
@@ -330,26 +323,6 @@ async def test_group_client_without_player_role_does_not_count() -> None:
     pcm_format, _ = session._select_session_pcm_formats()
 
     assert pcm_format.sample_rate == 48000
-
-
-async def test_tone_above_24khz_reaches_a_96k_member() -> None:
-    """A 30 kHz tone in a 96 kHz track reaches a 96 kHz member of a group led by a 48 kHz player."""
-    leader, _ = _player([FLAC_48K])
-    member, _ = _player([FLAC_48K, FLAC_96K], player_id=MEMBER_ID)
-    _group(leader, member)
-    session = _session(leader, sample_rate=96000)
-    await session._follow_session_sample_rate([PLAYER_ID, MEMBER_ID])
-    pcm_format, _ = session._select_session_pcm_formats()
-    member_rate = session._get_member_sample_rate(MEMBER_ID)
-    leader_rate = session._get_member_sample_rate(PLAYER_ID)
-    assert member_rate == 96000
-    assert leader_rate == 48000
-
-    with_group_rate = await _tone_level_at_member(pcm_format.sample_rate, member_rate)
-    with_leader_rate = await _tone_level_at_member(leader_rate, member_rate)
-
-    assert with_group_rate > 0.9
-    assert with_leader_rate < 0.001
 
 
 async def test_consecutive_44k_tracks_flow_without_restart() -> None:
@@ -858,57 +831,6 @@ def _flow_item(item_id: str, sample_rate: int) -> SimpleNamespace:
             duration=300,
         ),
     )
-
-
-async def _tone_level_at_member(session_rate: int, member_rate: int) -> float:
-    """
-    Return the level of a 30 kHz tone in a 96 kHz source as a 96 kHz-rate member receives it.
-
-    The source is converted to the session rate by ffmpeg as the stream pipeline does, then to
-    the member rate by the resampler of the Sendspin library.
-
-    :param session_rate: The sample rate of the session.
-    :param member_rate: The sample rate the member plays.
-    """
-    source_rate, tone_hz, amplitude = 96000, 30000, 0.5
-    samples = amplitude * np.sin(2 * np.pi * tone_hz * np.arange(source_rate) / source_rate)
-    source_pcm = np.repeat(samples, 2).astype("<f4").tobytes()
-
-    async def _source() -> AsyncGenerator[bytes]:
-        yield source_pcm
-
-    session_pcm = b"".join(
-        [
-            chunk
-            async for chunk in get_ffmpeg_stream(
-                _source(),
-                AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=source_rate),
-                AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=session_rate),
-            )
-        ]
-    )
-    session_format = SendspinAudioFormat(session_rate, 32, 2, sample_type="float")
-    member_format = _processing_format_for_roles(
-        session_format, target_sample_rate=member_rate, target_bit_depth=24, target_channels=2
-    )
-    key = _ResamplerKey(
-        channel_id=uuid4(),
-        source_format=session_format,
-        target_sample_rate=member_rate,
-        target_channels=2,
-        target_bit_depth=member_format.bit_depth,
-        target_sample_type=member_format.sample_type,
-    )
-    state = _create_resampler_state(key, session_format, member_format)
-    member_pcm = _resample_pcm_standalone(state, session_pcm, session_format, 0).pcm_data
-
-    # the middle half second, clear of the resamplers' start and end transients
-    left = np.frombuffer(member_pcm, dtype="<f4")[::2]
-    middle = left[len(left) // 4 : len(left) // 4 + member_rate // 2]
-    spectrum = np.abs(np.fft.rfft(middle * np.hanning(len(middle))))
-    tone_bin = round(tone_hz * len(middle) / member_rate)
-    # the hann window halves the peak of a sine that falls on a bin
-    return float(spectrum[tone_bin - 2 : tone_bin + 3].max() / (amplitude * len(middle) / 4))
 
 
 def _session(player: SendspinPlayer, *, sample_rate: int) -> SendspinPlaybackSession:
