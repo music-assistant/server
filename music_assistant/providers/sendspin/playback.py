@@ -756,8 +756,7 @@ class SendspinPlaybackSession:
                 self._pcm_format.sample_rate,
             )
             push_stream = self._create_push_stream()
-            is_live = self._is_live_source(media)
-            push_stream.set_live_source(is_live)
+            push_stream.set_live_source(self._is_live_source(media))
             async with self._state_lock:
                 self._push_stream = push_stream
                 self._playback_running = True
@@ -786,9 +785,9 @@ class SendspinPlaybackSession:
         # Shadow deque mirroring pending_chunks for join-catchup backlog peeking.
         pending_backlog: deque[_PendingChunk] = deque()
         pending_duration_us = 0
-        # Set once the first commit may go out. A live source has no audio ahead to wait for.
+        # Set once the first commit may go out. Live audio has nothing ahead to wait for.
         start_queued = asyncio.Event()
-        if is_live:
+        if self._plays_live_audio(media):
             start_queued.set()
         last_elapsed_update_s: float | None = None
         reported_anchor_us: int | None = None
@@ -1683,3 +1682,20 @@ class SendspinPlaybackSession:
         :param media: The media about to be played.
         """
         return media.media_type in _LIVE_MEDIA_TYPES
+
+    def _plays_live_audio(self, media: PlayerMedia) -> bool:
+        """
+        Return whether the audio of this media arrives live, also when a group streams it.
+
+        :param media: The media about to be played.
+        """
+        if self._is_live_source(media):
+            return True
+        if media.media_type != MediaType.FLOW_STREAM or not media.source_id:
+            return False
+        # A group that streams one source to all its members (a Universal Group) hands each
+        # member a flow stream of it, under the id of the group player as source_id.
+        group_player = self.player.mass.players.get_player(media.source_id)
+        group_protocol = group_player.own_protocol if group_player else None
+        group_media = group_protocol.current_media if group_protocol else None
+        return group_media is not None and self._is_live_source(group_media)

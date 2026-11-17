@@ -8,34 +8,65 @@ producer that lags shows up as a commit that comes late.
 
 from __future__ import annotations
 
+import asyncio
+import wave
 from itertools import pairwise
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
+from uuid import uuid4
 
+import numpy as np
+import pytest
+from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.push_stream import MAIN_CHANNEL
+from music_assistant_models.dsp import ConvolutionFilter
+from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.media_items.audio_format import AudioFormat
 
+from music_assistant.helpers.dsp import filter_to_ffmpeg_params
+from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sendspin.playback import (
     _PRODUCER_BACKLOG_SIZE,
     _START_LOG_COMMITS,
     _START_QUEUE_US,
+    _PipelineConfig,
 )
 from tests.providers.sendspin.test_dsp_channel_alignment import (
     DSP_ID,
+    LEADER_ID,
     _assert_aligned,
     _ramp_slice,
     _SessionHarness,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    import pytest
+    from collections.abc import AsyncIterator, Callable
+    from pathlib import Path
 
 SLICE_US = 100_000
 START_SLICES = _START_QUEUE_US // SLICE_US
 # The time the producer needed for slices 2 to 5 of a start after a server start.
 COLD_START_SLICE_TIMES_US = (157_400, 100_000, 107_700, 114_600)
 MOVE_LOG = "Play timeline moved %+.1f ms at commit %d of the stream"
+# Wall time to wait for progress that runs on a worker thread or in FFmpeg.
+WAIT_S = 10.0
+GROUP_ID = "universal-group"
+
+
+async def _wait_for(condition: Callable[[], bool], failure: Callable[[], str]) -> None:
+    """
+    Wait until a condition holds.
+
+    :param condition: The progress to wait for.
+    :param failure: Describes what was reached instead, for a test that waited in vain.
+    """
+    try:
+        async with asyncio.timeout(WAIT_S):
+            while not condition():
+                await asyncio.sleep(0.001)
+    except TimeoutError:
+        raise AssertionError(failure()) from None
 
 
 class _Start:
@@ -44,6 +75,7 @@ class _Start:
     def __init__(self, monkeypatch: pytest.MonkeyPatch, *, live: bool = False) -> None:
         self.harness = _SessionHarness(monkeypatch, dsp_ids=set())
         self.clock = self.harness.clock
+        self.live = live
         self.commit_times_us: list[int] = []
         self.commit_starts_us: list[int] = []
         self._produced = 0
@@ -61,19 +93,31 @@ class _Start:
 
         monkeypatch.setattr(self.harness.push_stream, "commit_audio", _recording_commit)
 
-    async def play(self) -> None:
+    async def play(self, media: PlayerMedia | None = None) -> None:
         """Start playback with one slice produced."""
         self.harness.allow_source(0)
-        await self.harness.session.start(MagicMock())
+        await self.harness.session.start(media or MagicMock())
         await self.produce(0)
 
     async def produce(self, *slice_times_us: int) -> None:
-        """Produce one more slice per given time, each taking that long to make."""
+        """
+        Produce one more slice per given time, each taking that long to make.
+
+        Each slice is taken by the producer, and every commit it allows is done, before the
+        next one is made.
+        """
         for slice_time_us in slice_times_us:
             self.clock.advance_us(slice_time_us)
             self._produced += 1
             self.harness.allow_source(self._produced)
-            await self.harness.settle()
+            await self._wait_for_slice(self._produced)
+
+    async def finish(self) -> None:
+        """Wait until playback ends with its source."""
+        task = self.harness.session.playback_task
+        assert task is not None
+        await _wait_for(task.done, lambda: "playback did not end with its source")
+        await task
 
     def moves_us(self) -> list[int]:
         """Return how far each commit after the first moved the play timeline."""
@@ -84,6 +128,17 @@ class _Start:
         """Return the arguments of every debug line about a moved play timeline."""
         debug = cast("MagicMock", self.harness.session.player.logger.debug)
         return [call.args[1:] for call in debug.call_args_list if call.args[0] == MOVE_LOG]
+
+    async def _wait_for_slice(self, produced: int) -> None:
+        """Wait until the producer took slice `produced` and every commit it allows is done."""
+        expected = produced if self.live or produced >= START_SLICES else 0
+        await _wait_for(
+            lambda: self.harness.source_reads > produced and len(self.commit_starts_us) == expected,
+            lambda: (
+                f"after slice {produced}: {len(self.commit_starts_us)} completed commits "
+                f"instead of {expected}"
+            ),
+        )
 
 
 async def test_buffered_start_keeps_its_timeline_when_the_producer_lags(
@@ -133,6 +188,111 @@ async def test_live_source_commits_its_first_chunk_at_once(
         await start.harness.close()
 
 
+@pytest.mark.parametrize(
+    ("group_media_type", "live"),
+    [
+        (MediaType.RADIO, True),
+        (MediaType.AUDIO_SOURCE, True),
+        (MediaType.PLUGIN_SOURCE, True),
+        (MediaType.TRACK, False),
+    ],
+)
+async def test_universal_group_member_starts_like_the_media_of_the_group(
+    monkeypatch: pytest.MonkeyPatch, group_media_type: MediaType, live: bool
+) -> None:
+    """A member of a Universal Group starts at once only when the group plays live audio."""
+    start = _Start(monkeypatch, live=live)
+    session = start.harness.session
+    monkeypatch.delattr(session, "_is_live_source")
+    group_media = PlayerMedia(uri="group-media", media_type=group_media_type)
+    group_player = SimpleNamespace(own_protocol=SimpleNamespace(current_media=group_media))
+    monkeypatch.setattr(
+        session.player.mass.players,
+        "get_player",
+        lambda player_id: group_player if player_id == GROUP_ID else None,
+    )
+    # the media a Universal Group hands each of its members
+    member_media = PlayerMedia(
+        uri=f"http://127.0.0.1:8097/ugp/{GROUP_ID}.flac?player_id={LEADER_ID}",
+        media_type=MediaType.FLOW_STREAM,
+        source_id=GROUP_ID,
+    )
+    try:
+        await start.play(member_media)
+        await start.produce(*[5_000] * (START_SLICES - 1))
+
+        assert start.commit_times_us[0] == (0 if live else 5_000 * (START_SLICES - 1))
+    finally:
+        await start.harness.close()
+
+
+async def test_member_processing_at_a_high_rate_holds_the_start_queue(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    A member's FFmpeg with a convolution at 384 kHz takes the audio queued before the start.
+
+    Its output is read by the commits only, so until the first commit the queued audio has to
+    fit in FFmpeg and its pipes.
+    """
+    rate = 384_000
+    source_slices = 30
+    harness = _SessionHarness(monkeypatch, dsp_ids={LEADER_ID})
+    session = harness.session
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE, sample_rate=rate, bit_depth=32, channels=2
+    )
+    wire_format = SendspinAudioFormat(
+        sample_rate=rate, bit_depth=32, channels=2, sample_type="float"
+    )
+    monkeypatch.setattr(
+        session, "_select_session_pcm_formats", MagicMock(return_value=(pcm_format, wire_format))
+    )
+    with wave.open(str(tmp_path / "room.wav"), "wb") as ir_file:
+        ir_file.setnchannels(2)
+        ir_file.setsampwidth(2)
+        ir_file.setframerate(48_000)
+        decay = np.exp(-np.arange(4_800) / 600)
+        noise = np.random.default_rng(0).standard_normal(4_800 * 2).reshape(-1, 2)
+        ir_file.writeframes((noise * decay[:, None] * 8_000).astype("<i2").tobytes())
+    filter_params = filter_to_ffmpeg_params(
+        ConvolutionFilter(enabled=True, ir_id="room"), pcm_format, ir_dir=str(tmp_path)
+    )
+    monkeypatch.setattr(
+        session,
+        "_read_pipeline_config",
+        lambda _player_id: _PipelineConfig(
+            requires_transform=True, filter_params=tuple(filter_params)
+        ),
+    )
+    monkeypatch.delattr(session, "_create_member_ffmpeg")
+    channel_id = uuid4()
+    harness.push_stream.enable_pcm_cache_for_channel(channel_id)
+    session._preassigned_channels[LEADER_ID] = channel_id
+    slice_pcm = np.zeros(rate // 10 * 2, dtype="<f4").tobytes()
+
+    async def _source() -> AsyncIterator[bytes]:
+        for _ in range(source_slices):
+            yield slice_pcm
+
+    monkeypatch.setattr(
+        session.player.mass.streams, "get_stream", MagicMock(return_value=_source())
+    )
+    for _ in range(source_slices):
+        harness.commit_permits.release()
+    try:
+        await session.start(MagicMock())
+        task = session.playback_task
+        assert task is not None
+        await _wait_for(task.done, lambda: f"playback stalled after {harness.entered} commits")
+        await task
+
+        assert harness.entered == source_slices
+        assert len(harness.push_stream.get_cached_pcm_chunks(channel_id)) == source_slices
+    finally:
+        await harness.close()
+
+
 async def test_source_shorter_than_the_start_queue_still_plays(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -144,7 +304,7 @@ async def test_source_shorter_than_the_start_queue_still_plays(
         assert start.commit_starts_us == []
 
         start.harness.end_source()
-        await start.harness.finish()
+        await start.finish()
 
         assert len(start.commit_starts_us) == 3
         assert start.moves_us() == [0, 0]
@@ -167,9 +327,11 @@ async def test_full_queue_starts_the_stream_before_half_a_second_is_queued(
     monkeypatch.setattr(player.mass.streams, "get_stream", MagicMock(return_value=_tiny_chunks()))
     try:
         await start.harness.session.start(MagicMock())
-        await start.harness.settle()
 
-        assert len(start.commit_starts_us) >= _PRODUCER_BACKLOG_SIZE
+        await _wait_for(
+            lambda: len(start.commit_starts_us) >= _PRODUCER_BACKLOG_SIZE,
+            lambda: f"{len(start.commit_starts_us)} completed commits",
+        )
     finally:
         await start.harness.close()
 
@@ -223,7 +385,7 @@ async def test_member_joining_while_the_first_commit_waits_gets_the_start(
     try:
         harness.allow_source(START_SLICES - 2)
         await harness.session.start(MagicMock())
-        await harness.settle()
+        await harness._until(lambda: harness.source_reads > START_SLICES - 2)
         assert harness.entered == 0
 
         await harness.add_member(DSP_ID)
