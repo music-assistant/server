@@ -141,3 +141,8 @@ FLOW_PLAYED_OUT_MARGIN = 0.5
 # keeps playing the audio it buffered, which a held-open stream lets it do for up to the maximum
 # lead-out; the extra minute covers its idle report after the connection closes.
 FLOW_PLAYOUT_IDLE_TIMEOUT = FLOW_STREAM_MAX_LEAD_OUT_SECONDS + 60
+
+# A queue restarts a flow stream its player lost at most this many times within the window (in
+# seconds), so a player that keeps losing its stream does not restart playback over and over.
+LOST_FLOW_RESTART_LIMIT = 3
+LOST_FLOW_RESTART_WINDOW = 600

@@ -72,6 +72,8 @@ from music_assistant.controllers.player_queues.constants import (
     DEFAULT_CROSSFADE_ENABLED,
     FLOW_PLAYED_OUT_MARGIN,
     FLOW_PLAYOUT_IDLE_TIMEOUT,
+    LOST_FLOW_RESTART_LIMIT,
+    LOST_FLOW_RESTART_WINDOW,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
 )
@@ -1436,6 +1438,48 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         played = player.state.corrected_elapsed_time or 0
         return played >= streamed - FLOW_PLAYED_OUT_MARGIN
 
+    def restart_lost_flow_stream(self, queue_id: str, session_id: str) -> bool:
+        """
+        Restart a queue at the position that plays now, for a flow stream its player lost.
+
+        Only the current session restarts, once, and a queue at most LOST_FLOW_RESTART_LIMIT
+        times within LOST_FLOW_RESTART_WINDOW seconds. A stopped or paused queue and a flow
+        stream that was fully generated do not restart.
+
+        :param queue_id: The queue whose flow stream the player lost.
+        :param session_id: The stream session of the lost flow stream.
+        :return: Whether the queue restarts, or already does for this session.
+        """
+        if not self._lost_flow_stream_restartable(queue_id, session_id):
+            return False
+        queue_data = self._queue_data[queue_id]
+        if queue_data.flow_restarted_session_id == session_id:
+            return True
+        now = time.monotonic()
+        restart_times = [
+            t for t in queue_data.flow_restart_times if now - t < LOST_FLOW_RESTART_WINDOW
+        ]
+        if len(restart_times) >= LOST_FLOW_RESTART_LIMIT:
+            self.logger.warning(
+                "Not restarting %s after its player lost the stream: it restarted %s times "
+                "in the last %s minutes already",
+                queue_data.queue.display_name,
+                len(restart_times),
+                LOST_FLOW_RESTART_WINDOW // 60,
+            )
+            return False
+        queue_data.flow_restart_times = [*restart_times, now]
+        queue_data.flow_restarted_session_id = session_id
+        self.logger.info(
+            "Restarting %s where it plays now: its player lost the stream",
+            queue_data.queue.display_name,
+        )
+        self.mass.create_task(
+            self._restart_lost_flow_stream(queue_id, session_id),
+            task_id=f"restart_lost_flow_stream_{queue_id}_{session_id}",
+        )
+        return True
+
     # Main queue manipulation methods
 
     async def load(
@@ -1965,6 +2009,26 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             keep_remaining=False,
             shuffle=shuffle_enabled,
         )
+
+    def _lost_flow_stream_restartable(self, queue_id: str, session_id: str) -> bool:
+        """Return whether a queue may restart the lost flow stream of a session."""
+        queue_data = self.queue_data_or_none(queue_id)
+        if (
+            queue_data is None
+            or queue_data.session_id != session_id
+            or queue_data.queue.state == PlaybackState.PAUSED
+            or queue_data.flow_buffer_completed == session_id
+        ):
+            return False
+        return self.mass.players.get_player(queue_id) is not None
+
+    async def _restart_lost_flow_stream(self, queue_id: str, session_id: str) -> None:
+        """Resume a queue where it plays now, unless a command took it over meanwhile."""
+        async with self.mass.players.get_group_and_player_lock(queue_id):
+            # a command that held or waited for the lock (stop, next, play) went first
+            if not self._lost_flow_stream_restartable(queue_id, session_id):
+                return
+            await self.resume(queue_id, fade_in=False)
 
     def _resolve_default_toggles(self, queue_data: PlayerQueueData) -> None:
         """Set the queue's effective autoplay/crossfade from their override or the global default."""
