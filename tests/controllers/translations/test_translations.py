@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import re
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
@@ -716,11 +717,12 @@ def test_provider_specific_error_keys_resolve_with_params() -> None:
         assert arg in resolved, f"{key} did not fill its param: {resolved!r}"
 
 
-def _error_keys_of(package: str) -> list[tuple[str, str, str]]:
+def _error_keys_of(package: str) -> list[tuple[str, str, str, int | None]]:
     """
-    Return the namespace, key and place of every constant translation key a controller raises.
+    Return the namespace, key, place and argument count of every constant key a controller raises.
 
-    The namespace is the one its translation owner names, or common without an owner.
+    The namespace is the one its translation owner names, or common without an owner. The
+    argument count is None where the arguments are not written out at the raise.
 
     :param package: The folder of the controller.
     """
@@ -734,7 +736,7 @@ def _error_keys_of(package: str) -> list[tuple[str, str, str]]:
     # the players controller raises the refusals and steps of these with its own namespace,
     # by keyword or at this position
     players_owned = {"Refuse": None, "Ungroup": None, "_refuse": 2, "_refused": 1}
-    keys: list[tuple[str, str, str]] = []
+    keys: list[tuple[str, str, str, int | None]] = []
     for path in sorted((CONTROLLERS_PATH / package).glob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if not isinstance(node, ast.Call):
@@ -753,7 +755,18 @@ def _error_keys_of(package: str) -> list[tuple[str, str, str]]:
                 namespace = "common"
             else:
                 namespace = owners[ast.unparse(owner)]
-            keys.append((namespace, key.value, f"{path.name}:{node.lineno}"))
+            if position is not None:
+                # the arguments follow the key: as one tuple (_refuse) or one by one (_refused)
+                rest = node.args[position + 1 :]
+                args = rest[0] if name == "_refuse" and rest else ast.Tuple(elts=rest)
+            else:
+                args = keywords.get("translation_args", ast.Tuple(elts=[]))
+            count: int | None = None
+            if isinstance(args, ast.List | ast.Tuple) and not any(
+                isinstance(arg, ast.Starred) for arg in args.elts
+            ):
+                count = len(args.elts)
+            keys.append((namespace, key.value, f"{path.name}:{node.lineno}", count))
     return keys
 
 
@@ -766,10 +779,23 @@ def test_every_error_key_of_the_player_controllers_has_a_text(package: str) -> N
     assert keys
     missing = [
         f"{place}: {namespace}.errors.{key}"
-        for namespace, key, place in keys
+        for namespace, key, place, _count in keys
         if f"{namespace}.errors.{key}" not in source and f"common.errors.{key}" not in source
     ]
     assert not missing
+
+
+@pytest.mark.parametrize("package", ["players", "player_queues"])
+def test_every_error_text_of_the_player_controllers_gets_its_arguments(package: str) -> None:
+    """A text renders at each raise: it has a placeholder for every argument given, no more."""
+    source = build_translations_source()
+    misfits = []
+    for namespace, key, place, count in _error_keys_of(package):
+        text = source.get(f"{namespace}.errors.{key}") or source.get(f"common.errors.{key}", "")
+        placeholders = {int(index) for index in re.findall(r"\{(\d+)\}", text)}
+        if count is not None and placeholders != set(range(count)):
+            misfits.append(f"{place}: {key} gets {count} argument(s) for {text!r}")
+    assert not misfits
 
 
 def test_media_item_without_translation_key_is_untouched() -> None:
