@@ -419,7 +419,7 @@ class AudioSourceMixin(_PlayerControllerBase):
             # a source that plays takes the place of a step (next, previous) that has not
             # played yet within the queue the player plays
             self.mass.player_queues._drop_pending_step(player.active_source or player_id)
-        # no lock while a device comes online: a switched-off player is powered on first,
+        # no lock while a player starts up: a switched-off player is powered on first,
         # and so are the switched-off members of a group player for a source that plays.
         # A queue that is selected only becomes the source: that starts nothing
         if player.offline_by_power_control:

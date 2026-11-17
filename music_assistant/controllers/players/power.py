@@ -1,9 +1,10 @@
 """
 Power Mixin for the Player Controller.
 
-The power commands of a player, a player switched off at its external power control
-(powered on for itself, or for the group or leader that is about to play on it), a power
-off that happens outside of Music Assistant and the idle power off.
+The power commands of a player, a player whose external power control cuts its power
+(powered on for itself, or for the group or leader that is about to play on it, and waited
+for while it starts up), a power off that happens outside of Music Assistant and the idle
+power off.
 
 This module provides the PowerMixin class which is inherited by
 PlayerController to add the power commands.
@@ -37,10 +38,12 @@ from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_POWER,
     ATTR_IDLE_SINCE,
-    ATTR_POWER_ON_DEADLINE,
     ATTR_POWERED,
     CONF_AUTO_PLAY,
     CONF_IDLE_POWER_OFF,
+    CONF_POWER_ON_STARTUP_TIME,
+    DEFAULT_POWER_ON_STARTUP_TIME,
+    POWER_ON_STARTUP_TIME_RANGE,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -54,7 +57,7 @@ from music_assistant.models.player import Player
 from .base import _PlayerControllerBase
 from .constants import (
     CACHE_CATEGORY_PLAYER_POWER,
-    OFFLINE_POWER_ON_TIMEOUT,
+    POWER_RESTORE_TIMEOUT,
     UNGROUP_ON_POWER_OFF_TYPES,
     PlayerLockPurpose,
     SwitchedOffAction,
@@ -62,24 +65,17 @@ from .constants import (
 from .helpers import handle_player_command, wait_for_power_on
 
 if TYPE_CHECKING:
+    from music_assistant_models.player_control import PlayerControl
+
     from music_assistant.models.player_protocol import PlayerProtocol
 
-# How long a player must stay powered off before the queue it was playing is ended.
+# How long a player must stay powered off before the queue it was playing is ended, and
+# before its power counts as cut at a power control that cuts it.
 # Home Assistant reports an entity that is (briefly) unavailable or unknown as off, so an
 # external power control can report a power off that comes straight back - which must not
 # stop the music. Long enough to sit out a reloading integration or a device missing a
 # poll, short enough that a real power off is not left streaming.
 EXTERNAL_POWER_OFF_STOP_DELAY = 15
-
-# How long after an external power control reported off the device of its player is checked
-# (PlayerProtocol.check_device): a device can take a moment to lose its power and its
-# connection, and Home Assistant can report a plug as off for a moment while it reloads.
-DEVICE_CHECK_DELAY = 5
-# How often a power on that waits for a device asks the protocol that reports for it to reach
-# the device: the protocol may only try again on a backoff of minutes by itself.
-DEVICE_CHECK_INTERVAL = 5
-# How long a device check may take before it is given up on.
-DEVICE_CHECK_TIMEOUT = 10
 
 # Set while the server continues playback by itself (see without_member_power_on).
 _CONTINUES_PLAYBACK: ContextVar[bool] = ContextVar("continues_playback", default=False)
@@ -87,6 +83,20 @@ _CONTINUES_PLAYBACK: ContextVar[bool] = ContextVar("continues_playback", default
 
 class _PowerOnCalledOff(PlayerUnavailableError):
     """A power on that was called off, or whose player was switched off again, meanwhile."""
+
+
+class _PowerOnWait:
+    """The commands that wait for a player to start up after its power was switched on."""
+
+    __slots__ = ("called_off", "commands", "over")
+
+    def __init__(self) -> None:
+        """Initialize a wait that is not over."""
+        # set once the player started up, or the wait was called off
+        self.over = asyncio.Event()
+        self.called_off = False
+        # how many commands wait
+        self.commands = 0
 
 
 class PowerMixin(_PlayerControllerBase):
@@ -107,12 +117,12 @@ class PowerMixin(_PlayerControllerBase):
             self._cancel_member_power_ons(player, self._resolve_playback_owner(player))
         if player is not None and powered:
             if player.offline_by_power_control:
-                # no lock while the switched off device comes online: that takes far longer
+                # no lock while the switched off device starts up: that takes far longer
                 # than other commands wait for the lock, and it has no group to form
                 await self._handle_cmd_power(player_id, True)
                 return
             if player.type == PlayerType.GROUP and player.available and player.powered is False:
-                # the group forms once its switched-off members are online, which is waited
+                # the group forms once its switched-off members started up, which is waited
                 # for before the lock as well
                 await self._power_on_members(player)
         # Power is serialized with PLAYBACK because powering on a sync/group player
@@ -144,15 +154,53 @@ class PowerMixin(_PlayerControllerBase):
         finally:
             _CONTINUES_PLAYBACK.reset(token)
 
+    def get_power_on_wait(self, player_id: str) -> int:
+        """
+        Return how long (in seconds) a command to a player can wait for its power to come on.
+
+        That is the start-up time of a player whose power control cuts its power, with the
+        time its protocols get to connect after it, and 0 for any other player.
+
+        :param player_id: The player the command goes to.
+        """
+        player = self.get_player(player_id)
+        if player is None or not player.power_control_cuts_power:
+            return 0
+        return self._get_startup_time(player) + POWER_RESTORE_TIMEOUT
+
+    def _handle_external_power_on(self, player: Player) -> None:
+        """
+        Let the start-up time of a player run when its power came on outside of MA.
+
+        Only once its power counted as cut: a power control that read off for a moment
+        switched nothing. Call this when the power control of the player reports, before
+        the player publishes what it reports.
+
+        :param player: The player whose power control reports.
+        """
+        control = self._controls.get(player.power_control)
+        if control is None or not control.power_state or player.powered is not False:
+            return
+        # a control that reads off since before anyone looked counts as a cut too
+        confirmed = self._power_cuts.pop(player.player_id, True)
+        if confirmed and player.power_control_cuts_power:
+            self._begin_startup(player)
+
     def _handle_external_power_off(
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
-        """End the queue of a player whose power was turned off outside of MA."""
+        """
+        Follow up on a player whose power was turned off outside of MA.
+
+        Ends the queue it played, and takes its power as cut at a power control that cuts
+        it, both once it has stayed off for a while.
+        """
         if (
             changed_values.get(ATTR_POWERED) != (True, False)
             or player.type not in PLAYBACK_TARGET_TYPES
         ):
             return
+        self._schedule_power_cut(player)
         if (
             player.synced_to
             or player.active_group
@@ -185,6 +233,10 @@ class PowerMixin(_PlayerControllerBase):
 
         :param player_id: The player whose power was turned off outside of MA.
         """
+        # a start of the player that waits for players to start up is not called off by
+        # this stop: it switches the power on or fails, and then this looks again
+        while (player := self.get_player(player_id)) and self._has_waiting_start(player):
+            await asyncio.sleep(1)
         # hold the playback lock across the checks: a power on that overlaps the wait
         # holds it while it resumes the queue, and reading the power state before that
         # completes would stop the playback it just started (the lock is re-entrant per
@@ -203,102 +255,82 @@ class PowerMixin(_PlayerControllerBase):
             with suppress(PlayerUnavailableError):
                 await self.mass.player_queues._handle_stop(player_id)
 
-    def _schedule_device_check(
-        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
-    ) -> None:
+    def _schedule_power_cut(self, player: Player) -> None:
         """
-        Check the device of a player a moment after its external power control reported off.
+        Take the power of a player as cut once its power control has read off for a while.
 
-        :param player: The player whose state changed.
-        :param changed_values: The changed state values.
+        Only for a power control that cuts the power of the player. A player that was
+        still starting up has its power cut at once.
+
+        :param player: The player whose power control reported off.
         """
-        if ATTR_POWERED not in changed_values:
+        player_id = player.player_id
+        if not player.power_control_cuts_power or player_id in self._power_cuts:
+            # also a cut that the power command that caused it took as cut already
             return
-        if changed_values[ATTR_POWERED] == (True, False) and player.power_control in self._controls:
-            self.mass.call_later(
-                DEVICE_CHECK_DELAY,
-                self._check_switched_off_device,
-                player.player_id,
-                task_id=f"device_check_after_power_off_{player.player_id}",
-            )
-        else:
-            self._cancel_power_off_check(player.player_id)
-
-    def _cancel_power_off_check(self, player_id: str) -> None:
-        """
-        Call off the check of the device of a player that is due after its power off.
-
-        :param player_id: The player whose check to call off.
-        """
-        self.mass.cancel_timer(f"device_check_after_power_off_{player_id}")
-
-    def _cancel_device_check(self, protocol_id: str) -> None:
-        """
-        Call off a check of the device of a protocol that is running.
-
-        :param protocol_id: The protocol whose check to call off.
-        """
-        self.mass.cancel_task(f"device_check_{protocol_id}")
-
-    def _check_switched_off_device(self, player_id: str) -> None:
-        """
-        Check the device of a player whose external power control reads off.
-
-        Only while the protocol that reports for the device has not noticed that it is gone.
-
-        :param player_id: The player whose power control reported off.
-        """
-        player = self.get_player(player_id)
-        if (
-            player is None
-            or player.powered is not False
-            or player.power_on_in_progress
-            or player.power_control not in self._controls
-            or (device := player.device_protocol) is None
-            or not device.available
-        ):
+        if player.startup_ends_at is not None:
+            # nothing of a device that did not start up yet is left to wait for
+            self._confirm_power_cut(player)
             return
-        self._start_device_check(player, device)
-
-    def _start_device_check(self, player: Player, device: PlayerProtocol) -> None:
-        """
-        Let the protocol that reports for the device of a player check it, in a task of its own.
-
-        Does nothing while a check of that protocol still runs.
-
-        :param player: The player of the device.
-        :param device: The protocol that reports for its device.
-        """
-        self.mass.create_task(
-            self._check_device(player, device), task_id=f"device_check_{device.protocol_id}"
+        self._power_cuts[player_id] = False
+        self.mass.call_later(
+            EXTERNAL_POWER_OFF_STOP_DELAY,
+            self._confirm_external_power_cut,
+            player_id,
+            task_id=f"power_cut_{player_id}",
         )
 
-    async def _check_device(self, player: Player, device: PlayerProtocol) -> None:
+    def _confirm_external_power_cut(self, player_id: str) -> None:
         """
-        Let the protocol that reports for the device of a player check it now.
+        Take the power of a player as cut, unless its power control came on again meanwhile.
 
-        The protocol reads unavailable itself when its device does not answer. Takes no lock:
-        a check waits on the network.
+        Neither when that control no longer cuts the power of the player: the setting or
+        the power control of the player changed, or the control is gone.
 
-        :param player: The player of the device.
-        :param device: The protocol that reports for its device.
+        :param player_id: The player whose power control reported off a while ago.
         """
-        try:
-            async with asyncio.timeout(DEVICE_CHECK_TIMEOUT):
-                answered = await device.check_device()
-        except TimeoutError:
-            self.logger.debug("The device check of player %s did not come back", player.name)
+        player = self._players.get(player_id)
+        if player is None or self._power_cuts.get(player_id) is not False:
             return
-        except Exception as err:
-            # deliberately broad: a check is a raw provider call, which changes nothing here
-            self.logger.debug("The device check of player %s failed: %s", player.name, err)
+        if player.offline_by_power_control:
+            self._confirm_power_cut(player)
+        else:
+            del self._power_cuts[player_id]
+
+    def _confirm_power_cut(self, player: Player) -> None:
+        """
+        Take the power of a player as cut at its power control, and tell its protocols.
+
+        Ends its start-up time: the commands that wait for it fail as switched off.
+
+        :param player: The player whose power control is off.
+        """
+        self._end_startup(player, called_off=True)
+        if self._power_cuts.get(player.player_id):
             return
-        if answered is not None:
-            self.logger.debug(
-                "The device of player %s %s",
-                player.name,
-                "answers" if answered else "does not answer",
-            )
+        self._power_cuts[player.player_id] = True
+        self.logger.debug("The power of player %s is cut", player.name)
+        self.mass.create_task(self._tell_protocols(player, power_is_back=False))
+
+    def _drop_power_state(self, player: Player, *, release: bool = False) -> None:
+        """
+        Forget what is kept about the power of a player.
+
+        For a player that goes away, or whose power control or the setting that says it
+        cuts the power of the player changed or went away: what was kept belongs to the
+        control it had. Its start-up time ends, and the commands that wait for it fail as
+        switched off.
+
+        :param player: The player.
+        :param release: Whether the player stays. Its protocols are then told that the power
+            is back when they were told that it was cut, or still wait to be told: nothing
+            else tells them any more, so they reach the device by themselves again.
+        """
+        told = self._power_cuts.pop(player.player_id, None) or player.startup_ends_at is not None
+        self._end_startup(player, called_off=True)
+        self.mass.cancel_timer(f"power_cut_{player.player_id}")
+        if release and told and not self.mass.closing:
+            self.mass.create_task(self._tell_protocols(player, power_is_back=True))
 
     def _check_idle_power_off(self, player: Player) -> None:
         """
@@ -409,9 +441,9 @@ class PowerMixin(_PlayerControllerBase):
             raise PlayerUnavailableError(msg)
         player_state = player.state
 
-        # a power on that still waits for the device is waited for (power on) or called off
-        # (power off) below, whatever its control reports by now
-        if player_state.powered == powered and not player.power_on_in_progress:
+        # a player that starts up is waited for (power on) or switched off (power off)
+        # below, whatever its control reports by now
+        if player_state.powered == powered and player.startup_ends_at is None:
             self.logger.debug(
                 "Ignoring power %s command for player %s: already in state %s",
                 "ON" if powered else "OFF",
@@ -489,7 +521,7 @@ class PowerMixin(_PlayerControllerBase):
                     f"Player control {control_name} is not available"
                 )
             if powered and player.offline_by_power_control:
-                if player.power_on_in_progress:
+                if player.player_id in self._power_on_waits:
                     # joins a power on under way: the request that started it runs auto play
                     skip_auto_play = True
                 player = await self._power_on_switched_off_player(player_id)
@@ -498,10 +530,7 @@ class PowerMixin(_PlayerControllerBase):
                 await player_control.power_on()
                 await wait_for_power_on(self.logger, player, player_control)
             else:
-                # calls off a power on that still waits for the device
-                self._cancel_power_on(player)
-                assert player_control.power_off is not None  # for type checking
-                await player_control.power_off()
+                await self._power_off_at_control(player, player_control)
         # always trigger a state update to update the UI
         player.refresh_state()
 
@@ -516,6 +545,21 @@ class PowerMixin(_PlayerControllerBase):
             and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         ):
             await self.mass.player_queues.resume(player_id)
+
+    async def _power_off_at_control(self, player: Player, player_control: PlayerControl) -> None:
+        """
+        Switch a player off at its external power control.
+
+        :param player: The player to switch off.
+        :param player_control: Its power control.
+        """
+        # calls off a power on that still waits for the player to start up
+        self._cancel_power_on(player)
+        assert player_control.power_off is not None  # for type checking
+        await player_control.power_off()
+        if player.power_control_cuts_power:
+            # no need to wait and see whether the control comes back on
+            self._confirm_power_cut(player)
 
     async def _power_on_for_playback(self, player: Player, skip_auto_play: bool = False) -> None:
         """
@@ -535,31 +579,26 @@ class PowerMixin(_PlayerControllerBase):
 
     async def _power_on_switched_off_player(self, player_id: str) -> Player:
         """
-        Power on a player that is switched off at its external power control.
+        Power on a player that is off, or starting up, at a power control that cuts its power.
 
-        Returns right away for a player that is not switched off. Otherwise it returns once
-        the device is online and the protocols that brought it back finished attaching,
-        while the player stays available to clients in the meantime. Takes no lock: waiting
-        for the device takes far longer than other commands wait for a player lock, so it
-        must run before any lock is taken.
-
-        A player whose device still boots after a power on that was called off (see
-        _still_boots) is waited for again, for the time that is left of that power on.
+        Returns right away for any other player. Otherwise it switches the control on,
+        unless the player starts up already, and returns once the start-up time of the
+        player is over, while the player stays available to clients in the meantime. Takes
+        no lock: a start-up takes far longer than other commands wait for a player lock, so
+        it must run before any lock is taken.
 
         :param player_id: The player to power on.
         :raises InsufficientPermissions: When the current user has no access to the player.
-        :raises PlayerUnavailableError: When the device does not come online in time, or
-            it is switched off again before it does.
+        :raises PlayerUnavailableError: When the power on is called off or the player is
+            switched off again before it started up, or it can not be played to once it did.
         :return: The player.
         """
-        player = self.get_player(player_id)
-        # such a player shows as unavailable until it is waited for again
-        still_boots = player is not None and self._still_boots(player)
-        if not still_boots:
-            player = self.get_player(player_id, True)
+        player = self.get_player(player_id, True)
         assert player is not None  # for type checking
-        if not (player.offline_by_power_control or still_boots):
+        switched_off = player.offline_by_power_control
+        if not switched_off:
             return player
+        player_id = player.player_id
         current_user = get_current_user()
         if current_user and not has_player_access(current_user, player.player_id, player):
             msg = f"{current_user.username} does not have access to player {player.name}"
@@ -567,93 +606,160 @@ class PowerMixin(_PlayerControllerBase):
         # publish first: what the player published last may name another control while a
         # change of this setting is still being applied
         player.refresh_state()
-        control_id = player.power_control
-        player_control = self._controls[control_id]
-        # a power on that is already under way is only waited for: switching the control
-        # once more could switch a device behind a toggling control off again
-        owns_power_on = not player.power_on_in_progress
-        if owns_power_on:
-            player.set_power_on_in_progress(True)
-            if still_boots:
-                # it shows as available again while it is waited for
-                player.refresh_state()
-        loop = asyncio.get_running_loop()
+        player_control = self._controls[player.power_control]
+        if (wait := self._power_on_waits.get(player_id)) is None:
+            wait = self._power_on_waits[player_id] = _PowerOnWait()
+        wait.commands += 1
         try:
-            # the control of a device that still boots is left as it is: switching it once
-            # more could switch a device behind a toggling control off again
-            if owns_power_on and not still_boots:
-                assert player_control.power_on is not None  # for type checking
-                await player_control.power_on()
-                player.extra_data[ATTR_POWER_ON_DEADLINE] = loop.time() + OFFLINE_POWER_ON_TIMEOUT
-            deadline = (
-                player.extra_data[ATTR_POWER_ON_DEADLINE]
-                if still_boots
-                else loop.time() + OFFLINE_POWER_ON_TIMEOUT
-            )
-            self.logger.debug("Waiting for player %s to come online", player.name)
-            await self._wait_for_device(player, control_id, deadline)
-            player.extra_data.pop(ATTR_POWER_ON_DEADLINE, None)
-            return player
+            # a player that starts up already is only waited for: switching its control
+            # once more could switch a device behind a toggling control off again
+            if player.startup_ends_at is None:
+                # the start-up time runs from here, so the control reporting on changes
+                # nothing
+                power_cut = self._power_cuts.get(player_id)
+                self._begin_startup(player)
+                try:
+                    assert player_control.power_on is not None  # for type checking
+                    await player_control.power_on()
+                except BaseException:
+                    control = self._controls.get(player_control.id)
+                    if control is not None and not control.power_state:
+                        # not switched on: the power is cut as it was, unless a newer
+                        # cut was recorded meanwhile. A control that reads on did switch,
+                        # so the start-up time runs on and only this command ends
+                        self._end_startup(player, called_off=True)
+                        if power_cut is not None:
+                            self._power_cuts.setdefault(player_id, power_cut)
+                    raise
+            self.logger.debug("Waiting for player %s to start up", player.name)
+            await wait.over.wait()
         finally:
-            if owns_power_on:
-                player.set_power_on_in_progress(False)
-                if refreshed := self.get_player(player_id):
-                    refreshed.refresh_state()
+            wait.commands -= 1
+            if not wait.commands and self._power_on_waits.get(player_id) is wait:
+                # the last command that waited was cancelled
+                del self._power_on_waits[player_id]
+        if wait.called_off or player.offline_by_power_control:
+            msg = f"Player {player.name} is switched off"
+            raise _PowerOnCalledOff(msg)
+        # a protocol that is still attaching may not be played to yet
+        if not player.available_for_playback or self._is_attaching(player):
+            seconds = self._get_startup_time(player)
+            msg = f"Player {player.name} could not be reached {seconds}s after it was switched on"
+            raise PlayerUnavailableError(
+                msg,
+                translation_key="player_not_started_up",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name, seconds],
+            )
+        return player
 
-    async def _wait_for_device(self, player: Player, control_id: str, deadline: float) -> None:
+    def _begin_startup(self, player: Player) -> None:
         """
-        Wait until the device of a player that is being powered on is online.
+        Let the start-up time of a player run from now, unless it runs already.
 
-        Returns once the protocols that brought the device back finished attaching. Meanwhile
-        the protocol that reports for the device is asked every few seconds to reach it.
-
-        :param player: The player, whose power control was switched on.
-        :param control_id: The power control that was switched on.
-        :param deadline: The time of the event loop until which the device is waited for.
-        :raises PlayerUnavailableError: When the device is not online by then, or the power
-            on is called off or the player switched off again before it is.
+        :param player: The player whose power control is switched on.
         """
-        # a control reports its new state a moment after it was switched, so only an
-        # off that follows its on means it was switched off again
-        control_reported_on = False
-        loop = asyncio.get_running_loop()
-        next_check = loop.time() + DEVICE_CHECK_INTERVAL
-        try:
+        if player.startup_ends_at is not None:
+            return
+        self._power_cuts.pop(player.player_id, None)
+        seconds = self._get_startup_time(player)
+        player.set_startup_ends_at(asyncio.get_running_loop().time() + seconds)
+        self.mass.call_later(
+            seconds,
+            self._finish_startup,
+            player.player_id,
+            task_id=f"power_on_startup_{player.player_id}",
+        )
+
+    async def _finish_startup(self, player_id: str) -> None:
+        """
+        End the start-up time of a player that is over: the commands that wait for it go on.
+
+        Its protocols are told that the power is back first, and get POWER_RESTORE_TIMEOUT
+        to connect.
+
+        :param player_id: The player whose start-up time is over.
+        """
+        if (player := self._players.get(player_id)) is None or player.startup_ends_at is None:
+            return
+        deadline = asyncio.get_running_loop().time() + POWER_RESTORE_TIMEOUT
+        await self._tell_protocols(player, power_is_back=True)
+        with suppress(TimeoutError):
             async with asyncio.timeout_at(deadline):
-                while True:
-                    # a protocol that is still attaching may not be played to yet
-                    if self._device_is_online(player) and self._attaching.keys().isdisjoint(
-                        player.attached_protocols
-                    ):
-                        # a device can come online before its control reports on, while
-                        # what follows (e.g. an announcement) reads the power state
-                        if (control := self._controls.get(control_id)) is not None:
-                            await wait_for_power_on(self.logger, player, control)
-                        return
-                    if not player.power_on_in_progress or (
-                        self._players.get(player.player_id) is not player
-                    ):
-                        # a power off called it off, or the power on waited for has ended
-                        msg = f"Player {player.name} is switched off"
-                        raise _PowerOnCalledOff(msg)
-                    if (control := self._controls.get(control_id)) is not None:
-                        if control.power_state:
-                            control_reported_on = True
-                        elif control_reported_on:
-                            msg = f"Player {player.name} is switched off"
-                            raise _PowerOnCalledOff(msg)
-                    if (
-                        (device := player.device_protocol) is not None
-                        and not device.available
-                        and loop.time() >= next_check
-                    ):
-                        next_check = loop.time() + DEVICE_CHECK_INTERVAL
-                        # a task of its own, so the device is still looked for meanwhile
-                        self._start_device_check(player, device)
-                    await asyncio.sleep(0.5)
-        except TimeoutError:
-            msg = f"Player {player.name} did not come online after powering it on"
-            raise PlayerUnavailableError(msg) from None
+                while self._is_attaching(player):
+                    await asyncio.sleep(0.1)
+        self._end_startup(player, called_off=False)
+        player.refresh_state()
+
+    async def _tell_protocols(self, player: Player, *, power_is_back: bool) -> None:
+        """
+        Tell every attached protocol of a player that its power was cut, or is back.
+
+        All at once. Returns once each of them handled it, failed or took longer than
+        POWER_RESTORE_TIMEOUT.
+
+        :param player: The player whose power control cuts its power.
+        :param power_is_back: Whether the power is back and the player started up, else
+            the power was cut.
+        """
+
+        async def _tell(protocol: PlayerProtocol) -> None:
+            try:
+                async with asyncio.timeout(POWER_RESTORE_TIMEOUT):
+                    await (
+                        protocol.on_power_restored() if power_is_back else protocol.on_power_cut()
+                    )
+            except Exception as err:
+                # deliberately broad: this is a raw provider call, which changes nothing here
+                self.logger.debug(
+                    "Protocol %s of player %s did not handle that its power %s: %r",
+                    protocol.protocol_id,
+                    player.name,
+                    "is back" if power_is_back else "was cut",
+                    err,
+                )
+
+        await asyncio.gather(*(_tell(protocol) for protocol in player.attached_protocols.values()))
+
+    def _end_startup(self, player: Player, *, called_off: bool) -> None:
+        """
+        End the start-up time of a player, and the wait of the commands for it.
+
+        :param player: The player.
+        :param called_off: Whether the commands that wait fail as switched off, for a
+            player whose power is cut again or that goes away.
+        """
+        task_id = f"power_on_startup_{player.player_id}"
+        self.mass.cancel_timer(task_id)
+        if called_off:
+            # what runs once the start-up time is over
+            self.mass.cancel_task(task_id)
+        if player.startup_ends_at is not None:
+            player.set_startup_ends_at(None)
+        if (wait := self._power_on_waits.pop(player.player_id, None)) is not None:
+            wait.called_off = called_off
+            wait.over.set()
+
+    def _is_attaching(self, player: Player) -> bool:
+        """
+        Return whether a protocol of a player is still attaching, so it may not be played to yet.
+
+        :param player: The player.
+        """
+        return not self._attaching.keys().isdisjoint(player.attached_protocols)
+
+    def _get_startup_time(self, player: Player) -> int:
+        """
+        Return the start-up time (in seconds) of a player whose power control cuts its power.
+
+        :param player: The player.
+        """
+        seconds = self.mass.config.get_player_value(player.player_id, CONF_POWER_ON_STARTUP_TIME)
+        if not isinstance(seconds, int):
+            return DEFAULT_POWER_ON_STARTUP_TIME
+        # the range is only enforced by the frontend, an API client can store any value
+        shortest, longest = POWER_ON_STARTUP_TIME_RANGE
+        return min(max(seconds, shortest), longest)
 
     async def _power_on_members(
         self, owner: Player, member_ids: Iterable[str] | None = None
@@ -661,13 +767,13 @@ class PowerMixin(_PlayerControllerBase):
         """
         Power on the switched-off players that a group player or leader is about to play on.
 
-        Powers on the given players that are switched off at their external power control
-        and waits until their devices are online, all at once. A player whose device still
-        boots after a power on that was called off is waited for again. A player that does not come
-        online is logged and left to the caller. Takes no lock: waiting for a device takes
-        far longer than other commands wait for a player lock, so this must run before any
-        lock is taken. Does nothing in a task that holds the lock of the owner already, and
-        for playback the server continues by itself (see without_member_power_on).
+        Powers on the given players that are off, or starting up, at a power control that
+        cuts their power and waits until they started up, all at once. A player that can
+        not be powered on or played to is logged and left to the caller. Takes no lock: a
+        start-up takes far longer than other commands wait for a player lock, so this must
+        run before any lock is taken. Does nothing in a task that holds the lock of the
+        owner already, and for playback the server continues by itself (see
+        without_member_power_on).
 
         :param owner: The group player that is about to play, or the group player or leader
             that players are added to.
@@ -675,7 +781,7 @@ class PowerMixin(_PlayerControllerBase):
         :raises InsufficientPermissions: When the current user has no access to the owner.
         :raises PlayerUnavailableError: When the power on is called off meanwhile (see
             _cancel_member_power_ons).
-        :return: The ids of the players that did not come online.
+        :return: The ids of the players that can not be played to.
         """
         if _CONTINUES_PLAYBACK.get() or self.holds_player_lock(owner.player_id):
             return set()
@@ -693,7 +799,7 @@ class PowerMixin(_PlayerControllerBase):
             frozenset(member.player_id for member in members),
         )
         try:
-            came_online = await power_ons
+            started_up = await power_ons
         except asyncio.CancelledError:
             if (task := asyncio.current_task()) is not None and task.cancelling():
                 raise
@@ -709,8 +815,8 @@ class PowerMixin(_PlayerControllerBase):
                 player.refresh_state()
         return {
             member.player_id
-            for member, online in zip(members, came_online, strict=True)
-            if not online
+            for member, started in zip(members, started_up, strict=True)
+            if not started
         }
 
     async def _power_on_member(self, owner: Player, member: Player) -> bool:
@@ -718,8 +824,8 @@ class PowerMixin(_PlayerControllerBase):
         Power on a switched-off player for the player that is about to play on it.
 
         :param owner: The group player or leader that is about to play on the player.
-        :param member: The player, which is switched off at its power control.
-        :return: Whether its device came online.
+        :param member: The player, which is off or starting up at its power control.
+        :return: Whether it started up and can be played to.
         """
         try:
             # the user's access was checked on the owner
@@ -743,8 +849,7 @@ class PowerMixin(_PlayerControllerBase):
         """
         Return the players a start of a group player or leader powers on or waits for.
 
-        A player that is switched off at its power control with its device not there, or
-        whose device still boots.
+        A player that is off, or starting up, at a power control that cuts its power.
 
         :param owner: The group player or leader that is about to play.
         :param member_ids: The players to select from. The members of the owner when omitted.
@@ -754,55 +859,22 @@ class PowerMixin(_PlayerControllerBase):
             member
             for member_id in dict.fromkeys(owner_members if member_ids is None else member_ids)
             if (member := self.get_player(member_id)) is not None
-            and (
-                (member.available and member.offline_by_power_control) or self._still_boots(member)
-            )
+            and member.available
+            and member.offline_by_power_control
         ]
-
-    def _still_boots(self, player: Player) -> bool:
-        """
-        Return whether the device of a player still boots after its power on was called off.
-
-        Its power control was switched on less than OFFLINE_POWER_ON_TIMEOUT ago and is still
-        on, its device is not online yet, and nothing waits for it any more.
-
-        :param player: The player to check.
-        """
-        control = self._controls.get(player.power_control)
-        deadline = player.extra_data.get(ATTR_POWER_ON_DEADLINE)
-        return (
-            player.enabled
-            and not player.power_on_in_progress
-            and not self._device_is_online(player)
-            and control is not None
-            and control.power_state
-            and deadline is not None
-            and asyncio.get_running_loop().time() < deadline
-        )
-
-    @staticmethod
-    def _device_is_online(player: Player) -> bool:
-        """
-        Return whether the device of a player that is switched on at its power control is online.
-
-        The protocol that reports for the device tells, whatever another one reads: the
-        player can be played to and that protocol reaches the device.
-
-        :param player: The player to check.
-        """
-        device = player.device_protocol
-        return player.available_for_playback and device is not None and device.available
 
     def _cancel_power_on(self, player: Player) -> None:
         """
-        Call off a power on of the player that still waits for its device to come online.
+        Call off a power on of the player that still waits for it to start up.
 
-        The requests waiting for it fail as switched off. Its power control is left as it is.
+        The requests waiting for it fail as switched off. Its power control is left as it
+        is, and its start-up time runs on.
 
         :param player: The player whose power on to call off.
         """
-        if player.power_on_in_progress:
-            player.set_power_on_in_progress(False)
+        if (wait := self._power_on_waits.pop(player.player_id, None)) is not None:
+            wait.called_off = True
+            wait.over.set()
             self.logger.debug("Called off the power on of player %s", player.name)
 
     def _cancel_member_power_ons(self, *players: Player) -> None:
@@ -823,10 +895,24 @@ class PowerMixin(_PlayerControllerBase):
         """
         Return whether a start, or an addition, still waits for players it powered this one on with.
 
-        Such a player may be online for a while before the others are: it is about to play.
+        Such a player may have started up for a while before the others have: it is about
+        to play.
 
         :param player: The player to check.
         """
         return any(
             player.player_id in member_ids for _, member_ids in self._member_power_ons.values()
+        )
+
+    def _has_waiting_start(self, player: Player) -> bool:
+        """
+        Return whether a command still waits for players to start up before it acts on this one.
+
+        That is a start of the player, or an addition to it, that waits for the switched-off
+        players it powered on, or a command that waits for the player itself.
+
+        :param player: The player to check.
+        """
+        return player.player_id in self._power_on_waits or any(
+            owner_id == player.player_id for owner_id, _ in self._member_power_ons.values()
         )

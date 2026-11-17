@@ -51,7 +51,7 @@ HOME_THEATER_KEYS = {
     "speech_enhancement",
     "audio_delay",
     "ir_repeater",
-    "remote_led_feedback",
+    "ir_signal_light",
 }
 SETTINGS_KEYS = {
     "bass",
@@ -160,7 +160,7 @@ async def test_option_values_and_failed_reads() -> None:
     assert (options["bass"].min_value, options["bass"].max_value) == (-10, 10)
     assert options["night_mode"].value is True
     assert options["balance"].value == -20
-    assert options["remote_led_feedback"].value is True
+    assert options["ir_signal_light"].value is True
     assert options["mono_mode"].read_only
     assert not options["bass"].read_only
 
@@ -194,7 +194,7 @@ async def test_nothing_is_read_over_upnp_while_the_speaker_does_not_answer() -> 
             [call(DEVICE_PROPERTIES_SERVICE, "SetButtonLockState", DesiredButtonLockState="On")],
         ),
         (
-            "remote_led_feedback",
+            "ir_signal_light",
             False,
             "upnp.call",
             [call(HT_CONTROL_SERVICE, "SetLEDFeedbackState", LEDFeedbackState="Off")],

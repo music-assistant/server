@@ -70,7 +70,7 @@ from aiosendspin.server.roles.color.state import Color
 from aiosendspin.server.roles.metadata.state import Metadata
 from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
-from aiosendspin.server.roles.player.v1 import PlayerPersistentState
+from aiosendspin.server.roles.player.v1 import PlayerPersistentState, PlayerV1Role
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -190,7 +190,7 @@ SENDSPIN_FORMAT_AUTOMATIC = "automatic"
 # Player types that can render a line-in, so groups and pairs stay selectable.
 SOURCE_AUTOSTART_TARGET_TYPES = {
     PlayerType.PLAYER,
-    PlayerType.STEREO_PAIR,
+    PlayerType.MULTI_CHANNEL,
     PlayerType.GROUP,
 }
 
@@ -367,8 +367,6 @@ class SendspinBasePlayer(PlayerProtocol):
     unsub_event_cb: Callable[[], None] | None = None
     unsub_group_event_cb: Callable[[], None] | None = None
     is_web_player: bool = False
-    # set when a device check found the client away, until the client connects again
-    _away_on_check: bool = False
     # transient alert produced by the most recent security action, surfaced on the next
     # config-entries render (the settings page re-renders after invoking an action)
     _pending_security_alert: AlertText | None = None
@@ -454,24 +452,6 @@ class SendspinBasePlayer(PlayerProtocol):
         await super().on_detach()
         self._unsubscribe_client_callbacks()
 
-    async def check_device(self) -> bool | None:
-        """
-        Return whether the client is connected; None for a client that runs in the server.
-
-        A client that is not connected reads unavailable from then on, until it connects again.
-        """
-        if self._connects_when_it_plays:
-            return None
-        away = self.api.connection is None
-        if away != self._away_on_check:
-            self._away_on_check = away
-            self.update_state()
-        return not away
-
-    def on_client_connected(self) -> None:
-        """Handle the client connecting (again): it reads available after a check found it away."""
-        self._away_on_check = False
-
     def ride_on(self, underlying_protocol_id: str) -> None:
         """
         Make this client the bridge of another protocol of its device.
@@ -488,15 +468,6 @@ class SendspinBasePlayer(PlayerProtocol):
         self._attr_private = False
         self._attr_expose_to_ha_by_default = True
         self._attr_session_only = False
-
-    @property
-    def available(self) -> bool:
-        """
-        Return if the player is available.
-
-        Not once a device check found its client away, until the client connects again.
-        """
-        return super().available and not self._away_on_check
 
     @property
     def needs_setup(self) -> bool:
@@ -717,12 +688,6 @@ class SendspinBasePlayer(PlayerProtocol):
     def _is_bridge_or_web_player(self) -> bool:
         """Whether this is a protocol bridge or built-in web/app player (skips pairing setup)."""
         return self.protocol_id.startswith(BRIDGE_PREFIX) or self.is_web_player
-
-    @property
-    def _connects_when_it_plays(self) -> bool:
-        """Whether the client runs in the server, as a bridge or a virtual player does."""
-        provider = cast("SendspinProvider", self.provider)
-        return provider.server_api.is_external_player(self.protocol_id)
 
     @property
     def _offers_unpaired_consent(self) -> bool:
@@ -1484,6 +1449,8 @@ class SendspinPlayer(SendspinBasePlayer):
     # Server-clock time that metadata takes effect at, when it was scheduled ahead.
     _published_effective_us: int | None = None
     playback_session: SendspinPlaybackSession
+    # set once the format a client asks for could not be read from its player role
+    _requested_format_unreadable: ClassVar[bool] = False
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
     # output delay the device reported before its config was loaded, stored once it is
     _reported_static_delay: int | None = None
@@ -1495,6 +1462,9 @@ class SendspinPlayer(SendspinBasePlayer):
     _stop_taking_volume_reports: Callable[[], None] | None = None
     # sample rate an automatic Sendspin format follows, set by the last playback session
     _session_sample_rate: int | None = None
+    # bit depth a lossless output of that session has, None when it has no first item: a
+    # bridge reads it
+    session_bit_depth: int | None = None
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -1868,24 +1838,80 @@ class SendspinPlayer(SendspinBasePlayer):
                 abort_existing=True,
             )
 
-    async def follow_session_sample_rate(self, start_streamdetails: StreamDetails | None) -> None:
+    async def follow_session_sample_rate(
+        self,
+        start_streamdetails: StreamDetails | None,
+        *,
+        crossfade_enabled: bool = False,
+        overlay_active: bool = False,
+    ) -> None:
         """
         Match an automatic Sendspin format to the sample rate of a new playback session.
 
         The rate follows the player's sample rate setting for the first item of the session.
         Without a first item, the client's own default format is used.
-        An explicitly configured Sendspin format is left as is.
+        An explicitly configured Sendspin format keeps its sample rate; a bridge may play it
+        in fewer bits when the audio of the session has no more.
 
         :param start_streamdetails: Stream details of the first item of the session, if any.
+        :param crossfade_enabled: Whether the session blends the audio of its items.
+        :param overlay_active: Whether an audio overlay is mixed into the session.
         """
         if start_streamdetails is None:
             self._session_sample_rate = None
+            self.session_bit_depth = None
         else:
             pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
-                self, start_streamdetails=start_streamdetails
+                self,
+                start_streamdetails=start_streamdetails,
+                crossfade_enabled=crossfade_enabled,
+                overlay_active=overlay_active,
             )
             self._session_sample_rate = pcm_format.sample_rate
+            # the codec only stands for a lossless one here
+            output_format = await self.mass.streams.audio.get_output_format(
+                "flac",
+                self,
+                pcm_format.sample_rate,
+                pcm_format.bit_depth,
+                media_type=start_streamdetails.media_type,
+                source_bit_depth=start_streamdetails.audio_format.bit_depth,
+            )
+            self.session_bit_depth = output_format.bit_depth
         await self._apply_preferred_format()
+
+    async def get_session_format(
+        self, start_streamdetails: StreamDetails
+    ) -> tuple[SendspinAudioFormat, AudioCodec] | None:
+        """
+        Return the Sendspin format and codec this player plays in a session starting with an item.
+
+        :param start_streamdetails: Stream details of the first item of the session.
+        :return: The format and codec, or None when the format of this player does not follow
+            the session: an explicitly configured format, or a client without a player role.
+        """
+        player_role = self._player_role
+        config_value = self.config.get_value(
+            CONF_PREFERRED_SENDSPIN_FORMAT, SENDSPIN_FORMAT_AUTOMATIC
+        )
+        if player_role is None or config_value != SENDSPIN_FORMAT_AUTOMATIC:
+            return None
+        pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
+            self, start_streamdetails=start_streamdetails
+        )
+        audio_format, codec = self._session_format(player_role, pcm_format.sample_rate)
+        if audio_format is not None and codec is not None:
+            return audio_format, codec
+        if (default := self._default_format(player_role)) is None:
+            return None
+        return (
+            SendspinAudioFormat(
+                sample_rate=default.sample_rate,
+                bit_depth=default.bit_depth,
+                channels=default.channels,
+            ),
+            default.codec,
+        )
 
     async def on_group_content_takeover(self) -> object:
         """Clear the protocol snapshot before a new content owner joins."""
@@ -2560,7 +2586,9 @@ class SendspinPlayer(SendspinBasePlayer):
         )
         if config_value == SENDSPIN_FORMAT_AUTOMATIC:
             # Automatic mode: follow the session sample rate, else let the client decide.
-            player_role.set_preferred_format(*self._session_format(player_role))
+            player_role.set_preferred_format(
+                *self._session_format(player_role, self._session_sample_rate)
+            )
             return
 
         parsed = option_value_to_format(config_value)
@@ -2582,20 +2610,21 @@ class SendspinPlayer(SendspinBasePlayer):
             )
 
     def _session_format(
-        self, player_role: PlayerRoleProtocol
+        self, player_role: PlayerRoleProtocol, session_sample_rate: int | None
     ) -> tuple[SendspinAudioFormat | None, AudioCodec | None]:
         """
-        Return the client's format for the session sample rate, or (None, None) for its default.
+        Return the client's format for a session sample rate, or (None, None) for its default.
 
         Only formats in the codec of the client's own top choice are considered.
 
         :param player_role: The player role of this client.
+        :param session_sample_rate: The sample rate the session follows, None for none.
         """
         formats = self._top_codec_formats(player_role)
-        if not formats or self._session_sample_rate in (None, formats[0].sample_rate):
+        if not formats or session_sample_rate in (None, formats[0].sample_rate):
             return None, None
         default = formats[0]
-        candidates = [fmt for fmt in formats if fmt.sample_rate == self._session_sample_rate]
+        candidates = [fmt for fmt in formats if fmt.sample_rate == session_sample_rate]
         if not candidates:
             return None, None
         best = max(candidates, key=lambda fmt: (fmt.channels == default.channels, fmt.bit_depth))
@@ -2603,6 +2632,40 @@ class SendspinPlayer(SendspinBasePlayer):
             sample_rate=best.sample_rate, bit_depth=best.bit_depth, channels=best.channels
         )
         return audio_format, best.codec
+
+    def _default_format(self, player_role: PlayerRoleProtocol) -> SupportedAudioFormat | None:
+        """
+        Return the format the client plays while the server sets none.
+
+        :param player_role: The player role of this client.
+        """
+        formats = player_role.get_supported_formats() or []
+        # the player role picks the format the client asks for before its first choice
+        requested = self._requested_format(player_role)
+        return next(
+            (fmt for fmt in formats if requested is not None and requested.matches(fmt)),
+            formats[0] if formats else None,
+        )
+
+    def _requested_format(self, player_role: PlayerRoleProtocol) -> SupportedAudioFormat | None:
+        """
+        Return the format the client asks for in its client/state, None without one.
+
+        :param player_role: The player role of this client.
+        """
+        if not isinstance(player_role, PlayerV1Role):
+            return None
+        # the player role keeps this format to itself
+        try:
+            return player_role._client_format
+        except AttributeError:
+            if not SendspinPlayer._requested_format_unreadable:
+                SendspinPlayer._requested_format_unreadable = True
+                self.logger.warning(
+                    "Cannot read the format Sendspin clients ask for, the sample rate of "
+                    "a group's next session is predicted from their first choice"
+                )
+            return None
 
     @staticmethod
     def _top_codec_formats(player_role: PlayerRoleProtocol) -> list[SupportedAudioFormat]:

@@ -61,13 +61,22 @@ class BookmarksController:
         """Initialize the bookmarks controller."""
         self.mass = mass
         self.mass.register_api_command(
-            "music/bookmarks", self.bookmarks, required_scope=Scope.LIBRARY_READ
+            "music/bookmarks",
+            self.bookmarks,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
-            "music/set_bookmark", self.set_bookmark, required_scope=Scope.LIBRARY_WRITE
+            "music/set_bookmark",
+            self.set_bookmark,
+            required_scope=Scope.LIBRARY_WRITE,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
-            "music/remove_bookmark", self.remove_bookmark, required_scope=Scope.LIBRARY_WRITE
+            "music/remove_bookmark",
+            self.remove_bookmark,
+            required_scope=Scope.LIBRARY_WRITE,
+            allow_impersonation=True,
         )
 
     async def bookmarks(

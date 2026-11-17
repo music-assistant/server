@@ -290,19 +290,32 @@ class AudioAnalysisProvider(Provider):
         """
         return
 
-    def report_stream_metadata(self, session_id: str, stream_metadata: StreamMetadata) -> None:
+    def report_stream_metadata(self, session_id: str, stream_metadata: StreamMetadata) -> bool:
         """
         Report what plays right now in the stream of an analysis session, such as a recognised song.
 
-        Reported metadata is shown for a live source, while the source's plugin reports none
-        itself, until the session ends. It is never stored.
+        Reported metadata is shown for a live source while the source's plugin reports none
+        itself, and for a radio station that sends none itself once the listener reaches the
+        audio it was recognised in. It is shown until replaced or the session ends, and never
+        stored.
+
+        Returns whether the report is accepted. On False (the stream has metadata of its own,
+        the session is gone, or this provider no longer takes part) stop recognising for this
+        session.
+
+        A recogniser declares MediaType.RADIO (and AUDIO_SOURCE if wanted), returns quickly
+        from process_pcm_chunk by copying the audio into a small ring buffer, runs the
+        recognition in a task of its own throttled to one sample every 30 to 60 seconds, and
+        returns None from _finalize so nothing is stored.
 
         :param session_id: The analysis session ID.
         :param stream_metadata: What plays right now.
         """
         if session_id not in self._sessions:
-            return
-        self.mass.streams.audio_analysis.show_source_metadata(self, session_id, stream_metadata)
+            return False
+        return self.mass.streams.audio_analysis.show_stream_metadata(
+            self, session_id, stream_metadata
+        )
 
     async def cancel(self, session_id: str) -> None:
         """Cancel an in-progress analysis session."""

@@ -18,7 +18,7 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.controllers.players.constants import OFFLINE_POWER_ON_TIMEOUT
+from music_assistant.controllers.players.constants import MAX_POWER_ON_WAIT
 from music_assistant.providers.fastmcp_server.auth import LOOKUP_FAILURE_CLIENT_ID
 from music_assistant.providers.fastmcp_server.capabilities import Capability
 from music_assistant.providers.fastmcp_server.execution import (
@@ -289,10 +289,8 @@ async def _call_with_clock(
 
 
 async def test_call_waits_for_a_player_that_is_powered_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A play command that waits for a slow device to come online still starts playback."""
-    played, error = await _call_with_clock(
-        monkeypatch, OFFLINE_POWER_ON_TIMEOUT - 1, device_comes_online=True
-    )
+    """A play command that waits for the longest start-up time of a player still starts playback."""
+    played, error = await _call_with_clock(monkeypatch, MAX_POWER_ON_WAIT, device_comes_online=True)
 
     assert error is None
     assert played == ["kitchen"]

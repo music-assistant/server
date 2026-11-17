@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from .constants import PlayerLockPurpose
     from .lifecycle import _Attach
     from .matching import DeviceIdentity
+    from .power import _PowerOnWait
 
 
 class _PlayerControllerBase(CoreController):
@@ -82,6 +83,8 @@ class _PlayerControllerBase(CoreController):
     _pending_protocol_evaluations: dict[str, asyncio.TimerHandle]
     _source_sessions: dict[str, AudioSourceSession]
     _member_power_ons: dict[asyncio.Future[list[bool]], tuple[str, frozenset[str]]]
+    _power_on_waits: dict[str, _PowerOnWait]
+    _power_cuts: dict[str, bool]
     _state_update_subscribers: list[Callable[[Player, dict[str, tuple[Any, Any]]], None]]
 
     def iter_players(
@@ -470,6 +473,8 @@ class _PlayerControllerBase(CoreController):
             ) or (
                 include_configured and control_id in self._configured_control_ids(player.player_id)
             ):
+                if control_id == player.power_control:
+                    self._handle_external_power_on(player)
                 self.mass.loop.call_soon(player.refresh_state)
 
     def remove_player_control(self, control_id: str) -> None:
@@ -478,6 +483,10 @@ class _PlayerControllerBase(CoreController):
         if control is None:
             return
         self.logger.info("PlayerControl removed: %s", control.name)
+        for player in list(self._players.values()):
+            if player.power_control == control_id and self._power_cuts.get(player.player_id):
+                # nobody says when the power of this player is back any more
+                self._drop_power_state(player, release=True)
         # players configured to use this control still resolve to it until they are
         # refreshed, so let them fall back to their remaining options right away
         self.update_player_control(control_id)
@@ -793,11 +802,8 @@ class _PlayerControllerBase(CoreController):
         def _handle_external_power_off(
             self, player: Player, changed_values: dict[str, tuple[Any, Any]]
         ) -> None: ...
-        def _schedule_device_check(
-            self, player: Player, changed_values: dict[str, tuple[Any, Any]]
-        ) -> None: ...
-        def _cancel_power_off_check(self, player_id: str) -> None: ...
-        def _cancel_device_check(self, protocol_id: str) -> None: ...
+        def _handle_external_power_on(self, player: Player) -> None: ...
+        def _drop_power_state(self, player: Player, *, release: bool = False) -> None: ...
         def _check_idle_power_off(self, player: Player) -> None: ...
         def _restart_idle_count(
             self, player: Player, changed_values: dict[str, tuple[Any, Any]]
@@ -813,6 +819,9 @@ class _PlayerControllerBase(CoreController):
         async def _power_on_members(
             self, owner: Player, member_ids: Iterable[str] | None = None
         ) -> set[str]: ...
+        def _members_to_power_on(
+            self, owner: Player, member_ids: Iterable[str] | None = None
+        ) -> list[Player]: ...
         def _cancel_power_on(self, player: Player) -> None: ...
         def _cancel_member_power_ons(self, *players: Player) -> None: ...
         # volume

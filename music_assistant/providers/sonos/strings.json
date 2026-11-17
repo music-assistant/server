@@ -2,7 +2,7 @@
   "config_entries": {
     "show_device_settings": {
       "label": "Show device settings",
-      "description": "Offer the status light, touch controls, Trueplay and (on home theater speakers) the IR repeater and the status light on remote control as player options. The speaker reports no change of these, so it is polled every 30 seconds while they are shown."
+      "description": "Offer the status light, touch controls, Trueplay and (on home theater speakers) the IR repeater and the IR signal light as player options. The speaker reports no change of these, so it is polled every 30 seconds while they are shown."
     }
   },
   "manifest": {

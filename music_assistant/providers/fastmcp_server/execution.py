@@ -24,7 +24,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
-from music_assistant.controllers.players.constants import OFFLINE_POWER_ON_TIMEOUT
+from music_assistant.controllers.players.constants import MAX_POWER_ON_WAIT
 
 from .audit import (
     ANONYMOUS_USER_ID,
@@ -89,8 +89,9 @@ _COMPACT_BYTES = 12_288
 _FULL_BYTES = 65_536
 _COMPACT_STRING = 2_048
 _FULL_STRING = 8_192
-# a command that starts playback on a player that is switched off first waits for its device
-_CALL_TIMEOUT_SECONDS = OFFLINE_POWER_ON_TIMEOUT + 60
+# a command that starts playback on a player that is switched off first waits for it to
+# start up
+_CALL_TIMEOUT_SECONDS = MAX_POWER_ON_WAIT + 60
 CATALOG_REVISION = 2
 
 __all__ = [
