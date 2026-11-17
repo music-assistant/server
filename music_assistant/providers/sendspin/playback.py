@@ -85,9 +85,9 @@ _PRODUCER_SLICE_US = 100_000
 _PRODUCER_BACKLOG_SIZE = 64
 # Backpressure threshold: push stream sleeps when buffered audio exceeds this.
 _PRODUCER_BUFFER_LIMIT_US = 30_000_000
-# PCM a buffered source queues before its first commit. The first commits then follow each
-# other without waiting, which schedules that much audio ahead of real time, so a producer
-# that lags right after the start does not move the play timeline.
+# PCM a buffered source queues before its first commit, which carries all of it. That schedules
+# this much audio ahead of real time at once, so neither a producer that lags right after the
+# start nor a slow first commit moves the play timeline.
 _START_QUEUE_US = 500_000
 # Commits from the start of a stream in which a moved play timeline is logged.
 _START_LOG_COMMITS = 20
@@ -301,7 +301,7 @@ class SendspinPlaybackSession:
       ``sleep_to_limit_buffer``.
 
     The first commit of a buffered source waits until ``_START_QUEUE_US`` of audio is
-    queued, so the start is scheduled ahead of real time.
+    queued and carries all of it, so the start is scheduled ahead of real time.
 
     When a new member joins mid-playback, a *join-catchup* processor replays
     committed history through the member's DSP chain so it can be promoted
@@ -976,17 +976,49 @@ class SendspinPlaybackSession:
                 self._timeline_start_us = anchor_us
             await _report_timeline(anchor_us, now_us)
 
-        async def _commit_pending_chunks() -> None:
+        def _take_start_queue(first: _PendingChunk) -> tuple[_PendingChunk, bool]:
+            """
+            Join the audio queued for the start of the stream to its first chunk.
+
+            :param first: The first chunk of the stream, already taken from the queue.
+            :return: The joined chunk, and whether the source ended with it.
+            """
+            nonlocal pending_duration_us
+            chunks = [first]
+            queued_us = first.duration_us
+            source_ended = False
+            while queued_us < _START_QUEUE_US and not pending_chunks.empty():
+                pending = pending_chunks.get_nowait()
+                if pending is None:
+                    source_ended = True
+                    break
+                pending_backlog.popleft()
+                pending_duration_us = max(0, pending_duration_us - pending.duration_us)
+                chunks.append(pending)
+                queued_us += pending.duration_us
+            if len(chunks) == 1:
+                return first, source_ended
+            pcm = b"".join(chunk.pcm for chunk in chunks)
+            return _PendingChunk(pcm, self._duration_us(pcm, self._pcm_format)), source_ended
+
+        async def _commit_pending_chunks() -> None:  # noqa: PLR0915
             nonlocal pending_duration_us
             commit_count = 0
             previous_timeline_start_us: int | None = None
+            # Clock times of the commit loop, for the debug line about a moved timeline.
+            first_lead_us = 0
+            previous_commit_called_us = 0
             await start_queued.wait()
-            while True:
+            source_ended = False
+            while not source_ended:
+                waiting_since_us = push_stream.now_us()
                 pending = await pending_chunks.get()
                 if pending is None:
                     break
                 pending_backlog.popleft()
                 pending_duration_us = max(0, pending_duration_us - pending.duration_us)
+                if commit_count == 0:
+                    pending, source_ended = _take_start_queue(pending)
                 await self._inject_ready_join_historical(push_stream, pending_backlog, pending.pcm)
                 push_stream.prepare_audio(
                     pending.pcm, self._sendspin_pcm_format, channel_id=MAIN_CHANNEL
@@ -1023,6 +1055,7 @@ class SendspinPlaybackSession:
                         self._sendspin_pcm_format,
                         channel_id=pipeline.channel_id,
                     )
+                commit_called_us = push_stream.now_us()
                 try:
                     commit_start_us = await push_stream.commit_audio()
                 except StreamStoppedError:
@@ -1054,18 +1087,28 @@ class SendspinPlaybackSession:
                     self._prune_history_locked(commit_now_us)
                 commit_count += 1
                 timeline_start_us = committed_history_chunk.timeline_start_us
-                if (
+                lead_us = int(commit_start_us) - commit_called_us
+                if commit_count == 1:
+                    first_lead_us = lead_us
+                elif (
                     commit_count <= _START_LOG_COMMITS
                     and previous_timeline_start_us is not None
                     # anything smaller is rounding
                     and abs(timeline_start_us - previous_timeline_start_us) >= 1_000
                 ):
                     self.player.logger.debug(
-                        "Play timeline moved %+.1f ms at commit %d of the stream",
+                        "Play timeline moved %+.1f ms at commit %d of the stream: the commit "
+                        "before it took %.1f ms, then %.1f ms went to waiting for audio; "
+                        "scheduled %.1f ms ahead, the first commit %.1f ms",
                         (timeline_start_us - previous_timeline_start_us) / 1000,
                         commit_count,
+                        (waiting_since_us - previous_commit_called_us) / 1000,
+                        (commit_called_us - waiting_since_us) / 1000,
+                        lead_us / 1000,
+                        first_lead_us / 1000,
                     )
                 previous_timeline_start_us = timeline_start_us
+                previous_commit_called_us = commit_called_us
                 await _report_timeline(anchor_us, commit_now_us)
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
 

@@ -11,6 +11,7 @@ from music_assistant_models.dsp import DSPConfig
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.models.player import PlayerMedia
+from music_assistant.providers.sendspin import playback
 from music_assistant.providers.sendspin.playback import (
     _HISTORY_KEEP_PAST_US,
     ANCHOR_REBASE_SIGNIFICANT_US,
@@ -121,6 +122,8 @@ async def _run_commit_loop(
     monkeypatch.setattr(
         "music_assistant.providers.sendspin.playback.import_module_in_thread", AsyncMock()
     )
+    # every chunk is a commit of its own, the first one too
+    monkeypatch.setattr(playback, "_START_QUEUE_US", _CHUNK_DURATION_US)
 
     trace = _CommitLoopTrace(player=player)
     player.on_flow_timeline_changed.side_effect = lambda *_: trace.player_calls.append(

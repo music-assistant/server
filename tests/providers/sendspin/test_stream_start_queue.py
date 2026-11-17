@@ -19,7 +19,7 @@ from uuid import uuid4
 import numpy as np
 import pytest
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
-from aiosendspin.server.push_stream import MAIN_CHANNEL
+from aiosendspin.server.push_stream import DEFAULT_INITIAL_DELAY_US, MAIN_CHANNEL
 from music_assistant_models.dsp import ConvolutionFilter
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items.audio_format import AudioFormat
@@ -35,7 +35,9 @@ from music_assistant.providers.sendspin.playback import (
 from tests.providers.sendspin.test_dsp_channel_alignment import (
     DSP_ID,
     LEADER_ID,
+    SAMPLE_RATE,
     _assert_aligned,
+    _first_frame,
     _ramp_slice,
     _SessionHarness,
 )
@@ -43,12 +45,19 @@ from tests.providers.sendspin.test_dsp_channel_alignment import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
     from pathlib import Path
+    from uuid import UUID
 
 SLICE_US = 100_000
 START_SLICES = _START_QUEUE_US // SLICE_US
 # The time the producer needed for slices 2 to 5 of a start after a server start.
 COLD_START_SLICE_TIMES_US = (157_400, 100_000, 107_700, 114_600)
-MOVE_LOG = "Play timeline moved %+.1f ms at commit %d of the stream"
+MOVE_LOG = (
+    "Play timeline moved %+.1f ms at commit %d of the stream: the commit before it took "
+    "%.1f ms, then %.1f ms went to waiting for audio; scheduled %.1f ms ahead, the first "
+    "commit %.1f ms"
+)
+# How far ahead PushStream schedules audio when no player asks for more.
+LEAD_MS = DEFAULT_INITIAL_DELAY_US / 1000
 # Wall time to wait for progress that runs on a worker thread or in FFmpeg.
 WAIT_S = 10.0
 GROUP_ID = "universal-group"
@@ -78,20 +87,37 @@ class _Start:
         self.live = live
         self.commit_times_us: list[int] = []
         self.commit_starts_us: list[int] = []
+        self.commit_durations_us: list[int] = []
+        # Clock time a commit takes after it was scheduled, by its index.
+        self.commit_extra_us: dict[int, int] = {}
         self._produced = 0
         # sleep_to_limit_buffer never blocks, as for a stream that is less than 30 s ahead
         for _ in range(1000):
             self.harness.commit_permits.release()
         monkeypatch.setattr(self.harness.session, "_is_live_source", MagicMock(return_value=live))
-        commit_audio = self.harness.push_stream.commit_audio
+        push_stream = self.harness.push_stream
+        commit_audio = push_stream.commit_audio
+        prepare_audio = push_stream.prepare_audio
+        main_duration_us = 0
+
+        def _recording_prepare(
+            pcm: bytes, audio_format: SendspinAudioFormat, *, channel_id: UUID = MAIN_CHANNEL
+        ) -> None:
+            nonlocal main_duration_us
+            if channel_id == MAIN_CHANNEL:
+                main_duration_us = len(pcm) // 8 * 1_000_000 // SAMPLE_RATE
+            prepare_audio(pcm, audio_format, channel_id=channel_id)
 
         async def _recording_commit() -> int:
             self.commit_times_us.append(self.clock.now_us())
+            self.commit_durations_us.append(main_duration_us)
             start_us = await commit_audio()
+            self.clock.advance_us(self.commit_extra_us.get(len(self.commit_starts_us), 0))
             self.commit_starts_us.append(start_us)
             return start_us
 
-        monkeypatch.setattr(self.harness.push_stream, "commit_audio", _recording_commit)
+        monkeypatch.setattr(push_stream, "prepare_audio", _recording_prepare)
+        monkeypatch.setattr(push_stream, "commit_audio", _recording_commit)
 
     async def play(self, media: PlayerMedia | None = None) -> None:
         """Start playback with one slice produced."""
@@ -121,8 +147,12 @@ class _Start:
 
     def moves_us(self) -> list[int]:
         """Return how far each commit after the first moved the play timeline."""
-        starts = self.commit_starts_us
-        return [later - earlier - SLICE_US for earlier, later in pairwise(starts)]
+        return [
+            later - earlier - duration_us
+            for (earlier, later), duration_us in zip(
+                pairwise(self.commit_starts_us), self.commit_durations_us, strict=False
+            )
+        ]
 
     def logged_moves(self) -> list[tuple[object, ...]]:
         """Return the arguments of every debug line about a moved play timeline."""
@@ -131,12 +161,16 @@ class _Start:
 
     async def _wait_for_slice(self, produced: int) -> None:
         """Wait until the producer took slice `produced` and every commit it allows is done."""
-        expected = produced if self.live or produced >= START_SLICES else 0
+        expected_us = produced * SLICE_US if self.live or produced >= START_SLICES else 0
+
+        def _committed_us() -> int:
+            return sum(self.commit_durations_us[: len(self.commit_starts_us)])
+
         await _wait_for(
-            lambda: self.harness.source_reads > produced and len(self.commit_starts_us) == expected,
+            lambda: self.harness.source_reads > produced and _committed_us() == expected_us,
             lambda: (
-                f"after slice {produced}: {len(self.commit_starts_us)} completed commits "
-                f"instead of {expected}"
+                f"after slice {produced}: {_committed_us() / 1000:.0f} ms committed "
+                f"instead of {expected_us / 1000:.0f} ms"
             ),
         )
 
@@ -150,8 +184,8 @@ async def test_buffered_start_keeps_its_timeline_when_the_producer_lags(
         await start.play()
         await start.produce(*COLD_START_SLICE_TIMES_US, *[5_000] * 10)
 
-        assert len(start.commit_starts_us) == START_SLICES + 10
-        assert start.moves_us() == [0] * (START_SLICES + 9)
+        assert start.commit_durations_us == [_START_QUEUE_US] + [SLICE_US] * 10
+        assert start.moves_us() == [0] * 10
         assert start.logged_moves() == []
     finally:
         await start.harness.close()
@@ -169,8 +203,8 @@ async def test_first_commit_waits_for_half_a_second_of_audio_and_no_longer(
 
         await start.produce(5_000)
 
-        assert start.commit_times_us == [5_000 * (START_SLICES - 1)] * START_SLICES
-        assert start.moves_us() == [0] * (START_SLICES - 1)
+        assert start.commit_times_us == [5_000 * (START_SLICES - 1)]
+        assert start.commit_durations_us == [_START_QUEUE_US]
     finally:
         await start.harness.close()
 
@@ -287,8 +321,9 @@ async def test_member_processing_at_a_high_rate_holds_the_start_queue(
         await _wait_for(task.done, lambda: f"playback stalled after {harness.entered} commits")
         await task
 
-        assert harness.entered == source_slices
-        assert len(harness.push_stream.get_cached_pcm_chunks(channel_id)) == source_slices
+        commits = source_slices - START_SLICES + 1
+        assert harness.entered == commits
+        assert len(harness.push_stream.get_cached_pcm_chunks(channel_id)) == commits
     finally:
         await harness.close()
 
@@ -306,8 +341,7 @@ async def test_source_shorter_than_the_start_queue_still_plays(
         start.harness.end_source()
         await start.finish()
 
-        assert len(start.commit_starts_us) == 3
-        assert start.moves_us() == [0, 0]
+        assert start.commit_durations_us == [3 * SLICE_US]
     finally:
         await start.harness.close()
 
@@ -336,7 +370,24 @@ async def test_full_queue_starts_the_stream_before_half_a_second_is_queued(
         await start.harness.close()
 
 
-async def test_timeline_that_moves_during_the_first_commits_is_logged(
+@pytest.mark.parametrize("slow_commit", [0, 1])
+async def test_slow_commit_at_the_start_keeps_the_timeline(
+    monkeypatch: pytest.MonkeyPatch, slow_commit: int
+) -> None:
+    """A commit that takes 250 ms in the first half second moves no timeline."""
+    start = _Start(monkeypatch)
+    start.commit_extra_us[slow_commit] = 250_000
+    try:
+        await start.play()
+        await start.produce(*[5_000] * (START_SLICES - 1 + 5))
+
+        assert start.moves_us() == [0] * 5
+        assert start.logged_moves() == []
+    finally:
+        await start.harness.close()
+
+
+async def test_timeline_moved_by_a_slow_producer_is_logged_with_the_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A producer that stalls longer than the queued audio lasts leaves a line in the debug log."""
@@ -347,14 +398,29 @@ async def test_timeline_that_moves_during_the_first_commits_is_logged(
 
         await start.produce(_START_QUEUE_US + 300_000, SLICE_US + 150_000)
 
-        *start_moves_us, first_move_us, second_move_us = start.moves_us()
-        assert start_moves_us == [0] * (START_SLICES - 1)
-        assert first_move_us > 0
-        assert second_move_us == 150_000
+        assert start.moves_us() == [300_000, 150_000]
         assert start.logged_moves() == [
-            (first_move_us / 1000, START_SLICES + 1),
-            (150.0, START_SLICES + 2),
+            (300.0, 2, 0.0, 800.0, LEAD_MS, LEAD_MS),
+            (150.0, 3, 0.0, 250.0, LEAD_MS, LEAD_MS),
         ]
+    finally:
+        await start.harness.close()
+
+
+async def test_timeline_moved_by_a_slow_commit_is_logged_with_its_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A first commit that takes longer than the queued audio lasts leaves a line in the debug log."""
+    start = _Start(monkeypatch)
+    start.commit_extra_us[0] = 700_000
+    try:
+        await start.play()
+        await start.produce(*[5_000] * (START_SLICES - 1))
+
+        await start.produce(5_000)
+
+        assert start.moves_us() == [205_000]
+        assert start.logged_moves() == [(205.0, 2, 700.0, 5.0, LEAD_MS, LEAD_MS)]
     finally:
         await start.harness.close()
 
@@ -366,7 +432,7 @@ async def test_timeline_that_moves_after_the_first_commits_is_not_logged(
     start = _Start(monkeypatch)
     try:
         await start.play()
-        await start.produce(*[5_000] * (_START_LOG_COMMITS - 1))
+        await start.produce(*[5_000] * (_START_LOG_COMMITS + START_SLICES - 2))
 
         await start.produce(3_000_000)
 
@@ -407,7 +473,7 @@ async def test_member_joining_during_the_first_commits_gets_its_audio(
     """A member that joins between the first commits gets the audio still queued behind them."""
     harness = _SessionHarness(monkeypatch, dsp_ids={DSP_ID})
     try:
-        await harness.start(source_limit=START_SLICES)
+        await harness.start(source_limit=START_SLICES + 2)
         await harness.commit(1)
         assert len(harness.chunks(MAIN_CHANNEL)) == 2
 
@@ -418,9 +484,19 @@ async def test_member_joining_during_the_first_commits_gets_its_audio(
         assert DSP_ID not in harness.session._join_catchup
         channel_id = harness.session._member_pipelines[DSP_ID].channel_id
         _assert_aligned(harness.offsets_us(channel_id))
-        main_starts = [start_us for start_us, _ in harness.chunks(MAIN_CHANNEL)]
-        member_starts = [start_us for start_us, frame in harness.chunks(channel_id) if frame >= 0]
-        assert member_starts == main_starts[-len(member_starts) :]
-        assert member_starts[0] <= main_starts[START_SLICES - 1]
+        main = harness.push_stream.get_cached_pcm_chunks(MAIN_CHANNEL)
+        member = [
+            chunk
+            for chunk in harness.push_stream.get_cached_pcm_chunks(channel_id)
+            if _first_frame(chunk.pcm_data) >= 0
+        ]
+        # the member has audio from its first chunk to the end of the stream, without a hole
+        assert all(
+            later.timestamp_us == earlier.timestamp_us + earlier.duration_us
+            for earlier, later in pairwise(member)
+        )
+        assert member[-1].timestamp_us == main[-1].timestamp_us
+        # the first commit carries the start queue, the third one the last slice queued
+        assert member[0].timestamp_us <= main[2].timestamp_us
     finally:
         await harness.close()
