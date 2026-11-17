@@ -704,28 +704,47 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if library_only and providers is None:
             # handle deprecated library_only flag
             providers = ["library"]
-        # resolve the search targets: all (unique) music providers plus plugin
-        # providers with search support, optionally filtered by the providers argument
-        plugin_search_providers = [
-            p.instance_id
-            for p in self.mass.get_providers_supporting_feature(
+        # Filter visible, available connections before collapsing streaming domains.
+        requested_providers = set(providers) if providers is not None else None
+        include_library = requested_providers is None or "library" in requested_providers
+        music_providers = [
+            provider
+            for provider in self.providers
+            if provider.available
+            and (
+                requested_providers is None
+                or provider.instance_id in requested_providers
+                or provider.domain in requested_providers
+            )
+        ]
+        # Prefer explicitly selected accounts over a generic connection to their service.
+        explicit_instances = requested_providers or set()
+        music_providers.sort(key=lambda provider: provider.instance_id not in explicit_instances)
+        processed_domains: set[str] = set()
+        search_providers: list[str] = []
+        for provider in music_providers:
+            if (
+                provider.is_streaming_provider
+                and provider.domain in processed_domains
+                and provider.instance_id not in explicit_instances
+            ):
+                continue
+            search_providers.append(provider.instance_id)
+            processed_domains.add(provider.domain)
+        search_providers.extend(
+            prov.instance_id
+            for prov in self.mass.get_providers_supporting_feature(
                 ProviderFeature.SEARCH,
                 priority=(ProviderType.PLUGIN,),
             )
-        ]
-        all_search_providers = sorted(self.get_unique_providers() + plugin_search_providers)
-        if providers is None:
-            include_library = True
-            search_providers = all_search_providers
-        else:
-            include_library = "library" in providers
-            requested_providers = set(providers)
-            search_providers = [
-                instance_id
-                for instance_id in all_search_providers
-                if (prov := self.get_visible_provider(instance_id))
-                and (prov.instance_id in requested_providers or prov.domain in requested_providers)
-            ]
+            if prov.available
+            and (
+                requested_providers is None
+                or prov.instance_id in requested_providers
+                or prov.domain in requested_providers
+            )
+        )
+        search_providers.sort()
         # use cache to avoid repeated searches; the library results are narrowed to what
         # the calling user may see, so the entry is kept per user (and role)
         user = get_current_user()
