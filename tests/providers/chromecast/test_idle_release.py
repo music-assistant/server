@@ -160,6 +160,8 @@ def test_pausing_keeps_the_device_claimed() -> None:
 def test_an_idle_player_is_not_released_again() -> None:
     """A player that was already idle has no session of its own to release."""
     fake = _fake_player(prev_state=PlaybackState.IDLE)
+    # set as after our own playback, so only the was-playing guard keeps it claimed
+    fake._playing_own_session = True
 
     fake._handle_media_status(_media_status())
 
@@ -188,6 +190,8 @@ def test_a_dashboard_keepalive_does_not_release_the_device(
 def test_a_cast_group_is_not_released_when_playback_ends() -> None:
     """A cast group is released by its power control, not by playback ending."""
     fake = _fake_player(player_type=PlayerType.GROUP)
+    # our own playback is what ends, so only the group guard keeps the device claimed
+    fake._playing_own_session = True
 
     fake._handle_media_status(_media_status())
 
@@ -198,6 +202,8 @@ def test_a_cast_group_is_not_released_when_playback_ends() -> None:
 def test_a_group_member_is_not_released_when_the_group_stops() -> None:
     """A member follows the group's Cast session, so it has none of its own to release."""
     fake = _fake_player(active_cast_group="group_player_1")
+    # the group's own playback is what ends, so only the member guard keeps it claimed
+    fake._playing_own_session = True
     # the handler reads the group's status instead of its own, but only for a real cast player
     group = MagicMock(spec=ChromecastPlayer)
     group.cc = MagicMock()
