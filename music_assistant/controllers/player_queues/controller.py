@@ -2870,6 +2870,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.ended = False
         if queue.state != PlaybackState.IDLE and not skip_stop:
             self.mass.create_task(self.stop(queue_id))
+        if queue.state != PlaybackState.IDLE and queue.current_item:
+            # the stop no longer finds the item it cuts off
+            self._queue_data[queue_id].cut_off_item_id = queue.current_item.queue_item_id
         queue.current_index = None
         queue.current_item = None
         queue.next_item = None
@@ -3129,6 +3132,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue_data.cut_off_item_id = (
                 playing_item_id if playing_item_id != loading_item_id else None
             )
+            if not seek_position and queue_data.last_counted_play == loading_item_id:
+                # started over, so its next end is another play of it
+                queue_data.last_counted_play = None
             queue_data.flow_mode_stream_log = []
             queue_data.flow_buffer_completed = None
             queue_data.flow_queue_exhausted = None

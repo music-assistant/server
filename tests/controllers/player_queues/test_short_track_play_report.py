@@ -220,3 +220,29 @@ def test_short_track_with_a_late_last_report_is_counted() -> None:
     _plays(ctrl, "b", 0)
 
     assert _reported(ctrl) == [("a", True)]
+
+
+def test_short_track_cut_off_by_clearing_the_queue_is_not_counted() -> None:
+    """A 4 s track whose queue is cleared at 2 s did not play to its end."""
+    ctrl = _controller([_track("a")])
+    ctrl.store_sources = Mock()  # type: ignore[method-assign]
+    ctrl.update_items = Mock()  # type: ignore[method-assign]
+    _plays(ctrl, "a", 0, 2)
+
+    ctrl._clear(QUEUE_ID)
+    _player_reports(ctrl, PlaybackState.IDLE, "a", 2)
+
+    assert _reported(ctrl) == []
+
+
+async def test_short_track_played_twice_in_a_row_is_counted_twice() -> None:
+    """A 4 s track started over after it ended is another play of it."""
+    ctrl = _controller([_track("a")])
+    _plays(ctrl, "a", 0, 3)
+    _player_reports(ctrl, PlaybackState.IDLE, "a", 3)
+
+    await ctrl.play_index(QUEUE_ID, 0)
+    _plays(ctrl, "a", 0, 3)
+    _player_reports(ctrl, PlaybackState.IDLE, "a", 3)
+
+    assert _reported(ctrl) == [("a", True), ("a", True)]
