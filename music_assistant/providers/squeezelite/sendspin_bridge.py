@@ -199,10 +199,9 @@ MAX_OFF_TIMELINE_US: int = 4_000_000
 
 # A stream that fails is restarted, and its player stays in its Sendspin group for as long
 # as its streams play this much before they fail, by what the player reports to have
-# played. A stream has its long lead some 3 seconds after its start, so one that played
-# this much got that lead and played it: the player plays what it is sent. A stream that
-# fails sooner did not get past its start, which includes the 5 seconds or so after which
-# a player that stays off its timeline is restarted.
+# played. One that played this much got past its start and played what it was sent. One
+# that fails sooner did not, which includes the 5 seconds or so after which a player that
+# stays off its timeline is restarted.
 MIN_PLAYED_US: int = 10_000_000
 # Streams in a row that fail sooner than that before the bridge leaves the Sendspin
 # session: restarting once more is not going to work.
