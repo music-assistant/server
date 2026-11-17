@@ -1743,4 +1743,4 @@ jobs:
       - name: Warn when the docs site was not notified
         if: steps.dispatch.outcome != 'success'
         run: |
-          echo "::warning title=Docs site not notified::music-assistant.io was not told about this release; its daily check will merge the waiting docs pull requests instead. Give the musicassistant-bot GitHub App Contents write access to music-assistant/music-assistant.io, then check the failed step above."
+          echo "::warning title=Docs site not notified::music-assistant.io was not told about this release; its daily check will merge the waiting docs pull requests instead. The failed step above says why."
