@@ -404,6 +404,8 @@ class DLNAPlayer(PlayerProtocol):
             with suppress(ValueError, ParseError):
                 await self.device.async_update(do_ping=do_ping)
             self.last_seen = now if do_ping else self.last_seen
+            if not self.device.profile_device.available:
+                await self._resubscribe()
         except UpnpError as err:
             # Some devices (e.g. Denon HEOS) return SOAP responses containing
             # non-UTF-8 bytes in track metadata, which the underlying library
@@ -815,6 +817,20 @@ class DLNAPlayer(PlayerProtocol):
             self.set_available(False)
             await old_device.async_unsubscribe_services()
         self.update_state()
+
+    async def _resubscribe(self) -> None:
+        """Renew the event subscriptions of a device that responds again after a failed renewal."""
+        async with self.lock:
+            if not self.device or self.device.profile_device.available:
+                return
+            self.logger.debug("Resubscribing to %s after a failed event renewal", self.device.name)
+            await self.device.async_unsubscribe_services()
+            # the library marks the device unavailable on a failed renewal and never resets it
+            self.device.profile_device.available = True
+            try:
+                await self.device.async_subscribe_services(auto_resubscribe=True)
+            except UpnpResponseError as err:
+                self.logger.debug("Device rejected subscription: %r", err)
 
     async def _force_avt_action(self, name: str) -> bool:
         """Call an AVTransport action regardless of CurrentTransportActions; False if absent."""
