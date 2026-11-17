@@ -182,13 +182,19 @@ MAX_PENDING_CHUNKS: int = 4_000
 MAX_TIMELINE_ERROR_MS: float = 100.0
 MAX_OFF_TIMELINE_US: int = 4_000_000
 
-# A session that fails again this soon after it was restarted is not going to work by
-# restarting it once more: the bridge leaves the Sendspin session instead. The same
-# window guards its return: a bridge that gives up again this soon after it was put back
-# stays out.
-RECOVERY_GUARD_US: int = 30_000_000
+# A stream that fails is restarted, and its player stays in its Sendspin group for as long
+# as its streams play this much before they fail, by what the player reports to have
+# played. A stream has its long lead some 3 seconds after its start, so one that played
+# this much got that lead and played it: the player plays what it is sent. A stream that
+# fails sooner did not get past its start, which includes the 5 seconds or so after which
+# a player that stays off its timeline is restarted.
+MIN_PLAYED_US: int = 10_000_000
+# Streams in a row that fail sooner than that before the bridge leaves the Sendspin
+# session: restarting once more is not going to work.
+MAX_QUICK_FAILURES: int = 3
 # Delays (seconds) before each attempt to put a bridge back into the Sendspin group a
-# give-up took it out of.
+# give-up took it out of. A bridge that gives up again before a stream played that much
+# since it was put back stays out.
 REJOIN_ATTEMPT_DELAYS: tuple[int, ...] = (5, 30)
 # The same for the bridge of a player that connected again: it only has to wait for its
 # Sendspin protocol to be attached.
@@ -458,13 +464,13 @@ class SendspinSqueezeliteBridge:
         self._pending_status: dict[int, int] = {}
         self._status_token = 0
         self._reports = 0
-        # time of the last restart of a failed session, None when the stream had none yet
-        self._last_recovery_us: int | None = None
+        # streams in a row that failed before they played long enough
+        self._quick_failures = 0
         self._rejoin_task: asyncio.Task[None] | None = None
         # the group a pending re-join returns the bridge to
         self._rejoin_group: SendspinGroup | None = None
-        # time the bridge was last put back into the group a give-up took it out of
-        self._last_rejoin_us: int | None = None
+        # put back into a group, with no stream that played long enough since
+        self._rejoined = False
 
     @property
     def is_registered(self) -> bool:
@@ -757,7 +763,7 @@ class SendspinSqueezeliteBridge:
         )
         # Each Sendspin stream gets its own recovery budget: a failure on the previous
         # one says nothing about the player on this one.
-        self._last_recovery_us = None
+        self._quick_failures = 0
         # Joining a session by any means supersedes a pending re-join.
         self._cancel_rejoin()
         self._begin_session()
@@ -1089,6 +1095,19 @@ class SendspinSqueezeliteBridge:
             f"{player}"
         )
 
+    def _played_us(self, session: BridgeSession) -> int:
+        """
+        Return how much of its stream a player reported to have played, in microseconds.
+
+        :param session: The session of the stream.
+        """
+        if (status := session.status) is None:
+            return 0
+        # a report may still be about the stream before: a player has played no more of
+        # this one than the time since it was told to start
+        since_told_us = round(status.received * 1_000_000) - session.command_us
+        return max(0, min(status.elapsed_milliseconds * 1000, since_told_us))
+
     def _align(self, session: BridgeSession, loop: SyncLoop, now_us: int) -> bytes:
         """
         Return the silence to send to a player whose start is not corrected yet.
@@ -1195,6 +1214,10 @@ class SendspinSqueezeliteBridge:
             self._decide_start(session)
             return
         session.status = status
+        if self._played_us(session) >= MIN_PLAYED_US:
+            # the player plays what it is sent: what failed before says nothing now
+            self._quick_failures = 0
+            self._rejoined = False
         if (server_us := self._player_clock.to_server_us(status.jiffies)) is None:
             return
         start_reports = loop.start_reports
@@ -1279,21 +1302,26 @@ class SendspinSqueezeliteBridge:
 
     def _recover(self, session: BridgeSession, reason: str) -> None:
         """
-        Restart a session that failed, unless the player keeps failing.
+        Restart a session that failed, unless the player keeps failing before it plays.
 
         :param session: The session that failed.
         :param reason: What the player did, for the log.
         """
         if session is not self._session or session.ended:
             return
-        now_us = self._clock.now_us()
-        last_recovery_us = self._last_recovery_us
-        if last_recovery_us is not None and now_us - last_recovery_us < RECOVERY_GUARD_US:
+        played_us = self._played_us(session)
+        if quick := played_us < MIN_PLAYED_US:
+            self._quick_failures += 1
+        played_s = played_us / 1_000_000
+        min_played_s = MIN_PLAYED_US / 1_000_000
+        if self._quick_failures >= MAX_QUICK_FAILURES:
             self.logger.error(
-                "Sendspin stream on %s failed again within %.0fs of its restart (%s), "
-                "giving up and taking it out of the Sendspin session",
+                "Sendspin stream on %s failed %d times in a row before it played %.0f s, now "
+                "after %.1f s (%s): giving up and taking it out of the Sendspin session",
                 self.protocol.display_name,
-                RECOVERY_GUARD_US / 1_000_000,
+                self._quick_failures,
+                min_played_s,
+                played_s,
                 reason,
             )
             # Sendspin reports playback from the state of the group, so a bridge that
@@ -1301,11 +1329,20 @@ class SendspinSqueezeliteBridge:
             self._close_session(session, stop_player=True)
             self.mass.create_task(self._leave_sendspin_session())
             return
-        self._last_recovery_us = now_us
-        self.logger.warning(
-            "Sendspin stream on %s is restarted: %s", self.protocol.display_name, reason
+        count = (
+            f" (failure {self._quick_failures} of {MAX_QUICK_FAILURES} in a row before "
+            f"{min_played_s:.0f} s)"
+            if quick
+            else ""
         )
-        self._begin_session(session.unplayed(now_us), session.audio_format)
+        self.logger.warning(
+            "Sendspin stream on %s is restarted after it played %.1f s%s: %s",
+            self.protocol.display_name,
+            played_s,
+            count,
+            reason,
+        )
+        self._begin_session(session.unplayed(self._clock.now_us()), session.audio_format)
 
     async def _leave_sendspin_session(self, *, rejoin: bool = True) -> None:
         """
@@ -1337,12 +1374,12 @@ class SendspinSqueezeliteBridge:
         self._cancel_rejoin()
         if not rejoin:
             return
-        last_rejoin_us = self._last_rejoin_us
-        if last_rejoin_us is not None and self._clock.now_us() - last_rejoin_us < RECOVERY_GUARD_US:
+        if self._rejoined:
             self.logger.warning(
-                "%s gave up again within %.0fs of being re-joined, leaving it out of the group",
+                "%s gave up again before it played %.0f s since it was re-joined, leaving it "
+                "out of the group until it is grouped again",
                 self.protocol.display_name,
-                RECOVERY_GUARD_US / 1_000_000,
+                MIN_PLAYED_US / 1_000_000,
             )
             return
         self._schedule_rejoin(group, REJOIN_ATTEMPT_DELAYS)
@@ -1397,7 +1434,7 @@ class SendspinSqueezeliteBridge:
                         err,
                     )
                     continue
-                self._last_rejoin_us = self._clock.now_us()
+                self._rejoined = True
                 self.logger.info("Re-joined %s to its Sendspin group", name)
                 return
             self.logger.warning(

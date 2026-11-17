@@ -59,12 +59,12 @@ from music_assistant.providers.squeezelite.sendspin_bridge import (
     MAX_PENDING_AUDIO_US,
     MAX_PENDING_CHUNKS,
     MAX_PENDING_STATUS,
+    MAX_QUICK_FAILURES,
     MAX_START_AHEAD_US,
     MIN_START_AHEAD_US,
     OUTPUT_THRESHOLD,
     PREROLL_US,
     RECONNECT_REJOIN_WINDOW,
-    RECOVERY_GUARD_US,
     START_LEAD_US,
     STARVED_LEAD_US,
     STATUS_POLL_INTERVAL,
@@ -496,12 +496,18 @@ class _Rig:
         server_us = self.now_us if server_us is None else server_us
         return JIFFIES_AT_EPOCH + (server_us - EPOCH_US) // 1000
 
-    def map_clock(self) -> None:
-        """Let the bridge know the player's clock, from three replies to its requests."""
+    def map_clock(self, *, elapsed_ms: int = 0) -> None:
+        """
+        Let the bridge know the player's clock, from three replies to its requests.
+
+        :param elapsed_ms: The elapsed time of its stream by the last of them.
+        """
         for number, back_us in enumerate((400_000, 200_000, 0)):
             token = STATUS_TOKEN_BIT | (1 << 30) + number
             self.bridge._pending_status[token] = self.now_us - back_us
-            self.bridge.handle_slim_event(self.status(token=token, at_us=self.now_us - back_us))
+            elapsed = max(0, elapsed_ms - back_us // 1000)
+            status = self.status(elapsed_ms=elapsed, token=token, at_us=self.now_us - back_us)
+            self.bridge.handle_slim_event(status)
 
     def status(self, *, elapsed_ms: int = 0, token: int = 0, at_us: int | None = None) -> SlimEvent:
         """
@@ -649,6 +655,38 @@ class _Rig:
         while not session.loop.on_timeline:
             self.play(session, 0.25)
             assert self.now_us - session.start_us < 10_000_000, "the player is not followed"
+
+    async def await_start(self) -> BridgeSession:
+        """
+        Take the current stream up to the start instant of the player.
+
+        The player of a restarted stream answers its status requests, fetches the stream
+        and reports its buffer ready first.
+        """
+        session = self.session
+        if session.loop is None:
+            if not session.clock_mapped.is_set():
+                self.map_clock()
+                await _settle()
+            self.fetched(session)
+            self.event(SlimEventType.PLAYER_BUFFER_READY)
+            await _settle()
+        assert session.loop is not None
+        self.clock.advance_us(max(0, session.start_us - self.now_us))
+        return session
+
+    async def run_dry(self, *, played_s: float = 0) -> None:
+        """
+        Let the player play the current stream from its start instant on, then run out of audio.
+
+        :param played_s: How long it plays, and reports that, before it runs dry.
+        """
+        session = await self.await_start()
+        self.play(session, played_s)
+        # it answers its status requests all along
+        self.map_clock(elapsed_ms=round(played_s * 1000))
+        self.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+        await _settle()
 
     def first_audio(
         self, session: BridgeSession, sent: bytes, *, late_ms: int = 0
@@ -2834,18 +2872,19 @@ async def test_a_buffer_ready_of_the_stream_before_is_ignored(rig: _Rig) -> None
 
 
 async def test_a_player_that_does_not_get_ready_has_its_stream_restarted(rig: _Rig) -> None:
-    """A stream that the player never fetches is requested again, once."""
+    """A stream that the player never fetches is requested again, twice."""
     with patch(f"{MODULE}.START_TIMEOUT_SECONDS", 0.2):
         first = await rig.start_stream()
         await _wait_for(lambda: rig.client.play_url.await_count == 2)
 
         assert rig.session is not first
         assert first.ended
+        await _wait_for(lambda: rig.client.play_url.await_count == 3)
         rig.client.stop.assert_not_called()
-        # again this soon: the player is given up on
+        # a third stream that played nothing: the player is given up on
         await _wait_for(lambda: not rig.owns_stream())
 
-    assert rig.client.play_url.await_count == 2
+    assert rig.client.play_url.await_count == 3
     rig.client.stop.assert_awaited_once()
 
 
@@ -3446,12 +3485,10 @@ async def test_nothing_is_left_on_the_player_when_its_stream_is_over(rig: _Rig, 
         session.started = False
         rig.bridge._on_stream_end()
     else:
-        rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
-        await _settle()
-        rig.client.clear_media.assert_not_called()
-        rig.fetched(rig.session)
-        rig.event(SlimEventType.PLAYER_BUFFER_READY)
-        rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+        for _ in range(MAX_QUICK_FAILURES - 1):
+            await rig.run_dry()
+            rig.client.clear_media.assert_not_called()
+        await rig.run_dry()
     await _settle()
 
     assert not rig.owns_stream()
@@ -3585,7 +3622,8 @@ async def test_an_underrun_tells_what_the_bridge_knew(
     # the stream was 6 seconds ahead when the player stopped taking it, and the block of
     # 50 ms after that waits: 7 of the 30 chunks of a second went out whole
     assert (
-        "Sendspin stream on Kitchen is restarted: it ran out of audio (prepared 4700 ms ahead, "
+        "Sendspin stream on Kitchen is restarted after it played 4.5 s (failure 1 of 3 in a row "
+        "before 10 s): it ran out of audio (prepared 4700 ms ahead, "
         f"{written} bytes written, a write waits for 1300 ms, 23000 ms of audio waiting, the player "
         "got 1000000 bytes and held 65536 of 3145728 in its stream buffer and 1234 of 3528000 "
         "in its output buffer 100 ms ago)"
@@ -3705,60 +3743,157 @@ async def test_an_underrun_before_the_start_is_not_one_of_the_stream(rig: _Rig) 
     assert rig.client.play_url.await_count == 1
 
 
-async def test_a_second_underrun_gives_up_and_rejoins_later(rig: _Rig) -> None:
-    """A stream that fails again within 30 seconds takes the player out of the session."""
+@pytest.mark.parametrize("played_s", [0, 9.75])
+async def test_three_streams_in_a_row_that_fail_early_give_up_and_rejoin_later(
+    rig: _Rig, played_s: float
+) -> None:
+    """A third stream in a row that fails before it played 10 seconds takes the player out of the session."""
     client = rig.grouped()
     group = client.group
     await rig.start_playing()
-    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
-    await _settle()
-    rig.fetched(rig.session)
-    rig.event(SlimEventType.PLAYER_BUFFER_READY)
-    rig.clock.advance_us(RECOVERY_GUARD_US - 1)
+    for _ in range(MAX_QUICK_FAILURES - 1):
+        await rig.run_dry(played_s=played_s)
+    assert rig.owns_stream()
+    assert rig.client.play_url.await_count == 3
+    rig.client.stop.assert_not_called()
+    client.quiesce_to_solo_stopped.assert_not_called()
 
     with patch(f"{MODULE}.REJOIN_ATTEMPT_DELAYS", (0,)):
-        rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
-        await _settle()
+        await rig.run_dry(played_s=played_s)
 
     assert not rig.owns_stream()
-    assert rig.client.play_url.await_count == 2
+    assert rig.client.play_url.await_count == 3
     rig.client.stop.assert_awaited_once_with()
     client.quiesce_to_solo_stopped.assert_awaited_once()
     group.add_client.assert_awaited_once_with(client)
 
 
-async def test_an_underrun_long_after_a_restart_restarts_again(rig: _Rig) -> None:
-    """A restart that held for 30 seconds worked."""
-    rig.bridge._sendspin_client = client = _grouped_client()
+async def test_a_player_whose_streams_play_10_seconds_stays_in(rig: _Rig) -> None:
+    """A stream that failed after it played 10 seconds is restarted, however often that happens."""
+    client = rig.grouped()
     await rig.start_playing()
-    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
-    await _settle()
-    rig.fetched(rig.session)
-    rig.event(SlimEventType.PLAYER_BUFFER_READY)
-    rig.clock.advance_us(RECOVERY_GUARD_US)
-    # the player answers its status requests all along
-    rig.map_clock()
 
-    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
-    await _settle()
+    for _ in range(2 * MAX_QUICK_FAILURES):
+        await rig.run_dry(played_s=10)
 
     assert rig.owns_stream()
-    assert rig.client.play_url.await_count == 3
+    assert rig.client.play_url.await_count == 1 + 2 * MAX_QUICK_FAILURES
+    rig.client.stop.assert_not_called()
     client.quiesce_to_solo_stopped.assert_not_called()
+
+
+async def test_a_stream_that_played_10_seconds_starts_the_count_again(rig: _Rig) -> None:
+    """Two early failures are forgotten once a stream played long enough: it takes three more."""
+    client = rig.grouped()
+    await rig.start_playing()
+    await rig.run_dry()
+    await rig.run_dry(played_s=3)
+
+    await rig.run_dry(played_s=10)
+    await rig.run_dry()
+    await rig.run_dry(played_s=3)
+
+    assert rig.owns_stream()
+    assert rig.client.play_url.await_count == 6
+    client.quiesce_to_solo_stopped.assert_not_called()
+    await rig.run_dry()
+    assert not rig.owns_stream()
+    client.quiesce_to_solo_stopped.assert_awaited_once()
+
+
+@pytest.mark.parametrize("reports", ["nothing", "nothing played", "the stream before"])
+async def test_only_what_a_player_reports_of_its_stream_counts_as_played(
+    rig: _Rig, reports: str
+) -> None:
+    """The time a player takes to get going is not played, and neither is a position of another stream."""
+    client = rig.grouped()
+    await rig.start_playing()
+
+    for _ in range(MAX_QUICK_FAILURES):
+        assert rig.owns_stream()
+        session = await rig.await_start()
+        if reports == "nothing":
+            rig.clock.advance_us(30_000_000)
+        elif reports == "nothing played":
+            rig.play(session, 30, late_ms=60_000)
+        else:
+            # an hour played, a quarter of a second after it was told to start
+            rig.play(session, 0.25, late_ms=-3_600_000)
+        rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+        await _settle()
+
+    assert not rig.owns_stream()
+    assert rig.client.play_url.await_count == 3
+    client.quiesce_to_solo_stopped.assert_awaited_once()
+
+
+async def test_a_player_that_ends_up_off_its_timeline_every_time_is_taken_out(rig: _Rig) -> None:
+    """A stream that is restarted for a player that stays off its timeline did not play 10 seconds."""
+    client = rig.grouped()
+    await rig.start_playing()
+
+    for _ in range(MAX_QUICK_FAILURES):
+        assert rig.owns_stream()
+        session = await rig.await_start()
+        # it plays for two seconds and stalls without running dry
+        rig.play(session, 2)
+        for _ in range(18):
+            rig.clock.advance_us(250_000)
+            rig.bridge.handle_slim_event(rig.status(elapsed_ms=2000))
+        await _settle()
+        assert session.ended
+
+    assert not rig.owns_stream()
+    assert rig.client.play_url.await_count == 3
+    client.quiesce_to_solo_stopped.assert_awaited_once()
+
+
+async def test_the_log_tells_why_a_stream_was_restarted_and_why_its_player_left(
+    rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A restart tells what the player did and how long it had played, a give-up how often it failed."""
+    rig.grouped()
+    await rig.start_playing()
+    supply = "it ran out of audio (prepared "
+
+    await rig.run_dry(played_s=12.5)
+    await rig.run_dry(played_s=2)
+    await rig.run_dry()
+    records = [record for record in caplog.records if "is restarted" in record.getMessage()]
+    assert [record.levelno for record in records] == [logging.WARNING] * 3
+    restarts = [record.getMessage() for record in records]
+    assert [message.partition(supply)[0] for message in restarts] == [
+        "Sendspin stream on Kitchen is restarted after it played 12.5 s: ",
+        "Sendspin stream on Kitchen is restarted after it played 2.0 s (failure 1 of 3 in a row "
+        "before 10 s): ",
+        "Sendspin stream on Kitchen is restarted after it played 0.0 s (failure 2 of 3 in a row "
+        "before 10 s): ",
+    ]
+    assert all(supply in message for message in restarts)
+    assert not [record for record in caplog.records if record.levelno > logging.WARNING]
+
+    await rig.run_dry(played_s=0.5)
+    (gave_up,) = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert gave_up.getMessage().startswith(
+        "Sendspin stream on Kitchen failed 3 times in a row before it played 10 s, now after "
+        f"0.5 s ({supply}"
+    )
+    assert gave_up.getMessage().endswith("): giving up and taking it out of the Sendspin session")
+    assert len([record for record in caplog.records if "is restarted" in record.getMessage()]) == 3
 
 
 async def test_a_new_sendspin_stream_has_its_own_recovery_budget(rig: _Rig) -> None:
     """A failure on the stream before says nothing about this one."""
     await rig.start_playing()
-    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
-    await _settle()
+    for _ in range(MAX_QUICK_FAILURES - 1):
+        await rig.run_dry()
 
     await rig.start_playing()
-    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
-    await _settle()
+    for _ in range(MAX_QUICK_FAILURES - 1):
+        await rig.run_dry()
 
     assert rig.owns_stream()
-    assert rig.client.play_url.await_count == 4
+    assert rig.client.play_url.await_count == 2 * MAX_QUICK_FAILURES
 
 
 async def test_a_return_survives_the_stream_start_it_causes(rig: _Rig) -> None:
@@ -3778,31 +3913,68 @@ async def test_a_return_survives_the_stream_start_it_causes(rig: _Rig) -> None:
         await _settle()
 
     group.add_client.assert_awaited_once_with(client)
-    assert rig.bridge._last_rejoin_us == rig.now_us
+    assert rig.bridge._rejoined
 
 
-async def test_a_bridge_that_gave_up_right_after_its_return_stays_out(rig: _Rig) -> None:
-    """A player that fails again within 30 seconds of being put back is left out."""
+async def test_a_bridge_that_gives_up_again_before_it_played_stays_out(
+    rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A player that was put back and gives up again without 10 seconds played since is left out."""
     client = rig.grouped()
     group = client.group
-    rig.bridge._last_rejoin_us = rig.now_us - RECOVERY_GUARD_US + 1
-
     with patch(f"{MODULE}.REJOIN_ATTEMPT_DELAYS", (0,)):
-        await rig.bridge._leave_sendspin_session()
-        await _settle()
+        await rig.start_playing()
+        for _ in range(MAX_QUICK_FAILURES):
+            await rig.run_dry()
+        group.add_client.assert_awaited_once_with(client)
+        assert "gave up again" not in caplog.text
 
-    client.quiesce_to_solo_stopped.assert_awaited_once()
-    group.add_client.assert_not_called()
+        # its return starts a stream, which plays a little short of that before it fails
+        client.group = group
+        await rig.start_playing()
+        await rig.run_dry(played_s=9.75)
+        await rig.run_dry()
+        assert rig.owns_stream()
+        await rig.run_dry()
 
-    # half a minute after its return it is given another go
-    client = rig.grouped()
-    group = client.group
-    rig.bridge._last_rejoin_us = rig.now_us - RECOVERY_GUARD_US
-    with patch(f"{MODULE}.REJOIN_ATTEMPT_DELAYS", (0,)):
-        await rig.bridge._leave_sendspin_session()
-        await _settle()
-
+    assert not rig.owns_stream()
+    assert client.quiesce_to_solo_stopped.await_count == 2
     group.add_client.assert_awaited_once_with(client)
+    (left_out,) = [record for record in caplog.records if "gave up again" in record.getMessage()]
+    assert left_out.levelno == logging.WARNING
+    assert left_out.getMessage() == (
+        "Kitchen gave up again before it played 10 s since it was re-joined, leaving it out of "
+        "the group until it is grouped again"
+    )
+
+
+@pytest.mark.parametrize("ended_by", ["a failure", "a new stream"])
+async def test_a_bridge_that_played_since_its_return_is_put_back_again(
+    rig: _Rig, ended_by: str
+) -> None:
+    """A return that led to 10 seconds of playing worked: the next give-up gets a return of its own."""
+    client = rig.grouped()
+    group = client.group
+    with patch(f"{MODULE}.REJOIN_ATTEMPT_DELAYS", (0,)):
+        await rig.start_playing()
+        for _ in range(MAX_QUICK_FAILURES):
+            await rig.run_dry()
+        group.add_client.assert_awaited_once_with(client)
+
+        client.group = group
+        await rig.start_playing()
+        if ended_by == "a failure":
+            await rig.run_dry(played_s=10)
+        else:
+            rig.play(await rig.await_start(), 10)
+            await rig.start_playing()
+        for _ in range(MAX_QUICK_FAILURES):
+            assert rig.owns_stream()
+            await rig.run_dry()
+
+    assert not rig.owns_stream()
+    assert client.quiesce_to_solo_stopped.await_count == 2
+    assert group.add_client.await_count == 2
 
 
 @pytest.mark.parametrize("blocker", ["grouped", "streaming", "playing", "group gone"])
@@ -3847,7 +4019,7 @@ async def test_the_return_waits_for_the_sendspin_protocol_of_the_bridge(rig: _Ri
     group.add_client.assert_awaited_once_with(client)
     # on the third attempt, the first one that found the protocol attached
     assert rig.mass.players.get_protocol.call_count == 3
-    assert rig.bridge._last_rejoin_us == rig.now_us
+    assert rig.bridge._rejoined
 
 
 async def test_a_stream_start_cancels_a_pending_return(rig: _Rig) -> None:
