@@ -14,7 +14,7 @@ aiojellyfin==0.14.1
 aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive
 aiomusiccast==0.15.0
 aiosendspin[server]==10.3.0
-aioslimproto==3.6.1
+aioslimproto==3.6.2
 aiosonos==0.2.0
 aiosqlite==0.22.1
 aiosxm==0.3.1
@@ -51,8 +51,8 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.22
 modern_colorthief==0.3.0
-music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/2.17.371/music_assistant_frontend-2.17.371-py3-none-any.whl#sha256=b1eab1e106a1e1ef9f18ab8ce5f2a3530773305a426af4b81a6eb4598efc7d83
-music-assistant-models==1.1.241
+music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/2.17.373/music_assistant_frontend-2.17.373-py3-none-any.whl#sha256=5ee4f94374ba62b81c5340a761b5f5ca89e5b814da937db3bc8a41f379f67413
+music-assistant-models==1.1.242
 mutagen==1.48.1
 niconico.py-ma==3.0.0
 nnAudio==0.3.4

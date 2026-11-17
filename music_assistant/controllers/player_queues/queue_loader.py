@@ -541,6 +541,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
     async def _get_resume_position(self, queue_item: QueueItem) -> int:
         """Return the position (in seconds) to resume an audiobook/episode from, 0 to start over."""
+        if getattr(queue_item.media_item, "fully_played", False):
+            return 0
         if not (resume_position_ms := getattr(queue_item.media_item, "resume_position_ms", 0)):
             return 0
         # the client may have fetched the item before its duration was known
@@ -1357,8 +1359,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
-        # a dynamic queue is an always-on smart mix; reflect that in the (now locked) shuffle state
+        # a dynamic queue is an always-on smart mix; reflect that in the (now locked) shuffle
+        # and repeat states
         queue.shuffle_enabled = True
+        queue.repeat_mode = RepeatMode.OFF
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         # rebuild from the buffered position so the already-prepared next track is kept and the
         # crossfade isn't disturbed; fall back to the current index (or the front when idle/empty)

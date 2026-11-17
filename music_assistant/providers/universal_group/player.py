@@ -465,11 +465,12 @@ class UniversalGroupPlayer(PlayerProtocol):
                     translation_args=[self.display_name],
                 )
             self._attr_group_members.remove(player_id)
-            child_player = self.mass.players.get_player(player_id, True)
-            assert child_player is not None  # for type checking
-            if child_player.playback_state in (
-                PlaybackState.PLAYING,
-                PlaybackState.PAUSED,
+            child_player = self.mass.players.get_player(player_id)
+            # a member that can not be reached is only taken off the list
+            if (
+                child_player is not None
+                and child_player.available
+                and child_player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
             ):
                 # if the child player is playing the group stream, stop it
                 # Use internal handler to get protocol selection and avoid redirect

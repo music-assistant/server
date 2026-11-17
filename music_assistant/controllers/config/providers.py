@@ -50,6 +50,7 @@ from music_assistant.controllers.config.constants import BASE_KEYS, _ConfigValue
 from music_assistant.controllers.config.helpers import (
     _mask_encrypted,
     _provider_status,
+    _raw_config_to_store,
     _reject_encrypted_values,
     _unavailable_provider_config,
     _with_translation_owner,
@@ -752,11 +753,16 @@ class ProviderConfigMixin:
     ) -> ProviderConfig:
         """Update ProviderConfig."""
         config = await self.get_provider_config(instance_id)
+        conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
+        stored_values = (self.get(conf_key) or {}).get("values", {})
         changed_keys = config.update(values)
+        raw_conf = _raw_config_to_store(config, stored_values, values)
         prov_instance = self.mass.get_provider(instance_id)
         available = prov_instance.available if prov_instance else False
         if not changed_keys and (config.enabled == available):
-            # no changes
+            if raw_conf["values"] != stored_values:
+                # only the storage changed, not the config: nothing to apply
+                self.set(conf_key, raw_conf)
             return config
         if not config.enabled:
             prov_manifest = self.mass.get_provider_manifest(config.domain)
@@ -770,18 +776,6 @@ class ProviderConfigMixin:
         config.validate()
         # save the config first to prevent issues when the
         # provider wants to manipulate the config during load
-        conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
-        raw_conf = config.to_raw()
-        # Preserve stored values that don't have config entries in the current context
-        # (e.g. values written by a provider at runtime while its declared entries
-        # changed) - to_raw() only rebuilds the values from the declared entries.
-        existing_values = (self.get(conf_key) or {}).get("values", {})
-        new_values = raw_conf.get("values", {})
-        config_entry_keys = set(config.values.keys())
-        for key, value in existing_values.items():
-            if key not in new_values and key not in config_entry_keys:
-                new_values[key] = value
-        raw_conf["values"] = new_values
         self.set(conf_key, raw_conf)
         try:
             if config.enabled and prov_instance and available:

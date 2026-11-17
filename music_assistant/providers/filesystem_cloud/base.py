@@ -395,7 +395,11 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
 
     async def _parse_tags(self, file_item: FileSystemItem) -> AudioTags:
         """Parse the tags of a cloud file from its stream URL."""
-        return await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        # ffprobe reports the (url-encoded) stream URL as filename; the title/track/artist
+        # fallbacks parse the filename, so hand them the real cloud path instead
+        tags.filename = file_item.relative_path
+        return tags
 
     def _get_chapter_path(self, relative_path: str) -> str:
         """Return the streamable URL for an audiobook chapter file."""

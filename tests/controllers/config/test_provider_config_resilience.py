@@ -25,6 +25,7 @@ from music_assistant_models.config_entries import ProviderError
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import (
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
     CONF_PLAYER_SPLIT_SESSION_ONLY,
     CONF_PLAYER_SPLIT_TREE,
     CONF_PROVIDERS,
@@ -64,6 +65,7 @@ async def test_migrate_leaves_valid_provider_configs_alone() -> None:
         # the player configs are split already
         CONF_PLAYER_SPLIT_SESSION_ONLY: True,
         CONF_PLAYER_SPLIT_TREE: True,
+        CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: True,
     }
     assert await migrate(data) is False
     assert "filesystem_local--1" in data[CONF_PROVIDERS]

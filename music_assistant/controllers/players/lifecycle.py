@@ -123,7 +123,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         The controller detaches the protocol from its player, which tells it through
         on_detach, and calls off a registration of it that is still in progress. The
         player stays and keeps its queue; it is unavailable while none of its other
-        protocols is available, unless it is switched off at its external power control.
+        protocols is available, unless it is switched off at a power control that cuts
+        its power.
         A player that only exists while its device is connected goes with its last
         protocol, unless it is kept: the user changed its config, a plugin keeps it (see
         keep_player), or its queue has items. Silently ignored for a protocol the
@@ -811,6 +812,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         for prefix in [p.value for p in PlayerLockPurpose]:
             self._player_command_locks.pop(f"{prefix}_{player_id}", None)
         self._clear_sleep_timer(player)
+        self._drop_power_state(player)
         self.mass.cancel_timer(f"player_update_state_{player_id}")
         # once the player is gone its id can be a legacy id of another player, whose queue
         # this update must not reach

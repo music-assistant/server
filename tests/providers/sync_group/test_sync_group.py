@@ -37,6 +37,7 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_MUTE_CONTROL,
     CONF_POWER_CONTROL,
+    CONF_POWER_CONTROL_CUTS_POWER,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_VOLUME_CONTROL,
 )
@@ -370,8 +371,9 @@ class TestProtocolAwareLeaderSelection:
         plug = PlayerControl(
             id="switch.plug", provider="hass", name="Plug", supports_power=True, power_state=False
         )
+        on_the_plug = {CONF_POWER_CONTROL: plug.id, CONF_POWER_CONTROL_CUTS_POWER: True}
         mass.config.get_player_value.side_effect = lambda player_id, key, default=None: (
-            plug.id if (player_id, key) == ("switched_off", CONF_POWER_CONTROL) else default
+            on_the_plug.get(key, default) if player_id == "switched_off" else default
         )
         mass.players.get_player_control.side_effect = {plug.id: plug}.get
         switched_off._cache.clear()

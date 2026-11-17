@@ -70,6 +70,7 @@ if TYPE_CHECKING:
 
 CONF_URL = "url"
 SUPPORTED_FEATURES = {
+    ProviderFeature.FAVORITE_TRACKS_EDIT,
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
@@ -92,6 +93,29 @@ class JellyfinProvider(MusicProvider):
     """Provider for a jellyfin music library."""
 
     _verify_ssl: bool = True
+
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """Write track Favorite status to the connected Jellyfin account."""
+        if media_type != MediaType.TRACK:
+            return
+        # aiojellyfin has no Favorite writer; reuse its authenticated session settings.
+        config = self._client._session_config
+        url = f"{self._client.base_url}/Users/{self._client._user_id}/FavoriteItems/{prov_item_id}"
+        async with config.session.request(
+            "POST" if favorite else "DELETE",
+            url,
+            headers={
+                "Authorization": config.authentication_header(self._client._access_token),
+                "User-Agent": config.user_agent,
+            },
+            ssl=config.verify_ssl,
+            raise_for_status=True,
+        ) as response:
+            await response.read()
+        # Cached track, album and playlist reads include Jellyfin's per-user Favorite flag.
+        await self.mass.cache.delete(None, category=0, provider=self.instance_id)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""

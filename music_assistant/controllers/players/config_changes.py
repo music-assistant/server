@@ -20,6 +20,8 @@ from music_assistant.constants import (
     ATTR_GROUP_VOLUME_SNAPSHOT,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
+    CONF_POWER_CONTROL,
+    CONF_POWER_CONTROL_CUTS_POWER,
 )
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -33,6 +35,11 @@ if TYPE_CHECKING:
 # How long a queue that is restarted for a changed setting waits after its stop before it
 # resumes, so the stop has reached the device before the new stream starts.
 CONFIG_CHANGE_RESUME_DELAY = 1
+
+# The settings that decide whether, and at which control, the power of a player is cut.
+_POWER_CUT_KEYS = frozenset(
+    {f"values/{CONF_POWER_CONTROL}", f"values/{CONF_POWER_CONTROL_CUTS_POWER}"}
+)
 
 
 class ConfigChangesMixin(_PlayerControllerBase):
@@ -62,6 +69,9 @@ class ConfigChangesMixin(_PlayerControllerBase):
         if not player:
             return  # a player that is not there takes its config when it comes back
 
+        if changed_keys & _POWER_CUT_KEYS:
+            # what is kept about its power belongs to the control and the setting it had
+            self._drop_power_state(player, release=True)
         # ensure player state gets updated with any updated config
         player.set_config(await self.mass.config.get_player_object_config(player))
         if (own := player.own_protocol) is not None:

@@ -1,10 +1,11 @@
 """
 Tests for what a core config save keeps in, and drops from, persistent storage.
 
-State a core controller keeps next to its settings belongs in a declared (hidden) config
-entry; keeping undeclared raw values across a save is the safety net, not the contract.
-The same safety net covers keys stored next to the values, which is where the tasks
-controller keeps its scheduler state.
+A stored value is a choice of the user and stays stored, also when it equals its default;
+None unsets it. State a core controller keeps next to its settings belongs in a declared
+(hidden) config entry; keeping undeclared raw values across a save is the safety net, not
+the contract. The same safety net covers keys stored next to the values, which is where
+the tasks controller keeps its scheduler state.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import pytest
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_CORE, CONF_LOG_LEVEL
 from music_assistant.controllers.cache.constants import CACHE_DATABASE_CLEANUP_TASK_ID
@@ -26,6 +29,10 @@ _RAW_KEY = "runtime_state"
 _RAW_VALUE = ["spotify--abc", "tidal--def"]
 _TOP_LEVEL_KEY = "scheduler_state"
 _TOP_LEVEL_VALUE = {"some_task": {"status": "idle", "schedule": {"enabled": False}}}
+_OTHER_KEY = "other_setting"
+_OTHER_ENTRY = ConfigEntry(
+    key=_OTHER_KEY, type=ConfigEntryType.INTEGER, default_value=0, required=False
+)
 
 
 @pytest.fixture
@@ -54,18 +61,61 @@ async def test_undeclared_raw_value_survives_a_core_config_save(stub_mass: Music
     assert stub_mass.config.get_raw_core_config_value(_DOMAIN, CONF_LOG_LEVEL) == "DEBUG"
 
 
-async def test_declared_value_at_its_default_is_dropped_from_storage(
+async def test_declared_value_set_back_to_its_default_stays_stored(
     stub_mass: MusicAssistant,
 ) -> None:
-    """Storage stays minimal: a declared entry set back to its default leaves no value behind."""
+    """A declared value set back to its default stays stored, also through a save of another."""
+    getattr(stub_mass, _DOMAIN).get_config_entries.return_value = (_OTHER_ENTRY,)
     stub_mass.config.set_raw_core_config_value(_DOMAIN, _RAW_KEY, _RAW_VALUE)
     await stub_mass.config.save_core_config(_DOMAIN, {CONF_LOG_LEVEL: "DEBUG"})
-
     await stub_mass.config.save_core_config(_DOMAIN, {CONF_LOG_LEVEL: "GLOBAL"})
+
+    await stub_mass.config.save_core_config(_DOMAIN, {CONF_LOG_LEVEL: "GLOBAL", _OTHER_KEY: 5})
+
+    stored_values = stub_mass.config.get(f"{CONF_CORE}/{_DOMAIN}/values")
+    assert stored_values[CONF_LOG_LEVEL] == "GLOBAL"
+    assert stored_values[_OTHER_KEY] == 5
+    assert stored_values[_RAW_KEY] == _RAW_VALUE
+
+
+async def test_declared_value_at_its_default_is_not_stored_when_new(
+    stub_mass: MusicAssistant,
+) -> None:
+    """Storage stays minimal: a value that was not stored is only stored when it is no default."""
+    await stub_mass.config.save_core_config(_DOMAIN, {CONF_LOG_LEVEL: "GLOBAL"})
+
+    assert CONF_LOG_LEVEL not in stub_mass.config.get(f"{CONF_CORE}/{_DOMAIN}/values", {})
+
+
+async def test_declared_value_submitted_as_none_is_unset(stub_mass: MusicAssistant) -> None:
+    """A value submitted as None leaves storage and the controller applies its default."""
+    controller = getattr(stub_mass, _DOMAIN)
+    stub_mass.config.set_raw_core_config_value(_DOMAIN, _RAW_KEY, _RAW_VALUE)
+    await stub_mass.config.save_core_config(_DOMAIN, {CONF_LOG_LEVEL: "DEBUG"})
+    controller.update_config.reset_mock()
+
+    config = await stub_mass.config.save_core_config(_DOMAIN, {CONF_LOG_LEVEL: None})
 
     stored_values = stub_mass.config.get(f"{CONF_CORE}/{_DOMAIN}/values")
     assert CONF_LOG_LEVEL not in stored_values
     assert stored_values[_RAW_KEY] == _RAW_VALUE
+    assert config.get_value(CONF_LOG_LEVEL) == "GLOBAL"
+    controller.update_config.assert_awaited_once()
+
+
+async def test_unsetting_a_value_at_its_default_is_stored_without_applying_it(
+    stub_mass: MusicAssistant,
+) -> None:
+    """Unsetting a stored value that equals its default changes storage, not the controller."""
+    controller = getattr(stub_mass, _DOMAIN)
+    await stub_mass.config.save_core_config(_DOMAIN, {CONF_LOG_LEVEL: "DEBUG"})
+    await stub_mass.config.save_core_config(_DOMAIN, {CONF_LOG_LEVEL: "GLOBAL"})
+    controller.update_config.reset_mock()
+
+    await stub_mass.config.save_core_config(_DOMAIN, {CONF_LOG_LEVEL: None})
+
+    assert CONF_LOG_LEVEL not in stub_mass.config.get(f"{CONF_CORE}/{_DOMAIN}/values")
+    controller.update_config.assert_not_awaited()
 
 
 async def test_a_failed_save_reverts_without_dropping_undeclared_values(
@@ -81,6 +131,20 @@ async def test_a_failed_save_reverts_without_dropping_undeclared_values(
     stored_values = stub_mass.config.get(f"{CONF_CORE}/{_DOMAIN}/values")
     assert CONF_LOG_LEVEL not in stored_values
     assert stored_values[_RAW_KEY] == _RAW_VALUE
+
+
+async def test_a_failed_save_reverts_to_a_value_stored_at_its_default(
+    stub_mass: MusicAssistant,
+) -> None:
+    """The revert after a failed controller update restores a value stored at its default."""
+    await stub_mass.config.save_core_config(_DOMAIN, {CONF_LOG_LEVEL: "DEBUG"})
+    await stub_mass.config.save_core_config(_DOMAIN, {CONF_LOG_LEVEL: "GLOBAL"})
+    getattr(stub_mass, _DOMAIN).update_config.side_effect = RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await stub_mass.config.save_core_config(_DOMAIN, {CONF_LOG_LEVEL: "DEBUG"})
+
+    assert stub_mass.config.get_raw_core_config_value(_DOMAIN, CONF_LOG_LEVEL) == "GLOBAL"
 
 
 async def test_key_stored_next_to_the_values_survives_a_core_config_save(

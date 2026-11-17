@@ -236,7 +236,9 @@ drops the items themselves, so all of their audio goes with them.
 
 A paused queue keeps its session and its buffers until the pause watcher stops it once the
 configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread
-buffer releases its audio).
+buffer releases its audio). The watcher leaves the queue alone while a command still waits for
+players to start up before it acts on the player of the queue, and counts again from the end of
+that wait: only then can a pause outlast the buffer.
 When playback on another queue finds no free provider stream slot and one of those buffers holds
 one, the paused queue is stopped right away. It resumes later from where it was paused, with a new
 source stream. Preparing the next track ahead of time never stops a paused queue. A player that
