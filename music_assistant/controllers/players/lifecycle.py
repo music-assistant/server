@@ -327,9 +327,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         is out of use: clients are told it is removed, nothing is sent to its device, no
         protocol attaches to it, and its config, settings and saved queue stay. Once the set no
         longer names it, it comes back under its id, unless the user disabled it.
-        Skipped are a protocol without a stored config, one of the player of this protocol, of
-        a group, or of a player that another set holds. Nothing happens for a protocol without
-        a stored config, nor when the list changes nothing.
+        An id in the list is skipped when it has no stored config, or when its player is the
+        player of this protocol, a group, or already part of another set. Nothing happens when
+        this protocol itself has no stored config, or when the list changes nothing.
 
         :param protocol_id: Id of the protocol that delivers the set.
         :param absorbed_protocol_ids: Ids of the protocols of the other speakers of the set,
