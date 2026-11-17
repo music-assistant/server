@@ -2517,11 +2517,18 @@ class TestOwnerChangesWhileWaitingForTheLock:
             _refresh(group, member)
             async with _lock_held_elsewhere(controller, "g1"):
                 waits = record_lock_waits(controller)
-                with pytest.raises(ResourceBusyError):
-                    async with controller.get_group_and_player_lock("member"):
-                        pytest.fail("the body ran without the group's lock")
+                loop = asyncio.get_running_loop()
+                # the clock only moves while the loop waits for a timer: a pause of the
+                # process does not count, any wait does
+                with virtual_loop_clock():
+                    started = loop.time()
+                    with pytest.raises(ResourceBusyError):
+                        async with controller.get_group_and_player_lock("member"):
+                            pytest.fail("the body ran without the group's lock")
+                    waited = loop.time() - started
 
         assert waits == []
+        assert waited < 0.1
 
     async def test_a_player_whose_owner_keeps_changing_fails_as_busy(
         self, controller: PlayerController
@@ -3597,7 +3604,7 @@ class TestOfflinePowerControl:
         assert controller._has_waiting_start(player)
         waits = record_lock_waits(controller)
 
-        async with controller.get_group_and_player_lock("player_1"):
+        async with asyncio.timeout(0.2), controller.get_group_and_player_lock("player_1"):
             pass
 
         assert waits == []
