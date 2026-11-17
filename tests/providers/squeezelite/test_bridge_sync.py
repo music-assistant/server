@@ -573,6 +573,23 @@ def test_player_stays_on_its_timeline_whatever_it_reports_later() -> None:
     assert loop.on_timeline
 
 
+def test_a_report_with_more_to_correct_starts_the_count_over() -> None:
+    """Three reports with little to correct, one with more and three with little again are no four in a row."""
+    # the error is the mean of the last five reports
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US, window_s=1.1)
+    # which is 0.5 ms from the fifth report on, 1.5 ms at the eighth and 0.5 ms after it
+    reports = [0.5] * 7 + [5.5, -4.5, 0.5, 0.5]
+    errors = []
+    for number, late_ms in enumerate(reports):
+        _report(loop, 2000 + number * 250, late_ms)
+        errors.append(loop.error_ms)
+        assert not loop.on_timeline
+    assert errors[4:] == pytest.approx([0.5, 0.5, 0.5, 1.5, 0.5, 0.5, 0.5])
+
+    _report(loop, 2000 + len(reports) * 250, 0.5)
+    assert loop.on_timeline
+
+
 def test_reports_before_a_clock_step_do_not_count_for_the_timeline() -> None:
     """The four reports have to follow each other on one mapping of the clock of the player."""
     loop = SyncLoop(RATE, FRAME_SIZE, START_US)
