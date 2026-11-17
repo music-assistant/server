@@ -438,6 +438,82 @@ async def test_forced_track_refresh_takes_the_lyrics_of_the_local_file_first() -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("force_refresh", [True, False])
+@pytest.mark.parametrize(
+    ("local_lyrics", "local_lrc_lyrics"),
+    [("local plain", None), (None, "[00:01.00]local sync"), (None, None)],
+)
+async def test_track_refresh_keeps_local_lyrics_but_updates_other_metadata(
+    force_refresh: bool, local_lyrics: str | None, local_lrc_lyrics: str | None
+) -> None:
+    """Local lyrics are kept while other metadata from providers is still updated."""
+    enrichment = _enrichment()
+    local = ProviderMapping(
+        item_id="local", provider_domain="filesystem_local", provider_instance="local_1"
+    )
+    local_provider = MagicMock(
+        instance_id="local_1", domain="filesystem_local", is_streaming_provider=False
+    )
+    _mass(enrichment).get_provider = MagicMock(return_value=local_provider)
+    local_item = _track_with_lyrics(local_lyrics, local_lrc_lyrics)
+    local_item.provider = "local_1"
+    _mass(enrichment).music.tracks.get_provider_item = AsyncMock(return_value=local_item)
+    provider_metadata = MediaItemMetadata(
+        lyrics="online plain", lrc_lyrics="[00:02.00]online sync", mood="online mood"
+    )
+    mixed_provider = _metadata_provider("mixed", ProviderFeature.TRACK_METADATA)
+    mixed_provider.supported_features.add(ProviderFeature.LYRICS)
+    mixed_provider.get_track_metadata = AsyncMock(return_value=provider_metadata)
+    enrichment.providers = [mixed_provider]  # type: ignore[misc]
+    track = _track_with_lyrics(None, None, local)
+
+    await enrichment._update_track_metadata(track, force_refresh=force_refresh)
+
+    mixed_provider.get_track_metadata.assert_awaited_once()
+    assert track.metadata.mood == "online mood"
+    if local_lyrics or local_lrc_lyrics:
+        assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == (
+            local_lyrics,
+            local_lrc_lyrics,
+        )
+        assert (provider_metadata.lyrics, provider_metadata.lrc_lyrics) == (
+            "online plain",
+            "[00:02.00]online sync",
+        )
+    else:
+        assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == (
+            "online plain",
+            "[00:02.00]online sync",
+        )
+
+
+@pytest.mark.asyncio
+async def test_track_refresh_does_not_treat_library_fallback_as_local_lyrics() -> None:
+    """A library item returned for a local mapping is not fresh local-file metadata."""
+    enrichment = _enrichment()
+    local = ProviderMapping(
+        item_id="local", provider_domain="filesystem_local", provider_instance="local_1"
+    )
+    local_provider = MagicMock(
+        instance_id="local_1", domain="filesystem_local", is_streaming_provider=False
+    )
+    _mass(enrichment).get_provider = MagicMock(return_value=local_provider)
+    fallback = _track_with_lyrics("stored plain", None)
+    _mass(enrichment).music.tracks.get_provider_item = AsyncMock(return_value=fallback)
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
+    enrichment.providers = [lyrics_provider]  # type: ignore[misc]
+    track = _track_with_lyrics(None, None, local)
+
+    await enrichment._update_track_metadata(track, force_refresh=True)
+
+    lyrics_provider.get_track_metadata.assert_awaited_once()
+    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == (
+        "stored plain",
+        "[00:01.00]sync",
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("lookup", "online_metadata"),
     [
