@@ -1930,6 +1930,7 @@ def _flow_handler(
     controller._log_request = MagicMock()
     controller._update_audio_processing_context = MagicMock()
     controller._open_item_streams = {}
+    controller._flow_bytes_sent = {}
     controller._active_output_streams = 0
     controller.get_crossfade_mode = MagicMock(return_value=CrossfadeMode.DISABLED)
 
