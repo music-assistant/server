@@ -2086,6 +2086,25 @@ start-up time run in the same way.
   - `test_power_control.py::test_a_stop_while_the_plug_of_a_member_is_switched_on_loses_no_power_cut`
   - `test_power_control.py::test_a_switch_on_that_ends_badly_once_the_plug_switched_lets_the_startup_time_run`
 
+### GROUP-61 · A member that is offline can be removed from its group
+
+Office drops off the network while it is a member of a group, and the user takes it out, as the
+group editor does. Office is no longer listed, and nothing is sent to it. When Kitchen leads
+Office and Kitchen's device still lists it, Kitchen's own protocol is asked to let Office go.
+When Lounge leads Study over AirPlay, Lounge's AirPlay receiver lets Study go as soon as Study
+drops off, as in GROUP-6, so the removal finds it gone; Lounge's own protocol, which never held
+Study, is asked nothing. Downstairs, a sync group or a universal group, idle or playing, lists
+Kitchen and Den from then on. When Downstairs has a fixed member list, the removal of Office is
+refused with the same error as that of Den, which is online.
+
+- End-to-end: **yes**. A universal group of two Squeezelite players: stop the container of one,
+  then remove it from the group.
+- Proven by:
+  - `test_grouping.py::test_an_offline_member_its_leader_still_lists_is_removed`
+  - `test_grouping.py::test_an_offline_member_leaves_a_group_over_a_shared_protocol`
+  - `test_grouping.py::test_an_offline_member_is_removed_from_a_group_player`
+  - `test_grouping.py::test_an_offline_member_of_a_fixed_group_is_refused_as_an_online_one`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered
