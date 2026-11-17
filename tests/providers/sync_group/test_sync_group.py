@@ -58,6 +58,7 @@ from tests.common import (
     make_player_state,
     mock_player_mass,
     record_lock_waits,
+    virtual_loop_clock,
 )
 
 # the lock budget of the tests that wait for a real player lock, in seconds
@@ -1364,10 +1365,17 @@ class TestCommandOnAMemberOfASyncGroup:
             player.refresh_state(signal_event=False)
         assert member.active_group == _group_id(group)
         waits = record_lock_waits(players)
+        loop = asyncio.get_running_loop()
 
-        await getattr(players, command)("B")
+        # the clock only moves while the loop waits for a timer: a pause of the process does
+        # not count, any wait does
+        with virtual_loop_clock():
+            started = loop.time()
+            await getattr(players, command)("B")
+            took = loop.time() - started
 
         assert waits == []
+        assert took < LOCK_BUDGET
         leader.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
 
     @pytest.mark.parametrize("command", ["cmd_play", "cmd_resume"])
@@ -1383,10 +1391,17 @@ class TestCommandOnAMemberOfASyncGroup:
             player.refresh_state(signal_event=False)
         assert child.synced_to == "L"
         waits = record_lock_waits(players)
+        loop = asyncio.get_running_loop()
 
-        await getattr(players, command)("B")
+        # the clock only moves while the loop waits for a timer: a pause of the process does
+        # not count, any wait does
+        with virtual_loop_clock():
+            started = loop.time()
+            await getattr(players, command)("B")
+            took = loop.time() - started
 
         assert waits == []
+        assert took < LOCK_BUDGET
         leader.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
         child.own_protocol.play_media.assert_not_awaited()  # type: ignore[union-attr]
 
