@@ -10,13 +10,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from music_assistant_models.api import CommandMessage
 from music_assistant_models.errors import RateLimited
 
 from music_assistant.controllers.webserver import websocket_client
 from music_assistant.controllers.webserver.helpers import login_flow
 from music_assistant.controllers.webserver.helpers.login_flow import (
+    AUTHORIZATION_CODE_TTL,
+    MAX_AUTHORIZATION_CODES,
     MAX_PENDING_LOGINS,
     PENDING_LOGIN_TTL,
+    AuthorizationCodeStore,
     AuthTransport,
     PendingLoginStore,
     verify_pkce,
@@ -116,6 +120,87 @@ def test_starts_beyond_the_limit_are_refused_until_some_expire() -> None:
     assert list(store._pending) == [pending.state]
 
 
+def test_a_pending_sign_in_carries_what_the_client_started_it_with() -> None:
+    """The purpose, client state and device name of a start are kept, get does not use it up."""
+    store = PendingLoginStore()
+    pending = store.start(
+        "homeassistant",
+        AuthTransport.DIRECT,
+        "http://ma.local/cb",
+        "verifier",
+        client_code_challenge=RFC_7636_CHALLENGE,
+        client_state="client-state",
+        device_name="Phone",
+    )
+
+    assert store.get(pending.state) is pending
+    assert store.pop(pending.state) is pending
+    assert (pending.purpose, pending.client_state, pending.device_name) == (
+        "login",
+        "client-state",
+        "Phone",
+    )
+    assert store.get(pending.state) is None
+
+
+def test_a_one_time_code_is_redeemed_once_with_its_verifier() -> None:
+    """A code is good for one exchange with its state and verifier, and is stored hashed."""
+    store = AuthorizationCodeStore()
+    code = store.issue("w.state", "user-1", RFC_7636_CHALLENGE, device_name="Phone")
+
+    assert len(code) >= 43
+    assert code not in store._codes
+    entry = store.redeem(code, "w.state", RFC_7636_VERIFIER)
+    assert entry is not None
+    assert (entry.user_id, entry.purpose, entry.device_name) == ("user-1", "login", "Phone")
+    assert store.redeem(code, "w.state", RFC_7636_VERIFIER) is None
+
+
+@pytest.mark.parametrize(
+    ("code", "state", "verifier", "age"),
+    [
+        (None, "w.state", "x" * 43, 0),
+        (None, "w.other", RFC_7636_VERIFIER, 0),
+        ("unknown-code", "w.state", RFC_7636_VERIFIER, 0),
+        (None, "w.state", RFC_7636_VERIFIER, AUTHORIZATION_CODE_TTL),
+    ],
+    ids=["wrong_verifier", "wrong_state", "unknown_code", "expired"],
+)
+def test_a_one_time_code_fails_alike_and_is_spent_by_any_attempt(
+    code: str | None, state: str, verifier: str, age: float
+) -> None:
+    """
+    A wrong verifier or state, an unknown code and an expired one fail, and spend the code.
+
+    :param code: The code presented, None for the one that was issued.
+    :param state: The state presented with the code.
+    :param verifier: The code verifier presented with the code.
+    :param age: How many seconds after the code was issued it is presented.
+    """
+    store = AuthorizationCodeStore()
+    issued = store.issue("w.state", "user-1", RFC_7636_CHALLENGE)
+
+    with _monotonic_after(age):
+        assert store.redeem(code or issued, state, verifier) is None
+    if code is None:
+        # a later attempt with the right state and verifier no longer works
+        assert store.redeem(issued, "w.state", RFC_7636_VERIFIER) is None
+
+
+def test_codes_beyond_the_limit_are_refused_until_some_expire() -> None:
+    """Issuing a code at the limit is refused, and accepted again once the open ones expired."""
+    store = AuthorizationCodeStore()
+    for _ in range(MAX_AUTHORIZATION_CODES):
+        store.issue("w.state", "user-1", RFC_7636_CHALLENGE)
+
+    with pytest.raises(RateLimited):
+        store.issue("w.state", "user-1", RFC_7636_CHALLENGE)
+    with _monotonic_after(AUTHORIZATION_CODE_TTL):
+        code = store.issue("w.state", "user-1", RFC_7636_CHALLENGE)
+        assert len(store._codes) == 1
+        assert store.redeem(code, "w.state", RFC_7636_VERIFIER) is not None
+
+
 @pytest.mark.parametrize(
     ("connect_ip", "peer_ip", "session_id", "expected"),
     [
@@ -178,8 +263,67 @@ async def test_an_ingress_connection_is_ingress(webserver: WebserverController) 
     assert client.auth_transport is AuthTransport.INGRESS
 
 
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"Host": "192.168.1.10:8095"}, "http://192.168.1.10:8095"),
+        (
+            {"Host": "192.168.1.10:8095", "Origin": "https://ma.example.com"},
+            "https://ma.example.com",
+        ),
+        ({"Host": "192.168.1.10:8095", "Origin": "null"}, "http://192.168.1.10:8095"),
+        (
+            {
+                "Host": "127.0.0.1:8095",
+                "X-Forwarded-Host": "ma.example.com, proxy.local",
+                "X-Forwarded-Proto": "https, http",
+            },
+            "https://ma.example.com",
+        ),
+    ],
+    ids=["host", "origin_header", "opaque_origin", "forwarded"],
+)
+def test_request_origin(headers: dict[str, str], expected: str) -> None:
+    """
+    The origin is the Origin header, else the (forwarded) scheme and host of the request.
+
+    :param headers: The request headers.
+    :param expected: The expected origin.
+    """
+    request = make_mocked_request("GET", "/ws", headers=headers)
+
+    assert login_flow.get_request_origin(request) == expected
+
+
+async def test_a_websocket_command_carries_the_transport_and_origin(
+    webserver: WebserverController,
+) -> None:
+    """Each websocket command sets the transport and origin of its own connection."""
+    client = _ws_client(webserver, "192.168.1.20", None, {"Host": "192.168.1.10:8095"})
+    login_flow.set_auth_request_context(AuthTransport.INGRESS, "https://stale.example")
+    msg = CommandMessage(message_id="1", command="auth/providers", args={})
+    seen: list[tuple[AuthTransport, str | None]] = []
+
+    def _run_handler(*_args: object) -> None:
+        seen.append(login_flow.get_auth_request_context())
+
+    handler = MagicMock(authenticated=False, required_scope=None)
+    with (
+        patch.object(webserver.mass, "command_handlers", {"auth/providers": handler}),
+        patch.object(webserver.mass, "create_task"),
+        patch.object(client, "_run_handler", MagicMock(side_effect=_run_handler)),
+    ):
+        await client._handle_command(msg)
+    login_flow.set_auth_request_context(AuthTransport.DIRECT, None)
+
+    assert seen == [(AuthTransport.DIRECT, "http://192.168.1.10:8095")]
+
+
 def _ws_client(
-    webserver: WebserverController, peer_ip: str, session_id: str | None
+    webserver: WebserverController,
+    peer_ip: str,
+    session_id: str | None,
+    headers: dict[str, str] | None = None,
 ) -> WebsocketClientHandler:
     """
     Return a websocket connection from the given address, claiming the given session.
@@ -187,11 +331,14 @@ def _ws_client(
     :param webserver: The webserver the connection is made to.
     :param peer_ip: The address the connection came from.
     :param session_id: The WebRTC session id the connection claims, if any.
+    :param headers: The headers of the websocket upgrade request, if any.
     """
     transport = MagicMock()
     transport.get_extra_info.side_effect = {"peername": (peer_ip, 54321)}.get
     path = f"/ws?webrtc_session_id={session_id}" if session_id else "/ws"
-    request = make_mocked_request("GET", path, app=web.Application(), transport=transport)
+    request = make_mocked_request(
+        "GET", path, headers=headers, app=web.Application(), transport=transport
+    )
     return WebsocketClientHandler(webserver, request)
 
 

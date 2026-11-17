@@ -1,0 +1,15 @@
+{
+  "type": "auth",
+  "domain": "hass_auth",
+  "stage": "stable",
+  "name": "Home Assistant",
+  "description": "Sign in to Music Assistant with your Home Assistant account.",
+  "codeowners": ["@music-assistant"],
+  "documentation": "https://music-assistant.io/integration/sign-in/",
+  "multi_instance": false,
+  "builtin": true,
+  "allow_disable": true,
+  "depends_on": "hass",
+  "icon": "md:home-assistant",
+  "requirements": []
+}

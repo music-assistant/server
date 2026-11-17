@@ -17,6 +17,8 @@ from yarl import URL
 
 from music_assistant.controllers.webserver import controller as controller_module
 from music_assistant.controllers.webserver.controller import WebserverController
+from music_assistant.controllers.webserver.helpers.auth_providers import BuiltinLoginProvider
+from music_assistant.helpers.pkce import pkce_challenge
 from music_assistant.helpers.redirect_validation import build_code_redirect_url
 
 if TYPE_CHECKING:
@@ -25,6 +27,13 @@ if TYPE_CHECKING:
 INDEX_PATH = "/frontend/index.html"
 
 ACCOUNT = {"username": "marcel", "password": "correct horse battery", "display_name": "Marcel"}
+# a client's PKCE pair, and the arguments that ask for a one-time code
+CLIENT_VERIFIER = "client-verifier-" + "v" * 40
+CLIENT_CHALLENGE_ARGS = {
+    "code_challenge": pkce_challenge(CLIENT_VERIFIER),
+    "code_challenge_method": "S256",
+    "client_state": "client-state",
+}
 
 
 async def _start_webserver(mass: MusicAssistant) -> WebserverController:
@@ -397,6 +406,140 @@ async def test_setup_forwards_the_token_to_the_client_that_started_it(
     assert answer["redirect_to"] == build_code_redirect_url(
         "musicassistant://auth", answer["token"], {"onboard": "true"}
     )
+
+
+async def test_setup_hands_a_one_time_code_to_a_client_with_a_challenge(
+    webserver: WebserverController,
+) -> None:
+    """With a code challenge, redirect_to carries a one-time code bound to the client state."""
+    response = await _post_setup(
+        webserver,
+        {
+            **ACCOUNT,
+            "return_url": "musicassistant://auth",
+            "device_name": "Companion",
+            **CLIENT_CHALLENGE_ARGS,
+        },
+    )
+
+    assert response.status == 200
+    answer = json.loads(response.text or "")
+    redirect_to = URL(answer["redirect_to"])
+    assert answer["token"] not in answer["redirect_to"]
+    assert redirect_to.query["state"] == "client-state"
+    assert redirect_to.query["onboard"] == "true"
+    entry = webserver.auth.authorization_codes.redeem(
+        redirect_to.query["code"], "client-state", CLIENT_VERIFIER
+    )
+    assert entry is not None
+    assert entry.user_id == answer["user"]["user_id"]
+    assert entry.device_name == "Companion"
+
+
+@pytest.mark.parametrize(
+    "challenge_args",
+    [
+        {**CLIENT_CHALLENGE_ARGS, "code_challenge_method": "plain"},
+        {**CLIENT_CHALLENGE_ARGS, "code_challenge": "too-short"},
+        {"code_challenge": CLIENT_CHALLENGE_ARGS["code_challenge"]},
+        {**CLIENT_CHALLENGE_ARGS, "client_state": None},
+        {**CLIENT_CHALLENGE_ARGS, "client_state": "x" * 257},
+    ],
+    ids=["plain", "malformed", "no_method", "no_client_state", "long_client_state"],
+)
+async def test_setup_refuses_an_invalid_challenge_before_creating_the_admin(
+    webserver: WebserverController, challenge_args: dict[str, Any]
+) -> None:
+    """
+    An invalid code challenge or client state is refused and no admin is made.
+
+    :param challenge_args: The challenge arguments of the request.
+    """
+    response = await _post_setup(
+        webserver, {**ACCOUNT, "return_url": "musicassistant://auth", **challenge_args}
+    )
+
+    assert response.status == 400
+    assert not webserver.auth.has_users
+
+
+async def test_the_login_page_opens_the_app_without_a_return_url(
+    webserver: WebserverController,
+) -> None:
+    """Once a user exists, /login without a return URL opens the app, keeping its query."""
+    await webserver.auth.create_user(username="marcel", role=UserRole.ADMIN)
+
+    plain = await webserver._handle_login_page(_request(webserver.mass, "GET", "/login"))
+    join = await webserver._handle_login_page(_request(webserver.mass, "GET", "/login?join=AB12"))
+    external = await webserver._handle_login_page(
+        _request(webserver.mass, "GET", "/login?return_url=musicassistant%3A%2F%2Fauth")
+    )
+
+    assert (plain.status, plain.headers["Location"]) == (302, "./")
+    assert (join.status, join.headers["Location"]) == (302, "./?join=AB12")
+    assert external.status == 200
+    assert "<html" in _text(external).lower()
+
+
+@pytest.mark.parametrize("challenge", [False, True], ids=["token", "one_time_code"])
+async def test_auth_login_hands_back_a_one_time_code_with_a_challenge(
+    webserver: WebserverController, challenge: bool
+) -> None:
+    """
+    POST /auth/login puts a one-time code in redirect_to with a challenge, the token without.
+
+    :param challenge: Whether the request carries a code challenge.
+    """
+    user = await webserver.auth.create_user(username="marcel", role=UserRole.ADMIN)
+    builtin = webserver.auth.login_providers["builtin"]
+    assert isinstance(builtin, BuiltinLoginProvider)
+    await builtin.reset_password(user, ACCOUNT["password"])
+    body: dict[str, Any] = {
+        "credentials": {"username": "marcel", "password": ACCOUNT["password"]},
+        "return_url": "musicassistant://auth",
+        "device_name": "Companion",
+    }
+    if challenge:
+        body.update(CLIENT_CHALLENGE_ARGS)
+
+    response = await webserver._handle_auth_login(
+        _request(webserver.mass, "POST", "/auth/login", body)
+    )
+
+    assert response.status == 200
+    answer = json.loads(response.text or "")
+    redirect_to = URL(answer["redirect_to"])
+    if not challenge:
+        assert answer["redirect_to"] == build_code_redirect_url(
+            "musicassistant://auth", answer["token"]
+        )
+        assert not webserver.auth.authorization_codes._codes
+        return
+    assert answer["token"] not in answer["redirect_to"]
+    assert redirect_to.query["state"] == "client-state"
+    entry = webserver.auth.authorization_codes.redeem(
+        redirect_to.query["code"], "client-state", CLIENT_VERIFIER
+    )
+    assert entry is not None
+    assert entry.user_id == user.user_id
+
+
+async def test_auth_login_refuses_an_invalid_challenge(webserver: WebserverController) -> None:
+    """POST /auth/login with an invalid code challenge is refused before signing in."""
+    await webserver.auth.create_user(username="marcel", role=UserRole.ADMIN)
+    body = {
+        "credentials": {"username": "marcel", "password": ACCOUNT["password"]},
+        "return_url": "musicassistant://auth",
+        **CLIENT_CHALLENGE_ARGS,
+        "code_challenge_method": "plain",
+    }
+
+    response = await webserver._handle_auth_login(
+        _request(webserver.mass, "POST", "/auth/login", body)
+    )
+
+    assert response.status == 400
+    assert response.headers["Access-Control-Allow-Origin"] == "*"
 
 
 async def test_setup_keeps_the_token_from_an_untrusted_client(

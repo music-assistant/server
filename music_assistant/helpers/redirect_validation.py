@@ -53,11 +53,44 @@ def is_allowed_redirect_url(
         - "external": Valid but requires user consent
         - "blocked": Invalid/dangerous URL
     """
+    return is_allowed_redirect_url_for_host(
+        url, request.host if request else None, base_url, external_url
+    )
+
+
+def is_allowed_redirect_url_for_host(
+    url: str,
+    request_host: str | None = None,
+    base_url: str | None = None,
+    external_url: str | None = None,
+) -> tuple[bool, str]:
+    """
+    Validate a redirect URL like is_allowed_redirect_url, with the host the client used.
+
+    For callers without an HTTP request at hand, such as a websocket command.
+
+    :param url: The redirect URL to validate.
+    :param request_host: The host (and any port) the client used to reach the server.
+    :param base_url: Optional configured base URL to allow.
+    :param external_url: Optional configured External URL to allow.
+    :return: Tuple of (is_valid, category), see is_allowed_redirect_url.
+    """
     if not url:
         return False, "blocked"
 
     try:
         parsed = urlparse(url)
+
+        # Browsers read a backslash as a slash, strip control characters and whitespace, and
+        # split userinfo differently than urlparse, so such a URL can lead somewhere else
+        # than the host we classify here. Refuse it before any trust decision.
+        if (
+            "\\" in url
+            or "@" in parsed.netloc
+            or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in url)
+        ):
+            LOGGER.warning("Redirect URL blocked (ambiguous characters): %r", url)
+            return False, "blocked"
 
         # Check for custom URL schemes (mobile apps)
         for pattern in ALLOWED_REDIRECT_PATTERNS:
@@ -76,11 +109,9 @@ def is_allowed_redirect_url(
             return False, "blocked"
 
         # 1. Same origin as request - always trusted
-        if request:
-            request_host = request.host
-            if parsed.netloc == request_host:
-                LOGGER.debug("Redirect URL trusted (same origin): %s", url)
-                return True, "trusted"
+        if request_host and parsed.netloc == request_host:
+            LOGGER.debug("Redirect URL trusted (same origin): %s", url)
+            return True, "trusted"
 
         # 2. Localhost - always trusted (for development and mobile app testing)
         if hostname in ("localhost", "127.0.0.1", "::1"):
@@ -129,10 +160,22 @@ def build_code_redirect_url(
     :param token: The auth token to pass along as the ``code`` query parameter.
     :param extra_params: Optional additional query parameters to append.
     """
-    params = f"code={quote(token, safe='')}"
-    if extra_params:
-        for key, value in extra_params.items():
-            params += f"&{quote(key, safe='')}={quote(value, safe='')}"
+    return build_query_redirect_url(return_url, {"code": token, **(extra_params or {})})
+
+
+def build_query_redirect_url(return_url: str, query: dict[str, str]) -> str:
+    """
+    Build a redirect URL with query parameters appended to the query string.
+
+    The parameters are inserted before a possible hash fragment so they end up in the
+    query string rather than inside the fragment.
+
+    :param return_url: The validated destination URL to redirect to.
+    :param query: The query parameters to append.
+    """
+    params = "&".join(
+        f"{quote(key, safe='')}={quote(value, safe='')}" for key, value in query.items()
+    )
 
     if "#" in return_url:
         base_part, hash_part = return_url.split("#", 1)

@@ -273,7 +273,7 @@ A provider of any type that stores the id of a player (in its config or setup da
 The manifest file contains metadata and configuration about a provider. The supported properties are:
 | Name  | Description  | Type  |
 |---|---|---|
-| type  | `music`, `player`, `metadata`, `plugin` or `audio_analysis`  | string  |
+| type  | `music`, `player`, `metadata`, `plugin`, `audio_analysis` or `auth`  | string  |
 | domain  | The internal unique id of the provider, e.g. `spotify` or `ytmusic`  | string  |
 | name  | The full name of the provider, e.g. `Spotify` or `Youtube Music`  | string  |
 | description  | The full description of the provider  | string  |

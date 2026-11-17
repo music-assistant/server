@@ -523,6 +523,9 @@ class ProviderConfigMixin:
             await self.mass.music.cleanup_library_shortcuts()
         if existing["type"] == "metadata":
             await self.mass.music.cleanup_provider_images(instance_id)
+        if existing["type"] == "auth":
+            # unload_provider drops them for a loaded provider, this covers one that was not
+            self.mass.webserver.auth.pending_logins.drop_provider(instance_id)
         if existing["type"] == "player":
             # the protocols of this provider were detached by unload_provider. Their
             # configs go with it; a player only when it has no other protocol left

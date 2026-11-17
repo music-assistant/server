@@ -202,10 +202,12 @@ Manages individual WebSocket connections:
 2. **Authorize in HA**: The client opens that URL and the user signs in to Home Assistant. The
    server sends its own PKCE pair to Home Assistant on every sign-in, and uses the origin of the
    callback URL as `client_id`
-3. **OAuth Callback**: HA redirects back to `/auth/callback` with code and state, on the
-   External URL when the sign-in started there or over Remote Access (judged by the return URL,
-   or for a native app by how its websocket connection came in), else on the base URL
-   (`WebserverController.get_auth_callback_base`)
+3. **OAuth Callback**: HA redirects back to `/auth/callback` with code and state; the provider is
+   found from the state (a `provider_id` query is ignored). The callback is on the origin the
+   client reached the server on when its host is known (loopback, a published address, or the
+   host of the base URL or External URL), else on the External URL when set, else on the base
+   URL. Over Remote Access it is on the External URL when set, else the base URL; over Ingress
+   a redirect sign-in is refused (`WebserverController.get_auth_callback_base`)
 4. **Token Exchange**: Code exchanged for HA access token
 5. **User Lookup/Creation**: User found or created with HA provider link
 6. **Token Generation**: A short-lived MA token is created and the callback answers with
