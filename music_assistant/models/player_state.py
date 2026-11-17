@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
+    ChannelLayout,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -176,6 +177,7 @@ class StateInputs:
     :param player_id: Id of the player.
     :param provider: Instance id of the provider of the player.
     :param player_type: Type of the player.
+    :param channel_layout: Layout of the speakers of a multi-channel player.
     :param now: Current time, as a timestamp.
     :param previous_state: The state published before this one.
     :param enabled: Whether the player is enabled in its config.
@@ -241,6 +243,7 @@ class StateInputs:
     player_id: str
     provider: str
     player_type: PlayerType
+    channel_layout: ChannelLayout | None
     now: float
     previous_state: PlayerState
     enabled: bool
@@ -349,6 +352,7 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
         player_id=inputs.player_id,
         provider=inputs.provider,
         type=inputs.player_type,
+        channel_layout=inputs.channel_layout,
         # the client view: it includes a player switched off at its power control, so
         # internal code that needs a reachable device checks available_for_playback
         available=inputs.enabled
@@ -1298,7 +1302,7 @@ def _volume_members(inputs: StateInputs, state: PlayerState) -> list[PlayerState
         peer = inputs.peers.get(member_id)
         # the player itself may be named by one of its legacy ids
         if (peer.player_id if peer else member_id) == inputs.player_id:
-            if inputs.player_type != PlayerType.PLAYER:
+            if inputs.player_type not in (PlayerType.PLAYER, PlayerType.MULTI_CHANNEL):
                 continue
             available_for_playback: bool | None = (
                 _playable(inputs) and not inputs.offline_by_power_control

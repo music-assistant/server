@@ -1260,7 +1260,7 @@ class PlayerConfigMixin:
         default_entries: list[ConfigEntry]
         is_dedicated_group_player = player.type in (
             PlayerType.GROUP,
-            PlayerType.STEREO_PAIR,
+            PlayerType.MULTI_CHANNEL,
         ) and not player.protocol_id.startswith((UGP_PREFIX, SGP_PREFIX))
         is_http_based_player_protocol = player.provider.domain not in NON_HTTP_PROVIDERS
         if player.type == PlayerType.GROUP and not is_dedicated_group_player:
@@ -1358,7 +1358,7 @@ class PlayerConfigMixin:
                 icon_entry,
             ]
             return entries
-        # normal player (or stereo pair) config entries
+        # normal player (or multi-channel player) config entries
         entries += [
             icon_entry,
             # add default entries for announce feature

@@ -371,7 +371,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             replaced_player = await self._unbind(existing) if existing else None
             if protocol.role != ProtocolRole.VIRTUAL and protocol.type not in (
                 PlayerType.GROUP,
-                PlayerType.STEREO_PAIR,
+                PlayerType.MULTI_CHANNEL,
             ):
                 await self._resolve_mac_addresses(protocol)
                 # the await above may have staled the guards of register()

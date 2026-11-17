@@ -194,13 +194,13 @@ def test_the_player_the_source_belongs_to_is_the_default_target() -> None:
     assert (entry.options or [])[1].translation_key == "this_device"
 
 
-def test_groups_and_stereo_pairs_are_offered() -> None:
+def test_groups_and_multi_channel_players_are_offered() -> None:
     """A line-in must be routable to a group, not just to a single speaker."""
     player = _player(
         negotiated_role_ids=["source@v1"],
         line_sense=True,
         known_players=["speaker"],
-        non_audio_players={"kitchen-group": PlayerType.GROUP, "pair": PlayerType.STEREO_PAIR},
+        non_audio_players={"kitchen-group": PlayerType.GROUP, "pair": PlayerType.MULTI_CHANNEL},
     )
     entry = _target_entry(player)
     assert entry is not None

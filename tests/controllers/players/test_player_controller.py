@@ -1484,9 +1484,9 @@ class TestPowerOffEndsTheQueue:
         player_stop.assert_awaited_once_with("player_1")
         queue_stop.assert_not_awaited()
 
-    # a stereo pair is a group member like any single speaker, so powering it off must
+    # a multi-channel player is a group member like any single speaker, so powering it off must
     # detach it from the group instead of leaving the group streaming to a dead speaker
-    @pytest.mark.parametrize("member_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("member_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     @pytest.mark.asyncio
     async def test_powering_off_a_group_member_does_not_end_the_groups_queue(
         self, mock_mass: MagicMock, member_type: PlayerType
@@ -1577,7 +1577,7 @@ class TestSyncLeaderPowerOffUngroup:
 
         leader_protocol.power = _power  # type: ignore[method-assign]
 
-    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     @pytest.mark.asyncio
     async def test_ma_power_off_ungroups_a_sync_leader(
         self, mock_mass: MagicMock, player_type: PlayerType
@@ -1596,7 +1596,7 @@ class TestSyncLeaderPowerOffUngroup:
 
         assert ungrouped == ["leader"]
 
-    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     def test_external_power_off_ungroups_a_sync_leader(
         self, mock_mass: MagicMock, player_type: PlayerType
     ) -> None:
@@ -1685,7 +1685,7 @@ class TestSyncLeaderPowerOffUngroup:
         controller.cmd_ungroup.assert_called_once_with("leader")
         assert leader.power_off_issued_at is None
 
-    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     @pytest.mark.asyncio
     async def test_power_off_leaves_the_synced_followers_powered(
         self,
@@ -1815,7 +1815,7 @@ class TestExternalPowerOffUnsync:
         controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
         return controller, player
 
-    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     def test_power_off_unsyncs_synced_player(
         self, mock_mass: MagicMock, player_type: PlayerType
     ) -> None:
@@ -1914,9 +1914,9 @@ class TestExternalPowerOffEndsTheQueue:
         mock_mass.player_queues._handle_stop = queue_stop
         return controller, player, protocol, queue_stop
 
-    # a stereo pair renders audio and owns a queue just like a single speaker does,
+    # a multi-channel player renders audio and owns a queue just like a single speaker does,
     # and an MA power off ends its queue without looking at the type either
-    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     def test_power_off_schedules_the_queue_stop(
         self, mock_mass: MagicMock, player_type: PlayerType
     ) -> None:
@@ -1975,9 +1975,9 @@ class TestExternalPowerOffEndsTheQueue:
 
         assert _scheduled_queue_stops(mock_mass) == []
 
-    # a stereo pair reaches the queue-stop gate (it renders audio) but must take the
+    # a multi-channel player reaches the queue-stop gate (it renders audio) but must take the
     # ungroup route, exactly like a single speaker that is part of a group
-    @pytest.mark.parametrize("member_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.parametrize("member_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
     def test_a_grouped_player_is_ungrouped_instead(
         self, mock_mass: MagicMock, member_type: PlayerType
     ) -> None:
