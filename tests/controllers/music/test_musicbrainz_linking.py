@@ -473,6 +473,7 @@ def _album_harness(
     """
     ctrl = AlbumsController.__new__(AlbumsController)
     ctrl.logger = logging.getLogger("test.musicbrainz.linking")
+    ctrl._logged_hints = set()
     ctrl.mass = Mock()
     ctrl.mass.music.database.deferred_commit = MagicMock()
     ctrl.mass.music.tracks.update_item_in_library = AsyncMock()
@@ -510,6 +511,43 @@ async def test_release_tracks_fill_recording_ids_isrcs_and_marker_by_position() 
     }
     assert updated[1].mbid == OTHER_RECORDING_ID
     assert all(track.metadata.last_musicbrainz_lookup is not None for track in updated)
+
+
+@pytest.mark.parametrize("on_musicbrainz", [False, True])
+async def test_release_tracks_log_the_isrcs_musicbrainz_lacks_once(
+    caplog: pytest.LogCaptureFixture, on_musicbrainz: bool
+) -> None:
+    """The ISRCs MusicBrainz lacks are logged once, numbered across the release's mediums."""
+    caplog.set_level(logging.DEBUG, logger="test.musicbrainz.linking")
+    db_tracks = [
+        _library_track("t1", 1, isrcs=["GBSTK0700001"]),
+        _library_track("t2", 2, isrcs=["GBSTK0700002"]),
+        _library_track("d2", 1, disc_number=2, isrcs=["GBSTK0700003"]),
+    ]
+    release = _release(
+        [
+            _recording(RECORDING_ID, "Track 1", None, "GBSTK0700001"),
+            _recording(OTHER_RECORDING_ID, "Track 2", None, *(["GBSTK0700002"] * on_musicbrainz)),
+        ],
+        [
+            _recording(
+                "7f6e5d4c-3b2a-4c1d-8e0f-a1b2c3d4e5f6",
+                "Track 1",
+                None,
+                "GBSTK0700003" if on_musicbrainz else "GBSTK0700009",
+            )
+        ],
+    )
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
+
+    hints = [(x.levelno, x.getMessage()) for x in caplog.records if "MagicISRC" in x.getMessage()]
+    expected = (
+        'Album "In Rainbows" has ISRCs MusicBrainz lacks, add them all at once with MagicISRC: '
+        f"https://magicisrc.kepstin.ca/?mbid={release.id}&isrc2=GBSTK0700002&isrc3=GBSTK0700003"
+    )
+    assert hints == ([] if on_musicbrainz else [(logging.DEBUG, expected)])
 
 
 async def test_release_tracks_skip_a_length_or_title_mismatch() -> None:
