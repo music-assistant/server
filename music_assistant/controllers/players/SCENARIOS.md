@@ -39,6 +39,7 @@ once and that every test it names exists.
 - [Duplicates, merging and taking a protocol off](#duplicates-merging-and-taking-a-protocol-off) (MERGE)
 - [Restart and upgrade](#restart-and-upgrade) (RESTART)
 - [Removing and disabling](#removing-and-disabling) (REMOVE)
+- [Speakers of a set](#speakers-of-a-set) (SET)
 - [Browser and app players](#browser-and-app-players) (WEB)
 - [Commands to a busy player](#commands-to-a-busy-player) (BUSY)
 - [What a stopped player keeps for a moment](#what-a-stopped-player-keeps-for-a-moment) (KEEP)
@@ -1002,8 +1003,9 @@ multi-channel player, also while its device is away, and it is stored as one.
 
 What goes when the user removes a provider, removes a player or disables one. Clients are told
 a player is removed, with no data besides its id, only when it is gone for good: removed or merged
-into another player (MERGE-3), or a browser player that was only seen (WEB-4); a device that goes
-away is no removal (AWAY-1), and neither is disabling a player (REMOVE-4).
+into another player (MERGE-3), or a browser player that was only seen (WEB-4), and when it went up
+in a set of speakers (SET-1); a device that goes away is no removal (AWAY-1), and neither is
+disabling a player (REMOVE-4).
 
 ### REMOVE-1 · A player outlives the removal of its vendor's provider on its other protocols
 
@@ -1089,6 +1091,112 @@ gone, and so is the DJ of the AI radio on the queue of the disabled one.
 - Proven by:
   - `test_lifecycle.py::test_a_player_that_is_not_there_is_announced_once_when_it_is_removed`
   - `tests/providers/ai_radio/test_queue_dj_player_lifecycle.py::test_a_dj_goes_with_a_disabled_player_that_is_removed`
+
+## Speakers of a set
+
+A stereo pair or a home theater set is one multi-channel player, delivered by the protocol of its
+primary speaker (APPEAR-10). The provider of that protocol reports the other speakers of the set.
+While the set names a speaker, the player of that speaker is out of use; it comes back once the set
+no longer names it. In the examples the Patio speaker, a Sonos speaker with an AirPlay receiver,
+goes up in the set of the Living speaker.
+
+### SET-1 · A speaker that goes up in a set is no player anymore, and nothing is sent to it
+
+Patio plays when its provider reports that it went up in the set of Living. Clients are told once
+that Patio is removed: it is no player anymore, and the settings do not list it, whatever they ask
+for. Its record, its DSP and queue settings and its saved queue stay. No command reaches it through
+either of its protocols, also no power off when it is on a plug that cuts its power: the plug stays
+on.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by:
+  - `test_speaker_sets.py::test_a_speaker_that_goes_up_in_a_set_is_no_player_anymore`
+  - `test_speaker_sets.py::test_nothing_reaches_a_speaker_that_goes_up_in_a_set`
+
+### SET-2 · No protocol attaches to a speaker in a set
+
+While Patio is in the set, the AirPlay provider finds its receiver again, the Cast provider finds a
+receiver with the same address for the first time, and a Sendspin bridge rides on its AirPlay
+receiver. Each is stored as a protocol of Patio and stays unattached; no player is created for any
+of them, and the server tells their providers that it does not want them.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by: `test_speaker_sets.py::test_no_protocol_attaches_to_a_speaker_in_a_set`
+
+### SET-3 · A speaker the set lets go comes back with its id
+
+The set no longer names Patio. Clients are told it is added under its id, with its name, its DSP
+and queue settings and its queue. Its protocols attach once their providers find them again.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by: `test_speaker_sets.py::test_a_speaker_the_set_lets_go_comes_back_with_its_id`
+
+### SET-4 · A speaker in a set stays out after a restart, until a report lets it go
+
+After a restart Patio is not brought back, and none of its protocols attach. The set was taken
+apart while the server was down: the first report after the start that no longer names Patio brings
+it back under its id, and its protocols attach.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by:
+  - `test_speaker_sets.py::test_a_speaker_in_a_set_stays_out_after_a_restart`
+  - `test_speaker_sets.py::test_a_set_taken_apart_while_the_server_was_down_lets_its_speaker_go`
+
+### SET-5 · A speaker is free once the player of its set is removed
+
+Living is gone and the user removes its player. The protocols of Patio attach again as they are
+found, to Patio under its id. After a restart Patio is there, and its record no longer names the
+set.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by: `test_speaker_sets.py::test_a_speaker_is_a_player_again_once_the_player_of_its_set_is_removed`
+
+### SET-6 · "Remove all unavailable players" leaves a speaker in a set alone
+
+While Patio is in the set, the user asks the settings to remove all unavailable players. Patio is
+not named, also not by a dry run, and its record stays.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by: `test_speaker_sets.py::test_removing_all_unavailable_players_leaves_a_speaker_in_a_set_alone`
+
+### SET-7 · A report that changes nothing does nothing
+
+A provider reports a set for a protocol nothing is stored of, or a set that names a protocol
+nothing is stored of, a protocol of the set's own player, the protocol of a group, or a speaker that
+another set holds already; or it reports the same set once more. Nothing is announced and nothing
+is stored.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by: `test_speaker_sets.py::test_a_report_that_changes_nothing_does_nothing`
+
+### SET-8 · A speaker the user disabled stays disabled when its set lets it go
+
+The user disabled Patio before it went up in the set. When the set lets it go, it is still
+disabled and nothing is announced. A Patio the user enables while it is in the set comes back only
+once the set lets it go.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by:
+  - `test_speaker_sets.py::test_a_speaker_the_user_disabled_stays_disabled_when_its_set_lets_it_go`
+  - `test_speaker_sets.py::test_a_speaker_enabled_while_in_a_set_comes_back_once_the_set_lets_it_go`
+
+### SET-9 · A group plays on without a speaker that goes up in a set
+
+Patio plays along with Kitchen: in a sync session that Kitchen leads, in a sync group or in a
+universal group. When Patio goes up in the set, the group plays on and no longer lists it, and no
+command about it reaches Kitchen or Patio.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by: `test_speaker_sets.py::test_a_group_plays_on_without_a_speaker_that_goes_up_in_a_set`
 
 ## Browser and app players
 

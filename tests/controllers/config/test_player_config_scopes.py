@@ -19,6 +19,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_ABSORBED_BY,
     CONF_CACHED_ARP_MAC,
     CONF_DEVICE_INFO,
     CONF_ENABLED,
@@ -417,6 +418,29 @@ async def test_saving_a_player_kept_without_protocols_keeps_its_default_name(
 
     stored = scenario.mass.config.get(f"{CONF_PLAYERS}/up0001")
     assert (stored["name"], stored["default_name"]) == ("Study", "Den TV")
+
+
+async def test_saving_a_player_in_a_set_of_speakers_keeps_it_in_the_set(
+    scenario: Scenario,  # noqa: F811
+) -> None:
+    """A player that went up in a set of speakers and is renamed still names the set."""
+    sonos = await scenario.add_provider("sonos")
+    living = sonos.protocol(
+        "speaker_living", "Living", identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A2"}
+    )
+    patio = sonos.protocol(
+        "speaker_patio", "Patio", identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A3"}
+    )
+    await scenario.register(living)
+    await scenario.register(patio)
+    patio_id = scenario.single_player(patio).player_id
+    await scenario.mass.players.set_absorbed_protocols("speaker_living", ["speaker_patio"])
+    await scenario.idle()
+
+    await scenario.configure_player(patio_id, name="Patio Speaker")
+
+    stored = scenario.mass.config.get(f"{CONF_PLAYERS}/{patio_id}")
+    assert (stored["name"], stored.get(CONF_ABSORBED_BY)) == ("Patio Speaker", "speaker_living")
 
 
 async def _session_of_a_device_client(scenario: Scenario) -> str:  # noqa: F811

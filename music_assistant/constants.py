@@ -206,6 +206,8 @@ CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
 CONF_LEGACY_IDS: Final[str] = "legacy_ids"  # ids a player is also known under
 # the player the user took a protocol off, which it is not merged back into by itself
 CONF_UNLINKED_FROM: Final[str] = "unlinked_from"
+# the protocol whose set of speakers (a stereo pair, a home theater set) a player went up in
+CONF_ABSORBED_BY: Final[str] = "absorbed_by"
 CONF_LAST_SEEN: Final[str] = "last_seen"  # when a player last had an available protocol
 # a player that only exists while its device is connected (a browser tab, an app)
 CONF_SESSION_ONLY: Final[str] = "session_only"

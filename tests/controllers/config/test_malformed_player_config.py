@@ -13,9 +13,9 @@ crashing. A merely offline player with an intact config is returned untouched.
 from typing import Any
 
 import pytest
-from music_assistant_models.enums import PlayerType
+from music_assistant_models.enums import PlayerType, ProtocolRole
 
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_ABSORBED_BY, CONF_PLAYERS
 from music_assistant.mass import MusicAssistant
 from tests.common import use_player_registry
 
@@ -102,6 +102,29 @@ async def test_non_mapping_entry_is_pruned_from_list(
     ids = {conf.player_id for conf in configs}
     assert "apvalid" in ids
     assert mass_minimal.config.get(f"{CONF_PLAYERS}/apbroken") is None
+
+
+async def test_a_healed_entry_keeps_the_set_of_speakers_its_player_went_up_in(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """An entry that lost its player id is healed, and its player stays in its set of speakers."""
+    use_player_registry(mass_minimal)
+    mass_minimal.config.create_protocol_record(
+        "sonos_living",
+        provider="sonos",
+        player_id="sonos_living",
+        role=ProtocolRole.NATIVE,
+        default_name="Living",
+    )
+    mass_minimal.config.set(
+        f"{CONF_PLAYERS}/{PLAYER_ID}",
+        {"provider": "airplay", "values": {}, CONF_ABSORBED_BY: "sonos_living"},
+    )
+
+    await mass_minimal.config.get_player_config(PLAYER_ID)
+
+    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/player_id") == PLAYER_ID
+    assert mass_minimal.config.get_absorbing_protocol_id(PLAYER_ID) == "sonos_living"
 
 
 async def test_get_base_player_config_recovers_missing_base_keys(

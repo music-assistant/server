@@ -30,6 +30,7 @@ from music_assistant_models.enums import (
 )
 
 from music_assistant.constants import (
+    CONF_ABSORBED_BY,
     CONF_CREATED_AT,
     CONF_ENABLED,
     CONF_ENTRY_ANNOUNCE_VOLUME,
@@ -193,6 +194,9 @@ class PlayerConfigMixin:
             # possible, else the unreconstructable entry is pruned.
             raw_conf = self._get_raw_player_config(player_id)
             if raw_conf is None:
+                continue
+            # a player that went up in a set of speakers is no player of its own
+            if self.get_absorbing_protocol_id(player_id):
                 continue
             # optional provider filter
             if provider is not None and raw_conf.get("provider") != provider:
@@ -601,6 +605,20 @@ class PlayerConfigMixin:
             if isinstance(record, dict) and record.get("player_id") == player_id
         ]
 
+    def get_absorbing_protocol_id(self, player_id: str) -> str | None:
+        """
+        Return the id of the protocol whose set of speakers a player went up in, None if none.
+
+        Such a player is no player of its own while the set names it. It is free again once
+        the protocol of the set has no stored config anymore.
+
+        :param player_id: ID of the player.
+        """
+        protocol_id = self.get(f"{CONF_PLAYERS}/{player_id}/{CONF_ABSORBED_BY}")
+        if isinstance(protocol_id, str) and self.get_protocol_record(protocol_id) is not None:
+            return protocol_id
+        return None
+
     def get_protocol_ids_of_provider(self, provider: str) -> list[str]:
         """
         Return the ids of the protocols a config is stored for that belong to a provider.
@@ -959,6 +977,9 @@ class PlayerConfigMixin:
         # device reported
         if "default_name" in existing_raw:
             new_raw["default_name"] = existing_raw["default_name"]
+        # the config has no field for the set of speakers the player went up in
+        if CONF_ABSORBED_BY in existing_raw:
+            new_raw[CONF_ABSORBED_BY] = existing_raw[CONF_ABSORBED_BY]
         # what a setup flow collected belongs to a protocol
         new_raw.pop("setup_data", None)
         new_values = new_raw["values"]

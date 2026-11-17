@@ -34,6 +34,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import (
     ATTR_FAKE_POWER,
+    CONF_ABSORBED_BY,
     CONF_CACHED_ARP_MAC,
     CONF_PLAYER_DSP,
     CONF_PLAYER_QUEUES,
@@ -52,6 +53,8 @@ from .grouping import apply_group_change
 from .grouping_plan import ChangeKind, GroupChange
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from music_assistant_models.config_entries import PlayerConfig
 
     from music_assistant.models.player_protocol import PlayerProtocol
@@ -91,7 +94,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
 
         The controller attaches the protocol to the player it belongs to, which it creates
         for a new device, or holds it until it knows which player that is. It leaves it
-        unattached for a player the user disabled or a protocol the user switched off.
+        unattached for a player the user disabled, a player that went up in a set of
+        speakers (see set_absorbed_protocols) or a protocol the user switched off.
         Registering an object that is attached already publishes what it reports now;
         another object under the same id takes its place. The protocol is told through on_attach
         and on_detach when it is actually attached to a player or detached from it, so do
@@ -297,8 +301,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         Return whether the server wants a protocol attached now.
 
         Not when the user disabled the player it belongs to, or switched the protocol
-        itself off as an output of that player. A provider that sets up a connection
-        for a device before it registers it can ask this first.
+        itself off as an output of that player, nor while that player went up in a set of
+        speakers (see set_absorbed_protocols). A provider that sets up a connection for a
+        device before it registers it can ask this first.
 
         :param protocol_id: Id of the protocol.
         :param protocol: The protocol object about to be attached, when the provider has one:
@@ -309,6 +314,51 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             protocol_id,
             protocol or self._protocols.get(protocol_id) or self._unattached.get(protocol_id),
         )
+
+    async def set_absorbed_protocols(
+        self, protocol_id: str, absorbed_protocol_ids: Iterable[str]
+    ) -> None:
+        """
+        Set the other speakers of the set of speakers that a protocol delivers.
+
+        A set (a stereo pair, a home theater set) is one multi-channel player. Call this once
+        the protocol is set up and whenever its set changes, always with the full list, and an
+        empty one when the protocol delivers no set. While the set names a speaker, its player
+        is out of use: clients are told it is removed, nothing is sent to its device, no
+        protocol attaches to it, and its config, settings and saved queue stay. Once the set no
+        longer names it, it comes back under its id, unless the user disabled it.
+        Skipped are a protocol without a stored config, one of the player of this protocol, of
+        a group, or of a player that another set holds. Nothing happens for a protocol without
+        a stored config, nor when the list changes nothing.
+
+        :param protocol_id: Id of the protocol that delivers the set.
+        :param absorbed_protocol_ids: Ids of the protocols of the other speakers of the set,
+            all of the provider of that protocol.
+        """
+        if (set_player_id := self._get_stored_player_id(protocol_id)) is None:
+            return
+        absorbed_ids: set[str] = set()
+        for absorbed_protocol_id in absorbed_protocol_ids:
+            player_id = self._get_stored_player_id(absorbed_protocol_id)
+            if player_id is None or player_id == set_player_id:
+                continue
+            player = self._players.get(player_id)
+            stored_type = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/player_type")
+            if (player.reported_type if player else stored_type) == PlayerType.GROUP:
+                continue
+            # the first set that claims a speaker keeps it
+            if self.mass.config.get_absorbing_protocol_id(player_id) not in (None, protocol_id):
+                continue
+            absorbed_ids.add(player_id)
+        for player_id, stored in list(self.mass.config.get(CONF_PLAYERS, {}).items()):
+            if (
+                isinstance(stored, dict)
+                and stored.get(CONF_ABSORBED_BY) == protocol_id
+                and player_id not in absorbed_ids
+            ):
+                await self._release_absorbed_player(player_id)
+        for player_id in absorbed_ids:
+            await self._absorb_player(player_id, protocol_id)
 
     def on_unattached_protocol_update(self, protocol: PlayerProtocol) -> None:
         """
@@ -359,8 +409,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         existing = self._protocols.get(protocol_id)
         held = existing is protocol and protocol.player is None
         if not self._wants_protocol(protocol_id, protocol):
-            # switched off, or its player is disabled: it keeps its player and its place. Its
-            # provider keeps the object, which a removal of the player still has to reach
+            # switched off, or its player is disabled or in a set of speakers: it keeps its
+            # player and its place. Its provider keeps the object, which a removal of the
+            # player still has to reach
             if held:
                 self._release_held_protocol(protocol)
             self._unattached[protocol_id] = protocol
@@ -603,6 +654,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             return False
         if not player_id:
             return True
+        if self.mass.config.get_absorbing_protocol_id(str(player_id)):
+            return False
         return bool(self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True))
 
     async def _hold_derived_protocols_without_place(self, protocol_id: str) -> None:
@@ -934,10 +987,17 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         player.store_protocol_defaults()
 
     async def _restore_players(self) -> None:
-        """Bring back every stored player that is enabled."""
+        """Bring back every stored player that is enabled and not in a set of speakers."""
         stored_players = self.mass.config.get(CONF_PLAYERS, {})
         for player_id, stored in list(stored_players.items()):
-            if not isinstance(stored, dict) or not stored.get("enabled", True):
+            if not isinstance(stored, dict):
+                continue
+            if CONF_ABSORBED_BY in stored:
+                if self.mass.config.get_absorbing_protocol_id(player_id):
+                    continue
+                # the protocol of the set it went up in is gone
+                self.mass.config.remove(f"{CONF_PLAYERS}/{player_id}/{CONF_ABSORBED_BY}")
+            if not stored.get("enabled", True):
                 continue
             if player_id in self._players:
                 continue
@@ -957,13 +1017,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         :param player: The player to disable.
         """
         await self._stop_player_that_goes(player)
-        for protocol in list(player.attached_protocols.values()):
-            self._attaching.pop(protocol.protocol_id, None)
-            await self._unbind(protocol)
-            # its provider keeps the object, which a removal of the player still has to reach
-            self._unattached[protocol.protocol_id] = protocol
-        await self._unregister_player(player)
-        self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
+        await self._take_out_of_use(player)
         if player.initialized.is_set() and not self.mass.closing:
             # its last update carries the disabled config, which also makes it unavailable
             player.set_config(await self.mass.config.get_player_object_config(player))
@@ -973,6 +1027,56 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             )
         self.logger.info("Player disabled: %s", player.name)
         self._schedule_update_all_players()
+
+    async def _absorb_player(self, player_id: str, protocol_id: str) -> None:
+        """
+        Take a player out of use that went up in the set of speakers a protocol delivers.
+
+        Nothing is sent to its device; to clients it is removed.
+
+        :param player_id: Id of the player, which has a stored config.
+        :param protocol_id: Id of the protocol that delivers the set.
+        """
+        conf_key = f"{CONF_PLAYERS}/{player_id}/{CONF_ABSORBED_BY}"
+        if self.mass.config.get(conf_key) != protocol_id:
+            self.mass.config.set(conf_key, protocol_id)
+        if (player := self._players.get(player_id)) is None:
+            return
+        await self._take_out_of_use(player)
+        if player.initialized.is_set() and not self.mass.closing:
+            self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+        self.logger.info("Player %s went up in the set of speakers of %s", player.name, protocol_id)
+        self._schedule_update_all_players()
+
+    async def _release_absorbed_player(self, player_id: str) -> None:
+        """
+        Bring back a player that the set of speakers it went up in no longer names.
+
+        :param player_id: Id of the player.
+        """
+        self.mass.config.remove(f"{CONF_PLAYERS}/{player_id}/{CONF_ABSORBED_BY}")
+        self.logger.info("Player %s left the set of speakers it went up in", player_id)
+        # one that is there already came back while the protocol of the set had no config
+        if player_id not in self._players and self.mass.config.get(
+            f"{CONF_PLAYERS}/{player_id}/enabled", True
+        ):
+            await self._enable_player(player_id)
+
+    async def _take_out_of_use(self, player: Player) -> None:
+        """
+        Take a player out of the registry with its queue, without a command to its device.
+
+        Its protocols are detached; its config and its saved queue stay.
+
+        :param player: The player.
+        """
+        for protocol in list(player.attached_protocols.values()):
+            self._attaching.pop(protocol.protocol_id, None)
+            await self._unbind(protocol)
+            # its provider keeps the object, which a removal of the player still has to reach
+            self._unattached[protocol.protocol_id] = protocol
+        await self._unregister_player(player)
+        self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
 
     async def _stop_player_that_goes(self, player: Player) -> None:
         """
@@ -1024,6 +1128,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
         if not isinstance(stored, dict):
             return
+        if self.mass.config.get_absorbing_protocol_id(player_id):
+            # it comes back once the set of speakers it went up in lets it go
+            return
         await self._publish_player(self._create_player(player_id))
         provider_ids = {
             str(record.get("provider"))
@@ -1074,6 +1181,20 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
                 and not (current_mac and cached_reported_mac.upper() == current_mac.upper())
             ):
                 protocol.set_reported_mac(cached_reported_mac)
+
+    def _get_stored_player_id(self, protocol_id: str) -> str | None:
+        """
+        Return the id of the stored player the stored config of a protocol names, if any.
+
+        :param protocol_id: Id of the protocol.
+        """
+        record = self.mass.config.get_protocol_record(protocol_id) or {}
+        player_id = record.get("player_id")
+        if isinstance(player_id, str) and isinstance(
+            self.mass.config.get(f"{CONF_PLAYERS}/{player_id}"), dict
+        ):
+            return player_id
+        return None
 
     def _teardown_in_progress(self, protocol: PlayerProtocol) -> bool:
         """
