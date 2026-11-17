@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import socket
 from asyncio import TaskGroup
@@ -9,12 +10,13 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from aiojellyfin import DEFAULT_FIELDS, ItemType, NotFound, authenticate_by_name
+from aiohttp import ClientError, ClientResponseError
+from aiojellyfin import DEFAULT_FIELDS, Connection, ItemType, NotFound, authenticate_by_name
 from aiojellyfin import MediaLibrary as JellyMediaLibrary
 from aiojellyfin import Track as JellyTrack
 from aiojellyfin.session import SessionConfiguration
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -69,6 +71,11 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
 CONF_URL = "url"
+CONF_ACCESS_TOKEN = "access_token"  # noqa: S105 - config key
+CONF_USER_ID = "user_id"
+CONF_DEVICE_ID = "device_id"
+AUTH_METHOD_PASSWORD = "password"  # noqa: S105 - config key
+AUTH_METHOD_QUICK_CONNECT = "quick_connect"
 SUPPORTED_FEATURES = {
     ProviderFeature.FAVORITE_TRACKS_EDIT,
     ProviderFeature.LIBRARY_ARTISTS,
@@ -87,6 +94,53 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return JellyfinProvider(mass, manifest, config, SUPPORTED_FEATURES)
+
+
+async def initiate_quick_connect(session_config: SessionConfiguration) -> tuple[str, str]:
+    """Start a Jellyfin Quick Connect request and return its secret and approval code."""
+    base_url = session_config.url.rstrip("/")
+    async with session_config.session.post(
+        f"{base_url}/QuickConnect/Initiate",
+        headers={
+            "User-Agent": session_config.user_agent,
+            "Authorization": session_config.authentication_header(),
+        },
+        raise_for_status=True,
+    ) as response:
+        result = await response.json()
+    return result["Secret"], result["Code"]
+
+
+async def authenticate_with_quick_connect(
+    session_config: SessionConfiguration, secret: str
+) -> Connection:
+    """Wait for Quick Connect approval and return the authenticated Jellyfin connection."""
+    base_url = session_config.url.rstrip("/")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": session_config.user_agent,
+        "Authorization": session_config.authentication_header(),
+    }
+    while True:
+        async with session_config.session.get(
+            f"{base_url}/QuickConnect/Connect",
+            params={"secret": secret},
+            headers=headers,
+            raise_for_status=True,
+        ) as response:
+            result = await response.json()
+        if result["Authenticated"]:
+            break
+        await asyncio.sleep(1)
+
+    async with session_config.session.post(
+        f"{base_url}/Users/AuthenticateWithQuickConnect",
+        json={"Secret": secret},
+        headers=headers,
+        raise_for_status=True,
+    ) as response:
+        result = await response.json()
+    return Connection(session_config, result["User"]["Id"], result["AccessToken"])
 
 
 class JellyfinProvider(MusicProvider):
@@ -123,7 +177,7 @@ class JellyfinProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Initialize provider(instance) with given configuration."""
-        username = str(self.get_setup_value(CONF_USERNAME))
+        username = str(self.get_setup_value(CONF_USERNAME) or "")
 
         # Device ID should be stable between reboots
         # Otherwise every time the provider starts we "leak" a new device
@@ -139,7 +193,10 @@ class JellyfinProvider(MusicProvider):
         # token and server_id is used in zeroconf) but hash them anyway as its meant
         # to be an opaque identifier
 
-        device_id = hashlib.sha256(f"{self.mass.server_id}+{username}".encode()).hexdigest()
+        device_id = str(
+            self.get_setup_value(CONF_DEVICE_ID)
+            or hashlib.sha256(f"{self.mass.server_id}+{username}".encode()).hexdigest()
+        )
         self._verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL))
         http_session = self.mass.http_session if self._verify_ssl else self.mass.http_session_no_ssl
 
@@ -153,14 +210,26 @@ class JellyfinProvider(MusicProvider):
             device_id=device_id,
         )
 
-        try:
-            self._client = await authenticate_by_name(
-                session_config,
-                username,
-                str(self.get_setup_value(CONF_PASSWORD) or ""),
+        if access_token := self.get_setup_value(CONF_ACCESS_TOKEN):
+            self._client = Connection(
+                session_config, str(self.get_setup_value(CONF_USER_ID)), str(access_token)
             )
-        except Exception as err:
-            raise LoginFailed(f"Authentication failed: {err}") from err
+            try:
+                # a saved token can have been revoked on the server since it was issued
+                await self._client.get_media_folders()
+            except (ClientError, TimeoutError) as err:
+                if isinstance(err, ClientResponseError) and err.status in (401, 403):
+                    raise LoginFailed(f"Authentication failed: {err}") from err
+                raise ProviderUnavailableError(f"Jellyfin server is unreachable: {err}") from err
+        else:
+            try:
+                self._client = await authenticate_by_name(
+                    session_config,
+                    username,
+                    str(self.get_setup_value(CONF_PASSWORD) or ""),
+                )
+            except Exception as err:
+                raise LoginFailed(f"Authentication failed: {err}") from err
 
     @property
     def is_streaming_provider(self) -> bool:
