@@ -1578,15 +1578,11 @@ class MusicAssistant:
         default_providers_setup = set(self.config.get(CONF_DEFAULT_PROVIDERS_SETUP))
         changes_made = False
         newly_created_defaults: set[str] = set()
-        for default_provider, require_mdns in DEFAULT_PROVIDERS:
+        for default_provider in DEFAULT_PROVIDERS:
             if default_provider in default_providers_setup:
                 # already processed/setup before, skip
                 continue
             if not (manifest := self._provider_manifests.get(default_provider)):
-                continue
-            # if mdns discovery is required, check if we have seen any mdns entries
-            # for this provider before setting it up
-            if require_mdns and not self.discovery.is_seen_on_mdns(manifest):
                 continue
             # A config the user enabled by hand before this became a default is not an auto setup.
             if await self.config.create_builtin_provider_config(manifest.domain):

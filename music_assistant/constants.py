@@ -1100,27 +1100,24 @@ PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"
 # setup reason of a player without any protocol whose provider is not installed
 SETUP_REASON_PROVIDER_NOT_INSTALLED: Final[str] = "provider_not_installed"
 
-DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
-    # list of providers that are setup by default once
-    # (and they can be removed/disabled by the user if they want to)
-    # the boolean value indicates whether it needs to be discovered on mdns
-    ("airplay", False),
-    ("chromecast", False),
-    ("dlna", False),
-    ("sonos", True),
-    ("bluesound", True),
-    ("heos", True),
-    ("wiim", True),
-    ("party", False),
-    # smart_fades refuses an automatic setup below its recommended hardware (see its
-    # setup()); the auto-created config is then removed again at load time.
-    ("smart_fades", False),
-    ("lastfm_recommendations", False),
-    ("playlist_metadata", False),
-    # ambient_sounds provides out-of-the-box sound effects (e.g. for the queue
-    # audio overlay feature) at zero resource cost until actually used
-    ("ambient_sounds", False),
-}
+DEFAULT_PROVIDERS: Final[frozenset[str]] = frozenset(
+    {
+        # list of providers that are setup by default once
+        # (and they can be removed/disabled by the user if they want to)
+        "airplay",
+        "chromecast",
+        "dlna",
+        "party",
+        # smart_fades refuses an automatic setup below its recommended hardware (see its
+        # setup()); the auto-created config is then removed again at load time.
+        "smart_fades",
+        "lastfm_recommendations",
+        "playlist_metadata",
+        # ambient_sounds provides out-of-the-box sound effects (e.g. for the queue
+        # audio overlay feature) at zero resource cost until actually used
+        "ambient_sounds",
+    }
+)
 
 # The editorial part of the Marketplace, which the team edits per release.
 CATALOG_POPULAR: Final[tuple[str, ...]] = (

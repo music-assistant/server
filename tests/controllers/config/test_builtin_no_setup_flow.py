@@ -20,7 +20,7 @@ from music_assistant.mass import PROVIDERS_PATH
 
 def _auto_created_provider_domains() -> set[str]:
     """Return the domains of all providers that are auto-created without a setup flow."""
-    domains = {domain for domain, _ in DEFAULT_PROVIDERS}
+    domains = set(DEFAULT_PROVIDERS)
     for manifest_path in Path(PROVIDERS_PATH).glob("*/manifest.json"):
         data = json.loads(manifest_path.read_text())
         if data.get("builtin"):
