@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import contextlib
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from dataclasses import replace
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.auth import Scope, UserRole
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
@@ -30,6 +31,7 @@ from music_assistant_models.errors import (
     PlayerCommandFailed,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.media_items import Track
 from music_assistant_models.player import PlayerOptionValueType  # noqa: TC002
 
 from music_assistant.constants import CONF_PLAY_MEDIA_OVERRIDES_GROUP
@@ -39,6 +41,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.provider_access import resolve_playback_user
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.player import Player, PlayerMedia
 
 from .base import _PlayerControllerBase
@@ -48,7 +51,9 @@ from .grouping_plan import ChangeKind, GroupChange
 from .helpers import handle_player_command
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.player import OutputProtocol
+    from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant.models.player_protocol import PlayerProtocol
 
@@ -496,6 +501,38 @@ class PlaybackMixin(_PlayerControllerBase):
         # Delegate to internal handler for actual implementation
         await self._handle_enqueue_next_media(player_id, media)
 
+    @api_command("players/currently_playing_track", required_scope=Scope.LIBRARY_READ)
+    async def get_currently_playing_track(
+        self, player_id: str, library_only: bool = False
+    ) -> Track | None:
+        """
+        Return the track that currently plays on the given player.
+
+        For a radio station, or a source that only reports artist and title, the track is
+        looked up by name. Returns None when nothing plays or it can not be told which
+        track plays.
+
+        :param player_id: The player to get the currently playing track for.
+        :param library_only: Look up the track in the library only, without asking any music
+            provider. Use this for a lookup on every song change (such as to show whether the
+            song is a favorite) and leave the provider search to an action of the user.
+        """
+        self.check_player_access(player_id)
+        player = self._get_player_with_redirect(player_id)
+        item = await self._resolve_currently_playing(
+            player, self.get_active_queue(player), library_only
+        )
+        if not isinstance(item, Track):
+            return None
+        # a fresh read of the library item carries the current favorite state of the user
+        # who asks, also for a queue item or a cached search result
+        if library_item := await self.mass.music.tracks.get_visible_library_item_by_prov_id(
+            item.item_id, item.provider
+        ):
+            return library_item
+        # outside the library of the user who asks, the track holds no favorite of theirs
+        return replace(item, favorite=None)
+
     @api_command("players/add_currently_playing_to_favorites", required_scope=Scope.LIBRARY_WRITE)
     async def add_currently_playing_to_favorites(self, player_id: str) -> None:
         """
@@ -517,87 +554,22 @@ class PlaybackMixin(_PlayerControllerBase):
             and (playback_user := await resolve_playback_user(self.mass, mass_queue.queue_id))
         ):
             set_current_user(playback_user)
-        # handle mass player queue active
-        if mass_queue:
-            if not (current_item := mass_queue.current_item) or not current_item.media_item:
-                raise PlayerCommandFailed(
-                    "No current item to add to favorites",
-                    translation_key="nothing_playing",
-                    translation_owner=self.translation_owner,
-                    translation_args=[player.name],
-                )
-            # if we're playing a radio station, try to resolve the currently playing track
-            if current_item.media_item.media_type == MediaType.RADIO:
-                if not (
-                    (streamdetails := mass_queue.current_item.streamdetails)
-                    and (stream_title := streamdetails.stream_title)
-                    and " - " in stream_title
-                ):
-                    # no stream title available, so we can't resolve the track
-                    # this can happen if the radio station does not provide metadata
-                    # or there's a commercial break
-                    # Possible future improvement could be to actually detect the song with a
-                    # shazam-like approach.
-                    raise PlayerCommandFailed(
-                        "No current item to add to favorites",
-                        translation_key="favorite_track_unknown",
-                        translation_owner=self.translation_owner,
-                        translation_args=[player.name],
-                    )
-                # send the streamtitle into a global search query
-                search_artist, search_title_title = stream_title.split(" - ", 1)
-                # strip off any additional comments in the title (such as from Radio Paradise)
-                search_title_title = search_title_title.split(" | ")[0].strip()
-                if track := await self.mass.music.get_track_by_name(
-                    search_title_title, search_artist
-                ):
-                    # we found a track, so add it to the favorites
-                    await self.mass.music.add_item_to_favorites(track)
-                    return
-                # we could not resolve the track, so raise an error
-                raise PlayerCommandFailed(
-                    "No current item to add to favorites",
-                    translation_key="favorite_track_unknown",
-                    translation_owner=self.translation_owner,
-                    translation_args=[player.name],
-                )
-
-            # else: any other media item, just add it to the favorites directly
-            await self.mass.music.add_item_to_favorites(current_item.media_item)
-            return
-
         # guard for player with no active source
-        if not player.active_source:
+        if not mass_queue and not player.active_source:
             raise PlayerCommandFailed(
                 "Player has no active source",
                 translation_key="nothing_playing",
                 translation_owner=self.translation_owner,
                 translation_args=[player.name],
             )
-        # handle other source active using the current_media with uri
-        if current_media := player.current_media:
-            # prefer the uri of the current media item
-            if current_media.uri:
-                with suppress(MusicAssistantError):
-                    await self.mass.music.add_item_to_favorites(current_media.uri)
-                    return
-            # fallback to search based on artist and title (and album if available)
-            if current_media.artist and current_media.title:
-                if track := await self.mass.music.get_track_by_name(
-                    current_media.title,
-                    current_media.artist,
-                    current_media.album,
-                ):
-                    # we found a track, so add it to the favorites
-                    await self.mass.music.add_item_to_favorites(track)
-                    return
-        # if we reach here, we could not resolve the currently playing item
-        raise PlayerCommandFailed(
-            "No current item to add to favorites",
-            translation_key="favorite_track_unknown",
-            translation_owner=self.translation_owner,
-            translation_args=[player.name],
-        )
+        if not (item := await self._resolve_currently_playing(player, mass_queue)):
+            raise PlayerCommandFailed(
+                "No current item to add to favorites",
+                translation_key="favorite_track_unknown",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
+        await self.mass.music.add_item_to_favorites(item)
 
     def _play_media_overrides_group(self, player_id: str) -> bool:
         """
@@ -1045,3 +1017,94 @@ class PlaybackMixin(_PlayerControllerBase):
             player.name,
         )
         await self._stop_player_or_its_queue(player)
+
+    async def _resolve_currently_playing(
+        self, player: Player, mass_queue: PlayerQueue | None, library_only: bool = False
+    ) -> MediaItemType | None:
+        """
+        Return the media item that currently plays on the given player, if it can be told.
+
+        :param player: The player to resolve the currently playing media item for.
+        :param mass_queue: The active queue of the player, if any.
+        :param library_only: Look up a track by uri or name in the library only.
+        """
+        # handle mass player queue active
+        if mass_queue:
+            if not (current_item := mass_queue.current_item) or not current_item.media_item:
+                return None
+            # any other media item than a radio station is the item itself
+            if current_item.media_item.media_type != MediaType.RADIO:
+                return current_item.media_item
+            # if we're playing a radio station, try to resolve the currently playing track
+            if not (
+                (streamdetails := current_item.streamdetails)
+                and (stream_title := streamdetails.stream_title)
+                and " - " in stream_title
+            ):
+                # no stream title available, so we can't resolve the track
+                # this can happen if the radio station does not provide metadata
+                # or there's a commercial break
+                # Possible future improvement could be to actually detect the song with a
+                # shazam-like approach.
+                return None
+            # send the streamtitle into a global search query
+            search_artist, search_title_title = stream_title.split(" - ", 1)
+            # strip off any additional comments in the title (such as from Radio Paradise)
+            search_title_title = search_title_title.split(" | ")[0].strip()
+            return await self.mass.music.get_track_by_name(
+                search_title_title, search_artist, library_only=library_only
+            )
+        # handle other source active using the current_media with uri
+        if not player.active_source or not (current_media := player.current_media):
+            return None
+        # prefer the uri of the current media item
+        item = (
+            await self._get_item_by_uri(current_media.uri, library_only)
+            if current_media.uri
+            else None
+        )
+        if item and item.media_type != MediaType.RADIO:
+            return item
+        # fallback to search based on artist and title (and album if available),
+        # which also finds the song that plays on a radio stream
+        if (
+            current_media.artist
+            and current_media.title
+            and (
+                track := await self.mass.music.get_track_by_name(
+                    current_media.title,
+                    current_media.artist,
+                    current_media.album,
+                    library_only=library_only,
+                )
+            )
+        ):
+            return track
+        # a radio station whose song is unknown is still the item that plays
+        return item
+
+    async def _get_item_by_uri(self, uri: str, library_only: bool) -> MediaItemType | None:
+        """
+        Return the media item a uri reported by a player points to, if it can be resolved.
+
+        :param uri: The uri the player reports for its current media.
+        :param library_only: Look up a track in the library only.
+        """
+        with suppress(MusicAssistantError):
+            media_type, provider, item_id = await parse_uri(uri)
+            # the uri of a plugin source names the source, not the song that plays on it
+            if media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
+                return None
+            if library_only:
+                if media_type != MediaType.TRACK:
+                    return None
+                return await self.mass.music.tracks.get_visible_library_item_by_prov_id(
+                    item_id, provider
+                )
+            return cast(
+                "MediaItemType",
+                await self.mass.music.get_item(
+                    media_type, item_id, provider, allow_update_metadata=False
+                ),
+            )
+        return None

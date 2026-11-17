@@ -155,9 +155,8 @@ class TestRhythmClashMetric:
         """Kicks on both decks across a 4-bar cut weigh 2/3 of 4 bars."""
         out, inc = (
             _analysis_with_bands(0.5, 0.3, 0.3, 0.3),
-            _analysis_with_bands(0.5, 0.3, 0.3, 0.3),
+            _analysis_with_bands(0.5, 0.3, 0.3, 0.3, bpm=132.0),
         )
-        inc.bpm = 132.0
         ctx = _ctx(out, inc)
         assert ctx.tier is TransitionTier.QUICK_FADE
 

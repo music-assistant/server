@@ -271,7 +271,7 @@ def test_an_option_event_reads_the_options(changes: dict[str, str], read: bool) 
             True,
             True,
             OPTIONS_POLL_INTERVAL,
-            {"status_light", "touch_controls", "trueplay", "ir_repeater", "remote_led_feedback"},
+            {"status_light", "touch_controls", "trueplay", "ir_repeater", "ir_signal_light"},
         ),
     ],
     ids=["no_events", "events", "events_and_device_settings"],

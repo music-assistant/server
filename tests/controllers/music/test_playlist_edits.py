@@ -293,6 +293,8 @@ async def test_a_change_fetches_nothing_from_the_service(mass: MusicAssistant) -
     with _with_provider(mass, provider):
         playlist = await _library_playlist(mass)
         await _listed(mass, playlist)
+        # two pages and the empty one that ends the playlist: kept in the background
+        await _wait_for_kept(mass, 3)
         provider.pages_fetched = 0
         # the add reads the kept playlist to leave out what it holds already
         await _add(mass, playlist, "t4")

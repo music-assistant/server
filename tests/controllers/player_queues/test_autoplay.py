@@ -266,6 +266,7 @@ def test_get_queue_config_entries_categories_and_dependencies() -> None:
     """Per-queue entries land in their categories, default to 'global' and offer a global option."""
     fake = MagicMock()
     fake.mass.music.providers = []
+    fake.mass.get_providers_supporting_feature.return_value = []
     fake.mass.streams.smart_fades_available = False
 
     entries = PlayerQueuesController.get_queue_config_entries(cast("PlayerQueuesController", fake))

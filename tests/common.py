@@ -284,12 +284,15 @@ def mock_player_mass() -> MagicMock:
     """
     Return a mocked MusicAssistant for tests of players and protocols without a server.
 
-    Nothing is stored in its config, no queue or player control exists, and its players
-    controller looks players and protocols up for real, in what
-    ``attach_mock()`` registers for a provider of it.
+    Nothing is stored in its config, no queue or player control exists, a stream shows
+    only its own metadata, and its players controller looks players and protocols up for
+    real, in what ``attach_mock()`` registers for a provider of it.
     """
     mass = MagicMock()
     mass.closing = False
+    mass.streams.audio_analysis.shown_stream_metadata = MagicMock(
+        side_effect=lambda streamdetails: streamdetails.stream_metadata
+    )
     config = mass.config
     config.get = MagicMock(side_effect=lambda _key, default=None: default)
     config.get_player_value = MagicMock(side_effect=lambda _player_id, _key, default=None: default)
@@ -358,7 +361,10 @@ def use_api_command_registry(mass: MagicMock, *command_owners: object) -> None:
                 continue
             if hasattr(handler := getattr(owner, attr_name), "api_cmd"):
                 mass.register_api_command(
-                    handler.api_cmd, handler, required_scope=handler.api_required_scope
+                    handler.api_cmd,
+                    handler,
+                    required_scope=handler.api_required_scope,
+                    allow_impersonation=handler.api_allow_impersonation,
                 )
 
 

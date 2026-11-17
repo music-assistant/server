@@ -305,6 +305,9 @@ class HomeAssistantProvider(PluginProvider):
             await self._cleanup_failed_init()
             err_msg = str(err) or err.__class__.__name__
             raise SetupFailedError(err_msg) from err
+        except Exception:
+            await self._cleanup_failed_init()
+            raise
         self._listen_task = self.mass.create_task(self._hass_listener())
         try:
             # the registry subscription must be live before the first registry read, so no

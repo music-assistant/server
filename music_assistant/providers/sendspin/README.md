@@ -193,7 +193,7 @@ Sendspin players support:
 - **Volume control** - Set volume level (0-100) and mute
 - **Synchronized playback** - Sample-accurate sync across grouped players
 - **Per-player DSP** - Individual equalizer settings per device
-- **Player grouping** - Create multi-room audio groups
+- **Player grouping** - Create multi-room audio groups. A group plays at the sample rate of what it plays, kept within the lowest and highest rate its members play; a member at another rate gets the group audio converted to its own rate
 - **Metadata display** - Track info, artwork, progress
 - **Playback control** - Play, pause, stop, next, previous
 - **Repeat/Shuffle** - Queue control from clients

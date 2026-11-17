@@ -17,8 +17,13 @@ from aiosendspin.server.roles.player.v1 import PlayerV1Role
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
+from music_assistant.constants import (
+    CONF_FLOW_MODE_SAMPLE_RATE,
+    FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
+    FLOW_MODE_SAMPLE_RATE_SMART,
+)
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
-from music_assistant.helpers.audio import iter_pcm_slices
+from music_assistant.helpers.audio import arriving_audio_format, iter_pcm_slices
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.util import import_module_in_thread
 from music_assistant.models.player import PlayerMedia
@@ -30,7 +35,7 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Awaitable, Callable, Iterable
 
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -41,8 +46,8 @@ if TYPE_CHECKING:
     from .provider import SendspinProvider
 
 
-# Default session PCM format (MA-side and wire) used until _run_playback picks a
-# leader-driven rate. Same sample format expressed in both MA and Sendspin types.
+# Default session PCM format (MA-side and wire) used until _run_playback picks the
+# session rate. Same sample format expressed in both MA and Sendspin types.
 _DEFAULT_PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_F32LE,
     sample_rate=48000,
@@ -314,8 +319,8 @@ class SendspinPlaybackSession:
         self._mapping_dirty = True
         self._cancel_requested = False
         # PCM formats are session-scoped and refreshed at the start of every
-        # _run_playback: the wire/MA-side rate is taken from the leader player's
-        # preferred format (capped at 48 kHz for lossy codecs), F32 is always used
+        # _run_playback: the wire/MA-side rate follows the source within the range of
+        # rates the members play (see _select_session_pcm_formats), F32 is always used
         # internally for DSP headroom.
         self._pcm_format: AudioFormat = _DEFAULT_PCM_FORMAT
         self._sendspin_pcm_format: SendspinAudioFormat = _DEFAULT_SENDSPIN_PCM_FORMAT
@@ -424,6 +429,30 @@ class SendspinPlaybackSession:
             self._timeline_start_us = None
             self._pipeline_config_cache.clear()
             self._preassigned_channels.clear()
+
+    async def get_session_sample_rate(self, start_streamdetails: StreamDetails) -> int:
+        """
+        Return the sample rate this group picks for a session starting with an item.
+
+        :param start_streamdetails: Stream details of the first item of the session.
+        """
+        from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
+
+        member_rates: list[int] = []
+        for client in self.player.api.group.clients:
+            player = self.player.provider.get_protocol(client.client_id)
+            session_format = (
+                await player.get_session_format(start_streamdetails)
+                if isinstance(player, SendspinPlayer)
+                else None
+            )
+            if session_format is not None:
+                member_rates.append(_counted_sample_rate(_to_audio_format(*session_format)))
+            elif rate := self._get_member_sample_rate(client.client_id):
+                member_rates.append(rate)
+        return self._pick_session_sample_rate(
+            arriving_audio_format(start_streamdetails).sample_rate, member_rates
+        )
 
     async def add_member(self, player_id: str) -> None:
         """Add a member to the group with DSP-aware lifecycle handling."""
@@ -727,7 +756,7 @@ class SendspinPlaybackSession:
                     media, self.player.protocol_id
                 )
             # let automatic Sendspin formats follow the first item's sample rate, then
-            # refresh the session PCM format from the leader's preferred output before
+            # refresh the session PCM format from the members' preferred outputs before
             # building any pipelines; member ffmpeg pipelines and pre-computed filter
             # params depend on this rate so the cache must also be cleared
             self._start_streamdetails = (
@@ -739,6 +768,7 @@ class SendspinPlaybackSession:
                 [client.client_id for client in self.player.api.group.clients]
             )
             self._pcm_format, self._sendspin_pcm_format = self._select_session_pcm_formats()
+            flow_restart = self._flow_restart_of_this_playback()
             self._queue_id = media.source_id
             self._queue_session_id = get_media_session_id(media)
             self._pipeline_config_cache.clear()
@@ -785,7 +815,10 @@ class SendspinPlaybackSession:
                 source_stream.stream(self._pcm_format)
                 if source_stream is not None
                 else self.player.mass.streams.get_stream(
-                    media, self._pcm_format, self.player.protocol_id
+                    media,
+                    self._pcm_format,
+                    self.player.protocol_id,
+                    flow_restart=flow_restart,
                 )
             )
             completed = False
@@ -1382,18 +1415,25 @@ class SendspinPlaybackSession:
 
     def _select_session_pcm_formats(self) -> tuple[AudioFormat, SendspinAudioFormat]:
         """
-        Pick the session PCM format (MA-side + wire) from the leader's preferred format.
+        Pick the session PCM format (MA-side + wire) from the members' preferred formats.
 
-        F32 is always used for DSP headroom. The sample rate follows the leader's
-        preferred rate but is capped at 48 kHz when the leader's output codec is
-        lossy — higher rates yield no perceivable quality gain there. Member
-        clients with a different preferred rate up/down-sample in their own DSP
-        step on the receiving side.
+        F32 is always used for DSP headroom. The sample rate is the rate of the session's
+        first item, kept within the lowest and the highest rate the members play; without
+        a known first item rate, the leader's rate takes its place. A member with a lossy
+        output codec counts with at most 48 kHz, as higher rates yield no perceivable
+        quality gain there. Members playing another rate than the session are resampled
+        on the receiving side.
         """
-        leader_output = self._get_member_output_format(self.player.protocol_id)
-        sample_rate = int(leader_output.sample_rate) or _DEFAULT_PCM_FORMAT.sample_rate
-        if leader_output.content_type in (ContentType.OPUS, ContentType.MP3, ContentType.AAC):
-            sample_rate = min(sample_rate, _LOSSY_MAX_SAMPLE_RATE)
+        member_rates = [
+            rate
+            for client in self.player.api.group.clients
+            if (rate := self._get_member_sample_rate(client.client_id))
+        ]
+        streamdetails = self._start_streamdetails
+        sample_rate = self._pick_session_sample_rate(
+            arriving_audio_format(streamdetails).sample_rate if streamdetails else 0,
+            member_rates,
+        )
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_F32LE,
             sample_rate=sample_rate,
@@ -1408,12 +1448,75 @@ class SendspinPlaybackSession:
         )
         return pcm_format, sendspin_pcm_format
 
+    def _flow_restart_of_this_playback(self) -> Callable[[StreamDetails], Awaitable[bool]]:
+        """
+        Return what tells the flow stream of the running playback whether it restarts for an item.
+
+        It restarts when a session starting with the item would run at a higher rate, or at
+        another rate while the leader of the group as it is then plays bit-perfect. Call from
+        the playback task. Once that playback has ended the answer is no, so a flow that is
+        being torn down plays out.
+        """
+        playback_task = asyncio.current_task()
+        stream_rate = self._pcm_format.sample_rate
+
+        async def _flow_restart(streamdetails: StreamDetails) -> bool:
+            if (
+                playback_task is None
+                or playback_task.done()
+                or self.playback_task is not playback_task
+            ):
+                return False
+            sample_rate = await self.get_session_sample_rate(streamdetails)
+            # a fixed sample rate setting fixes only the leader's own output
+            leader_mode = self.player.config.get_value(
+                CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
+            )
+            if leader_mode == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT:
+                return sample_rate != stream_rate
+            return sample_rate > stream_rate
+
+        return _flow_restart
+
+    def _pick_session_sample_rate(self, source_rate: int, member_rates: list[int]) -> int:
+        """
+        Return the session sample rate for a source rate and the rates the members play.
+
+        :param source_rate: The sample rate the audio of the first item arrives in, 0 when
+            unknown.
+        :param member_rates: The rates the members count with, see _get_member_sample_rate.
+        """
+        if not member_rates:
+            return _DEFAULT_PCM_FORMAT.sample_rate
+        source_rate = source_rate or self._get_member_sample_rate(self.player.protocol_id) or 0
+        return min(max(source_rate, min(member_rates)), max(member_rates))
+
     def _get_member_output_format(self, player_id: str) -> AudioFormat:
         """
         Return the actual output AudioFormat for a group member.
 
         Derives the format from the member's sendspin player role (preferred codec
         and format), falling back to the internal PCM format if unavailable.
+        """
+        return self._get_member_preferred_format(player_id) or self._pcm_format
+
+    def _get_member_sample_rate(self, player_id: str) -> int | None:
+        """
+        Return the sample rate a group member counts with for the session rate.
+
+        :param player_id: The Sendspin client id of the member.
+        :return: The member's preferred rate, at most 48 kHz for a lossy output codec,
+            or None for a member without a known preferred format.
+        """
+        if (output := self._get_member_preferred_format(player_id)) is None:
+            return None
+        return _counted_sample_rate(output)
+
+    def _get_member_preferred_format(self, player_id: str) -> AudioFormat | None:
+        """
+        Return the preferred output AudioFormat of a group member, if it has one.
+
+        :param player_id: The Sendspin client id of the member.
         """
         provider = cast("SendspinProvider", self.player.provider)
         client = provider.server_api.get_client(player_id)
@@ -1423,18 +1526,7 @@ class SendspinPlaybackSession:
                     preferred_fmt = role.preferred_format
                     preferred_codec = role.preferred_codec
                     if preferred_fmt is not None and preferred_codec is not None:
-                        if preferred_codec == SendspinAudioCodec.FLAC:
-                            content_type = ContentType.FLAC
-                        elif preferred_codec == SendspinAudioCodec.OPUS:
-                            content_type = ContentType.OPUS
-                        else:
-                            content_type = ContentType.from_bit_depth(preferred_fmt.bit_depth)
-                        return AudioFormat(
-                            content_type=content_type,
-                            sample_rate=preferred_fmt.sample_rate,
-                            bit_depth=preferred_fmt.bit_depth,
-                            channels=preferred_fmt.channels,
-                        )
+                        return _to_audio_format(preferred_fmt, preferred_codec)
                 elif isinstance(role, BridgePlayerRole):
                     fmt = role.preferred_format
                     if fmt is not None:
@@ -1450,7 +1542,7 @@ class SendspinPlaybackSession:
                         bit_depth=BRIDGE_BIT_DEPTH,
                         channels=BRIDGE_CHANNELS,
                     )
-        return self._pcm_format
+        return None
 
     def _get_or_create_preassigned_channel(self, player_id: str) -> UUID:
         """Return stable dedicated channel id for transform-required player."""
@@ -1647,3 +1739,35 @@ class SendspinPlaybackSession:
         :param media: The media about to be played.
         """
         return media.media_type in _LIVE_MEDIA_TYPES
+
+
+def _to_audio_format(audio_format: SendspinAudioFormat, codec: SendspinAudioCodec) -> AudioFormat:
+    """
+    Return the MA AudioFormat of a Sendspin format in a codec.
+
+    :param audio_format: The Sendspin format.
+    :param codec: The codec of the format.
+    """
+    if codec == SendspinAudioCodec.FLAC:
+        content_type = ContentType.FLAC
+    elif codec == SendspinAudioCodec.OPUS:
+        content_type = ContentType.OPUS
+    else:
+        content_type = ContentType.from_bit_depth(audio_format.bit_depth)
+    return AudioFormat(
+        content_type=content_type,
+        sample_rate=audio_format.sample_rate,
+        bit_depth=audio_format.bit_depth,
+        channels=audio_format.channels,
+    )
+
+
+def _counted_sample_rate(output_format: AudioFormat) -> int:
+    """
+    Return the sample rate a member playing a format counts with for the session rate.
+
+    :param output_format: The format the member plays.
+    """
+    if output_format.content_type in (ContentType.OPUS, ContentType.MP3, ContentType.AAC):
+        return min(output_format.sample_rate, _LOSSY_MAX_SAMPLE_RATE)
+    return output_format.sample_rate

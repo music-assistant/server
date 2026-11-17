@@ -83,10 +83,16 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
     - If you have other conditions that determine whether to skip an analysis,
       implement them in _start_analysis and return False to reject the session.
     - Return AudioAnalysisData from _finalize; the base class persists it.
-    - To report what plays in a live source (for example a recognised song), call
-      self.report_stream_metadata(session_id, StreamMetadata(...)). Players show it while
-      the plugin of the source reports nothing itself, until the session ends; it is
-      never stored.
+    - To report what plays in a live source or on a radio station (for example a recognised
+      song), call self.report_stream_metadata(session_id, StreamMetadata(...)). Players show
+      it while the source or station reports nothing itself, a station's report once the
+      listener reaches the audio it was recognised in, until replaced or the session ends;
+      it is never stored. On a False return stop recognising for that session: the stream
+      has metadata of its own, or the session is gone.
+    - A recogniser must return quickly from process_pcm_chunk: copy the audio into a small
+      ring buffer and run the recognition in a task of its own, throttled (for example one
+      sample every 30 to 60 seconds, none after a False). Declare MediaType.RADIO (and
+      AUDIO_SOURCE if wanted) and return None from _finalize, so nothing is stored.
     """
 
     # Increment this when your analysis algorithm changes significantly.

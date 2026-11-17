@@ -728,6 +728,8 @@ class ChromecastPlayer(PlayerProtocol):
             return
 
         self._report_media_error(status, group_player)
+        if group_player is None:
+            self._restart_lost_stream(status)
 
         if group_player is None and self._in_app_track_change(status):
             return
@@ -812,6 +814,21 @@ class ChromecastPlayer(PlayerProtocol):
             self.display_name,
             status.content_id or "the loaded media",
         )
+
+    def _restart_lost_stream(self, status: MediaStatus) -> None:
+        """
+        Have the queue restart a stream the receiver gave up on while it played it.
+
+        :param status: Media status as reported by the receiver.
+        """
+        if (
+            status.player_is_idle
+            and status.idle_reason == "ERROR"
+            and self._attr_playback_state == PlaybackState.PLAYING
+            and status.content_id
+        ):
+            # nothing is queued on the receiver after a flow stream, so it stays idle otherwise
+            self.mass.streams.restart_lost_stream(status.content_id)
 
     def _update_playback_state(self, status: MediaStatus, is_playing: bool) -> None:
         """
