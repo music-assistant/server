@@ -98,7 +98,6 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.constants import (
     CONF_ALLOW_LEGACY_CLIENTS,
-    CONF_LOCAL_PAIRING,
     CONF_SENDSPIN_STATIC_DELAY,
     CONF_VIRTUAL_PLAYER_OWNER,
     VIRTUAL_PLAYER_ID_PREFIX,
@@ -442,12 +441,6 @@ class SendspinProvider(PlayerProvider):
             CONF_ENTRY_MANUAL_DISCOVERY_IPS,
             ConfigEntry(
                 key=CONF_ALLOW_LEGACY_CLIENTS,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=True,
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_LOCAL_PAIRING,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
                 hidden=True,

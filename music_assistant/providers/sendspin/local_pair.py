@@ -6,7 +6,6 @@ from typing import Final
 
 from aiohttp import ClientError, ClientTimeout
 
-from music_assistant.providers.sendspin.constants import CONF_LOCAL_PAIRING
 from music_assistant.providers.sendspin.token_auto_pair import TokenAutoPairer
 
 # Provisional application-specific role a player lists when it serves its token locally.
@@ -40,11 +39,7 @@ class LocalAutoPairer(TokenAutoPairer):
     @property
     def _enabled(self) -> bool:
         # the hassio network, and so the token endpoint, only exists on the add-on
-        return (
-            not self._closed
-            and self.provider.mass.running_as_hass_addon
-            and bool(self.provider.config.get_value(CONF_LOCAL_PAIRING, True))
-        )
+        return not self._closed and self.provider.mass.running_as_hass_addon
 
     async def _get_token(self, client_id: str) -> str | None:
         """Return the token the client serves on the Home Assistant host, if it announced one."""

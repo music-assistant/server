@@ -17,7 +17,6 @@ from aiosendspin.noise.pairing_token import PSKPairingToken, encode_psk_token
 from aiosendspin.noise.trust_store import PskCategory
 from aiosendspin.server import ClientConnectedEvent
 
-from music_assistant.providers.sendspin.constants import CONF_LOCAL_PAIRING
 from music_assistant.providers.sendspin.local_pair import (
     LOCAL_PAIRING_MAX_BODY,
     LOCAL_PAIRING_SUPPORT_KEY,
@@ -92,7 +91,6 @@ def _make_pairer(
     paired: bool = False,
     connected: bool = True,
     addon: bool = True,
-    enabled: bool = True,
 ) -> tuple[LocalAutoPairer, _FakeServerApi, _FakeHttpSession]:
     api = _FakeServerApi(methods, await_pin=False, connected=connected)
     client = cast("Any", api._client)
@@ -110,10 +108,6 @@ def _make_pairer(
     mass = cast("Any", provider.mass)
     mass.http_session = http
     mass.running_as_hass_addon = addon
-    provider.config = cast(
-        "Any",
-        SimpleNamespace(get_value=lambda key, _default=None: {CONF_LOCAL_PAIRING: enabled}[key]),
-    )
     return LocalAutoPairer(provider), api, http
 
 
@@ -146,18 +140,9 @@ async def test_surrounding_whitespace_is_ignored(monkeypatch: pytest.MonkeyPatch
     assert len(api.attempts) == 1
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        pytest.param({"addon": False}, id="not_addon"),
-        pytest.param({"enabled": False}, id="disabled"),
-    ],
-)
-async def test_only_active_on_the_addon_while_enabled(
-    monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any]
-) -> None:
-    """Outside the add-on there is no hassio network; the hidden flag turns it off there too."""
-    pairer, api, http = _make_pairer(monkeypatch, **kwargs)
+async def test_only_active_on_the_addon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Outside the add-on there is no hassio network to fetch the token from."""
+    pairer, api, http = _make_pairer(monkeypatch, addon=False)
     pairer.on_client_connected(CLIENT_ID)
     assert pairer._tasks == {}
     assert http.requests == []
