@@ -221,6 +221,9 @@ class SonosPlayer(PlayerProtocol):
         self._hand_over_tasks: set[asyncio.Task[None]] = set()
         # the members the running AirPlay group restore still has to bring back
         self._airplay_rejoin_members: set[str] = set()
+        # the AirPlay session on the speaker is Music Assistant's own; the speaker keeps
+        # reporting it, paused, for a while after Music Assistant stopped streaming
+        self._own_airplay_session = False
 
     @property
     def source_list(self) -> list[PlayerSource]:
@@ -1262,6 +1265,7 @@ class SonosPlayer(PlayerProtocol):
             return
 
         # map playback state
+        was_playing = self._attr_playback_state == PlaybackState.PLAYING
         self._attr_playback_state = PLAYBACK_STATE_MAP[active_group.playback_state]
         self._attr_elapsed_time = active_group.position
 
@@ -1273,14 +1277,21 @@ class SonosPlayer(PlayerProtocol):
         foreign_session = active_service == MusicService.MUSIC_ASSISTANT and not (
             group_parent or self
         )._plays_own_session(active_group)
+        playing = self._attr_playback_state == PlaybackState.PLAYING
+        if container_type != ContainerType.AIRPLAY:
+            self._own_airplay_session = False
+        elif self._airplay_output() is not None:
+            self._own_airplay_session = True
+        elif playing and not was_playing:
+            # an AirPlay sender of its own, such as a phone, started playing on the speaker
+            self._own_airplay_session = False
         if container_type == ContainerType.LINEIN:
             self._attr_active_source = SOURCE_LINE_IN
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
             self._attr_active_source = SOURCE_TV
-        elif container_type == ContainerType.AIRPLAY and (
-            self.player.active_output_protocol if self.player is not None else None
-        ) not in ("airplay", "sendspin"):
-            self._attr_active_source = SOURCE_AIRPLAY
+        elif container_type == ContainerType.AIRPLAY:
+            own_tail = self._own_airplay_session and not playing
+            self._attr_active_source = None if own_tail else SOURCE_AIRPLAY
         elif (
             container_type == ContainerType.STATION
             and active_service != MusicService.MUSIC_ASSISTANT
@@ -1318,9 +1329,8 @@ class SonosPlayer(PlayerProtocol):
 
         # special case: Sonos reports PAUSED state when MA stopped playback
         if (
-            active_service == MusicService.MUSIC_ASSISTANT
-            and self._attr_playback_state == PlaybackState.PAUSED
-        ):
+            active_service == MusicService.MUSIC_ASSISTANT or self._own_airplay_session
+        ) and self._attr_playback_state == PlaybackState.PAUSED:
             self._attr_playback_state = PlaybackState.IDLE
 
         # parse current media
