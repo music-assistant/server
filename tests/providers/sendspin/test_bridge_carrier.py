@@ -509,6 +509,41 @@ async def test_cast_leaves_an_output_it_takes_over_off_until_the_user_opts_in() 
     assert device.state() == ("chromecast", AIRPLAY_CLIENT, "chromecast", "on")
 
 
+async def test_an_output_switched_on_while_cast_is_away_stays_on_when_cast_carries_again() -> None:
+    """The user who switched the output on with the warning shown opted in, wherever Cast is."""
+    device = _device(squeezelite=False, cast=True)
+    device.records()[AIRPLAY_ID]["enabled"] = False
+    await device.attach(device.cast)
+    assert device.state() == (None, CAST_CLIENT, "chromecast", "off-default")
+    await device.detach(device.cast)
+
+    await device.switch_output(True)
+    await device.switch(device.airplay, True)
+    await device.attach(device.airplay)
+
+    assert device.state() == ("airplay", CAST_CLIENT, "airplay", "on")
+    assert device.output()["values"][CONF_SENDSPIN_CAST_OPT_IN] is True, "the opt-in is lost"
+
+    await device.switch(device.airplay, False)
+    await device.attach(device.cast)
+
+    assert device.state() == ("chromecast", CAST_CLIENT, "chromecast", "on")
+
+
+async def test_the_player_shows_the_new_carrier_of_an_output_that_is_switched_off() -> None:
+    """An output that stays off attaches nowhere, so its player is told of its carrier."""
+    device = _device()
+    await device.attach(device.airplay)
+    await device.attach(device.squeezelite)
+    await device.switch_output(False)
+    device.player.update_state.reset_mock()
+
+    await device.switch(device.airplay, False)
+
+    assert device.state() == (None, AIRPLAY_CLIENT, "squeezelite", "off-user")
+    device.player.update_state.assert_called_with(force_update=True)
+
+
 async def test_an_output_cast_switches_off_is_detached_also_without_a_bridge() -> None:
     """The default of Cast takes an attached output away that no bridge holds the client of."""
     device = _device(airplay=False, squeezelite=False, cast=True)

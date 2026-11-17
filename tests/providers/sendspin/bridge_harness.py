@@ -175,6 +175,7 @@ class _Player:
         """
         self.player_id = player_id
         self.attached_protocols: dict[str, Any] = {}
+        self.update_state = MagicMock()
 
 
 class BridgedDevice:

@@ -811,19 +811,23 @@ def _settle_output(
     stored_values = record.get("values") or {}
     values = dict(stored_values)
     was_enabled = enabled = bool(record.get(CONF_ENABLED, True))
-    if _move_carrier(values, carrier.protocol_id):
+    if moved := _move_carrier(values, carrier.protocol_id):
         LOGGER.info(
             "The Sendspin output %s rides on %s from now on", client_id, carrier.display_name
         )
+    if (
+        enabled
+        and values.get(CONF_PROTOCOL_EXPERIMENTAL_NOTE)
+        and not values.get(CONF_SENDSPIN_CAST_OPT_IN)
+    ):
+        # switched on with the warning shown, also while its experimental carrier was away
+        values[CONF_SENDSPIN_CAST_OPT_IN] = True
     if note := manager.experimental_note:
         if values.get(CONF_PROTOCOL_EXPERIMENTAL_NOTE) != note:
             values[CONF_PROTOCOL_EXPERIMENTAL_NOTE] = note
             if enabled and not values.get(CONF_SENDSPIN_CAST_OPT_IN):
                 enabled = False
                 values[CONF_PROTOCOL_OFF_BY_DEFAULT] = True
-        elif enabled and not values.get(CONF_SENDSPIN_CAST_OPT_IN):
-            # switched on with the warning shown
-            values[CONF_SENDSPIN_CAST_OPT_IN] = True
     else:
         values.pop(CONF_PROTOCOL_EXPERIMENTAL_NOTE, None)
         if values.pop(CONF_PROTOCOL_OFF_BY_DEFAULT, None):
@@ -832,6 +836,9 @@ def _settle_output(
         mass.config.set(f"{CONF_PLAYER_PROTOCOLS}/{client_id}/values", values)
     if enabled != was_enabled:
         mass.config.set_protocol_value(client_id, CONF_ENABLED, enabled)
+    if moved and (player := carrier.player) is not None:
+        # the outputs of the player name the carrier also of an output that is not attached
+        player.update_state(force_update=True)
     return was_enabled and not enabled
 
 
