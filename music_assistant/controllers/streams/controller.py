@@ -1762,10 +1762,21 @@ class StreamsController(CoreController):
                                     )
                                 )
                                 icy_bytes_until_meta = icy_meta_interval
-                    except BrokenPipeError, ConnectionResetError, ConnectionError:
+                    except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
                         # a superseded response is aborted under us and this is
                         # its normal end
                         client_disconnected = True
+                        if queue_data.session_id == session_id and not (
+                            player.player and player.player.stop_called
+                        ):
+                            self.logger.info(
+                                "Player %s disconnected from the flow stream of %s - "
+                                "error: %s, sent %d bytes",
+                                player.display_name,
+                                queue.display_name,
+                                err.__class__.__name__,
+                                bytes_sent,
+                            )
                         break
         except AbortFlowStream:
             await audio_bytes.aclose()
