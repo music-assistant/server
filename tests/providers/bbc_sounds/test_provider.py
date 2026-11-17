@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import ANY, AsyncMock, Mock
-
 
 import pytest
 from auntie_sounds.models import (
