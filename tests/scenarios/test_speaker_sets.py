@@ -330,6 +330,29 @@ async def test_a_report_that_changes_nothing_does_nothing(scenario: Scenario, re
     } == stored_absorbed_by
 
 
+async def test_a_report_of_unknown_speakers_only_lets_go_of_the_speakers_before(
+    scenario: Scenario,
+) -> None:
+    """
+    A report that names only a protocol nothing is stored of is still the full list.
+
+    The unknown protocol is skipped, and the speaker the report before named is let go of: it
+    is announced as added once, and it no longer names the set.
+    """
+    living, patio, patio_airplay = await _living_and_patio(scenario)
+    patio_id = scenario.single_player(patio, patio_airplay).player_id
+    await _report_set(scenario, living, patio)
+    scenario.clear_events()
+
+    await scenario.mass.players.set_absorbed_protocols(living.protocol_id, ["sonos_attic"])
+    await scenario.idle()
+
+    assert scenario.events(EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED) == [
+        Event(EventType.PLAYER_ADDED, patio_id)
+    ]
+    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{patio_id}/{CONF_ABSORBED_BY}") is None
+
+
 async def test_a_speaker_the_user_disabled_stays_disabled_when_its_set_lets_it_go(
     scenario: Scenario,
 ) -> None:

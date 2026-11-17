@@ -1166,16 +1166,21 @@ not named, also not by a dry run, and its record stays.
   yet, and a stereo pair of it.
 - Proven by: `test_speaker_sets.py::test_removing_all_unavailable_players_leaves_a_speaker_in_a_set_alone`
 
-### SET-7 · A report that changes nothing does nothing
+### SET-7 · A report changes only what its full list changes
 
 A provider reports a set for a protocol nothing is stored of, or a set that names a protocol
 nothing is stored of, a protocol of the set's own player, the protocol of a group, or a speaker that
-another set holds already; or it reports the same set once more. Nothing is announced and nothing
-is stored.
+another set holds already; or it reports the same set once more. While no speaker the set held
+before is left out, nothing is announced and nothing is stored. A report is always the full list:
+when the set of Living held Patio and the next report names only a protocol nothing is stored of,
+that protocol is skipped and Patio is let go of. It is announced as added and no longer names the
+set.
 
 - End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
   yet, and a stereo pair of it.
-- Proven by: `test_speaker_sets.py::test_a_report_that_changes_nothing_does_nothing`
+- Proven by:
+  - `test_speaker_sets.py::test_a_report_that_changes_nothing_does_nothing`
+  - `test_speaker_sets.py::test_a_report_of_unknown_speakers_only_lets_go_of_the_speakers_before`
 
 ### SET-8 · A speaker the user disabled stays disabled when its set lets it go
 
