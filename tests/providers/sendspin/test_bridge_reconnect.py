@@ -106,6 +106,7 @@ def _sendspin(scenario: Scenario) -> Any:
     provider._bridge_static_delay_defaults = {}
     provider._bridge_player_types = {}
     provider._bridge_holders = {}
+    provider._bridge_waiters = {}
     provider._bridge_locks = {}
     return provider
 
