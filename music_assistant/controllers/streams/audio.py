@@ -4274,6 +4274,7 @@ class StreamsAudio:
                     may_release=partial(
                         self._may_release_source, queue_item, streamdetails.provider
                     ),
+                    on_created=partial(self.mass.player_queues.register_audio_buffer, queue_item),
                 )
             except ProviderStreamLimitError as err:
                 last_capacity_error = err

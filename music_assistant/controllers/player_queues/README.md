@@ -172,7 +172,8 @@ track handed to the player after a wait is still the one that follows the playin
 Queue edits (moves, deletes, refills) do not take the lock, so the handover checks the queue again once
 the player has the track, and hands over the real next track when an edit changed it meanwhile.
 While an action is in progress an "action in progress" flag is surfaced on the queue and reported to
-subscribers.
+subscribers. A command that starts a queue that does not play raises it already while it waits for
+the queue's player, or the members of its group, to start up at their power control.
 
 A per-queue transitioning flag guards the window during track changes, so concurrent
 player-update callbacks are skipped while a queue is mid-transition. A load that shuffles prepares

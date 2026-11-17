@@ -21,13 +21,13 @@ _INDEX_FILE: Final = "index.json"
 _STATE_FILE: Final = "state.json"
 
 
-def parse_index(data: Any, line: str | None = None) -> CatalogIndex:
+def parse_index(data: Any, channel: str | None = None) -> CatalogIndex:
     """
     Return the index in a parsed JSON document.
 
     :param data: The parsed document.
-    :param line: The line the index must be for, any line when omitted.
-    :raises ValueError: The document is not an index of the format and line this server reads.
+    :param channel: The channel the index must be for, any channel when omitted.
+    :raises ValueError: The document is not an index of the format and channel this server reads.
     :raises LookupError: A field of the index is missing.
     """
     schema = data.get("schema") if isinstance(data, dict) else None
@@ -35,8 +35,8 @@ def parse_index(data: Any, line: str | None = None) -> CatalogIndex:
         msg = f"the document has schema {schema}, this server reads {INDEX_SCHEMA}"
         raise ValueError(msg)
     index = CatalogIndex.from_dict(data)
-    if line is not None and index.server_line != line:
-        msg = f"the index is for line {index.server_line}, this server reads {line}"
+    if channel is not None and index.channel != channel:
+        msg = f"the index is for channel {index.channel}, this server reads {channel}"
         raise ValueError(msg)
     return index
 

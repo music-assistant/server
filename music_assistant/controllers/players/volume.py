@@ -421,7 +421,7 @@ class VolumeMixin(_PlayerControllerBase):
         # member that has not confirmed the previous nudge yet
         base: int | None = None
         for child_player in self.iter_group_members(
-            group_player, only_powered=True, exclude_self=group_player.type != PlayerType.PLAYER
+            group_player, only_powered=True, exclude_self=group_player.type == PlayerType.GROUP
         ):
             if child_player.volume_control == PLAYER_CONTROL_NONE:
                 continue

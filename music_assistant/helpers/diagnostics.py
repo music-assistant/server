@@ -103,8 +103,7 @@ def sanitize_text(text: str) -> str:
     """
     text = _RE_SITE_PACKAGES_PATH.sub("", text)
     text = _RE_MASS_ROOT_PATH.sub("music_assistant/", text)
-    text = _RE_URL_QUERY.sub(r"\1?<redacted-query>", text)
-    text = _RE_URL_USERINFO.sub(r"\1<redacted>@", text)
+    text = redact_url_credentials(text)
     text = _RE_PATH_QUERY.sub(r"\1?<redacted-query>", text)
     text = _RE_JWT.sub("<redacted-token>", text)
     text = _RE_AUTH_SCHEME.sub(r"\1 <redacted>", text)
@@ -117,6 +116,16 @@ def sanitize_text(text: str) -> str:
     text = _RE_IPV6_CANDIDATE.sub(_redact_ip, text)
     text = _RE_IPV4.sub(_redact_ip, text)
     return _RE_HOME_DIR.sub("~", text)
+
+
+def redact_url_credentials(text: str) -> str:
+    """
+    Redact the query string and userinfo (where tokens and passwords live) of every URL in a text.
+
+    :param text: The raw text to redact.
+    """
+    text = _RE_URL_QUERY.sub(r"\1?<redacted-query>", text)
+    return _RE_URL_USERINFO.sub(r"\1<redacted>@", text)
 
 
 def sanitize_data[DataT](data: DataT) -> DataT:
