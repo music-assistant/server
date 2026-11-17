@@ -1880,7 +1880,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param item_id: The queue item whose first chunk of audio went out to the player.
         """
         if (queue_data := self._queue_data.get(queue_id)) is not None:
-            queue_data.served_item_ids.add(item_id)
+            queue_data.served_item_ids[item_id] = queue_data.session_id
 
     async def release_failed_item_source(self, queue_id: str, queue_item_id: str) -> None:
         """
@@ -3184,9 +3184,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 and prev_state["state"] in (PlaybackState.PLAYING, PlaybackState.PAUSED)
                 else None
             )
-            queue_data.served_item_ids.intersection_update(
-                {playing_item_id} if playing_item_id else ()
-            )
+            queue_data.served_item_ids = {
+                item_id: session_id
+                for item_id, session_id in queue_data.served_item_ids.items()
+                if item_id == playing_item_id
+            }
+            loading_item = self.get_item(queue_id, index)
+            loading_item_id = loading_item.queue_item_id if loading_item else None
+            if not seek_position and queue_data.last_counted_play == loading_item_id:
+                # started over, so its next end is another play of it
+                queue_data.last_counted_play = None
             queue_data.flow_mode_stream_log = []
             queue_data.flow_buffer_completed = None
             queue_data.flow_queue_exhausted = None

@@ -140,7 +140,7 @@ async def test_a_new_load_keeps_the_playing_item_eligible() -> None:
     await ctrl.play_index(QUEUE_ID, 2)
 
     # only the track the player is still playing survives the new load
-    assert ctrl._queue_data[QUEUE_ID].served_item_ids == {"a"}
+    assert ctrl._queue_data[QUEUE_ID].served_item_ids == {"a": None}
     ctrl.track_loaded_in_buffer(QUEUE_ID, "c")
     _player_reports(ctrl, PlaybackState.PLAYING, "c", 0)
     assert _reported(ctrl) == [("a", True)]
@@ -202,4 +202,4 @@ async def test_replaying_a_finished_queue_does_not_credit_a_load_that_never_serv
     _player_reports(ctrl, PlaybackState.IDLE, "a", 196)
 
     assert _reported(ctrl) == [("a", True)]
-    assert ctrl._queue_data[QUEUE_ID].served_item_ids == set()
+    assert ctrl._queue_data[QUEUE_ID].served_item_ids == {}
