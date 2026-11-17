@@ -1886,9 +1886,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.signal_update(queue_id)
         # preload next streamdetails
         self._preload_next_item(queue_id, item_id)
-        # clean up stale audio buffers for old queue items to prevent memory leaks
-        if current_index is not None:
-            self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
 
     def mark_item_served(self, queue_id: str, item_id: str) -> None:
         """
