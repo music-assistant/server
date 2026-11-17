@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +16,10 @@ from music_assistant.constants import (
     CONF_PROTOCOL_OFF_BY_DEFAULT,
     CONF_UNDERLYING_PLAYER_ID,
 )
-from music_assistant.providers.chromecast.constants import SENDSPIN_CAST_EXPERIMENTAL_NOTE
+from music_assistant.providers.chromecast.constants import (
+    CONF_SENDSPIN_UNSUPPORTED,
+    SENDSPIN_CAST_EXPERIMENTAL_NOTE,
+)
 from music_assistant.providers.sendspin import bridge_manager
 from music_assistant.providers.sendspin.bridge_manager import (
     BRIDGE_ORDER,
@@ -66,6 +70,16 @@ def _device(**kwargs: Any) -> BridgedDevice:
     device = BridgedDevice(**kwargs)
     _DEVICES.append(device)
     return device
+
+
+async def _until(condition: Callable[[], Any]) -> None:
+    """
+    Return once a condition holds.
+
+    :param condition: What has to hold.
+    """
+    while not condition():
+        await asyncio.sleep(0)
 
 
 # ---------------------------------------------------------------- the decision
@@ -515,6 +529,38 @@ async def test_an_output_cast_switches_off_is_detached_also_without_a_bridge() -
     assert device.manager_of(device.cast).get_bridge(CAST_ID) is None
 
 
+@pytest.mark.parametrize("airplay", [True, False], ids=["airplay switched off", "cast only"])
+async def test_a_bridge_that_stops_qualifying_takes_the_output_along_only_as_its_one_connection(
+    airplay: bool,
+) -> None:
+    """The output stays for another connection of the player, also one that is switched off."""
+    device = _device(airplay=airplay, squeezelite=False, cast=True)
+    if airplay:
+        device.records()[AIRPLAY_ID]["enabled"] = False
+    device.store_output(
+        CAST_CLIENT,
+        CAST_ID,
+        values={
+            CONF_PROTOCOL_EXPERIMENTAL_NOTE: SENDSPIN_CAST_EXPERIMENTAL_NOTE,
+            CONF_SENDSPIN_CAST_OPT_IN: True,
+        },
+    )
+    await device.attach(device.cast)
+    assert device.state() == ("chromecast", CAST_CLIENT, "chromecast", "on")
+
+    # the receiver reported that it can not run Sendspin
+    device.records()[CAST_ID]["values"][CONF_SENDSPIN_UNSUPPORTED] = True
+    await device.manager_of(device.cast).evaluate_bridge(device.cast)
+
+    assert device.manager_of(device.cast).get_bridge(CAST_ID) is None
+    if airplay:
+        assert device.state() == (None, CAST_CLIENT, "chromecast", "on"), (
+            "the output of a player with another connection was removed"
+        )
+    else:
+        assert not device.outputs()
+
+
 # ---------------------------------------------------------------- one output per player
 
 
@@ -551,6 +597,34 @@ async def test_a_bridge_does_not_register_the_output_of_another_player() -> None
     )
 
 
+async def test_a_bridge_does_not_register_the_client_of_another_player_before_it_is_stored() -> (
+    None
+):
+    """A client id the bridge of another player registered is that player's from the start."""
+    device = _device(airplay_id=SAME_ID_AIRPLAY_ID)
+    store = asyncio.Event()
+    client_added = device._client_added
+
+    async def _store_later(client_id: str) -> None:
+        await store.wait()
+        await client_added(client_id)
+
+    with patch.object(device, "_client_added", _store_later):
+        await device.attach(device.airplay)
+        await device.attach(device.squeezelite, device.other_player)
+
+        assert not device.outputs()
+        assert device.timeline == [("registered", "airplay")], (
+            "the bridges of two players registered the same client"
+        )
+
+        store.set()
+        await asyncio.wait_for(_until(device.outputs), timeout=1)
+
+    assert device.state() == ("airplay", SQUEEZELITE_CLIENT, "airplay", "on")
+    assert device.output()["player_id"] == PLAYER_ID
+
+
 async def test_a_bridge_adopts_an_output_of_its_id_that_belongs_to_no_player() -> None:
     """An output without a player that still exists is taken by the bridge that meets it."""
     device = _device(airplay=False)
@@ -562,6 +636,29 @@ async def test_a_bridge_adopts_an_output_of_its_id_that_belongs_to_no_player() -
     assert device.state() == ("squeezelite", SQUEEZELITE_CLIENT, "squeezelite", "on")
     assert device.output()["player_id"] == PLAYER_ID
     assert device.output()["values"][CONF_SENDSPIN_BRIDGE_STATIC_DELAYS] == {"gone": 40}
+
+
+async def test_a_cast_default_that_belongs_to_no_player_stays_a_default_on_its_new_player() -> None:
+    """An output Cast left off, which a bridge adopts, is offered to the user again."""
+    device = _device(airplay=False, squeezelite=False, cast=True)
+    device.store_output(
+        CAST_CLIENT,
+        CAST_ID,
+        enabled=False,
+        values={
+            CONF_PROTOCOL_EXPERIMENTAL_NOTE: SENDSPIN_CAST_EXPERIMENTAL_NOTE,
+            CONF_PROTOCOL_OFF_BY_DEFAULT: True,
+        },
+    )
+    device.records()[CAST_CLIENT]["player_id"] = "pl_removed"
+
+    await device.attach(device.cast)
+
+    assert device.state() == (None, CAST_CLIENT, "chromecast", "off-default")
+    assert device.output()["player_id"] == PLAYER_ID, "the user has no toggle to opt in with"
+    assert CONF_SENDSPIN_CAST_OPT_IN not in device.output()["values"], (
+        "adopting the output reads as an opt-in of the user"
+    )
 
 
 async def test_a_second_output_that_is_stored_is_reported_and_one_is_used(

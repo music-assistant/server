@@ -301,6 +301,14 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
                 self._hold_client(protocol)
                 self._remove_bridge_on_detach(protocol)
                 return
+            if client_id and self._is_held_by_another_player(protocol, client_id):
+                # its output is not stored yet, so no other check sees whose it is
+                self.logger.debug(
+                    "Not bridging %s: a bridge of another player registered %s",
+                    protocol.display_name,
+                    client_id,
+                )
+                return
             bridge: BridgeT | None = None
             try:
                 bridge = self._create_bridge(protocol)
@@ -523,6 +531,21 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         ):
             sendspin_provider.release_bridge_client(client_id, protocol.protocol_id)
 
+    def _is_held_by_another_player(self, protocol: PlayerProtocol, client_id: str) -> bool:
+        """
+        Return whether the bridge of a protocol of another player holds a client id.
+
+        :param protocol: The protocol to bridge, which is attached to its player.
+        :param client_id: The client id its bridge would register under.
+        """
+        sendspin_provider = self.sendspin_provider
+        holder = sendspin_provider.get_bridge_holder(client_id) if sendspin_provider else None
+        if holder is None or (player := protocol.player) is None:
+            return False
+        return holder not in player.attached_protocols and holder not in (
+            self.mass.config.get_protocol_ids_of_player(player.player_id)
+        )
+
     def _is_only_connection(self, protocol: PlayerProtocol) -> bool:
         """
         Return whether no other protocol of the player of a protocol can be bridged.
@@ -622,6 +645,9 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             client_id,
             protocol.display_name,
         )
+        if (record.get("values") or {}).get(CONF_PROTOCOL_OFF_BY_DEFAULT):
+            # an experimental carrier offers it to the user again, rather than take it as an opt-in
+            self.mass.config.set_protocol_value(client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE, None)
         await self.mass.config.save_protocol_config(client_id, {"enabled": True})
 
     async def _on_providers_updated(self, event: MassEvent) -> None:

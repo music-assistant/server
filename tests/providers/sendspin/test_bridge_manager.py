@@ -370,6 +370,7 @@ async def test_stale_bridge_rebuilt_after_sendspin_reload() -> None:
 
     # Simulate a sendspin provider reload (new server instance)
     new_provider = MagicMock()
+    use_real_bridge_holders(new_provider)
     env.mass.get_provider = MagicMock(
         side_effect=lambda domain: new_provider if domain == "sendspin" else None
     )
