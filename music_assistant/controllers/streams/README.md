@@ -118,7 +118,7 @@ Supporting modules in `helpers/`:
 - `AudioBuffer.fill()` - Start filling from an async generator of PCM chunks
 - `AudioBuffer.ready` - Event set when enough chunks are buffered past the seek point (threshold-based)
 - `AudioBuffer.users` - The parties that wait for the buffer's audio or read it
-- `AudioBuffer.release_if_unneeded()` - Stop the source of a buffer that still fills, has no user and is not needed by its queue
+- `AudioBuffer.release_if_unneeded()` - Give up the audio and the source of a buffer that nobody reads and that left its queue's scope
 
 ### Buffer Lifecycle
 
@@ -137,7 +137,7 @@ on, leaves the old track's buffer filling. On a provider with a stream limit tha
 slot the new track needs, so the single-item route cancels it once the player asks for another track
 and no open request still streams the old one.
 
-A buffer keeps track of its users. `get_buffer()` counts whoever waits for the first audio,
+A buffer keeps track of its users. `get_buffer()` lists whoever only waits for the first audio,
 `get_raw_stream()` every open read stream, and `get_queue_item_stream()` holds one `BufferUser` from
 the moment it takes the buffer until it ends, so the wait for a source slot and the time before its
 first read count as well. A stream also claims the queue item it decided to play, which holds the
@@ -145,12 +145,14 @@ item's buffer before the stream has it and when someone else creates it: the ite
 whole life, the flow stream from the moment it selects a track. A claim counts for the playback
 session its stream is part of, and no longer once the queue the item is on plays in another session
 or in none. The source of a buffer that still fills holds a stream slot of its provider, which lists
-those buffers in `stream_slot_holders`. `release_if_unneeded()` stops the source of a buffer that has
-no user and that neither a claim nor its queue needs (the player queues README says when that is),
-but only when its provider has no slot to spare, and makes the buffer invalid on the spot, so nobody
-takes it while its source unwinds. It runs when the last user of a buffer leaves, when a claim ends,
-and for every holder of a provider's slots when a track needs one and none is free; when none of them
-gives way, a debug line names the holders, their users and the streams that claim their items.
+those buffers in `stream_slot_holders`. `release_if_unneeded()` gives up the audio and the source of
+a buffer that no stream reads or holds to read and that left its queue's scope (the player queues
+README says when that is), whether its source still fills or has delivered everything. It makes the
+buffer invalid on the spot, so nobody takes it while its source unwinds, and a caller that only
+waited for its first audio gets no buffer. It runs when a user of a buffer leaves, when a claim
+ends, when the scope of its queue can have changed, and for every holder of a provider's slots when
+a track needs one and none is free; when none of them gives way, a debug line names the holders,
+their users and the streams that claim their items.
 
 ### Error Handling
 

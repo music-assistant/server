@@ -85,7 +85,6 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import Track
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENABLED
-from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
@@ -1319,7 +1318,7 @@ class MusicQuizPlugin(PluginProvider):
                 )
 
     def _warm_first_round(self, first_round: MusicQuizRound) -> None:
-        """Queue and buffer the first round's track in the background while the lobby is open."""
+        """Queue the first round's track in the background while the lobby is open."""
         _, quiz_type, _ = self._require_game_strategies()
         if not quiz_type.plays_track_before_answering or first_round.track_uri is None:
             return
@@ -1525,7 +1524,7 @@ class MusicQuizPlugin(PluginProvider):
 
     async def _warm_first_track(self, track_uri: str) -> None:
         """
-        Queue the first round's track on an idle playback target and buffer its audio.
+        Queue the first round's track on an idle playback target.
 
         :param track_uri: URI of the first round's track.
         """
@@ -1536,7 +1535,7 @@ class MusicQuizPlugin(PluginProvider):
                 venue = self.mass.players.get_player(game.config.venue_player_id or "")
                 # a venue that is playing or paused (e.g. a party while the lobby is open) is
                 # left alone, without a session either: a lobby teardown stops the session's
-                # playback. Its first round then starts without prepared audio.
+                # playback. Its first round then starts without a staged track.
                 if (
                     venue is None
                     or not venue.available
@@ -1562,17 +1561,6 @@ class MusicQuizPlugin(PluginProvider):
                 if not await self._is_round_track(staged_item, track_uri):
                     return
                 self._staged_item_id = staged_item.queue_item_id
-                # A cold start decodes the track at full speed while the player has no lead
-                # yet; buffering it in the lobby lets the first round start from audio already
-                # in hand. Best effort: audio that is missing or lapsed in a long lobby is
-                # resolved on demand when the round starts.
-                await self.mass.streams.audio.get_audio_buffer(
-                    staged_item,
-                    reason="prepare_next",
-                    capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
-                    allow_provider_match=False,
-                    stop_paused_queues=False,
-                )
             except MusicAssistantError as err:
                 self.logger.debug("Could not prepare the first Music Quiz track: %s", err)
 

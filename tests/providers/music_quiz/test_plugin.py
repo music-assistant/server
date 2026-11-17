@@ -32,7 +32,6 @@ from music_assistant_models.media_items import Playlist, ProviderMapping, Track
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.controllers.player_queues.state import QueueSnapshot
-from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
@@ -6167,10 +6166,10 @@ def _install_staging_target(
 
 
 @pytest.mark.asyncio
-async def test_warm_first_track_stages_and_buffers_it_on_an_idle_target() -> None:
-    """The lobby replaces an idle queue with the first track and buffers its audio."""
+async def test_warm_first_track_stages_it_on_an_idle_target_without_buffering() -> None:
+    """The lobby replaces an idle queue with the first track and leaves its audio for the start."""
     plugin = _create_plugin()
-    staged_item, get_audio_buffer = _install_staging_target(plugin)
+    _, get_audio_buffer = _install_staging_target(plugin)
     queues = cast("MagicMock", plugin.mass.player_queues)
 
     await plugin._warm_first_track("library://track/0")
@@ -6181,14 +6180,8 @@ async def test_warm_first_track_stages_and_buffers_it_on_an_idle_target() -> Non
         "venue_player", "library://track/0", option=QueueOption.REPLACE_NEXT
     )
     assert plugin._staged_item_id == "item-staged"
-    # buffered like the queue's own speculative preparation: it gives up softly
-    get_audio_buffer.assert_awaited_once_with(
-        staged_item,
-        reason="prepare_next",
-        capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
-        allow_provider_match=False,
-        stop_paused_queues=False,
-    )
+    # a queue that is not playing gets no audio: the round fetches it when it starts
+    get_audio_buffer.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -6221,7 +6214,7 @@ async def test_warm_first_track_leaves_a_busy_target_alone(
 async def test_warm_first_track_stages_on_the_remote_virtual_player() -> None:
     """In remote mode the quiz's own virtual player takes the staged first track."""
     plugin = _create_plugin()
-    staged_item, get_audio_buffer = _install_staging_target(plugin, PlaybackState.PLAYING)
+    _, get_audio_buffer = _install_staging_target(plugin, PlaybackState.PLAYING)
     plugin._game = _fake_game(mode=SharedPlaybackMode.REMOTE, venue_player_id=None)
     cast("AsyncMock", plugin._get_playback_session).return_value.mode = SharedPlaybackMode.REMOTE
 
@@ -6231,9 +6224,7 @@ async def test_warm_first_track_stages_on_the_remote_virtual_player() -> None:
     cast("MagicMock", plugin.mass.player_queues).snapshot.assert_not_called()
     assert plugin._venue_snapshot is None
     assert plugin._staged_item_id == "item-staged"
-    get_audio_buffer.assert_awaited_once()
-    assert get_audio_buffer.await_args is not None
-    assert get_audio_buffer.await_args.args == (staged_item,)
+    get_audio_buffer.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -6264,18 +6255,6 @@ async def test_warm_first_track_gives_up_when_the_track_cannot_be_queued() -> No
 
     assert plugin._staged_item_id is None
     get_audio_buffer.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_warm_first_track_keeps_the_staged_item_when_buffering_fails() -> None:
-    """A failed buffer is best effort: the staged track still starts the first round."""
-    plugin = _create_plugin()
-    _, get_audio_buffer = _install_staging_target(plugin)
-    get_audio_buffer.side_effect = AudioError("no slot")
-
-    await plugin._warm_first_track("library://track/0")
-
-    assert plugin._staged_item_id == "item-staged"
 
 
 @pytest.mark.asyncio

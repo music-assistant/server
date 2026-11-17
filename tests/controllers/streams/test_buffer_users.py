@@ -202,17 +202,21 @@ async def test_a_buffer_gives_its_source_up_only_when_nothing_needs_it(rig: Slot
     assert buffer.release_if_unneeded() is None
 
 
-async def test_a_source_that_delivered_everything_is_left_alone(rig: SlotRig) -> None:
-    """A buffer whose source is done holds no slot, so there is nothing to give up."""
+async def test_a_source_that_delivered_everything_gives_its_audio_up_too(rig: SlotRig) -> None:
+    """A buffer whose source is done frees its audio like any other once nothing needs it."""
     playing, _upcoming = rig.play("track 0", "track 1", realtime=False)
     rig.sources["track 0"] = partial(source, 3)
     await rig.capture(playing)
     buffer = await rig.delivered(playing)
+    assert buffer.seconds_available == 3
     buffer.may_release = lambda _buffer: True
 
-    assert buffer.release_if_unneeded() is None
-    assert not buffer.cancelled
-    assert buffer.seconds_available == 3
+    release = buffer.release_if_unneeded()
+
+    assert release is not None
+    assert buffer.cancelled
+    await release
+    assert buffer.seconds_available == 0
 
 
 # --- the queue's side of the rule
@@ -277,19 +281,15 @@ async def test_a_queue_plays_neither_now_nor_next_what_is_not_on_it(rig: SlotRig
     assert not rig.queues.plays_now_or_next(elsewhere)
 
 
-async def test_a_queue_that_is_not_playing_plays_next_the_item_it_is_on(rig: SlotRig) -> None:
-    """A queue without a playback session starts with the item it is on, and prepares no other."""
+async def test_a_queue_without_a_playback_session_plays_nothing(rig: SlotRig) -> None:
+    """A queue that has no playback session plays no item, not the one it is on either."""
     first, second = rig.play("track 0", "track 1")
     queue_data = rig.queues._queue_data[QUEUE_ID]
     queue_data.session_id = None
 
-    assert rig.queues.plays_now_or_next(first)
+    assert not rig.queues.plays_now_or_next(first)
     assert not rig.queues.plays_now_or_next(second)
     queue_data.queue.current_index = 1
-    assert not rig.queues.plays_now_or_next(first)
-    assert rig.queues.plays_now_or_next(second)
-    # a queue that was cleared is on no item
-    queue_data.queue.current_index = None
     assert not rig.queues.plays_now_or_next(first)
     assert not rig.queues.plays_now_or_next(second)
 
@@ -335,34 +335,22 @@ def _may_release_in_every_state(rig: SlotRig, capture: AudioBuffer) -> dict[str,
 
 @pytest.mark.parametrize(
     "rig",
-    [TwoStreamProvider, UnlimitedProvider],
-    ids=["a slot to spare", "no limit"],
+    [SingleStreamProvider, TwoStreamProvider, UnlimitedProvider],
+    ids=["one slot", "a slot to spare", "no limit"],
     indirect=True,
 )
-async def test_a_provider_with_a_slot_to_spare_keeps_every_source(rig: SlotRig) -> None:
-    """Nothing may give its source up while its provider has a slot to spare."""
-    playing, _prepared, _later = rig.play("track 0", "track 1", "track 2")
-    capture = await rig.prepare_next(playing)
-    assert rig.slot_free()
-
-    assert not any(_may_release_in_every_state(rig, capture).values())
-
-
-@pytest.mark.parametrize("rig", [TwoStreamProvider], indirect=True)
-async def test_a_provider_without_a_free_slot_keeps_only_what_a_queue_plays_now_or_next(
+async def test_a_buffer_nobody_reads_is_kept_only_while_its_queue_plays_it_now_or_next(
     rig: SlotRig,
 ) -> None:
-    """Out of slots, a source without a user may go unless its queue plays it now or next."""
-    playing, _prepared, later = rig.play("track 0", "track 1", "track 2")
+    """On every provider a buffer without a reader may go unless its queue plays it now or next."""
+    playing, _prepared, _later = rig.play("track 0", "track 1", "track 2")
     capture = await rig.prepare_next(playing)
-    await rig.capture(later)
-    assert not rig.slot_free()
 
     assert _may_release_in_every_state(rig, capture) == {
         "it plays next": False,
         "it waits further down": True,
         "its queue is not playing, and is on another item": True,
-        "its queue is not playing, and is on it": False,
+        "its queue is not playing, and is on it": True,
         "its item left the queue": True,
         "its queue is gone": True,
         "another buffer took its place": True,

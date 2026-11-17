@@ -243,24 +243,29 @@ on the item, so it holds whichever buffer the item has or gets, and every stream
 away when it ends. A claim holds its item only for the playback session its stream is part of: once
 the queue stopped or started over, or was transferred to another player (which gets the same items
 and plays them in a session of its own), a stream that is still open from before holds nothing of the
-playback that followed. The buffer such a stream still reads keeps it as a user. A buffer is needed
-while it has a user, while a stream of its queue's session claims its item, or while its queue plays
-its item now or next (`plays_now_or_next`: the item the queue is on, the item its player has started
-fetching, and the item that follows either of them). A queue that is not playing plays next the item
-it is on, and nothing after it: audio that is buffered ahead of its start, as the music quiz does for
-the first track of a round while its lobby is open, is needed until the queue starts and takes it
-over. A buffer that is not needed gives its source up only when its provider has no free slot: a
-provider with a slot to spare, or without a limit, keeps every source it has. The buffer is asked at
-three moments: when a track asks the provider for a slot and none is free, when its last user leaves,
-and when the claim on its item ends. On a provider with a single slot there is no slot to spare while
-a source still fills, as that source holds the slot itself: there a source that is not needed is
-released the moment its last user leaves, whether or not another track is asking for the slot. From
-the moment a buffer is told to give its source up it is no longer valid, so nobody takes it while the
-source unwinds: whoever wants that item's audio after that gets a buffer of its own, through the
-provider's slots like any other. So a prepared track that a queue change moved away from the head or
-took off the queue hands its slot to the track that plays next, while a track that is in use or about
-to play keeps it. The releases of a stop, a clear, a replace and the start of an item do not ask for
-users or claims.
+playback that followed. The buffer such a stream still reads keeps it as a user. A queue keeps the
+audio that is in its scope and gives the rest up. A buffer is in scope while a stream reads it or
+holds it to read it. Otherwise it is in scope while it is still the buffer of its item and that item
+is one the queue plays now or next (`plays_now_or_next`: the item the queue is on, the item its
+player has started fetching, and the item that follows either of them), one a stream of the queue's
+session claims, or the item right before the one its player fetches, once all of its audio has
+arrived. A queue without a playback session has no scope, and no audio is made for it. Whoever only
+waits for the first audio of a buffer, as the preparation of the next track does, does not keep it.
+A buffer that is out of scope gives its audio up, whether its source still fills or has delivered
+everything, and whether or not its provider has a slot to spare; whoever waits for it gets no audio.
+The queue asks its buffers whenever its scope can change: when a session starts or ends, when its
+items change, when its player fetches another item or reports another one as playing, when the
+repeat mode or the sleep timer target changes, and before it gets audio for an item. A buffer is
+also asked when a user leaves it, when the claim on its item ends, when another buffer takes its
+place on the item, and when a track asks the provider for a slot and none is free. The queue is
+asked once more before audio is made: before a buffer is created, before a source in an unknown
+format is probed, and when the source gets its slot, so a track that left the scope during one of
+those waits is not fetched. From the moment a buffer is told to give its audio up it is no longer
+valid, so nobody takes it while its source unwinds: whoever wants that item's audio after that gets
+a buffer of its own, through the provider's slots like any other. So a prepared track that a queue
+change moved away from the head or took off the queue gives up its audio and its slot at that
+change, while a track that is in use or about to play keeps both. The releases of a stop, a clear, a
+replace and the start of an item do not ask for users or claims.
 
 A paused queue keeps its session and its buffers until the pause watcher stops it once the
 configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread
