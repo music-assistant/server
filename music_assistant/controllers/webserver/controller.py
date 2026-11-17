@@ -118,7 +118,7 @@ from .helpers.login_flow import (
     PKCE_CHALLENGE_RE,
     AuthTransport,
     RedirectTarget,
-    current_auth_transport,
+    get_auth_request_context,
     get_request_origin,
     set_auth_request_context,
 )
@@ -1379,7 +1379,7 @@ class WebserverController(CoreController):
                     return web.Response(status=400, text="Invalid return_url")
 
             self._set_auth_request_context(request)
-            transport = current_auth_transport.get()
+            transport, _ = get_auth_request_context()
             if transport is AuthTransport.INGRESS:
                 return web.Response(
                     status=400, text="Sign-in with a redirect is not available over Ingress"

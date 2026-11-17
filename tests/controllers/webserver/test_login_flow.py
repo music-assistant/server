@@ -305,7 +305,7 @@ async def test_a_websocket_command_carries_the_transport_and_origin(
     seen: list[tuple[AuthTransport, str | None]] = []
 
     def _run_handler(*_args: object) -> None:
-        seen.append((login_flow.current_auth_transport.get(), login_flow.current_auth_origin.get()))
+        seen.append(login_flow.get_auth_request_context())
 
     handler = MagicMock(authenticated=False, required_scope=None)
     with (

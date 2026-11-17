@@ -73,8 +73,7 @@ from music_assistant.controllers.webserver.helpers.login_flow import (
     PendingLogin,
     PendingLoginStore,
     RedirectTarget,
-    current_auth_origin,
-    current_auth_transport,
+    get_auth_request_context,
     get_origin_host,
     verify_pkce,
 )
@@ -1170,8 +1169,7 @@ class AuthenticationManager:
             invalid or the provider does not support it.
         :raises RateLimited: If too many sign-ins are pending.
         """
-        transport = current_auth_transport.get()
-        origin = current_auth_origin.get()
+        transport, origin = get_auth_request_context()
         if transport is AuthTransport.INGRESS:
             return {
                 "authorization_url": None,

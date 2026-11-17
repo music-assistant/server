@@ -61,7 +61,11 @@ from .helpers.auth_middleware import (
     set_impersonated_user,
     set_sendspin_player_id,
 )
-from .helpers.login_flow import AuthTransport, get_request_origin, set_auth_request_context
+from .helpers.login_flow import (
+    AuthTransport,
+    get_request_origin,
+    set_auth_request_context_resolver,
+)
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -317,7 +321,7 @@ class WebsocketClientHandler:
         set_current_user(self._authenticated_user)
         set_current_token(self._current_token)
         set_sendspin_player_id(self._sendspin_player_id)
-        set_auth_request_context(self.auth_transport, self.auth_origin)
+        set_auth_request_context_resolver(lambda: (self.auth_transport, self.auth_origin))
         set_request_priority(RequestPriority.NORMAL)
 
         # Check authentication if required
