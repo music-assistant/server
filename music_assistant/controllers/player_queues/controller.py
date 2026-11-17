@@ -62,6 +62,7 @@ from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    ATTR_NEXT_ITEM_REPLACEABLE,
     ATTR_PLAY_ACTION_IN_PROGRESS,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     MASS_LOGO_ONLINE,
@@ -86,6 +87,7 @@ from music_assistant.controllers.player_queues.constants import (
     FLOW_PLAYOUT_IDLE_TIMEOUT,
     LOST_FLOW_RESTART_LIMIT,
     LOST_FLOW_RESTART_WINDOW,
+    NEXT_ITEM_REPLACE_MARGIN,
     PAUSE_TIMEOUT_RANGE,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
@@ -980,7 +982,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             item_index = item_id_or_index
         queue = self._queue_data[queue_id].queue
         boundary_index = committed_index(queue) if queue.index_in_buffer is not None else None
-        if boundary_index is not None and item_index <= boundary_index:
+        if boundary_index is not None and (
+            item_index <= boundary_index
+            # a player can only replace the buffered item with an item that follows it
+            or item_index == queue.index_in_buffer == queue.items - 1
+        ):
             # ignore request if track already loaded in the buffer
             # the frontend should guard so this is just in case
             self.logger.warning("delete requested for item already loaded in buffer")
@@ -1984,8 +1990,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         return next_item
 
-    def track_loaded_in_buffer(self, queue_id: str, item_id: str) -> None:
-        """Call when a player has (started) loading a track in the buffer."""
+    def track_loaded_in_buffer(self, queue_id: str, item_id: str, faded_in: bool = False) -> None:
+        """
+        Call when a player has (started) loading a track in the buffer.
+
+        :param queue_id: The queue the track belongs to.
+        :param item_id: The queue item the player loaded.
+        :param faded_in: The item before mixed a fade into this item.
+        """
         queue = self.get(queue_id)
         if not queue:
             msg = f"PlayerQueue {queue_id} is not available"
@@ -1994,6 +2006,25 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # which helps us a bit to determine how far the player has buffered ahead
         current_index = self.index_by_id(queue_id, item_id)
         queue.index_in_buffer = current_index
+        replaceable = (
+            not faded_in
+            and not queue.flow_mode
+            and self.mass.players.replaces_enqueued_media(queue_id)
+        )
+        lock_task_id = f"lock_next_item_{queue_id}"
+        self.mass.cancel_timer(lock_task_id)
+        if (
+            replaceable
+            and current_index != queue.current_index
+            and (playing := queue.current_item) is not None
+            and playing.duration
+        ):
+            remaining = (playing.duration - queue.corrected_elapsed_time) / queue.playback_speed
+            lock_in = remaining - NEXT_ITEM_REPLACE_MARGIN
+            replaceable = lock_in > 0
+            if replaceable:
+                self.mass.call_later(lock_in, self._lock_next_item, queue_id, task_id=lock_task_id)
+        queue.extra_attributes[ATTR_NEXT_ITEM_REPLACEABLE] = replaceable
         self._queue_data[queue_id].last_served_item_id = item_id
         self.mark_item_served(queue_id, item_id)
         self.release_unneeded_audio(queue_id)
@@ -2001,6 +2032,23 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.signal_update(queue_id)
         # preload next streamdetails
         self._preload_next_item(queue_id, item_id)
+
+    def fading_into(self, queue_id: str, item_id: str) -> None:
+        """
+        Call when the playing item's stream prepares a crossfade into the next item.
+
+        The next item counts as loaded in the buffer from then on, so it stays in place.
+
+        :param queue_id: The queue the items belong to.
+        :param item_id: The queue item the fade goes into.
+        """
+        queue = self._queue_data[queue_id].queue
+        queue.index_in_buffer = self.index_by_id(queue_id, item_id)
+        queue.extra_attributes[ATTR_NEXT_ITEM_REPLACEABLE] = False
+        # no audio is asked for when the next item's is in hand already, so
+        # what left the queue's scope with this move is released here
+        self.release_unneeded_audio(queue_id)
+        self.signal_update(queue_id)
 
     def mark_item_served(self, queue_id: str, item_id: str) -> None:
         """
@@ -3983,3 +4031,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     if (player := self.mass.players.get_player(queue_id)) is not None:
                         self.on_player_update(player, {})
                     self.signal_update(queue_id)
+
+    def _lock_next_item(self, queue_id: str) -> None:
+        """Keep the next item of a queue in place, since an edit of it would come too late."""
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        if queue_data.queue.extra_attributes.get(ATTR_NEXT_ITEM_REPLACEABLE):
+            queue_data.queue.extra_attributes[ATTR_NEXT_ITEM_REPLACEABLE] = False
+            self.signal_update(queue_id)

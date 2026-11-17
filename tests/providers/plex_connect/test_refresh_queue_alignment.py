@@ -26,7 +26,10 @@ class _QueueHandler(QueueSyncMixin, QueueCommandsMixin):
         provider.get_track = AsyncMock(side_effect=_fake_track)
         provider.mass.player_queues.play_media = self.play_media
         self.queue = SimpleNamespace(
-            state=PlaybackState.PLAYING, current_index=0, index_in_buffer=0
+            state=PlaybackState.PLAYING,
+            current_index=0,
+            index_in_buffer=0,
+            extra_attributes={},
         )
         provider.mass.player_queues.get = Mock(return_value=self.queue)
         self.provider = provider

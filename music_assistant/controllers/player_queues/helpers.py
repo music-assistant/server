@@ -20,7 +20,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
-from music_assistant.constants import EXTERNAL_ID_PROVIDER
+from music_assistant.constants import ATTR_NEXT_ITEM_REPLACEABLE, EXTERNAL_ID_PROVIDER
 from music_assistant.controllers.player_queues.constants import (
     PLAY_REQUEST_RESOLVE_TIMEOUT,
     ArtistOrder,
@@ -450,15 +450,16 @@ def committed_index(queue: PlayerQueue) -> int | None:
     """
     Return the highest queue index the player owns, or None if it owns none.
 
-    It holds both the playing track and the one handed to it for the transition. Nothing at or
-    below this index can be reordered: the player keeps playing what it was given whatever the
-    queue says, and the buffered position does not follow items that move around it.
+    It holds both the playing track and the one handed to it for the transition, unless the
+    player can still replace that one. Nothing at or below this index can be reordered: the
+    player keeps playing what it was given whatever the queue says, and the buffered position
+    does not follow items that move around it.
 
     :param queue: The queue to resolve the index for.
     """
     if queue.current_index is None:
         return queue.index_in_buffer
-    if queue.index_in_buffer is None:
+    if queue.index_in_buffer is None or queue.extra_attributes.get(ATTR_NEXT_ITEM_REPLACEABLE):
         return queue.current_index
     # repeat wraps the buffered index back to the front while the last track plays
     return max(queue.current_index, queue.index_in_buffer)

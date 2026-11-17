@@ -51,6 +51,7 @@ class FakeQueue:
         self.queue_id = queue_id
         self.current_index = current_index
         self.index_in_buffer = index_in_buffer
+        self.extra_attributes: dict[str, Any] = {}
         self.sources = sources or []
         self.ended = ended
 
