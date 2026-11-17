@@ -1557,15 +1557,15 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
         Return whether the bridge of a squeezelite protocol carries the Sendspin output of a player.
 
         That is while its squeezelite protocol qualifies for a bridge, or is away and its bridge
-        stored a Sendspin output for the player, as long as the user has switched neither that
-        Sendspin output nor the squeezelite output off.
+        stored a Sendspin output for the player, as long as the user has the squeezelite output
+        switched on.
 
         :param player: The player to look at.
         """
         for protocol in player.attached_protocols.values():
             if protocol.provider is self.provider:
                 # one the user switched off, or whose provider is disabled, is detached
-                return self.is_bridgeable(protocol) and self._sendspin_output_switched_on(player)
+                return self.is_bridgeable(protocol)
         # a player that is away keeps the place of the Sendspin output its bridge stored
         return bool(self._sendspin_output_ids(player)) and super().carries_sendspin_output(player)
 

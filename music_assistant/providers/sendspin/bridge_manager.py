@@ -149,6 +149,15 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             # with another protocol's bridge on the same device (shared MAC).
             if self._has_bridge(protocol_id):
                 await self.remove_bridge(protocol_id, permanent=True)
+            elif (
+                client_id
+                and (player := protocol.player) is not None
+                and self._earlier_bridge_carries(player)
+                and self.mass.config.is_protocol_switched_on(client_id)
+            ):
+                # an output switched on keeps the place of the output of the bridge that
+                # carries the device; one switched off stays, with its settings
+                await self._remove_client_protocol(protocol_id, client_id)
             return
         if client_id:
             await self._heal_stale_client_disable(protocol, client_id)
@@ -267,13 +276,24 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
 
         The bridges after this one in BRIDGE_ORDER leave the output to it while it does. By
         default that is while the player has an output of this provider the user switched on,
-        also while it is away, and the Sendspin output of its bridge is not switched off.
+        also while it is away.
 
         :param player: The player to look at.
         """
-        return self._has_switched_on_output(
-            player, self.provider.domain
-        ) and self._sendspin_output_switched_on(player)
+        return self._has_switched_on_output(player, self.provider.domain)
+
+    def bridge_client_ids(self, player: Player) -> set[str]:
+        """
+        Return the client ids the bridges of this provider register, or stored, for a player.
+
+        :param player: The player to look at.
+        """
+        return {
+            client_id
+            for protocol in player.attached_protocols.values()
+            if protocol.provider is self.provider
+            and (client_id := self._bridge_client_id(protocol))
+        } | set(self._sendspin_output_ids(player))
 
     @abstractmethod
     def _bridge_client_id(self, protocol: PlayerProtocol) -> str | None:
@@ -380,19 +400,27 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         """
         Return whether a bridge before this one in BRIDGE_ORDER carries the Sendspin output.
 
+        :param player: The player to look at.
+        """
+        return self._earlier_carrier(player) is not None
+
+    def _earlier_carrier(self, player: Player) -> SendspinBridgeManagerBase[SendspinBridge] | None:
+        """
+        Return the manager of the bridge before this one in BRIDGE_ORDER that carries the player.
+
         A provider that is not loaded carries nothing.
 
         :param player: The player to look at.
         """
         for domain in BRIDGE_ORDER:
             if domain == self.provider.domain:
-                return False
+                return None
             manager = getattr(self.mass.get_provider(domain), "bridge_manager", None)
             if isinstance(manager, SendspinBridgeManagerBase) and (
                 manager.carries_sendspin_output(player)
             ):
-                return True
-        return False
+                return manager
+        return None
 
     def _sendspin_output_ids(self, player: Player) -> list[str]:
         """
@@ -418,17 +446,6 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             if underlying.get("provider") == self.provider.instance_id:
                 output_ids.append(output_id)
         return output_ids
-
-    def _sendspin_output_switched_on(self, player: Player) -> bool:
-        """
-        Return whether no Sendspin output of the bridges of this provider for a player is off.
-
-        :param player: The player to look at.
-        """
-        return all(
-            self.mass.config.is_protocol_switched_on(output_id)
-            for output_id in self._sendspin_output_ids(player)
-        )
 
     def _has_switched_on_output(self, player: Player, protocol_domain: str) -> bool:
         """
@@ -524,8 +541,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
 
         Those ride on a protocol of the player that is switched off or not attached, so they
         carry no Sendspin output now, yet keep the place of the Sendspin output of the device
-        from the bridge of the given protocol, which its policy allows to register. An output
-        the user switched off keeps no place, and stays with its settings.
+        from the bridge of the given protocol, which its policy allows to register.
 
         :param protocol: The protocol whose bridge is about to register.
         :param client_id: The client id that bridge registers under.
@@ -535,8 +551,6 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         for other_id in self.mass.config.get_protocol_ids_of_player(player.player_id):
             record = self.mass.config.get_protocol_record(other_id) or {}
             if other_id == client_id or record.get("provider") != sendspin.instance_id:
-                continue
-            if not record.get("enabled", True):
                 continue
             underlying_id = (record.get("values") or {}).get(CONF_UNDERLYING_PLAYER_ID)
             if not isinstance(underlying_id, str):

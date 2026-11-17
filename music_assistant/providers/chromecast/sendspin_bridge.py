@@ -853,10 +853,11 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         await super().evaluate_bridge(protocol)
         if not client_id:
             return
-        if (player := protocol.player) and self._earlier_bridge_carries(player):
-            # also the Sendspin output of a Cast bridge that is switched off goes, so the
-            # bridge that carries the device registers its output afresh
-            await self._remove_client_protocol(protocol.protocol_id, client_id)
+        if (player := protocol.player) and (carrier := self._earlier_carrier(player)):
+            if client_id in carrier.bridge_client_ids(player):
+                # also the Sendspin output of a Cast bridge that is switched off goes, so the
+                # bridge that carries the device registers the output of its client id afresh
+                await self._remove_client_protocol(protocol.protocol_id, client_id)
             return
         if not self._has_bridge(protocol.protocol_id):
             return
