@@ -6,14 +6,17 @@ provider creates a SendspinPlayer for that client, which rides on the squeezelit
 protocol and is attached to its player as one of its outputs. Sendspin handles the
 synchronization and the timing; the bridge puts its timeline on the player.
 
-Every Sendspin stream is a session: one stream over HTTP, FLAC or PCM by the output
-codec setting of the player, that the player starts at an instant of its own clock, on
-silence. A player starts later than it is told, by an amount that differs from start to
-start: the bridge measures that from the first positions the player reports and corrects
-it in the silence, so the first audio is heard on the timeline. The sync loop holds it
-there from the positions the player reports, and once it has little left to correct the
-bridge keeps the stream seconds ahead of what the player plays, as far as Sendspin
-delivered its audio, so the player plays on through a stall of its network.
+Every Sendspin stream is a session: one stream over HTTP that the player starts
+at an instant of its own clock, on silence. A player starts later than it is told, by
+an amount that differs from start to start: the bridge measures that from the first
+positions the player reports and corrects it in the silence, so the first audio is
+heard on the timeline. The sync loop holds it there from the positions the player
+reports, and once it has little left to correct the bridge keeps the stream seconds ahead
+of what the player plays, as far as Sendspin delivered its audio, so the player plays on
+through a stall of its network.
+
+The stream is FLAC or PCM, by the output codec setting of the player and what the player
+says it plays, in no more bits than the source of what plays has.
 
 Audio flow:
 Sendspin PushStream -> BridgePlayerRole.on_audio_chunk -> session -> HTTP stream -> player

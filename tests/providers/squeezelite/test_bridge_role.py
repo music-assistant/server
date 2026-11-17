@@ -202,6 +202,35 @@ def test_the_role_plays_the_first_format_of_the_hello_by_default() -> None:
 
 
 @pytest.mark.parametrize(
+    ("content_type", "bit_depth", "plays"),
+    [
+        (ContentType.FLAC, 16, (48000, 16, 2)),
+        (ContentType.FLAC, 24, (48000, 24, 2)),
+        (ContentType.MP3, 24, (48000, 24, 2)),
+    ],
+)
+async def test_a_session_keeps_the_format_of_its_first_item_for_the_bridge(
+    content_type: ContentType, bit_depth: int, plays: tuple[int, int, int]
+) -> None:
+    """The Sendspin provider hands the source of a session on, and the role plays no more bits."""
+    role = _role()
+    player = _sendspin_player(role, {})
+    # as the bridge reads it: the bit depth of the source the player was told about
+    role.limit_bit_depth(lambda: getattr(player.session_source_format, "bit_depth", None))
+    streamdetails = _track(48000)
+    streamdetails.audio_format.content_type = content_type
+    streamdetails.audio_format.bit_depth = bit_depth
+
+    await player.follow_session_sample_rate(streamdetails)
+
+    assert player.session_source_format is streamdetails.audio_format
+    assert _plays(role) == plays
+    await player.follow_session_sample_rate(None)
+    assert player.session_source_format is None
+    assert _plays(role) == (44100, 24, 2)
+
+
+@pytest.mark.parametrize(
     ("formats", "asked", "source_bit_depth", "plays"),
     [
         # no more bits than the source has, at the rate that is asked for
@@ -216,6 +245,8 @@ def test_the_role_plays_the_first_format_of_the_hello_by_default() -> None:
         # a player that plays one depth plays that
         ([(44100, 16), (48000, 16)], None, 24, (44100, 16, 2)),
         ([(44100, 24), (48000, 24)], _pcm(48000, 24), 16, (48000, 24, 2)),
+        # a player that only plays more bits plays the fewest it has
+        ([(44100, 32), (44100, 24)], None, 16, (44100, 24, 2)),
     ],
 )
 def test_the_bit_depth_follows_the_source(

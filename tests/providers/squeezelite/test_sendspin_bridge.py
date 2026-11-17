@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import struct
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import replace
@@ -1484,37 +1485,78 @@ FLAC_PLAYER = ["flc", "pcm", "mp3"]
 PLAIN_PLAYER = ["pcm", "mp3"]
 PCM_16 = "audio/pcm;rate=44100;bitrate=16;channels=2"
 PCM_24 = "audio/pcm;rate=44100;bitrate=24;channels=2"
+FLAC = "audio/flac"
+LOSSLESS_16 = _source(ContentType.FLAC, 16)
+LOSSLESS_24 = _source(ContentType.FLAC, 24)
+
+# The output codec setting of a player, the codecs it says it plays, the first item of the
+# playback session and the bit depths the player plays, with what the player is sent.
+SENT = [
+    # FLAC for a player that plays it, in the bit depth of the source
+    ("flac", FLAC_PLAYER, LOSSLESS_16, (16, 24), FLAC, 16),
+    ("flac", FLAC_PLAYER, LOSSLESS_24, (16, 24), FLAC, 24),
+    ("flac", FLAC_PLAYER, LOSSLESS_16, (16,), FLAC, 16),
+    ("flac", FLAC_PLAYER, LOSSLESS_24, (16,), FLAC, 16),
+    # PCM for a player that does not say it plays FLAC
+    ("flac", PLAIN_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
+    ("flac", PLAIN_PLAYER, LOSSLESS_24, (16, 24), PCM_24, 24),
+    ("flac", PLAIN_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
+    ("flac", PLAIN_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
+    # PCM for the setting that asks for it
+    ("wav", FLAC_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
+    ("wav", FLAC_PLAYER, LOSSLESS_24, (16, 24), PCM_24, 24),
+    ("wav", FLAC_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
+    ("wav", FLAC_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
+    ("wav", PLAIN_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
+    ("wav", PLAIN_PLAYER, LOSSLESS_24, (16, 24), PCM_24, 24),
+    ("wav", PLAIN_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
+    ("wav", PLAIN_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
+    # never FLAC for a lossy setting: PCM in 16 bits, whatever the source and the player
+    ("mp3", FLAC_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
+    ("mp3", FLAC_PLAYER, LOSSLESS_24, (16, 24), PCM_16, 16),
+    ("mp3", FLAC_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
+    ("mp3", FLAC_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
+    ("mp3", PLAIN_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
+    ("mp3", PLAIN_PLAYER, LOSSLESS_24, (16, 24), PCM_16, 16),
+    ("mp3", PLAIN_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
+    ("mp3", PLAIN_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
+    ("aac", FLAC_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
+    ("aac", FLAC_PLAYER, LOSSLESS_24, (16, 24), PCM_16, 16),
+    ("aac", FLAC_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
+    ("aac", FLAC_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
+    ("aac", PLAIN_PLAYER, LOSSLESS_16, (16, 24), PCM_16, 16),
+    ("aac", PLAIN_PLAYER, LOSSLESS_24, (16, 24), PCM_16, 16),
+    ("aac", PLAIN_PLAYER, LOSSLESS_16, (16,), PCM_16, 16),
+    ("aac", PLAIN_PLAYER, LOSSLESS_24, (16,), PCM_16, 16),
+    # a source of more than 16 bits fills 24
+    ("flac", FLAC_PLAYER, _source(ContentType.FLAC, 20), (16, 24), FLAC, 24),
+    ("flac", FLAC_PLAYER, _source(ContentType.FLAC, 32), (16, 24), FLAC, 24),
+    # a lossy source has 16 bits, whatever its decoder makes of it
+    ("flac", FLAC_PLAYER, _source(ContentType.MP3, 24), (16, 24), FLAC, 16),
+    ("wav", PLAIN_PLAYER, _source(ContentType.AAC, 24), (16, 24), PCM_16, 16),
+    # a source that is not known plays in all the bits of the player
+    ("flac", FLAC_PLAYER, None, (16, 24), FLAC, 24),
+    ("wav", PLAIN_PLAYER, None, (16, 24), PCM_24, 24),
+    ("mp3", FLAC_PLAYER, None, (16, 24), PCM_16, 16),
+    ("aac", PLAIN_PLAYER, None, (16, 24), PCM_16, 16),
+]
+
+
+def _sent_id(case: tuple[str, list[str], AudioFormat | None, tuple[int, ...], str, int]) -> str:
+    """Return the name of a case: its setting, its player and its source."""
+    output_codec, codecs, source, depths, _mime_type, _bit_depth = case
+    player = f"{'flac' if 'flc' in codecs else 'plain'} player of {max(depths)} bits"
+    if source is None:
+        return f"{output_codec}, {player}, source unknown"
+    return (
+        f"{output_codec}, {player}, {source.content_type.value} source of {source.bit_depth} bits"
+    )
 
 
 @pytest.mark.parametrize(
     ("output_codec", "codecs", "source", "depths", "mime_type", "bit_depth"),
-    [
-        # FLAC for a player that plays it, in the bit depth of the source
-        ("flac", FLAC_PLAYER, _source(ContentType.FLAC, 16), (16, 24), "audio/flac", 16),
-        ("flac", FLAC_PLAYER, _source(ContentType.FLAC, 24), (16, 24), "audio/flac", 24),
-        ("flac", FLAC_PLAYER, _source(ContentType.FLAC, 32), (16, 24), "audio/flac", 24),
-        ("flac", FLAC_PLAYER, _source(ContentType.FLAC, 24), (16,), "audio/flac", 16),
-        # a lossy source has 16 bits, whatever its decoder makes of it
-        ("flac", FLAC_PLAYER, _source(ContentType.MP3, 24), (16, 24), "audio/flac", 16),
-        ("flac", FLAC_PLAYER, _source(ContentType.AAC, 16), (16, 24), "audio/flac", 16),
-        # a source that is not known plays in all the bits of the player
-        ("flac", FLAC_PLAYER, None, (16, 24), "audio/flac", 24),
-        # PCM for a player that does not say it plays FLAC
-        ("flac", PLAIN_PLAYER, _source(ContentType.FLAC, 16), (16, 24), PCM_16, 16),
-        ("flac", PLAIN_PLAYER, _source(ContentType.FLAC, 24), (16, 24), PCM_24, 24),
-        ("flac", PLAIN_PLAYER, _source(ContentType.FLAC, 24), (16,), PCM_16, 16),
-        # PCM for the setting that asks for it
-        ("wav", FLAC_PLAYER, _source(ContentType.FLAC, 16), (16, 24), PCM_16, 16),
-        ("wav", FLAC_PLAYER, _source(ContentType.FLAC, 24), (16, 24), PCM_24, 24),
-        ("wav", PLAIN_PLAYER, _source(ContentType.MP3, 16), (16, 24), PCM_16, 16),
-        # never FLAC for a lossy setting: PCM in 16 bits, whatever the source and the player
-        ("mp3", FLAC_PLAYER, _source(ContentType.FLAC, 24), (16, 24), PCM_16, 16),
-        ("mp3", FLAC_PLAYER, _source(ContentType.FLAC, 16), (16, 24), PCM_16, 16),
-        ("mp3", PLAIN_PLAYER, None, (16, 24), PCM_16, 16),
-        ("aac", FLAC_PLAYER, _source(ContentType.FLAC, 24), (16, 24), PCM_16, 16),
-        ("aac", FLAC_PLAYER, None, (16, 24), PCM_16, 16),
-        ("aac", PLAIN_PLAYER, _source(ContentType.MP3, 16), (16,), PCM_16, 16),
-    ],
+    SENT,
+    ids=[_sent_id(case) for case in SENT],
 )
 async def test_the_output_codec_and_the_source_decide_what_a_player_is_sent(
     output_codec: str,
@@ -1690,6 +1732,59 @@ async def test_a_flac_player_is_kept_its_lead_in_what_it_can_decode(flac_rig: _R
     await player.play(1)
     assert abs(player.held_us - STREAM_LEAD_US) < block_us
     assert rig.session is session
+
+
+@pytest.mark.parametrize(("level", "held_ms"), [(15, 180), (3, 660)])
+async def test_a_live_source_reaches_a_flac_player_with_no_silence_in_its_place(
+    flac_rig: _Rig, caplog: pytest.LogCaptureFixture, level: int, held_ms: int
+) -> None:
+    """Audio that is only 2 seconds ahead leaves a player enough to decode, loud or quiet."""
+    caplog.set_level(logging.DEBUG, logger="test.squeezelite")
+    rig = flac_rig
+    rng = random.Random(level)  # noqa: S311
+    tenth = SECOND // 10
+    ahead_us = BRIDGE_REQUIRED_LEAD_MS * 1000
+
+    def noise(origin_us: int, first: int, count: int) -> AudioChunk:
+        """Return a chunk of noise of a number of bits, which is all an encoder goes by."""
+        values = (rng.randrange(-(1 << level), 1 << level) for _ in range(2 * count))
+        data = struct.pack(f"<{2 * count}h", *values)
+        return AudioChunk(
+            data=data,
+            timestamp_us=origin_us + _frame_us(first),
+            duration_us=_frame_us(count),
+            byte_count=len(data),
+        )
+
+    session = await rig.start_playing(first_chunk_ahead_us=ahead_us, frames=tenth, chunk=noise)
+    session.claimed = session.preroll_sent = False
+    player = _BufferedPlayer(rig, session)
+    rig.serve(session, player)
+    await _settle()
+    rig.clock.advance_us(session.start_us - rig.now_us)
+
+    held = []
+    delivered = tenth
+    for _ in range(200):
+        # Sendspin delivers what is due up to its lead from now
+        while _frame_us(delivered) < rig.now_us + ahead_us - rig.origin_us:
+            rig.bridge._on_audio_chunk(noise(rig.origin_us, delivered, tenth))
+            delivered += tenth
+        held += await player.play(0.05)
+
+    # all of it went out, and the player can decode it but for the end of it
+    assert not session.chunks
+    assert session.frames_held * 1000 // SECOND == pytest.approx(held_ms, abs=40)
+    # the lead of the group is its lead from when it is on its timeline, less that end
+    assert min(held[80:]) > ahead_us - (held_ms + 150) * 1000
+    assert min(held) >= ALIGN_LEAD_US
+    assert "Sendspin has no audio for Kitchen" not in caplog.text
+    assert rig.session is session
+    # from its first sample on the audio has no silence in it
+    samples = struct.unpack(f"<{len(player.pcm()) // 2}h", player.pcm())
+    audio = samples[next(at for at, sample in enumerate(samples) if sample) :]
+    quiet = max(len(run) for run in bytes(bool(sample) for sample in audio).split(b"\x01"))
+    assert quiet < 20
 
 
 async def test_silence_keeps_a_flac_player_fed_that_sendspin_has_nothing_for(
@@ -2472,6 +2567,33 @@ def test_audio_that_went_out_is_kept_until_it_is_played() -> None:
     assert list(session.unplayed(EPOCH_US)) == chunks[2:]
     assert list(session.unplayed(EPOCH_US + 3_500_000)) == chunks[3:]
     assert list(session.unplayed(EPOCH_US + 9_000_000)) == chunks[8:]
+
+
+def test_audio_a_flac_player_did_not_decode_yet_is_kept_too() -> None:
+    """A FLAC stream is ahead by more than its lead: a restart sends that again as well."""
+    session = BridgeSession(replace(CD_FORMAT, content_type=ContentType.FLAC), 0)
+    session.start_us = EPOCH_US
+    # noise an encoder makes a quarter of: a player can not decode the last 0.7 seconds of it
+    rng = random.Random(1)  # noqa: S311
+    chunks = []
+    for second in range(10):
+        data = struct.pack(f"<{2 * SECOND}h", *(rng.randrange(-8, 8) for _ in range(2 * SECOND)))
+        chunks.append(
+            AudioChunk(
+                data=data,
+                timestamp_us=EPOCH_US + second * 1_000_000,
+                duration_us=1_000_000,
+                byte_count=len(data),
+            )
+        )
+        session.add(chunks[-1])
+    for cursor in range(0, 8 * SECOND + 100, TEN_MS):
+        session.encode(session.take(cursor, TEN_MS))
+    assert 0.6 * SECOND < session.frames_held < 0.8 * SECOND
+
+    # 8.1 seconds went out: the player holds 6 of them, and the ones it can not decode
+    assert list(session.unplayed(EPOCH_US)) == chunks[1:]
+    assert list(session.unplayed(EPOCH_US + 3_500_000)) == chunks[3:]
 
 
 # ---------------------------------------------------------------- start
@@ -4039,7 +4161,10 @@ async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(
         assert played[-1] < audio[0] < 9 * SECOND
         assert audio[0] == pytest.approx(resumes_s * SECOND, abs=SECOND // 10)
         assert audio == list(range(audio[0], audio[0] + len(audio)))
-        assert 0 <= restarted.held_us - START_LEAD_US <= _frame_us(2 * block)
+        if output_codec == "wav":
+            assert rig.lead_frames(second) == START_LEAD_FRAMES
+        else:
+            assert abs(restarted.held_us - START_LEAD_US) < _frame_us(BLOCK_FRAMES)
         # each frame at its own time, the sync delay of the player included
         index = _frames(restarted.pcm()).index(audio[0])
         heard_us = second.start_us + _frame_us(index)
@@ -4063,6 +4188,27 @@ async def test_an_underrun_of_a_stream_without_audio_says_so(
         "it ran out of audio (prepared 500 ms ahead, 0 bytes written, the last write took 0 ms, "
         "0 ms of audio waiting, no status of the player)"
     ) in caplog.text
+
+
+async def test_an_underrun_of_a_flac_stream_tells_what_its_player_could_not_decode(
+    flac_rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The supply of a FLAC player is what went out less what its decoder waits with."""
+    rig = flac_rig
+    session, player = await rig.serve_player()
+    await player.play(3)
+    player.stalled = True
+    await player.play(1.25)
+    held_ms = session.frames_held * 1000 // SECOND
+    assert 180 < held_ms < 240
+
+    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+    await _settle()
+
+    assert rig.session is not session
+    # 6 seconds ahead in what the player can decode, when it stopped taking its stream
+    told = f"it ran out of audio (prepared 4990 ms ahead with {held_ms} ms it can not decode yet, "
+    assert told in caplog.text
 
 
 async def test_an_underrun_is_answered_before_the_stream_is_restarted(rig: _Rig) -> None:
