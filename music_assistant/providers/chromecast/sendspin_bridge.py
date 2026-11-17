@@ -909,6 +909,17 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         self._pending_bridge_evaluations.clear()
         await super().close()
 
+    def has_output_switched_off_by_user(self, player: Player) -> bool:
+        """
+        Return False: a Sendspin output of a Cast bridge can be switched off by default.
+
+        Sendspin over Cast starts switched off for a device it was never offered to, which
+        can not be told from a user that switched it off.
+
+        :param player: The player to look at.
+        """
+        return False
+
     def get_bridge_by_client_id(self, bridge_client_id: str) -> SendspinChromecastBridge | None:
         """
         Return the bridge whose `bridge_client_id` matches, if any.

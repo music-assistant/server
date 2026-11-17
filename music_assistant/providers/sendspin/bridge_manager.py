@@ -282,6 +282,17 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         """
         return self._has_switched_on_output(player, self.provider.domain)
 
+    def has_output_switched_off_by_user(self, player: Player) -> bool:
+        """
+        Return whether the user switched a stored Sendspin output of this provider for a player off.
+
+        :param player: The player to look at.
+        """
+        return any(
+            not (self.mass.config.get_protocol_record(output_id) or {}).get("enabled", True)
+            for output_id in self._sendspin_output_ids(player)
+        )
+
     def bridge_client_ids(self, player: Player) -> set[str]:
         """
         Return the client ids the bridges of this provider register, or stored, for a player.
@@ -447,6 +458,22 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
                 output_ids.append(output_id)
         return output_ids
 
+    def _later_bridge_output_switched_off(self, player: Player) -> bool:
+        """
+        Return whether the user switched off a Sendspin output of a later bridge in BRIDGE_ORDER.
+
+        A provider that is not loaded is not looked at.
+
+        :param player: The player to look at.
+        """
+        for domain in BRIDGE_ORDER[_bridge_rank(self.provider.domain) + 1 :]:
+            manager = getattr(self.mass.get_provider(domain), "bridge_manager", None)
+            if isinstance(manager, SendspinBridgeManagerBase) and (
+                manager.has_output_switched_off_by_user(player)
+            ):
+                return True
+        return False
+
     def _has_switched_on_output(self, player: Player, protocol_domain: str) -> bool:
         """
         Return whether a player has an output of a protocol that the user has switched on.
@@ -475,6 +502,10 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             # a bridge belongs to the player of the protocol it rides on
             return False
         if client_id := self._client_ids.get(protocol.protocol_id):
+            if self.mass.config.get_protocol_record(client_id) is None:
+                # a Sendspin output the user switched off for the device, stored for a later
+                # bridge under another client id, keeps the device without one
+                return not self._later_bridge_output_switched_off(protocol.player)
             # the Sendspin output of the bridge can be switched off by the user
             # independently of the protocol it rides on
             return self.mass.players.wants_protocol(client_id)
