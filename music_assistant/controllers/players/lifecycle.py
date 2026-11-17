@@ -927,6 +927,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             if protocol.protocol_id in self._protocols or protocol.protocol_id in self._unattached:
                 # its device was found again meanwhile, so its provider still needs it
                 continue
+            # a protocol that only exists while connected has no record to name its provider
+            protocol_provider_ids.setdefault(protocol.protocol_id, protocol.provider_id)
             # the provider only cleans up what it keeps about the device itself.
             # Best-effort: the player is gone by now, whatever happens to that
             try:
