@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncGenerator, AsyncIterator
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -22,6 +24,7 @@ from music_assistant.controllers.streams.audio_analysis import (
     AudioAnalysisController,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.controllers.streams.constants import BufferMode
 from music_assistant.controllers.streams.controller import AudioSourceStream
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
@@ -749,9 +752,10 @@ async def test_metadata_reported_for_a_session_that_is_not_a_live_source_does_no
         queue_id=PLAYER_ID,
     )
     await controller.start_analysis(AudioBuffer(PCM_FORMAT), streamdetails)
-    assert streamdetails.uri in provider._sessions
+    (session_key,) = provider._sessions
+    assert session_key.startswith(f"{streamdetails.uri}#")
 
-    provider.report_stream_metadata(streamdetails.uri, StreamMetadata(title="Recognised"))
+    provider.report_stream_metadata(session_key, StreamMetadata(title="Recognised"))
 
     assert streamdetails.stream_metadata is None
     cast("MagicMock", controller.mass).player_queues.signal_update.assert_not_called()
@@ -963,3 +967,277 @@ async def test_a_report_from_a_provider_no_longer_taking_part_is_ignored(
 
     assert source_session.stream_metadata is None
     assert not _players(controller).updated_players
+
+
+# --- what analysis providers recognise on a radio station ---
+
+# a listener that hears what the reader reads, so a report is due at once
+_LISTENER_CAUGHT_UP = 1_000_000.0
+
+
+def _station(queue_id: str = PLAYER_ID) -> StreamDetails:
+    """Return the stream details of the station for a queue that plays it."""
+    return StreamDetails(
+        provider=RADIO_ID,
+        item_id="station",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.RADIO,
+        stream_type=StreamType.HTTP,
+        path="https://example.com/station.mp3",
+        queue_id=queue_id,
+    )
+
+
+async def _play_station(
+    controller: AudioAnalysisController,
+    streamdetails: StreamDetails,
+    position: float | None = _LISTENER_CAUGHT_UP,
+) -> AudioBuffer:
+    """
+    Start a buffer of the station for the queue of its stream details.
+
+    :param position: The media second the queue's listener hears, None when not playing.
+    """
+    audio_buffer = AudioBuffer(PCM_FORMAT, mode=BufferMode.ROLLING)
+    audio_buffer.playback_position = lambda _buffer: position
+    streamdetails.buffer = audio_buffer
+    await controller.start_analysis(audio_buffer, streamdetails)
+    return audio_buffer
+
+
+async def _hear(audio_buffer: AudioBuffer, seconds: int = 1) -> None:
+    """Add seconds of audio to the buffer the analysis reads, and let the analysis read them."""
+    for _ in range(seconds):
+        await audio_buffer._put(b"\x00" * ONE_SECOND)
+        # until the reader waits for audio again
+        for _ in range(50):
+            await asyncio.sleep(0)
+
+
+def _radio_key(provider: AudioAnalysisProvider) -> str:
+    (session_key,) = provider._sessions
+    return session_key
+
+
+@pytest.mark.asyncio
+async def test_recognised_song_shows_on_every_queue_that_plays_the_station(
+    controller: AudioAnalysisController, registry: dict[str, Any]
+) -> None:
+    """Every queue on the station shows the song, a queue the analysis does not follow does not."""
+    provider = _recognizer(controller, registry)
+    first, second, stopped = _station("queue_a"), _station("queue_b"), _station("queue_c")
+    first_buffer = await _play_station(controller, first)
+    await _play_station(controller, second)
+    await (await _play_station(controller, stopped)).clear()
+    # a buffer that started while no provider was loaded never joined the analysis
+    unfollowed = _station("queue_d")
+    unfollowed.buffer = AudioBuffer(PCM_FORMAT, mode=BufferMode.ROLLING)
+    recognised = StreamMetadata(title="Recognised", artist="Someone")
+
+    assert provider.report_stream_metadata(_radio_key(provider), recognised) is True
+    await _hear(first_buffer)
+
+    assert controller.shown_stream_metadata(first) is recognised
+    assert controller.shown_stream_metadata(second) is recognised
+    assert controller.shown_stream_metadata(stopped) is None
+    assert controller.shown_stream_metadata(unfollowed) is None
+    assert _players(controller).updated_players == ["queue_a", "queue_b"]
+
+
+@pytest.mark.asyncio
+async def test_recognised_song_never_shows_on_a_station_with_metadata(
+    controller: AudioAnalysisController, registry: dict[str, Any]
+) -> None:
+    """A station that sends metadata itself refuses reports, on every queue that plays it."""
+    provider = _recognizer(controller, registry)
+    with_metadata, without = _station("queue_a"), _station("queue_b")
+    stations_own = StreamMetadata(title="From the station")
+    with_metadata.stream_metadata = stations_own
+    audio_buffer = await _play_station(controller, with_metadata)
+    await _play_station(controller, without)
+
+    accepted = provider.report_stream_metadata(
+        _radio_key(provider), StreamMetadata(title="Recognised")
+    )
+    await _hear(audio_buffer)
+
+    assert accepted is False
+    assert controller.shown_stream_metadata(with_metadata) is stations_own
+    assert controller.shown_stream_metadata(without) is None
+    assert not _players(controller).updated_players
+
+
+@pytest.mark.asyncio
+async def test_the_stations_own_metadata_wins_for_the_rest_of_the_session(
+    controller: AudioAnalysisController, registry: dict[str, Any]
+) -> None:
+    """A recognised song yields once the station sends metadata, also after it clears it."""
+    provider = _recognizer(controller, registry)
+    streamdetails = _station()
+    audio_buffer = await _play_station(controller, streamdetails)
+    session_key = _radio_key(provider)
+    provider.report_stream_metadata(session_key, StreamMetadata(title="Recognised"))
+    await _hear(audio_buffer)
+
+    stations_own = StreamMetadata(title="From the station")
+    streamdetails.stream_metadata = stations_own
+    assert controller.shown_stream_metadata(streamdetails) is stations_own
+    await _hear(audio_buffer)
+    assert _players(controller).updated_players == [PLAYER_ID, PLAYER_ID]
+    assert provider.report_stream_metadata(session_key, StreamMetadata(title="Later")) is False
+
+    # talk on the station: it sends no metadata for a while
+    streamdetails.stream_metadata = None
+    await _hear(audio_buffer)
+
+    assert controller.shown_stream_metadata(streamdetails) is None
+    assert provider.report_stream_metadata(session_key, StreamMetadata(title="Talk")) is False
+
+
+@pytest.mark.parametrize(("position", "lead"), [(3.0, 7), (None, 10)])
+@pytest.mark.asyncio
+async def test_recognised_song_shows_once_the_listener_reaches_it(
+    controller: AudioAnalysisController,
+    registry: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    position: float | None,
+    lead: int,
+) -> None:
+    """
+    A report waits for the reader's lead over what the listener hears, its position moved along.
+
+    Without a playing queue the audio the buffer holds is the lead.
+    """
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(
+        audio_analysis_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: clock.now, time=time.time),
+    )
+    provider = _recognizer(controller, registry)
+    streamdetails = _station()
+    audio_buffer = await _play_station(controller, streamdetails, position)
+    await _hear(audio_buffer, 10)
+    recognised = StreamMetadata(
+        title="Recognised", elapsed_time=20, elapsed_time_last_updated=1000.0
+    )
+    provider.report_stream_metadata(_radio_key(provider), recognised)
+
+    clock.now += lead - 0.1
+    await _hear(audio_buffer)
+    assert controller.shown_stream_metadata(streamdetails) is None
+
+    clock.now += 0.1
+    await _hear(audio_buffer)
+    shown = controller.shown_stream_metadata(streamdetails)
+    assert shown is not None
+    assert shown.title == "Recognised"
+    assert shown.elapsed_time == 20
+    assert shown.elapsed_time_last_updated == 1000.0 + lead
+    assert recognised.elapsed_time_last_updated == 1000.0
+
+
+@pytest.mark.parametrize("leaving", ["unloading", "released", "hang_guard"])
+@pytest.mark.asyncio
+async def test_recognised_song_is_withdrawn_when_its_provider_leaves(
+    controller: AudioAnalysisController, registry: dict[str, Any], leaving: str
+) -> None:
+    """The song goes when the provider that recognised it leaves, the session goes on."""
+    provider = _recognizer(controller, registry)
+    other = _aa_provider("other", frozenset({MediaType.RADIO}))
+    registry["other"] = other
+    streamdetails = _station()
+    audio_buffer = await _play_station(controller, streamdetails)
+    session_key = _radio_key(provider)
+    provider.report_stream_metadata(session_key, StreamMetadata(title="Recognised"))
+    await _hear(audio_buffer)
+    assert controller.shown_stream_metadata(streamdetails) is not None
+
+    if leaving == "unloading":
+        provider.unloading = True
+    elif leaving == "released":
+        controller.release_provider(provider.instance_id)
+    else:
+        # what the hang guard raises when a chunk takes too long
+        provider.process_pcm_chunk = AsyncMock(side_effect=TimeoutError)  # type: ignore[method-assign]
+    await _hear(audio_buffer)
+
+    assert controller.shown_stream_metadata(streamdetails) is None
+    assert _players(controller).updated_players == [PLAYER_ID, PLAYER_ID]
+    assert "other" in controller._active_sessions[session_key]
+
+
+@pytest.mark.asyncio
+async def test_recognised_song_ends_with_its_session_and_survives_a_restart_of_the_stream(
+    controller: AudioAnalysisController, registry: dict[str, Any]
+) -> None:
+    """A restart within the stream keeps the song, a stop and play on the station shows none."""
+    provider = _recognizer(controller, registry)
+    streamdetails = _station()
+    audio_buffer = await _play_station(controller, streamdetails)
+    provider.report_stream_metadata(_radio_key(provider), StreamMetadata(title="Recognised"))
+    await _hear(audio_buffer)
+
+    # a restart of the source within the producer keeps the buffer
+    streamdetails.path = "https://example.com/station-backup.mp3"
+    await _hear(audio_buffer)
+    assert controller.shown_stream_metadata(streamdetails) is not None
+
+    # a stop and play reuses the stream details with a new buffer
+    await audio_buffer.clear()
+    await _until(lambda: not controller._workers)
+    await _play_station(controller, streamdetails)
+
+    assert controller.shown_stream_metadata(streamdetails) is None
+    (radio,) = controller._radio_analyses.values()
+    assert radio.shown is None
+
+
+@pytest.mark.asyncio
+async def test_a_report_about_a_track_or_unknown_session_is_refused(
+    controller: AudioAnalysisController, registry: dict[str, Any]
+) -> None:
+    """Only a live source or a radio station takes reports."""
+    provider = _recognizer(controller, registry)
+    track_provider = _aa_provider("tracks", frozenset({MediaType.TRACK}))
+    registry["tracks"] = track_provider
+    track = StreamDetails(
+        provider=RADIO_ID,
+        item_id="track",
+        audio_format=PCM_FORMAT,
+        media_type=MediaType.TRACK,
+        stream_type=StreamType.HTTP,
+        path="https://example.com/track.mp3",
+        queue_id=PLAYER_ID,
+    )
+    track.buffer = AudioBuffer(PCM_FORMAT)
+    await controller.start_analysis(track.buffer, track)
+    recognised = StreamMetadata(title="Recognised")
+
+    assert controller.show_stream_metadata(track_provider, track.uri, recognised) is False
+    assert provider.report_stream_metadata("unknown", recognised) is False
+    assert controller.show_stream_metadata(provider, f"{track.uri}#0000", recognised) is False
+    assert controller.shown_stream_metadata(track) is None
+    assert not _players(controller).updated_players
+
+
+@pytest.mark.asyncio
+async def test_recognised_song_is_never_written_to_the_stream_details(
+    controller: AudioAnalysisController, registry: dict[str, Any]
+) -> None:
+    """The stream details keep only what the station sent while a song shows and goes."""
+    provider = _recognizer(controller, registry)
+    streamdetails = _station()
+    audio_buffer = await _play_station(controller, streamdetails)
+    before = dict(vars(streamdetails))
+    provider.report_stream_metadata(_radio_key(provider), StreamMetadata(title="Recognised"))
+    await _hear(audio_buffer)
+    assert controller.shown_stream_metadata(streamdetails) is not None
+
+    await audio_buffer.clear()
+    await _until(lambda: not controller._workers)
+
+    assert vars(streamdetails) == before
+    assert all(vars(streamdetails)[name] is value for name, value in before.items())
+    assert streamdetails.stream_metadata is None
+    assert streamdetails.stream_title is None
