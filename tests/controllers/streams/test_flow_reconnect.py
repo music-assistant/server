@@ -149,6 +149,8 @@ async def test_a_flow_stream_records_every_byte_it_sends_its_player(
 ) -> None:
     """The record holds the audio and the ICY metadata sent, by the player it went to."""
     controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
+    controller._audio_analysis = MagicMock()
+    controller._audio_analysis.shown_stream_metadata.return_value = None
     controller.mass.config.get_protocol_value.return_value = "full"
     request.headers = {"Icy-MetaData": "1"}
     request.path = "/flow/session-1/queue-1/item-1/player-1.flac"
