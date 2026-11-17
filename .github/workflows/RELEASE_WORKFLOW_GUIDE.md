@@ -93,6 +93,34 @@ Do not create or publish a GitHub release manually. A draft created outside the 
 is accepted only when its exact tag name and target SHA match; conflicting tags,
 published mutable releases, and mismatched drafts fail closed.
 
+## Community catalog lines
+
+A server reads the community catalog index of its own line from
+`https://catalog.music-assistant.io/v1/<line>.json`: nightlies read `nightly`, betas and
+RCs read `beta`, and a stable release reads `X.Y`. The registry
+(`music-assistant/community-catalog`) builds an index for each line in its
+`server_lines.json` and lists only provider versions that passed the checks in that line's
+server image. Without the index of its line, a stable release offers no catalog providers
+in the Marketplace, and a refresh reports that the catalog could not be reached. Each step
+below is a pull request on the registry; how to add a line, change its image, or freeze it
+is in the registry's `MAINTAINING.md`, section **Server lines**.
+
+For every new minor version `X.Y`:
+
+1. **First beta of `X.Y` published:** add the `X.Y` line with the image
+   `ghcr.io/music-assistant/server:beta`. The registry's daily **Releases** workflow checks
+   the provider versions on the new line; dispatch it to start right away. A pull request
+   on `dev` that moves a provider out of the server also needs this line
+   (`scripts/check_moved_providers.py`).
+2. **Before the stable release:** open `https://catalog.music-assistant.io/v1/X.Y.json`
+   (for example `v1/2.11.json`). Release `X.Y.0` only when it loads, its `server_line` is
+   `X.Y`, and every provider with `status` `listed` has a `latest` version.
+3. **After the stable release:** once `ghcr.io/music-assistant/server:X.Y` exists, set the
+   image of the `X.Y` line to it.
+4. **Stable release of the next minor version:** mark the `X.Y` line `frozen` (2.11 is
+   frozen when 2.12.0 is out). Its versions are no longer checked, while blocks and
+   withdrawals still reach its index.
+
 ## Authentication
 
 Same-repository tags, releases, assets, attestations, and GHCR writes use the job's
