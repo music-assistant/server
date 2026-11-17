@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -28,6 +28,9 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 
 from .conftest import RADIO_FOUR_SERVICE_ID
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def _mock(service: object) -> AsyncMock:
@@ -81,11 +84,11 @@ class TestStationBrowsing:
     """Tests for the catch-up and schedule menus, which list each station's dates."""
 
     @pytest.mark.parametrize(
-        ("menu_id", "dates"),
-        [("catch_up", catch_up_dates()), ("schedules", schedule_dates())],
+        ("menu_id", "dates_of"),
+        [("catch_up", catch_up_dates), ("schedules", schedule_dates)],
     )
     async def test_station_lists_its_dates(
-        self, provider: BBCSoundsProvider, menu_id: str, dates: list[Any]
+        self, provider: BBCSoundsProvider, menu_id: str, dates_of: Callable[[], list[Any]]
     ) -> None:
         """Test a station opens a folder for each date, starting from today."""
         path = f"bbc_sounds://{menu_id}/{RADIO_FOUR_SERVICE_ID}"
@@ -94,7 +97,8 @@ class TestStationBrowsing:
 
         assert all(isinstance(folder, BrowseFolder) for folder in folders)
         paths = [folder.path for folder in folders if isinstance(folder, BrowseFolder)]
-        assert paths == [f"{path}/{day}" for day in dates]
+        # the dates are worked out now: the tests can be collected on the day before
+        assert paths == [f"{path}/{day}" for day in dates_of()]
         assert folders[0].name == "Today"
 
     @pytest.mark.parametrize("menu_id", ["catch_up", "schedules"])
