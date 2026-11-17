@@ -998,12 +998,16 @@ class SendspinPlaybackSession:
                 if not self._next_media_ready.is_set():
                     if not self._takes_handovers(item_media):
                         return None
+                    if self._following_item_id(item_media) is None:
+                        # nothing follows, so the end of the audio goes out with its full lead
+                        await _flush_member_pipelines()
                     # the queue hands over the next item once the last one plays, or once one is
                     # added after it, so wait for it until the audio sent so far is about to end
                     await _wait_for_handover(_play_out(_LAST_AUDIO_LEAD_US))
                 if not self._next_media_ready.is_set() and self._following_item_id(item_media):
                     # the item after a short one is handed over once that one plays, which can be
                     # after its audio played out, so it follows after a gap
+                    await _flush_member_pipelines()
                     await _wait_for_handover(_late_handover())
                 self._next_media_ready.clear()
                 next_media, self._next_media = self._next_media, None
@@ -1145,6 +1149,15 @@ class SendspinPlaybackSession:
             self.player.logger.debug(
                 "Sendspin session PCM format: %d Hz / F32", pcm_format.sample_rate
             )
+
+        async def _flush_member_pipelines() -> None:
+            # the member DSP processes hold back their last chunk until their input ends
+            self._producer_eof_sent = True
+            await self._write_eof_to_member_pipelines()
+            await _commit_queued_chunks()
+            async with self._state_lock:
+                self._producer_eof_sent = False
+            await self._restart_member_pipelines()
 
         async def _commit_queued_chunks() -> None:
             drained = asyncio.create_task(pending_chunks.join())

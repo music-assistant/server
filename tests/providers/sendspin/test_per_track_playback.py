@@ -825,6 +825,72 @@ async def test_member_dsp_restarts_at_the_rate_of_a_later_item(
     assert push_stream.pcm_cached_channels == {next(iter(channels.keys() - {MAIN_CHANNEL}))}
 
 
+async def test_member_dsp_sends_the_end_of_a_short_item_before_a_late_next_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member's DSP process does not hold back the end of an item while the next one is late."""
+    short, following = _media("item-1"), _media("item-2")
+    player = _player()
+    player._attr_current_media = short
+    player.mass.player_queues.get_next_item.side_effect = _next_item_in(["item-1", "item-2"])
+    player.mass.streams.get_stream.side_effect = lambda *_args, **_kwargs: _chunks(2)
+    session, push_stream = _session(monkeypatch, player)
+    monkeypatch.setattr(SendspinPlaybackSession, "_wait_for_buffer_drain", AsyncMock())
+    monkeypatch.setattr(
+        session,
+        "_read_pipeline_config",
+        lambda _player_id: _PipelineConfig(requires_transform=True, filter_params=("volume=1.0",)),
+    )
+    monkeypatch.setattr(session, "_create_member_ffmpeg", lambda _params: _TailHoldingFFMpeg())
+    clock_sleep = asyncio.sleep
+    audio_end_us = _T0 + 2 * _CHUNK_DURATION_US
+    committed_at_handover: list[int] = []
+
+    async def _hand_over_after_play_out(delay: float) -> None:
+        await clock_sleep(delay)
+        if push_stream.now > audio_end_us and len(session._item_starts) == 1:
+            committed_at_handover.append(push_stream._commits)
+            session.set_next_media(following)
+
+    monkeypatch.setattr(asyncio, "sleep", _hand_over_after_play_out)
+
+    await asyncio.wait_for(session._run_playback(short), timeout=5)
+
+    assert committed_at_handover == [2]
+    assert push_stream._commits == 4
+
+
+async def test_member_dsp_sends_the_end_of_the_last_item_before_the_session_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member's DSP process does not hold back the end of the audio while nothing follows it."""
+    last = _media("item-1")
+    player = _player()
+    player._attr_current_media = last
+    player.mass.player_queues.get_next_item.return_value = None
+    player.mass.streams.get_stream.side_effect = lambda *_args, **_kwargs: _chunks(4)
+    session, push_stream = _session(monkeypatch, player)
+    monkeypatch.setattr(SendspinPlaybackSession, "_wait_for_buffer_drain", AsyncMock())
+    monkeypatch.setattr(
+        session,
+        "_read_pipeline_config",
+        lambda _player_id: _PipelineConfig(requires_transform=True, filter_params=("volume=1.0",)),
+    )
+    monkeypatch.setattr(session, "_create_member_ffmpeg", lambda _params: _TailHoldingFFMpeg())
+    clock_sleep = asyncio.sleep
+    committed_while_waiting: list[int] = []
+
+    async def _record_the_commits(delay: float) -> None:
+        committed_while_waiting.append(push_stream._commits)
+        await clock_sleep(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", _record_the_commits)
+
+    await asyncio.wait_for(session._run_playback(last), timeout=5)
+
+    assert committed_while_waiting[0] == 4
+
+
 async def test_a_dsp_member_joining_after_a_format_switch_replays_older_audio_converted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
