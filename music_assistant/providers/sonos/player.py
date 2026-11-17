@@ -2122,15 +2122,20 @@ class SonosPlayer(PlayerProtocol):
             player_ids_to_remove=player_ids_to_remove,
         )
         await self._wait_for_group_members(player_ids_to_add, player_ids_to_remove)
-        members = (
-            self.provider.get_protocol(protocol_id)
+        members = [
+            member
             for protocol_id in {*player_ids_to_add, *player_ids_to_remove} - {self.protocol_id}
-        )
+            if isinstance(member := self.provider.get_protocol(protocol_id), SonosPlayer)
+            and member.connected
+        ]
+        answered = await asyncio.gather(*(member._refresh_groups() for member in members))
+        # a coordinator that has not registered a member that just (re)joined answers its
+        # removal without doing it, while the member itself still reports the group
         await asyncio.gather(
             *(
-                member._refresh_groups()
-                for member in members
-                if isinstance(member, SonosPlayer) and member.connected
+                member._leave_group_of(self)
+                for member, refreshed in zip(members, answered, strict=True)
+                if refreshed and member.protocol_id in player_ids_to_remove
             )
         )
 
@@ -2155,8 +2160,12 @@ class SonosPlayer(PlayerProtocol):
                 player_ids_to_add,
             )
 
-    async def _refresh_groups(self) -> None:
-        """Update the grouping of this speaker from what the speaker reports right now."""
+    async def _refresh_groups(self) -> bool:
+        """
+        Update the grouping of this speaker from what the speaker reports right now.
+
+        :return: Whether the speaker answered.
+        """
         # a speaker knows its new group at once, but holds its groups event back for seconds,
         # and sends none at all when its group is back to what it last reported by then
         try:
@@ -2167,11 +2176,35 @@ class SonosPlayer(PlayerProtocol):
                 raise
             # a reconnect cancels the replies it still waited on, the refresh among them
             self.logger.debug("Could not refresh the groups of %s: connection closed", self.name)
-            return
+            return False
         except (SonosException, ClientError, OSError, TimeoutError) as err:
             self.logger.debug("Could not refresh the groups of %s: %s", self.name, err)
-            return
+            return False
         self.client._handle_groups_event(groups)
+        return True
+
+    async def _leave_group_of(self, coordinator: SonosPlayer) -> None:
+        """Leave the group of the given coordinator, if this speaker still reports to be in it."""
+        group = self.client.player.group
+        if group is None or group.coordinator_id != coordinator.protocol_id:
+            return
+        try:
+            async with asyncio.timeout(GROUPS_REFRESH_TIMEOUT):
+                await self.client.create_group([self.protocol_id])
+                await self._refresh_groups()
+        except asyncio.CancelledError:
+            if (task := asyncio.current_task()) is not None and task.cancelling():
+                raise
+            # a reconnect cancels the replies it still waited on
+            self.logger.debug(
+                "Could not take %s out of the group of %s: connection closed",
+                self.name,
+                coordinator.name,
+            )
+        except (SonosException, ClientError, OSError, TimeoutError) as err:
+            self.logger.debug(
+                "Could not take %s out of the group of %s: %s", self.name, coordinator.name, err
+            )
 
     def _extract_mac_from_player_id(self) -> str | None:
         """

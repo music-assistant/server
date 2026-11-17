@@ -66,6 +66,7 @@ from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_POWER,
     ATTR_IDLE_SINCE,
+    ATTR_PLAY_ACTION_IN_PROGRESS,
     CONF_AUTO_PLAY,
     CONF_ICON,
     CONF_IDLE_POWER_OFF,
@@ -87,6 +88,7 @@ from music_assistant.controllers.players import playback as players_playback
 from music_assistant.controllers.players import power as players_power
 from music_assistant.controllers.players.constants import (
     PLAYER_LOCK_OWNER_ATTEMPTS,
+    POWER_ON_REPORT_TIMEOUT,
     POWER_RESTORE_TIMEOUT,
     PlayerLockPurpose,
 )
@@ -3062,6 +3064,66 @@ class TestExternalPowerControl:
         assert wait_for_power_on.await_args is not None
         assert wait_for_power_on.await_args.args[2] is control
 
+    @pytest.mark.parametrize("report_after", [0.5, 10])
+    async def test_power_on_goes_on_once_the_control_reports_on(
+        self, mock_mass: MagicMock, report_after: float
+    ) -> None:
+        """A power on goes on as soon as the control reports on, also when that takes a while."""
+        loop = asyncio.get_running_loop()
+        control = PlayerControl(
+            id="ext_power",
+            provider="test",
+            name="External Power",
+            supports_power=True,
+            power_off=AsyncMock(),
+        )
+
+        async def _power_on() -> None:
+            loop.call_later(report_after, setattr, control, "power_state", True)
+
+        control.power_on = _power_on
+        controller, _ = self._make_player(mock_mass, control)
+
+        with virtual_loop_clock():
+            started = loop.time()
+            await controller._handle_cmd_power("player_1", True)
+            # the clock adds up the sleeps of the wait, which leaves a rounding error
+            waited = round(loop.time() - started, 6)
+
+        assert report_after <= waited < report_after + 0.5, (
+            f"the power on went on after {waited:.1f}s, the control reported on "
+            f"after {report_after}s"
+        )
+
+    async def test_power_on_goes_on_when_the_control_never_reports_on(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A power on whose control never reports on goes on without an error at the bound."""
+        loop = asyncio.get_running_loop()
+        power_on = AsyncMock()
+        control = PlayerControl(
+            id="ext_power",
+            provider="test",
+            name="External Power",
+            supports_power=True,
+            power_on=power_on,
+            power_off=AsyncMock(),
+        )
+        controller, player = self._make_player(mock_mass, control)
+
+        with virtual_loop_clock():
+            started = loop.time()
+            await controller._handle_cmd_power("player_1", True)
+            # the clock adds up the sleeps of the wait, which leaves a rounding error
+            waited = round(loop.time() - started, 6)
+
+        power_on.assert_awaited_once()
+        assert POWER_ON_REPORT_TIMEOUT <= waited < POWER_ON_REPORT_TIMEOUT + 0.5, (
+            f"the power on went on after {waited:.1f}s, not at the bound of "
+            f"{POWER_ON_REPORT_TIMEOUT}s"
+        )
+        assert player.powered is False
+
     async def test_power_off_forwards_to_control(self, mock_mass: MagicMock) -> None:
         """Powering off a player redirects to its external control's power_off callback."""
         power_on = AsyncMock()
@@ -3670,6 +3732,50 @@ class TestOfflinePowerControl:
         controller._handle_play_media.assert_not_awaited()
         assert player.startup_ends_at is None
 
+    @pytest.mark.parametrize("ending", ["started up", "stopped"])
+    async def test_a_play_shows_on_the_queue_of_the_player_while_it_starts_up(
+        self, mock_mass: MagicMock, ending: str
+    ) -> None:
+        """
+        A player command that powers the player on shows on its queue while it starts up.
+
+        It shows until the command ended, and no more when a stop called the power on off.
+
+        :param ending: How the wait for the player ends.
+        """
+        controller, _player, _protocol, _control = self._setup(mock_mass)
+        queues: Any = PlayerQueuesController.__new__(PlayerQueuesController)
+        queues.mass = mock_mass
+        queue = _stub_queue("player_1")
+        queues._queue_data = {"player_1": PlayerQueueData(queue=queue)}
+        queues.signal_update = MagicMock()
+        queues.on_player_update = MagicMock()
+        mock_mass.player_queues._show_play_action = queues._show_play_action
+        played: list[bool] = []
+        controller._handle_play_media = AsyncMock(  # type: ignore[method-assign]
+            side_effect=lambda *_args: played.append(
+                queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is True
+            )
+        )
+        pending = asyncio.create_task(
+            controller.play_media("player_1", PlayerMedia(uri="http://ma/stream.flac"))
+        )
+        await asyncio.sleep(1)
+        assert "player_1" in controller._power_on_waits
+
+        assert queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS) is True, (
+            "the queue does not show the play while its player starts up"
+        )
+        if ending == "stopped":
+            await controller.cmd_stop("player_1")
+            with pytest.raises(PlayerUnavailableError):
+                await pending
+        else:
+            await pending
+        assert played == ([] if ending == "stopped" else [True])
+        assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
+        assert queues._queue_data["player_1"].play_action_refcount == 0
+
     @pytest.mark.parametrize("command", ["cmd_stop", "cmd_pause"])
     async def test_stop_or_pause_while_starting_up_aborts_the_pending_play(
         self, mock_mass: MagicMock, command: str
@@ -3752,7 +3858,10 @@ class TestOfflinePowerControl:
         _ctrl, _player, _protocol, control = self._setup(mock_mass)
         queues: Any = PlayerQueuesController.__new__(PlayerQueuesController)
         queues.mass = mock_mass
-        queues._queue_data = {"player_1": MagicMock()}
+        queue = cast("PlayerQueue", MagicMock(extra_attributes={}))
+        queues._queue_data = {"player_1": PlayerQueueData(queue=queue)}
+        queues.signal_update = MagicMock()
+        queues.on_player_update = MagicMock()
         args = (0,) if action == "play_index" else ()
 
         with _restricted_user(["kitchen"]), pytest.raises(InsufficientPermissions):
