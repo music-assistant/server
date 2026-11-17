@@ -19,6 +19,7 @@ from music_assistant.constants import (
     CONF_PROTOCOL_OFF_BY_DEFAULT,
     CONF_UNDERLYING_PLAYER_ID,
 )
+from music_assistant.controllers.config.migrations import _migrate_sendspin_one_output
 from music_assistant.providers.chromecast import sendspin_bridge as bridge_module
 from music_assistant.providers.chromecast.constants import (
     CONF_SENDSPIN_UNSUPPORTED,
@@ -526,6 +527,21 @@ class TestCastBridgeOptIn:
         await device.attach(device.cast)
 
         assert device.state() == (None, CAST_CLIENT, "chromecast", "off-default")
+        assert device.timeline == []
+
+    async def test_an_opt_out_an_older_version_did_not_finish_is_finished_after_the_upgrade(
+        self, device: BridgedDevice
+    ) -> None:
+        """Test an output switched on, that the bridge of an older version still had to switch off."""
+        # what an older version left behind: the Cast protocol still marked to switch it off
+        device.records()[DEVICE_CAST_ID]["values"]["sendspin_opt_out_pending"] = True
+        device.store_output(CAST_CLIENT, DEVICE_CAST_ID)
+
+        _migrate_sendspin_one_output(device.config.data)
+        await device.attach(device.cast)
+
+        assert device.state() == (None, CAST_CLIENT, "chromecast", "off-default")
+        assert CONF_SENDSPIN_CAST_OPT_IN not in device.output()["values"]
         assert device.timeline == []
 
 
