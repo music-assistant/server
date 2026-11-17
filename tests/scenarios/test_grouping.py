@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import pytest
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import (
     InsufficientPermissions,
     PlayerCommandFailed,
@@ -1285,3 +1285,29 @@ async def test_a_first_member_that_plays_an_input_of_its_own_keeps_leading_the_s
     assert _state(scenario, den_id).synced_to == garden_id
     assert _state(scenario, kitchen_id).active_group is None
     await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("leader_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
+async def test_a_leader_counts_its_own_level_in_the_group_volume(
+    scenario: Scenario, leader_type: PlayerType
+) -> None:
+    """
+    A speaker or a multi-channel player that leads a group counts its own level.
+
+    The group volume is the level of the loudest member, the leader included, and a step up
+    of the group volume turns every member up, keeping their balance.
+    """
+    _, (living, office) = await _speakers(scenario, "Living", "Office")
+    await scenario.report(living, type=leader_type, volume_level=60)
+    await scenario.report(office, volume_level=30)
+    living_id, office_id = _player_id(scenario, living), _player_id(scenario, office)
+    await scenario.mass.players.cmd_set_members(living_id, player_ids_to_add=[office_id])
+    await scenario.idle()
+
+    assert _state(scenario, living_id).group_volume == 60
+
+    await scenario.mass.players.cmd_group_volume_up(living_id)
+    await scenario.idle()
+
+    assert _state(scenario, living_id).volume_level == 63
+    assert _state(scenario, office_id).volume_level == 35
