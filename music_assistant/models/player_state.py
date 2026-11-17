@@ -1302,7 +1302,7 @@ def _volume_members(inputs: StateInputs, state: PlayerState) -> list[PlayerState
         peer = inputs.peers.get(member_id)
         # the player itself may be named by one of its legacy ids
         if (peer.player_id if peer else member_id) == inputs.player_id:
-            if inputs.player_type not in (PlayerType.PLAYER, PlayerType.MULTI_CHANNEL):
+            if inputs.player_type == PlayerType.GROUP:
                 continue
             available_for_playback: bool | None = (
                 _playable(inputs) and not inputs.offline_by_power_control
