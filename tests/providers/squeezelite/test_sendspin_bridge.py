@@ -25,6 +25,7 @@ from aiohttp.test_utils import TestServer
 from aiosendspin.clock import ManualClock, RawMonotonicClock
 from aiosendspin.models.types import AudioCodec, PlayerCommand
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
+from aiosendspin.server.events import ClientGroupChangedEvent
 from aiosendspin.server.roles import AudioChunk
 from aioslimproto.client import SlimClient
 from aioslimproto.models import ButtonCode, PlayerStatus, RemoteCode, SlimEvent
@@ -303,17 +304,30 @@ def _grouped_client(*, members: int = 2) -> MagicMock:
     """
     Return a Sendspin client in a group with other clients.
 
-    Leaving moves it on to a solo group, as the real one does.
+    Leaving moves it on to a solo group, as the real one does, and ``moved_to`` puts it in
+    a group as a user does: both tell whoever listens to the client, as the real one does.
     """
     client = MagicMock()
     client.group.clients = [MagicMock() for _ in range(members)]
     client.group.has_active_stream = True
     client.group.add_client = AsyncMock()
+    listeners: list[Callable[[Any, Any], None]] = []
+
+    def _add_event_listener(listener: Callable[[Any, Any], None]) -> Callable[[], None]:
+        listeners.append(listener)
+        return lambda: listeners.remove(listener)
+
+    def _moved_to(group: MagicMock) -> None:
+        client.group = group
+        for listener in listeners:
+            listener(client, ClientGroupChangedEvent(group))
 
     async def _quiesce() -> str:
-        client.group = MagicMock(clients=[client], has_active_stream=False)
+        _moved_to(MagicMock(clients=[client], has_active_stream=False))
         return "group-1"
 
+    client.add_event_listener = _add_event_listener
+    client.moved_to = _moved_to
     client.quiesce_to_solo_stopped = AsyncMock(side_effect=_quiesce)
     return client
 
@@ -715,6 +729,8 @@ class _Rig:
         """Let the bridge be registered, with its client in a group with other clients."""
         self.bridge._sendspin_client = client = _grouped_client()
         self.bridge._bridge_client_id = CLIENT_ID
+        # as its registration does
+        client.add_event_listener(self.bridge._on_client_event)
         return client
 
     def serve(self, session: BridgeSession, response: _Response) -> asyncio.Task[Any]:
@@ -965,6 +981,7 @@ async def test_registration_hands_sendspin_what_it_needs_in_order(rig: _Rig) -> 
         "identifiers",
         "underlying",
         "register",
+        "register().add_event_listener",
         "register().roles_by_family",
         "role.set_callbacks",
         "role.set_preferred_format",
@@ -3801,6 +3818,59 @@ async def test_a_stream_that_played_10_seconds_starts_the_count_again(rig: _Rig)
     client.quiesce_to_solo_stopped.assert_awaited_once()
 
 
+async def test_a_stream_that_played_long_keeps_that_when_the_counter_of_its_player_starts_over(
+    rig: _Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A player counts the frames it played in 32 bits: after 27 hours its elapsed time starts at 0 again."""
+    client = rig.grouped()
+    session = await rig.start_playing()
+    await rig.await_start()
+    wrap_us = (1 << 32) * 1_000_000 // SECOND
+    rig.clock.advance_us(wrap_us - 250_000)
+    rig.bridge.handle_slim_event(rig.status(elapsed_ms=(wrap_us - 250_000) // 1000))
+    rig.clock.advance_us(500_000)
+    rig.bridge.handle_slim_event(rig.status(elapsed_ms=250))
+
+    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+    await _settle()
+
+    assert rig.session is not session
+    assert "Sendspin stream on Kitchen is restarted after it played 97391.3 s: " in caplog.text
+    # it did not fail early: it takes three streams that do to take the player out
+    for _ in range(MAX_QUICK_FAILURES - 1):
+        await rig.run_dry()
+    assert rig.owns_stream()
+    client.quiesce_to_solo_stopped.assert_not_called()
+    await rig.run_dry()
+    assert not rig.owns_stream()
+
+
+@pytest.mark.parametrize("position", ["stuck", "running"])
+async def test_a_position_of_another_stream_that_a_player_keeps_reporting_is_not_played(
+    rig: _Rig, position: str
+) -> None:
+    """A player that goes on reporting where another stream was has its stream restarted before that counts."""
+    client = rig.grouped()
+    await rig.start_playing(frames=60 * SECOND)
+
+    for _ in range(MAX_QUICK_FAILURES):
+        assert rig.owns_stream()
+        session = await rig.await_start()
+        # an hour played, from the instant it was told to start on, while its stream is written
+        while not session.ended:
+            rig.clock.advance_us(250_000)
+            rig.bridge._next_block(session)
+            since_start_ms = (rig.now_us - session.start_us) // 1000
+            elapsed_ms = 3_600_000 + (since_start_ms if position == "running" else 0)
+            rig.bridge.handle_slim_event(rig.status(elapsed_ms=elapsed_ms))
+            assert since_start_ms < 9000, "it goes on playing"
+        await _settle()
+
+    assert not rig.owns_stream()
+    assert rig.client.play_url.await_count == 3
+    client.quiesce_to_solo_stopped.assert_awaited_once()
+
+
 @pytest.mark.parametrize("reports", ["nothing", "nothing played", "the stream before"])
 async def test_only_what_a_player_reports_of_its_stream_counts_as_played(
     rig: _Rig, reports: str
@@ -3875,10 +3945,12 @@ async def test_the_log_tells_why_a_stream_was_restarted_and_why_its_player_left(
     await rig.run_dry(played_s=0.5)
     (gave_up,) = [record for record in caplog.records if record.levelno == logging.ERROR]
     assert gave_up.getMessage().startswith(
-        "Sendspin stream on Kitchen failed 3 times in a row before it played 10 s, now after "
-        f"0.5 s ({supply}"
+        "Giving up on Kitchen and taking it out of the Sendspin session: its stream failed 3 "
+        f"times in a row before it played 10 s, now after 0.5 s: {supply}"
     )
-    assert gave_up.getMessage().endswith("): giving up and taking it out of the Sendspin session")
+    # the reason as a restart gives it, with nothing around it
+    assert gave_up.getMessage().count("(") == gave_up.getMessage().count(")") == 1
+    assert gave_up.getMessage().endswith(" ms ago)")
     assert len([record for record in caplog.records if "is restarted" in record.getMessage()]) == 3
 
 
@@ -3946,6 +4018,67 @@ async def test_a_bridge_that_gives_up_again_before_it_played_stays_out(
         "Kitchen gave up again before it played 10 s since it was re-joined, leaving it out of "
         "the group until it is grouped again"
     )
+
+
+@pytest.mark.parametrize(
+    ("then", "returns"),
+    [("grouped again", 2), ("ungrouped and grouped again", 2), ("a new stream", 1)],
+)
+async def test_a_bridge_that_is_grouped_by_its_user_gets_a_return_of_its_own(
+    rig: _Rig, then: str, returns: int
+) -> None:
+    """A return that did not work out is forgotten once the user takes the player out of a group or puts it in one."""
+    client = rig.grouped()
+    group = client.group
+    with patch(f"{MODULE}.REJOIN_ATTEMPT_DELAYS", (0,)):
+        await rig.start_playing()
+        for _ in range(MAX_QUICK_FAILURES):
+            await rig.run_dry()
+        group.add_client.assert_awaited_once_with(client)
+        # its return starts a stream
+        client.group = group
+        await rig.start_playing()
+
+        if then == "grouped again":
+            # it gives up again, which leaves it out, and its user groups it again
+            for _ in range(MAX_QUICK_FAILURES):
+                await rig.run_dry()
+            assert not rig.owns_stream()
+            group.add_client.assert_awaited_once_with(client)
+            client.moved_to(group)
+        elif then == "ungrouped and grouped again":
+            # before its stream played 10 seconds, without a failure
+            rig.play(await rig.await_start(), 5)
+            client.moved_to(MagicMock(clients=[client], has_active_stream=False))
+            rig.bridge._on_stream_end()
+            client.moved_to(group)
+        await rig.start_playing()
+        for _ in range(MAX_QUICK_FAILURES):
+            assert rig.owns_stream()
+            await rig.run_dry()
+
+    assert not rig.owns_stream()
+    assert group.add_client.await_count == returns
+
+
+async def test_the_bridge_follows_its_client_from_group_to_group(rig: _Rig) -> None:
+    """The bridge listens to its Sendspin client for as long as it is registered."""
+    listeners: list[Any] = []
+
+    def _add_event_listener(listener: Any) -> Callable[[], None]:
+        listeners.append(listener)
+        return lambda: listeners.remove(listener)
+
+    rig.sendspin_client.add_event_listener.side_effect = _add_event_listener
+
+    await rig.bridge.start()
+    (listener,) = listeners
+    rig.bridge._rejoined = True
+    listener(rig.sendspin_client, ClientGroupChangedEvent(MagicMock()))
+    assert not rig.bridge._rejoined
+
+    await rig.bridge.stop()
+    assert not listeners
 
 
 @pytest.mark.parametrize("ended_by", ["a failure", "a new stream"])
