@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.enums import (
     ContentType,
@@ -30,6 +31,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 
 import music_assistant.controllers.streams.audio as audio_mod
+import music_assistant.controllers.streams.controller as controller_mod
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer, BufferUser
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.models.music_provider import ProviderStreamLimitError
@@ -48,7 +50,6 @@ from tests.controllers.streams.stream_slot_rig import (
 )
 
 if TYPE_CHECKING:
-    from aiohttp import web
     from music_assistant_models.queue_item import QueueItem
 
 PLAYER_ID = "player1"
@@ -514,6 +515,100 @@ async def test_a_speakers_request_uses_the_buffer_until_the_request_ends(
 
     assert list(buffer.users) == []
     assert rig.audio._item_claims == set()
+
+
+async def _request_in_setup(
+    rig: SlotRig, monkeypatch: pytest.MonkeyPatch, lookup_fails_with: Exception | None = None
+) -> tuple[asyncio.Task[web.StreamResponse], _Connection, AudioBuffer, asyncio.Event]:
+    """
+    Let a speaker ask for the prepared next track and hold its request before it streams.
+
+    The request is accepted and waits for the content length of its response, while a queue
+    change makes its track no longer the next one.
+
+    :param rig: The rig whose queue and audio the route serves.
+    :param monkeypatch: The test's monkeypatch.
+    :param lookup_fails_with: What the content length lookup raises once it may go on.
+    :return: The request, its connection, the track's prepared audio and the event that
+        lets the request go on.
+    """
+    setting_up = asyncio.Event()
+    go_on = asyncio.Event()
+
+    async def _content_length(*_args: object) -> int:
+        setting_up.set()
+        await go_on.wait()
+        if lookup_fails_with is not None:
+            raise lookup_fails_with
+        return 48_000
+
+    monkeypatch.setattr(controller_mod, "get_content_length", _content_length)
+    playing, prepared, _later = rig.play("track 0", "track 1", "track 2")
+    rig.sources["track 1"] = partial(source, 3)
+    capture = await rig.prepare_next(playing)
+    await rig.delivered(prepared)
+    request, connection = _start_request(rig, prepared)
+    # this speaker wants a content length, which the route looks up before it streams
+    rig.mass.players.get_output_protocol.return_value.get_config_value.return_value = True
+    await asyncio.wait_for(setting_up.wait(), 1)
+    await rig.queues._enqueue_with_option(QUEUE_ID, [rig.track("track 5")], QueueOption.NEXT)
+    await rig.settle()
+    return request, connection, capture, go_on
+
+
+@pytest.mark.parametrize(
+    "competing", [False, True], ids=["nobody else asks", "the new next track takes the slot"]
+)
+async def test_a_track_a_speaker_asked_for_keeps_its_audio_while_its_request_is_set_up(
+    rig: SlotRig, monkeypatch: pytest.MonkeyPatch, competing: bool
+) -> None:
+    """A queue change while a speaker's request is set up leaves the track it asked for alone."""
+    request, connection, capture, go_on = await _request_in_setup(rig, monkeypatch)
+    try:
+        assert not capture.cancelled
+        if competing:
+            playing = rig.queues._queue_data[QUEUE_ID].items[0]
+            await rig.prepare_next(playing)
+            assert not rig.slot_free()
+        go_on.set()
+        connection.deliver_all()
+        await asyncio.wait_for(request, 5)
+    finally:
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+    # the speaker got the audio that was prepared for it: its source was not opened again
+    assert rig.opened["track 1"] == 1
+    assert connection.writer.write.await_count > 0
+    assert rig.audio._item_claims == set()
+
+
+@pytest.mark.parametrize("ending", ["cancelled", "refused", "failed", "client gone"])
+async def test_a_request_that_ends_before_it_streams_lets_go_of_its_track(
+    rig: SlotRig, monkeypatch: pytest.MonkeyPatch, ending: str
+) -> None:
+    """However a request ends before its first audio, its track is no longer kept for it."""
+    failure = {
+        "refused": web.HTTPNotFound(reason="No longer there"),
+        "failed": RuntimeError("the lookup broke"),
+    }.get(ending)
+    request, connection, capture, go_on = await _request_in_setup(rig, monkeypatch, failure)
+    try:
+        assert capture.is_valid()
+        if ending == "cancelled":
+            request.cancel()
+        elif ending == "client gone":
+            connection.drop()
+        go_on.set()
+        await asyncio.wait_for(asyncio.gather(request, return_exceptions=True), 5)
+    finally:
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+    assert rig.audio._item_claims == set()
+    # nothing else needs the track any more, so its audio goes with the request
+    assert capture.cancelled
+    assert rig.opened["track 1"] == 1
 
 
 @pytest.mark.parametrize("ending", ENDINGS)

@@ -487,6 +487,42 @@ async def test_a_fade_into_the_next_track_lets_go_of_the_track_before_the_playin
     await rig.settle()
 
 
+@NO_LIMIT
+async def test_a_fade_into_a_track_that_was_already_prepared_lets_go_of_the_track_before(
+    rig: SlotRig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fade that takes a next track whose audio is in hand releases as one that loads it."""
+    before, playing, incoming = rig.play("track 0", "track 1", "track 2", realtime=False)
+    for name in ("track 0", "track 1", "track 2"):
+        rig.sources[name] = partial(source, 30)
+    earlier = await rig.ask(before)
+    assert earlier is not None
+    await rig.delivered(before)
+    _move_to(rig, 1)
+    await rig.ask(playing)
+    await rig.delivered(playing)
+    prepared = await rig.prepare_next(playing)
+    await rig.delivered(incoming)
+    install_mixer(rig, monkeypatch)
+    rig.audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    rig.audio.select_pcm_format = AsyncMock(return_value=PCM_FORMAT)  # type: ignore[method-assign]
+    assert not earlier.cancelled
+
+    await drain(
+        rig.audio.get_queue_item_stream_with_smartfade(
+            MagicMock(), playing, PCM_FORMAT, CrossfadeMode.STANDARD_CROSSFADE, 8, SESSION_ID
+        )
+    )
+
+    assert rig.queues._queue_data[QUEUE_ID].queue.index_in_buffer == 2
+    # the fade read the audio that was there: no source was opened a second time
+    assert rig.opened["track 2"] == 1
+    assert rig.buffer(incoming) is prepared
+    assert await _given_up(earlier)
+    rig.audio.clear_crossfade_handover(QUEUE_ID)
+    await rig.settle()
+
+
 # --- what plays next changes while the queue and its position stay
 
 

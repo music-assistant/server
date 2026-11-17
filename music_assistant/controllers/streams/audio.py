@@ -2375,6 +2375,9 @@ class StreamsAudio:
                     queue.index_in_buffer = self.mass.player_queues.index_by_id(
                         queue.queue_id, next_queue_item.queue_item_id
                     )
+                    # no audio is asked for when the next item's is in hand already, so
+                    # what left the queue's scope with this move is released here
+                    self.mass.player_queues.release_unneeded_audio(queue.queue_id)
                 except QueueEmpty:
                     # end of queue reached, no next item
                     next_queue_item = None
@@ -3654,6 +3657,22 @@ class StreamsAudio:
         :param queue_item: The queue item to check.
         """
         return any(self._claim_holds(claim, queue_item) for claim in self._item_claims)
+
+    def claim_item(self, queue_item: QueueItem, session_id: str, name: str) -> Callable[[], None]:
+        """
+        Claim a queue item for a consumer that decided to play it, before it reads any of it.
+
+        Until the claim ends the item's audio is kept for the playback session of its queue,
+        whatever the queue plays now or next.
+
+        :param queue_item: The queue item the consumer decided to play.
+        :param session_id: The playback session the consumer plays in.
+        :param name: Who claims, for log lines.
+        :return: Ends the claim. To be called exactly once, however the consumer ends.
+        """
+        claim = _ItemClaim(name, session_id)
+        self._claim_item(claim, queue_item)
+        return partial(self._claim_item, claim, None)
 
     def claimed_items(self, queue_id: str) -> list[QueueItem]:
         """

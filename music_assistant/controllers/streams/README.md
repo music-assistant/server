@@ -142,7 +142,9 @@ A buffer keeps track of its users. `get_buffer()` lists whoever only waits for t
 the moment it takes the buffer until it ends, so the wait for a source slot and the time before its
 first read count as well. A stream also claims the queue item it decided to play, which holds the
 item's buffer before the stream has it and when someone else creates it: the item stream for its
-whole life, the flow stream from the moment it selects a track. A claim counts for the playback
+whole life, the flow stream from the moment it selects a track. The route that serves a single item
+to a speaker claims it as well (`claim_item()`), from the moment it accepts the request until the
+request ends: the item is held while the response is set up. A claim counts for the playback
 session its stream is part of, and no longer once the queue the item is on plays in another session
 or in none. The source of a buffer that still fills holds a stream slot of its provider, which lists
 those buffers in `stream_slot_holders`. The slot is taken in the name of the buffer's queue, and a
