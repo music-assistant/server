@@ -19,7 +19,9 @@ from music_assistant.providers.deezer.parsers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import Artist
+    from collections.abc import AsyncGenerator
+
+    from music_assistant_models.media_items import Artist, Audiobook
 
     from music_assistant.providers.deezer.provider import DeezerProvider
 
@@ -199,14 +201,39 @@ async def test_search_lists_the_author_after_the_artist(
     assert len(result.audiobooks) == (MediaType.AUDIOBOOK in media_types)
 
 
-async def test_author_writes_use_the_deezer_artist(
-    provider: DeezerProvider, gql: AsyncMock
+async def test_library_lists_the_authors_of_its_audiobooks(
+    provider: DeezerProvider, gql: AsyncMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Deezer has one artist, so favorites and bans of an author go to it."""
-    await provider.media_manager.library_add(parse_author(provider, "75255", "Conni"))
-    await provider.media_manager.library_remove("author_75255", MediaType.ARTIST)
+    """Every author of a library audiobook is a library artist, once."""
+    conni, liane = _artist_node("75255", "Conni"), _artist_node("6449846", "Liane Schneider")
+    audiobooks = [
+        parse_audiobook_from_album(provider, _album_node("1", conni, liane)),  # type: ignore[arg-type]
+        parse_audiobook_from_album(provider, _album_node("2", conni)),  # type: ignore[arg-type]
+    ]
+
+    async def library_audiobooks() -> AsyncGenerator[Audiobook]:
+        for audiobook in audiobooks:
+            yield audiobook
+
+    manager = provider.media_manager
+    gql.get_favorite_artists.return_value = None
+    monkeypatch.setattr(manager, "_get_personal_songs", AsyncMock(return_value=[]))
+    monkeypatch.setattr(manager, "get_library_audiobooks", library_audiobooks)
+
+    artists = [artist async for artist in manager.get_library_artists()]
+
+    assert [(a.item_id, a.artist_type) for a in artists] == [
+        ("author_75255", ArtistType.AUTHOR),
+        ("author_6449846", ArtistType.AUTHOR),
+    ]
+
+
+async def test_authors_follow_their_audiobooks(provider: DeezerProvider, gql: AsyncMock) -> None:
+    """Adding or removing an author leaves Deezer alone, a dislike still bans the artist."""
+    assert not await provider.media_manager.library_add(parse_author(provider, "75255", "Conni"))
+    assert not await provider.media_manager.library_remove("author_75255", MediaType.ARTIST)
     await provider.media_manager.set_favorite("author_75255", MediaType.ARTIST, False)
 
-    gql.add_artist_to_favorite.assert_awaited_once_with(artist_id="75255")
-    gql.remove_artist_from_favorite.assert_awaited_once_with(artist_id="75255")
+    gql.add_artist_to_favorite.assert_not_called()
+    gql.remove_artist_from_favorite.assert_not_called()
     gql.ban_artist_from_recommendation.assert_awaited_once_with(artist_id="75255")

@@ -301,6 +301,13 @@ class DeezerMediaManager:
                 if isinstance(artist, Artist) and artist.name not in seen_artist_names:
                     seen_artist_names.add(artist.name)
                     yield artist
+        # Authors come and go with the audiobooks in the library
+        seen_author_ids: set[str] = set()
+        async for audiobook in self.get_library_audiobooks():
+            for author in audiobook.authors:
+                if isinstance(author, Artist) and author.item_id not in seen_author_ids:
+                    seen_author_ids.add(author.item_id)
+                    yield author
 
     async def _get_audiobook_ids_in_albums(self) -> set[str]:
         """Identify which favorite album IDs are actually audiobooks."""
@@ -860,9 +867,10 @@ class DeezerMediaManager:
     async def library_add(self, item: MediaItemType) -> bool:
         """Add an item to the provider's library/favorites."""
         if item.media_type == MediaType.ARTIST:
-            # an author is the same artist on Deezer
-            artist_id = item.item_id.removeprefix(AUTHOR_ARTIST_PREFIX)
-            await self.provider.gql_client.add_artist_to_favorite(artist_id=artist_id)
+            if item.item_id.startswith(AUTHOR_ARTIST_PREFIX):
+                # authors come and go with their audiobooks
+                return False
+            await self.provider.gql_client.add_artist_to_favorite(artist_id=item.item_id)
         elif item.media_type == MediaType.ALBUM:
             await self.provider.gql_client.add_album_to_favorite(album_id=item.item_id)
         elif item.media_type == MediaType.TRACK:
@@ -881,9 +889,10 @@ class DeezerMediaManager:
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove an item from the provider's library/favorites."""
-        # an author is the same artist on Deezer
-        prov_item_id = prov_item_id.removeprefix(AUTHOR_ARTIST_PREFIX)
         if media_type == MediaType.ARTIST:
+            if prov_item_id.startswith(AUTHOR_ARTIST_PREFIX):
+                # authors come and go with their audiobooks
+                return False
             await self.provider.gql_client.remove_artist_from_favorite(artist_id=prov_item_id)
         elif media_type == MediaType.ALBUM:
             await self.provider.gql_client.remove_album_from_favorite(album_id=prov_item_id)
