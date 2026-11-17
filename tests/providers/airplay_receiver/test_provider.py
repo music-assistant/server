@@ -7,8 +7,10 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import ifaddr
+import pytest
 from music_assistant_models.enums import ContentType, EventType
 from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import AudioFormat
@@ -537,6 +539,80 @@ async def test_receiver_config_starts_at_the_volume_of_the_player(tmp_path: Path
     # 40 % of the -30.0 to 0.0 dB range
     config = (tmp_path / "shairport.conf").read_text(encoding="utf-8")
     assert "default_airplay_volume = -18.0;" in config
+
+
+# a host with a LAN interface, a second LAN interface, a Docker bridge and a VPN tunnel
+_HOST_ADAPTERS = [
+    ifaddr.Adapter("lo", "lo", [ifaddr.IP("127.0.0.1", 8, "lo")]),
+    ifaddr.Adapter("docker0", "docker0", [ifaddr.IP("172.17.0.1", 16, "docker0")]),
+    ifaddr.Adapter(
+        "eth0",
+        "eth0",
+        [ifaddr.IP("192.168.1.10", 24, "eth0"), ifaddr.IP(("2001:db8::10", 0, 2), 64, "eth0")],
+    ),
+    ifaddr.Adapter("eth1", "eth1", [ifaddr.IP("192.168.2.10", 24, "eth1")]),
+    ifaddr.Adapter("wg0", "wg0", [ifaddr.IP("10.8.0.2", 24, "wg0")]),
+]
+
+
+def _interface_line_provider(bind_ip: str | None, publish_ip: str) -> AirPlayReceiverProvider:
+    """
+    Build a bare provider, without registered players, whose stream server has the given IPs.
+
+    :param bind_ip: The explicitly configured bind IP, or None when it binds all interfaces.
+    :param publish_ip: The stream server's publish IP.
+    """
+    prov = AirPlayReceiverProvider.__new__(AirPlayReceiverProvider)
+    prov.logger = MagicMock()
+    prov.mass = mass = MagicMock()
+    mass.streams.get_source_ip = AsyncMock(return_value=bind_ip)
+    mass.streams.publish_ip = publish_ip
+    mass.players.get_player.return_value = None
+    return prov
+
+
+@pytest.mark.parametrize(
+    ("bind_ip", "publish_ip", "expected"),
+    [
+        pytest.param(
+            None, "192.168.1.10", '\tinterface = "eth0";\n', id="publish-ip-when-binding-all"
+        ),
+        pytest.param(None, "2001:DB8::10", '\tinterface = "eth0";\n', id="ipv6-publish-ip"),
+        pytest.param(
+            "192.168.2.10", "192.168.1.10", '\tinterface = "eth1";\n', id="explicit-bind-ip"
+        ),
+        # e.g. a port-forwarded address configured as publish IP
+        pytest.param(None, "203.0.113.5", "", id="publish-ip-not-on-this-host"),
+    ],
+)
+async def test_mdns_interface_follows_the_address_music_assistant_is_reached_on(
+    bind_ip: str | None, publish_ip: str, expected: str
+) -> None:
+    """The receiver's mDNS records stay on the interface holding the bind or publish IP."""
+    prov = _interface_line_provider(bind_ip, publish_ip)
+
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=_HOST_ADAPTERS):
+        assert await prov._get_mdns_interface_line() == expected
+
+
+async def test_receiver_config_pins_mdns_to_the_publish_interface(tmp_path: Path) -> None:
+    """The interface directive lands in the general section of the receiver's config."""
+    prov = _interface_line_provider(None, "192.168.1.10")
+    daemon = MagicMock(
+        player_id="pl0123456789ab",
+        airplay_name="Player A",
+        port=7000,
+        config_file=str(tmp_path / "shairport.conf"),
+    )
+    daemon.metadata_pipe.path = str(tmp_path / "metadata")
+    daemon.audio_pipe.path = str(tmp_path / "audio")
+
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=_HOST_ADAPTERS):
+        await prov._create_config_file(daemon)
+
+    config = (tmp_path / "shairport.conf").read_text(encoding="utf-8")
+    general_section = config.split("metadata =", 1)[0]
+    assert '\tinterface = "eth0";\n};' in general_section
 
 
 def test_receiver_pipes_and_config_live_in_the_runtime_dir() -> None:

@@ -18,6 +18,7 @@ from music_assistant_models import config_entries
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
     CONF_ENCRYPTION_KEY,
     CONF_ENCRYPTION_KEY_MIGRATED,
     CONF_ONBOARD_DONE,
@@ -329,6 +330,8 @@ class ConfigController(
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
         mark_player_split_done(self._data)
+        # a new installation stores the AirPlay sync adjust with its current sign
+        self._data[CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED] = True
 
     async def _backup_before_player_split(self, loaded_filename: str) -> None:
         """

@@ -14,6 +14,7 @@ import torch
 from beat_this.inference import Spect2Frames, aggregate_prediction, split_piece
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, MediaType
+from music_assistant_models.errors import SetupFailedError
 from torchaudio.transforms import SpectralCentroid
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -115,6 +116,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
     max_analysis_duration = ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS
     # v3: FireRed AED vocal activity
     analysis_version = 3
+    # We only want to analyze tracks
+    media_types = frozenset({MediaType.TRACK})
     has_unloadable_models = True
 
     def __init__(
@@ -202,7 +205,17 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     def _initialize_models(self) -> LoadedModels:
         """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
-        beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
+        try:
+            beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
+        except ValueError as err:
+            # Beat This downloads its checkpoint on first use and wraps any failure in a
+            # ValueError (the actual cause is its __context__). A handled error lets the
+            # provider load be retried once the download works again.
+            msg = (
+                f"Could not download the Beat This! model ({err.__context__ or err}). "
+                "Check your internet connection or try again later."
+            )
+            raise SetupFailedError(msg) from err
         # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
         preference = ("qnnpack", "fbgemm") if is_arm() else ("fbgemm", "qnnpack")
         supported_engines = torch.backends.quantized.supported_engines
@@ -251,10 +264,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
         audio_format: AudioFormat,
     ) -> bool:
         """Start beat tracking analysis for a new track."""
-        if streamdetails.media_type != MediaType.TRACK:
-            # We only want to analyze tracks
-            return False
-
         models = self._require_models()
         block_seconds = 10.0
 

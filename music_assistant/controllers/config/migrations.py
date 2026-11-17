@@ -12,6 +12,7 @@ from music_assistant_models.enums import CrossfadeMode, TaskScheduleType
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
     CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED,
     CONF_CORE,
     CONF_CROSSFADE_DURATION,
@@ -28,6 +29,7 @@ from music_assistant.constants import (
     CONF_PROVIDERS,
     CONF_RAUMFELD_ICY_BASIC_MIGRATED,
     CONF_SMART_FADES_MODE,
+    CONF_SYNC_ADJUST,
     CONF_VOLUME_NORMALIZATION,
 )
 from music_assistant.controllers.config.player_split import (
@@ -62,6 +64,9 @@ LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX = "spb_msx_"
 
 # removed player HTTP profile config key, only referenced by its migrations
 LEGACY_HTTP_PROFILE_KEY = "http_profile"
+
+# domains of the removed builtin providers, whose stored configs nothing can load anymore
+RETIRED_BUILTIN_PROVIDER_DOMAINS = ("builtin_player", "universal_player")
 
 
 # Canonical ids of the shared icon set (music-assistant/shared-icons v0.3.0);
@@ -617,6 +622,25 @@ async def migrate(data: dict[str, Any]) -> bool:
     # It reads both trees, so it also reaches a config that was split before this step existed.
     # TODO: remove after 2.13 release
     if _migrate_drop_http_profile(data):
+        changed = True
+
+    # Negate the stored sync adjust of every AirPlay player, whose positive value now plays
+    # earlier like it does on every other protocol. It reads the split trees, so it runs
+    # after the split.
+    # TODO: remove after 2.13 release
+    if _migrate_airplay_sync_adjust_sign(data):
+        changed = True
+
+    # Remove the stored configs of the retired builtin providers, which the UI would
+    # otherwise list as unavailable providers forever.
+    # TODO: remove after 2.13 release
+    if _migrate_remove_retired_builtin_providers(data):
+        changed = True
+
+    # Store every player that is stored as a stereo pair as a multi-channel player, the type
+    # a set of speakers has. It reads the split tree, so it runs after the split.
+    # TODO: remove after 2.13 release
+    if _migrate_stereo_pair_player_type(data):
         changed = True
 
     return changed
@@ -1531,6 +1555,60 @@ def _migrate_raumfeld_icy_basic(data: dict[str, Any]) -> bool:
     return True
 
 
+def _migrate_airplay_sync_adjust_sign(data: dict[str, Any]) -> bool:
+    """
+    Negate the stored sync adjust of every AirPlay player and protocol, once.
+
+    AirPlay played later for a positive value, unlike every other protocol. Guarded by
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED, which is claimed even when nothing moved, so a
+    value stored afterwards keeps its sign. Returns True when the settings were modified,
+    including the first run's marker.
+    """
+    if data.get(CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED):
+        return False
+    migrated: list[str] = []
+    for tree in (CONF_PLAYERS, CONF_PLAYER_PROTOCOLS):
+        records = data.get(tree)
+        if not isinstance(records, dict):
+            continue
+        for record_id, record in records.items():
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("provider") or "").split("--", maxsplit=1)[0] != "airplay":
+                continue
+            values = record.get("values")
+            if not isinstance(values, dict):
+                continue
+            sync_adjust = values.get(CONF_SYNC_ADJUST)
+            if isinstance(sync_adjust, int) and sync_adjust:
+                values[CONF_SYNC_ADJUST] = -sync_adjust
+                migrated.append(f"{record_id} ({sync_adjust} -> {-sync_adjust})")
+    if migrated:
+        LOGGER.info(
+            "Negated the AirPlay sync adjust, a positive value now plays earlier: %s",
+            ", ".join(migrated),
+        )
+    data[CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED] = True
+    return True
+
+
+def _migrate_stereo_pair_player_type(data: dict[str, Any]) -> bool:
+    """
+    Store every player that is stored as a stereo pair as a multi-channel player.
+
+    Returns True when the settings were modified.
+    """
+    all_player_configs = data.get(CONF_PLAYERS)
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_cfg in all_player_configs.values():
+        if isinstance(player_cfg, dict) and player_cfg.get("player_type") == "stereo_pair":
+            player_cfg["player_type"] = "multi_channel"
+            changed = True
+    return changed
+
+
 def _migrate_artist_catalogue_selection(data: dict[str, Any]) -> bool:
     """Move a stored artist selection that is no longer offered to the library album tracks."""
     core_cfg = data.get(CONF_CORE)
@@ -1546,3 +1624,20 @@ def _migrate_artist_catalogue_selection(data: dict[str, Any]) -> bool:
     queue_values[CONF_DEFAULT_ENQUEUE_SELECT_ARTIST] = "library_album_tracks"
     LOGGER.info("Moved the artist playback selection to the tracks of the library albums")
     return True
+
+
+def _migrate_remove_retired_builtin_providers(data: dict[str, Any]) -> bool:
+    """Remove the stored configs of the retired builtin providers."""
+    all_provider_configs = data.get(CONF_PROVIDERS)
+    if not isinstance(all_provider_configs, dict):
+        return False
+    retired = [
+        instance_id
+        for instance_id, provider_cfg in all_provider_configs.items()
+        if isinstance(provider_cfg, dict)
+        and provider_cfg.get("domain") in RETIRED_BUILTIN_PROVIDER_DOMAINS
+    ]
+    for instance_id in retired:
+        del all_provider_configs[instance_id]
+        LOGGER.info("Removed the config of the retired provider %s", instance_id)
+    return bool(retired)

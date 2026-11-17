@@ -196,6 +196,38 @@ class TestStretchScenarios:
         assert plan.crossfade_duration == pytest.approx(16.0)
         assert plan.fadein_trim_start == pytest.approx(13.77, abs=0.01)
 
+    def test_the_ramp_matches_the_beat_grids_not_the_stored_tempos(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stored tempos biased against their grids still ramp to the grid ratio."""
+        out = dataclasses.replace(_kicked(125.0), bpm=124.956)
+        inc = dataclasses.replace(_kicked(124.0), bpm=124.182)
+
+        plan = _plan_ramped_only(monkeypatch, out, inc)
+
+        assert plan.style is TransitionStyle.BLEND
+        assert plan.tempo_plan.steps[-1][1] == pytest.approx(124.0 / 125.0, rel=3e-4)
+
+    def test_a_ragged_outro_past_the_mix_out_does_not_set_the_tempo(self) -> None:
+        """Beats wandering through a quiet outro leave the deck on the tempo that plays."""
+        outro = _T >= 228.0
+        out = _analysis_with_bands(np.where(outro, 0.02, 0.5), 0.3, 0.3, 0.3, bpm=125.0)
+        steady = np.asarray(out.beats)[np.asarray(out.beats) < 228.0]
+        wandering = steady[-1] + np.cumsum(0.48 + 0.06 * np.sin(np.arange(1, 26) * 0.9))
+        beats = np.concatenate((steady, wandering))
+        out = dataclasses.replace(
+            out,
+            bpm=124.6,
+            beats=beats.tolist(),
+            downbeats=beats[::4].tolist(),
+            rms_energy=np.where(outro, 0.1, 0.5).astype(np.float32).tolist(),
+        )
+
+        ctx = build_transition_context(out, _kicked(124.0), 45.0, LOGGER)
+
+        assert ctx.default_anchor < 34.0
+        assert ctx.outgoing.bpm == pytest.approx(125.0, rel=2e-4)
+
 
 class TestBothDecksKick:
     """Both decks kick in a blend's overlap with at least a beat of kick each."""

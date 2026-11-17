@@ -29,7 +29,6 @@ from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFo
 from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType, PlaybackState
 
-from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -47,10 +46,9 @@ from .constants import (
     AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
-    ClockReadiness,
     StreamingProtocol,
 )
-from .helpers import cli_clock_time, player_id_to_mac_address
+from .helpers import cli_clock_time, get_sync_offset_ms, player_id_to_mac_address
 from .stream import AirPlayStream
 
 if TYPE_CHECKING:
@@ -899,22 +897,14 @@ class SendspinAirPlayBridge:
             queued audio the new anchor has to clear.
         :return: True when the stream is anchored, False when superseded.
         """
-        readiness, ready_at_unix_ms = await stream.wait_clock_ready(
+        # A stalled receiver is anchored anyway, like a group start and unlike a
+        # late joiner: a joiner is dropped because the session plays on without
+        # it, while here it would stop the speaker - and a stall is not evidence
+        # enough for that (a receiver that begins probing late still comes
+        # good). The stream itself warns about the stall once.
+        _, ready_at_unix_ms = await stream.wait_clock_ready(
             timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
         )
-        if readiness is ClockReadiness.STALLED:
-            # Anchored anyway, like a group start and unlike a late joiner: a
-            # joiner is dropped because the session plays on without it, while
-            # here it would stop the speaker - and a stall is not evidence
-            # enough for that. The binary reports it as a diagnosis rather than
-            # a verdict (a receiver that begins probing late still comes good)
-            # and re-arms that reporting per cycle, so a warm re-anchor is
-            # reading the cycle before it.
-            self.logger.warning(
-                "%s never answered the server's PTP clock, so this stream will be silent "
-                "until it does; anchoring anyway",
-                self.airplay_player.display_name,
-            )
         sendspin_now_us = self.sendspin_server.clock.now_us()
         unix_now = cli_clock_time()
         now_ms = int(unix_now * 1000)
@@ -926,12 +916,11 @@ class SendspinAirPlayBridge:
         anchor_ms = max(now_ms + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS, first_chunk_unix_ms)
         if ready_at_unix_ms:
             anchor_ms = max(anchor_ms, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
-        sync_adjust = self.airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
-        adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
+        adjust_ms = get_sync_offset_ms(self.airplay_player.config)
         if warm:
             # A splice-timeline receiver honours the commanded instant only when
             # it lands beyond the audio still queued behind the flushed head. A
-            # NEGATIVE sync_adjust moves the commanded instant earlier, eating
+            # NEGATIVE sync offset moves the commanded instant earlier, eating
             # into the lead, so it has to be added back to the requirement.
             if stream.warm_lead_ms > 0:
                 anchor_ms = max(
@@ -978,7 +967,7 @@ class SendspinAirPlayBridge:
             or self._airplay_stream is not stream
         ):
             return False
-        # The command carries the device's sync_adjust; the group timeline does not.
+        # The command carries the device's sync offset; the group timeline does not.
         acked_timeline_ms = acked_adjusted - adjust_ms
         sendspin_now_us = self.sendspin_server.clock.now_us()
         unix_now = cli_clock_time()
@@ -1233,6 +1222,13 @@ class SendspinAirPlayBridge:
                 # the transport and tear down a session that is not the bridge's
                 self.logger.debug(
                     "Not re-joining %s: it is streaming outside the bridge",
+                    self.airplay_player.display_name,
+                )
+                return
+            if (player := self.airplay_player.player) and player.offline_by_power_control:
+                # switched off on purpose, whatever the protocol still reads
+                self.logger.debug(
+                    "Not re-joining %s: it is switched off",
                     self.airplay_player.display_name,
                 )
                 return

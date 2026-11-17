@@ -16,12 +16,14 @@ from aiosendspin.clock import RawMonotonicClock
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import format_ip_for_url
 
 from .constants import AIRPLAY_BUFFER_DEPTH_DEFAULTS
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import PlayerConfig
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
@@ -46,6 +48,19 @@ CLI_CLOCK_OFFSET_NS: Final[int] = time.time_ns() - _RAW_CLOCK.now_us() * 1000
 def cli_clock_time() -> float:
     """Return now on the cliairplay timeline, in unix-epoch seconds."""
     return (_RAW_CLOCK.now_us() * 1000 + CLI_CLOCK_OFFSET_NS) / 1e9
+
+
+def get_sync_offset_ms(config: PlayerConfig) -> int:
+    """
+    Return how much later than the group an AirPlay player is commanded to play, in ms.
+
+    The sync adjust setting is the extra latency of the device's audio chain, so a
+    positive setting makes the player play earlier and returns a negative offset.
+
+    :param config: The config of the AirPlay player.
+    """
+    sync_adjust = config.get_value(CONF_SYNC_ADJUST, 0)
+    return -sync_adjust if isinstance(sync_adjust, int) else 0
 
 
 def convert_airplay_volume(value: float) -> int:

@@ -76,7 +76,7 @@ def _controller(
     queue.elapsed_time_last_updated = time.time()
     queue_data = PlayerQueueData(queue=queue)
     queue_data.items = [_book_item("item_1"), _book_item("item_2", chapters=None)]
-    queue_data.served_item_ids = {"item_1", "item_2"}
+    queue_data.served_item_ids = {"item_1": None, "item_2": None}
     queue.current_item = queue_data.items[0]
     ctrl._queue_data = {"q1": queue_data}
     return ctrl, queue, mass

@@ -93,6 +93,10 @@ class PlayerQueueData:
     # session_id whose flow stream ended because the queue ran out of items, as opposed
     # to ending early to restart on a format change or a live item
     flow_queue_exhausted: str | None = None
+    # session_id whose lost flow stream the queue restarted, and when (monotonic) it restarted
+    # lost flow streams, for the rate limit
+    flow_restarted_session_id: str | None = None
+    flow_restart_times: list[float] = field(default_factory=list)
     # the current stream session id (set when a stream starts, cleared between sessions)
     session_id: str | None = None
     # per-item play log for the active flow-mode stream
@@ -111,8 +115,9 @@ class PlayerQueueData:
     # queue_item_ids whose audio reached the player during the current load, plus the item it
     # was still playing when that load started. The tracker only reports a play for, or ends the
     # queue on, one of these: a player can name an item it never received (one from its own
-    # cached copy of the queue that the stream server then refused), and nothing of it has played
-    served_item_ids: set[str] = field(default_factory=set)
+    # cached copy of the queue that the stream server then refused), and nothing of it has played.
+    # Maps each to the stream session that served it
+    served_item_ids: dict[str, str | None] = field(default_factory=dict)
     # the point an END_OF_ITEM/END_OF_CHAPTER sleep timer stops the queue at; while set, the
     # queue does not advance past that item on its own
     sleep_timer_target: SleepTimerTarget | None = None

@@ -38,6 +38,11 @@
       }
     }
   },
+  "menu_actions": {
+    "listen_from_start": {
+      "label": "Listen from start"
+    }
+  },
   "manifest": {
     "description": "Stream live BBC radio shows, podcast series and on-demand audio."
   }

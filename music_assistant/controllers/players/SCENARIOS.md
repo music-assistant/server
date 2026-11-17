@@ -156,13 +156,24 @@ app: the player and its queue take the new name, and it is stored as the name of
 - End-to-end: **yes**. Rename a shairport-sync receiver and restart it.
 - Proven by: `test_attach_detach.py::test_a_player_of_an_audio_receiver_alone_follows_its_name`
 
+### APPEAR-10 · A set of speakers is a multi-channel player with the layout of its speakers
+
+The Cast provider finds the Living stereo pair. Clients see one player, Living, of the type
+multi-channel with the layout stereo; the Den speaker next to it has no layout. A layout the
+provider reports later, such as 5.1, shows right away. A provider that still reports a stereo
+pair gives a multi-channel player as well.
+
+- End-to-end: **possible with** a Cast stereo pair, or a virtual device that reports one.
+- Proven by: `test_lifecycle.py::test_a_multi_channel_player_shows_the_layout_of_its_speakers`
+
 ## A device goes away and comes back
 
 A device can go away: switched off, off the network, or its provider reloads. It can also stay
 known but not be reachable. Its player stays all the same, with its id, its settings and its
 queue. These scenarios say what a client sees meanwhile and which commands the player takes. A
-player that is switched off at its power control stays available: a play, a power on or an
-announcement switches it on.
+player on a power control that cuts its power, such as a smart plug, is told so in its settings.
+It then stays available while that control is off: a play, a power on or an announcement
+switches it on and waits for the start-up time of the player.
 
 ### AWAY-1 · A player whose device goes away stays listed
 
@@ -200,13 +211,14 @@ accepted without an error.
   - `test_availability.py::test_command_to_an_unavailable_player_raises`
   - `test_availability.py::test_power_on_of_an_unavailable_player_is_accepted`
 
-### AWAY-4 · A player on a power control is switched on through it
+### AWAY-4 · A player on a power control that cuts its power is switched on through it
 
-The user has the Bathroom player on a smart plug and switches the plug off, after which the
-device drops off the network. The player shows as available and powered off. Power on switches
-the plug on and returns once the device is back; the player is then powered on and plays. Play
-media on the switched-off player does the same: it switches the plug on, waits for the device
-and plays, instead of failing as unavailable.
+The user has the Bathroom player on a smart plug that is set to cut its power, and switches the
+plug off, after which the device drops off the network. The player shows as available and
+powered off. Power on switches the plug on and returns once the start-up time of the player (30 s)
+is over; the player is then powered on and plays. Play media on the switched-off player does the
+same: it switches the plug on, waits for the start-up time and plays, instead of failing as
+unavailable.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
@@ -214,15 +226,23 @@ and plays, instead of failing as unavailable.
   - `test_availability.py::test_offline_device_is_powered_on_through_its_power_control`
   - `test_availability.py::test_play_on_a_switched_off_player_powers_it_on`
 
-### AWAY-5 · A stop calls off a power on that waits for the device
+### AWAY-5 · A stop or a power off calls off a power on that waits for the start-up
 
-As in AWAY-4, the user powers on the Bathroom player. While the power on waits for the device,
-the player shows as available and powered on. The user stops the player: the waiting power on
-fails as unavailable, and since the device never came, the player shows as unavailable.
+As in AWAY-4, the user powers on the Bathroom player. While the power on waits for the start-up
+time, the player shows as available and powered on. The user stops the player: the waiting power
+on fails as switched off, the plug stays on and the player keeps starting up, idle. When its
+start-up time is over it is on and idle if its device is back, and unavailable if the device
+never came. A power off of the Den speaker while a play waits for its start-up fails that play,
+switches its plug off again and leaves nothing of the start-up: a play seconds later switches the
+plug on again and waits a whole start-up time. So does a plug that someone switches off, and on
+again, in Home Assistant while the speaker starts up.
 
 - End-to-end: **possible with** a power control the lab can switch and a container that stays
   stopped.
-- Proven by: `test_player_memory.py::test_a_stop_calls_off_a_power_on_that_waits_for_the_device`
+- Proven by:
+  - `test_player_memory.py::test_a_stop_calls_off_a_power_on_that_waits_for_the_startup`
+  - `test_power_control.py::test_a_power_off_during_the_startup_switches_the_plug_off_again`
+  - `test_power_control.py::test_a_plug_switched_off_during_the_startup_ends_the_play_that_waits`
 
 ### AWAY-6 · A device that comes back finds its queue where it was
 
@@ -280,9 +300,9 @@ shown, exposed and not private, while attached, while away and after a restart.
 
 As in AWAY-4, the Bathroom player is on a smart plug that is switched off. A user speaks a live
 announcement to it from the app. The player is accepted, and once the clip is spoken it is
-announced on the player, which switches the plug on and waits for the device. The app is told
-that the clip played. When the device does not come back, the app is told why, never that the
-clip played.
+announced on the player, which switches the plug on and waits for the start-up time. The app is
+told that the clip played. When the player can not be reached after its start-up time, the app is
+told why, never that the clip played.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player, and a client that speaks a live announcement.
@@ -290,70 +310,164 @@ clip played.
   - `tests/controllers/streams/test_live_announcements.py::test_a_player_switched_off_at_its_power_control_is_accepted`
   - `tests/controllers/streams/test_live_announcements.py::test_a_power_on_that_fails_is_reported_and_not_as_finished`
 
-### AWAY-12 · A stop of the queue of a player that waits for its device goes to no device
+### AWAY-12 · A stop of the queue of a player that starts up goes to no device
 
 As in AWAY-4, the user plays music on the Bathroom player, which switches its plug on and waits
-for the device. The user stops the queue of the player: the play fails as switched off, and
+for the start-up time. The user stops the queue of the player: the play fails as switched off, and
 nothing is sent to the player, whose device is not there to take a stop.
 
 - End-to-end: **possible with** a power control the lab can switch and a container that stays
   stopped.
 - Proven by: `test_availability.py::test_a_stop_of_a_queue_whose_player_waits_for_its_device_goes_to_no_device`
 
-### AWAY-13 · A speaker on a power control is off, and back, when its own protocol says so
+### AWAY-19 · A speaker that kept its power while its plug reads off plays once the plug reads on
 
-The Den speaker has its Sonos protocol and an AirPlay receiver, and is on a smart plug that is
-cut. Its Sonos protocol no longer reaches it, while its AirPlay receiver still reads available:
-it has not noticed the cut, or it is back before the Sonos protocol is. The player shows as
-available and powered off. Play switches the plug on and waits, nothing is sent to the device,
-and Den plays through its Sonos protocol once that reaches it again.
+Den's plug only feeds an amplifier, so it is not set to cut the power of the speaker. The plug
+reads off while the device is still there. Play switches the plug on, once, and starts as soon as
+the plug reports on: there is no start-up time.
 
-- End-to-end: **possible with** a power control the lab can switch and a speaker behind it with
-  two protocols, one of which reads available for a while after the power is cut.
-- Proven by: `test_power_control.py::test_a_speaker_is_off_and_back_when_its_own_protocol_says_so`
+- End-to-end: **possible with** a power control the lab can switch that does not cut the power of
+  the speaker behind it.
+- Proven by: `test_power_control.py::test_a_speaker_that_kept_its_power_plays_once_its_plug_reads_on`
 
-### AWAY-14 · Until its own protocol notices a power cut, a speaker reads as on
+### AWAY-20 · A plug that is switched on again right away lets no start-up time run
 
-As in AWAY-13, but none of Den's protocols has noticed the cut yet. The player shows as available
-and powered off, and nothing tells that its device is gone: play switches the plug on and starts
-at once, on a device that still boots. That window closes when the Sonos protocol notices.
+Den's plug, which cuts its power, reads off and on again within seconds, as Home Assistant
+reports a plug while it reloads. Den shows as powered off for that moment. Back on, it does not
+start up: play starts at once and does not switch the plug, and its protocols are told nothing.
 
-- End-to-end: **possible with** a power control the lab can switch and a play right after the
-  power is cut.
-- Proven by: `test_power_control.py::test_a_play_before_the_own_protocol_noticed_the_cut_starts_at_once`
+- End-to-end: **possible with** a power control the lab can switch.
+- Proven by: `test_power_control.py::test_a_plug_switched_on_again_right_away_lets_no_startup_time_run`
 
-### AWAY-15 · A stop calls off the power on of a speaker whose receiver reads available
+### AWAY-24 · A speaker whose plug cuts its power is off while the plug is off
 
-As in AWAY-13, the user plays music on Den, which switches its plug on and waits. The user stops
-Den: the play fails as switched off, and nothing is sent to the device, also not once its Sonos
-protocol reaches it again.
+The Den speaker has its Sonos protocol and an AirPlay receiver, and is on a smart plug that is set
+to cut its power. The plug is switched off. At once Den shows as available, powered off and idle,
+whatever its protocols read: both may have noticed the cut, only its Sonos protocol, or neither. A
+volume command is ignored, a seek is refused, and nothing is sent to the device.
 
 - End-to-end: **possible with** a power control the lab can switch and a speaker behind it with
   two protocols, one of which reads available for a while after the power is cut.
-- Proven by: `test_power_control.py::test_a_stop_calls_off_the_power_on_of_a_speaker_whose_receiver_reads_available`
+- Proven by: `test_power_control.py::test_a_speaker_whose_plug_cuts_its_power_is_off_while_the_plug_is_off`
 
-### AWAY-16 · For a speaker of receivers alone, its most preferred receiver tells whether it is there
+### AWAY-25 · A play switches the plug on and waits for the start-up time
 
-The Den speaker is an AirPlay and a Cast receiver, on a smart plug that is cut. When its AirPlay
-receiver no longer reaches it, the player is switched off, whatever its Cast receiver reads: play
-switches the plug on, waits, and plays once the AirPlay receiver is back. When only its Cast
-receiver noticed the cut, nothing waits and play starts at once, as in AWAY-14.
+Den's plug, which cuts its power, is off. Play switches the plug on, and Den shows as available,
+powered on and idle. Its device is back on the network within seconds, but nothing is sent to it
+until the start-up time of the player is over, counted from the moment the plug was switched on:
+30 s, or the time the user set. Then Den plays, once, through its Sonos protocol.
 
-- End-to-end: **possible with** a power control the lab can switch and a device behind it that
-  is an AirPlay and a Cast receiver.
-- Proven by: `test_power_control.py::test_the_most_preferred_receiver_tells_for_a_speaker_without_a_protocol_of_its_own`
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_power_control.py::test_a_play_switches_the_plug_on_and_waits_for_the_startup_time`
 
-### AWAY-17 · A speaker whose own protocol only controls is there while its renderer is too
+### AWAY-34 · The play button shows the play while the speaker starts up
 
-The Den speaker has a LinkPlay protocol that controls it and a DLNA renderer that plays, and is on
-a smart plug that is cut. Whichever of the two no longer reaches it, the player shows as available
-and powered off. Play switches the plug on and waits, and the player shows as available and
-powered on until both reach the device again, also when the LinkPlay protocol is back first. Then
-Den plays through its renderer.
+Den's plug, which cuts its power, is off, and Den holds the track it played before. The play
+button is pressed: for the whole start-up time Den's queue shows that a play is in progress, so
+the button spins in the app. Once Den plays, it shows that no more.
 
-- End-to-end: **possible with** a power control the lab can switch and a LinkPlay speaker behind
-  it.
-- Proven by: `test_power_control.py::test_a_speaker_whose_own_protocol_only_controls_is_there_while_its_renderer_is_too`
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_power_control.py::test_the_play_button_shows_the_play_while_the_speaker_starts_up`
+
+### AWAY-26 · A plug that is switched on elsewhere lets the start-up time run as well
+
+Den's plug, which cuts its power, is off, and someone switches it on in Home Assistant. From that
+moment Den starts up: it shows as available, powered on and idle, and a volume command is
+ignored. A second report of the plug does not start the time over. A play meanwhile waits for what
+is left of the start-up time and does not switch the plug, and then Den plays.
+
+- End-to-end: **possible with** a power control the lab can switch outside of Music Assistant.
+- Proven by: `test_power_control.py::test_a_plug_switched_on_elsewhere_lets_the_startup_time_run`
+
+### AWAY-27 · A plug that reads off for a moment does not stop the music
+
+Den plays its queue when its plug, which cuts its power, reads off for some seconds, as Home
+Assistant reports a plug while it reloads. For that moment Den shows as powered off and idle. Back
+on within 15 s, Den shows as playing again: its queue was not stopped, the device got no command,
+its protocols are told nothing and no start-up time runs.
+
+- End-to-end: **possible with** a power control whose Home Assistant integration the lab can
+  reload while the speaker plays.
+- Proven by: `test_power_control.py::test_a_plug_that_reads_off_for_a_moment_does_not_stop_the_music`
+
+### AWAY-28 · The protocols of a speaker are told of a power cut and of the power being back
+
+Den's plug, which cuts its power, is switched off in Home Assistant. Once it has stayed off for
+15 s, Den's Sonos protocol and its AirPlay receiver are told that the power was cut; after a power
+off through Music Assistant they are told at once. A play switches the plug on, and when the
+start-up time is over both are told that the power is back, before anything is played. Den's Sonos
+protocol, which only reaches the device again once it is told, plays the music.
+
+- End-to-end: **possible with** a power control the lab can switch and a speaker behind it whose
+  provider reconnects when it is told that the power is back.
+- Proven by: `test_power_control.py::test_the_protocols_are_told_of_a_power_cut_and_of_the_power_being_back`
+
+### AWAY-29 · A speaker that is not back after its start-up time fails the play with a hint
+
+Den's plug, which cuts its power, is off, and both its protocols noticed. Play switches the plug
+on and waits for the start-up time. When neither protocol reaches Den by then, the play fails and
+tells the user to raise the start-up time, and Den shows as powered on and unavailable. When its
+AirPlay receiver is back and its Sonos protocol is not, Den plays through the receiver.
+
+- End-to-end: **possible with** a power control the lab can switch and a container that stays
+  stopped.
+- Proven by: `test_power_control.py::test_a_speaker_that_is_not_back_after_its_startup_time_fails_the_play_with_a_hint`
+
+### AWAY-30 · A plug that is not set to cut the power is a plain switch
+
+Den is on a smart plug, and its settings offer to say that the plug cuts its power, which is off,
+with a start-up time of 30 s. The plug is switched off while the device keeps its power: Den shows
+as available and powered off, and a volume command reaches it. Once its protocols no longer reach
+the device, Den is unavailable and a play is refused: the plug is not switched on for it, and its
+protocols are never told that its power was cut.
+
+- End-to-end: **possible with** a power control the lab can switch and a speaker behind it.
+- Proven by: `test_power_control.py::test_a_plug_that_does_not_cut_the_power_is_a_plain_switch`
+
+### AWAY-31 · After a server start a plug that is off counts as a power cut
+
+Den's plug cuts its power. The server starts while the plug is on: Den is on at once, and play
+starts right away. The server starts while the plug is off: Den shows as available and powered
+off, and when the plug is switched on in Home Assistant, Den starts up for its start-up time
+before a play starts.
+
+- End-to-end: **possible with** a power control the lab can switch while the server is down.
+- Proven by: `test_power_control.py::test_a_server_start_takes_a_plug_that_is_off_as_a_power_cut`
+
+### AWAY-32 · A change of the power setting ends what was kept about the power of the speaker
+
+Den's plug, which cuts its power, is switched off. Five seconds later, before its power counts as
+cut, the user switches the setting off, sets Den's power control to none or picks another plug
+that is on, or the plug goes with its provider: Den's protocols are not told that its power was
+cut, and a cut at the other plug counts from the moment that plug goes off. The same change while
+Den starts up for a play ends that play as switched off and leaves nothing of the start-up: with
+the setting off a new play starts at once, and with another plug, which is off, a new play
+switches that plug on and waits for a whole start-up time.
+
+- End-to-end: **possible with** two power controls the lab can switch and a change of the player
+  settings within the first seconds after the power is cut.
+- Proven by:
+  - `test_power_control.py::test_a_plug_that_no_longer_cuts_the_power_of_a_speaker_confirms_no_power_cut`
+  - `test_power_control.py::test_a_change_of_the_power_setting_during_the_startup_ends_the_play_that_waits`
+
+### AWAY-33 · Protocols told of a power cut are told that it is back once nothing follows it
+
+Den's plug, which cuts its power, is off, and Den's protocols were told that its power was cut.
+The user switches the setting off, sets Den's power control to none or picks another plug, or the
+plug goes with its provider. Nothing tells the protocols any more when the power is back, so they
+are told at once and reach Den by themselves again. The same when the setting is switched off
+while Den starts up for a play, which fails as switched off, and after a power on of Den that
+failed because the plug did not answer: the power is still cut, and the protocols still told so,
+also when they were told while that power on was under way.
+
+- End-to-end: **possible with** a power control the lab can switch, a speaker behind it whose
+  provider lets go of it when its power is cut, and a change of the player settings while it is off.
+- Proven by:
+  - `test_power_control.py::test_protocols_told_of_a_power_cut_are_told_it_is_back_once_nothing_follows_it`
+  - `test_power_control.py::test_a_switch_on_that_fails_leaves_the_power_cut_as_it_was`
+  - `test_power_control.py::test_a_switch_on_that_fails_keeps_a_power_cut_that_was_told_meanwhile`
 
 ## Several devices on one host
 
@@ -876,6 +990,14 @@ the provider is removed again, Patio says again that its provider is not install
 - End-to-end: **no**: nothing installs a provider into a running server yet.
 - Proven by: `test_lifecycle.py::test_a_stored_player_follows_a_provider_installed_or_removed_while_the_server_runs`
 
+### RESTART-9 · A player stored as a stereo pair is a multi-channel player
+
+An older version stored the Living pair with the type stereo pair. After the start Living is a
+multi-channel player, also while its device is away, and it is stored as one.
+
+- End-to-end: **no**: the lab has no settings of an older version.
+- Proven by: `test_lifecycle.py::test_a_player_stored_as_a_stereo_pair_is_a_multi_channel_player`
+
 ## Removing and disabling
 
 What goes when the user removes a provider, removes a player or disables one. Clients are told
@@ -1186,9 +1308,10 @@ of its play.
 
 ### BUSY-7 · A queue moved to a switched-off player holds neither player while it comes on
 
-The Bathroom player is on a smart plug that is switched off. The queue of Den, moved to Bathroom
-while Den plays, switches the plug on and waits for the device. A seek on Den meanwhile runs at
-once. Once the device is back, Bathroom plays Den's queue, and Den is stopped.
+The Bathroom player is on a smart plug that cuts its power and is switched off. The queue of Den,
+moved to Bathroom while Den plays, switches the plug on and waits for the start-up time of
+Bathroom. A seek on Den meanwhile runs at once. Once Bathroom has started up, it plays Den's
+queue, and Den is stopped.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
@@ -1266,11 +1389,11 @@ played on until the stop, and neither queue shows an action in progress.
 ### BUSY-14 · A group that waits for a member holds no player meanwhile
 
 Downstairs, a sync group or a universal group of Kitchen, Office and Den, is played while Den's
-plug is switched off: the plug is switched on and the play waits for Den's device. A volume
+plug is switched off: the plug is switched on and the play waits for Den to start up. A volume
 command, a pause or a stop of Downstairs and a play on Kitchen meanwhile run at once and wait
-for no lock. A second play of Downstairs waits for the same device, not for a lock. A next on
+for no lock. A second play of Downstairs waits for the same start-up, not for a lock. A next on
 Downstairs, which was paused, returns at once as well and waits for no lock: its queue moves on
-to the next track, which starts on all three once Den's device is back (GROUP-40).
+to the next track, which starts on all three once Den has started up (GROUP-40).
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player, and a third player of one kind.
@@ -1317,9 +1440,10 @@ Players are grouped through the protocol that can carry the group: their own pro
 are of one make, else an audio protocol they share, such as AirPlay. A sync group is a player of
 its own whose members are grouped on one of them, its leader, while it plays. Most examples use
 speakers of one make that can all group with each other (Kitchen, Office, Den), and speakers of
-two makes that share an AirPlay receiver (Lounge, Study). A speaker that is switched off at its
-power control is switched on first: the group that is started, or the leader or group it is
-added to, waits until its device is back (GROUP-22 and on).
+two makes that share an AirPlay receiver (Lounge, Study). A speaker that is switched off at a
+power control that cuts its power is switched on first: the group that is started, or the leader
+or group it is added to, waits until it has started up (GROUP-22 and on). In those examples
+Den's plug is set to cut its power.
 
 ### GROUP-1 · Speakers of one make group through their own protocol
 
@@ -1517,10 +1641,10 @@ members and its power.
 ### GROUP-22 · A group waits for the members it switches on and starts once
 
 Downstairs is a sync group, with a fixed member list or not, or a universal group of Kitchen,
-Office and Den. One of them, or all three, are on a smart plug that is switched off, so their
-devices are off the network. The user plays Downstairs: the plugs are switched on and the play
-waits. No speaker gets a command until the last device is back. Then Downstairs starts once, on
-all three.
+Office and Den. One of them, or all three, are on a smart plug that cuts their power and is
+switched off. The user plays Downstairs: the plugs are switched on and the play waits. No speaker
+gets a command while they start up, also not one whose device is back on the network already.
+When their start-up time is over, Downstairs starts once, on all three.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player, and a third player of one kind.
@@ -1530,8 +1654,8 @@ all three.
 
 Downstairs, a sync group with a fixed member list or a universal group, holds music in its queue
 and Den's plug is switched off. A play, a resume or a play of an item of its queue, sent to the
-queue or to the player, switches the plug on and starts Downstairs on all members once Den's
-device is back. So does a power on of Downstairs when it has a power control of its own, and a
+queue or to the player, switches the plug on and starts Downstairs on all members once Den has
+started up. So does a power on of Downstairs when it has a power control of its own, and a
 queue that is transferred to it from Bedroom, which plays on until then.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
@@ -1541,12 +1665,13 @@ queue that is transferred to it from Bedroom, which plays on until then.
   - `test_group_power_on.py::test_a_group_that_is_powered_on_waits_for_its_members`
   - `test_group_power_on.py::test_a_queue_that_is_transferred_to_a_group_waits_for_its_members`
 
-### GROUP-24 · A member that does not come online is left out
+### GROUP-24 · A member that is not back after its start-up time is left out
 
 The user plays Downstairs, which switches Den's plug on, but Den's device does not come back.
-Nothing plays for 90 s. Then that is logged once, with Den and Downstairs, and Downstairs starts
-on Kitchen and Office. Den, whose plug is on by then, shows as unavailable. With the plug
-switched off again, a later play of Downstairs switches it on and waits once more.
+Nothing plays while Den's start-up time runs. Then it is logged once that Den is left out of
+Downstairs, and Downstairs starts on Kitchen and Office. Den, whose plug is on by then, shows as
+unavailable. With the plug switched off again, a later play of Downstairs switches it on and waits
+once more.
 
 - End-to-end: **possible with** a power control the lab can switch and a container that stays
   stopped.
@@ -1557,7 +1682,7 @@ switched off again, a later play of Downstairs switches it on and waits once mor
 Den's plug is switched off and does not answer. The user plays Downstairs: it starts on Kitchen
 and Office at once, and it is logged once that Den is left out of Downstairs. The plug works
 again and the user plays Downstairs once more: the plug is switched on, and Downstairs starts on
-all three once Den's device is back.
+all three once Den has started up.
 
 - End-to-end: **possible with** a power control that refuses a command.
 - Proven by: `test_group_power_on.py::test_a_power_control_that_refuses_leaves_the_member_out`
@@ -1566,8 +1691,8 @@ all three once Den's device is back.
 
 The user plays Downstairs, which switches Den's plug on and waits. The user stops Downstairs,
 pauses it or powers it off, through the player or its queue; Downstairs itself still reads as
-off. The play fails as unavailable and nothing starts, also not on Kitchen and Office. Den shows
-as unavailable until its device is back, then it is idle and in no group. Its plug stays on.
+off. The play fails as unavailable and nothing starts, also not on Kitchen and Office. Den's plug
+stays on and Den keeps starting up: once it has started up, Den is idle and in no group.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
@@ -1578,8 +1703,8 @@ as unavailable until its device is back, then it is idle and in no group. Its pl
 Downstairs, a sync group with a fixed member list, plays on Kitchen and Office: the plug of Den
 did not answer when it started. Downstairs is paused, and the plug works again. The user presses
 play on Office, which goes to Downstairs: Den's plug is switched on and the play waits. The user
-presses stop on Office: the play fails, Downstairs is stopped, and Den stays idle when its device
-is back.
+presses stop on Office: the play fails, Downstairs is stopped, and Den stays idle when it has
+started up.
 
 - End-to-end: **possible with** a power control that refuses a command.
 - Proven by: `test_group_power_on.py::test_a_command_on_a_member_reaches_the_start_of_the_group_that_owns_its_playback`
@@ -1589,16 +1714,16 @@ is back.
 Kitchen leads Office, or the sync group or universal group Downstairs of the two plays. Den's
 plug is switched off. The user adds Den, with either command that groups players: the plug is
 switched on and the command waits, while Kitchen and Office play on and get no command for Den.
-Once Den's device is back, Den is added once and plays along.
+Once Den has started up, Den is added once and plays along.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player, and a third player of one kind.
 - Proven by: `test_group_power_on.py::test_a_switched_off_speaker_that_is_added_is_waited_for_and_added_once`
 
-### GROUP-29 · A speaker that is added and does not come online is left out
+### GROUP-29 · A speaker that is added and is not back after its start-up time is left out
 
-As in GROUP-28, but Den's device does not come back. After 90 s it is logged once that Den is
-left out of Kitchen or Downstairs, which plays on. Den is not added.
+As in GROUP-28, but Den's device does not come back. When Den's start-up time is over it is
+logged once that Den is left out of Kitchen or Downstairs, which plays on. Den is not added.
 
 - End-to-end: **possible with** a power control the lab can switch and a container that stays
   stopped.
@@ -1607,7 +1732,7 @@ left out of Kitchen or Downstairs, which plays on. Den is not added.
 ### GROUP-30 · An addition that waits for a speaker can be ended
 
 As in GROUP-28, while the command waits for Den. The user removes Den again, or stops Kitchen or
-Downstairs: the addition ends at once and adds nothing. When Den's device is back, Den gets no
+Downstairs: the addition ends at once and adds nothing. When Den has started up, it gets no
 command and is in no group. Its plug stays on.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
@@ -1629,10 +1754,10 @@ stays off.
 ### GROUP-32 · The idle power off of a member follows what its group did with it
 
 Den has an idle power off of one minute and its plug is switched off. The user plays Downstairs:
-it starts as soon as Den's device is back, so Den plays and is not powered off. Neither is a
-member that is back within seconds while the play waits more than a minute for another one. When
-the user stops Downstairs while it still waits for Den, Den's plug stays on and its device comes
-back idle: a minute later Den is powered off, as any idle player is.
+it starts as soon as Den has started up, so Den plays and is not powered off. Neither is a
+member that has started up while the play waits more than a minute for another one, which needs
+two minutes. When the user stops Downstairs while it still waits for Den, Den's plug stays on
+and Den starts up idle: a minute later Den is powered off, as any idle player is.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
@@ -1641,17 +1766,17 @@ back idle: a minute later Den is powered off, as any idle player is.
   - `test_group_power_on.py::test_a_member_that_is_back_early_is_not_powered_off_while_its_group_waits`
   - `test_group_power_on.py::test_a_member_its_group_never_started_is_powered_off_as_idle`
 
-### GROUP-33 · A group that is played again waits again for a member that still boots
+### GROUP-33 · A group that is played again waits for what is left of a start-up
 
-The user plays Downstairs, which switches Den's plug on and waits, and stops it. The plug stays
-on, so Den's device still boots, and Den shows as unavailable. The user plays Downstairs again
-before the device is back: nothing starts yet, Den shows as available and powered on again, and
-Downstairs starts on all three once Den's device is back. The plug is not switched a second
-time.
+Den needs a minute to start up. The user plays Downstairs, which switches Den's plug on and
+waits, and stops it. The plug stays on and Den keeps starting up: it shows as available and
+powered on. The user plays Downstairs again before Den has started up: nothing starts yet, and
+Downstairs starts on all three when Den's start-up time, counted from the moment its plug was
+switched on, is over. The plug is not switched a second time.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
-- Proven by: `test_group_power_on.py::test_a_new_start_after_a_stop_waits_again_for_a_member_that_still_boots`
+- Proven by: `test_group_power_on.py::test_a_new_start_after_a_stop_waits_for_what_is_left_of_the_startup`
 
 ### GROUP-34 · An announcement to a group switches no member on
 
@@ -1702,7 +1827,7 @@ Downstairs, a sync group with a fixed member list or a universal group, plays on
 Office: Den's plug refused to switch on when it started, and works again by now. The user plays
 other music on Downstairs, plays or resumes its queue or plays another item of it, or transfers
 the queue of Bedroom to it: Den's plug is switched on and the command waits, while Kitchen and
-Office play on. Once Den's device is back, Downstairs starts again, on all three. A sync group
+Office play on. Once Den has started up, Downstairs starts again, on all three. A sync group
 whose members can change let Den go when it started without it: while it plays it has no member
 to switch on, and Den is a member again once it has stopped (GROUP-25).
 
@@ -1716,7 +1841,7 @@ to switch on, and Den is a member again once it has stopped (GROUP-25).
 Downstairs plays on Kitchen and Office, without Den, whose plug works again. Kitchen and Office
 play the track out, or Kitchen plays something of its own instead: Downstairs still reads as
 playing while its queue does not play. A resume of its queue switches Den's plug on, and
-Downstairs plays on all three once Den's device is back. The same holds for a universal group
+Downstairs plays on all three once Den has started up. The same holds for a universal group
 that was played while none of its plugs answered: it started on no speaker and reads as playing,
 and the next play switches all three plugs on and waits for them.
 
@@ -1730,7 +1855,7 @@ and the next play switches all three plugs on and waits for them.
 Downstairs plays on Kitchen and Office, without Den, whose plug works again. Office is set to
 send what is played on it to its group. The user resumes the queue of Office, plays an item of
 it, or media is played on Office: that starts Downstairs, so Den's plug is switched on, the
-command waits, and Downstairs plays on all three once Den's device is back. Without that
+command waits, and Downstairs plays on all three once Den has started up. Without that
 setting, as a player is by default, Office is taken out of Downstairs and plays alone: Den's
 plug stays off and nothing waits.
 
@@ -1745,7 +1870,7 @@ Downstairs played on Kitchen and Office: Den's plug refused to switch on when it
 works again by now. Downstairs is paused or stopped. The user presses next or previous, or seeks
 or skips within the track: that makes Downstairs play, so Den's plug is switched on and nothing
 plays yet. A next and a previous return at once and show the other track, a seek waits, and none
-of them holds a player meanwhile. Once Den's device is back, Downstairs plays that track, or from
+of them holds a player meanwhile. Once Den has started up, Downstairs plays that track, or from
 that position, on all three. A second next while the first one waits moves the queue on once
 more: the plug is switched once and Downstairs starts once, with the last track. A sync group
 whose members can change has no member to switch on while it is paused (GROUP-37). Den, when it
@@ -1761,8 +1886,8 @@ is in no group and switched off, refuses a next, a previous and a seek.
 ### GROUP-41 · A next or a seek that waits for a member can be called off
 
 As in GROUP-40: Downstairs does not play, and a next has switched Den's plug on and waits. The
-user stops Downstairs, pauses it or powers it off: nothing starts, also not when Den's device is
-back. Den's plug stays on, and the server logs nothing above the debug level for it. A seek or a
+user stops Downstairs, pauses it or powers it off: nothing starts, also not when Den has started
+up. Den's plug stays on, and the server logs nothing above the debug level for it. A seek or a
 skip that waits is ended by a stop the same way and fails as called off; a skip that was called
 off does not add to a later one.
 
@@ -1777,7 +1902,7 @@ Den's plug is switched off, and Downstairs plays on Kitchen and Office or is idl
 selects the queue of Downstairs, or the queue of Bedroom, as its source: that starts nothing, so
 Den's plug stays off and nothing waits. The user selects a live source of a plugin on Downstairs,
 or plays it on the queue of Downstairs: that starts Downstairs, so Den's plug is switched on, the
-command waits, and the source plays on all three once Den's device is back.
+command waits, and the source plays on all three once Den has started up.
 
 - End-to-end: **possible with** a power control the lab can switch and can make refuse, and a
   plugin with a live source.
@@ -1789,16 +1914,16 @@ command waits, and the source plays on all three once Den's device is back.
 
 Downstairs holds three tracks, played the first on Kitchen and Office, without Den, and is paused
 or stopped. The user presses next: the queue moves to the second track, Den's plug is switched on
-and nothing plays yet. Before Den's device is back, the user resumes or plays Downstairs, plays
+and nothing plays yet. Before Den has started up, the user resumes or plays Downstairs, plays
 other media or the third track on it, seeks, or transfers the queue of Bedroom to it. That start
-waits for Den as well, and the next is gone. Once Den's device is back every speaker gets one
+waits for Den as well, and the next is gone. Once Den has started up every speaker gets one
 stream: of the second track for a resume and a play, from its beginning, and for a seek, from the
 position asked for; of the media, the third track or the queue of Bedroom otherwise. Nothing is
 played on top of it afterwards, and Den's plug is switched once. The same holds for a live source
 that is played on the queue of Downstairs or selected on Downstairs, and for media that is played
 on Downstairs itself. A
 user who may not use Downstairs is refused and leaves the next in place: it plays the second
-track once Den's device is back.
+track once Den has started up.
 
 A speaker that is in no group waits for nobody, but a next still holds its track back for a
 second. Bedroom is paused on the first of two tracks and the user presses next and, within that
@@ -1818,12 +1943,11 @@ the first.
 
 Downstairs holds three tracks and is stopped, and Den's plug is switched off. The user plays the
 third track or seeks, which switches the plug on and waits, and presses next meanwhile, which
-waits as well. The play or the seek is the first to see that Den's device is back: the third
-track plays, or the second one from the position of the seek, with one stream for every speaker,
-and the next, which still waits at that moment, plays nothing on top of it. Or the user presses
-next, which waits for Den, and presses next once more in the last moment before the server sees
-that Den's device is back: Downstairs starts once, with the third track, and not with the second
-one first.
+waits as well. When Den has started up the play or the seek goes first: the third track plays, or
+the second one from the position of the seek, with one stream for every speaker, and the next,
+which still waits at that moment, plays nothing on top of it. Or the user presses next, which
+waits for Den, and presses next once more in the last moment before Den's start-up time is over:
+Downstairs starts once, with the third track, and not with the second one first.
 
 - End-to-end: **possible with** a power control the lab can switch and can make refuse.
 - Proven by:
@@ -1841,32 +1965,6 @@ busy error at once: Den's plug stays off, and Office is added to Downstairs and 
 - End-to-end: **no**: it needs a group that takes a player within the moment in which that
   player loads its music.
 - Proven by: `test_group_power_on.py::test_a_play_on_a_speaker_that_a_group_took_meanwhile_switches_no_member_on`
-
-### GROUP-46 · A group waits for the own protocol of a switched-off member
-
-Den, a member of Downstairs, has an AirPlay receiver next to its Sonos protocol, and its plug is
-cut. Its Sonos protocol no longer reaches it, its AirPlay receiver has not noticed. The user plays
-Downstairs: the plug is switched on and the play waits, and no speaker gets a command. Once Den's
-Sonos protocol reaches it again, Downstairs starts once, on all three. So does the sync group of
-Lounge and Study, speakers of two makes that play together over their AirPlay receivers: with
-Lounge switched off, nothing starts through its AirPlay receiver until its Sonos protocol is back.
-
-- End-to-end: **possible with** a power control the lab can switch and a speaker behind it with
-  two protocols, one of which reads available for a while after the power is cut.
-- Proven by:
-  - `test_power_control.py::test_a_group_waits_for_the_own_protocol_of_a_switched_off_member`
-  - `test_power_control.py::test_a_group_over_airplay_waits_for_a_speaker_whose_receiver_reads_available`
-
-### GROUP-47 · A group that is played again waits for the own protocol of a member that still boots
-
-As in GROUP-33, the user plays Downstairs, which switches Den's plug on and waits, and stops it.
-Den has an AirPlay receiver that has not noticed the cut, so Den shows as available and powered
-on while its device still boots. The user plays Downstairs again: nothing starts until Den's Sonos
-protocol reaches it again, and the plug is not switched a second time.
-
-- End-to-end: **possible with** a power control the lab can switch and a speaker behind it with
-  two protocols, one of which reads available for a while after the power is cut.
-- Proven by: `test_power_control.py::test_a_new_start_waits_again_for_a_member_whose_own_protocol_is_not_back`
 
 ### GROUP-48 · A sync group is not led by a member that can group with none of the others
 
@@ -1913,6 +2011,124 @@ it can group with for as long as that plays, keeps leading as well.
   - `test_grouping.py::test_a_member_that_leads_another_playing_group_does_not_take_a_sync_group`
   - `test_grouping.py::test_a_member_that_leads_players_of_its_own_does_not_replace_the_first_member`
   - `test_grouping.py::test_a_first_member_that_plays_an_input_of_its_own_keeps_leading_the_sync_group`
+### GROUP-53 · Adding to the queue of a switched-off speaker does not switch it on
+
+The user's default for tracks is to add them, or to play them next. A client plays a track
+without naming an option, on Den, a speaker switched off at its plug, or on Downstairs, a group
+with Den as a member. The track is only added: Den's plug stays off, the request does not wait,
+and nothing plays. With the default to play, the same request switches Den's plug on and waits
+for the device, as any start does.
+
+- End-to-end: **possible with** a power control the lab can switch, and a core setting for the
+  default enqueue option of tracks.
+- Proven by:
+  - `test_group_power_on.py::test_media_that_is_only_added_by_default_switches_nothing_on`
+  - `test_group_power_on.py::test_media_that_plays_by_default_switches_its_power_control_on`
+
+### GROUP-54 · BBC Sounds' seek back to the live edge switches no member on
+
+The user starts a BBC Sounds programme that is on air at a point past the live edge, on
+Downstairs, a group with Den, a speaker switched off at its plug, as a member. BBC Sounds seeks
+the queue back to where the stream really starts. That seek is no start of the group: Den's plug
+is not switched on, and nothing waits for Den.
+
+- End-to-end: **no**: it needs BBC Sounds' own stream of a live programme, which the lab does not
+  serve.
+- Proven by: `tests/providers/bbc_sounds/test_live_rewind.py::test_the_seek_back_to_the_live_edge_switches_no_member_of_a_group_on`
+
+### GROUP-55 · MusicCast's own step to the next item switches no member on
+
+Downstairs, a group with Den, a speaker switched off at its plug, plays the queue of Office, a
+MusicCast speaker. Office reads idle at the end of a track, and MusicCast steps its queue to the
+next item by itself. That step is no start of the group: Den's plug is not switched on, and
+nothing waits for Den.
+
+- End-to-end: **no**: it needs MusicCast's own player, which the lab does not run.
+- Proven by: `tests/providers/musiccast/test_player.py::test_end_of_track_advance_switches_no_member_of_a_group_on`
+
+### GROUP-51 · Members on the leader's own stream follow it onto AirPlay, or leave
+
+Kitchen plays with Office and Den on HEOS, which can not pass AirPlay on to its members. The
+user adds Office again and Patio, which only has AirPlay. Kitchen's playback moves to its AirPlay
+receiver, which takes Patio and Office in one call. Den has no AirPlay receiver: it leaves the
+group, and that is logged as a warning.
+
+- End-to-end: **possible with** two HEOS speakers with AirPlay, a HEOS speaker without it, and an
+  AirPlay receiver.
+- Proven by: `test_grouping.py::test_members_on_the_leaders_own_stream_follow_it_onto_airplay`
+
+### GROUP-57 · A start tells the protocols of a member that its power is back
+
+Den, a member of Downstairs, is on a smart plug that cuts its power, and its Sonos protocol
+noticed the cut. Once Den is up again, the protocol would only reach it on a reconnect minutes
+later. The user plays Downstairs: the plug is switched on, and when Den's start-up time is over
+its Sonos protocol is told that the power is back and reaches the device. Downstairs then starts
+once, on all three.
+
+- End-to-end: **possible with** a power control the lab can switch and a Chromecast behind it,
+  switched off long enough for its reconnect to back off.
+- Proven by: `test_power_control.py::test_a_start_tells_the_protocols_of_a_member_that_its_power_is_back`
+
+### GROUP-58 · A group player on a power control has no start-up time
+
+Downstairs, a sync group or a universal group, is on a smart plug that is switched off. Its
+settings do not offer to say that the plug cuts its power, and such a setting stored for it all
+the same changes nothing: Downstairs is available and powered off, and a power on switches the
+plug on and returns at once.
+
+- End-to-end: **possible with** a power control the lab can switch, selected for a group player.
+- Proven by: `test_power_control.py::test_a_group_player_on_a_power_control_has_no_startup_time`
+
+### GROUP-59 · The pause timeout does not end a paused group whose play waits for a member
+
+Downstairs, a sync group with a fixed member list, is paused on Kitchen and Office: Den's plug
+did not answer when it started, and works again. Ten seconds later the user presses play: Den's
+plug is switched on and the play waits for Den to start up, for longer than what is left of the
+pause timeout. Downstairs is not stopped when that timeout ends: it stays paused, and once Den
+has started up it starts once, on all three. Without a play, Downstairs is stopped when the pause
+timeout ends, and Den's plug stays off. When the user stops Downstairs while the play waits, the
+play fails and Downstairs is stopped; when the user pauses it instead, the play fails, Downstairs
+is still paused, and it is stopped when the pause timeout has passed since that pause.
+
+- End-to-end: **possible with** a power control the lab can switch and can make refuse, and a
+  speaker behind it that needs longer to start up than the pause timeout lasts.
+- Proven by:
+  - `test_group_power_on.py::test_a_play_of_a_paused_group_that_waits_for_a_member_outlasts_the_pause_timeout`
+  - `test_group_power_on.py::test_a_paused_group_that_nobody_plays_is_stopped_at_the_pause_timeout`
+  - `test_group_power_on.py::test_a_play_of_a_paused_group_that_is_called_off_leaves_the_pause_timeout_in_force`
+
+### GROUP-60 · A switch-on that ends badly once the plug switched lets the member start up
+
+Den, a member of Downstairs, is on a smart plug that cuts its power, and its protocol was told
+that the power was cut. A play of Downstairs switches the plug on, and Home Assistant has not
+answered that when the user stops Downstairs: the play is called off. When the plug reported on
+before the stop, the power is on and Den starts up all the same: once its start-up time is over
+its protocol is told that the power is back, and Den is on and available. When the plug reports on
+after the stop, the start-up time runs from then, and when it never does, the power of Den is
+still cut. A power on of Den alone that fails, or is cancelled, once the plug reported on lets the
+start-up time run in the same way.
+
+- End-to-end: **possible with** a power control whose answer the lab can hold back while it
+  switches, and a stop of the group in that moment.
+- Proven by:
+  - `test_power_control.py::test_a_stop_while_the_plug_of_a_member_is_switched_on_loses_no_power_cut`
+  - `test_power_control.py::test_a_switch_on_that_ends_badly_once_the_plug_switched_lets_the_startup_time_run`
+
+### GROUP-61 · A member that is offline can be removed from its group
+
+Office drops off the network while it is a member of a group, and the user takes it out, as the
+group editor does. Office is no longer listed, and nothing is sent to it. When Kitchen leads
+Office and Kitchen's device still lists it, Kitchen's own protocol is asked to let Office go.
+Downstairs, a sync group or a universal group, idle or playing, lists Kitchen and Den from then
+on. When Downstairs has a fixed member list, the removal of Office is refused with the same error
+as that of Den, which is online.
+
+- End-to-end: **yes**. A universal group of two Squeezelite players: stop the container of one,
+  then remove it from the group.
+- Proven by:
+  - `test_grouping.py::test_an_offline_member_its_leader_still_lists_is_removed`
+  - `test_grouping.py::test_an_offline_member_is_removed_from_a_group_player`
+  - `test_grouping.py::test_an_offline_member_of_a_fixed_group_is_refused_as_an_online_one`
 
 ## Where playback goes
 
@@ -2019,6 +2235,16 @@ a volume command reaches it.
 - End-to-end: **possible with** a Sendspin client of the lab that opens a second connection right
   after its first one, checked after a restart of the server.
 - Proven by: `tests/providers/sendspin/test_reported_volume.py::test_a_device_keeps_its_reported_volume_when_a_second_connection_replaces_the_first`
+
+### VOLUME-6 · A speaker or a multi-channel player that leads a group counts its own level
+
+Living, a single speaker or a multi-channel player at level 60, leads a group with Office at level
+30. The group volume is 60, the level of the loudest member with Living included. A step up of
+the group volume turns both up and keeps their balance: Living to 63, Office to 35. A group player
+has no level of its own; only its members count.
+
+- End-to-end: **possible with** two players of one make that group, one of them a set of speakers.
+- Proven by: `test_grouping.py::test_a_leader_counts_its_own_level_in_the_group_volume`
 
 ## A pause, a stop and the end of a queue
 

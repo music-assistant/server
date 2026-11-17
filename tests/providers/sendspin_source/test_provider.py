@@ -123,6 +123,8 @@ async def test_audio_sources_follow_role_activation() -> None:
     assert [s.item_id for s in sources] == ["with-role"]
     assert sources[0].exclusive is True
     assert sources[0].can_initiate is True
+    # a live input the user feeds in, so analysis providers may follow it
+    assert sources[0].allow_audio_analysis is True
 
 
 async def test_source_name_follows_a_player_rename(fake_client: _FakeClient) -> None:

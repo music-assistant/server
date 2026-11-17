@@ -1717,7 +1717,7 @@ class AirPlayStream:
 
         The binary reports the shift cumulative since the last start/resume
         directly, so this SETS the tracked shift, using the sample rate carried
-        on the line when present.
+        on the line when present, and reports it to the stream session.
 
         :param line: The status line, e.g. ``[STATUS] REANCHOR shifted_frames=67870
             total_shifted_frames=135740 sample_rate=44100``.
@@ -1735,6 +1735,8 @@ class AirPlayStream:
             self.player.display_name,
             self.cumulative_shift_seconds,
         )
+        if self.session is not None:
+            self.session.on_member_reanchored()
 
     def _reanchor_sample_rate(self, reported: str | None) -> int:
         """Return the frame->seconds rate, preferring a valid rate reported on the line."""
@@ -2239,7 +2241,8 @@ class AirPlayStream:
         Parse a [STATUS] clock_ready line into the receiver's readiness projection.
 
         A ``stalled`` state means the receiver never answered our clock and will
-        render silence, which is warned about once per stream session.
+        render silence, which is warned about once per stream session. On a late
+        join it also takes the joiner out of its session.
 
         :param line: The status line, e.g. ``[STATUS] clock_ready mode=ptp
             state=probing streak_ms=0 exchanges=1 ready_in_ms=2300
@@ -2278,6 +2281,10 @@ class AirPlayStream:
                 fields.get("exchanges", "?"),
                 fields.get("streak_ms", "?"),
             )
+        if stalled and self._start_was_join and self.session and self._describes_the_device():
+            # The binary reaches its stall verdict seconds after the join is in
+            # place, so the session is told here rather than at the join.
+            self.mass.create_task(self.session.remove_stalled_joiner(self.player))
         # NTP timing has no receiver clock to wait for, and a state without a
         # projection resolves the wait with nothing so a caller falls back
         # instead of blocking on evidence that will not arrive. A stalled clock
