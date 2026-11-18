@@ -279,6 +279,12 @@ SPEAKER_CHANNEL_OUTPUT = {
     SpeakerChannel.FRONT_RIGHT: "right",
 }
 
+# A full playthrough ends slightly short of the metadata length, so only a larger
+# shortfall counts as a source that stopped early.
+DURATION_SHORTFALL_SECONDS = 2.0
+DURATION_SHORTFALL_RATIO = 0.01
+DURATION_SHORTFALL_MAX_SECONDS = 10.0
+
 
 @dataclass
 class CrossfadeHandover:
@@ -392,6 +398,48 @@ def tail_hold_target(queue_item: QueueItem, max_bytes: int, frame_size: int) -> 
         # better off played out than held back for one
         return 0
     return max_bytes // frame_size * frame_size
+
+
+def _delivered_media_covers_item(streamdetails: StreamDetails, delivered_seconds: float) -> bool:
+    """
+    Return whether the delivered audio reaches the item's declared length.
+
+    :param streamdetails: The item's stream details.
+    :param delivered_seconds: Media-time delivered, counted from the start of the item.
+    """
+    declared = streamdetails.duration or 0
+    tolerance = min(
+        DURATION_SHORTFALL_MAX_SECONDS,
+        max(DURATION_SHORTFALL_SECONDS, declared * DURATION_SHORTFALL_RATIO),
+    )
+    return not declared or delivered_seconds >= declared - tolerance
+
+
+def _store_measured_duration(
+    streamdetails: StreamDetails,
+    delivered_seconds: float,
+    *,
+    queue_item: QueueItem | None = None,
+    play_log_entry: PlayLogEntry | None = None,
+) -> bool:
+    """
+    Store the measured length on the item, unless the source stopped short.
+
+    :param streamdetails: The item's stream details.
+    :param delivered_seconds: Media-time delivered, counted from the start of the item.
+    :param queue_item: The queue item to update as well.
+    :param play_log_entry: The play log entry to update as well.
+    :return: True if the length was stored.
+    """
+    if not _delivered_media_covers_item(streamdetails, delivered_seconds):
+        return False
+    streamdetails.duration = int(delivered_seconds)
+    # propagate accurate duration to queue_item so UI displays it
+    if queue_item is not None:
+        queue_item.duration = streamdetails.duration
+    if play_log_entry is not None:
+        play_log_entry.duration = streamdetails.duration
+    return True
 
 
 async def _incoming_overlap_stream(
@@ -2700,12 +2748,11 @@ class StreamsAudio:
             uncredited_tail_seconds = uncredited_tail_bytes / pcm_format.pcm_sample_size
             # streamdetails.duration is in media-time; seconds_streamed is stream-time
             # (post-atempo), so we scale by playback_speed to recover media-time.
-            streamdetails.duration = int(
+            written_seconds = (
                 streamdetails.seek_position
                 + (seconds_streamed + uncredited_tail_seconds) * playback_speed
             )
-            # propagate accurate duration to queue_item so UI displays it
-            queue_item.duration = streamdetails.duration
+            _store_measured_duration(streamdetails, written_seconds, queue_item=queue_item)
         self.logger.debug(
             "Finished Streaming queue track: %s (%s) on queue %s "
             "- crossfade data prepared for next track: %s",
@@ -3454,13 +3501,16 @@ class StreamsAudio:
                     # streamdetails.duration is in media-time; seconds_streamed is stream-time
                     # (post-atempo), so we scale by the track's playback_speed to recover media-time.
                     assert play_log_entry.seek_position is not None
-                    queue_track.streamdetails.duration = int(
+                    written_seconds = (
                         play_log_entry.seek_position
                         + (seconds_streamed + tail_seconds) * track_playback_speed
                     )
-                    # propagate accurate duration to queue_item so UI displays it
-                    queue_track.duration = queue_track.streamdetails.duration
-                    play_log_entry.duration = queue_track.streamdetails.duration
+                    _store_measured_duration(
+                        queue_track.streamdetails,
+                        written_seconds,
+                        queue_item=queue_track,
+                        play_log_entry=play_log_entry,
+                    )
                 if last_play_log_entry is play_log_entry and last_fadeout_part:
                     # Pre-count the full crossfade tail so the queue index calculation
                     # doesn't undercount while waiting for the next track's crossfade mix.
@@ -3500,11 +3550,6 @@ class StreamsAudio:
             streamdetails.seconds_streamed = (
                 streamdetails.seconds_streamed or 0
             ) + last_part_seconds
-            # also update the play log entry so elapsed time tracking stays in sync
-            if last_play_log_entry:
-                assert last_play_log_entry.seconds_streamed is not None
-                # full tail was pre-counted and is now yielded as-is
-                last_play_log_entry.duration = streamdetails.duration
             last_fadeout_part = b""
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
         # only signal completion if we are still the active producer — a later
@@ -5305,8 +5350,9 @@ class StreamsAudio:
             seconds_received = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
             # store accurate duration, but only for a playthrough from the very start:
             # a seeked stream yields the remaining audio, not the item's full length
+            # seconds_received is media-time: the buffer applies playback speed when reading
             if finished and not requested_seek_position and seconds_received:
-                streamdetails.duration = int(seconds_received)
+                _store_measured_duration(streamdetails, seconds_received)
 
             logger.log(
                 VERBOSE_LOG_LEVEL,
