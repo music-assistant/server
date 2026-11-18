@@ -2817,10 +2817,10 @@ async def test_a_start_is_at_least_300_ms_ahead(rig: _Rig) -> None:
     assert MIN_START_AHEAD_US == 300_000
     assert session.start_us == rig.now_us + MIN_START_AHEAD_US
     rig.client.unpause_at.assert_awaited_once_with(rig.jiffies() + 300)
-    # the stream starts 200 ms into its audio and its start takes 500 ms of it to correct:
-    # that much is left out, and what follows is on the timeline
+    # the stream starts 200 ms into its audio, which follows the preroll: that much is left
+    # out, and what follows is on the timeline
     first, late_us = rig.first_audio(session, rig.align(session))
-    assert first == round(0.7 * SECOND)
+    assert first == round(0.45 * SECOND)
     assert late_us == 0
 
 
@@ -2830,7 +2830,7 @@ async def test_a_start_that_is_past_starts_as_soon_as_it_can(rig: _Rig) -> None:
 
     assert session.start_us == rig.now_us + MIN_START_AHEAD_US
     first, late_us = rig.first_audio(session, rig.align(session))
-    assert first == round(1.8 * SECOND)
+    assert first == round(1.55 * SECOND)
     assert late_us == 0
 
 
@@ -4273,9 +4273,113 @@ async def test_an_underrun_restarts_the_stream_on_the_timeline(rig: _Rig) -> Non
     # as soon as it can, which is 0.8 seconds into its audio
     assert second_session.start_us == rig.now_us + MIN_START_AHEAD_US
     assert second_session.start_us == rig.origin_us + 800_000
-    # the audio is heard from where it is once the start is corrected, half a second on
+    # the audio is heard from where it is once the preroll is played
     sent = rig.align(second_session) + rig.drain(second_session)
-    assert rig.first_audio(second_session, sent) == (round(1.3 * SECOND), 0)
+    assert rig.first_audio(second_session, sent) == (round(1.05 * SECOND), 0)
+
+
+async def test_a_restart_into_audio_that_is_due_goes_out_a_lead_ahead_from_its_first_write(
+    rig: _Rig,
+) -> None:
+    """A restart has no silence before its audio to correct its start in: it is corrected in the audio."""
+    first = await rig.start_playing(frames=SECOND)
+    for second in range(1, 6):
+        rig.bridge._on_audio_chunk(_chunk(rig.origin_us, second * SECOND, SECOND))
+    rig.align(first)
+    rig.clock.advance_us(first.start_us - rig.now_us + 1_950_000)
+    rig.drain(first)
+    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+    await _settle()
+    session = rig.session
+    rig.fetched(session)
+    rig.event(SlimEventType.PLAYER_BUFFER_READY)
+    await _settle()
+    loop = session.loop
+    assert loop is not None
+    assert session.first_audible_us is not None
+    assert session.first_audible_us - session.start_us == -800_000
+
+    sent = rig.drain(session)
+
+    # before its start instant: its audio on the timeline from the end of the preroll on,
+    # as far as the lead
+    first_frame = round(1.05 * SECOND)
+    assert _frames(sent) == list(
+        range(first_frame, first_frame + START_LEAD_FRAMES - PREROLL_FRAMES)
+    )
+    assert rig.first_audio(session, sent) == (first_frame, 0)
+    rig.clock.advance_us(session.start_us - rig.now_us)
+    assert rig.lead_frames(session) == START_LEAD_FRAMES
+    # a player that starts 5 ms late is corrected by the sync loop, not in a jump that is heard
+    rig.play(session, 1.0, late_ms=5)
+    assert loop.start_error_ms == pytest.approx(4.5)
+    assert loop.pending_jump == 0
+
+
+async def test_a_restarted_player_plays_on_through_a_stall_right_after_its_start(rig: _Rig) -> None:
+    """A player that takes nothing for 1.3 s from the start of its restarted stream does not run dry."""
+    first, player = await rig.serve_player()
+    await player.play(3)
+    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+    rig.map_clock()
+    await _settle()
+    session = rig.session
+    assert session is not first
+    restarted = _BufferedPlayer(rig, session)
+    rig.serve(session, restarted)
+    await _settle()
+    rig.event(SlimEventType.PLAYER_BUFFER_READY)
+    await _settle()
+    assert session.first_audible_us is not None
+    assert session.first_audible_us < session.start_us
+    rig.clock.advance_us(session.start_us - rig.now_us)
+    await _settle()
+
+    restarted.stalled = True
+    held = await restarted.play(1.3)
+    restarted.stalled = False
+
+    # what it got before its start instant: the lead, of which it played 1.3 s
+    assert min(held) == START_LEAD_US - 1_300_000
+
+
+async def test_positions_that_stay_impossible_after_a_restart_count_only_after_the_timeout(
+    rig: _Rig,
+) -> None:
+    """A restart into its audio does not take a position of the stream before for its start."""
+    first = await rig.start_playing(frames=SECOND)
+    for second in range(1, 6):
+        rig.bridge._on_audio_chunk(_chunk(rig.origin_us, second * SECOND, SECOND))
+    rig.align(first)
+    rig.clock.advance_us(first.start_us - rig.now_us + 1_950_000)
+    rig.drain(first)
+    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+    await _settle()
+    session = await rig.await_start()
+    loop = session.loop
+    assert loop is not None
+    assert not session.aligning
+
+    def _report_5_seconds_too_much() -> None:
+        rig.clock.advance_us(50_000)
+        played_ms = (rig.now_us - session.start_us) // 1000
+        rig.bridge.handle_slim_event(rig.status(elapsed_ms=played_ms + 5368))
+        rig.drain(session)
+
+    # for as long as a start is waited for, such a report does not count
+    while rig.now_us - session.start_us <= ALIGN_TIMEOUT_US:
+        _report_5_seconds_too_much()
+        assert loop.start_error_ms is None
+    assert rig.session is session
+
+    # from then on it is measured as it reports
+    for _ in range(3):
+        _report_5_seconds_too_much()
+    await _settle()
+
+    assert loop.start_error_ms == pytest.approx(-5368.5)
+    assert rig.session is not session
+    assert rig.client.play_url.await_count == 3
 
 
 async def test_an_underrun_tells_what_the_bridge_knew(
@@ -4329,7 +4433,7 @@ async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(
     # 0.2 seconds more to get through its decoder
     block = BLOCK_FRAMES if output_codec == "flac" else 0
     restarted_as = "flac" if output_codec == "flac" and plays_s == 9 else "wav"
-    resumes_s = 8.85 if restarted_as == "flac" else 8.65
+    resumes_s = 8.6 if restarted_as == "flac" else 8.4
     # what it plays longer before the stall, in whole chunks, comes on top of every position
     later = (plays_s - 3) * SECOND
     try:
@@ -4369,8 +4473,8 @@ async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(
         await rig.align_served(second)
         await restarted.play(2)
 
-        # nothing twice, and all of it from where the new stream could begin: 0.8 seconds
-        # for its start and its correction, in the chunk the first stream had begun
+        # nothing twice, and all of it from where the new stream could begin: 0.55 seconds
+        # for its start and its preroll, in the chunk the first stream had begun
         audio = restarted.audio()
         assert played[-1] < audio[0] < 9 * SECOND + later
         assert audio[0] == pytest.approx(resumes_s * SECOND + later, abs=SECOND // 10)

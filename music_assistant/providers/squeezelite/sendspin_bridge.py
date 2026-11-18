@@ -10,7 +10,9 @@ Every Sendspin stream is a session: one stream over HTTP that the player starts
 at an instant of its own clock, on silence. A player starts later than it is told, by
 an amount that differs from start to start: the bridge measures that from the first
 positions the player reports and corrects it in the silence, so the first audio is
-heard on the timeline. The sync loop holds it there from the positions the player
+heard on the timeline. A stream whose audio is already due at its start, such as a
+restart, gets that audio at once and has its start corrected in it. The sync loop holds
+it there from the positions the player
 reports, and once it has little left to correct the bridge keeps the stream seconds ahead
 of what the player plays, as far as Sendspin delivered its audio, so the player plays on
 through a stall of its network.
@@ -1097,11 +1099,14 @@ class SendspinSqueezeliteBridge:
         session.start_us = start_us
         # the player starts a little later than it is told to, which was learned before
         session.command_us = start_us - offset_us
+        # audio that is due by the start leaves no silence to correct the start in: it
+        # goes out from the first write, and the start is corrected in it
+        session.aligning = session.first_audible_us > start_us
         session.loop = SyncLoop(
             session.sample_rate,
             session.frame_size,
             start_us,
-            start_jump_ms=ALIGN_JUMP_MS,
+            start_jump_ms=ALIGN_JUMP_MS if session.aligning else START_JUMP_MS,
             told_us=session.command_us,
         )
         # the preroll went out before the timeline was known: it holds frame 0 and on
@@ -1264,9 +1269,6 @@ class SendspinSqueezeliteBridge:
         sent_us = loop.frames_consumed * 1_000_000 // session.sample_rate
         left_out_ms = max(0, session.start_us + sent_us - session.first_audible_us) / 1000
         if (start_error_ms := loop.start_error_ms) is None:
-            # whatever it reports from here on is measured, so a start that is far off
-            # still restarts the stream
-            loop.lift_start_bound()
             self.logger.debug(
                 "%s did not show where it plays in time: its audio goes out with its start "
                 "not corrected, %.0f ms of it left out",
@@ -1341,6 +1343,13 @@ class SendspinSqueezeliteBridge:
             self._rejoined = False
         if (server_us := self._player_clock.to_server_us(status.jiffies)) is None:
             return
+        if (
+            loop.start_error_ms is None
+            and self._clock.now_us() - session.start_us > ALIGN_TIMEOUT_US
+        ):
+            # a start that is not measured in time: whatever it reports from here on is
+            # measured, so a start that is far off still restarts the stream
+            loop.lift_start_bound()
         start_reports = loop.start_reports
         report_ms = loop.on_report(
             server_us, status.elapsed_milliseconds, self._player_clock.generation
