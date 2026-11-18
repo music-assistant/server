@@ -585,7 +585,6 @@ class _Rig:
         self.sendspin_player.session_bit_depth = None
         protocol.get_supported_sample_rates.return_value = [(44100, 16)]
         protocol.volume_set = AsyncMock()
-        protocol.release_native_playback = AsyncMock()
         protocol.sendspin_bridge = None
         protocol.player.attached_protocols = {PLAYER_ID: protocol}
         protocol.player.current_media = None
