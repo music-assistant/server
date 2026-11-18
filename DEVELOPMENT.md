@@ -88,8 +88,8 @@ In most cases, you won't need to modify the models. However, if you do need to m
 ### Running a provider from a folder outside the server
 
 A provider that lives outside the server repository (for example in a repository of its own) can be run from where it is:
-* Name the provider folder after the provider's `domain`. A domain the server already has is refused.
-* Start the server in dev mode (`PYTHONDEVMODE=1`, or from a checkout with a `.venv` in the repository root) and pass the folder that holds your provider folders:
+* Put the provider in a folder named after its `domain`, in a folder named `provider`, or in `providers/<domain>` in a repository with several providers, as the community catalog accepts. It loads under its domain either way. A domain the server already has is refused.
+* Start the server in dev mode (`PYTHONDEVMODE=1`, or from a checkout with a `.venv` in the repository root) and pass the folder that holds them, such as the root of your repository:
 
       PYTHONDEVMODE=1 python -m music_assistant --dev-providers-dir /path/to/my_providers
 
