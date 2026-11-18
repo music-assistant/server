@@ -405,6 +405,22 @@ async def test_player_of_follows_the_attachment(scenario: Scenario) -> None:
     assert scenario.player_of(speaker) is None
 
 
+async def test_a_detach_takes_the_detach_time_of_the_protocol(scenario: Scenario) -> None:
+    """A protocol with a detach time finishes its detach once the clock passed that time."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.register(speaker)
+    speaker.detach_time = 3
+
+    detach = await scenario.command(scenario.mass.players.unregister(speaker.protocol_id))
+    await scenario.advance(2)
+
+    assert not detach.done()
+    await scenario.advance(1)
+    assert detach.done()
+    await detach
+
+
 async def test_player_configs_lists_the_settings_page(scenario: Scenario) -> None:
     """player_configs() lists stored player configs, disabled ones included, protocol configs not."""
     sonos = await scenario.add_provider("sonos")
