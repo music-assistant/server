@@ -16,7 +16,7 @@ from aiojellyfin import Connection
 from aiojellyfin.session import SessionConfiguration
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Playlist
+from music_assistant_models.media_items import ItemMapping, Playlist
 
 from music_assistant.providers.jellyfin import SUPPORTED_FEATURES, JellyfinProvider
 
@@ -134,15 +134,64 @@ async def test_missing_entry_id(playlist_server: tuple[JellyfinProvider, dict[st
     assert not state["writes"]
 
 
-@pytest.mark.parametrize("status", [401, 500])
-async def test_permission_errors_propagate(
-    playlist_server: tuple[JellyfinProvider, dict[str, Any]], status: int
+@pytest.mark.parametrize("read_path", ["detail", "search", "library"])
+async def test_permission_authentication_errors_propagate(
+    playlist_server: tuple[JellyfinProvider, dict[str, Any]], read_path: str
 ) -> None:
-    """Do not conceal failed authentication or an unavailable Jellyfin server."""
+    """Keep failed authentication visible on every public playlist read path."""
     provider, state = playlist_server
-    state["status"] = status
-    with pytest.raises(aiohttp.ClientResponseError):
-        await provider.get_playlist("playlist")
+    state["permission_status_by_id"] = {"playlist-0": 401}
+    with pytest.raises((aiohttp.ClientResponseError, ExceptionGroup)) as raised:
+        await _read_playlists(provider, read_path)
+    error = raised.value
+    if isinstance(error, ExceptionGroup):
+        assert error.subgroup(
+            lambda item: isinstance(item, aiohttp.ClientResponseError) and item.status == 401
+        )
+    else:
+        assert isinstance(error, aiohttp.ClientResponseError)
+        assert error.status == 401
+
+
+@pytest.mark.parametrize("read_path", ["detail", "search", "library"])
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_permission_http_failures_keep_playlists_readable(
+    playlist_server: tuple[JellyfinProvider, dict[str, Any]],
+    read_path: str,
+    status: int,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One unavailable permission check must not discard the readable playlist listing."""
+    provider, state = playlist_server
+    state["permission_status_by_id"] = {"playlist-0": status}
+    items = await _read_playlists(provider, read_path)
+    _assert_readonly_fallback(items, read_path)
+    assert "keeping it read-only" in caplog.text
+    assert "test-token" not in caplog.text
+
+
+@pytest.mark.parametrize("read_path", ["detail", "search", "library"])
+@pytest.mark.parametrize("failure", [TimeoutError, aiohttp.ClientConnectionError])
+async def test_permission_transport_failures_keep_playlists_readable(
+    playlist_server: tuple[JellyfinProvider, dict[str, Any]],
+    read_path: str,
+    failure: type[Exception],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Timeouts and connection failures fail closed for editing, not for browsing."""
+    provider, _state = playlist_server
+    original = provider._client._session.get_json
+
+    async def get_json(url: str, params: Any) -> dict[str, Any]:
+        if url == "/Playlists/playlist-0/Users/own-user":
+            raise failure("sensitive diagnostic that should not be logged")
+        return await original(url, params)
+
+    with mock.patch.object(provider._client._session, "get_json", side_effect=get_json):
+        items = await _read_playlists(provider, read_path)
+    _assert_readonly_fallback(items, read_path)
+    assert "keeping it read-only" in caplog.text
+    assert "sensitive diagnostic" not in caplog.text
 
 
 async def test_edit_invalidates_all_playlist_pages(
@@ -190,7 +239,7 @@ async def test_large_removal_resolves_before_batches(
     assert max(state["request_sizes"]) < 8192
 
 
-@pytest.mark.parametrize("status", [200, 403, 404])
+@pytest.mark.parametrize("status", [200, 403, 404, 500])
 async def test_permission_cache_shared_by_read_paths(
     playlist_server: tuple[JellyfinProvider, dict[str, Any]], status: int
 ) -> None:
@@ -279,8 +328,12 @@ def _playlist_app() -> tuple[web.Application, dict[str, Any]]:
         try:
             if state["permission_gate"] is not None:
                 await state["permission_gate"].wait()
-            if state["status"] != 200:
-                return web.Response(status=state["status"])
+            if (
+                status := state.get("permission_status_by_id", {}).get(
+                    request.match_info["playlist_id"], state["status"]
+                )
+            ) != 200:
+                return web.Response(status=status)
             return web.json_response(
                 {
                     "UserId": user_id,
@@ -435,3 +488,24 @@ async def test_permission_cache_isolated_between_accounts(
     await _wait_for_permission_cache(other, ["playlist-0"])
     assert (await provider.get_playlist("playlist-0")).is_editable
     assert len(state["permission_reads"]) == 2
+
+
+async def _read_playlists(
+    provider: JellyfinProvider, read_path: str
+) -> list[Playlist | ItemMapping]:
+    """Exercise the three public read paths that enrich edit permissions."""
+    if read_path == "detail":
+        return [await provider.get_playlist("playlist-0")]
+    if read_path == "search":
+        return list((await provider.search("test", [MediaType.PLAYLIST], 12)).playlists)
+    return [item async for item in provider.get_library_playlists()]
+
+
+def _assert_readonly_fallback(items: list[Playlist | ItemMapping], read_path: str) -> None:
+    """Keep the failed item read-only without changing other items' edit permissions."""
+    assert [item.item_id for item in items] == (
+        ["playlist-0"] if read_path == "detail" else [f"playlist-{index}" for index in range(12)]
+    )
+    for item in items:
+        assert isinstance(item, Playlist)
+        assert item.is_editable == (item.item_id != "playlist-0")

@@ -670,10 +670,17 @@ class JellyfinProvider(MusicProvider):
                 )
             except SessionNotFound:
                 return False
-            except ClientResponseError as err:
-                if err.status == 403:
-                    return False
-                raise
+            except (ClientError, TimeoutError) as err:
+                if isinstance(err, ClientResponseError) and err.status == 401:
+                    raise
+                if not isinstance(err, ClientResponseError) or err.status != 403:
+                    self.logger.warning(
+                        "Unable to check edit permission for Jellyfin playlist %s (%s); "
+                        "keeping it read-only",
+                        playlist_id,
+                        type(err).__name__,
+                    )
+                return False
         return permission.get("CanEdit") is True
 
     async def _edit_playlist_items(
