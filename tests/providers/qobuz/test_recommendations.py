@@ -52,7 +52,7 @@ def provider() -> QobuzProvider:
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     use_real_create_task(mass)
-    manifest = Mock()
+    manifest = Mock(features=set())
     manifest.domain = "qobuz"
     config = Mock()
     config.instance_id = "qobuz_test"

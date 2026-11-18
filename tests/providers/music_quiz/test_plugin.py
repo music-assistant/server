@@ -41,7 +41,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user as get_auth_current_user,
 )
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
-from music_assistant.helpers.plugin_engines import select_ai_engine
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz import (
@@ -5852,7 +5851,7 @@ async def test_get_config_entries_reports_unavailable_ai(providers: list[object]
     assert ai_entry.default_value is False
     assert ai_entry.required is False
     assert ai_entry.read_only is True
-    assert entries[1].read_only is True
+    assert entries[1].hidden is True
     assert entries[2].type == ConfigEntryType.ALERT
 
 
@@ -5870,26 +5869,27 @@ async def test_get_config_entries_reports_available_ai() -> None:
     assert entries[0].read_only is False
     # the picker stays reachable with the distractor toggle off (Trivia always needs an engine)
     assert entries[1].depends_on is None
-    assert [option.value for option in entries[1].options] == ["ai--test/engine"]
+    assert [option.value for option in entries[1].options] == ["global", "ai--test/engine"]
 
 
 @pytest.mark.asyncio
-async def test_first_use_adopts_a_concrete_engine_selection() -> None:
-    """An instance without a stored selection adopts a concrete engine uid on first use."""
+async def test_a_game_keeps_the_default_engine_it_was_created_with() -> None:
+    """A game created while following the default engine runs on that engine's uid."""
     plugin = _create_plugin()
+    config_get_value = cast("MagicMock", plugin.config.get_value)
+    get_value = config_get_value.side_effect
+    config_get_value.side_effect = lambda key, default=None: (
+        "global" if key == CONF_AI_ENGINE else get_value(key, default)
+    )
     mass = cast("MagicMock", plugin.mass)
     mass.get_providers_supporting_feature.return_value = [_create_ai_plugin()]
-    mass.config.get_raw_provider_config_value.return_value = None
+    mass.config.get_raw_core_config_value.return_value = "ai--test/engine"
 
-    engine = await select_ai_engine(plugin, CONF_AI_ENGINE)
+    await plugin.create_game(source_uris=["library://playlist/1"])
 
-    assert engine is not None
-    assert engine.uid == "ai--test/engine"
-    assert mass.config.set_raw_provider_config_value.call_args.args == (
-        plugin.instance_id,
-        CONF_AI_ENGINE,
-        "ai--test/engine",
-    )
+    assert plugin._game is not None
+    assert plugin._game.config.ai_engine == "ai--test/engine"
+    mass.config.set_raw_provider_config_value.assert_not_called()
 
 
 @pytest.mark.asyncio

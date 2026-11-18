@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 119
+API_SCHEMA_VERSION: Final[int] = 122
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -130,6 +130,7 @@ CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: Final[str] = "airplay_sync_adjust_sign_m
 CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING: Final[str] = "emby_album_artists_heal_pending"
 CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
+CONF_AI_DEFAULT_ENGINES_MIGRATED: Final[str] = "ai_default_engines_migrated"
 CONF_PLAYER_SPLIT_SESSION_ONLY: Final[str] = "player_split_session_only"
 CONF_PLAYER_SPLIT_TREE: Final[str] = "player_split_tree"
 CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
@@ -142,6 +143,7 @@ CONF_PROVIDERS: Final[str] = "providers"
 CONF_PLAYERS: Final[str] = "players"
 CONF_PLAYER_PROTOCOLS: Final[str] = "player_protocols"
 CONF_PLAYER_QUEUES: Final[str] = "player_queues"
+CONF_AI: Final[str] = "ai"
 CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
 CONF_NAME: Final[str] = "name"
@@ -186,6 +188,10 @@ CONF_ANNOUNCE_VOLUME_MIN: Final[str] = "announce_volume_min"
 CONF_ANNOUNCE_VOLUME_MAX: Final[str] = "announce_volume_max"
 CONF_PRE_ANNOUNCE_CHIME_URL: Final[str] = "pre_announcement_chime_url"
 CONF_ANNOUNCE_TTS_ENGINE: Final[str] = "announce_tts_engine"
+# the default engine of each kind, stored by the AI core module
+CONF_DEFAULT_TEXT_ENGINE: Final[str] = "text_engine"
+CONF_DEFAULT_SPEECH_ENGINE: Final[str] = "speech_engine"
+CONF_DEFAULT_IMAGE_ENGINE: Final[str] = "image_engine"
 CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
@@ -203,6 +209,7 @@ CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_MIN_VOLUME: Final[str] = "min_volume"
 CONF_MAX_VOLUME: Final[str] = "max_volume"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
+CONF_ALLOW_AUDIO_ANALYSIS: Final[str] = "allow_audio_analysis"
 CONF_LEGACY_IDS: Final[str] = "legacy_ids"  # ids a player is also known under
 # the player the user took a protocol off, which it is not merged back into by itself
 CONF_UNLINKED_FROM: Final[str] = "unlinked_from"
@@ -394,6 +401,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "player_queues",
     "tasks",
     "statistics",
+    "ai",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDER_LOAD_CONCURRENCY = 8

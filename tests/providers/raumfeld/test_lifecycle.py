@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import IdentifierType, ProtocolRole
+from music_assistant_models.enums import ChannelLayout, IdentifierType, PlayerType, ProtocolRole
 
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.raumfeld.constants import CONF_RESTART_ON_JOIN
@@ -36,6 +36,8 @@ class _Speaker:
     renderer_udn: str
     serial: str
     ip_address: str
+    # the renderers of the other speakers in the room, listed after this one
+    others: tuple[str, ...] = ()
 
 
 BAR_SPEAKER = _Speaker("uuid:room-bar", "uuid:renderer-bar", SERIAL_BAR, "192.168.1.42")
@@ -81,7 +83,7 @@ async def _sync(
                 speaker.renderer_udn,
                 "ACTIVE",
                 False,
-                renderer_udns=(speaker.renderer_udn,),
+                renderer_udns=(speaker.renderer_udn, *speaker.others),
             )
             for name, speaker in rooms.items()
         },
@@ -97,6 +99,10 @@ async def _sync(
     for name, speaker in rooms.items():
         provider._room_serials[name] = speaker.serial
         provider._room_serial_renderers[name] = speaker.renderer_udn
+        # read to find the speaker of a room of several, which would go out to the network
+        provider._renderer_descriptions[speaker.renderer_udn] = (
+            f"<root><device><serialNumber>{speaker.serial}</serialNumber></device></root>"
+        )
         provider._versions_read.add(name)
     await provider._sync_rooms()
     await scenario.settle()
@@ -392,3 +398,54 @@ async def test_a_room_whose_speaker_returns_under_another_address_reports_it(
     assert record is not None
     assert [IdentifierType.IP_ADDRESS.value, "192.168.1.43"] in record["values"]["identifiers"]
     assert scenario.player_of(other_device) != player_id
+
+
+async def test_a_room_of_several_speakers_is_a_multi_channel_player(scenario: Scenario) -> None:
+    """
+    A room of several speakers is one multi-channel player in stereo, and it follows the room.
+
+    Every speaker of a room plays the same stereo sound, so the layout is stereo. A speaker
+    moved to another room takes that along: each room keeps its own player.
+    """
+    provider = await _raumfeld(scenario)
+    bar_pair = replace(BAR_SPEAKER, others=("uuid:renderer-bar-2",))
+    await _sync(scenario, provider, {"Bar": bar_pair, "TV": TV_SPEAKER})
+    bar_id = _player(_attached(provider, BAR)).player_id
+    tv_id = _player(_attached(provider, TV)).player_id
+
+    bar, tv = scenario.player(bar_id), scenario.player(tv_id)
+    assert bar is not None
+    assert tv is not None
+    assert (bar.type, bar.channel_layout) == (PlayerType.MULTI_CHANNEL, ChannelLayout.STEREO)
+    assert (tv.type, tv.channel_layout) == (PlayerType.PLAYER, None)
+
+    tv_pair = replace(TV_SPEAKER, others=("uuid:renderer-bar-2",))
+    await _sync(scenario, provider, {"Bar": BAR_SPEAKER, "TV": tv_pair})
+
+    assert _player(_attached(provider, BAR)).player_id == bar_id
+    assert _player(_attached(provider, TV)).player_id == tv_id
+    bar, tv = scenario.player(bar_id), scenario.player(tv_id)
+    assert bar is not None
+    assert tv is not None
+    assert (bar.type, bar.channel_layout) == (PlayerType.PLAYER, None)
+    assert (tv.type, tv.channel_layout) == (PlayerType.MULTI_CHANNEL, ChannelLayout.STEREO)
+
+
+async def test_a_room_stored_as_a_single_speaker_is_stored_as_the_set_it_is_now(
+    scenario: Scenario,
+) -> None:
+    """
+    The type stored for a room follows the speakers it has when it attaches.
+
+    That is the case of a room an older version stored as a single player.
+    """
+    provider = await _raumfeld(scenario)
+    await _sync(scenario, provider, {"Bar": BAR_SPEAKER})
+    player_id = _player(_attached(provider, BAR)).player_id
+    assert scenario.mass.config.get(f"players/{player_id}/player_type") == "player"
+    await _sync(scenario, provider, {})
+
+    await _sync(scenario, provider, {"Bar": replace(BAR_SPEAKER, others=("uuid:renderer-bar-2",))})
+
+    assert _player(_attached(provider, BAR)).player_id == player_id
+    assert scenario.mass.config.get(f"players/{player_id}/player_type") == "multi_channel"

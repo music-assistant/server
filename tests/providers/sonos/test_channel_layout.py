@@ -75,6 +75,7 @@ def _report_zone(client: MagicMock, *members: dict[str, Any]) -> None:
     client.player.has_subwoofer = zone.has_subwoofer
     client.player.has_surrounds = zone.has_surrounds
     client.player.is_stereo_pair = zone.is_stereo_pair
+    client.player.bonded_player_ids = zone.bonded_player_ids
 
 
 def _zone(*channels: list[str]) -> list[dict[str, Any]]:

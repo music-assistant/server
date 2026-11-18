@@ -1194,11 +1194,39 @@ def test_clip_item_carries_weather_required_flag() -> None:
     assert item.extra_attributes[ATTR_WEATHER_REQUIRED] is True
 
 
-async def test_get_ai_engine_requires_a_configured_selection() -> None:
-    """Without a stored selection no engine is picked, so the run fails with a clear error."""
+def _default_engines_config(**defaults: str) -> SimpleNamespace:
+    """Create a config stand-in holding the given default engines of the AI core module."""
+    return SimpleNamespace(
+        get_raw_core_config_value=lambda _domain, key, default=None: defaults.get(key, default),
+        set_raw_core_config_value=lambda _domain, key, value: defaults.__setitem__(key, value),
+    )
+
+
+async def test_get_ai_engine_follows_the_default_engine() -> None:
+    """Without a selection of its own the default AI engine is used, not the first one."""
     runtime = DummyRuntime()
     _set_runtime_mass(
-        runtime, _create_engine_mass(ProviderFeature.AI_QUERY, _create_ai_plugin("hass_1", "one"))
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY,
+            _create_ai_plugin("hass_1", "one", "two"),
+            config=_default_engines_config(text_engine="hass_1/two"),
+        ),
+    )
+
+    assert (await runtime._get_ai_engine()).uid == "hass_1/two"
+
+
+async def test_get_ai_engine_refuses_a_default_engine_that_disappeared() -> None:
+    """A default AI engine that is gone fails the run instead of using another engine."""
+    runtime = DummyRuntime({CONF_AI_ENGINE: "global"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY,
+            _create_ai_plugin("hass_1", "one"),
+            config=_default_engines_config(text_engine="gone/engine"),
+        ),
     )
 
     with pytest.raises(MusicAssistantError, match="No AI engine available"):
@@ -1265,6 +1293,21 @@ async def test_get_tts_engine_falls_back_to_provider_selection_when_host_uid_is_
 
     assert engine.uid == "aa_low/engine"
     assert any("unavailable" in message for message in caplog.messages)
+
+
+async def test_get_tts_engine_falls_back_to_the_default_when_host_uid_is_unresolvable() -> None:
+    """A host engine that is gone falls back to the AI Radio choice, here the default engine."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.TTS,
+            _create_tts_plugin("hass_1", "one", "two"),
+            config=_default_engines_config(speech_engine="hass_1/two"),
+        ),
+    )
+
+    assert (await runtime._get_tts_engine("gone/engine")).uid == "hass_1/two"
 
 
 def test_passes_optional_guards_handles_non_numeric_guard_values() -> None:

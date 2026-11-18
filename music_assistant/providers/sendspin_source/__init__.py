@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.providers.sendspin_source.constants import (
@@ -21,14 +21,12 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
-
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return SendspinSourceProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    return SendspinSourceProvider(mass, manifest, config)
 
 
 async def get_config_entries(

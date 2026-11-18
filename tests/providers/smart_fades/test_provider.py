@@ -114,7 +114,7 @@ def mass_mock() -> Mock:
 @pytest.fixture
 def manifest_mock() -> Mock:
     """Return a mock provider manifest."""
-    manifest = Mock()
+    manifest = Mock(features=set())
     manifest.domain = "smart_fades"
     manifest.name = "Smart Fades"
     return manifest

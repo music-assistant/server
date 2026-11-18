@@ -107,7 +107,7 @@ def provider() -> KionMusicProvider:
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     use_real_create_task(mass)
-    manifest = Mock()
+    manifest = Mock(features=set())
     manifest.domain = "kion_music"
     config = Mock()
     config.instance_id = "kion_music--test123"
