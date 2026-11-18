@@ -25,7 +25,7 @@ from sqlite3 import IntegrityError, OperationalError
 from types import EllipsisType
 from typing import TYPE_CHECKING, Any, cast
 
-import aiohttp
+from aiohttp import ClientError
 from hass_client.exceptions import BaseHassClientError
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
@@ -1398,7 +1398,7 @@ class SmartPlaylistProvider(PluginProvider):
                 continue
             try:
                 seeds.append(await ctrl.get(item_id, provider))
-            except (MusicAssistantError, OSError, aiohttp.ClientError) as exc:
+            except (MusicAssistantError, OSError, ClientError) as exc:
                 self.logger.warning("Could not resolve seed %s: %s", uri, exc)
         if not seeds:
             return []
