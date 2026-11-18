@@ -244,14 +244,14 @@ class AirPlayProvider(PlayerProvider):
 
     def get_set_speakers(self, set_id: str) -> list[AirPlaySpeaker]:
         """
-        Return the speakers of a home theater set that are on the network, by position.
+        Return the speakers of a set that are on the network or still play for it, by position.
 
         :param set_id: Id of the set.
         """
         speakers = [
             (membership.position, speaker)
             for speaker in self._speakers.values()
-            if speaker.available
+            if (speaker.available or (speaker.stream is not None and speaker.stream.running))
             and (membership := speaker.set_membership)
             and membership.set_id == set_id
         ]
@@ -746,6 +746,7 @@ class AirPlayProvider(PlayerProvider):
         self._speakers[speaker.protocol_id] = speaker
         self.logger.debug("%s is a speaker of a home theater set", speaker.display_name)
         self._on_set_speakers_changed(speaker)
+        self._rejoin_set_session(speaker)
 
     def _find_by_airplay_name(self, name: str) -> AirPlayPlayer | None:
         """
@@ -764,9 +765,9 @@ class AirPlayProvider(PlayerProvider):
 
     def _rejoin_set_session(self, speaker: AirPlaySpeaker) -> None:
         """
-        Add a speaker that is back to the session its set plays in, which went on without it.
+        Add a speaker that is back or new to the session its set plays in without it.
 
-        :param speaker: The speaker that is back.
+        :param speaker: The speaker that is back or new.
         """
         if (
             (airplay_set := speaker.owner)

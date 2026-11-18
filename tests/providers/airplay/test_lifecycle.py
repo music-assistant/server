@@ -682,7 +682,7 @@ async def test_a_homepod_that_goes_offline_keeps_the_stream_it_plays(
     scenario: Scenario, provider: AirPlayProvider
 ) -> None:
     """
-    A speaker whose records go away is no speaker of its set, but its stream plays on.
+    A speaker whose records go away plays on for its set until its stream ends.
 
     A stream that really lost its device ends by itself, and stops its set with it.
     """
@@ -695,9 +695,36 @@ async def test_a_homepod_that_goes_offline_keeps_the_stream_it_plays(
     await _homepod_gone(provider)
 
     assert apple_tv is not None
-    assert apple_tv.speakers == []
+    assert apple_tv.speakers == [speaker]
     session.remove_client.assert_not_awaited()
-    assert speaker.stream is not None
+    speaker.stream.running = False
+    assert apple_tv.speakers == []
+
+
+@pytest.mark.usefixtures("apple_controls")
+@pytest.mark.parametrize("homepods_only", [False, True])
+async def test_a_homepod_that_goes_offline_takes_the_commands_of_its_set_while_it_plays(
+    scenario: Scenario, provider: AirPlayProvider, homepods_only: bool
+) -> None:
+    """The volume and a stop of a set reach a speaker whose records went away while it plays."""
+    apple_tv = await _announce(scenario, provider, _apple_tv())
+    await _announce(scenario, provider, _homepod())
+    assert apple_tv is not None
+    scenario.mass.config.set_protocol_value(APPLE_TV_PROTOCOL_ID, CONF_HOMEPODS_ONLY, homepods_only)
+    speaker = provider._speakers[HOMEPOD_PROTOCOL_ID]
+    session = MagicMock(stop=AsyncMock(), remove_client=AsyncMock())
+    speaker.stream = MagicMock(
+        running=True, session=session, send_cli_command=AsyncMock(return_value=True)
+    )
+    if not homepods_only:
+        apple_tv.stream = MagicMock(running=True, session=session, send_cli_command=AsyncMock())
+    await _homepod_gone(provider)
+
+    await apple_tv.volume_set(5)
+    await apple_tv.stop()
+
+    speaker.stream.send_cli_command.assert_awaited_once_with("VOLUME=5")
+    session.stop.assert_awaited_once()
 
 
 @pytest.mark.usefixtures("apple_controls")
@@ -774,6 +801,25 @@ async def test_a_homepod_that_is_back_joins_the_music_its_set_plays(
         scenario, provider, _homepod(2, device_id=SECOND_HOMEPOD_ID, address="192.168.1.62", size=3)
     )
     session.add_client.assert_awaited_once()
+
+
+@pytest.mark.usefixtures("apple_controls")
+async def test_a_homepod_seen_for_the_first_time_joins_the_music_its_set_plays(
+    scenario: Scenario, provider: AirPlayProvider
+) -> None:
+    """A speaker that turns up while its set plays, never seen before, is added to the session."""
+    await _announce(scenario, provider, _apple_tv(size=3))
+    await _announce(scenario, provider, _homepod(1, size=3))
+    first = provider._speakers[HOMEPOD_PROTOCOL_ID]
+    session = MagicMock(add_client=AsyncMock(), remove_client=AsyncMock())
+    session.sync_clients = [first]
+    first.stream = MagicMock(running=True, session=session)
+
+    await _announce(
+        scenario, provider, _homepod(2, device_id=SECOND_HOMEPOD_ID, address="192.168.1.62", size=3)
+    )
+
+    session.add_client.assert_awaited_once_with(provider._speakers[SECOND_HOMEPOD_PROTOCOL_ID])
 
 
 @pytest.mark.usefixtures("apple_controls")

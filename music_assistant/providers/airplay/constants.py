@@ -289,8 +289,8 @@ AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5, 15, 30, 60, 120)
 # Seconds before the one re-add of the Apple TV of a set that left the session of its
 # speakers: a session opened 5 s after the Apple TV reset one stayed up (measured).
 AIRPLAY_SILENT_MEMBER_REJOIN_DELAY: Final[int] = 5
-# How long the Apple TV of a set waits for its speakers to play before it joins them (it
-# needs their timeline), and how often it looks.
+# How long the Apple TV of a set waits for all its speakers to play before it joins those
+# that do (it needs their timeline), and how often it looks.
 AIRPLAY_SILENT_MEMBER_JOIN_TIMEOUT: Final[float] = 10.0
 AIRPLAY_SILENT_MEMBER_JOIN_POLL_INTERVAL: Final[float] = 0.25
 # Longest the session waits on the Apple TV of a set (a flush, a START, or an audio write once

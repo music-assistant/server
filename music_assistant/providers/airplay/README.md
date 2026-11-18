@@ -193,19 +193,21 @@ pair), and the HomePods are fed directly as its speakers.
   registered. It plays with the settings, password, output settings and volume of its set,
   otherwise with the defaults of its device, and stores nothing itself. Its state, commands and
   stream loss count for its set. Only a current `_airplay._tcp` record makes it available: after
-  a goodbye of either of its records, a `_raop._tcp` record alone does not.
-- The speakers start the session of the set. The Apple TV joins it as a late joiner after them,
-  as its session resets when its SETUP goes out before the one of a HomePod (measured), and in
-  the background, so the music never waits for it. It is fed silence and sent no volume: it only
-  shows what plays and takes the commands of its remote. When its stream ends it is added once
-  more; it never stops or fails its speakers. Power and wake act on the Apple TV, as for a plain
+  a goodbye of either of its records, a `_raop._tcp` record alone does not. One that goes away
+  while it plays stays a speaker of its set until its stream ends.
+- The speakers start the session of the set. The Apple TV joins it as a late joiner after all of
+  them, as its session resets when its SETUP goes out before the one of a HomePod (measured), and
+  in the background, so the music never waits for it. It is fed silence and sent no volume: it
+  only shows what plays and takes the commands of its remote. When its stream ends it is added
+  once more, and again whenever a speaker of its set joins late; it never stops or fails its
+  speakers. Power and wake act on the Apple TV, as for a plain
   Apple TV, which needs to be paired for this.
 - The player option "Play on HomePods only" leaves the Apple TV out: no session to it, no
   wake and no power control (the players controller powers a player on before it plays), and
   no pairing needed.
 - A set plays on all of its speakers or not at all: a speaker whose stream ends stops its set,
-  or takes it out of the group it plays in. A speaker that was away when its set started is
-  added to the session when it is back.
+  or takes it out of the group it plays in. A speaker that was away or not found yet when its set
+  started is added to the session once it is there.
 - When the set protocol is attached and both current records name a speaker, the player that
   speaker had before is removed (`mass.players.remove_absorbed_players()`).
 - While the player of the Apple TV is disabled, its HomePods are players of their own. Without

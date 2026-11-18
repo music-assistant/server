@@ -825,7 +825,7 @@ class AirPlayStreamSession:
             cli_clock_time() - now,
         )
         if airplay_player.renders_audio:
-            self._join_silent_members()
+            self._join_silent_members(joined=airplay_player)
 
     def on_member_reanchored(self) -> None:
         """
@@ -1605,8 +1605,15 @@ class AirPlayStreamSession:
         """Return the members whose audio is heard."""
         return [player for player in self.sync_clients if player.renders_audio]
 
-    def _join_silent_members(self) -> None:
-        """Add the members that are not heard and were not added yet, after those they go with."""
+    def _join_silent_members(self, joined: AirPlayPlayer | None = None) -> None:
+        """
+        Add the members that are not heard and were not added yet, after those they go with.
+
+        :param joined: A member that just joined late: the one that is not heard and goes with
+            it is added again, also when it was added before.
+        """
+        if joined and (owner := joined.owner) and (member := owner.silent_member):
+            self._silent_member_joins.pop(member.protocol_id, None)
         for player in self._audible_clients:
             owner = player.owner
             member = owner.silent_member if owner else None
@@ -1670,11 +1677,14 @@ class AirPlayStreamSession:
         :param delay: Seconds to wait first.
         """
         await asyncio.sleep(delay)
-        # It joins once the members it goes with play: an Apple TV resets its session when
-        # its SETUP precedes the one of its speakers (measured), and a late joiner is
+        # It joins once all the members it goes with play: an Apple TV resets its session
+        # when its SETUP precedes the one of a speaker (measured), and a late joiner is
         # anchored on the timeline they play.
         deadline = time.monotonic() + AIRPLAY_SILENT_MEMBER_JOIN_TIMEOUT
-        while not self._session_is_live() and time.monotonic() < deadline:
+        while (
+            not self._session_is_live()
+            or not all(endpoint in self.sync_clients for endpoint in airplay_player.endpoints)
+        ) and time.monotonic() < deadline:
             await asyncio.sleep(AIRPLAY_SILENT_MEMBER_JOIN_POLL_INTERVAL)
         if (
             not self._session_is_live()
