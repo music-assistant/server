@@ -93,7 +93,10 @@ from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
-from music_assistant.constants import CONF_ENTRY_FLOW_MODE_SAMPLE_RATE
+from music_assistant.constants import (
+    CONF_ALLOW_AUDIO_ANALYSIS,
+    CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
+)
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import (
@@ -346,6 +349,7 @@ if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
     from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
     from music_assistant.providers.hass import HomeAssistantProvider
+    from music_assistant.providers.sendspin_source.provider import SendspinSourceProvider
 
     from .provider import PinPairingSession, SendspinProvider
 
@@ -523,6 +527,14 @@ class SendspinBasePlayer(PlayerProtocol):
         entries.extend(await self._get_security_config_entries())
         entries.extend(self._get_source_autostart_config_entries())
         if "source" in self._negotiated_families():
+            entries.append(
+                ConfigEntry(
+                    key=CONF_ALLOW_AUDIO_ANALYSIS,
+                    type=ConfigEntryType.BOOLEAN,
+                    default_value=True,
+                    required=False,
+                )
+            )
             # an entry for the decline keeps it in the config of a client nothing is stored
             # for yet, so it is stored once the user declines the input
             entries.append(
@@ -535,6 +547,14 @@ class SendspinBasePlayer(PlayerProtocol):
                 )
             )
         return entries
+
+    async def on_config_updated(self) -> None:
+        """Handle logic when the PlayerConfig is first loaded or updated."""
+        if source_provider := self.mass.get_provider("sendspin_source"):
+            # an input that is playing holds the source it was selected with
+            cast("SendspinSourceProvider", source_provider).on_client_config_updated(
+                self.protocol_id
+            )
 
     async def handle_config_action(self, action: str) -> list[ConfigEntry]:
         """Run an unpair/management/input action, then re-render the entries."""
@@ -1809,6 +1829,7 @@ class SendspinPlayer(SendspinBasePlayer):
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
+        await super().on_config_updated()
         if (reported_delay := self._reported_static_delay) is not None:
             self._reported_static_delay = None
             if reported_delay != self.config.get_value(

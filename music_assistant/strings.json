@@ -433,6 +433,10 @@
       "action_label": "Reset authentication",
       "description": "Clear the current authentication details."
     },
+    "allow_audio_analysis": {
+      "label": "Allow analysis of the audio input",
+      "description": "Lets the audio analysis you added in the settings listen to this input while it plays, for example to recognize the song that is playing. Nothing it hears is stored. Disable this for an input that should not be listened to, such as a microphone."
+    },
     "verify_ssl": {
       "label": "Verify SSL",
       "description": "Whether or not to verify the certificate of SSL/TLS connections."

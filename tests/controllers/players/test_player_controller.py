@@ -3791,7 +3791,7 @@ class TestOfflinePowerControl:
 
         await getattr(controller, command)("player_1")
         async with asyncio.timeout(1.5):
-            with pytest.raises(PlayerUnavailableError, match="switched off"):
+            with pytest.raises(PlayerUnavailableError, match="was called off"):
                 await pending
 
         controller._handle_play_media.assert_not_awaited()
@@ -3888,7 +3888,7 @@ class TestOfflinePowerControl:
 
         await getattr(queues, action)("player_1")
         async with asyncio.timeout(1.5):
-            with pytest.raises(PlayerUnavailableError, match="switched off"):
+            with pytest.raises(PlayerUnavailableError, match="was called off"):
                 await pending
 
         queues.play_index.assert_not_awaited()
@@ -4656,6 +4656,43 @@ class TestAddCurrentlyPlayingToFavorites:
 
         assert acting_users == [expected]
 
+    @pytest.mark.parametrize(
+        ("media_type", "translation_key"),
+        [(None, "nothing_playing"), (MediaType.RADIO, "favorite_track_unknown")],
+        ids=["nothing-playing", "radio-without-track-info"],
+    )
+    async def test_a_track_that_can_not_be_told_is_refused(
+        self, mock_mass: MagicMock, media_type: MediaType | None, translation_key: str
+    ) -> None:
+        """
+        Test that nothing playing, or a radio station that names no track, says so.
+
+        :param mock_mass: The mocked MusicAssistant instance.
+        :param media_type: What the queue plays, None for no queue and no source at all.
+        :param translation_key: The key of the refusal.
+        """
+        controller = _controller(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        player, _ = _attach(provider, "player1", "Player 1")
+        _refresh(player)
+        queue = None
+        if media_type is None:
+            player.state.active_source = None
+        else:
+            queue = MagicMock(queue_id="player1")
+            queue.current_item.media_item.media_type = media_type
+            queue.current_item.streamdetails = None
+
+        with (
+            patch.object(controller, "get_active_queue", return_value=queue),
+            patch.object(players_playback, "resolve_playback_user", AsyncMock(return_value=None)),
+            pytest.raises(PlayerCommandFailed) as error,
+        ):
+            await controller.add_currently_playing_to_favorites("player1")
+
+        assert error.value.translation_key == translation_key
+        assert error.value.translation_args == ["Player 1"]
+
 
 STREAM_URL = "http://stream.example.com/live"
 
@@ -4930,7 +4967,9 @@ class TestAddCurrentlyPlayingToFavoritesResolution:
     async def test_no_active_source(self, mock_mass: MagicMock) -> None:
         """A player without an active source has nothing to add."""
         _search_tracks(mock_mass)
-        idle = SimpleNamespace(player_id="player1", active_source=None, current_media=None)
+        idle = SimpleNamespace(
+            player_id="player1", name="Player 1", active_source=None, current_media=None
+        )
 
         with pytest.raises(PlayerCommandFailed, match="Player has no active source"):
             await self._add(mock_mass, idle, None)
