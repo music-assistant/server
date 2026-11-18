@@ -1,4 +1,4 @@
-"""Tests for provider manifest loading: the has_setup_flow flag and the tier."""
+"""Tests for provider manifest loading: the has_setup_flow flag, the tier and the features."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ import pathlib
 from typing import TYPE_CHECKING
 
 import pytest
-from music_assistant_models.enums import ProviderTier
+from music_assistant_models.enums import ProviderFeature, ProviderTier
+from music_assistant_models.provider import ProviderManifest
 
 from music_assistant import mass as mass_module
 
@@ -111,3 +112,21 @@ async def test_shipped_provider_is_core_whatever_its_manifest_says(
     manifest = mass_minimal.get_provider_manifest("claims_community")
     assert manifest.tier == ProviderTier.CORE
     assert manifest.to_dict()["tier"] == "core"
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        "airplay_receiver",
+        "ariacast_receiver",
+        "sendspin_source",
+        "spotify_connect",
+        "vban_receiver",
+        "yandex_ynison",
+    ],
+)
+async def test_audio_source_plugins_declare_the_feature(domain: str) -> None:
+    """A plugin that always offers an audio source declares it in its manifest."""
+    manifest_path = pathlib.Path(mass_module.PROVIDERS_PATH, domain, "manifest.json")
+    manifest = await ProviderManifest.parse(str(manifest_path))
+    assert ProviderFeature.AUDIO_SOURCE in manifest.features

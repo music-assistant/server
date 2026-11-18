@@ -292,6 +292,7 @@ The manifest file contains metadata and configuration about a provider. The supp
 | self_service | Whether members may set up and reconfigure an instance of the provider as a music source of their own. Defaults to `true`. A provider whose setup reaches into the server itself, like a folder on its disk, may only keep it `true` when its setup flow checks what a member picks against what that member may use (the Local files flow checks every folder against `mass.storage.can_hold_music_source`); otherwise set it to `false` | boolean |
 | credits | List of credits/attributions, e.g. for libraries or icons used. Accepts markdown formatting. | array[string] |
 | menu_actions | Entries the provider adds to the menu of a media item, see [Menu actions](#-menu-actions). | array[object] |
+| features | Features the provider offers whatever its config, such as `audio_source`. The app uses them to decide where the provider is listed, and they are merged into its supported features. | array[string] |
 
 A provider's config entries are not declared in the manifest. They are built in code by overriding `get_config_entries` on the provider, and their values are read via `self.config.get_value(key)`. One-time setup input is collected by the provider's setup flow (`setup_flow.py`).
 

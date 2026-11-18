@@ -47,7 +47,7 @@ def mass_mock() -> Mock:
 @pytest.fixture
 def manifest_mock() -> Mock:
     """Return a mock provider manifest."""
-    manifest = Mock()
+    manifest = Mock(features=set())
     manifest.domain = "lastfm_recommendations"
     return manifest
 
