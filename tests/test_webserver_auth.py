@@ -71,6 +71,7 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
 )
 from music_assistant.controllers.webserver.helpers.login_flow import (
     AuthTransport,
+    ExternalIdentity,
     PendingLogin,
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
@@ -78,6 +79,7 @@ from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.pkce import pkce_challenge
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.auth_provider import AuthProvider
 from tests.common import set_music_source_access
 
 # a client's PKCE pair, and the arguments of a valid sign-in for the remote app
@@ -597,6 +599,18 @@ async def test_disable_enable_user(auth_manager: AuthenticationManager) -> None:
     # Verify user is enabled
     enabled_user = await auth_manager.get_user(user.user_id)
     assert enabled_user is not None
+
+
+async def test_unknown_provider_type_is_never_linked(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the UNKNOWN provider type can not be linked and never resolves a user.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="unknownlink", role=UserRole.USER)
+    with pytest.raises(InvalidDataError):
+        await auth_manager.link_user_to_provider(user, AuthProviderType.UNKNOWN, "someone")
+    assert await auth_manager.get_user_by_provider_link(AuthProviderType.UNKNOWN, "someone") is None
 
 
 async def test_user_lookups_include_a_disabled_user_only_on_request(
@@ -1420,69 +1434,45 @@ async def test_get_login_providers(auth_manager: AuthenticationManager) -> None:
     assert any(p["provider_id"] == "builtin" for p in providers)
 
 
-class _FakeHassProvider:
-    """Minimal stand-in for the Home Assistant provider."""
-
-    domain = "hass"
-    available = True
-
-    def __init__(self, url: str | None) -> None:
-        self._url = url
-
-    @property
-    def url(self) -> str | None:
-        """Return the configured Home Assistant URL, or None if not configured."""
-        return self._url
-
-
-async def test_get_login_providers_with_ha_provider(
-    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
-) -> None:
-    """
-    Test that the HA OAuth login provider is registered when the HA provider has a URL.
-
-    :param auth_manager: AuthenticationManager instance.
-    :param mass_minimal: Minimal MusicAssistant instance.
-    """
-    mass_minimal._providers["hass"] = _FakeHassProvider("http://homeassistant.local:8123")  # type: ignore[assignment]
-
-    providers = await auth_manager.get_login_providers()
-
-    assert any(p["provider_id"] == "homeassistant" for p in providers)
-
-
-async def test_get_login_providers_ha_provider_without_url(
-    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
-) -> None:
-    """
-    Test that a HA provider without a URL does not break the login providers endpoint.
-
-    Regression test for the HA provider storing its URL in setup data instead of
-    config: builtin login must remain available and the endpoint must not raise.
-
-    :param auth_manager: AuthenticationManager instance.
-    :param mass_minimal: Minimal MusicAssistant instance.
-    """
-    mass_minimal._providers["hass"] = _FakeHassProvider(None)  # type: ignore[assignment]
-
-    providers = await auth_manager.get_login_providers()
-
-    assert any(p["provider_id"] == "builtin" for p in providers)
-    assert not any(p["provider_id"] == "homeassistant" for p in providers)
-
-
 @pytest.fixture
 def oauth_provider(auth_manager: AuthenticationManager) -> MagicMock:
     """
-    Register a stub OAuth login provider as "oauth" on the auth manager.
+    Load a stub auth provider with the sign-in method id and instance id "oauth".
 
     :param auth_manager: AuthenticationManager instance.
     """
-    provider = MagicMock(requires_redirect=True)
+    provider = MagicMock(
+        spec=AuthProvider,
+        instance_id="oauth",
+        domain="oauth",
+        sign_in_method_id="oauth",
+        available=True,
+        unloading=False,
+        sign_in_available=True,
+        requires_redirect=True,
+        supports_remote_app=True,
+    )
     provider.build_authorization_url = AsyncMock(return_value="https://idp.example.com/authorize")
-    provider.supports_remote_app = AsyncMock(return_value=True)
-    auth_manager.login_providers["oauth"] = provider
+    auth_manager.mass._providers["oauth"] = provider
     return provider
+
+
+async def _ha_identity(auth_manager: AuthenticationManager, user: User) -> ExternalIdentity:
+    """
+    Link the user to a Home Assistant account and return the identity of that account.
+
+    :param auth_manager: The authentication manager of the user.
+    :param user: The user to link.
+    """
+    ha_user_id = f"ha_{user.username}"
+    await auth_manager.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, ha_user_id)
+    return ExternalIdentity(
+        provider_type=AuthProviderType.HOME_ASSISTANT,
+        issuer="http://ha.local:8123",
+        subject=ha_user_id,
+        username=user.username,
+        display_name=user.display_name,
+    )
 
 
 @pytest.mark.parametrize("return_url", ["javascript:alert(1)", "https:///no-host"])
@@ -1738,7 +1728,7 @@ async def test_get_auth_url_refuses_an_invalid_sign_in_request(
     :param supports_remote_app: Whether the login provider supports the remote app.
     :param error: Part of the expected error.
     """
-    oauth_provider.supports_remote_app.return_value = supports_remote_app
+    oauth_provider.supports_remote_app = supports_remote_app
     path = f"/ws?webrtc_session_id={session_id}" if session_id else "/ws"
     with (
         _remote_access_gateway(auth_manager, "127.0.0.1", {"live"}),
@@ -1757,7 +1747,9 @@ async def test_exchange_signs_in_the_user_of_an_app_sign_in(
 ) -> None:
     """An app sign-in is exchanged once, with the matching verifier, for a token of its user."""
     user = await auth_manager.create_user(username="remote", display_name="Remote User")
-    oauth_provider.complete_authorization = AsyncMock(return_value=user)
+    oauth_provider.complete_authorization = AsyncMock(
+        return_value=await _ha_identity(auth_manager, user)
+    )
     pending = _start_app_sign_in(auth_manager)
 
     result = _as_sent(
@@ -1871,7 +1863,9 @@ async def test_failed_exchanges_are_rate_limited_per_connection(
 ) -> None:
     """After repeated failures a connection is throttled, while other connections are not."""
     user = await auth_manager.create_user(username="remote")
-    oauth_provider.complete_authorization = AsyncMock(return_value=user)
+    oauth_provider.complete_authorization = AsyncMock(
+        return_value=await _ha_identity(auth_manager, user)
+    )
     set_current_client_id("connection-a")
     try:
         for _ in range(3):

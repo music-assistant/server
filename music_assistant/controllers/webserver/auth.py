@@ -19,10 +19,12 @@ from music_assistant_models.auth import (
     AuthToken,
     Role,
     Scope,
+    SignInMethod,
     User,
     UserAuthProvider,
     UserRole,
 )
+from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
     AuthenticationFailed,
     AuthenticationRequired,
@@ -32,6 +34,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import (
+    CONF_AUTH_ALLOW_SELF_REGISTRATION,
     DB_TABLE_BOOKMARKS,
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PLAY_HISTORY,
@@ -53,16 +56,17 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     AuthFailure,
     AuthResult,
     BuiltinLoginProvider,
-    HomeAssistantOAuthProvider,
-    HomeAssistantProviderConfig,
     LoginProvider,
     LoginRateLimiter,
+    get_or_create_ha_user,
     normalize_username,
 )
 from music_assistant.controllers.webserver.helpers.login_flow import (
     AUTH_CODE_RE,
     PKCE_CHALLENGE_RE,
     AuthTransport,
+    ExternalIdentity,
+    LoginFlowError,
     PendingLogin,
     PendingLoginStore,
     RedirectTarget,
@@ -75,11 +79,11 @@ from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.jwt_auth import JWTHelper
 from music_assistant.helpers.provider_access import own_music_sources, with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
+from music_assistant.models.auth_provider import AuthProvider
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
     from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
-    from music_assistant.providers.hass import HomeAssistantProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
@@ -390,6 +394,8 @@ class AuthenticationManager:
         :param provider_user_id: The user ID from the provider.
         :param include_disabled: Also return a disabled user.
         """
+        if provider_type == AuthProviderType.UNKNOWN:
+            return None
         link_row = await self.database.get_row(
             "user_auth_providers",
             {
@@ -552,7 +558,10 @@ class AuthenticationManager:
         :param user: The user to link.
         :param provider_type: The provider type.
         :param provider_user_id: The user ID from the provider (e.g., password hash, OAuth ID).
+        :raises InvalidDataError: If the provider type is unknown.
         """
+        if provider_type == AuthProviderType.UNKNOWN:
+            raise InvalidDataError("Can not link a user to an unknown auth provider type")
         # Check if a link already exists for this provider/provider_user_id
         existing_link = await self.database.get_row(
             "user_auth_providers",
@@ -567,7 +576,7 @@ class AuthenticationManager:
             return UserAuthProvider(
                 link_id=existing_link["link_id"],
                 user_id=existing_link["user_id"],
-                provider_type=AuthProviderType(existing_link["provider_type"]),
+                provider_type=provider_type,
                 provider_user_id=existing_link["provider_user_id"],
                 created_at=datetime.fromisoformat(existing_link["created_at"]),
             )
@@ -990,12 +999,8 @@ class AuthenticationManager:
         self.logger.info("User account disabled (user_id=%s)", user_id)
 
     async def get_login_providers(self) -> list[dict[str, Any]]:
-        """Get list of available login providers (dynamically checks for HA provider)."""
-        # Sync HA OAuth provider with HA provider availability
-        await self._sync_ha_oauth_provider()
-
+        """Get list of available login providers, including the usable auth providers."""
         providers = []
-        # a concurrent listing can add or remove the HA provider while this one awaits
         for provider_id, provider in list(self.login_providers.items()):
             providers.append(
                 {
@@ -1005,7 +1010,42 @@ class AuthenticationManager:
                     "supports_remote_app": await provider.supports_remote_app(),
                 }
             )
+        for auth_provider in self._get_auth_providers():
+            providers.append(
+                {
+                    "provider_id": auth_provider.sign_in_method_id,
+                    # this list only ever held the built-in and Home Assistant types, whose
+                    # sign-in method ids equal their type
+                    "provider_type": auth_provider.sign_in_method_id,
+                    "requires_redirect": auth_provider.requires_redirect,
+                    "supports_remote_app": auth_provider.supports_remote_app,
+                }
+            )
         return providers
+
+    def get_sign_in_methods(self) -> list[SignInMethod]:
+        """Return the sign-in methods of the loaded auth providers."""
+        # registered providers rather than initialized ones: signing in needs none of the API
+        # commands loaded_in_mass() registers, and the startup awaits registration only
+        return [
+            provider.get_sign_in_method()
+            for provider in self.mass.providers
+            if isinstance(provider, AuthProvider) and provider.available and not provider.unloading
+        ]
+
+    def on_auth_provider_changed(self, instance_id: str, loaded: bool) -> None:
+        """
+        Handle an auth provider that was loaded or unloaded.
+
+        :param instance_id: The instance id of the auth provider.
+        :param loaded: True if the provider was loaded, False if it was unloaded.
+        """
+        if not loaded:
+            # a sign-in started with a provider that is gone can no longer complete
+            self.pending_logins.drop_provider(instance_id)
+        # carries no data: websocket clients only receive events once authenticated, and
+        # the methods are fetched by the login page itself
+        self.mass.signal_event(EventType.AUTH_SIGNIN_METHODS_UPDATED)
 
     @api_command("auth/login", authenticated=False)
     async def login(
@@ -1144,8 +1184,8 @@ class AuthenticationManager:
                     "authorization_url": None,
                     "error": "redirect_target app requires Remote Access and a code_challenge",
                 }
-            provider = self.login_providers.get(provider_id)
-            if not provider or not await provider.supports_remote_app():
+            provider = self._get_auth_provider(provider_id)
+            if not provider or not provider.supports_remote_app:
                 return {
                     "authorization_url": None,
                     "error": "Provider does not support the remote app",
@@ -1196,7 +1236,7 @@ class AuthenticationManager:
             does not exist, needs no redirect or is not reachable.
         :raises RateLimited: If too many sign-ins are pending.
         """
-        provider = self.login_providers.get(provider_id)
+        provider = self._get_auth_provider(provider_id)
         if not provider or not provider.requires_redirect:
             return None
 
@@ -1212,7 +1252,7 @@ class AuthenticationManager:
         else:
             redirect_uri = f"{callback_base_url}/auth/callback?provider_id={provider_id}"
         pending = self.pending_logins.start(
-            provider_id,
+            provider.instance_id,
             transport,
             redirect_uri,
             redirect_target=redirect_target,
@@ -1223,6 +1263,8 @@ class AuthenticationManager:
         auth_url = None
         try:
             auth_url = await provider.build_authorization_url(pending)
+        except LoginFlowError as err:
+            self.logger.debug("Sign-in with %s not started: %s", provider_id, err)
         finally:
             if not auth_url:
                 self.pending_logins.pop(pending.state)
@@ -1236,18 +1278,22 @@ class AuthenticationManager:
         :param code: OAuth authorization code.
         :param state: OAuth state parameter.
         """
-        provider = self.login_providers.get(provider_id)
+        provider = self._get_auth_provider(provider_id)
         if not provider:
             return AuthResult(success=False, error="Invalid provider")
 
         pending = self.pending_logins.pop(state)
         # a sign-in that returns to the app is completed by the app itself (auth/exchange)
-        if not pending or pending.provider_id != provider_id or pending.redirect_target != "server":
+        if (
+            not pending
+            or pending.provider_id != provider.instance_id
+            or pending.redirect_target != "server"
+        ):
             return AuthResult(success=False, error="Invalid or expired state parameter")
         if not AUTH_CODE_RE.fullmatch(code):
             return AuthResult(success=False, error="Invalid authorization code")
         try:
-            user = await provider.complete_authorization(pending, {"code": code})
+            user = await self._complete_redirect_sign_in(provider, pending, {"code": code})
         except AuthenticationFailed as err:
             return AuthResult(success=False, error=str(err))
         return AuthResult(success=True, user=user, return_url=pending.return_url)
@@ -1825,8 +1871,9 @@ class AuthenticationManager:
         rows = await self.database.get_rows("user_auth_providers", {"user_id": user.user_id})
         providers = [UserAuthProvider.from_dict(dict(row)) for row in rows]
         for provider in providers:
-            # the builtin link stores the password hash as its provider user id
-            if provider.provider_type == AuthProviderType.BUILTIN:
+            # the builtin link stores the password hash as its provider user id, and a link
+            # of a type this server does not know may hold a credential just as well
+            if provider.provider_type in (AuthProviderType.BUILTIN, AuthProviderType.UNKNOWN):
                 provider.provider_user_id = ""
         return [p.to_dict() for p in providers]
 
@@ -2270,74 +2317,86 @@ class AuthenticationManager:
         return jwt_secret
 
     async def _setup_login_providers(self) -> None:
-        """Set up available login providers based on configuration."""
-        # Always enable built-in provider
+        """Set up the built-in login provider."""
         self.login_providers["builtin"] = BuiltinLoginProvider(self.mass, "builtin", {})
 
-        # Home Assistant OAuth provider
-        # Automatically enabled if HA provider (plugin) is configured
-        ha_provider = None
-        for provider in self.mass.providers:
-            if provider.domain == "hass" and provider.available:
-                ha_provider = provider
-                break
+    def _get_auth_providers(self) -> list[AuthProvider]:
+        """Return the loaded auth providers whose sign-in method can be used right now."""
+        return [
+            provider
+            for provider in self.mass.providers
+            if isinstance(provider, AuthProvider)
+            and provider.available
+            and not provider.unloading
+            and provider.sign_in_available
+        ]
 
-        if ha_provider:
-            ha_provider = cast("HomeAssistantProvider", ha_provider)
-            ha_url = ha_provider.url
-            if not ha_url:
-                self.logger.warning(
-                    "Home Assistant provider has no URL configured, "
-                    "Home Assistant OAuth login is not available"
-                )
-                return
-            ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
-            self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
-                self.mass, "homeassistant", ha_config
-            )
-            self.logger.info(
-                "Home Assistant OAuth provider enabled (using URL from HA provider: %s)",
-                ha_url,
-            )
-
-    async def _sync_ha_oauth_provider(self) -> None:
+    def _get_auth_provider(self, sign_in_method_id: str) -> AuthProvider | None:
         """
-        Sync HA OAuth provider with HA provider availability (dynamic check).
+        Return the usable auth provider of a sign-in method, if any.
 
-        Adds the provider if HA is available, removes it if HA is not available.
+        :param sign_in_method_id: The id clients start the sign-in with.
         """
-        # Find HA provider
-        ha_provider = None
-        for provider in self.mass.providers:
-            if provider.domain == "hass" and provider.available:
-                ha_provider = provider
-                break
+        return next(
+            (p for p in self._get_auth_providers() if p.sign_in_method_id == sign_in_method_id),
+            None,
+        )
 
-        if ha_provider:
-            # HA provider exists and is available - ensure OAuth provider is registered
-            if "homeassistant" not in self.login_providers:
-                ha_provider = cast("HomeAssistantProvider", ha_provider)
-                ha_url = ha_provider.url
-                if not ha_url:
-                    # missing URL must never break the login providers endpoint,
-                    # simply leave the HA OAuth provider unregistered
-                    self.logger.debug(
-                        "Home Assistant provider has no URL configured, "
-                        "Home Assistant OAuth login is not available"
-                    )
-                    return
-                ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
-                self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
-                    self.mass, "homeassistant", ha_config
-                )
-                self.logger.info(
-                    "Home Assistant OAuth provider dynamically enabled (using URL: %s)",
-                    ha_url,
-                )
-        # HA provider not available - remove OAuth provider if present
-        elif "homeassistant" in self.login_providers:
-            del self.login_providers["homeassistant"]
-            self.logger.info("Home Assistant OAuth provider removed (HA provider not available)")
+    async def _complete_redirect_sign_in(
+        self, provider: AuthProvider, pending: PendingLogin, params: Mapping[str, str]
+    ) -> User:
+        """
+        Complete a redirect sign-in with its auth provider and return the user it signs in.
+
+        :param provider: The auth provider the sign-in was started with.
+        :param pending: The sign-in the browser returned for.
+        :param params: The parameters the browser returned with.
+        :raises AuthenticationFailed: If the sign-in can not be completed or the user may not
+            sign in.
+        """
+        try:
+            identity = await provider.complete_authorization(pending, params)
+        except LoginFlowError as err:
+            raise AuthenticationFailed(
+                str(err), translation_key=err.translation_key, translation_args=err.translation_args
+            ) from err
+        return await self._get_external_identity_user(identity)
+
+    async def _get_external_identity_user(self, identity: ExternalIdentity) -> User:
+        """
+        Return the user an external identity signs in, linking or creating it as allowed.
+
+        :param identity: The verified identity an auth provider returned.
+        :raises AuthenticationFailed: If no user may sign in with the identity.
+        """
+        if identity.provider_type is not AuthProviderType.HOME_ASSISTANT:
+            raise AuthenticationFailed("Signing in with this identity type is not supported")
+        allow_create = bool(self.webserver.config.get_value(CONF_AUTH_ALLOW_SELF_REGISTRATION))
+        try:
+            user = await get_or_create_ha_user(
+                self.mass,
+                identity.subject,
+                identity.username or identity.subject,
+                identity.display_name,
+                identity.avatar_url,
+                allow_create=allow_create,
+            )
+        except AuthenticationFailed:
+            raise
+        except Exception as err:
+            self.logger.exception("Error during Home Assistant OAuth callback")
+            raise AuthenticationFailed("The Home Assistant sign-in could not be completed") from err
+
+        if not user:
+            raise AuthenticationFailed(
+                "Self-registration is disabled. Please contact an administrator.",
+                translation_key="self_registration_disabled",
+            )
+        if not user.enabled:
+            raise AuthenticationFailed(
+                "User account is disabled", translation_key="user_account_disabled"
+            )
+        return user
 
     async def _has_non_system_users(self) -> bool:
         """Check if any non-system users exist."""
@@ -2803,10 +2862,12 @@ class AuthenticationManager:
             raise AuthenticationFailed("This sign-in can not be completed with auth/exchange")
         if not verify_pkce(code_verifier, pending.client_code_challenge):
             raise AuthenticationFailed("The code_verifier does not match the code_challenge")
-        provider = self.login_providers.get(pending.provider_id)
+        provider = next(
+            (p for p in self._get_auth_providers() if p.instance_id == pending.provider_id), None
+        )
         if not provider:
             raise AuthenticationFailed("The login provider of this sign-in is not available")
-        return await provider.complete_authorization(pending, {"code": code})
+        return await self._complete_redirect_sign_in(provider, pending, {"code": code})
 
 
 def _client_rate_limit_key() -> tuple[str, bool]:

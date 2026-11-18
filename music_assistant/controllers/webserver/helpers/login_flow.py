@@ -6,13 +6,16 @@ import hmac
 import re
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
-from music_assistant_models.errors import RateLimited
+from music_assistant_models.errors import MusicAssistantError, RateLimited
 
 from music_assistant.helpers.pkce import pkce_challenge
+
+if TYPE_CHECKING:
+    from music_assistant_models.auth import AuthProviderType
 
 # Seconds a sign-in may take, and how many may be pending at once
 PENDING_LOGIN_TTL: Final = 600
@@ -50,6 +53,35 @@ class PendingLogin:
     idp_code_verifier: str
     return_url: str | None = None
     client_code_challenge: str | None = None  # S256 only
+
+
+@dataclass
+class ExternalIdentity:
+    """A verified identity that an auth provider returns at the end of a sign-in."""
+
+    provider_type: AuthProviderType
+    issuer: str
+    subject: str
+    email: str | None = None
+    email_verified: bool = False
+    username: str | None = None
+    display_name: str | None = None
+    avatar_url: str | None = None  # https only
+    groups: list[str] = field(default_factory=list)
+    claims: dict[str, Any] = field(default_factory=dict)  # snapshot, size-capped
+
+
+class LoginFlowError(MusicAssistantError):
+    """A sign-in that cannot be completed, with a translation key that tells the user why."""
+
+    def __init__(self, translation_key: str, message: str | None = None) -> None:
+        """
+        Initialize the error.
+
+        :param translation_key: The translation key of the reason shown to the user.
+        :param message: Optional message for the log, the translation key if omitted.
+        """
+        super().__init__(message or translation_key, translation_key=translation_key)
 
 
 class PendingLoginStore:
@@ -114,6 +146,17 @@ class PendingLoginStore:
         if pending is None or pending.expires_at <= time.monotonic():
             return None
         return pending
+
+    def drop_provider(self, provider_id: str) -> int:
+        """
+        Remove the pending sign-ins of a login provider and return how many were removed.
+
+        :param provider_id: The id of the login provider.
+        """
+        states = [key for key, entry in self._pending.items() if entry.provider_id == provider_id]
+        for state in states:
+            del self._pending[state]
+        return len(states)
 
 
 def verify_pkce(code_verifier: str, code_challenge: str) -> bool:
