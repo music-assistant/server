@@ -155,7 +155,12 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
         self.logger.debug("Getting podcast for %s", prov_podcast_id)
-        podcast = await self.client.content.get_podcast(pid=prov_podcast_id)
+        try:
+            podcast = await self.client.content.get_podcast(pid=prov_podcast_id)
+        except exceptions.NotFoundError as e:
+            raise MediaNotFoundError(e) from e
+        except exceptions.SoundsException as e:
+            raise MusicAssistantError(e) from e
         ma_podcast = await self.adaptor.new_object(source_obj=podcast, force_type=Podcast)
 
         if isinstance(ma_podcast, Podcast):
@@ -189,16 +194,20 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         self.logger.debug("Getting radio for %s", prov_radio_id)
-        station = await self.client.stations.get_station(prov_radio_id, include_stream=True)
+        try:
+            station = await self.client.stations.get_station(prov_radio_id, include_stream=True)
+        except exceptions.NotFoundError as e:
+            raise MediaNotFoundError(e) from e
+        except exceptions.SoundsException as e:
+            raise MusicAssistantError(e) from e
+
         if station:
             ma_radio = await self.adaptor.new_object(station, force_type=Radio)
             if ma_radio and isinstance(ma_radio, Radio):
                 return ma_radio
-        else:
-            raise MediaNotFoundError(f"No station found: {prov_radio_id}")
 
-        self.logger.error("Failed to retrieve station with details: %s %s", station, ma_radio)
-        raise MediaNotFoundError("No valid radio stream found")
+        self.logger.error("Failed to retrieve station with details: %s", station)
+        raise MediaNotFoundError("No valid radio stream found for %s", prov_radio_id)
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -384,7 +393,13 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         # schedule time. The best we can find out from the API is original release
         # date, so the stream title loses access to the air date
         self.logger.debug("Getting podcast episode for %s", prov_episode_id)
-        episode = await self.client.content.get_by_pid(prov_episode_id)
+        try:
+            episode = await self.client.content.get_by_pid(prov_episode_id)
+        except exceptions.NotFoundError as e:
+            raise MediaNotFoundError(e) from e
+        except exceptions.SoundsException as e:
+            raise MusicAssistantError(e) from e
+
         # This can return a mixture of episode/clip types
         if not isinstance(episode, EpisodeTypes):
             raise UnplayableMediaError(
