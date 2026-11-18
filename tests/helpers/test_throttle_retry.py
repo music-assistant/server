@@ -889,6 +889,77 @@ class TestThrottlerVirtualClock:
         assert fake_clock.sleeps == [pytest.approx(0.02)]
 
 
+class TestThrottlerSeed:
+    """A limit restored from storage keeps counting the slots granted before."""
+
+    async def test_seeded_grants_count(self, fake_clock: FakeClock) -> None:
+        """Seeded slots are spent, and free up as the period passes."""
+        throttler = Throttler(rate_limit=2, period=3600)
+        throttler.seed([fake_clock.now - 100, fake_clock.now - 50])
+        assert throttler.available(RequestPriority.NORMAL) == 0
+        assert throttler.try_acquire(1, RequestPriority.NORMAL) == pytest.approx(3500)
+        fake_clock.now = 3500
+        assert throttler.available(RequestPriority.NORMAL) == 1
+        assert throttler.try_acquire(1, RequestPriority.NORMAL) == 0
+
+    async def test_grants_returns_the_times_of_the_slots(self, fake_clock: FakeClock) -> None:
+        """The granted times come back in order, so they can be stored and restored."""
+        throttler = Throttler(rate_limit=2, period=3600)
+        throttler.seed([fake_clock.now - 100])
+        assert throttler.try_acquire(1, RequestPriority.NORMAL) == 0
+        assert throttler.grants() == [fake_clock.now - 100, fake_clock.now]
+
+
+class TestThrottlerTryAcquire:
+    """Slots are taken without waiting, all of the asked ones or none."""
+
+    async def test_takes_free_slots(self, fake_clock: FakeClock) -> None:
+        """Free slots are taken at once, and count as used."""
+        throttler = Throttler(rate_limit=3, period=3600)
+        assert throttler.try_acquire(2, RequestPriority.NORMAL) == 0
+        assert throttler.available(RequestPriority.NORMAL) == 1
+        assert not fake_clock.sleeps
+
+    async def test_takes_nothing_when_not_all_slots_are_free(self, fake_clock: FakeClock) -> None:
+        """Asking for more slots than are free takes none, and says when they will be free."""
+        throttler = Throttler(rate_limit=3, period=3600)
+        assert throttler.try_acquire(1, RequestPriority.NORMAL) == 0
+        fake_clock.now = 600
+        assert throttler.try_acquire(1, RequestPriority.NORMAL) == 0
+        # two slots are taken, so three need the oldest two to expire
+        assert throttler.try_acquire(3, RequestPriority.NORMAL) == pytest.approx(3600 + 600 - 600)
+        assert throttler.available(RequestPriority.NORMAL) == 1
+        fake_clock.now = 3600
+        assert throttler.try_acquire(3, RequestPriority.NORMAL) == pytest.approx(600)
+        fake_clock.now = 4200
+        assert throttler.try_acquire(3, RequestPriority.NORMAL) == 0
+
+    async def test_more_slots_than_a_period_allows_never_free(self, fake_clock: FakeClock) -> None:
+        """Asking for more slots than the rate limit allows is never granted."""
+        throttler = Throttler(rate_limit=2, period=3600)
+        assert throttler.try_acquire(3, RequestPriority.NORMAL) == float("inf")
+        assert throttler.available(RequestPriority.NORMAL) == 2
+
+    async def test_low_priority_gets_its_share(self, fake_clock: FakeClock) -> None:
+        """Low priority requests take only their share of the slots, and are paced."""
+        throttler = Throttler(rate_limit=4, period=3600)
+        assert throttler.available(RequestPriority.LOW) == 2
+        assert throttler.try_acquire(1, RequestPriority.LOW) == 0
+        assert throttler.try_acquire(1, RequestPriority.LOW) == pytest.approx(1800)
+        assert throttler.try_acquire(1, RequestPriority.NORMAL) == 0
+
+    async def test_does_not_overtake_the_line(self) -> None:
+        """A slot that frees up goes to a request waiting in line, not to a later caller."""
+        throttler = Throttler(rate_limit=1, period=0.2)
+        await throttler.acquire(RequestPriority.NORMAL)
+        served, tasks = await _acquire_in_order(throttler, [RequestPriority.LOW])
+        assert throttler.available(RequestPriority.HIGH) == 0
+        assert throttler.try_acquire(1, RequestPriority.HIGH) > 0
+        async with asyncio.timeout(5):
+            await asyncio.gather(*tasks)
+        assert served == [0]
+
+
 class TestThrottlerManagerPriority:
     """Playback takes a slot without sitting out a cooldown."""
 

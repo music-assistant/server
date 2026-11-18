@@ -13,7 +13,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ProviderFeature, ProviderType
-from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    ProviderUnavailableError,
+    RateLimited,
+)
 
 from music_assistant.helpers.datetime import now as host_now
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
@@ -556,14 +561,32 @@ def test_plan_sections_ignores_invalid_optional_chance() -> None:
     assert planned == []
 
 
-async def test_generate_text_wraps_not_connected_error() -> None:
-    """Raise an actionable MusicAssistantError when the AI engine is disconnected."""
-
-    class NotConnected(Exception):
-        """Match hass_client NotConnected exception name."""
-
+@pytest.mark.parametrize(
+    ("err", "expected"),
+    [
+        pytest.param(
+            ProviderUnavailableError("Home Assistant is not reachable"),
+            "is not reachable. reconnect the provider",
+            id="unreachable",
+        ),
+        pytest.param(
+            RateLimited("Rate limited for another 873 seconds", backoff_time=873),
+            "taking no more requests for now. try again in 15 minutes",
+            id="rate_limited",
+        ),
+        pytest.param(
+            RateLimited("slow down"),
+            "taking no more requests for now. try again later",
+            id="rate_limited_without_wait",
+        ),
+    ],
+)
+async def test_generate_text_explains_an_engine_that_is_unavailable(
+    err: Exception, expected: str
+) -> None:
+    """An unreachable or rate limited AI engine gets an actionable message, not its raw error."""
     plugin = _create_ai_plugin("hass_1", "ai_task.default")
-    plugin.ai_query = AsyncMock(side_effect=NotConnected)
+    plugin.ai_query = AsyncMock(side_effect=err)
     runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
     _set_runtime_mass(
         runtime,
@@ -578,8 +601,9 @@ async def test_generate_text_wraps_not_connected_error() -> None:
             prompt="test prompt",
             web_mode="disabled",
         )
-    assert "not connected" in str(error.value).lower()
+    assert expected in str(error.value).lower()
     assert "hass_1/ai_task.default" in str(error.value)
+    assert "query failed" not in str(error.value)
 
 
 async def test_generate_text_fails_the_section_when_the_engine_stalls(

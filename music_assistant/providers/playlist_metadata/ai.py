@@ -21,7 +21,7 @@ import os
 import string
 import tempfile
 import time
-from collections import Counter, deque
+from collections import Counter
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -33,6 +33,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ImageType
 from music_assistant_models.errors import (
     ActionUnavailable,
+    InvalidDataError,
     MediaNotFoundError,
     ProviderUnavailableError,
     RateLimited,
@@ -49,6 +50,7 @@ from music_assistant.helpers.plugin_engines import (
     select_ai_engine,
     select_image_engine,
 )
+from music_assistant.helpers.throttle_retry import RequestPriority, Throttler
 
 from .ai_constants import (
     BASE_PROMPT,
@@ -84,7 +86,6 @@ from .ai_constants import (
     DEFAULT_CUSTOM_PROMPT,
     DEFAULT_MAX_PER_HOUR,
     DESCRIPTION_PROMPT,
-    ENGINE_RETRY_SECONDS,
     FAILURE_BACKOFF_SECONDS,
     FULL_BLEED,
     IMAGE_EXTENSION,
@@ -117,22 +118,19 @@ from .fonts import get_font
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from music_assistant.models.plugin import AIEngine, ImageEngine
+    from music_assistant.models.plugin import AIEngine, ImageEngine, PluginEngine
     from music_assistant.providers.smart_playlist import SmartPlaylistProvider
 
     from . import PlaylistMetadataProvider
 
 SMART_PLAYLIST_DOMAIN: Final = "smart_playlist"
 BUILTIN_DOMAIN: Final = "builtin"
+# the period of the hourly limit
 THROTTLE_WINDOW_SECONDS: Final = 3600
 
-# what the worker generates for a playlist
+# what is generated for a playlist
 KIND_COVER: Final = "cover"
 KIND_DESCRIPTION: Final = "description"
-# the engines that are left alone after they could not be reached, and what each one makes
-ENGINE_IMAGE: Final = "image"
-ENGINE_TEXT: Final = "text"
-KIND_ENGINES: Final = {KIND_COVER: ENGINE_IMAGE, KIND_DESCRIPTION: ENGINE_TEXT}
 # the smart playlist provider's plain summary of the rules, which a written description replaces
 SMART_PLAYLIST_SUMMARY_PREFIX: Final = "[Smart Playlist] "
 # the smart playlist rules that end up in the prompts, so a change to them makes a new cover
@@ -193,37 +191,33 @@ class AIArtwork:
     The AI generated covers and descriptions of the Playlist Metadata provider.
 
     A playlist's metadata refresh never waits for a generation: it applies what is ready and
-    queues what is missing. A single background worker generates the queued covers and
-    descriptions one playlist at a time, within the hourly limits, and then refreshes the
-    playlist so they are applied to it as it is by then.
+    queues the playlist for the next generation pass. A pass generates the queued playlists'
+    covers and descriptions one playlist at a time, within the hourly limits, and then refreshes
+    each playlist so they are applied to it as it is by then. When the hourly limit or an engine
+    holds a playlist back, it is queued again once that has passed.
     """
 
     # one preview at a time, so repeated presses do not stack up paid generations
     _preview_lock: asyncio.Lock
-    # stores the generation times one at a time, so an older list can not overwrite a newer one
+    # stores the generation counter and the slot history one at a time, so an older write can
+    # not overwrite a newer one
     _store_lock: asyncio.Lock
     # one refresh pass at a time; a regenerate during one has it run again right after
     _refresh_lock: asyncio.Lock
     _refresh_again: bool
-    # when each cover and description of the last hour was generated, to enforce the hourly limit
-    _generated_at: deque[float]
-    _described_at: deque[float]
+    # the hourly limits of the covers and of the descriptions
+    _cover_slots: Throttler
+    _description_slots: Throttler
     # bumped by the regenerate action, so every cover and description is keyed anew
     _generation: int
-    # the library ids of the playlists waiting for the worker, with what each one is missing
-    _pending: dict[str, set[str]]
-    # wakes the worker from waiting for the hourly limit when new work is queued
-    _wakeup: asyncio.Event
-    _waiting: bool
-    # until when an engine that could not be reached is left alone, per engine
-    _paused_until: dict[str, float]
+    # the library ids of the playlists waiting for a generation pass
+    _pending: dict[str, None]
+    # the library ids of the playlists waiting to be queued again, which a refresh leaves be
+    _waiting: set[str]
     # the metadata refreshes running per playlist, each set once it has returned
     _refreshing: dict[str, set[asyncio.Event]]
-    # set when the provider unloads, so nothing queued afterwards starts a worker
+    # set when the provider unloads, so nothing is queued afterwards
     _stopped: bool
-    # whether a worker runs; set before it is started, as an eagerly started task can queue
-    # more work before Music Assistant has tracked it under its task id
-    _working: bool
 
     def __init__(self, provider: PlaylistMetadataProvider) -> None:
         """
@@ -239,16 +233,13 @@ class AIArtwork:
         self._preview_tasks: list[asyncio.Future[Any]] = []
         self._refresh_lock = asyncio.Lock()
         self._refresh_again = False
-        self._generated_at = deque()
-        self._described_at = deque()
+        self._cover_slots = Throttler(DEFAULT_MAX_PER_HOUR, THROTTLE_WINDOW_SECONDS)
+        self._description_slots = Throttler(DEFAULT_MAX_PER_HOUR, THROTTLE_WINDOW_SECONDS)
         self._generation = 0
         self._pending = {}
-        self._wakeup = asyncio.Event()
-        self._waiting = False
-        self._paused_until = {}
+        self._waiting = set()
         self._refreshing = {}
         self._stopped = False
-        self._working = False
 
     @property
     def covers_enabled(self) -> bool:
@@ -260,19 +251,13 @@ class AIArtwork:
         """Return whether descriptions are written with AI."""
         return bool(self.provider.config.get_value(CONF_DESCRIPTIONS))
 
-    @property
-    def waiting(self) -> bool:
-        """Return whether the worker waits for the hourly limit, or for an engine, to allow more."""
-        return self._waiting
-
     async def setup(self) -> None:
         """Restore the state kept across reloads and schedule the catch-up."""
-        self._generated_at = await self._load_timestamps(CACHE_KEY_GENERATED_AT)
-        self._described_at = await self._load_timestamps(CACHE_KEY_DESCRIBED_AT)
         generation = await self.mass.cache.get(
             CACHE_KEY_GENERATION, provider=self.provider.instance_id, default=0
         )
         self._generation = generation if isinstance(generation, int) else 0
+        await self._restore_slots()
         if self.covers_enabled or self.descriptions_enabled:
             # covers are otherwise only made on a playlist's (infrequent) metadata refresh, so
             # this catches up on the playlists in scope that have none yet
@@ -292,20 +277,25 @@ class AIArtwork:
 
     def stop(self, is_removed: bool = False) -> None:
         """
-        Stop the catch-up and the worker, and drop what is still waiting for it.
+        Stop the catch-up and the queued generations, and what waits to be queued again.
 
         :param is_removed: Whether the provider is being removed rather than reloaded.
         """
+        self._stopped = True
         self.mass.cancel_timer(self._task_id("catch_up"))
-        for name in ("catch_up", "regenerate", "worker"):
+        for name in ("catch_up", "regenerate"):
             self.mass.cancel_task(self._task_id(name))
         for task in self._preview_tasks:
             task.cancel()
-        self._stopped = True
+        with contextlib.suppress(InvalidDataError):
+            self.mass.tasks.cancel_task(self._task_id("generate"))
+        for item_id in self._waiting:
+            self.mass.cancel_timer(self._task_id(f"retry_{item_id}"))
+        self._pending.clear()
+        self._waiting.clear()
         self.mass.tasks.unregister_scheduled_task(
             self._task_id("refresh"), clear_persisted_state=is_removed
         )
-        self._pending.clear()
 
     async def config_entries(
         self, preview: tuple[ConfigEntry, ...] = ()
@@ -470,20 +460,20 @@ class AIArtwork:
         if self._preview_lock.locked():
             raise ActionUnavailable("A preview is already being generated, wait for it to finish")
         async with self._preview_lock:
-            if paused := self._engine_paused_for(ENGINE_IMAGE):
+            if paused := self._cooldown(image_engine):
                 raise ActionUnavailable(
                     "The image engine could not be reached, "
                     f"try again in {paused // 60 + 1} minute(s)"
                 )
-            # previews count towards the hourly limit, like the covers they preview. The check
-            # and the reservation of every slot run with nothing awaited in between, so a
-            # background generation can not take a slot in between
-            if (available := self._available(self._generated_at)) < len(looks):
+            # previews count towards the hourly limit, like the covers they preview, and take
+            # a slot for every style at once or none at all
+            cover_slots = self._slots(KIND_COVER)
+            available = cover_slots.available(RequestPriority.NORMAL)
+            if await self._take_slots(KIND_COVER, len(looks)):
                 raise ActionUnavailable(
                     f"The hourly limit leaves {available} cover(s) for now, "
                     "pick fewer styles to preview or try again later"
                 )
-            await self._record(self._generated_at, CACHE_KEY_GENERATED_AT, count=len(looks))
             self.logger.info("Generating %d preview cover(s) for '%s'", len(looks), playlist.name)
             # what the playlist is about is the same for every style, so it is worked out once
             context = await self._playlist_context(playlist)
@@ -609,7 +599,7 @@ class AIArtwork:
                 remotely_accessible=False,
             )
         if not await self._backing_off(KIND_COVER, playlist, file_name):
-            self._enqueue(playlist, KIND_COVER)
+            self._enqueue(playlist)
         return current
 
     async def apply_description(self, playlist: Playlist) -> None:
@@ -635,7 +625,7 @@ class AIArtwork:
             await self._remember_written(playlist, description)
             return
         if not await self._backing_off(KIND_DESCRIPTION, playlist, checksum):
-            self._enqueue(playlist, KIND_DESCRIPTION)
+            self._enqueue(playlist)
 
     @contextlib.contextmanager
     def refreshing(self, playlist: Playlist) -> Iterator[None]:
@@ -772,7 +762,7 @@ class AIArtwork:
             shown = current is not None and self.is_own_image(current) and current.path == file_name
             return not shown
         if not await self._backing_off(KIND_COVER, playlist, file_name):
-            self._enqueue(playlist, KIND_COVER)
+            self._enqueue(playlist)
         return False
 
     async def _queue_missing_description(self, playlist: Playlist, engine: AIEngine) -> bool:
@@ -789,114 +779,98 @@ class AIArtwork:
         if (stored := await self._stored_description(playlist, checksum)) is not None:
             return playlist.metadata.description != stored
         if not await self._backing_off(KIND_DESCRIPTION, playlist, checksum):
-            self._enqueue(playlist, KIND_DESCRIPTION)
+            self._enqueue(playlist)
         return False
 
-    def _enqueue(self, playlist: Playlist, kind: str) -> None:
-        """Queue a cover or description of the playlist for the worker, starting it if needed."""
-        if self._stopped:
+    def _enqueue(self, playlist: Playlist) -> None:
+        """Queue the playlist for the next generation pass."""
+        if (item_id := str(playlist.item_id)) in self._waiting:
+            # it is queued again once the hourly limit or the engine allows
             return
-        kinds = self._pending.setdefault(str(playlist.item_id), set())
-        if kind in kinds:
-            return
-        kinds.add(kind)
-        # a running worker is kept and picks the playlist up; a waiting one is only woken for
-        # work it can do now
-        if self._blocked_for(kind) is None:
-            self._wakeup.set()
-        if not self._working:
-            self._working = True
-            self.mass.create_task(self._work(), task_id=self._task_id("worker"))
+        self._queue(item_id)
 
-    async def _work(self) -> None:
-        """Generate the queued covers and descriptions, one playlist at a time."""
-        try:
-            await self._work_queue()
-        finally:
-            self._working = False
-
-    async def _work_queue(self) -> None:
-        """Work through the queue until it is empty, waiting while everything left is blocked."""
-        while self._pending and not self._stopped:
-            self._wakeup.clear()
-            blocked: dict[str, set[str]] = {}
-            wait = 0
-            for item_id in list(self._pending):
-                kinds = self._pending.get(item_id, set())
-                waits = [self._blocked_for(kind) for kind in kinds]
-                if kinds and all(waits):
-                    # nothing of it can run yet, so it is left as it is without fetching it
-                    blocked[item_id] = set(kinds)
-                    retry_in = min(w for w in waits if w)
-                    wait = retry_in if not wait else min(wait, retry_in)
-                    continue
-                kinds = self._pending.pop(item_id, set())
-                try:
-                    waiting_kinds, retry_in = await self._process(item_id, kinds)
-                except Exception as err:
-                    # one playlist failing must not stop the others
-                    self.logger.warning(
-                        "Could not generate for playlist %s: %s", item_id, err, exc_info=err
-                    )
-                    continue
-                if waiting_kinds:
-                    blocked[item_id] = waiting_kinds
-                    wait = retry_in if not wait else min(wait, retry_in)
-            for item_id, kinds in blocked.items():
-                self._pending.setdefault(item_id, set()).update(kinds)
-            if blocked and set(self._pending) <= set(blocked):
-                # everything left waits for the hourly limit to free a slot
-                self.logger.info(
-                    "Waiting for the hourly limit or the engine, continuing with %d playlist(s) "
-                    "in %d minutes",
-                    len(self._pending),
-                    wait // 60 + 1,
-                )
-                self._waiting = True
-                try:
-                    with contextlib.suppress(TimeoutError):
-                        async with asyncio.timeout(wait):
-                            await self._wakeup.wait()
-                finally:
-                    self._waiting = False
-
-    async def _process(self, item_id: str, kinds: set[str]) -> tuple[set[str], int]:
+    def _queue(self, item_id: str) -> None:
         """
-        Generate what a queued playlist is missing, and refresh it to apply what was made.
-
-        Returns what is left waiting for the hourly limit, and the seconds until a slot frees.
+        Queue a playlist for the next generation pass, starting one when none runs.
 
         :param item_id: The library id of the playlist.
-        :param kinds: What to generate for it.
+        """
+        self._waiting.discard(item_id)
+        if self._stopped:
+            return
+        self._pending[item_id] = None
+        self._start()
+
+    def _start(self) -> None:
+        """Start a generation pass, unless one is queued or running."""
+        if not self._pending:
+            return
+        # a pass that is still queued or running is kept, and takes up what was queued since
+        self.mass.tasks.run_background_task(
+            task_id=self._task_id("generate"),
+            name="Generate AI playlist artwork",
+            handler=self._work,
+            translation_key="generate_ai_artwork",
+            translation_owner=self.provider.translation_owner,
+        )
+
+    async def _work(self) -> None:
+        """Generate what the queued playlists are missing, one playlist at a time."""
+        while self._pending and not self._stopped:
+            item_id = next(iter(self._pending))
+            del self._pending[item_id]
+            try:
+                await self._generate(item_id)
+            except Exception as err:
+                # one playlist failing must not stop the others
+                self.logger.warning(
+                    "Could not generate the AI artwork of playlist %s: %s",
+                    item_id,
+                    err,
+                    exc_info=err,
+                )
+
+    async def _generate(self, item_id: str) -> None:
+        """
+        Generate what a playlist is missing, and refresh it to apply what was made.
+
+        What the hourly limit or an engine holds back is queued again once that has passed.
+
+        :param item_id: The library id of the playlist.
         """
         try:
             # fetched now, so the refresh applies the result to the playlist as it is now
             playlist = await self.mass.music.playlists.get_library_item(item_id)
         except MediaNotFoundError:
-            return set(), 0
-        waiting: set[str] = set()
+            return
         retry_in = 0
         made = False
-        for kind, make in (
-            (KIND_COVER, self._make_cover),
-            (KIND_DESCRIPTION, self._make_description),
-        ):
-            if kind not in kinds:
-                continue
+        for make in (self._make_cover, self._make_description):
             try:
                 made = await make(playlist) or made
             except LimitReachedError as err:
-                waiting.add(kind)
-                retry_in = max(retry_in, err.retry_in)
+                retry_in = min(retry_in, err.retry_in) if retry_in else err.retry_in
         if made:
             await self._refresh_playlist(playlist)
-        return waiting, retry_in
+        if retry_in and not self._stopped:
+            self.logger.info(
+                "Waiting for the hourly limit or the engine, continuing with '%s' in %d minutes",
+                playlist.name,
+                retry_in // 60 + 1,
+            )
+            self._waiting.add(item_id)
+            self.mass.call_later(
+                retry_in,
+                self._queue,
+                item_id,
+                task_id=self._task_id(f"retry_{item_id}"),
+            )
 
     async def _make_cover(self, playlist: Playlist) -> bool:
         """
-        Generate and store the playlist's cover, returning whether it has one to apply.
+        Generate and store the playlist's cover, returning whether it has a new one to apply.
 
-        :raises LimitReachedError: When the hourly limit leaves no cover for now.
+        :raises LimitReachedError: When the hourly limit, or an engine, allows no cover for now.
         """
         if (
             not self.covers_enabled
@@ -910,18 +884,26 @@ class AIArtwork:
         if (file_name := await self._file_name(playlist, engine)) is None:
             return False
         if await asyncio.to_thread(os.path.isfile, os.path.join(self._images_dir, file_name)):
-            return True
+            current = playlist.image
+            return current is None or not self.is_own_image(current) or current.path != file_name
         if await self._backing_off(KIND_COVER, playlist, file_name):
             return False
-        self._check_paused(KIND_COVER)
-        await self._reserve(self._generated_at, CACHE_KEY_GENERATED_AT)
+        text_engine = (
+            await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+            if self.provider.config.get_value(CONF_USE_PROMPT_ENGINE)
+            else None
+        )
+        # the text engine writes the visual concept, when one is used
+        if paused := max(self._cooldown(engine), self._cooldown(text_engine)):
+            raise LimitReachedError(paused)
+        await self._reserve(KIND_COVER)
         try:
             context = await self._playlist_context(playlist)
             concept = await self._concept(playlist, context)
             cover = await self._render(playlist, engine, self._look(), context, concept)
             await asyncio.to_thread(write_file, self._images_dir, file_name, cover)
         except Exception as err:
-            # an unreachable or misbehaving engine must not stop the worker
+            # an unreachable or misbehaving engine must not stop the generation
             self.logger.warning(
                 "Could not generate a cover for '%s': %s", playlist.name, err, exc_info=err
             )
@@ -932,9 +914,10 @@ class AIArtwork:
 
     async def _make_description(self, playlist: Playlist) -> bool:
         """
-        Write and store the playlist's description, returning whether it has one to apply.
+        Write and store the playlist's description, returning whether it has a new one to apply.
 
-        :raises LimitReachedError: When the hourly limit leaves no description for now.
+        :raises LimitReachedError: When the hourly limit, or the engine, allows no description
+            for now.
         """
         if not self.descriptions_enabled or not self.in_scope(playlist):
             return False
@@ -943,12 +926,13 @@ class AIArtwork:
             return False
         if (checksum := await self._description_checksum(playlist, engine)) is None:
             return False
-        if await self._stored_description(playlist, checksum) is not None:
-            return True
+        if (stored := await self._stored_description(playlist, checksum)) is not None:
+            return playlist.metadata.description != stored
         if await self._backing_off(KIND_DESCRIPTION, playlist, checksum):
             return False
-        self._check_paused(KIND_DESCRIPTION)
-        await self._reserve(self._described_at, CACHE_KEY_DESCRIBED_AT)
+        if paused := self._cooldown(engine):
+            raise LimitReachedError(paused)
+        await self._reserve(KIND_DESCRIPTION)
         try:
             description = await self._write_description(playlist, engine)
         except Exception as err:
@@ -998,75 +982,27 @@ class AIArtwork:
         Handle a failed cover or description: wait longer after each failure.
 
         An engine that could not be reached is counted apart, and given up on only after many
-        more tries. It is also left alone for a while, so an outage does not take a slot of the
-        limit per playlist.
+        more tries. The engine itself turns requests away for a while then, so an outage does
+        not take a slot of the limit per playlist.
 
         :param kind: Whether it is a cover or a description.
         :param playlist: The playlist it is for.
         :param key: What identifies it, so a changed one is tried afresh.
         :param err: The error, None for an engine that answered with nothing.
         """
-        transient = self._pause_if_unreachable(KIND_ENGINES[kind], err)
+        transient = isinstance(err, TRANSIENT_ERRORS)
         await self._record_failure(kind, playlist, key, transient=transient)
 
-    def _pause_if_unreachable(self, engine: str, err: BaseException | None) -> bool:
+    def _cooldown(self, engine: PluginEngine | None) -> int:
         """
-        Leave an engine alone for a while when the error shows it could not be reached.
+        Return the seconds an engine turns requests away after it failed, 0 when it takes them.
 
-        Returns whether it could not be reached.
-
-        :param engine: Which engine failed, the image or the text engine.
-        :param err: The error, None for an engine that answered with nothing.
+        :param engine: The engine, None for one that is not used.
         """
-        if not isinstance(err, TRANSIENT_ERRORS):
-            return False
-        # as long as the service asked for, when it said how long
-        pause = max(ENGINE_RETRY_SECONDS, getattr(err, "backoff_time", 0) or 0)
-        until = time.time() + pause
-        self._paused_until[engine] = max(self._paused_until.get(engine, 0), until)
-        return True
-
-    def _paused_for(self, kind: str) -> int:
-        """
-        Return the seconds the engines a cover or description needs are left alone, 0 if none.
-
-        A cover also needs the text engine when that writes its visual concept.
-
-        :param kind: Whether it is a cover or a description.
-        """
-        engines = [KIND_ENGINES[kind]]
-        if kind == KIND_COVER and self.provider.config.get_value(CONF_USE_PROMPT_ENGINE):
-            engines.append(ENGINE_TEXT)
-        return max(self._engine_paused_for(engine) for engine in engines)
-
-    def _engine_paused_for(self, engine: str) -> int:
-        """
-        Return the seconds an engine is left alone after it could not be reached, 0 if not.
-
-        :param engine: Which engine, the image or the text engine.
-        """
-        remaining = self._paused_until.get(engine, 0) - time.time()
+        if engine is None:
+            return 0
+        remaining = engine.provider.engine_cooldown(engine.id)
         return int(remaining) + 1 if remaining > 0 else 0
-
-    def _blocked_for(self, kind: str) -> int | None:
-        """
-        Return the seconds until a cover or description may be generated, None when it may now.
-
-        :param kind: Whether it is a cover or a description.
-        """
-        timestamps = self._generated_at if kind == KIND_COVER else self._described_at
-        limited = self._throttle_delay(timestamps) or 0
-        return max(self._paused_for(kind), limited) or None
-
-    def _check_paused(self, kind: str) -> None:
-        """
-        Refuse to generate while an engine a kind needs is left alone after it was unreachable.
-
-        :param kind: Whether it is a cover or a description.
-        :raises LimitReachedError: While the engine is left alone.
-        """
-        if paused := self._paused_for(kind):
-            raise LimitReachedError(paused)
 
     async def _record_failure(
         self, kind: str, playlist: Playlist, key: str, *, transient: bool = False
@@ -1152,17 +1088,83 @@ class AIArtwork:
             persistent=True,
         )
 
-    async def _reserve(self, timestamps: deque[float], key: str) -> None:
+    async def _reserve(self, kind: str) -> None:
         """
-        Take one slot of the hourly limit, as one step with checking that one is left.
+        Take one slot of the hourly limit of the covers or the descriptions.
 
-        :param timestamps: When each generation of this kind ran, oldest first.
-        :param key: The cache key the timestamps are stored under.
+        :param kind: Whether it is a cover or a description.
         :raises LimitReachedError: When no slot is left for now.
         """
-        if (retry_in := self._throttle_delay(timestamps)) is not None:
-            raise LimitReachedError(retry_in)
-        await self._record(timestamps, key)
+        if wait := await self._take_slots(kind):
+            raise LimitReachedError(int(wait) + 1)
+
+    async def _take_slots(self, kind: str, count: int = 1) -> float:
+        """
+        Take slots of the hourly limit of the covers or the descriptions.
+
+        Returns 0 when the slots were taken, else the seconds until they may be free. They are
+        taken before anything is awaited, so a caller that finds them free keeps them.
+
+        :param kind: Whether it is a cover or a description.
+        :param count: The number of slots to take, all of them or none.
+        """
+        # background tasks run at low priority, which would leave them half of the limit
+        slots = self._slots(kind)
+        wait = slots.try_acquire(count, RequestPriority.NORMAL)
+        if not wait:
+            await self._store_slots(kind, slots)
+        return wait
+
+    def _slots(self, kind: str) -> Throttler:
+        """
+        Return the hourly limit of the covers or the descriptions, at the configured rate.
+
+        :param kind: Whether it is a cover or a description.
+        """
+        slots = self._cover_slots if kind == KIND_COVER else self._description_slots
+        limit = self.provider.config.get_value(CONF_MAX_PER_HOUR)
+        slots.rate_limit = limit if isinstance(limit, int) and limit > 0 else DEFAULT_MAX_PER_HOUR
+        return slots
+
+    def _slots_key(self, kind: str) -> str:
+        """
+        Return the cache key the recent generations of the covers or the descriptions go under.
+
+        :param kind: Whether it is a cover or a description.
+        """
+        return CACHE_KEY_GENERATED_AT if kind == KIND_COVER else CACHE_KEY_DESCRIBED_AT
+
+    async def _restore_slots(self) -> None:
+        """Count the generations of the last hour again, so a reload keeps the hourly limits."""
+        now, monotonic = time.time(), time.monotonic()
+        for kind in (KIND_COVER, KIND_DESCRIPTION):
+            stored = await self.mass.cache.get(
+                self._slots_key(kind), provider=self.provider.instance_id, default=[]
+            )
+            self._slots(kind).seed(
+                monotonic - (now - stamp)
+                for stamp in (stored if isinstance(stored, list) else [])
+                if isinstance(stamp, int | float) and now - stamp < THROTTLE_WINDOW_SECONDS
+            )
+
+    async def _store_slots(self, kind: str, slots: Throttler) -> None:
+        """
+        Store when the slots of a kind were granted, so a reload keeps counting them.
+
+        :param kind: Whether it is a cover or a description.
+        :param slots: The hourly limit the slots were taken from.
+        """
+        now, monotonic = time.time(), time.monotonic()
+        stamps = [now - (monotonic - granted) for granted in slots.grants()]
+        # one store at a time, each of the list as it is then, so the newest is stored last
+        async with self._store_lock:
+            await self.mass.cache.set(
+                self._slots_key(kind),
+                stamps,
+                expiration=THROTTLE_WINDOW_SECONDS,
+                provider=self.provider.instance_id,
+                persistent=True,
+            )
 
     async def _has_own_artwork(self, playlist: Playlist) -> bool:
         """Return whether the playlist has a cover of its own, which is never replaced."""
@@ -1184,8 +1186,13 @@ class AIArtwork:
         """Return a newly generated cover for the playlist, with the given look."""
         prompt = _build_prompt(playlist.name, look, context, concept)
         self.logger.debug("Generating a cover for '%s': %s", playlist.name, prompt)
-        async with asyncio.timeout(IMAGE_TIMEOUT_SECONDS):
-            image = await engine.provider.ai_generate_image(prompt, engine_id=engine.id)
+        try:
+            async with asyncio.timeout(IMAGE_TIMEOUT_SECONDS):
+                image = await engine.provider.ai_generate_image(prompt, engine_id=engine.id)
+        except TimeoutError:
+            # the engine did not answer in time, so it rests like one that is unreachable
+            engine.provider.note_engine_outage(engine.id)
+            raise
         return await asyncio.to_thread(_render_cover, image, _overlay_layout(look), playlist.name)
 
     async def _render_preview(
@@ -1201,32 +1208,24 @@ class AIArtwork:
         async with slots:
             if self._stopped:
                 raise ActionUnavailable("The provider is unloading")
-            if self._engine_paused_for(ENGINE_IMAGE):
+            if self._cooldown(engine):
                 # an earlier style found the engine unreachable or rate limited
                 raise ActionUnavailable("The image engine could not be reached")
-            try:
-                return await self._render(playlist, engine, look, context, concept)
-            except Exception as err:
-                self._pause_if_unreachable(ENGINE_IMAGE, err)
-                raise
+            return await self._render(playlist, engine, look, context, concept)
 
     async def _preview_description(
         self, playlist: Playlist, engine: AIEngine | None, context: PlaylistContext
     ) -> str:
         """Return a description to preview for the playlist, empty when none could be written."""
-        if (
-            engine is None
-            or self._engine_paused_for(ENGINE_TEXT)
-            or self._throttle_delay(self._described_at) is not None
-        ):
+        if engine is None or self._cooldown(engine):
             return ""
-        await self._record(self._described_at, CACHE_KEY_DESCRIBED_AT)
+        if await self._take_slots(KIND_DESCRIPTION):
+            return ""
         if self._stopped:
             return ""
         try:
             return await self._write_description(playlist, engine, context)
         except Exception as err:
-            self._pause_if_unreachable(ENGINE_TEXT, err)
             # the covers are still worth showing
             self.logger.warning(
                 "Could not write a preview description for '%s': %s",
@@ -1246,8 +1245,13 @@ class AIArtwork:
             name=playlist.name,
             seeds=_description_seeds(context),
         )
-        async with asyncio.timeout(PROMPT_TIMEOUT_SECONDS):
-            answer = await engine.provider.ai_query(query, engine_id=engine.id)
+        try:
+            async with asyncio.timeout(PROMPT_TIMEOUT_SECONDS):
+                answer = await engine.provider.ai_query(query, engine_id=engine.id)
+        except TimeoutError:
+            # the engine did not answer in time, so it rests like one that is unreachable
+            engine.provider.note_engine_outage(engine.id)
+            raise
         return " ".join(answer.split()).strip().strip('"')[:MAX_DESCRIPTION_CHARS]
 
     async def _stored_description(self, playlist: Playlist, checksum: str) -> str | None:
@@ -1302,16 +1306,18 @@ class AIArtwork:
         if not self.provider.config.get_value(CONF_USE_PROMPT_ENGINE):
             return DEFAULT_CONCEPT
         engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
-        if engine is None or self._engine_paused_for(ENGINE_TEXT):
-            # the worker waits for a paused engine, so this serves previews and a cover that
-            # was already under way when the engine was paused
+        if engine is None or self._cooldown(engine):
+            # a cover waits for the engine, so this serves previews and a cover that was
+            # already under way when the engine started turning requests away
             return DEFAULT_CONCEPT
         query = CONCEPT_PROMPT.format(name=playlist.name, context=context.describe())
         try:
             async with asyncio.timeout(PROMPT_TIMEOUT_SECONDS):
                 concept = await engine.provider.ai_query(query, engine_id=engine.id)
         except Exception as err:
-            self._pause_if_unreachable(ENGINE_TEXT, err)
+            if isinstance(err, TimeoutError):
+                # the engine did not answer in time, so it rests like one that is unreachable
+                engine.provider.note_engine_outage(engine.id)
             self.logger.warning(
                 "The text engine could not write a visual concept for '%s': %s",
                 playlist.name,
@@ -1398,64 +1404,6 @@ class AIArtwork:
         )
         digest = hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()
         return f"{IMAGE_PREFIX}{playlist.item_id}_{digest[:16]}{IMAGE_EXTENSION}"
-
-    async def _load_timestamps(self, key: str) -> deque[float]:
-        """Return the stored times of the generations of one kind within the last hour."""
-        stored = await self.mass.cache.get(key, provider=self.provider.instance_id, default=[])
-        now = time.time()
-        return deque(
-            sorted(
-                float(stamp)
-                for stamp in (stored if isinstance(stored, list) else [])
-                if isinstance(stamp, int | float) and now - stamp < THROTTLE_WINDOW_SECONDS
-            )
-        )
-
-    async def _record(self, timestamps: deque[float], key: str, count: int = 1) -> None:
-        """
-        Record generations now, and store them so a reload or restart still counts them.
-
-        The generations are recorded before anything is awaited, so a check of the limit
-        right before this call and the recording happen as one step.
-
-        :param timestamps: When each generation of this kind ran, oldest first.
-        :param key: The cache key the timestamps are stored under.
-        :param count: The number of generations to record.
-        """
-        now = time.time()
-        timestamps.extend([now] * count)
-        # one store at a time, each of the list as it is then, so the newest is stored last
-        async with self._store_lock:
-            await self.mass.cache.set(
-                key,
-                list(timestamps),
-                expiration=THROTTLE_WINDOW_SECONDS,
-                provider=self.provider.instance_id,
-                persistent=True,
-            )
-
-    def _throttle_delay(self, timestamps: deque[float]) -> int | None:
-        """
-        Return the seconds until another generation may run, None when it may now.
-
-        :param timestamps: When each generation of this kind ran, oldest first.
-        """
-        if self._available(timestamps):
-            return None
-        return int(timestamps[0] + THROTTLE_WINDOW_SECONDS - time.time()) + 5
-
-    def _available(self, timestamps: deque[float]) -> int:
-        """
-        Return how many more generations of one kind the hourly limit allows now.
-
-        :param timestamps: When each generation of this kind ran, oldest first.
-        """
-        now = time.time()
-        while timestamps and now - timestamps[0] >= THROTTLE_WINDOW_SECONDS:
-            timestamps.popleft()
-        limit = self.provider.config.get_value(CONF_MAX_PER_HOUR)
-        limit = limit if isinstance(limit, int) and limit > 0 else DEFAULT_MAX_PER_HOUR
-        return max(0, limit - len(timestamps))
 
     def _style(self) -> Style:
         """Return the configured style."""

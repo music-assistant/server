@@ -10,6 +10,7 @@ import random
 import time
 from collections import defaultdict
 from copy import deepcopy
+from math import ceil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -19,7 +20,11 @@ from music_assistant_models.enums import (
     ImageType,
     MediaType,
 )
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    ProviderUnavailableError,
+    RateLimited,
+)
 from music_assistant_models.media_items import (
     MediaItemImage,
     ProviderMapping,
@@ -931,21 +936,28 @@ class AIRadioRuntimeMixin:
         try:
             async with query_timeout:
                 response = await engine.provider.ai_query(query, engine_id=engine.id)
+        except ProviderUnavailableError as err:
+            raise MusicAssistantError(
+                f"AI engine '{engine.uid}' is not reachable. Reconnect the provider "
+                "(for example Home Assistant) and retry."
+            ) from err
+        except RateLimited as err:
+            minutes = ceil(err.backoff_time / 60)
+            retry = (
+                f" Try again in {minutes} minute{'s' if minutes != 1 else ''}."
+                if minutes > 0
+                else " Try again later."
+            )
+            raise MusicAssistantError(
+                f"AI engine '{engine.uid}' is taking no more requests for now.{retry}"
+            ) from err
         except Exception as err:
             # expired() tells our own cap apart from a timeout raised inside the engine
             if isinstance(err, TimeoutError) and query_timeout.expired():
                 raise MusicAssistantError(
                     f"AI engine '{engine.uid}' did not respond within {AI_QUERY_TIMEOUT_SECONDS}s"
                 ) from err
-            error_name = err.__class__.__name__
-            error_text = str(err).strip()
-            if error_name == "NotConnected":
-                raise MusicAssistantError(
-                    "AI engine "
-                    f"'{engine.uid}' is not connected. Reconnect the provider "
-                    "(for example Home Assistant) and retry."
-                ) from err
-            details = error_text or error_name
+            details = str(err).strip() or err.__class__.__name__
             raise MusicAssistantError(f"AI engine '{engine.uid}' query failed: {details}") from err
         if not response or not str(response).strip():
             raise MusicAssistantError(
