@@ -30,6 +30,7 @@ STATE_MAP = {
 }
 
 REPEATMODE_MAP = {RepeatMode.OFF: 0, RepeatMode.ONE: 1, RepeatMode.ALL: 2}
+REPEATMODE_BY_LMS_VALUE = {str(value): mode for mode, value in REPEATMODE_MAP.items()}
 
 CONF_ENTRY_DISPLAY = ConfigEntry(
     key=CONF_DISPLAY,

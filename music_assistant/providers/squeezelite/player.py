@@ -37,6 +37,7 @@ from .constants import (
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
     CONF_STORED_VOLUME,
+    REPEATMODE_BY_LMS_VALUE,
     REPEATMODE_MAP,
     STATE_MAP,
 )
@@ -437,8 +438,13 @@ class SqueezelitePlayer(PlayerProtocol):
             if len(self.client.presets) >= preset_index + 1:
                 preset = self.client.presets[preset_index]
                 await self.mass.player_queues.play_media(queue.queue_id, preset.uri)
-        elif event_data == "button repeat":
-            if queue.repeat_mode == RepeatMode.OFF:
+        elif event_data == "button repeat" or event_data.startswith("playlist repeat"):
+            # a client such as a WiiM sends the mode it wants as its LMS number; a button,
+            # or a request without a number, cycles through the modes
+            lms_value = event_data.removeprefix("playlist repeat ")
+            if lms_value in REPEATMODE_BY_LMS_VALUE:
+                repeat_mode = REPEATMODE_BY_LMS_VALUE[lms_value]
+            elif queue.repeat_mode == RepeatMode.OFF:
                 repeat_mode = RepeatMode.ONE
             elif queue.repeat_mode == RepeatMode.ONE:
                 repeat_mode = RepeatMode.ALL
@@ -449,8 +455,13 @@ class SqueezelitePlayer(PlayerProtocol):
             # updates once the session's options echo lands
             self.client.extra_data["playlist repeat"] = REPEATMODE_MAP[repeat_mode]
             self.client.signal_update()
-        elif event_data == "button shuffle":
-            shuffle_enabled = not queue.shuffle_enabled
+        elif event_data == "button shuffle" or event_data.startswith("playlist shuffle"):
+            lms_value = event_data.removeprefix("playlist shuffle ")
+            # LMS shuffles by track (1) or by album (2); without a number it toggles
+            if lms_value in ("0", "1", "2"):
+                shuffle_enabled = lms_value != "0"
+            else:
+                shuffle_enabled = not queue.shuffle_enabled
             await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled)
             self.client.extra_data["playlist shuffle"] = int(shuffle_enabled)
             self.client.signal_update()
