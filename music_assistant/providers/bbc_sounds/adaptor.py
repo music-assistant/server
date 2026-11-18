@@ -67,22 +67,25 @@ def _date_convertor(
     """
     Convert a timestamp string or datetime to its date component as string.
 
-    :arg timestamp string or datetime version of the timestamp, e.g. "2020-02-02 18:00:00"
-    :arg date_format strfttime format to read the timestamp, e.g. "%d/%m/%Y, %H:%M:%S"
-
+    :param timestamp: timestamp string or datetime version of the timestamp, e.g. "2020-02-02 18:00:00"
+    :param date_format: date_format strfttime format to write the timestamp, e.g. "%d/%m/%Y, %H:%M:%S"
+    :param timezone: timezone to use for conversion, defaults to schedule's timezone (UK)
+    :return: the date as a string
     """
     if isinstance(timestamp, str):
-        timestamp = dt.from_iso_string(timestamp)
+        timestamp = dt.from_iso_string(timestamp).astimezone(timezone)
     else:
-        timestamp = timestamp.astimezone(timezone)
+        timestamp = timestamp.astimezone(timezone).astimezone(timezone)
     return timestamp.strftime(date_format)
 
 
 def _to_time(timestamp: str | datetime) -> str:
+    """Convert a timestamp to a time string, e.g. 14:23."""
     return _date_convertor(timestamp, "%H:%M")
 
 
 def _to_date(timestamp: str | datetime) -> str:
+    """Convert a timestamp to a date string, e.g. 31/01/20."""
     return _date_convertor(timestamp, "%d/%m/%y")
 
 
