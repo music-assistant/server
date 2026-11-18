@@ -503,7 +503,7 @@ class DeezerMediaManager:
                     search_results.albums = [
                         parse_album(self.provider, n)
                         for n in album_nodes
-                        if n.id not in audiobook_ids
+                        if not need_audiobooks or n.id not in audiobook_ids
                     ]
                 audiobooks = [
                     parse_audiobook_from_album(self.provider, n)

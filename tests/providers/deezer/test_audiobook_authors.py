@@ -211,6 +211,31 @@ async def test_search_lists_the_author_after_the_artist(
 
 
 @pytest.mark.parametrize(
+    ("media_types", "albums"),
+    [
+        ([MediaType.ALBUM, MediaType.ARTIST], ["1"]),
+        ([MediaType.ALBUM, MediaType.ARTIST, MediaType.AUDIOBOOK], []),
+    ],
+    ids=["without audiobooks", "with audiobooks"],
+)
+async def test_search_keeps_audiobooks_among_albums_unless_searched(
+    provider: DeezerProvider,
+    gql: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    media_types: list[MediaType],
+    albums: list[str],
+) -> None:
+    """Audiobooks leave the album results only when audiobooks are searched too."""
+    gql.search.return_value = _search_hits(_artist_node("75255", "Conni"))
+    gql.check_audiobook_ids.return_value = {"1"}
+    monkeypatch.setattr(media, "parse_album", lambda _provider, node: node.id)
+
+    result = await _unwrap(DeezerMediaManager.search)(provider.media_manager, "conni", media_types)
+
+    assert result.albums == albums
+
+
+@pytest.mark.parametrize(
     ("artist_albums", "listed"),
     [
         (AsyncMock(return_value=[]), ["author_32067711"]),
