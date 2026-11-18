@@ -2838,11 +2838,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 continue
             if (streamdetails := item.streamdetails) is None:
                 # its source is not chosen yet: it can turn out to be this provider when the
-                # item has a copy there, or when its copies are not known
+                # provider can stream one of the item's copies, or when its copies are not known
                 media_item = item.media_item
                 if media_item is None or any(
-                    mapping.provider_instance == provider_instance
+                    provider.instance_id == provider_instance
                     for mapping in media_item.provider_mappings
+                    if mapping.available
+                    for provider in self.mass.streams.audio.get_stream_providers(mapping, None)
                 ):
                     return True
                 continue

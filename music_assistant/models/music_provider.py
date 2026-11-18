@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import aiohttp
 from music_assistant_models.background_task import TaskSchedule
@@ -394,6 +394,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             _StreamSlots(max_concurrent_streams) if max_concurrent_streams is not None else None
         )
         self._stream_slot_holders: set[AudioBuffer] = set()
+        # set for a moment whenever a source takes a slot and is listed as its holder
+        self._stream_slot_held = asyncio.Event()
 
     def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool:
         """
@@ -490,12 +492,50 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             raise ProviderStreamLimitError(self, wait_timeout) from err
         if holder is not None:
             self._stream_slot_holders.add(holder)
+            self._stream_slot_held.set()
+            self._stream_slot_held.clear()
         try:
             yield
         finally:
             if holder is not None:
                 self._stream_slot_holders.discard(holder)
             slots.give_back(queue_id, reserve)
+
+    async def wait_for_stream_slot(
+        self, wait_timeout: float, queue_id: str, gives_up: Callable[[], bool]
+    ) -> None:
+        """
+        Wait in line for a source-stream slot, and keep the slot for the given queue.
+
+        The slot stays reserved for the queue, as one that a source of it gave back, so the
+        next source of the queue takes it.
+
+        :param wait_timeout: Maximum seconds to wait.
+        :param queue_id: The queue the slot is for.
+        :param gives_up: Asked whenever a source takes a slot, or a holder of one gets its
+            first audio, during the wait: True ends the wait without a slot, and it may raise
+            to refuse the wait.
+        :raises ProviderStreamLimitError: If no slot comes free within the timeout.
+        """
+        slots = self._stream_slots
+        if slots is None:
+            return
+        taking = asyncio.ensure_future(slots.take(queue_id))
+        granted = False
+        try:
+            async with asyncio.timeout(wait_timeout):
+                while not taking.done():
+                    await self._stream_slot_change(taking)
+                    if not taking.done() and gives_up():
+                        break
+                granted = taking.done()
+        except TimeoutError as err:
+            raise ProviderStreamLimitError(self, wait_timeout) from err
+        finally:
+            # a wait that ends without the slot leaves the line, and gives back a slot that
+            # was granted in that moment
+            if not taking.cancel():
+                slots.give_back(queue_id, lambda: granted)
 
     def end_stream_slot_reservation(self, queue_id: str) -> None:
         """
@@ -1494,6 +1534,26 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             for track in tracks:
                 yield track
             page += 1
+
+    async def _stream_slot_change(self, taking: asyncio.Future[None]) -> None:
+        """
+        Wait until a slot is granted, a source takes a slot, or a holder gets its first audio.
+
+        :param taking: The wait in line for a slot.
+        """
+        watches: list[asyncio.Future[Any]] = [
+            asyncio.ensure_future(event.wait())
+            for event in (
+                self._stream_slot_held,
+                *(holder.ready for holder in self._stream_slot_holders),
+            )
+            if not event.is_set()
+        ]
+        try:
+            await asyncio.wait([taking, *watches], return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for watch in watches:
+                watch.cancel()
 
     async def _run_library_sync(self, media_type: MediaType) -> None:  # noqa: PLR0915
         """Sync the given media type into the library and process its deletions."""

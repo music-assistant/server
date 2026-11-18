@@ -124,7 +124,6 @@ from music_assistant.controllers.streams.constants import (
     OUTCOME_ONLY_NORMALIZATION_MODES,
     STREAM_SLOT_MATCH_TIMEOUT,
     STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
-    STREAM_SLOT_VERDICT_INTERVAL,
     STREAM_SLOT_WAIT_TIMEOUT,
     STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
     STREAMDETAILS_INBAND_TITLE_KEY,
@@ -4308,16 +4307,23 @@ class StreamsAudio:
                 alternatives_left or busy_instances or match_pending or paused_holder
             )
             if last_resort and not resumes:
-                if await self._await_stream_slot_verdict(
-                    streamdetails.provider, queue_item.queue_id, deadline
-                ):
-                    # what holds the slot now can be something else than what was decided on
-                    continue
                 # a realtime source keeps its slot until its item ends, so the budget would
-                # run out with nothing to show for it: refuse right away instead
-                self.mass.player_queues.refuse_held_stream_slot(
-                    streamdetails.provider, queue_item.queue_id
+                # run out with nothing to show for it: refused as soon as one holds it instead
+                gives_up = partial(
+                    self._leaves_stream_slot_line,
+                    streamdetails.provider,
+                    queue_item.queue_id,
+                    stop_paused_queues,
                 )
+                gives_up()
+                provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+                if isinstance(provider, MusicProvider) and self._stream_slot_undecided(
+                    provider, queue_item.queue_id
+                ):
+                    await provider.wait_for_stream_slot(remaining, queue_item.queue_id, gives_up)
+                    # the slot is kept for the queue now, or a paused queue hands its slot over;
+                    # the wait can have outlasted the consumer
+                    continue
             source_wait = remaining if last_resort else 0.0
             # record whose audio this is before it exists: a queue stop releases only the
             # buffers of the session it is tearing down, and details resolved by an earlier
@@ -4454,37 +4460,34 @@ class StreamsAudio:
         queue_data = self.mass.player_queues.queue_data_or_none(queue_item.queue_id)
         return queue_data.session_id if queue_data is not None else None
 
-    async def _await_stream_slot_verdict(
-        self, provider_instance: str, queue_id: str, deadline: float
+    def _leaves_stream_slot_line(
+        self, provider_instance: str, queue_id: str, stop_paused_queues: bool
     ) -> bool:
         """
-        Wait while it is open whether realtime playback keeps the only slot of a provider.
+        Return whether a start that waits for a slot takes a paused queue's slot over instead.
+
+        :param provider_instance: The provider instance a slot is needed on.
+        :param queue_id: The queue that needs the slot.
+        :param stop_paused_queues: Whether a paused queue may be stopped to hand its slot over.
+        :raises ProviderStreamLimitError: When another queue's realtime playback holds the slot.
+        """
+        self.mass.player_queues.refuse_held_stream_slot(provider_instance, queue_id)
+        return stop_paused_queues and self.mass.player_queues.has_paused_stream_slot_holder(
+            provider_instance, queue_id
+        )
+
+    def _stream_slot_undecided(self, provider: MusicProvider, queue_id: str) -> bool:
+        """
+        Return whether it is open if another queue's realtime playback keeps the only slot.
 
         That is open while the slot is reserved for another queue, and while a realtime
-        source has the slot and no audio yet.
+        source of another queue has the slot and no audio yet.
 
-        :param provider_instance: The provider instance a slot is needed on.
-        :param queue_id: The queue that needs the slot.
-        :param deadline: Loop time at which the wait ends at the latest.
-        :return: Whether there was something to wait for.
-        """
-        loop = asyncio.get_running_loop()
-        waited = False
-        while loop.time() < deadline and self._stream_slot_undecided(provider_instance, queue_id):
-            waited = True
-            await asyncio.sleep(STREAM_SLOT_VERDICT_INTERVAL)
-        return waited
-
-    def _stream_slot_undecided(self, provider_instance: str, queue_id: str) -> bool:
-        """
-        Return whether it is open if realtime playback keeps the only slot of a provider.
-
-        :param provider_instance: The provider instance a slot is needed on.
+        :param provider: The provider a slot is needed on.
         :param queue_id: The queue that needs the slot.
         """
-        provider = self.mass.get_provider(provider_instance, return_unavailable=True)
         # one realtime holder says nothing about the other slots of a larger budget
-        if not isinstance(provider, MusicProvider) or provider.max_concurrent_streams != 1:
+        if provider.max_concurrent_streams != 1:
             return False
         if provider.has_available_stream_slot:
             # no source is open: the next source of that queue takes the slot, or it lapses
@@ -4493,7 +4496,7 @@ class StreamsAudio:
             )
         # a source that has its slot and no audio yet can still fail and give it back
         return any(
-            holder.is_realtime and not holder.ready.is_set()
+            holder.is_realtime and holder.queue_id != queue_id and not holder.ready.is_set()
             for holder in provider.stream_slot_holders
         )
 
