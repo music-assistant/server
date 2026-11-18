@@ -57,6 +57,7 @@ def _provider(
         ),
     )
     provider._client_event_versions = {}
+    provider._multi_channel_speakers = {}
     provider._client_event_task_counts = {}
     added: list[str] = []
     provider._handle_client_added = MagicMock(  # type: ignore[method-assign]
@@ -144,6 +145,16 @@ async def test_a_client_whose_event_is_being_handled_is_left_to_it() -> None:
     """A client still being added, updated or removed is not added a second time."""
     provider, added = _provider([_client("busy")])
     provider._client_event_versions["busy"] = 1
+
+    await provider.discover_players()
+
+    assert added == []
+
+
+async def test_a_speaker_of_a_multi_channel_player_is_left_to_that_player() -> None:
+    """A connected speaker of a multi-channel player gets no protocol of its own."""
+    provider, added = _provider([_client("speaker")])
+    provider._multi_channel_speakers["speaker"] = "sendspin_mc_set"
 
     await provider.discover_players()
 

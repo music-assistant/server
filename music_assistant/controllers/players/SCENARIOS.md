@@ -2188,6 +2188,26 @@ as that of Den, which is online.
   - `test_grouping.py::test_an_offline_member_is_removed_from_a_group_player`
   - `test_grouping.py::test_an_offline_member_of_a_fixed_group_is_refused_as_an_online_one`
 
+### GROUP-62 · A multi-channel player plays in a sync group like any player
+
+Kitchen is a multi-channel player of two Sendspin speakers, a left and a right one. Downstairs, a
+sync group of Kitchen and the Sendspin player Den, plays. Kitchen and Den play in one Sendspin
+group on the leader of Downstairs, the speakers of Kitchen with them. No player of the group lists
+a speaker of Kitchen: they are part of Kitchen.
+
+- End-to-end: **possible with** two virtual Sendspin speakers combined into Kitchen in the lab, and
+  the left and right channel checked in the captured audio.
+- Proven by: `tests/providers/sendspin/test_multi_channel.py::test_a_set_plays_in_a_sync_group`
+
+### GROUP-63 · A multi-channel player plays in a universal group like any player
+
+Everywhere, a universal group of the multi-channel player Kitchen and the Sendspin player Den,
+plays. Kitchen plays the stream of Everywhere as any member does, and its speakers play it with it.
+
+- End-to-end: **possible with** two virtual Sendspin speakers combined into Kitchen in the lab, and
+  the left and right channel checked in the captured audio.
+- Proven by: `tests/providers/sendspin/test_multi_channel.py::test_a_set_plays_in_a_universal_group`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered

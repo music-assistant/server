@@ -1,0 +1,571 @@
+"""
+Multi-channel players of the Sendspin provider.
+
+A multi-channel player combines Sendspin speakers into one player, each speaker playing its own
+channel. It is a silent client of the server that leads the Sendspin group its speakers play in,
+or follows another leader together with them. Its protocol record holds its speakers, which have
+no protocol of their own while they belong to it.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import secrets
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, cast
+
+from aiosendspin.server import VolumeChangedEvent
+from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
+from aiosendspin.server.roles.player.types import PlayerRoleProtocol
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ChannelLayout, ConfigEntryType, PlayerType, SpeakerChannel
+
+from music_assistant.constants import CONF_OUTPUT_CHANNELS
+
+from .constants import (
+    CONF_MULTI_CHANNEL_GROUP_ID,
+    CONF_SPEAKER_CHANNEL,
+    CONF_SPEAKER_CLIENT_ID,
+    CONF_SPEAKER_NAME,
+    CONF_SPEAKER_OUTPUT_DELAY,
+    CONF_SPEAKER_STATE,
+    DEFAULT_SENDSPIN_STATIC_DELAY,
+)
+from .player import SendspinPlayer
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from aiosendspin.models.core import ClientHelloPayload
+    from aiosendspin.server import ClientEvent, SendspinGroup
+    from aiosendspin.server.client import SendspinClient
+    from music_assistant_models.streamdetails import StreamDetails
+
+    from music_assistant.models.player import Player
+
+    from .provider import SendspinProvider
+
+# The channels of each layout a multi-channel player can have.
+LAYOUT_CHANNELS: dict[ChannelLayout, tuple[SpeakerChannel, ...]] = {
+    ChannelLayout.STEREO: (SpeakerChannel.FRONT_LEFT, SpeakerChannel.FRONT_RIGHT),
+}
+# Seconds a speaker that connected again has to report the state it kept, before it takes the
+# volume of its player.
+SPEAKER_JOIN_GRACE = 2.0
+# Delay to let the changes of several speakers end in one restart of the playback.
+CHANNEL_CHANGE_DEBOUNCE = 1.0
+# The most levels kept per speaker that it has not reported back yet.
+MAX_UNREPORTED_LEVELS = 8
+
+
+@dataclass(frozen=True, slots=True)
+class SetSpeaker:
+    """A speaker of a multi-channel player, as the record of the player holds it."""
+
+    number: int
+    client_id: str
+    name: str
+    channel: SpeakerChannel
+
+
+def new_group_id() -> str:
+    """Return a new group id: 32 random bytes in base64url without padding."""
+    return base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+
+
+def layout_of(channels: Iterable[SpeakerChannel]) -> ChannelLayout | None:
+    """
+    Return the layout that speakers on these channels make up, None for no known layout.
+
+    :param channels: The channel of each speaker.
+    """
+    channels = sorted(channels)
+    for layout, layout_channels in LAYOUT_CHANNELS.items():
+        if channels == sorted(layout_channels):
+            return layout
+    return None
+
+
+def stored_speakers(values: Mapping[str, Any]) -> list[SetSpeaker]:
+    """
+    Return the speakers in the stored values of a multi-channel player.
+
+    :param values: The stored values of the protocol of the multi-channel player.
+    """
+    speakers: list[SetSpeaker] = []
+    number = 1
+    while isinstance(client_id := values.get(CONF_SPEAKER_CLIENT_ID.format(n=number)), str):
+        name = values.get(CONF_SPEAKER_NAME.format(n=number))
+        speakers.append(
+            SetSpeaker(
+                number=number,
+                client_id=client_id,
+                name=name if isinstance(name, str) else client_id,
+                channel=SpeakerChannel(str(values.get(CONF_SPEAKER_CHANNEL.format(n=number)))),
+            )
+        )
+        number += 1
+    return speakers
+
+
+class SendspinMultiChannelPlayer(SendspinPlayer):
+    """
+    A player made of Sendspin speakers, each of which plays its own channel.
+
+    One volume and one DSP apply to the whole player. While a speaker is away, the others play
+    every channel.
+    """
+
+    _speakers: tuple[SetSpeaker, ...] = ()
+
+    def __init__(
+        self,
+        provider: SendspinProvider,
+        protocol_id: str,
+        initial_hello: ClientHelloPayload | None = None,
+    ) -> None:
+        """
+        Initialize the multi-channel player.
+
+        :param provider: The Sendspin provider instance.
+        :param protocol_id: The client id of the silent client of the player.
+        :param initial_hello: Optional hello payload of that client.
+        """
+        super().__init__(provider, protocol_id, initial_hello)
+        self._attr_type = PlayerType.MULTI_CHANNEL
+        self._speaker_listeners: dict[str, tuple[SendspinClient, Callable[[], None]]] = {}
+        # levels sent to a speaker that it has not reported back yet
+        self._sent_volumes: dict[str, list[int]] = {}
+        self._sent_mutes: dict[str, list[bool]] = {}
+        # speakers that connected again, which still report the state they kept
+        self._joining: set[str] = set()
+        self._take_lock = asyncio.Lock()
+        self._load_speakers()
+        self._played_channels = self._current_channels()
+        self._refresh_speaker_state()
+
+    @property
+    def supported_sample_rates(self) -> list[tuple[int, int]] | None:
+        """Return the (sample_rate, bit_depth) tuples the connected speakers play."""
+        rates = {
+            (fmt.sample_rate, fmt.bit_depth)
+            for _, role in self._speaker_roles()
+            for fmt in self._top_codec_formats(role)
+        }
+        return sorted(rates) if rates else [(44100, 16)]
+
+    def speaker_channel(self, client_id: str) -> SpeakerChannel | None:
+        """
+        Return the channel a speaker of this player plays.
+
+        :param client_id: The client id of the speaker.
+        :return: Its channel, or None while another speaker of this player is away, when it
+            plays every channel.
+        """
+        return self._current_channels().get(client_id)
+
+    async def take_speakers(self) -> None:
+        """
+        Take the speakers of this player into the group it plays in.
+
+        A speaker that still has a protocol of its own loses it first: the speaker belongs
+        to this player, and a player that has no other protocol left goes with it.
+        """
+        async with self._take_lock:
+            for speaker in self._speakers:
+                record = self.mass.config.get_protocol_record(speaker.client_id)
+                if record is not None and record.get("provider") == self.provider.instance_id:
+                    await self.mass.players.remove_protocol(speaker.client_id)
+            for speaker in self._speakers:
+                await self._take_speaker(speaker.client_id)
+        self._on_speakers_changed()
+
+    def on_speaker_changed(self, client_id: str) -> None:
+        """
+        Follow a speaker of this player that connected, went away or was removed.
+
+        :param client_id: The client id of the speaker.
+        """
+        client = self._sendspin_provider.server_api.get_client(client_id)
+        if client is not None and client.connection is not None:
+            self._joining.add(client_id)
+            self.mass.call_later(
+                SPEAKER_JOIN_GRACE,
+                self._join_speaker,
+                client_id,
+                task_id=f"sendspin_mc_join_{client_id}",
+            )
+        else:
+            self._joining.discard(client_id)
+            self.mass.cancel_timer(f"sendspin_mc_join_{client_id}")
+            if client is None:
+                self._stop_listening(client_id)
+        self._on_speakers_changed()
+
+    async def volume_set(self, volume_level: int) -> None:
+        """Set the volume of every speaker of this player."""
+        self._attr_volume_level = volume_level
+        for client_id, role in self._speaker_roles():
+            self._send_level(client_id, role)
+        self.update_state()
+
+    async def volume_mute(self, muted: bool) -> None:
+        """Mute or unmute every speaker of this player."""
+        self._attr_volume_muted = muted
+        for client_id, role in self._speaker_roles():
+            self._send_level(client_id, role)
+        self.update_state()
+
+    async def follow_session_sample_rate(
+        self,
+        start_streamdetails: StreamDetails | None,
+        *,
+        crossfade_enabled: bool = False,
+        overlay_active: bool = False,
+    ) -> None:
+        """
+        Let the format of every speaker follow the sample rate of a new playback session.
+
+        :param start_streamdetails: Stream details of the first item of the session, if any.
+        :param crossfade_enabled: Whether the session blends the audio of its items.
+        :param overlay_active: Whether an audio overlay is mixed into the session.
+        """
+        await super().follow_session_sample_rate(
+            start_streamdetails,
+            crossfade_enabled=crossfade_enabled,
+            overlay_active=overlay_active,
+        )
+        for _, role in self._speaker_roles():
+            role.set_preferred_format(*self._session_format(role, self._session_sample_rate))
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return the config entries of this player: one set per speaker."""
+        entries = [
+            # each speaker plays its channel, the player itself every channel
+            ConfigEntry(
+                key=CONF_OUTPUT_CHANNELS,
+                type=ConfigEntryType.STRING,
+                default_value="stereo",
+                required=False,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_MULTI_CHANNEL_GROUP_ID,
+                type=ConfigEntryType.STRING,
+                required=False,
+                hidden=True,
+            ),
+        ]
+        channel_options = [
+            ConfigValueOption(channel.value)
+            for channel in LAYOUT_CHANNELS.get(
+                self._attr_channel_layout or ChannelLayout.UNKNOWN,
+                tuple(speaker.channel for speaker in self._speakers),
+            )
+        ]
+        for speaker in self._speakers:
+            number = speaker.number
+            online = self._is_online(speaker.client_id)
+            entries.extend(
+                (
+                    ConfigEntry(
+                        key=CONF_SPEAKER_STATE.format(n=number),
+                        type=ConfigEntryType.LABEL,
+                        default_value="online" if online else "offline",
+                        translation_key="speaker_online" if online else "speaker_offline",
+                        translation_params=[speaker.name],
+                    ),
+                    ConfigEntry(
+                        key=CONF_SPEAKER_CLIENT_ID.format(n=number),
+                        type=ConfigEntryType.STRING,
+                        required=False,
+                        hidden=True,
+                        translation_key="speaker_client_id",
+                    ),
+                    ConfigEntry(
+                        key=CONF_SPEAKER_NAME.format(n=number),
+                        type=ConfigEntryType.STRING,
+                        required=False,
+                        hidden=True,
+                        translation_key="speaker_name",
+                    ),
+                    ConfigEntry(
+                        key=CONF_SPEAKER_CHANNEL.format(n=number),
+                        type=ConfigEntryType.STRING,
+                        default_value=speaker.channel.value,
+                        options=channel_options,
+                        translation_key="speaker_channel",
+                        translation_params=[speaker.name],
+                    ),
+                    ConfigEntry(
+                        key=CONF_SPEAKER_OUTPUT_DELAY.format(n=number),
+                        type=ConfigEntryType.INTEGER,
+                        default_value=DEFAULT_SENDSPIN_STATIC_DELAY,
+                        range=(0, 5000),
+                        required=False,
+                        immediate_apply=True,
+                        translation_key="speaker_output_delay",
+                        translation_params=[speaker.name],
+                    ),
+                )
+            )
+        return entries
+
+    async def on_config_updated(self) -> None:
+        """Apply a changed channel or output delay of a speaker."""
+        previous = {speaker.number: speaker.channel for speaker in self._speakers}
+        self._load_speakers()
+        changed = [s for s in self._speakers if previous.get(s.number, s.channel) != s.channel]
+        for speaker in changed:
+            # a channel taken from a speaker that kept its own swaps the two
+            other = next(
+                (
+                    s
+                    for s in self._speakers
+                    if s.number != speaker.number and s.channel == speaker.channel
+                ),
+                None,
+            )
+            if other is not None and other not in changed:
+                self.mass.config.set_protocol_value(
+                    self.protocol_id,
+                    CONF_SPEAKER_CHANNEL.format(n=other.number),
+                    previous[speaker.number].value,
+                )
+        if changed:
+            self._load_speakers()
+        for client_id, role in self._speaker_roles():
+            self._send_output_delay(client_id, role)
+        self._on_speakers_changed(channels_changed=bool(changed))
+
+    async def on_attach(self, player: Player) -> None:
+        """Take the speakers into the group of this player once it is attached."""
+        await super().on_attach(player)
+        self.mass.create_task(self.take_speakers())
+
+    async def on_detach(self) -> None:
+        """Stop following the speakers when this player is detached."""
+        for client_id in list(self._speaker_listeners):
+            self._stop_listening(client_id)
+        for client_id in self._joining:
+            self.mass.cancel_timer(f"sendspin_mc_join_{client_id}")
+        self._joining.clear()
+        self.mass.cancel_timer(f"sendspin_mc_channels_{self.protocol_id}")
+        await super().on_detach()
+
+    async def on_remove(self) -> None:
+        """Let the speakers go, which come back as players of their own."""
+        await self._sendspin_provider.release_multi_channel_player(self.protocol_id)
+
+    @property
+    def _sendspin_provider(self) -> SendspinProvider:
+        """Return the Sendspin provider of this player."""
+        return cast("SendspinProvider", self.provider)
+
+    def _refresh_client_info(
+        self,
+        sendspin_client: SendspinClient,
+        hello_payload: ClientHelloPayload | None = None,
+    ) -> None:
+        """Refresh the player from its silent client, as the player of a device."""
+        super()._refresh_client_info(sendspin_client, hello_payload=hello_payload)
+        self.is_web_player = False
+        self._attr_expose_to_ha_by_default = True
+        self._attr_hidden_by_default = False
+        self._attr_private = False
+        self._attr_session_only = False
+        self._attr_available = any(self._is_online(s.client_id) for s in self._speakers)
+
+    def _on_group_changed(self, new_group: SendspinGroup) -> None:
+        """Bring the speakers along to the group this player joined."""
+        super()._on_group_changed(new_group)
+        if self.player is not None:
+            self.mass.create_task(self.take_speakers())
+
+    def _load_speakers(self) -> None:
+        """Read the speakers from the stored record of this player."""
+        record = self.mass.config.get_protocol_record(self.protocol_id) or {}
+        self._speakers = tuple(stored_speakers(record.get("values") or {}))
+        self._attr_channel_layout = layout_of(speaker.channel for speaker in self._speakers)
+
+    def _speaker_number(self, client_id: str) -> int | None:
+        """Return the number of a speaker of this player in its record."""
+        return next((s.number for s in self._speakers if s.client_id == client_id), None)
+
+    def _is_online(self, client_id: str) -> bool:
+        """Return whether a speaker of this player is connected."""
+        client = self._sendspin_provider.server_api.get_client(client_id)
+        return client is not None and client.connection is not None
+
+    def _speaker_roles(self) -> list[tuple[str, PlayerRoleProtocol]]:
+        """Return the player role of every connected speaker this player took."""
+        roles: list[tuple[str, PlayerRoleProtocol]] = []
+        for client_id, (client, _) in self._speaker_listeners.items():
+            if client.connection is None or client_id in self._joining:
+                continue
+            role = next(
+                (r for r in client.roles_by_family("player") if isinstance(r, PlayerRoleProtocol)),
+                None,
+            )
+            if role is not None:
+                roles.append((client_id, role))
+        return roles
+
+    def _current_channels(self) -> dict[str, SpeakerChannel | None]:
+        """Return the channel each speaker plays now: none while another one is away."""
+        complete = all(self._is_online(speaker.client_id) for speaker in self._speakers)
+        return {s.client_id: s.channel if complete else None for s in self._speakers}
+
+    async def _join_speaker(self, client_id: str) -> None:
+        """Take a speaker that connected again, once it reported the state it kept."""
+        self._joining.discard(client_id)
+        async with self._take_lock:
+            await self._take_speaker(client_id)
+        self._on_speakers_changed()
+
+    async def _take_speaker(self, client_id: str) -> None:
+        """Take a speaker into the group of this player and give it the state of the player."""
+        provider = self._sendspin_provider
+        client = provider.server_api.get_client(client_id)
+        # a speaker that still has a protocol of its own is taken once that is removed
+        if client is None or self.player is None or provider.get_protocol(client_id) is not None:
+            return
+        self._listen_to(client)
+        await self.api.group.add_client(client)
+        if client.connection is None:
+            return
+        role = next(
+            (r for r in client.roles_by_family("player") if isinstance(r, PlayerRoleProtocol)),
+            None,
+        )
+        if role is None:
+            return
+        if self._attr_volume_level is None:
+            # the first speaker brings the volume of this player
+            self._attr_volume_level = role.get_player_volume()
+            self._attr_volume_muted = role.get_player_muted()
+        self._send_level(client_id, role)
+        self._send_output_delay(client_id, role)
+        role.set_preferred_format(*self._session_format(role, self._session_sample_rate))
+
+    def _listen_to(self, client: SendspinClient) -> None:
+        """Follow the events of the client of a speaker."""
+        client_id = client.client_id
+        if (listener := self._speaker_listeners.get(client_id)) and listener[0] is client:
+            return
+        self._stop_listening(client_id)
+        self._speaker_listeners[client_id] = (
+            client,
+            client.add_event_listener(self._on_speaker_event),
+        )
+
+    def _stop_listening(self, client_id: str) -> None:
+        """Stop following the events of the client of a speaker."""
+        if (listener := self._speaker_listeners.pop(client_id, None)) is not None:
+            listener[1]()
+
+    def _on_speaker_event(self, client: SendspinClient, event: ClientEvent) -> None:
+        """Handle an event of the client of a speaker."""
+        match event:
+            case VolumeChangedEvent(volume=volume, muted=muted):
+                self._take_speaker_level(client.client_id, volume, muted)
+            case OutputDelayChangedEvent(output_delay_ms=delay_ms):
+                if (number := self._speaker_number(client.client_id)) is None:
+                    return
+                key = CONF_SPEAKER_OUTPUT_DELAY.format(n=number)
+                if self.mass.config.get_protocol_value(self.protocol_id, key) != delay_ms:
+                    self.mass.config.set_protocol_value(self.protocol_id, key, delay_ms)
+
+    def _take_speaker_level(self, client_id: str, volume: int, muted: bool) -> None:
+        """
+        Take a volume or mute a speaker reports, and give it to the other speakers.
+
+        A report of a level this player sent changes nothing, so the speakers never
+        send each other's levels back and forth.
+        """
+        if client_id in self._joining:
+            return
+        changed = False
+        if (
+            not _take_echo(self._sent_volumes.setdefault(client_id, []), volume)
+            and volume != self._attr_volume_level
+        ):
+            self._attr_volume_level = volume
+            changed = True
+        if (
+            not _take_echo(self._sent_mutes.setdefault(client_id, []), muted)
+            and muted != self._attr_volume_muted
+        ):
+            self._attr_volume_muted = muted
+            changed = True
+        if not changed:
+            return
+        for other_id, role in self._speaker_roles():
+            if other_id != client_id:
+                self._send_level(other_id, role)
+        self.update_state()
+
+    def _send_level(self, client_id: str, role: PlayerRoleProtocol) -> None:
+        """Send the volume and mute of this player to a speaker that has another."""
+        volume = self._attr_volume_level
+        if volume is not None and role.get_player_volume() not in (None, volume):
+            _remember(self._sent_volumes.setdefault(client_id, []), volume)
+            role.set_player_volume(volume)
+        muted = self._attr_volume_muted
+        if muted is not None and role.get_player_muted() not in (None, muted):
+            _remember(self._sent_mutes.setdefault(client_id, []), muted)
+            role.set_player_mute(muted)
+
+    def _send_output_delay(self, client_id: str, role: PlayerRoleProtocol) -> None:
+        """Send the stored output delay of a speaker to it, when it has another."""
+        if (number := self._speaker_number(client_id)) is None:
+            return
+        delay_ms = self.mass.config.get_protocol_value(
+            self.protocol_id,
+            CONF_SPEAKER_OUTPUT_DELAY.format(n=number),
+            DEFAULT_SENDSPIN_STATIC_DELAY,
+        )
+        if isinstance(delay_ms, int) and role.get_output_delay_ms() != delay_ms:
+            role.set_output_delay(delay_ms)
+
+    def _refresh_speaker_state(self) -> None:
+        """Refresh what this player reports from its speakers."""
+        self._attr_available = any(self._is_online(s.client_id) for s in self._speakers)
+        if roles := [role for _, role in self._speaker_roles()]:
+            # the volume commands every speaker accepts
+            self._sync_control_features(
+                set.intersection(*(set(role.state_supported_commands) for role in roles))
+            )
+
+    def _on_speakers_changed(self, *, channels_changed: bool = False) -> None:
+        """Publish a change of the speakers, and play the channels they play now."""
+        self._refresh_speaker_state()
+        played_channels = self._current_channels()
+        if (channels_changed or played_channels != self._played_channels) and (
+            self.player is not None
+        ):
+            # the speakers of a running stream play other channels from a new stream
+            self.mass.call_later(
+                CHANNEL_CHANGE_DEBOUNCE,
+                self.mass.players.on_player_dsp_change,
+                self.player.player_id,
+                task_id=f"sendspin_mc_channels_{self.protocol_id}",
+            )
+        self._played_channels = played_channels
+        self.update_state()
+
+
+def _remember[T](sent: list[T], value: T) -> None:
+    """Keep a level sent to a speaker until it reports it back."""
+    sent.append(value)
+    del sent[:-MAX_UNREPORTED_LEVELS]
+
+
+def _take_echo[T](sent: list[T], value: T) -> bool:
+    """Return whether a reported level was sent, forgetting it and the levels sent before it."""
+    if value not in sent:
+        return False
+    del sent[: sent.index(value) + 1]
+    return True

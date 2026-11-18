@@ -157,6 +157,7 @@ async def _connect(
     provider._bridge_underlying_protocols = {}
     provider._bridge_static_delay_defaults = {}
     provider._bridge_player_types = {}
+    provider._multi_channel_speakers = {}
 
     async def _enrich(_players: list[SendspinPlayer]) -> None:
         # the client/state arrives between the hello and the attach

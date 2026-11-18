@@ -4,6 +4,15 @@ from __future__ import annotations
 
 BRIDGE_PREFIX = "spb_"
 VIRTUAL_PLAYER_ID_PREFIX = "sendspin_virtual_"
+MULTI_CHANNEL_ID_PREFIX = "sendspin_mc_"
+
+# The record of a multi-channel player: its group id and, per speaker number, its speaker.
+CONF_MULTI_CHANNEL_GROUP_ID = "multi_channel_group_id"
+CONF_SPEAKER_CLIENT_ID = "speaker_{n}_client_id"
+CONF_SPEAKER_NAME = "speaker_{n}_name"
+CONF_SPEAKER_CHANNEL = "speaker_{n}_channel"
+CONF_SPEAKER_OUTPUT_DELAY = "speaker_{n}_output_delay"
+CONF_SPEAKER_STATE = "speaker_{n}_state"
 
 CONF_SENDSPIN_STATIC_DELAY = "sendspin_static_delay"
 # the static delays the user set for the protocols that do not carry the output now, by their id
