@@ -16,8 +16,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
-from music_assistant_models.enums import PlaybackState, PlayerType, ProviderFeature
+from music_assistant_models.enums import (
+    PlaybackState,
+    PlayerType,
+    ProviderFeature,
+    SpeakerChannel,
+)
 from music_assistant_models.errors import (
+    InvalidDataError,
     PlayerUnavailableError,
     ProviderUnavailableError,
     UnsupportedFeaturedException,
@@ -237,6 +243,50 @@ class GroupCommandsMixin(_PlayerControllerBase):
                 f"Provider {provider} does not support creating group players"
             )
         return await provider_instance.create_group_player(name, members, dynamic)
+
+    @api_command("players/create_multi_channel_player", required_scope=Scope.CONFIG_PLAYERS_WRITE)
+    async def create_multi_channel_player(
+        self, provider: str, name: str, members: dict[str, SpeakerChannel]
+    ) -> Player:
+        """
+        Combine speakers into one new multi-channel player.
+
+        The output of each speaker on the provider moves into the new player. A player that
+        has no other output left is removed, with its settings and its queue.
+
+        :param provider: The provider (id) whose speakers to combine.
+        :param name: Name of the new player.
+        :param members: The channel each speaker plays, by the player id of the speaker.
+        """
+        if not (provider_instance := self.mass.get_provider(provider)):
+            raise ProviderUnavailableError(f"Provider {provider} not found")
+        provider_instance = cast("PlayerProvider", provider_instance)
+        if ProviderFeature.CREATE_MULTI_CHANNEL_PLAYER not in provider_instance.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Provider {provider} does not support creating multi-channel players"
+            )
+        if not (name := name.strip()):
+            raise InvalidDataError("A multi-channel player needs a name")
+        speakers: dict[str, SpeakerChannel] = {}
+        for player_id, channel in members.items():
+            if not (player := self.get_player(player_id)):
+                raise PlayerUnavailableError(f"Player {player_id} not found")
+            protocol = next(
+                (
+                    protocol
+                    for protocol in player.attached_protocols.values()
+                    if protocol.provider_id == provider_instance.instance_id
+                ),
+                None,
+            )
+            if protocol is None:
+                raise UnsupportedFeaturedException(
+                    f"Player {player.name} has no output of provider {provider}"
+                )
+            if channel == SpeakerChannel.UNKNOWN or channel in speakers.values():
+                raise InvalidDataError("Every speaker needs a channel of its own")
+            speakers[protocol.protocol_id] = channel
+        return await provider_instance.create_multi_channel_player(name, speakers)
 
     @api_command("players/remove_group_player", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_group_player(self, player_id: str) -> None:
