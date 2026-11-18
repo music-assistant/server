@@ -19,6 +19,7 @@ from music_assistant.providers.music_quiz.errors import (
     MusicQuizGuessTooFastError,
     MusicQuizInvalidAnswerError,
     MusicQuizTooManyAttemptsError,
+    MusicQuizWrongPhaseError,
 )
 from music_assistant.providers.music_quiz.models import (
     HintTextRoundState,
@@ -86,14 +87,16 @@ def _guess(game: MusicQuizGame, player_id: str, text: str, at: float) -> None:
     )
 
 
-def _guess_artist(game: MusicQuizGame, player_id: str, text: str | None) -> None:
+def _guess_artist(
+    game: MusicQuizGame, player_id: str, text: str | None, at: float = STARTED_AT + 20.0
+) -> None:
     """Submit an artist guess for a player, or skip the bonus when text is None."""
     ANSWER_TYPE.submit(
         game,
         game.rounds[0].answer_state,
         game.players[player_id],
         HintTextArtistSubmission(text=text),
-        STARTED_AT + 20.0,
+        at,
     )
 
 
@@ -206,7 +209,7 @@ def test_guesses_are_rate_limited_and_capped() -> None:
     for index in range(1, MAX_ATTEMPTS_PER_ROUND):
         _guess(game, "bob", "wrong", 101.0 + index)
     with pytest.raises(MusicQuizTooManyAttemptsError):
-        _guess(game, "bob", "Hey Jude", 200.0)
+        _guess(game, "bob", "Hey Jude", DEADLINE - 0.1)
 
 
 def test_earlier_correct_guesses_score_more_points() -> None:
@@ -263,6 +266,22 @@ def test_artist_bonus_is_one_guess_after_the_title() -> None:
     ANSWER_TYPE.reveal(game, state)
     assert game.players["alice"].score == 1000 + FIRST_SOLVER_BONUS + ARTIST_BONUS_POINTS
     assert game.players["bob"].score == 550
+
+
+def test_guesses_at_or_after_the_deadline_are_refused() -> None:
+    """Refuse late title and artist guesses while the deadline timer is still pending."""
+    state = _state(artist_bonus=True)
+    game = _game(state)
+    _guess(game, "alice", "Hey Jude", DEADLINE - 1.0)
+
+    with pytest.raises(MusicQuizWrongPhaseError):
+        _guess(game, "bob", "Hey Jude", DEADLINE)
+    with pytest.raises(MusicQuizWrongPhaseError):
+        _guess_artist(game, "alice", "The Beatles", DEADLINE + 0.5)
+
+    assert "bob" not in state.solves
+    assert state.attempts.get("bob", []) == []
+    assert state.solves["alice"].artist_done is False
 
 
 def test_artist_guess_is_refused_without_artist_bonus() -> None:

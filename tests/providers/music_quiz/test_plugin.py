@@ -64,6 +64,7 @@ from music_assistant.providers.music_quiz.errors import (
     MusicQuizNoGameError,
     MusicQuizNoPlaybackTargetError,
     MusicQuizUnknownPlayerError,
+    MusicQuizWrongPhaseError,
 )
 from music_assistant.providers.music_quiz.game import finish_game as finish_game_state
 from music_assistant.providers.music_quiz.game import get_current_round
@@ -7048,6 +7049,29 @@ async def test_title_reveal_hides_the_title_until_hints_and_reveal() -> None:
     assert plugin._game is not None
     assert plugin._game.config.hint_speed == "normal"
     assert plugin._game.config.typo_tolerance == "normal"
+
+
+@pytest.mark.asyncio
+async def test_title_reveal_refuses_guesses_while_the_deadline_timer_is_pending() -> None:
+    """Refuse a guess after the deadline even before the deadline timer revealed the round."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_title_reveal_game(plugin)
+    delay, _invoke_deadline, _round_index = _round_timer_call(plugin, plugin._reveal_timer_id)
+    assert plugin._game is not None
+    started_at = plugin._game.rounds[0].started_at
+    assert started_at is not None
+
+    with (
+        patch("time.time", return_value=started_at + delay + 0.1),
+        pytest.raises(MusicQuizWrongPhaseError),
+    ):
+        await plugin.submit_answer(
+            player_ids["Alice"],
+            {"answer_type": "hint_text", "action": "guess_title", "text": "Hey Jude"},
+        )
+
+    assert _phase(plugin) == MusicQuizPhase.ANSWERING
+    assert plugin._game.players[player_ids["Alice"]].score == 0
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,7 @@ from music_assistant.providers.music_quiz.errors import (
     MusicQuizGuessTooFastError,
     MusicQuizInvalidAnswerError,
     MusicQuizTooManyAttemptsError,
+    MusicQuizWrongPhaseError,
 )
 from music_assistant.providers.music_quiz.hints import build_mask, hidden_positions
 from music_assistant.providers.music_quiz.matching import (
@@ -174,6 +175,9 @@ class HintTextAnswerType(QuizAnswerType):
         :param submitted_at: Server timestamp of the submission.
         """
         hint_state = self._get_state(state)
+        # the round only closes once the deadline timer gets the game lock
+        if hint_state.deadline is not None and submitted_at >= hint_state.deadline:
+            raise MusicQuizWrongPhaseError("The answer deadline has passed")
         if isinstance(submission, HintTextArtistSubmission):
             self._submit_artist(hint_state, player, submission)
             return
