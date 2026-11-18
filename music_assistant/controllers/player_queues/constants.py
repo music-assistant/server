@@ -207,5 +207,6 @@ LOST_FLOW_RESTART_WINDOW = 600
 
 # A queue stops once this many of its items in a row got no audio from their source, without
 # audio of an item reaching its player in between, so it does not run on through its items while
-# a music service or the network is down.
+# a music service or the network is down. Until audio reaches the player again, every next item
+# without audio stops it at once.
 SOURCE_FAILURE_LIMIT = 3

@@ -1995,15 +1995,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         Record that audio of a queue item reached the player, so it can be reported as played.
 
         The count of items in a row whose source failed to deliver audio starts over, unless
-        this item is one of them.
+        the stream of this item failed.
 
         :param queue_id: The queue the item belongs to.
         :param item_id: The queue item whose first chunk of audio went out to the player.
         """
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.served_item_ids[item_id] = queue_data.session_id
-            # the output of an item whose source failed can still send out an empty stream
-            if item_id not in queue_data.failed_source_items:
+            # the output of a stream whose source failed can still send out an empty stream
+            queue_item = self.get_item(queue_id, item_id)
+            if not (
+                queue_item and queue_item.streamdetails and queue_item.streamdetails.stream_error
+            ):
                 queue_data.failed_source_items = {}
 
     def register_audio_buffer(self, queue_item: QueueItem, audio_buffer: AudioBuffer) -> None:
@@ -2103,6 +2106,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         Once SOURCE_FAILURE_LIMIT items of a queue failed in a row, without audio of an item
         reaching its player in between, the queue stops and is set back to the first of them.
+        Until audio of an item reaches the player, the next item without audio stops it again.
 
         :param queue_item: The queue item whose source failed.
         :param session_id: The playback session the audio was for, or None for the one that
@@ -2920,18 +2924,21 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         Count a queue item whose source failed to deliver audio, once per item.
 
+        The count goes on until audio of an item reaches the player, or the queue is replaced
+        or cleared, so once the queue stopped for its items, every next item without audio
+        stops it again.
+
         :param queue_data: The data of the queue the item belongs to.
         :param queue_item: The queue item whose source failed.
-        :return: The items that failed in a row, when this one makes SOURCE_FAILURE_LIMIT of
-            them; the count then starts over. None otherwise.
+        :return: A copy of the items that failed in a row while there are SOURCE_FAILURE_LIMIT
+            or more of them, None otherwise.
         """
         failed = queue_data.failed_source_items
         streamdetails = queue_item.streamdetails
         failed[queue_item.queue_item_id] = streamdetails.provider if streamdetails else None
         if len(failed) < SOURCE_FAILURE_LIMIT:
             return None
-        queue_data.failed_source_items = {}
-        return failed
+        return dict(failed)
 
     async def _stop_for_failed_sources(
         self, queue_id: str, session_id: str, failed: dict[str, str | None]
@@ -2956,15 +2963,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 await self._handle_stop(queue_id)
             self._park_on_failed_sources(queue_id, failed)
 
-    def _park_on_failed_sources(self, queue_id: str, failed: dict[str, str | None]) -> None:
+    def _park_on_failed_sources(
+        self, queue_id: str, failed: dict[str, str | None], park_item_id: str | None = None
+    ) -> None:
         """
-        Set a queue that stopped for its items without audio back to the first of them.
+        Set a queue that stopped for its items without audio back to one of them.
 
-        Those items stay playable, so a play starts over at the first one.
+        Those items stay playable, so a play starts over there.
 
         :param queue_id: The queue that stopped.
         :param failed: The ids of the items that got no audio, in the order they failed, each
             with the provider instance it streamed from.
+        :param park_item_id: The item to set the queue back to, or None for the first of the
+            failed items.
         """
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
@@ -2974,22 +2985,20 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             len(failed),
             ", ".join(self._source_names(failed)) or "their source",
         )
-        # what failed after the stop was decided belongs to the playback that stopped
-        queue_data.failed_source_items = {}
-        first_item: QueueItem | None = None
+        park_item = self.get_item(queue_id, park_item_id)
         for item_id in failed:
             if (queue_item := self.get_item(queue_id, item_id)) is None:
                 continue
             # their source failed, not the items: undo the unplayable mark a skip gave them
             queue_item.available = True
-            first_item = first_item or queue_item
-        if first_item is None:
+            park_item = park_item or queue_item
+        if park_item is None:
             return
-        queue.current_index = self.index_by_id(queue_id, first_item.queue_item_id)
+        queue.current_index = self.index_by_id(queue_id, park_item.queue_item_id)
         self._resync_position(queue_id)
         if (prev_state := queue_data.prev_state) and prev_state[
             "current_item_id"
-        ] == first_item.queue_item_id:
+        ] == park_item.queue_item_id:
             # it starts over from its beginning, not where its audio stopped
             prev_state["last_playing_elapsed_time"] = 0
         self.signal_update(queue_id, items_changed=True)
@@ -3700,6 +3709,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             attempts = 0
             refilled = False
             loaded_item: QueueItem | None = None
+            first_failed: QueueItem | None = None
             while attempts < _MAX_LOAD_ATTEMPTS:
                 queue_item = self.get_item(queue_id, index)
                 if not queue_item:
@@ -3759,10 +3769,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                         # the same actionable error.
                         if isinstance(err, MediaNotFoundError):
                             queue_item.available = False
-                        elif failed := self._count_failed_source(queue_data, queue_item):
-                            await self._end_failed_start(queue_data)
-                            self._park_on_failed_sources(queue_id, failed)
-                            raise self._no_audio_error(failed) from err
+                        else:
+                            first_failed = first_failed or queue_item
+                            if failed := self._count_failed_source(queue_data, queue_item):
+                                await self._end_failed_start(queue_data)
+                                # set back to where this start began, not where the row did
+                                self._park_on_failed_sources(
+                                    queue_id, failed, first_failed.queue_item_id
+                                )
+                                raise self._no_audio_error(failed) from err
                 next_index = self._get_next_index(queue_id, index, allow_repeat=False)
                 if next_index is None and queue.is_dynamic and not refilled:
                     refilled = True

@@ -3,8 +3,9 @@ Tests for the stop of a queue whose items get no audio from their source.
 
 When the source of SOURCE_FAILURE_LIMIT items in a row fails to deliver audio (a music service or
 the network is down), the queue stops instead of running on through its items, and is set back to
-the first of them. Audio of an item that reaches the player, or new media that replaces the
-queue, starts the count over.
+the first of them. The row is kept after the stop, so a play during the outage fails at its
+first item without audio. Audio of an item that reaches the player, or new media that replaces
+the queue, starts the count over.
 """
 
 from __future__ import annotations
@@ -74,13 +75,16 @@ class _Rig:
         ctrl.logger = self.logger
         self.mass = MagicMock()
         ctrl.mass = self.mass
-        self.tasks: list[Coroutine[Any, Any, None]] = []
-        self.mass.create_task = Mock(side_effect=lambda coro, **_kwargs: self.tasks.append(coro))
+        self.tasks: dict[str | None, Coroutine[Any, Any, None]] = {}
+        self.mass.create_task = Mock(side_effect=self._create_task)
         names = {INSTANCE: "Svc", OTHER_INSTANCE: "Other"}
         self.mass.get_provider = Mock(
             side_effect=lambda instance, **_kwargs: _provider(names[instance])
         )
-        self.handle_stop = AsyncMock()
+        # a stop ends the playback session of the queue
+        self.handle_stop = AsyncMock(
+            side_effect=lambda _queue_id: setattr(self.queue_data, "session_id", None)
+        )
         ctrl._handle_stop = self.handle_stop  # type: ignore[method-assign]
         ctrl.signal_update = Mock()  # type: ignore[method-assign]
         ctrl.update_items = Mock()  # type: ignore[method-assign]
@@ -98,7 +102,21 @@ class _Rig:
     async def run_tasks(self) -> None:
         """Run the tasks the controller started."""
         while self.tasks:
-            await self.tasks.pop(0)
+            await self.tasks.pop(next(iter(self.tasks)))
+
+    def _create_task(self, coro: Coroutine[Any, Any, None], task_id: str | None = None) -> None:
+        """Start a task as the server does: not again while one with its id is pending."""
+        if task_id is not None and task_id in self.tasks:
+            coro.close()
+            return
+        self.tasks[task_id] = coro
+
+
+async def _stop_for_a_row(rig: _Rig) -> None:
+    """Have the first three items fail in a row, and let the queue stop for them."""
+    for item_id in ("a", "b", "c"):
+        rig.fail(item_id)
+    await rig.run_tasks()
 
 
 def _provider(name: str) -> MagicMock:
@@ -129,8 +147,6 @@ async def test_items_without_audio_in_a_row_stop_the_queue_at_the_first_of_them(
 
     assert [rig.fail(item_id) for item_id in ("a", "b", "c")] == [False, False, True]
     rig.handle_stop.assert_not_awaited()
-    # the playback that is about to stop can still report an item before the stop runs
-    rig.fail("d")
     await rig.run_tasks()
 
     rig.handle_stop.assert_awaited_once_with(QUEUE_ID)
@@ -142,10 +158,30 @@ async def test_items_without_audio_in_a_row_stop_the_queue_at_the_first_of_them(
     assert rig.queue.resume_pos == 0
     assert rig.queue_data.prev_state["last_playing_elapsed_time"] == 0
     assert all(rig.item(item_id).available for item_id in ITEM_IDS)
-    assert rig.queue_data.failed_source_items == {}
+    # the row is kept, so a play during the outage stops at its first item without audio
+    assert list(rig.queue_data.failed_source_items) == ["a", "b", "c"]
     warning = rig.logger.warning.call_args.args
     assert "Queue" in warning
     assert "Svc" in warning
+
+
+async def test_the_playback_that_stops_is_stopped_once() -> None:
+    """Items the stopping playback still reports stop nothing more, before or after the stop."""
+    rig = _Rig()
+    for item_id in ("a", "b", "c"):
+        rig.fail(item_id)
+
+    # reported before the stop ran: the stop that is on its way is the one for it
+    assert rig.fail("d") is True
+    await rig.run_tasks()
+    # reported after the stop: its playback ended
+    assert rig.fail("e") is False
+
+    task_ids = {call.kwargs["task_id"] for call in rig.mass.create_task.call_args_list}
+    assert task_ids == {f"stop_for_failed_sources_{QUEUE_ID}"}
+    rig.handle_stop.assert_awaited_once_with(QUEUE_ID)
+    assert rig.tasks == {}
+    assert list(rig.queue_data.failed_source_items) == ["a", "b", "c", "d"]
 
 
 async def test_audio_that_reaches_the_player_starts_the_count_over() -> None:
@@ -158,7 +194,7 @@ async def test_audio_that_reaches_the_player_starts_the_count_over() -> None:
 
     assert rig.fail("d") is False
     assert rig.fail("e") is False
-    assert rig.tasks == []
+    assert rig.tasks == {}
     assert list(rig.queue_data.failed_source_items) == ["d", "e"]
 
 
@@ -167,6 +203,10 @@ async def test_an_empty_stream_of_a_failed_item_keeps_the_count() -> None:
     rig = _Rig()
     rig.fail("a")
     rig.fail("b")
+    # the stream of b failed
+    streamdetails = rig.item("b").streamdetails
+    assert streamdetails is not None
+    streamdetails.stream_error = True
 
     rig.ctrl.mark_item_served(QUEUE_ID, "b")
 
@@ -189,7 +229,7 @@ async def test_an_item_that_fails_in_two_paths_counts_once() -> None:
     assert rig.fail("b") is False
     assert rig.fail("d") is False
     assert list(rig.queue_data.failed_source_items) == ["b", "d"]
-    assert rig.tasks == []
+    assert rig.tasks == {}
 
 
 async def test_an_item_that_is_not_found_does_not_count() -> None:
@@ -206,7 +246,7 @@ async def test_an_item_that_is_not_found_does_not_count() -> None:
 
     assert next_item is rig.item("e")
     assert rig.queue_data.failed_source_items == {}
-    assert rig.tasks == []
+    assert rig.tasks == {}
 
 
 async def test_the_next_item_path_stops_walking_when_the_queue_stops() -> None:
@@ -250,13 +290,38 @@ async def test_a_command_that_went_first_keeps_the_queue() -> None:
     assert rig.queue.current_item is rig.item("d")
 
 
-async def test_new_media_starts_the_count_over() -> None:
-    """New media that replaces the queue takes the failed items with the old ones."""
+async def test_audio_after_the_stop_starts_the_count_over() -> None:
+    """The first item that plays again with audio, one of the failed items, ends the row."""
     rig = _Rig()
-    rig.fail("a")
-    rig.fail("b")
+    await _stop_for_a_row(rig)
+    assert list(rig.queue_data.failed_source_items) == ["a", "b", "c"]
+    rig.queue_data.session_id = "session-2"
 
-    await rig.ctrl.load(QUEUE_ID, [_item("x"), _item("y")], keep_remaining=False, keep_played=False)
+    rig.ctrl.mark_item_served(QUEUE_ID, "a")
+
+    assert rig.queue_data.failed_source_items == {}
+    assert rig.fail("b", "session-2") is False
+    assert rig.tasks == {}
+
+
+@pytest.mark.parametrize("change", ["replace", "clear"])
+async def test_new_media_after_the_stop_starts_the_count_over(change: str) -> None:
+    """New media that replaces the queue, or a cleared queue, leaves the row behind."""
+    rig = _Rig()
+    await _stop_for_a_row(rig)
+    assert list(rig.queue_data.failed_source_items) == ["a", "b", "c"]
+    ctrl = rig.ctrl
+
+    if change == "replace":
+        await ctrl.load(QUEUE_ID, [_item("x"), _item("y")], keep_remaining=False, keep_played=False)
+    else:
+        ctrl.store_sources = Mock()  # type: ignore[method-assign]
+        ctrl.is_smart_shuffle_active = Mock(return_value=False)  # type: ignore[method-assign]
+        ctrl._clear(QUEUE_ID, skip_stop=True)
+        # the audio cleanup the clear starts is not part of this test
+        for coro in rig.tasks.values():
+            coro.close()
+        rig.tasks.clear()
 
     assert rig.queue_data.failed_source_items == {}
 
@@ -290,5 +355,32 @@ async def test_a_start_without_audio_fails_with_a_clear_error(
     end_failed_start.assert_awaited_once_with(rig.queue_data)
     assert rig.queue.current_item is rig.item("b")
     assert rig.queue.elapsed_time == 0
+    assert list(rig.queue_data.failed_source_items) == ["b", "c", "d"]
     # the start stops the queue itself
-    assert rig.tasks == []
+    assert rig.tasks == {}
+
+
+@pytest.mark.parametrize("start_item_id", ["a", "e"])
+async def test_a_play_after_the_stop_fails_at_its_first_item_without_audio(
+    start_item_id: str,
+) -> None:
+    """During the outage a play fails fast, and the queue stays on the item it started from."""
+    rig = _Rig()
+    await _stop_for_a_row(rig)
+    ctrl = rig.ctrl
+    load_item = AsyncMock(side_effect=AudioError("Timeout waiting for audio data"))
+    ctrl._load_item = load_item  # type: ignore[method-assign]
+    end_failed_start = AsyncMock()
+    ctrl._end_failed_start = end_failed_start  # type: ignore[method-assign]
+    ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(AudioError) as err:
+        await ctrl._play_index(QUEUE_ID, ITEM_IDS.index(start_item_id), None, fade_in=False)
+
+    assert err.value.translation_key == "no_audio_from_provider"
+    assert err.value.translation_args == ["Svc"]
+    load_item.assert_awaited_once()
+    end_failed_start.assert_awaited_once_with(rig.queue_data)
+    assert rig.queue.current_item is rig.item(start_item_id)
+    assert rig.queue.elapsed_time == 0
+    assert all(rig.item(item_id).available for item_id in ("a", "b", "c", start_item_id))
