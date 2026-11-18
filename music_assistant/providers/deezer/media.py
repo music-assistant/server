@@ -48,6 +48,7 @@ from .constants import (
     AUDIOBOOK_CHAPTERS_PAGE_SIZE,
     AUDIOBOOK_METADATA_VERSION,
     AUTHOR_ARTIST_PREFIX,
+    AUTHOR_NEWEST_RELEASES,
     FAVORITES_PAGE_SIZE,
     PERSONAL_ALBUM_PREFIX,
     PERSONAL_ARTIST_PREFIX,
@@ -1020,17 +1021,26 @@ class DeezerMediaManager:
         return artist_id in authors_without_music
 
     async def _get_authors(self, releases: dict[str, list[str]]) -> tuple[set[str], set[str]]:
-        """Return the artists whose newest release is an audiobook, and those without music."""
+        """Return the artists with an audiobook among their newest releases, and those without music."""
         check_audiobook_ids = self.provider.gql_client.check_audiobook_ids
-        newest_audiobooks = await check_audiobook_ids([ids[0] for ids in releases.values() if ids])
+        newest = await check_audiobook_ids(
+            [i for ids in releases.values() for i in ids[:AUTHOR_NEWEST_RELEASES]]
+        )
         authors = {
-            artist_id for artist_id, ids in releases.items() if ids and ids[0] in newest_audiobooks
+            artist_id
+            for artist_id, ids in releases.items()
+            if newest.intersection(ids[:AUTHOR_NEWEST_RELEASES])
         }
         # only an author needs the other releases checked
-        audiobooks = await check_audiobook_ids(
-            [i for artist_id in releases if artist_id in authors for i in releases[artist_id][1:]]
+        audiobooks = newest | await check_audiobook_ids(
+            [
+                i
+                for artist_id in releases
+                if artist_id in authors
+                for i in releases[artist_id][AUTHOR_NEWEST_RELEASES:]
+            ]
         )
-        return authors, {a for a in authors if set(releases[a][1:]) <= audiobooks}
+        return authors, {a for a in authors if set(releases[a]) <= audiobooks}
 
     async def _search_artists(
         self, nodes: list[SearchSearchResultsArtistsEdgesNode], author_ids: set[str]

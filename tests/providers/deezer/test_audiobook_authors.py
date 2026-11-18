@@ -343,10 +343,10 @@ async def test_library_lists_favorite_authors(
     check_fails: bool,
     listed: list[str],
 ) -> None:
-    """A favorite artist is an author if its newest release is an audiobook, an artist if it has music."""
-    band = _artist_node("1", "Band", "10", "11")
-    tilda = _artist_node("32067711", "Tilda Apfelkern", "20", "21")
-    conni = _artist_node("3", "Conni", "30", "31")
+    """A favorite artist is an author with an audiobook among its newest releases, an artist with music."""
+    band = _artist_node("1", "Band", "10", "11", "12", "13")
+    tilda = _artist_node("32067711", "Tilda Apfelkern", "20", "21", "22", "23")
+    conni = _artist_node("3", "Conni", "30", "31", "32", "33")
     for node in (band, tilda, conni):
         node.is_favorite = True
     page_info = SimpleNamespace(has_next_page=False, end_cursor=None)
@@ -354,7 +354,7 @@ async def test_library_lists_favorite_authors(
     gql.get_favorite_artists.return_value = SimpleNamespace(
         user_favorites=SimpleNamespace(artists=SimpleNamespace(edges=edges, page_info=page_info))
     )
-    audiobook_ids = {"20", "21", "30"}
+    audiobook_ids = {"20", "21", "22", "23", "32"}
     gql.check_audiobook_ids.side_effect = (
         TimeoutError if check_fails else lambda ids: set(ids) & audiobook_ids
     )
@@ -375,8 +375,8 @@ async def test_library_lists_favorite_authors(
     assert report_skipped.call_count == check_fails
     if not check_fails:
         assert all(artist.favorite for artist in artists)
-        # only the artists whose newest release is an audiobook get the rest checked
+        # only the authors get their older releases checked
         assert gql.check_audiobook_ids.await_args_list == [
-            call(["10", "20", "30"]),
-            call(["21", "31"]),
+            call(["10", "11", "12", "20", "21", "22", "30", "31", "32"]),
+            call(["23", "33"]),
         ]

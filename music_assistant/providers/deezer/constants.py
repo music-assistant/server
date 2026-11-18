@@ -33,6 +33,9 @@ AUTHOR_ARTIST_PREFIX = "author_"
 UNKNOWN_ARTIST_ID = "8592"
 # Bump when audiobook or release parsing changes to invalidate cached items.
 AUDIOBOOK_METADATA_VERSION = "1"
+# an artist is an author if one of its newest releases is an audiobook; each one more
+# costs a request per 50 favorite artists in the library sync
+AUTHOR_NEWEST_RELEASES = 3
 
 # -- Pagination page sizes --
 
