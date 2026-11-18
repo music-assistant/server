@@ -32,9 +32,7 @@ def _provider(episodes: list[dict[str, Any]]) -> ARDAudiothek:
     config.get_value.side_effect = lambda key, default=None: (
         "INFO" if key == "log_level" else default
     )
-    provider = ARDAudiothek(
-        Mock(), Mock(domain="ard_audiothek", features=set()), config, SUPPORTED_FEATURES
-    )
+    provider = ARDAudiothek(Mock(), Mock(domain="ard_audiothek"), config, SUPPORTED_FEATURES)
 
     async def _execute(query: Any) -> dict[str, Any]:
         if query is show_length_query:

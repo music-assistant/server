@@ -29,7 +29,7 @@ def provider() -> QobuzProvider:
         "quality": "27",
         "log_level": "GLOBAL",
     }.get(key, default)
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "qobuz"
     provider = QobuzProvider(Mock(), manifest, config, SUPPORTED_FEATURES)
     items = [{"id": 1000 + pos, "playlist_track_id": _entry_id(pos)} for pos in range(1, 7)]

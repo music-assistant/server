@@ -24,9 +24,7 @@ def _provider() -> LastFMScrobbleProvider:
     config = Mock()
     config.values = {}
     config.get_value.side_effect = lambda _key, default=None: default
-    return LastFMScrobbleProvider(
-        mass, Mock(domain="lastfm_scrobble", features=set()), config, SUPPORTED_FEATURES
-    )
+    return LastFMScrobbleProvider(mass, Mock(domain="lastfm_scrobble"), config, SUPPORTED_FEATURES)
 
 
 async def _authenticated_provider(network: Mock) -> LastFMScrobbleProvider:

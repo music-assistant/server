@@ -35,7 +35,7 @@ def provider() -> GPodder:
     mass.cache.set = AsyncMock()
     config = Mock(instance_id="gpodder--test")
     config.get_value.side_effect = lambda key, default=None: {"log_level": "INFO"}.get(key, default)
-    provider = GPodder(mass, Mock(domain="gpodder", features=set()), config, SUPPORTED_FEATURES)
+    provider = GPodder(mass, Mock(domain="gpodder"), config, SUPPORTED_FEATURES)
     provider._client = Mock()
     provider.feeds = set()
     provider.max_episodes = 0

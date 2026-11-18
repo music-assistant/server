@@ -17,6 +17,7 @@ from music_assistant_models.enums import (
     ContentType,
     EventType,
     MediaType,
+    ProviderFeature,
     ProviderType,
     RepeatMode,
     SourceControl,
@@ -175,9 +176,10 @@ class YandexYnisonProvider(PluginProvider):
         mass: MusicAssistant,
         manifest: ProviderManifest,
         config: ProviderConfig,
+        supported_features: set[ProviderFeature],
     ) -> None:
         """Initialize the Ynison plugin provider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, supported_features)
 
         # Setup-owned identity
         self._default_player_id: str = cast("str", self.get_setup_value(CONF_MASS_PLAYER_ID)) or ""

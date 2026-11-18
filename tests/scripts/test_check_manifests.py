@@ -115,26 +115,26 @@ def test_support_url_must_be_https() -> None:
         assert any("'support_url' must be" in issue for issue in _validate(manifest, "demo"))
 
 
-def test_valid_features_accepted() -> None:
-    """Declared features that are known ProviderFeature values produce no issues."""
+def test_valid_media_types_accepted() -> None:
+    """Declared media types that are known MediaType values produce no issues."""
     manifest = _valid_manifest()
-    manifest["features"] = ["audio_source", "scrobble"]
+    manifest["media_types"] = ["radio", "audio_source"]
     assert _validate(manifest, "demo") == []
-    manifest["features"] = []
+    manifest["media_types"] = []
     assert _validate(manifest, "demo") == []
 
 
-def test_features_breaking_the_rules_rejected() -> None:
-    """Features that are not a list of known, unique ProviderFeature values are reported."""
+def test_media_types_breaking_the_rules_rejected() -> None:
+    """Media types that are not a list of known, unique MediaType values are reported."""
     manifest = _valid_manifest()
-    manifest["features"] = "audio_source"
-    assert _validate(manifest, "demo") == ["'features' must be a list"]
-    manifest["features"] = ["audio_source", "teleport", "unknown", 1, "audio_source"]
+    manifest["media_types"] = "radio"
+    assert _validate(manifest, "demo") == ["'media_types' must be a list"]
+    manifest["media_types"] = ["radio", "radios", "unknown", 1, "radio"]
     assert _validate(manifest, "demo") == [
-        "feature 'teleport' is not a known ProviderFeature",
-        "feature 'unknown' is not a known ProviderFeature",
-        "feature '1' is not a known ProviderFeature",
-        "feature 'audio_source' is listed more than once",
+        "media type 'radios' is not a known MediaType",
+        "media type 'unknown' is not a known MediaType",
+        "media type '1' is not a known MediaType",
+        "media type 'radio' is listed more than once",
     ]
 
 

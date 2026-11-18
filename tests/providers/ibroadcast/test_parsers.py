@@ -154,7 +154,7 @@ def provider() -> IBroadcastProvider:
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     mass.create_task = lambda coro, *_args, **_kwargs: asyncio.ensure_future(coro)
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "ibroadcast"
     config = Mock()
     config.instance_id = "ibroadcast--test123"

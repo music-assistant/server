@@ -17,6 +17,7 @@ from music_assistant_models.enums import (
     ContentType,
     ImageType,
     MediaType,
+    ProviderFeature,
     SourceControl,
     StreamType,
 )
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
 DEFAULT_ARIACAST_NAME = "Music Assistant"
+SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 AUDIO_SOURCE_ID = "main"
 
 ARIACAST_PORT = 12889
@@ -84,11 +86,16 @@ class AriaCastReceiver(PluginProvider):
 
     reload_on_streams_network_change = True
 
+    @property
+    def supported_features(self) -> set[ProviderFeature]:
+        """Return the features supported by this provider."""
+        return SUPPORTED_FEATURES
+
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize the AriaCast Receiver provider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self._default_player_id = str(self.get_setup_value(CONF_MASS_PLAYER_ID) or "")
 
         # Audio pipeline: one asyncio.Queue, drained per stream (VBAN pattern)

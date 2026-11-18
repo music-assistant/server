@@ -5,6 +5,7 @@
   "name": "BookOrbit",
   "description": "Stream audiobooks from your personal BookOrbit server.",
   "codeowners": ["@justinwoodland"],
+  "media_types": ["artist", "audiobook"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/bookorbit",
   "multi_instance": true

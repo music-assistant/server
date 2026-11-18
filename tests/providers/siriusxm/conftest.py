@@ -48,7 +48,7 @@ def make_channel(
 def provider() -> SiriusXMProvider:
     """Create a real SiriusXMProvider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "siriusxm"
     config = Mock()
     config.instance_id = "siriusxm--test123"
