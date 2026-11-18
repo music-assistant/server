@@ -951,7 +951,7 @@ def _audio_source_provider[ProviderT: Provider](
     available: bool = True,
 ) -> ProviderT:
     """Construct a provider of the given class with the given features."""
-    manifest = Mock(type=provider_type, domain=instance_id, features=set())
+    manifest = Mock(type=provider_type, domain=instance_id)
     config = Mock(instance_id=instance_id)
     config.name = instance_id
     config.get_value.return_value = "GLOBAL"

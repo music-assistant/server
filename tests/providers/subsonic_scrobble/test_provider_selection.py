@@ -289,7 +289,7 @@ async def test_hook_reports_to_the_account_of_the_playing_user(
     config = Mock()
     config.get_value.side_effect = lambda _key, default=None: default
     provider = SubsonicScrobbleProvider(
-        mass, Mock(domain="subsonic_scrobble", features=set()), config, SUPPORTED_FEATURES
+        mass, Mock(domain="subsonic_scrobble"), config, SUPPORTED_FEATURES
     )
     await provider.loaded_in_mass()
 

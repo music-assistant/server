@@ -36,6 +36,7 @@ from .constants import (
     DEFAULT_PCM_AUDIO_FORMAT,
     DEFAULT_PCM_SAMPLE_RATE,
     DEFAULT_UDP_PORT,
+    SUPPORTED_FEATURES,
     VBAN_QUEUE_STRATEGIES,
 )
 from .helpers import get_supported_pcm_formats
@@ -63,7 +64,7 @@ class VBANReceiverProvider(PluginProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         # Setup values fall back to legacy option values for existing instances.
         self._bind_port: int = cast("int", self.get_setup_value(CONF_BIND_PORT) or DEFAULT_UDP_PORT)
         self._bind_ip: str = cast("str", self.get_setup_value(CONF_BIND_IP) or "0.0.0.0")  # noqa: S104 - user-configurable bind address

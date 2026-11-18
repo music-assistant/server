@@ -14,7 +14,7 @@ from music_assistant.providers.musicme.provider import MusicMeProvider
 def provider() -> MusicMeProvider:
     """Create a real MusicMeProvider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "musicme"
     config = Mock()
     config.instance_id = "musicme--test123"

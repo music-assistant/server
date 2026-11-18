@@ -306,7 +306,7 @@ def _provider(setup_data: dict[str, Any]) -> DeezerProvider:
     mass = Mock()
     mass.config.get.return_value = setup_data
     mass.config.decrypt_string.side_effect = lambda value: value
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "deezer"
     config = Mock()
     config.instance_id = "deezer--test"

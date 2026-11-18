@@ -24,7 +24,7 @@ def sync_run() -> Iterator[SyncRunState]:
 def provider() -> SoundcloudMusicProvider:
     """Create a real SoundcloudMusicProvider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "soundcloud"
     config = Mock()
     config.instance_id = "soundcloud--test123"

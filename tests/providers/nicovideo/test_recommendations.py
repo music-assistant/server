@@ -26,7 +26,7 @@ EXPECTED_ROW_IDS = [
 def provider() -> NicovideoMusicProvider:
     """Create a real NicovideoMusicProvider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "nicovideo"
     config = Mock()
     config.instance_id = "nicovideo--test123"

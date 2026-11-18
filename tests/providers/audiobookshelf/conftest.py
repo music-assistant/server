@@ -15,7 +15,7 @@ from music_assistant.providers.audiobookshelf.helpers import LibraryHelper
 def provider() -> Audiobookshelf:
     """Create a real Audiobookshelf provider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "audiobookshelf"
     config = Mock()
     config.instance_id = "audiobookshelf--test123"

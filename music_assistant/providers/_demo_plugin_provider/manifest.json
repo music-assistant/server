@@ -4,7 +4,7 @@
   "name": "Demo Plugin Provider",
   "description": "Test/Example Plugin Provider for Music Assistant.",
   "codeowners": ["@yourgithubusername"],
-  "features": ["audio_source"],
+  "media_types": ["audio_source"],
   "requirements": [],
   "documentation": "https://music-assistant.io/plugin-support/demo/",
   "menu_actions": [
