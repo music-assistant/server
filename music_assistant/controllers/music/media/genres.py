@@ -66,7 +66,7 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Collection, Mapping, Sequence
 
     from music_assistant_models.event import MassEvent
 
@@ -561,32 +561,51 @@ class GenreController(MediaControllerBase[Genre]):
             },
         )
 
-    async def get_track_ids_for_genres(
-        self, genre_ids: list[int], *, track_ids: list[int]
-    ) -> set[int]:
+    async def tracks_in_genres(
+        self, genre_ids: Collection[int], tracks: Sequence[Track]
+    ) -> set[tuple[str, str]]:
         """
-        Return candidate track IDs mapped to any of the selected genres.
+        Return which of the given tracks are in any of the given genres.
 
-        :param genre_ids: Genre database IDs to match.
-        :param track_ids: Candidate track database IDs to check.
+        A track is in the genres it is linked to itself, as in the track listing of a genre,
+        and a track without genres of its own is in those of every album it is on. One straight
+        from a music source is in the genres of its library track, so a track that is not in
+        the library is in no genre.
+
+        :param genre_ids: The library ids of the genres.
+        :param tracks: The candidate tracks.
+        :return: The (provider, item id) of every candidate in any of the genres.
         """
-        if not genre_ids or not track_ids:
+        if not genre_ids or not tracks:
             return set()
-        result: set[int] = set()
-        for start in range(0, len(track_ids), 500):
-            rows = await self.mass.music.database.get_rows_from_query(
-                f"SELECT DISTINCT media_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
-                "WHERE media_type = :media_type "
-                "AND genre_id IN :genre_ids AND media_id IN :track_ids",
-                {
-                    "media_type": MediaType.TRACK.value,
-                    "genre_ids": genre_ids,
-                    "track_ids": track_ids[start : start + 500],
-                },
-                limit=0,
-            )
-            result.update(row["media_id"] for row in rows)
-        return result
+        if not (candidates := await self._library_track_candidates(tracks)):
+            return set()
+        # look up only the links of the candidates: a big genre holds tens of thousands of tracks,
+        # so the album links are probed per candidate (EXISTS), never read for the whole genre
+        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+        own_links = (
+            f"SELECT media_id AS track_id FROM {gm} "
+            "WHERE genre_id IN :genre_ids AND media_type = :track AND media_id IN :track_ids"
+        )
+        album_links = (
+            f"SELECT at.track_id FROM {DB_TABLE_ALBUM_TRACKS} at "
+            "WHERE at.track_id IN :track_ids "
+            f"AND EXISTS (SELECT 1 FROM {gm} m WHERE m.genre_id IN :genre_ids "
+            "AND m.media_type = :album AND m.media_id = at.album_id) "
+            f"AND NOT EXISTS (SELECT 1 FROM {gm} own "
+            "WHERE own.media_id = at.track_id AND own.media_type = :track)"
+        )
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"{own_links} UNION {album_links}",
+            {
+                "genre_ids": sorted(genre_ids),
+                "track": MediaType.TRACK.value,
+                "album": MediaType.ALBUM.value,
+                "track_ids": sorted(candidates),
+            },
+            limit=0,
+        )
+        return {key for row in rows for key in candidates[int(row["track_id"])]}
 
     async def get_genre_exclusions_for_media_item(
         self, media_type: MediaType, media_id: str | int
@@ -2379,3 +2398,36 @@ class GenreController(MediaControllerBase[Genre]):
                 if create_safe_string(x, True, True) != own_name
             )
         return item
+
+    async def _library_track_candidates(
+        self, tracks: Sequence[Track]
+    ) -> dict[int, set[tuple[str, str]]]:
+        """Return the (provider, item id) of the given tracks by the id of their library track."""
+        candidates: dict[int, set[tuple[str, str]]] = {}
+        source_keys: dict[tuple[str, str], tuple[str, str]] = {}
+        for track in tracks:
+            key = (track.provider, track.item_id)
+            if track.provider == "library":
+                candidates.setdefault(int(track.item_id), set()).add(key)
+                continue
+            source_keys[key] = key
+            for mapping in track.provider_mappings:
+                source_keys[(mapping.provider_instance, mapping.item_id)] = key
+        if not source_keys:
+            return candidates
+        # the IN lists pair every instance with every item id, so match the exact pairs here
+        rows = await self.mass.music.database.get_rows_from_query(
+            "SELECT item_id, provider_instance, provider_item_id "
+            f"FROM {DB_TABLE_PROVIDER_MAPPINGS} WHERE media_type = :track "
+            "AND provider_instance IN :instances AND provider_item_id IN :item_ids",
+            {
+                "track": MediaType.TRACK.value,
+                "instances": sorted({instance for instance, _ in source_keys}),
+                "item_ids": sorted({item_id for _, item_id in source_keys}),
+            },
+            limit=0,
+        )
+        for row in rows:
+            if track_key := source_keys.get((row["provider_instance"], row["provider_item_id"])):
+                candidates.setdefault(int(row["item_id"]), set()).add(track_key)
+        return candidates

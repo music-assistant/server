@@ -824,16 +824,11 @@ class SmartPlaylistProvider(PluginProvider):
         tracks = self._apply_exclusions(
             tracks, rules, excluded_genre_names, excl_album_type_ids or None
         )
-        if rules.excluded_genre_ids and tracks:
-            track_map = await self._build_track_id_map(tracks)
-            if track_map:
-                excluded_ids = await self.mass.music.genres.get_track_ids_for_genres(
-                    rules.excluded_genre_ids, track_ids=list(track_map)
-                )
-                excluded_objects = {
-                    id(track) for track_id in excluded_ids for track in track_map[track_id]
-                }
-                tracks = [track for track in tracks if id(track) not in excluded_objects]
+        if rules.excluded_genre_ids:
+            in_excluded_genre = await self.mass.music.genres.tracks_in_genres(
+                rules.excluded_genre_ids, tracks
+            )
+            tracks = [t for t in tracks if (t.provider, t.item_id) not in in_excluded_genre]
         if rules.exclude_favorites:
             tracks = await with_user_favorites(self.mass, get_current_user(), tracks)
             tracks = [track for track in tracks if track.favorite is not True]
@@ -1009,22 +1004,16 @@ class SmartPlaylistProvider(PluginProvider):
         return result
 
     async def _resolve_excluded_genre_names(self, rules: SmartPlaylistRules) -> set[str]:
-        """Resolve current excluded genre names and aliases, falling back for deleted genres."""
+        """Resolve excluded_genre_ids to a lowercase name set for matching."""
         if not rules.excluded_genre_ids:
             return set()
-        names: set[str] = set()
+        genre_id_to_name = dict(rules.excluded_genre_names)
         for genre_id in rules.excluded_genre_ids:
-            try:
-                genre = await self.mass.music.genres.get_library_item(genre_id)
-            except MediaNotFoundError:
-                self.logger.warning("Excluded smart playlist genre %s no longer exists", genre_id)
-                if saved_name := rules.excluded_genre_names.get(genre_id):
-                    names.add(saved_name.lower())
-                continue
-            names.update(
-                name.lower() for name in (genre.name, *(genre.genre_aliases or ())) if name
-            )
-        return names
+            if genre_id not in genre_id_to_name:
+                with suppress(Exception):
+                    genre = await self.mass.music.genres.get_library_item(genre_id)
+                    genre_id_to_name[genre_id] = genre.name
+        return {v.lower() for v in genre_id_to_name.values() if v}
 
     async def _build_track_id_map(
         self,
@@ -1039,7 +1028,7 @@ class SmartPlaylistProvider(PluginProvider):
         :return: Mapping of library track ID to list of track objects
         """
         track_id_to_tracks: dict[int, list[Track]] = {}
-        provider_tracks: dict[str, dict[str, list[Track]]] = {}
+        provider_track_tasks: list[tuple[Track, str, str]] = []
 
         for track in tracks:
             if skip_tracks_with_genres and track.metadata and track.metadata.genres:
@@ -1052,27 +1041,36 @@ class SmartPlaylistProvider(PluginProvider):
                 track_id_to_tracks[track_id].append(track)
             elif track.provider_mappings:
                 for mapping in track.provider_mappings:
-                    provider = mapping.provider_instance or mapping.provider_domain
-                    provider_tracks.setdefault(provider, {}).setdefault(mapping.item_id, []).append(
-                        track
+                    provider_track_tasks.append(
+                        (
+                            track,
+                            mapping.item_id,
+                            mapping.provider_instance or mapping.provider_domain,
+                        )
                     )
+                    break
 
-        for provider, items in provider_tracks.items():
-            item_ids = list(items)
-            for start in range(0, len(item_ids), 500):
-                library_tracks = await self.mass.music.tracks.get_library_items_by_prov_id(
-                    provider_instance_id_or_domain=provider,
-                    provider_item_ids=item_ids[start : start + 500],
-                    limit=0,
+        # Resolve all provider tracks to library tracks in parallel
+        if provider_track_tasks:
+            library_tracks = await asyncio.gather(
+                *(
+                    self.mass.music.tracks.get_library_item_by_prov_id(
+                        item_id=item_id,
+                        provider_instance_id_or_domain=provider_instance_or_domain,
+                    )
+                    for _, item_id, provider_instance_or_domain in provider_track_tasks
                 )
-                for library_track in library_tracks:
-                    matched = track_id_to_tracks.setdefault(int(library_track.item_id), [])
-                    for mapping in library_track.provider_mappings:
-                        if provider not in (mapping.provider_instance, mapping.provider_domain):
-                            continue
-                        for track in items.get(mapping.item_id, []):
-                            if not any(track is existing for existing in matched):
-                                matched.append(track)
+            )
+
+            for (track, _, _), library_track in zip(
+                provider_track_tasks, library_tracks, strict=True
+            ):
+                if library_track:
+                    track_id = int(library_track.item_id)
+                    if track_id not in track_id_to_tracks:
+                        track_id_to_tracks[track_id] = []
+                    track_id_to_tracks[track_id].append(track)
+
         return track_id_to_tracks
 
     async def _enrich_tracks_with_db_genres(self, tracks: list[Track]) -> None:
