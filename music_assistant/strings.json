@@ -486,7 +486,7 @@
     "protocol_settings": "Output Protocol(s)",
     "protocol_output_settings": "Enable {0} support",
     "protocol_output_settings_via": "Enable {0} support (over {1})",
-    "plugins": "Plugins",
+    "audio_sources": "Audio sources",
     "dsp": "Digital Signal Processing (DSP)",
     "options": "Player options",
     "audio": "Audio",

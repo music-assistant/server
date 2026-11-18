@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, ProviderFeature
 
 from music_assistant.providers.sendspin_source.provider import SendspinSourceProvider
 
@@ -382,7 +382,10 @@ async def make_provider(
     # missing here and take the fake out of step with the provider.
     provider = SendspinSourceProvider(
         cast("MusicAssistant", _FakeMass(sendspin_provider)),
-        cast("Any", type("Manifest", (), {"domain": "sendspin_source"})()),
+        cast(
+            "Any",
+            SimpleNamespace(domain="sendspin_source", features={ProviderFeature.AUDIO_SOURCE}),
+        ),
         cast("Any", _FakeConfig(config_values)),
     )
     for client in clients:

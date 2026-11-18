@@ -53,7 +53,7 @@ class Provider:
         self.mass = mass
         self.manifest = manifest
         self.config = config
-        self._supported_features = supported_features or set()
+        self._supported_features = {*manifest.features, *(supported_features or ())}
         self._set_log_level_from_config(config)
         self.cache = mass.cache
         self.available = False
