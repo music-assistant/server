@@ -22,7 +22,15 @@ from zeroconf import (  # type: ignore[attr-defined]  # these DNS classes are mi
     current_time_millis,
 )
 from zeroconf.asyncio import AsyncZeroconf
-from zeroconf.const import _CLASS_IN, _CLASS_IN_UNIQUE, _TYPE_A, _TYPE_PTR, _TYPE_SRV, _TYPE_TXT
+from zeroconf.const import (
+    _CLASS_IN,
+    _CLASS_IN_UNIQUE,
+    _FLAGS_TC,
+    _TYPE_A,
+    _TYPE_PTR,
+    _TYPE_SRV,
+    _TYPE_TXT,
+)
 
 from music_assistant.constants import CONF_SERVER_ID, VERBOSE_LOG_LEVEL
 from music_assistant.mass import MusicAssistant
@@ -642,3 +650,21 @@ async def test_replay_trusts_a_service_heard_recently(mass: MusicAssistant) -> N
 
     assert zeroconf.sent == []
     provider.on_mdns_service_state_change.assert_awaited_once()
+
+
+@pytest.mark.usefixtures("fast_mdns_confirm")
+async def test_confirm_asks_in_queries_of_one_packet(mass: MusicAssistant) -> None:
+    """Many services are asked for in queries of one packet each, none flagged as truncated."""
+    names = {f"{'speaker' * 8}-{index}.{AIRPLAY_TYPE}" for index in range(60)}
+    zeroconf = StubZeroconf(live_names=set())
+    mass.discovery._aiozc = MagicMock(zeroconf=zeroconf)
+
+    assert await mass.discovery._async_confirm_mdns_services(names) == set()
+
+    # a responder waits 400-500 ms before it answers a truncated query (RFC 6762, section 7.2)
+    packets = [packet for out in zeroconf.sent for packet in out.packets()]
+    assert len(packets) == len(zeroconf.sent) > 2
+    assert not any(int.from_bytes(packet[2:4]) & _FLAGS_TC for packet in packets)
+    asked = [question.name for out in zeroconf.sent for question in out.questions]
+    assert len(asked) == 2 * len(names)
+    assert set(asked) == names

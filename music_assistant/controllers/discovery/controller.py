@@ -27,7 +27,13 @@ from zeroconf import (  # type: ignore[attr-defined]  # these DNS classes are mi
     current_time_millis,
 )
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
-from zeroconf.const import _CLASS_IN, _FLAGS_QR_QUERY, _TYPE_SRV
+from zeroconf.const import (
+    _CLASS_IN,
+    _DNS_PACKET_HEADER_LEN,
+    _FLAGS_QR_QUERY,
+    _MAX_MSG_TYPICAL,
+    _TYPE_SRV,
+)
 
 from music_assistant.constants import (
     CONF_ENTRY_ZEROCONF_INTERFACES,
@@ -491,10 +497,8 @@ class DiscoveryController(CoreController):
         try:
             for timeout in (MDNS_CONFIRM_RESEND, MDNS_CONFIRM_TIMEOUT - MDNS_CONFIRM_RESEND):
                 # AsyncServiceInfo would answer from our cache, so ask without known answers
-                out = DNSOutgoing(_FLAGS_QR_QUERY)
-                for name in names - listener.answered:
-                    out.add_question(DNSQuestion(name, _TYPE_SRV, _CLASS_IN))
-                zeroconf.async_send(out)
+                for out in _mdns_srv_queries(names - listener.answered):
+                    zeroconf.async_send(out)
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(listener.all_answered.wait(), timeout)
                     break
@@ -709,3 +713,24 @@ class _MdnsAnswerListener(RecordUpdateListener):
                 self.answered.add(name)
         if self.answered == self._names:
             self.all_answered.set()
+
+
+def _mdns_srv_queries(names: set[str]) -> list[DNSOutgoing]:
+    """
+    Return SRV queries for the given mDNS service names, each small enough for one packet.
+
+    :param names: The mDNS service instance names to ask for.
+    """
+    # zeroconf flags every packet but the last of a split query as truncated, and responders
+    # then wait 400-500 ms for the rest before they answer (RFC 6762, section 7.2)
+    queries: list[DNSOutgoing] = []
+    size = _MAX_MSG_TYPICAL
+    for name in names:
+        # the uncompressed name (a length byte per label plus the root) and its type and class
+        question_size = len(name.encode()) + 1 + 4
+        if size + question_size > _MAX_MSG_TYPICAL:
+            queries.append(DNSOutgoing(_FLAGS_QR_QUERY))
+            size = _DNS_PACKET_HEADER_LEN
+        queries[-1].add_question(DNSQuestion(name, _TYPE_SRV, _CLASS_IN))
+        size += question_size
+    return queries
