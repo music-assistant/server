@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal, TypedDict
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature, ProviderType
@@ -15,6 +16,7 @@ from music_assistant.constants import (
     CONF_DEFAULT_SPEECH_ENGINE,
     CONF_DEFAULT_TEXT_ENGINE,
     CONF_VALUE_GLOBAL,
+    CONFIGURABLE_CORE_CONTROLLERS,
     MASS_LOGGER_NAME,
 )
 from music_assistant.models.plugin import (
@@ -26,11 +28,12 @@ from music_assistant.models.plugin import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Sequence
+    from collections.abc import Callable, Coroutine, Mapping, Sequence
 
     from music_assistant_models.config_entries import ConfigValueType
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.core_controller import CoreController
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.plugin_engines")
 
@@ -41,6 +44,51 @@ class EngineKind(StrEnum):
     TEXT = "text"
     SPEECH = "speech"
     IMAGE = "image"
+
+
+@dataclass(frozen=True)
+class EngineSetting:
+    """
+    An engine setting of a core module or provider, as listed on the AI settings page.
+
+    :param kind: The kind of engine the setting selects.
+    :param key: The config key holding the setting.
+    :param in_setup_data: The setting is stored in the provider's setup data, set through its
+        setup/reconfigure flow, instead of in its options.
+    """
+
+    kind: EngineKind
+    key: str
+    in_setup_data: bool = False
+
+
+class EngineInfo(TypedDict):
+    """An available engine."""
+
+    uid: str
+    # the engine name, prefixed with the name of the plugin it comes from
+    name: str
+    kind: EngineKind
+    # the instance id of the plugin providing the engine
+    provider: str
+
+
+class EngineUsage(TypedDict):
+    """An engine setting of a core module or loaded provider, with the engine it selects."""
+
+    owner_type: Literal["core", "provider"]
+    # the core module domain or provider instance id
+    owner: str
+    domain: str
+    # the provider instance name or the core module name
+    name: str
+    key: str
+    kind: EngineKind
+    in_setup_data: bool
+    # the setting follows the default engine of its kind instead of picking one itself
+    follows_default: bool
+    # the uid of the selected engine, None when it selects no available engine
+    engine: str | None
 
 
 # the AI core module config key holding the default engine of each kind
@@ -103,6 +151,76 @@ def engine_display_name(engine: PluginEngine) -> str:
         name can be exposed by more than one plugin.
     """
     return f"{engine.provider.name} | {engine.name}"
+
+
+async def list_engines(mass: MusicAssistant, kind: EngineKind | None = None) -> list[EngineInfo]:
+    """
+    Return the available engines of a kind, or of all kinds, in a stable order.
+
+    :param mass: The Music Assistant instance to query.
+    :param kind: The kind of engine to return, or None for all kinds (text, speech, then image).
+    """
+    result: list[EngineInfo] = []
+    for engine_kind in (kind,) if kind else tuple(EngineKind):
+        result.extend(
+            EngineInfo(
+                uid=engine.uid,
+                name=engine_display_name(engine),
+                kind=engine_kind,
+                provider=engine.provider.instance_id,
+            )
+            for engine in await _get_engines(mass, engine_kind)
+        )
+    return result
+
+
+async def list_engine_usage(mass: MusicAssistant) -> list[EngineUsage]:
+    """
+    Return the engine settings of the core modules and loaded providers, with their engines.
+
+    The core modules come first, then the providers by name. Only the declared settings are
+    listed: an engine a feature picks within its own data, such as the voice of an AI Radio
+    host, is not.
+
+    :param mass: The Music Assistant instance to query.
+    """
+    engines = {kind: await _get_engines(mass, kind) for kind in EngineKind}
+    result: list[EngineUsage] = []
+    for domain in CONFIGURABLE_CORE_CONTROLLERS:
+        controller: CoreController = getattr(mass, domain)
+        for setting in controller.engine_settings:
+            result.append(
+                _engine_usage(
+                    mass,
+                    engines,
+                    setting,
+                    mass.config.get_raw_core_config_value(domain, setting.key),
+                    owner_type="core",
+                    owner=domain,
+                    domain=domain,
+                    name=controller.manifest.name,
+                )
+            )
+    for provider in sorted(mass.get_providers(), key=lambda provider: provider.name.casefold()):
+        for setting in provider.engine_settings:
+            value = (
+                mass.config.get_provider_setup_value(provider.instance_id, setting.key)
+                if setting.in_setup_data
+                else mass.config.get_raw_provider_config_value(provider.instance_id, setting.key)
+            )
+            result.append(
+                _engine_usage(
+                    mass,
+                    engines,
+                    setting,
+                    value,
+                    owner_type="provider",
+                    owner=provider.instance_id,
+                    domain=provider.domain,
+                    name=provider.name,
+                )
+            )
+    return result
 
 
 async def get_default_engine(mass: MusicAssistant, kind: EngineKind) -> PluginEngine | None:
@@ -377,6 +495,32 @@ def _resolve_setting[EngineT: PluginEngine](
     if _follows_default(value):
         return _default_engine(mass, kind, engines)
     return _resolve(engines, value if isinstance(value, str) else None)
+
+
+def _engine_usage(
+    mass: MusicAssistant,
+    engines: Mapping[EngineKind, Sequence[PluginEngine]],
+    setting: EngineSetting,
+    value: ConfigValueType,
+    *,
+    owner_type: Literal["core", "provider"],
+    owner: str,
+    domain: str,
+    name: str,
+) -> EngineUsage:
+    """Return the usage of an engine setting of an owner, given its stored value."""
+    engine = _resolve_setting(mass, setting.kind, engines[setting.kind], value)
+    return EngineUsage(
+        owner_type=owner_type,
+        owner=owner,
+        domain=domain,
+        name=name,
+        key=setting.key,
+        kind=setting.kind,
+        in_setup_data=setting.in_setup_data,
+        follows_default=_follows_default(value),
+        engine=engine.uid if engine else None,
+    )
 
 
 def _follows_default(value: ConfigValueType) -> bool:

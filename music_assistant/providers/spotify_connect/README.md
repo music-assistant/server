@@ -44,7 +44,7 @@ as `BackendEvent`s through a single async callback and answers `get_stream_sourc
 
 ### Shared provider behaviors (backend-independent)
 
-- **AudioSource item**: one live item under the global "Live Inputs" node, played through
+- **AudioSource item**: one live item listed under this provider when browsing, played through
   the standard `play_media` flow (`exclusive`, `allow_external_trigger`, `can_initiate`).
   Starting it from MA resumes the last known Spotify context on this device.
 - **Externally triggered playback**: a `PLAYING` event fires a debounced `play_media` on
@@ -100,7 +100,7 @@ managed binary install and API key.
 
 ## Related documentation
 
-- **PluginProvider contract:** `music_assistant/models/plugin.py`
+- **AudioSource contract:** `AudioSourceMixin` in `music_assistant/models/media_capabilities.py`
 - **AudioSource MediaItem:** `music_assistant_models.media_items.AudioSource`
 
 ---

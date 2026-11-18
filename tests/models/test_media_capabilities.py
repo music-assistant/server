@@ -11,6 +11,7 @@ from music_assistant_models.enums import MediaType, ProviderFeature, ProviderTyp
 from music_assistant_models.media_items import Artist
 
 from music_assistant.models.media_capabilities import (
+    AudioSourceMixin,
     AudioStreamMixin,
     MediaCatalogMixin,
     MusicDiscoveryMixin,
@@ -25,7 +26,13 @@ from music_assistant.models.provider import Provider
 if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
-ALL_MIXINS = {MediaCatalogMixin, RecommendationsMixin, MusicDiscoveryMixin, AudioStreamMixin}
+ALL_MIXINS = {
+    MediaCatalogMixin,
+    RecommendationsMixin,
+    MusicDiscoveryMixin,
+    AudioStreamMixin,
+    AudioSourceMixin,
+}
 
 
 def _make_provider[ProviderT: Provider](

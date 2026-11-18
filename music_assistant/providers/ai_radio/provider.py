@@ -30,6 +30,8 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.helpers.plugin_engines import (
+    EngineKind,
+    EngineSetting,
     get_tts_engines,
     resolve_ai_engine_setting,
     resolve_tts_engine_setting,
@@ -79,6 +81,11 @@ class AIRadioProvider(
     PluginProvider,
 ):
     """Implementation of the AI Radio plugin provider."""
+
+    engine_settings = (
+        EngineSetting(EngineKind.TEXT, CONF_AI_ENGINE, in_setup_data=True),
+        EngineSetting(EngineKind.SPEECH, CONF_TTS_ENGINE, in_setup_data=True),
+    )
 
     def __init__(
         self,

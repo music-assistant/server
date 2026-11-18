@@ -94,6 +94,8 @@ from music_assistant.helpers import guest_access
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.plugin_engines import (
+    EngineKind,
+    EngineSetting,
     create_ai_engine_config_entries,
     get_ai_engines,
     resolve_ai_engine_setting,
@@ -236,6 +238,8 @@ async def setup(
 
 class MusicQuizPlugin(PluginProvider):
     """Music Quiz plugin provider for Music Assistant."""
+
+    engine_settings = (EngineSetting(EngineKind.TEXT, CONF_AI_ENGINE),)
 
     def __init__(
         self,
