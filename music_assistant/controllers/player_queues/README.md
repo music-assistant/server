@@ -271,6 +271,41 @@ change moved away from the head or took off the queue gives up its audio and its
 change, while a track that is in use or about to play keeps both. The releases of a stop, a clear, a
 replace and the start of an item do not ask for users or claims.
 
+A source that delivers at playback pace holds its provider's slot for as long as its track plays.
+When such a source gives the slot back and the playback session of its queue goes on with that
+provider, the slot stays reserved for that queue for a few seconds, and the queue's next source
+takes it at once. The queue goes on with a provider when the track its player fetches or a start is
+loading, the track after it, or a track a stream of that session claims still gets audio from there:
+a track without audio, with audio that still arrives, or without a source yet when that provider is
+one the stream details could take it from (the same compatible accounts, without a copy that account
+no longer finds). The track the source was for only counts once its buffer was taken off it (a seek, a
+restart, a replace), so not after it delivered everything or broke off; a track that repeats itself
+and is longer than its buffer keeps is therefore not covered. So a queue that moves to its next
+track, skips, seeks or replaces its tracks does not lose its stream to a queue that asks in that
+moment.
+
+A reservation refuses nobody: to every other taker the slot is only busy that much longer. A preview
+waits within its budget. A track that needs the slot as its last resort (a start on another queue, a
+track prepared ahead of time) while it is open who keeps the slot (it is reserved for another queue,
+or another queue's realtime source has it and no audio yet) waits in the provider's line, in the
+order it asked, within its budget. It looks again each time a source takes a slot or a holder gets
+its first audio: once a realtime source of another queue holds the slot with audio the start is
+refused, naming the player to a user who may control it, and a paused queue's source that got its
+audio hands its slot over as at any other moment. A source that is being given up holds nothing
+here. When the slot comes free for the start
+it stays reserved for its queue, so its source takes it next, unless the queue no longer wants that
+track or its consumer is gone: then it goes on to whoever waits next.
+
+Nothing is reserved after the last track of a queue, when the tracks the queue goes on with come
+from another provider, for a source that loads ahead of playback, for a queue that is paused or was
+told to pause or stop (`halted_by_command`), or without a session. A play action of the queue (a
+skip, a seek, a resume, a replace, a "play now") keeps its stream until it ends, though its player
+still reports the pause until the new track plays: it keeps its reservation, and its slot is not
+handed over. A pause during it does not end it, as the action still plays its track. A reservation
+ends when its queue is paused outside its own play action (at the pause command, and at a pause its
+player reports by itself), when its session ends, when a start goes to tracks of another provider,
+and when a start has loaded its track without using it.
+
 A paused queue keeps its session and its buffers until the pause watcher stops it once the
 configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread
 buffer releases its audio). The watcher leaves the queue alone while a command still waits for
