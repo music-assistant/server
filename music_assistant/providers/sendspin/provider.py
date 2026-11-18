@@ -407,7 +407,9 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize a new Sendspin player provider."""
-        super().__init__(mass, manifest, config, {ProviderFeature.SYNC_PLAYERS})
+        super().__init__(
+            mass, manifest, config, {ProviderFeature.SYNC_PLAYERS, ProviderFeature.AUDIO_SOURCE}
+        )
         # Handle config option for manual IP's. Read a default here: at construction the
         # config only carries the server defaults + stored raw values (the provider's typed
         # option entries are resolved and applied by the config controller right after this).
