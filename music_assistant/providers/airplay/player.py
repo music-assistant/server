@@ -898,6 +898,7 @@ class AirPlayPlayer(PlayerProtocol):
                 )
             else:
                 session.add_silent_member(self)
+        cast("AirPlayProvider", self.provider).bridge_manager.update_endpoints(self.protocol_id)
         # the player compares the reported option lists, which this option is not part of
         self.update_state(force_update=True)
 

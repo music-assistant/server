@@ -313,11 +313,11 @@ def _live_members(player: AirPlayPlayer) -> list[AirPlayPlayer]:
         return own_members
     if (session := player.session) is None:
         # A Sendspin-bridged player plays without a stream session, but its
-        # stream is a regular AirPlayStream the clip mixes into (self-only).
+        # streams are regular AirPlayStreams the clip mixes into (its own members only).
         provider = cast("AirPlayProvider", player.provider)
         bridge = provider.bridge_manager.get_bridge(player.protocol_id)
         if bridge is not None and bridge.owns_airplay_stream:
-            return [player]
+            return own_members
         return []
     if _owning_group_entity(player):
         # A group ENTITY (e.g. a syncgroup) owns this session, and that entity

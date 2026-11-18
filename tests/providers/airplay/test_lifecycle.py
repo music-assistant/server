@@ -836,21 +836,24 @@ async def test_an_apple_tv_that_gets_or_loses_a_set_while_it_runs_follows_it(
     assert apple_tv is not None
     player_id = _player_of(apple_tv).player_id
     await _announce(scenario, provider, _homepod())
+    # the bridge follows the devices the player plays on both times
+    update = cast("MagicMock", provider._bridge_manager.update_endpoints)
+    update.reset_mock()
 
     assert await _announce(scenario, provider, _apple_tv()) is apple_tv
     assert [speaker.protocol_id for speaker in apple_tv.speakers] == [HOMEPOD_PROTOCOL_ID]
     state = scenario.player(player_id)
     assert state is not None
     assert state.name == "Study"
+    update.assert_called_with(APPLE_TV_PROTOCOL_ID)
+    update.reset_mock()
 
     assert await _announce(scenario, provider, plain) is apple_tv
     assert apple_tv.carries_set is False
     state = scenario.player(player_id)
     assert state is not None
     assert state.name == "Apple TV Study"
-    # the bridge follows the set both times
-    evaluate = cast("AsyncMock", provider._bridge_manager.evaluate_bridge)
-    assert [call.args[0] for call in evaluate.await_args_list[-2:]] == [apple_tv, apple_tv]
+    update.assert_called_with(APPLE_TV_PROTOCOL_ID)
 
 
 @pytest.mark.usefixtures("apple_controls")
