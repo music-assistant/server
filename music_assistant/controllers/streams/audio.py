@@ -414,19 +414,34 @@ def tail_hold_target(queue_item: QueueItem, max_bytes: int, frame_size: int) -> 
     return max_bytes // frame_size * frame_size
 
 
-def _delivered_media_covers_item(streamdetails: StreamDetails, delivered_seconds: float) -> bool:
+def _delivered_media_covers_item(
+    streamdetails: StreamDetails,
+    delivered_seconds: float,
+    source_duration: int | None = None,
+) -> bool:
     """
-    Return whether the delivered audio reaches the item's declared length.
+    Return whether the delivered audio reaches the item's length.
 
     :param streamdetails: The item's stream details.
     :param delivered_seconds: Media-time delivered, counted from the start of the item.
+    :param source_duration: The length the source itself reports, when it does.
     """
-    declared = streamdetails.duration or 0
-    tolerance = min(
+    lengths = [length for length in (streamdetails.duration, source_duration) if length]
+    if not lengths:
+        return True
+    return any(delivered_seconds >= length - _duration_tolerance(length) for length in lengths)
+
+
+def _duration_tolerance(length: float) -> float:
+    """
+    Return how far a full playthrough may end short of the given length.
+
+    :param length: The length in seconds.
+    """
+    return min(
         DURATION_SHORTFALL_MAX_SECONDS,
-        max(DURATION_SHORTFALL_SECONDS, declared * DURATION_SHORTFALL_RATIO),
+        max(DURATION_SHORTFALL_SECONDS, length * DURATION_SHORTFALL_RATIO),
     )
-    return not declared or delivered_seconds >= declared - tolerance
 
 
 def _store_measured_duration(
@@ -435,7 +450,8 @@ def _store_measured_duration(
     *,
     queue_item: QueueItem | None = None,
     play_log_entry: PlayLogEntry | None = None,
-) -> bool:
+    source_duration: int | None = None,
+) -> None:
     """
     Store the measured length on the item, unless the source stopped short.
 
@@ -443,17 +459,16 @@ def _store_measured_duration(
     :param delivered_seconds: Media-time delivered, counted from the start of the item.
     :param queue_item: The queue item to update as well.
     :param play_log_entry: The play log entry to update as well.
-    :return: True if the length was stored.
+    :param source_duration: The length the source itself reports, when it does.
     """
-    if not _delivered_media_covers_item(streamdetails, delivered_seconds):
-        return False
+    if not _delivered_media_covers_item(streamdetails, delivered_seconds, source_duration):
+        return
     streamdetails.duration = int(delivered_seconds)
     # propagate accurate duration to queue_item so UI displays it
     if queue_item is not None:
         queue_item.duration = streamdetails.duration
     if play_log_entry is not None:
         play_log_entry.duration = streamdetails.duration
-    return True
 
 
 async def _incoming_overlap_stream(
@@ -5387,7 +5402,9 @@ class StreamsAudio:
             # a seeked stream yields the remaining audio, not the item's full length
             # seconds_received is media-time: the buffer applies playback speed when reading
             if finished and not requested_seek_position and seconds_received:
-                _store_measured_duration(streamdetails, seconds_received)
+                _store_measured_duration(
+                    streamdetails, seconds_received, source_duration=ffmpeg_proc.parsed_duration
+                )
 
             logger.log(
                 VERBOSE_LOG_LEVEL,
