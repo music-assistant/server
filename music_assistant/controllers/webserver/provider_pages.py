@@ -1,35 +1,32 @@
 """
 Pages a provider serves, behind a short-lived address bound to a user and a provider instance.
 
-A provider answers an action with ``ConfigActionResult(open_page=<path>)``. The server turns
-that into an address under ``/provider_page/<session>/`` for the calling user, re-checks the
-user, scope and instance on every request to it, and serves every response of that route
-sandboxed (an opaque origin), so a page can not read the app's token or storage even though it
-shares the server's host and port.
+A provider declares its page in its manifest. The ``providers/open_page`` command hands the
+calling user an address under ``/provider_page/<session>/``; the server re-checks the user,
+scope and instance on every request to it, and serves every response of that route sandboxed
+(an opaque origin), so a page can not read the app's token or storage even though it shares the
+server's host and port.
 """
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
-from urllib.parse import unquote, urlsplit
 
 from aiohttp import hdrs, web
-from music_assistant_models.enums import ProviderTier
 from music_assistant_models.errors import ActionUnavailable
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
-    get_current_user,
     has_scope,
     user_auth_context,
 )
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import Scope
-    from music_assistant_models.config_entries import ConfigActionResult
 
     from music_assistant.controllers.webserver import WebserverController
     from music_assistant.models.provider import Provider
@@ -54,6 +51,14 @@ PAGE_HEADERS: Final = {
     # secret address is the credential
     "Access-Control-Allow-Origin": "*",
 }
+# headers that would have a browser report the page's address elsewhere
+REPORTING_HEADERS: Final = (
+    "Content-Security-Policy-Report-Only",
+    "Report-To",
+    "Reporting-Endpoints",
+    "NEL",
+)
+REPORTING_DIRECTIVES: Final = frozenset({"report-uri", "report-to"})
 PREFLIGHT_HEADERS: Final = {
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE",
     "Access-Control-Allow-Headers": "Content-Type",
@@ -62,13 +67,17 @@ PREFLIGHT_HEADERS: Final = {
 
 @dataclass
 class _PageSession:
-    """A page address handed to one user for one provider instance."""
+    """A page address handed to one user for one loaded provider instance."""
 
     user_id: str
-    instance_id: str
+    provider: Provider
     scope: Scope
     created: float
     last_used: float
+    # drops the address at its max age
+    max_age_timer: asyncio.TimerHandle
+    # the requests to the page still being served, a WebSocket or streamed response included
+    requests: set[asyncio.Task[object]] = field(default_factory=set)
 
 
 class ProviderPageManager:
@@ -82,7 +91,6 @@ class ProviderPageManager:
         """
         self.webserver = webserver
         self.mass = webserver.mass
-        self.logger = webserver.logger
         self._sessions: dict[str, _PageSession] = {}
         self._unsub_access_revoked: Callable[[], None] | None = None
 
@@ -97,50 +105,33 @@ class ProviderPageManager:
         if self._unsub_access_revoked:
             self._unsub_access_revoked()
             self._unsub_access_revoked = None
-        self._sessions.clear()
+        self._drop(lambda _session: True)
 
-    def prepare_action_result(
-        self, provider: Provider, result: ConfigActionResult, scope: Scope
-    ) -> None:
+    def create_address(self, user_id: str, provider: Provider, scope: Scope) -> str:
         """
-        Make an action result of a provider fit to hand to the calling user, in place.
+        Create a fresh address of the page of a loaded provider instance, for one user.
 
-        Replaces ``open_page`` with the page's address for the calling user, and drops an
-        ``open_page`` that is not a relative path inside the page as well as a non-https
-        ``open_url`` of a community provider, with a warning in the log.
+        Returns the address relative to the server's base url, which opens the page's root. It
+        never serves another instance loaded later under the same instance id.
 
-        :param provider: The provider instance that answered the action.
-        :param result: The result it answered.
-        :param scope: The scope the action required, which every request to the page re-checks.
+        :param user_id: The user the address is for.
+        :param provider: The provider instance that serves the page.
+        :param scope: The scope of the page, which every request to it re-checks.
         """
-        if (
-            result.open_url
-            and provider.manifest.tier == ProviderTier.COMMUNITY
-            and urlsplit(result.open_url).scheme.lower() != "https"
-        ):
-            self.logger.warning(
-                "Provider %s answered a url that is not https, which is not opened: %s",
-                provider.instance_id,
-                result.open_url,
-            )
-            result.open_url = None
-        if result.open_page is None:
-            return
-        user = get_current_user()
-        if user is None or not _is_page_path(result.open_page):
-            self.logger.warning(
-                "Provider %s answered a page that can not be opened: %s",
-                provider.instance_id,
-                result.open_page,
-            )
-            result.open_page = None
-            return
-        session_id = self._create_session(user.user_id, provider.instance_id, scope)
-        result.open_page = f"{PROVIDER_PAGE_ROUTE}/{session_id}/{result.open_page}"
+        now = time.monotonic()
+        self._drop(lambda session: _expired(session, now))
+        own = [key for key, session in self._sessions.items() if session.user_id == user_id]
+        # the dict keeps insertion order, so the oldest come first
+        for key in own[: max(0, len(own) - MAX_PAGES_PER_USER + 1)]:
+            self._drop_session(key)
+        session_id = secrets.token_urlsafe(32)
+        timer = self.mass.loop.call_later(PAGE_MAX_AGE, self._drop_session, session_id)
+        self._sessions[session_id] = _PageSession(user_id, provider, scope, now, now, timer)
+        return f"{PROVIDER_PAGE_ROUTE}/{session_id}/"
 
     def drop_user(self, user_id: str) -> None:
         """
-        Drop all page addresses of a user.
+        Drop all page addresses of a user, and close the requests still being served on them.
 
         :param user_id: The user whose addresses to drop.
         """
@@ -148,11 +139,11 @@ class ProviderPageManager:
 
     def drop_instance(self, instance_id: str) -> None:
         """
-        Drop all page addresses of a provider instance.
+        Drop all page addresses of a provider instance, and close the requests still being served.
 
         :param instance_id: The provider instance whose addresses to drop.
         """
-        self._drop(lambda session: session.instance_id == instance_id)
+        self._drop(lambda session: session.provider.instance_id == instance_id)
 
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
         """
@@ -164,10 +155,9 @@ class ProviderPageManager:
         session = self._sessions.get(session_id)
         now = time.monotonic()
         if session is None or _expired(session, now):
-            self._sessions.pop(session_id, None)
-            return web.Response(
-                status=410, text="This page has expired, open it again from Music Assistant."
-            )
+            if session is not None:
+                self._drop_session(session_id)
+            return _expired_response()
         user = await self.webserver.auth.get_user(session.user_id)
         if user is None or not has_scope(user, session.scope):
             return web.Response(status=403, text="You can no longer open this page.")
@@ -175,21 +165,31 @@ class ProviderPageManager:
             (
                 provider
                 for provider in self.mass.get_providers_for_user(user)
-                if provider.instance_id == session.instance_id and provider.available
+                if provider.instance_id == session.provider.instance_id
             ),
             None,
         )
-        if provider is None:
+        if provider is not None and provider is not session.provider:
+            # the instance was reloaded or replaced since the address was handed out
+            self._drop_session(session_id)
+            return _expired_response()
+        if provider is None or not provider.available:
             return web.Response(status=503, text="This page is not available right now.")
         session.last_used = now
         if request.method == hdrs.METH_OPTIONS:
             # the CORS preflight of the page's own requests from its opaque origin
             return web.Response(status=204, headers=PREFLIGHT_HEADERS)
-        with user_auth_context(user):
-            try:
+        task = asyncio.current_task()
+        assert task is not None  # a request is always served in a task
+        session.requests.add(task)
+        try:
+            with user_auth_context(user):
                 return await provider.handle_page_request(request, request.match_info["tail"])
-            except ActionUnavailable:
-                return web.Response(status=404, text="This provider has no page.")
+        except ActionUnavailable:
+            return web.Response(status=404, text="This provider has no page.")
+        finally:
+            session.requests.discard(task)
+            session.last_used = time.monotonic()
 
     async def on_response_prepare(self, request: web.Request, response: web.StreamResponse) -> None:
         """
@@ -200,45 +200,53 @@ class ProviderPageManager:
         """
         if not request.path.startswith(f"/{PROVIDER_PAGE_ROUTE}/"):
             return
-        # added next to any policy of the provider, which can then only narrow it further
-        response.headers.add(hdrs.CONTENT_SECURITY_POLICY, PAGE_CSP)
+        # a policy of the provider is kept next to ours, which it can then only narrow further
+        policies = [
+            policy
+            for value in response.headers.getall(hdrs.CONTENT_SECURITY_POLICY, [])
+            if (policy := _without_reporting(value))
+        ]
+        response.headers.popall(hdrs.CONTENT_SECURITY_POLICY, None)
+        for policy in [*policies, PAGE_CSP]:
+            response.headers.add(hdrs.CONTENT_SECURITY_POLICY, policy)
         for key, value in PAGE_HEADERS.items():
             response.headers[key] = value
-        response.headers.popall(hdrs.SET_COOKIE, None)
-
-    def _create_session(self, user_id: str, instance_id: str, scope: Scope) -> str:
-        """Create a page address for the user and return its session id."""
-        now = time.monotonic()
-        self._drop(lambda session: _expired(session, now))
-        own = [key for key, session in self._sessions.items() if session.user_id == user_id]
-        # the dict keeps insertion order, so the oldest come first
-        for key in own[: max(0, len(own) - MAX_PAGES_PER_USER + 1)]:
-            del self._sessions[key]
-        session_id = secrets.token_urlsafe(32)
-        self._sessions[session_id] = _PageSession(user_id, instance_id, scope, now, now)
-        return session_id
+        for key in (hdrs.SET_COOKIE, *REPORTING_HEADERS):
+            response.headers.popall(key, None)
 
     def _drop(self, matches: Callable[[_PageSession], bool]) -> None:
         """Drop the page addresses whose session matches."""
         for key in [key for key, session in self._sessions.items() if matches(session)]:
-            del self._sessions[key]
+            self._drop_session(key)
+
+    def _drop_session(self, session_id: str) -> None:
+        """Drop a page address, if it still exists, and close the requests still served on it."""
+        if (session := self._sessions.pop(session_id, None)) is None:
+            return
+        session.max_age_timer.cancel()
+        for task in session.requests:
+            task.cancel()
 
 
 def _expired(session: _PageSession, now: float) -> bool:
-    """Return whether a page address has lapsed."""
-    return now - session.last_used > PAGE_IDLE_TIMEOUT or now - session.created > PAGE_MAX_AGE
+    """Return whether a page address has lapsed; one still serving a request is not idle."""
+    if now - session.created > PAGE_MAX_AGE:
+        return True
+    return not session.requests and now - session.last_used > PAGE_IDLE_TIMEOUT
 
 
-def _is_page_path(path: str) -> bool:
-    """Return whether the path stays inside the page: relative, without a scheme or a '..'."""
-    # a URL parser drops tabs and newlines and reads a backslash as a slash, so a path with one
-    # could still climb out of the page
-    if not path.isprintable() or "\\" in path or path.startswith("/"):
-        return False
-    try:
-        parts = urlsplit(path)
-    except ValueError:
-        return False
-    if parts.scheme or parts.netloc:
-        return False
-    return ".." not in unquote(parts.path).split("/")
+def _expired_response() -> web.Response:
+    """Return the answer to an address that has lapsed or was dropped."""
+    return web.Response(
+        status=410, text="This page has expired, open it again from Music Assistant."
+    )
+
+
+def _without_reporting(policy: str) -> str:
+    """Return a content security policy without the directives that report elsewhere."""
+    return "; ".join(
+        directive
+        for raw in policy.split(";")
+        if (directive := raw.strip())
+        and directive.split(maxsplit=1)[0].lower() not in REPORTING_DIRECTIVES
+    )

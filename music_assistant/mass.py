@@ -97,6 +97,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_scope,
 )
+from music_assistant.helpers.action_result import without_insecure_open_url
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.build_info import get_official_build_info
@@ -606,8 +607,7 @@ class MusicAssistant:
         """
         Run a menu action of a provider instance for a media item, as the calling user.
 
-        Answers nothing, or the outcome to show the user (a message, and/or a url or the
-        provider's page to open once).
+        Answers nothing, or the outcome to show the user (a message and/or a url to open once).
 
         :param instance_id: The provider instance that declares the action.
         :param action_id: The id of the action in the manifest of the provider.
@@ -622,17 +622,7 @@ class MusicAssistant:
         :raises PlayerUnavailableError: The player does not exist.
         """
         user = get_current_user()
-        provider = next(
-            (
-                provider
-                for provider in self.get_providers_for_user(user)
-                if provider.instance_id == instance_id and provider.available
-            ),
-            None,
-        )
-        if provider is None:
-            msg = f"Provider {instance_id} is not available"
-            raise ProviderUnavailableError(msg)
+        provider = self._get_available_provider_for_user(user, instance_id)
         action = next((a for a in provider.manifest.menu_actions if a.id == action_id), None)
         if action is None:
             msg = f"Provider {instance_id} has no menu action {action_id}"
@@ -658,8 +648,35 @@ class MusicAssistant:
         result = await provider.handle_menu_action(action_id, uri, player_id)
         if result is not None:
             result.translation_owner = result.translation_owner or provider.translation_owner
-            self.webserver.provider_pages.prepare_action_result(provider, result, action.scope)
+            result = without_insecure_open_url(provider, result)
         return result
+
+    @api_command("providers/open_page", required_scope=Scope.PROVIDERS_READ)
+    def open_provider_page(self, instance_id: str) -> str:
+        """
+        Open the page a provider instance declares in its manifest, for the calling user.
+
+        Answers a fresh, short-lived address of the page, relative to the server's base url,
+        that only serves the calling user while they may use the instance and hold the scope of
+        the page. A client opens it in a new tab.
+
+        :param instance_id: The provider instance that serves the page.
+        :raises AuthenticationRequired: There is no calling user to open the page for.
+        :raises ProviderUnavailableError: The calling user has no such provider instance available.
+        :raises ActionUnavailable: The provider declares no page.
+        :raises InsufficientPermissions: The user lacks the scope of the page.
+        """
+        if (user := get_current_user()) is None:
+            msg = "A page opens only for a signed-in user"
+            raise AuthenticationRequired(msg)
+        provider = self._get_available_provider_for_user(user, instance_id)
+        if (page := provider.manifest.page) is None:
+            msg = f"Provider {instance_id} has no page"
+            raise ActionUnavailable(msg)
+        if not has_scope(user, page.scope):
+            msg = f"This page requires the {page.scope} scope"
+            raise InsufficientPermissions(msg)
+        return self.webserver.provider_pages.create_address(user.user_id, provider, page.scope)
 
     @api_command("catalog/recommendations", required_scope=Scope.PROVIDERS_READ)
     async def get_catalog_recommendations(self) -> list[CatalogRecommendation]:
@@ -1880,6 +1897,29 @@ class MusicAssistant:
         self._provider_manifests[provider_manifest.domain] = provider_manifest
         LOGGER.log(VERBOSE_LOG_LEVEL, "Loaded manifest for provider %s", provider_manifest.name)
         return provider_manifest
+
+    def _get_available_provider_for_user(
+        self, user: User | None, instance_id: str
+    ) -> ProviderInstanceType:
+        """
+        Return a provider instance the user may use and that is available.
+
+        :param user: The calling user; None applies no filtering.
+        :param instance_id: The provider instance.
+        :raises ProviderUnavailableError: The user has no such provider instance available.
+        """
+        provider = next(
+            (
+                provider
+                for provider in self.get_providers_for_user(user)
+                if provider.instance_id == instance_id and provider.available
+            ),
+            None,
+        )
+        if provider is None:
+            msg = f"Provider {instance_id} is not available"
+            raise ProviderUnavailableError(msg)
+        return provider
 
     def _update_players_without_provider(self) -> None:
         """Let the stored players follow a provider manifest that was registered or removed."""

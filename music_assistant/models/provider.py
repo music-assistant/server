@@ -126,11 +126,10 @@ class Provider:
         """
         Serve a request to the page of this provider instance.
 
-        Override to serve a page of your own, such as a small web interface. A menu action or
-        settings action opens it by answering ``ConfigActionResult(open_page=<path>)``, and the
-        server turns that into a short-lived address for the calling user that the app opens in
-        a new tab. The server only calls this for a user who may still use this instance and
-        still holds the scope of the action that opened the page, as that user
+        Override when the manifest declares a ``page``, such as a small web interface. The app
+        offers it in its main menu and opens it in a new tab, behind a short-lived address the
+        server hands out to the user who chose it. The server only calls this for a user who may
+        still use this instance and still holds the scope of the page, as that user
         (``get_current_user()``). The page runs sandboxed in its own origin: it gets no token or
         cookie and can not reach the app, so it calls its own sub-paths to talk to the provider.
         Return any aiohttp response, a streamed or WebSocket response included; the server sets

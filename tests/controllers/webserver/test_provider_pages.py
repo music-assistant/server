@@ -3,28 +3,31 @@
 from __future__ import annotations
 
 import json
-import logging
+import os
 import sys
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.auth import Scope, User, UserRole
-from music_assistant_models.config_entries import ConfigActionResult
+from aiohttp import WSMsgType
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import ProviderTier
+from music_assistant_models.errors import (
+    ActionUnavailable,
+    AuthenticationRequired,
+    InsufficientPermissions,
+    ProviderUnavailableError,
+)
 
 from music_assistant import providers as providers_package
 from music_assistant.controllers.webserver import provider_pages
-from music_assistant.controllers.webserver.helpers.auth_middleware import user_auth_context
 from music_assistant.controllers.webserver.provider_pages import (
     MAX_PAGES_PER_USER,
-    PAGE_CSP,
     PAGE_IDLE_TIMEOUT,
     PAGE_MAX_AGE,
-    ProviderPageManager,
 )
 from music_assistant.helpers.util import purge_provider_modules
+from music_assistant.mass import PROVIDERS_PATH
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -36,31 +39,18 @@ if TYPE_CHECKING:
 
 PAGE = "page_provider"
 PLAIN = "page_less_provider"
-OPEN = {
-    "id": "open_page",
-    "label": "Open the page",
-    "media_types": ["album"],
-    "scope": "library.write",
-}
-ALBUM_URI = "library://album/1"
+BARE = "bare_provider"
+PAGE_DECLARED = {"label": "Picture frame", "scope": "library.write", "icon": "mdi-image-frame"}
 PAGE_CODE = """
+import asyncio
+
 from aiohttp import web
-from music_assistant_models.config_entries import ConfigActionResult
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.plugin import PluginProvider
 
-# what an action answers, set by the test
-ANSWER = {"open_page": "stats?range=week"}
-
 
 class PageProvider(PluginProvider):
-    async def handle_menu_action(self, action_id, uri, player_id):
-        return ConfigActionResult(**ANSWER)
-
-    async def handle_config_action(self, action):
-        return ConfigActionResult(**ANSWER)
-
     async def handle_page_request(self, request, path):
         user = get_current_user().username
         if path == "stream":
@@ -74,14 +64,21 @@ class PageProvider(PluginProvider):
         if path == "ws":
             ws = web.WebSocketResponse()
             await ws.prepare(request)
-            await ws.send_str(f"{await ws.receive_str()} for {user}")
-            await ws.close()
+            async for message in ws:
+                await ws.send_str(f"{message.data} for {get_current_user().username}")
             return ws
         if request.method == "POST":
             return web.json_response({"posted": await request.json(), "user": user})
         return web.Response(
             text=f"{path} {request.query_string} for {user}",
-            headers={"Set-Cookie": "session=secret", "Content-Security-Policy": "img-src 'none'"},
+            headers={
+                "Set-Cookie": "session=secret",
+                "Content-Security-Policy": "img-src 'none'; report-uri /r; report-to grp",
+                "Content-Security-Policy-Report-Only": "default-src 'none'; report-uri /r",
+                "Report-To": '{"group":"grp","endpoints":[{"url":"https://example.org/r"}]}',
+                "Reporting-Endpoints": 'grp="https://example.org/r"',
+                "NEL": '{"report_to":"grp","max_age":86400}',
+            },
         )
 
 
@@ -89,19 +86,14 @@ async def setup(mass, manifest, config):
     return PageProvider(mass, manifest, config)
 """
 PLAIN_CODE = """
-from music_assistant_models.config_entries import ConfigActionResult
-
 from music_assistant.models.plugin import PluginProvider
 
 
-class PlainProvider(PluginProvider):
-    async def handle_menu_action(self, action_id, uri, player_id):
-        return ConfigActionResult(open_page="")
-
-
 async def setup(mass, manifest, config):
-    return PlainProvider(mass, manifest, config)
+    return PluginProvider(mass, manifest, config)
 """
+# the sandbox flags that would give the page the server's origin, a download or the app's tab
+SANDBOX_ESCAPES = ("allow-same-origin", "allow-downloads", "allow-top-navigation")
 
 
 @pytest.fixture
@@ -113,7 +105,7 @@ def location(tmp_path: Path) -> Iterator[Path]:
     imported_before = set(sys.modules)
     yield folder
     providers_package.__path__[:] = original_path
-    for domain in (PAGE, PLAIN):
+    for domain in (PAGE, PLAIN, BARE):
         if f"{providers_package.__name__}.{domain}" not in imported_before:
             purge_provider_modules(domain)
 
@@ -126,85 +118,74 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     return now
 
 
-@pytest.fixture
-def pages() -> ProviderPageManager:
-    """Return a page manager on a stubbed webserver."""
-    webserver = MagicMock()
-    webserver.logger = logging.getLogger("test_provider_pages")
-    return ProviderPageManager(webserver)
-
-
-@pytest.fixture
-def user() -> User:
-    """Return a user to call as."""
-    return User(user_id="u1", username="user", role=UserRole.USER)
-
-
-async def test_menu_action_opens_page_for_its_user(mass: MusicAssistant, location: Path) -> None:
-    """A menu action's page path becomes an address that serves the provider as that user."""
+async def test_open_page_answers_a_fresh_address_for_its_user(
+    mass: MusicAssistant, location: Path
+) -> None:
+    """The command answers a fresh address of the page's root, which serves the caller."""
     instance_id = await _register(mass, location)
     user, token = await _user(mass, UserRole.USER)
 
     address = await _open(mass, token, instance_id)
+    second = await _open(mass, token, instance_id)
 
     assert address.startswith("provider_page/")
-    assert address.endswith("/stats?range=week")
-    async with _get(mass, address) as response:
-        assert response.status == 200
-        assert await response.text() == f"stats range=week for {user.username}"
-    # opened again, the page gets a fresh address and the first one keeps working
-    second = await _open(mass, token, instance_id)
+    assert address.endswith("/")
     assert second != address
     for each in (address, second):
-        async with _get(mass, each) as response:
+        async with _get(mass, f"{each}stats?range=week") as response:
             assert response.status == 200
+            assert await response.text() == f"stats range=week for {user.username}"
 
 
-async def test_settings_action_opens_page(mass: MusicAssistant, location: Path) -> None:
-    """A settings action button opens the page in the same way."""
+async def test_open_page_refusals(mass: MusicAssistant, location: Path) -> None:
+    """The command refuses a missing or unavailable instance, no page, and a user without scope."""
     instance_id = await _register(mass, location)
-    _, token = await _user(mass, UserRole.ADMIN)
+    bare_id = await _setup(mass, BARE)
+    _, token = await _user(mass, UserRole.USER)
+    _, guest_token = await _user(mass, UserRole.GUEST)
+    provider = mass.get_provider(instance_id)
+    assert provider is not None
 
-    result = await _api(
-        mass,
-        token,
-        "config/providers/invoke_action",
-        instance_id=instance_id,
-        action="open",
-    )
-
-    assert result["open_page"].startswith("provider_page/")
-    async with _get(mass, result["open_page"]) as response:
-        assert response.status == 200
+    assert await _api_error(mass, token, "unknown--1") == ProviderUnavailableError.error_code
+    assert await _api_error(mass, token, bare_id) == ActionUnavailable.error_code
+    assert await _api_error(mass, guest_token, instance_id) == InsufficientPermissions.error_code
+    provider.available = False
+    assert await _api_error(mass, token, instance_id) == ProviderUnavailableError.error_code
+    provider.available = True
+    # without a calling user there is no one to bind the address to
+    with pytest.raises(AuthenticationRequired):
+        mass.open_provider_page(instance_id)
 
 
-@pytest.mark.parametrize("path", ["", "stream", "fail"])
-async def test_headers_forced_on_every_response(
-    mass: MusicAssistant, location: Path, path: str
-) -> None:
+async def test_headers_forced_on_every_response(mass: MusicAssistant, location: Path) -> None:
     """A normal, streamed or error response gets the sandbox headers and loses its cookies."""
     instance_id = await _register(mass, location)
     _, token = await _user(mass, UserRole.USER)
-    _answer(open_page=path)
     address = await _open(mass, token, instance_id)
 
-    async with _get(mass, address) as response:
-        assert response.status == (500 if path == "fail" else 200)
-        _assert_page_headers(response)
+    for path, status in (("", 200), ("stream", 200), ("fail", 500)):
+        async with _get(mass, f"{address}{path}") as response:
+            assert response.status == status
+            _assert_page_headers(response)
 
 
-async def test_provider_policy_kept_next_to_the_sandbox(
-    mass: MusicAssistant, location: Path
-) -> None:
-    """A policy the provider sets stays, as a second one that can only narrow the sandbox."""
+async def test_reporting_removed(mass: MusicAssistant, location: Path) -> None:
+    """Nothing in a page's response can have the browser report the address elsewhere."""
     instance_id = await _register(mass, location)
     _, token = await _user(mass, UserRole.USER)
 
     async with _get(mass, await _open(mass, token, instance_id)) as response:
-        assert response.headers.getall("Content-Security-Policy") == [
-            "img-src 'none'",
-            PAGE_CSP,
-        ]
+        policies = response.headers.getall("Content-Security-Policy")
+        # the provider's own policy is kept, without its reporting directives
+        assert policies[0] == "img-src 'none'"
+        assert not any("report" in policy for policy in policies)
+        for header in (
+            "Content-Security-Policy-Report-Only",
+            "Report-To",
+            "Reporting-Endpoints",
+            "NEL",
+        ):
+            assert header not in response.headers
 
 
 async def test_page_posts_json_and_upgrades_to_websocket(
@@ -213,7 +194,6 @@ async def test_page_posts_json_and_upgrades_to_websocket(
     """A page can post JSON to its own sub-paths and open a WebSocket, as its user."""
     instance_id = await _register(mass, location)
     user, token = await _user(mass, UserRole.USER)
-    _answer(open_page="")
     root = f"{mass.webserver.internal_base_url}/{await _open(mass, token, instance_id)}"
 
     # the preflight of a cross-origin JSON post, from the page's opaque origin
@@ -235,8 +215,25 @@ async def test_page_posts_json_and_upgrades_to_websocket(
         assert await ws.receive_str(timeout=10) == f"hello for {user.username}"
 
 
-async def test_provider_without_page(mass: MusicAssistant, location: Path) -> None:
-    """A provider that serves no page answers not found, with the sandbox headers."""
+async def test_preflight_rechecks_too(mass: MusicAssistant, location: Path) -> None:
+    """A preflight gets no permission once the user has lost the scope of the page."""
+    instance_id = await _register(mass, location)
+    user, token = await _user(mass, UserRole.USER)
+    address = await _open(mass, token, instance_id)
+
+    await mass.webserver.auth.database.update(
+        "users", {"user_id": user.user_id}, {"role": UserRole.GUEST.value}
+    )
+    async with mass.http_session_no_ssl.options(
+        f"{mass.webserver.internal_base_url}/{address}api",
+        headers={"Origin": "null", "Access-Control-Request-Method": "POST"},
+    ) as response:
+        assert response.status == 403
+        assert "Access-Control-Allow-Methods" not in response.headers
+
+
+async def test_provider_without_page_handler(mass: MusicAssistant, location: Path) -> None:
+    """A provider that declares a page but serves none answers not found, sandboxed."""
     await _register(mass, location)
     instance_id = await _setup(mass, PLAIN)
     _, token = await _user(mass, UserRole.USER)
@@ -271,6 +268,23 @@ async def test_address_expires_when_idle(
         assert "open it again" in await response.text()
 
 
+async def test_open_websocket_is_not_idle(
+    mass: MusicAssistant, location: Path, clock: list[float]
+) -> None:
+    """A WebSocket still open keeps its address from lapsing for being idle."""
+    instance_id = await _register(mass, location)
+    _, token = await _user(mass, UserRole.USER)
+    address = await _open(mass, token, instance_id)
+
+    async with _ws(mass, address) as ws:
+        clock[0] += PAGE_IDLE_TIMEOUT + 1
+        await _open(mass, token, instance_id)  # drops the addresses that have lapsed
+        await ws.send_str("still")
+        assert (await ws.receive(timeout=10)).type == WSMsgType.TEXT
+        async with _get(mass, address) as response:
+            assert response.status == 200
+
+
 async def test_address_expires_at_its_max_age(
     mass: MusicAssistant, location: Path, clock: list[float]
 ) -> None:
@@ -285,6 +299,21 @@ async def test_address_expires_at_its_max_age(
         async with _get(mass, address) as response:
             assert response.status == 200
     clock[0] += step
+    async with _get(mass, address) as response:
+        assert response.status == 410
+
+
+async def test_websocket_closed_at_max_age(
+    mass: MusicAssistant, location: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A WebSocket still open ends when its address reaches its maximum age."""
+    monkeypatch.setattr(provider_pages, "PAGE_MAX_AGE", 0.5)
+    instance_id = await _register(mass, location)
+    _, token = await _user(mass, UserRole.USER)
+    address = await _open(mass, token, instance_id)
+
+    async with _ws(mass, address) as ws:
+        await _assert_closed(ws)
     async with _get(mass, address) as response:
         assert response.status == 410
 
@@ -324,26 +353,27 @@ async def test_rechecks_the_user(mass: MusicAssistant, location: Path) -> None:
 
 
 @pytest.mark.parametrize("withdraw", ["disable", "delete"])
-async def test_addresses_dropped_with_the_user(
+async def test_addresses_and_websockets_dropped_with_the_user(
     mass: MusicAssistant, location: Path, withdraw: str
 ) -> None:
-    """Disabling or deleting a user drops the addresses it holds."""
+    """Disabling or deleting a user drops its addresses and ends its open WebSockets."""
     instance_id = await _register(mass, location)
     user, token = await _user(mass, UserRole.USER)
     address = await _open(mass, token, instance_id)
-
     _, admin_token = await _user(mass, UserRole.ADMIN)
-    await _api(mass, admin_token, f"auth/user/{withdraw}", user_id=user.user_id)
+
+    async with _ws(mass, address) as ws:
+        await _api(mass, admin_token, f"auth/user/{withdraw}", user_id=user.user_id)
+        await _assert_closed(ws)
     if withdraw == "disable":
         # an account enabled again does not get its old addresses back
         await _api(mass, admin_token, "auth/user/enable", user_id=user.user_id)
-
     async with _get(mass, address) as response:
         assert response.status == 410
 
 
 async def test_rechecks_the_instance(mass: MusicAssistant, location: Path) -> None:
-    """An address only serves while its instance is available, and lapses when it unloads."""
+    """An address only serves while its instance is available."""
     instance_id = await _register(mass, location)
     _, token = await _user(mass, UserRole.USER)
     address = await _open(mass, token, instance_id)
@@ -356,93 +386,68 @@ async def test_rechecks_the_instance(mass: MusicAssistant, location: Path) -> No
     provider.available = True
     async with _get(mass, address) as response:
         assert response.status == 200
-    await mass.unload_provider(instance_id)
+
+
+async def test_unload_drops_addresses_and_ends_websockets(
+    mass: MusicAssistant, location: Path
+) -> None:
+    """Unloading the instance drops its addresses and ends the WebSockets open on them."""
+    instance_id = await _register(mass, location)
+    _, token = await _user(mass, UserRole.USER)
+    address = await _open(mass, token, instance_id)
+
+    async with _ws(mass, address) as ws:
+        await mass.unload_provider(instance_id)
+        await _assert_closed(ws)
     await mass.load_provider(instance_id)
     async with _get(mass, address) as response:
         assert response.status == 410
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "https://example.org/page",
-        "javascript:alert(1)",
-        "/api",
-        "//example.org/page",
-        "../../api",
-        "stats/../../api",
-        "%2e%2e/api",
-        "..\\api",
-        ".\t./api",
-    ],
-)
-def test_page_path_leaving_the_page_refused(
-    pages: ProviderPageManager, user: User, caplog: pytest.LogCaptureFixture, path: str
+async def test_address_never_reaches_a_reloaded_instance(
+    mass: MusicAssistant, location: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A page path with a scheme, an absolute path or a step up is not opened."""
-    with user_auth_context(user), caplog.at_level(logging.WARNING):
-        result = ConfigActionResult(open_page=path)
-        pages.prepare_action_result(_provider(), result, Scope.LIBRARY_READ)
+    """An address is bound to the loaded instance, not only to its id."""
+    instance_id = await _register(mass, location)
+    _, token = await _user(mass, UserRole.USER)
+    address = await _open(mass, token, instance_id)
+    # without the drop on unload, only the binding to the instance can refuse it
+    monkeypatch.setattr(mass.webserver.provider_pages, "drop_instance", lambda _id: None)
 
-    assert result.open_page is None
-    assert "answered a page that can not be opened" in caplog.text
+    await mass.unload_provider(instance_id)
+    await mass.load_provider(instance_id)
+    provider = mass.get_provider(instance_id)
+    assert provider is not None
+    await provider.initialized.wait()
 
-
-@pytest.mark.parametrize("path", ["", "stats", "a/b.c/", "stats?from=../x#..", "..x/y"])
-def test_page_path_inside_the_page_accepted(
-    pages: ProviderPageManager, user: User, path: str
-) -> None:
-    """A relative path inside the page is appended to the page's address."""
-    with user_auth_context(user):
-        result = ConfigActionResult(open_page=path)
-        pages.prepare_action_result(_provider(), result, Scope.LIBRARY_READ)
-
-    assert result.open_page is not None
-    assert result.open_page.startswith("provider_page/")
-    assert result.open_page.split("/", 2)[2] == path
+    async with _get(mass, address) as response:
+        assert response.status == 410
 
 
-def test_page_needs_a_user(pages: ProviderPageManager) -> None:
-    """Without a calling user there is no one to bind the page to, so it is not opened."""
-    result = ConfigActionResult(open_page="stats")
-    pages.prepare_action_result(_provider(), result, Scope.LIBRARY_READ)
+async def test_demo_page(mass: MusicAssistant) -> None:
+    """The demo plugin declares a page, which greets the user who opened it."""
+    await mass.register_provider_manifest(
+        os.path.join(PROVIDERS_PATH, "_demo_plugin_provider"), ProviderTier.CORE
+    )
+    instance_id = await _setup(mass, "_demo_plugin_provider")
+    _, token = await _user(mass, UserRole.GUEST)
 
-    assert result.open_page is None
+    async with _get(mass, await _open(mass, token, instance_id)) as response:
+        page = await response.text()
 
-
-@pytest.mark.parametrize(
-    ("tier", "url", "kept"),
-    [
-        (ProviderTier.COMMUNITY, "https://example.org/connect", True),
-        (ProviderTier.COMMUNITY, "http://example.org/connect", False),
-        (ProviderTier.COMMUNITY, "ftp://example.org/connect", False),
-        (ProviderTier.CORE, "http://192.168.1.5:8095/mcp/connect", True),
-    ],
-)
-def test_open_url_https_only_for_community_providers(
-    pages: ProviderPageManager,
-    caplog: pytest.LogCaptureFixture,
-    tier: ProviderTier,
-    url: str,
-    kept: bool,
-) -> None:
-    """A community provider's url is only opened over https; a built-in one keeps http."""
-    with caplog.at_level(logging.WARNING):
-        result = ConfigActionResult(open_url=url)
-        pages.prepare_action_result(_provider(tier), result, Scope.LIBRARY_READ)
-
-    assert result.open_url == (url if kept else None)
-    assert ("not https" in caplog.text) is not kept
-
-
-def _provider(tier: ProviderTier = ProviderTier.COMMUNITY) -> Any:
-    """Return a stand-in provider instance of the given tier."""
-    return SimpleNamespace(instance_id="page--1", manifest=SimpleNamespace(tier=tier))
+    assert page == "<!doctype html><p>Hello user_guest, from the demo plugin.</p>"
 
 
 def _assert_page_headers(response: ClientResponse) -> None:
     """Assert the headers the server forces on every response of a provider page."""
-    assert PAGE_CSP in response.headers.getall("Content-Security-Policy")
+    policies = response.headers.getall("Content-Security-Policy")
+    directives = [d.strip().split() for policy in policies for d in policy.split(";")]
+    sandboxes = [directive for directive in directives if directive and directive[0] == "sandbox"]
+    assert sandboxes, policies
+    assert not any(
+        flag.startswith(SANDBOX_ESCAPES) for sandbox in sandboxes for flag in sandbox[1:]
+    ), policies
+    assert ["frame-ancestors", "'none'"] in directives
     assert response.headers["X-Frame-Options"] == "DENY"
     assert response.headers["Referrer-Policy"] == "no-referrer"
     assert response.headers["X-Content-Type-Options"] == "nosniff"
@@ -451,11 +456,10 @@ def _assert_page_headers(response: ClientResponse) -> None:
     assert "Set-Cookie" not in response.headers
 
 
-def _answer(**answer: Any) -> None:
-    """Set what the actions of the page provider answer."""
-    module = sys.modules[f"{providers_package.__name__}.{PAGE}"]
-    module.ANSWER.clear()
-    module.ANSWER.update(answer)
+async def _assert_closed(ws: Any) -> None:
+    """Assert that the server ends a WebSocket of a page."""
+    message = await ws.receive(timeout=10)
+    assert message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR)
 
 
 async def _register(mass: MusicAssistant, location: Path) -> str:
@@ -467,21 +471,25 @@ async def _register(mass: MusicAssistant, location: Path) -> str:
     :param mass: The server.
     :param location: The folder of community providers to write them in.
     """
-    for domain, code in ((PAGE, PAGE_CODE), (PLAIN, PLAIN_CODE)):
+    for domain, code, page in (
+        (PAGE, PAGE_CODE, PAGE_DECLARED),
+        (PLAIN, PLAIN_CODE, PAGE_DECLARED),
+        (BARE, PLAIN_CODE, None),
+    ):
         provider_dir = location / domain
         provider_dir.mkdir()
-        manifest = {
+        manifest: dict[str, Any] = {
             "type": "plugin",
             "domain": domain,
             "name": domain,
             "description": "test provider",
             "codeowners": [],
-            "menu_actions": [OPEN],
+            "page": page,
         }
         (provider_dir / "manifest.json").write_text(json.dumps(manifest))
         (provider_dir / "__init__.py").write_text(code)
     mass.add_provider_location(str(location))
-    for domain in (PAGE, PLAIN):
+    for domain in (PAGE, PLAIN, BARE):
         await mass.register_provider_manifest(str(location / domain), ProviderTier.COMMUNITY)
     return await _setup(mass, PAGE)
 
@@ -515,22 +523,36 @@ async def _user(mass: MusicAssistant, role: UserRole) -> tuple[User, str]:
 
 async def _open(mass: MusicAssistant, token: str, instance_id: str) -> str:
     """
-    Open the page through the menu action and return its address.
+    Open the page of a provider instance as a user and return its address.
 
     :param mass: The server.
     :param token: The token of the calling user.
     :param instance_id: The provider instance.
     """
-    result = await _api(
-        mass,
-        token,
-        "providers/invoke_menu_action",
-        instance_id=instance_id,
-        action_id=OPEN["id"],
-        uri=ALBUM_URI,
-    )
-    address: str = result["open_page"]
+    address: str = await _api(mass, token, "providers/open_page", instance_id=instance_id)
     return address
+
+
+async def _api_error(mass: MusicAssistant, token: str, instance_id: str) -> int:
+    """
+    Open the page of a provider instance as a user, expecting a refusal, and return its error code.
+
+    :param mass: The server.
+    :param token: The token of the calling user.
+    :param instance_id: The provider instance.
+    """
+    async with mass.http_session_no_ssl.post(
+        f"{mass.webserver.internal_base_url}/api",
+        json={
+            "message_id": "1",
+            "command": "providers/open_page",
+            "args": {"instance_id": instance_id},
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    ) as response:
+        assert response.status != 200
+        error_code: int = (await response.json())["error_code"]
+        return error_code
 
 
 async def _api(mass: MusicAssistant, token: str, command: str, **args: Any) -> Any:
@@ -556,6 +578,16 @@ def _get(mass: MusicAssistant, address: str) -> Any:
     Request a page address the way a browser tab opens it, without any credentials.
 
     :param mass: The server.
-    :param address: The page address the server issued.
+    :param address: The page address the server issued, with an optional sub-path.
     """
     return mass.http_session_no_ssl.get(f"{mass.webserver.internal_base_url}/{address}")
+
+
+def _ws(mass: MusicAssistant, address: str) -> Any:
+    """
+    Open the WebSocket of the test page at a page address.
+
+    :param mass: The server.
+    :param address: The page address the server issued.
+    """
+    return mass.http_session_no_ssl.ws_connect(f"{mass.webserver.internal_base_url}/{address}ws")

@@ -14,13 +14,11 @@
       "media_types": ["track", "album", "artist", "playlist"],
       "scope": "library.read",
       "icon": "mdi-information-outline"
-    },
-    {
-      "id": "open_page",
-      "label": "Open the demo plugin page",
-      "media_types": ["track", "album", "artist", "playlist"],
-      "scope": "library.read",
-      "icon": "mdi-open-in-new"
     }
-  ]
+  ],
+  "page": {
+    "label": "Demo plugin page",
+    "scope": "library.read",
+    "icon": "mdi-puzzle-outline"
+  }
 }

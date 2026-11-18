@@ -1327,7 +1327,6 @@ async def test_config_action_result_localizes_in_dynamic_response() -> None:
     assert response["data"] == {
         "message": "config_actions.cleanup.result|core.cache|3",
         "open_url": None,
-        "open_page": None,
     }
 
 
@@ -1352,7 +1351,6 @@ async def test_config_action_open_url_survives_dynamic_response() -> None:
     assert response["data"] == {
         "message": None,
         "open_url": "https://ma.example/result",
-        "open_page": None,
     }
 
 

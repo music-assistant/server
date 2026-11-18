@@ -25,8 +25,9 @@ Optional is an icon.svg file that will be used as the icon for the provider in t
 but we also support that you specify a material design icon in the manifest.json file.
 
 Optional is a strings.json file with the texts of the provider in English, which are
-translated into the other languages. This demo keeps the labels of its menu actions there
-(menu_actions.<id>.label) and the message a menu action answers with (config_actions.<key>).
+translated into the other languages. This demo keeps the label of its menu action there
+(menu_actions.<id>.label), the message its menu action answers with (config_actions.<key>)
+and the label of its page (page.label).
 
 IMPORTANT NOTE:
 We strongly recommend developing on either macOS or Linux and start your development
@@ -192,12 +193,8 @@ class MyDemoPluginprovider(PluginProvider):
         # look the item up yourself, as below.
         # Answer nothing, or a ConfigActionResult with a message the app shows and/or a url
         # it opens once; its translation_key is looked up in config_actions of strings.json.
-        # Answer open_page with a path inside the page of this provider (see
-        # handle_page_request) to have the app open that page in a new tab.
         # Raise a MusicAssistantError to tell the user the action failed: get_item_by_uri
         # below raises MediaNotFoundError for an unknown item.
-        if action_id == "open_page":
-            return ConfigActionResult(open_page="")
         if action_id != "show_item":
             return await super().handle_menu_action(action_id, uri, player_id)
         item = await self.mass.music.get_item_by_uri(uri)
@@ -210,12 +207,12 @@ class MyDemoPluginprovider(PluginProvider):
     async def handle_page_request(self, request: web.Request, path: str) -> web.StreamResponse:
         """Serve a request to the page of this provider instance."""
         # OPTIONAL
-        # Implement to serve a page of your own, such as a small web interface, which an
-        # action opens by answering ConfigActionResult(open_page=<path>). The server serves it
-        # behind a short-lived address for the user who chose the action, and calls this as
-        # that user (get_current_user()) for every request to it, with the path after the
-        # page's root. The page runs sandboxed: it gets no token and can not reach the app, so
-        # it talks to the provider through its own sub-paths (relative urls).
+        # Implement when manifest.json declares a "page", such as a small web interface. The
+        # app lists it in its main menu, and opens it in a new tab behind a short-lived address
+        # for the user who chose it. The server calls this as that user (get_current_user())
+        # for every request to it, with the path after the page's root. The page runs
+        # sandboxed: it gets no token and can not reach the app, so it talks to the provider
+        # through relative urls to its own sub-paths.
         user = get_current_user()
         name = user.display_name or user.username if user else ""
         return web.Response(

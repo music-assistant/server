@@ -23,6 +23,7 @@ ACTION = {
     "media_types": ["album"],
     "scope": "library.read",
 }
+PAGE = {"label": "Picture frame", "scope": "library.read"}
 TOOL = {
     "id": "show_photo",
     "description": "Show a photo of the playing album on the picture frame.",
@@ -123,6 +124,31 @@ def test_problems_of_menu_actions_and_mcp_tools_both_named() -> None:
         "menu action 'send_to_frame'",
         "MCP tool 'show_photo'",
     ]
+
+
+def test_valid_page_kept() -> None:
+    """A valid page is kept as declared."""
+    manifest, problems = manifest_from_dict(_manifest(page=PAGE))
+    assert manifest.page is not None
+    assert manifest.page.to_dict() == {**PAGE, "icon": None}
+    assert problems == []
+
+
+@pytest.mark.parametrize(
+    ("page", "problem"),
+    [
+        ("Picture frame", "page: needs string label and scope"),
+        ({"label": "Picture frame"}, "page: needs string label and scope"),
+        ({**PAGE, "scope": "everything"}, "page: needs a scope"),
+    ],
+)
+def test_broken_page_never_breaks_the_manifest(page: object, problem: str) -> None:
+    """Whatever page holds, the manifest is read, the page left out and its problem named."""
+    manifest, problems = manifest_from_dict(_manifest(page=page))
+    assert manifest.domain == "frame"
+    assert manifest.page is None
+    assert len(problems) == 1
+    assert problems[0].startswith(problem)
 
 
 def test_invalid_manifest_still_fails() -> None:
