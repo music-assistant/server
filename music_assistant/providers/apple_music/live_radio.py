@@ -30,6 +30,7 @@ from music_assistant.helpers.hls import HLSMediaPlaylist, HLSMediaPlaylistParser
 from music_assistant.helpers.playlists import parse_m3u
 from music_assistant.models.music_provider import ProviderStreamLimitError
 
+from .cbcs import drop_whole_sample_subsamples, encrypts_whole_samples
 from .constants import PARSED_ITEM_CACHE_CHECKSUM
 from .parsers import parse_station
 from .streaming import LicenseRefusedError
@@ -227,10 +228,17 @@ class AppleMusicLiveRadioManager:
                     )
                     if init is None:
                         raise UnplayableMediaError("The live radio init segment is not available")
+                    whole_samples = encrypts_whole_samples(init)
+                    if whole_samples:
+                        self.logger.debug(
+                            "Live radio of %s encrypts whole samples", streamdetails.item_id
+                        )
                     next_key: list[HLSMediaSegment] = []
                     async with aclosing(
                         get_ffmpeg_stream(
-                            self._key_input(new_segments, segment, init, key_uri, next_key, data),
+                            self._key_input(
+                                new_segments, segment, init, key_uri, next_key, data, whole_samples
+                            ),
                             input_format=AudioFormat(
                                 content_type=ContentType.MP4, codec_type=ContentType.AAC
                             ),
@@ -258,6 +266,7 @@ class AppleMusicLiveRadioManager:
         key_uri: str,
         next_key: list[HLSMediaSegment],
         data: dict[str, Any],
+        whole_samples: bool,
     ) -> AsyncGenerator[bytes]:
         """Yield the init segment and the segments of one key, keeping the first of the next."""
         yield init
@@ -271,6 +280,9 @@ class AppleMusicLiveRadioManager:
                     data["last_metadata"] = metadata
                     data["pending_metadata"].append((data["audio_seconds"], metadata))
                 data["audio_seconds"] += segment.duration
+                if whole_samples:
+                    # ffmpeg refuses these subsamples, the whole sample decrypts the same
+                    content = drop_whole_sample_subsamples(content)
                 yield content
             segment = await anext(new_segments)
             if segment_uri(segment.key_line) != key_uri:
