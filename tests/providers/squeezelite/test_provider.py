@@ -67,8 +67,16 @@ def test_the_display_name_is_the_one_set_in_music_assistant() -> None:
     assert SqueezelitePlayerProvider._lookup_display_name(provider, "other") is None
 
 
-async def test_the_cli_reports_the_display_name_set_in_music_assistant() -> None:
-    """Loading the provider hands the lookup to the CLI, which reports it to the clients."""
+def test_a_client_without_a_bridge_reports_its_own_position() -> None:
+    """The position in the track is left to a client that has no Sendspin bridge."""
+    provider = MagicMock()
+    provider.bridge_manager.get_bridge.return_value = None
+
+    assert SqueezelitePlayerProvider._lookup_elapsed(provider, "other") is None
+
+
+async def test_the_cli_reports_the_name_and_position_music_assistant_shows() -> None:
+    """Loading the provider hands its lookups to the CLI, which reports them to the clients."""
     provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
     provider.slimproto = MagicMock(start=AsyncMock())
     provider.mass = MagicMock()
@@ -77,6 +85,7 @@ async def test_the_cli_reports_the_display_name_set_in_music_assistant() -> None
         await provider.loaded_in_mass()
 
     assert provider.slimproto.cli.display_name_lookup == provider._lookup_display_name
+    assert provider.slimproto.cli.elapsed_lookup == provider._lookup_elapsed
 
 
 async def test_connected_client_without_attached_protocol_is_attached() -> None:

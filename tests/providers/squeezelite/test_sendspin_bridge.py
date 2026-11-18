@@ -15,6 +15,7 @@ import logging
 import math
 import random
 import struct
+import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import replace
 from functools import partial
@@ -297,9 +298,19 @@ def _real_client(rig: _Rig) -> tuple[asyncio.StreamReader, list[tuple[bytes, byt
     return reader, sent
 
 
-async def _player_reports(reader: asyncio.StreamReader, event: bytes) -> None:
-    """Let a player report a stream event to its real slimproto client."""
-    payload = event + bytes(47)
+async def _player_reports(
+    reader: asyncio.StreamReader, event: bytes, *, elapsed_ms: int = 0
+) -> None:
+    """
+    Let a player report a stream event to its real slimproto client.
+
+    :param reader: The reader of the client.
+    :param event: The stream event, such as STMs.
+    :param elapsed_ms: The elapsed time of its stream, as its decoder counts it.
+    """
+    # a status of the player that is all zero but its elapsed seconds and milliseconds
+    status = struct.pack("!BBBLLLLHLLLLHLL", *[0] * 11, elapsed_ms // 1000, 0, elapsed_ms, 0)
+    payload = event + status
     reader.feed_data(b"STAT" + struct.pack("!I", len(payload)) + payload)
     await _settle()
 
@@ -4347,6 +4358,200 @@ async def test_a_player_keeps_a_track_of_its_own_when_its_bridge_moves_on(
         await _settle()
 
         assert client.current_media is media
+    finally:
+        client._reader_task.cancel()
+
+
+# ---------------------------------------------------------------- position
+
+
+def _media_at(title: str, position_s: int, *, seconds_ago: float = 0) -> PlayerMedia:
+    """
+    Return that media at a position in its track, as Music Assistant shows it.
+
+    :param title: The title of the media.
+    :param position_s: The position in the track.
+    :param seconds_ago: How long ago that position was taken.
+    """
+    return replace(
+        _media(title),
+        elapsed_time=position_s,
+        elapsed_time_last_updated=time.time() - seconds_ago,
+    )
+
+
+def _cli_client(rig: _Rig, player_id: str) -> tuple[asyncio.StreamReader, SlimClient]:
+    """
+    Give the player of a rig a real slimproto client, with the id the CLI knows it by.
+
+    Its heartbeats do not reach the bridge: they are on the clock of the real client, and
+    the bridge of a rig runs on a manual one.
+
+    :param rig: The rig whose player gets the client.
+    :param player_id: The slimproto id of the player.
+    :return: The reader to feed what the player sends, and the client.
+    """
+    reader, _sent = _real_client(rig)
+    client: SlimClient = rig.client
+    client._player_id = player_id
+    report = client.callback
+
+    def _report(_client: SlimClient, event_type: SlimEventType, data: Any = None) -> None:
+        if event_type != SlimEventType.PLAYER_HEARTBEAT:
+            report(_client, event_type, data)
+
+    client.callback = _report
+    return reader, client
+
+
+def _cli(*rigs: _Rig) -> SlimProtoCLI:
+    """
+    Return the CLI of aioslimproto for the clients of rigs, with the elapsed lookup of the provider.
+
+    :param rigs: The rigs whose players the CLI answers for.
+    """
+    server = MagicMock(logger=logging.getLogger("test.aioslimproto"))
+    server.get_player.side_effect = {rig.client.player_id: rig.client for rig in rigs}.get
+    provider = MagicMock()
+    provider.bridge_manager.get_bridge.side_effect = {
+        rig.client.player_id: rig.bridge for rig in rigs
+    }.get
+    cli = SlimProtoCLI(server, cli_port=None, cli_port_json=None)
+    cli.elapsed_lookup = partial(SqueezelitePlayerProvider._lookup_elapsed, provider)
+    return cli
+
+
+async def _reported_position(cli: SlimProtoCLI, client: SlimClient) -> tuple[int, int | None]:
+    """Return the position the CLI reports for a player: to `time ?`, and in its status."""
+    answer = await cli._handle_command((client.player_id, ["time", "?"]))
+    status = await cli._handle_command((client.player_id, ["status", "-", 1, "tags:d"]))
+    # a status without a track has no time
+    return answer["_time"], status.get("time")
+
+
+async def test_the_players_of_a_group_report_its_position_in_the_track() -> None:
+    """
+    A player reports the position Music Assistant shows, whenever its stream started.
+
+    The group plays the track at 2:10. One player started its stream with the track, the
+    other joined the group 30 s later: its stream has played 1:40.
+    """
+    first, late = _Rig(), _Rig()
+    first_reader, first_client = _cli_client(first, "aa:bb:cc:dd:ee:01")
+    late_reader, late_client = _cli_client(late, "aa:bb:cc:dd:ee:02")
+    try:
+        for rig, reader in ((first, first_reader), (late, late_reader)):
+            rig.protocol.player.current_media = _media("One")
+            await rig.start_playing()
+            await _player_reports(reader, b"STMs")
+        # the members of a group show the media of the player that leads it
+        media = _media_at("One", 130)
+        first.protocol.player.current_media = late.protocol.player.current_media = media
+        await _player_reports(first_reader, b"STMt", elapsed_ms=130_000)
+        await _player_reports(late_reader, b"STMt", elapsed_ms=100_000)
+        cli = _cli(first, late)
+
+        assert await _reported_position(cli, first_client) == (130, 130)
+        assert await _reported_position(cli, late_client) == (130, 130)
+        # the bridge syncs a stream by the elapsed time the player counts
+        assert (int(first_client.elapsed_seconds), int(late_client.elapsed_seconds)) == (130, 100)
+    finally:
+        for rig in (first, late):
+            rig.client._reader_task.cancel()
+            await rig.close()
+
+
+async def test_a_player_reports_its_position_in_the_next_track_of_its_stream(rig: _Rig) -> None:
+    """The stream of the bridge plays on into the next track: the position is in that track."""
+    reader, client = _cli_client(rig, PLAYER_ID)
+    try:
+        rig.protocol.player.current_media = _media("One")
+        await rig.start_playing()
+        await _player_reports(reader, b"STMs")
+
+        # 20 s into Two, which follows the 4:00 of One in the same stream
+        rig.protocol.player.current_media = _media_at("Two", 20)
+        rig.bridge.update_now_playing()
+        await _settle()
+        await _player_reports(reader, b"STMt", elapsed_ms=260_000)
+
+        assert await _reported_position(_cli(rig), client) == (20, 20)
+        assert int(client.elapsed_seconds) == 260
+    finally:
+        client._reader_task.cancel()
+
+
+async def test_a_player_of_a_stopped_group_reports_where_the_group_stopped(rig: _Rig) -> None:
+    """
+    A pause of a Sendspin group stops it: its players report the position it stopped at.
+
+    The stream of the player played One and 20 s of Two before the group stopped, a
+    minute ago.
+    """
+    reader, client = _cli_client(rig, PLAYER_ID)
+    try:
+        rig.protocol.player.current_media = _media("One")
+        await rig.start_playing()
+        await _player_reports(reader, b"STMs")
+        rig.protocol.player.current_media = _media_at("Two", 20)
+        rig.bridge.update_now_playing()
+        await _settle()
+        await _player_reports(reader, b"STMt", elapsed_ms=260_000)
+
+        rig.bridge._on_stream_end()
+        rig.bridge._on_explicit_stop()
+        await _settle()
+        await _player_reports(reader, b"STMf")
+        rig.protocol.player.current_media = _media_at("Two", 20, seconds_ago=60)
+
+        assert not rig.owns_stream()
+        assert await _reported_position(_cli(rig), client) == (20, 20)
+    finally:
+        client._reader_task.cancel()
+
+
+@pytest.mark.parametrize(
+    ("plays", "reported"),
+    [
+        pytest.param("a stream of its own", (100, 100), id="a stream of its own"),
+        pytest.param("nothing", (100, None), id="nothing, out of the group it stopped with"),
+    ],
+)
+async def test_a_player_reports_its_own_elapsed_time_without_a_track_of_its_bridge(
+    rig: _Rig, plays: str, reported: tuple[int, int | None]
+) -> None:
+    """
+    A player that plays a track of its own, or has no track of its bridge, reports its own time.
+
+    :param plays: What the player plays: a stream of its own, or nothing after it left the
+        group it stopped with.
+    :param reported: What it reports to `time ?`, and in its status.
+    """
+    reader, client = _cli_client(rig, PLAYER_ID)
+    try:
+        if plays == "a stream of its own":
+            await client.play_url(f"{BASE_URL}/track.flac")
+            await _player_reports(reader, b"STMs")
+            await _player_reports(reader, b"STMt", elapsed_ms=100_000)
+        else:
+            rig.protocol.player.current_media = _media("One")
+            sendspin_client = rig.grouped()
+            await rig.start_playing()
+            await _player_reports(reader, b"STMs")
+            await _player_reports(reader, b"STMt", elapsed_ms=100_000)
+            rig.bridge._on_stream_end()
+            rig.bridge._on_explicit_stop()
+            await _settle()
+            await _player_reports(reader, b"STMf")
+            # as the group removes a member, with no stream left to end or stop
+            rig.bridge._on_stream_end()
+            sendspin_client.moved_to(MagicMock(clients=[sendspin_client], has_active_stream=False))
+            rig.bridge._on_explicit_stop()
+            await _settle()
+        rig.protocol.player.current_media = _media_at("One", 130)
+
+        assert not rig.owns_stream()
+        assert await _reported_position(_cli(rig), client) == reported
     finally:
         client._reader_task.cancel()
 
