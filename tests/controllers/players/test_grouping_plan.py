@@ -397,13 +397,16 @@ def test_the_heir_can_be_reached_on_the_groups_protocol(
     assert elect_ad_hoc_leader(world.snapshot(), "a", ["b", "c"]) == expected
 
 
-def test_a_player_that_can_not_play_audio_never_leads() -> None:
-    """A visualizer is passed over even when it comes first."""
+@pytest.mark.parametrize(
+    "player_type", [PlayerType.DISPLAY, PlayerType.VISUALIZER, PlayerType.LIGHT]
+)
+def test_a_player_that_can_not_play_audio_never_leads(player_type: PlayerType) -> None:
+    """A display, visualizer or light is passed over even when it comes first."""
     world = _World()
     world.protocol("airplay_a", "a", "airplay")
     world.player("a", "airplay_a")
     world.protocol("airplay_v", "v", "airplay")
-    world.player("v", "airplay_v", type=PlayerType.VISUALIZER)
+    world.player("v", "airplay_v", type=player_type)
     world.protocol("airplay_b", "b", "airplay")
     world.player("b", "airplay_b")
     assert elect_ad_hoc_leader(world.snapshot(), "a", ["v", "b"]) == "b"
