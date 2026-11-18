@@ -813,11 +813,6 @@ class SmartPlaylistProvider(PluginProvider):
                 tracks, rules.last_played_before_value, rules.last_played_before_unit
             )
 
-            # In non-seed mode, _evaluate_and/_evaluate_or already query by genre_ids.
-            # Only enrich if excluded_genre_ids is set (needs track.metadata.genres).
-            if rules.excluded_genre_ids:
-                await self._enrich_tracks_with_db_genres(tracks)
-
         # Apply exclusions regardless of source mode. Recency (don't repeat recently-played) is
         # no longer handled here: the player queue owns it globally for dynamic playlists.
         excluded_genre_names, excl_album_type_ids = await asyncio.gather(
@@ -829,6 +824,11 @@ class SmartPlaylistProvider(PluginProvider):
         tracks = self._apply_exclusions(
             tracks, rules, excluded_genre_names, excl_album_type_ids or None
         )
+        if rules.excluded_genre_ids:
+            in_excluded_genre = await self.mass.music.genres.tracks_in_genres(
+                rules.excluded_genre_ids, tracks
+            )
+            tracks = [t for t in tracks if (t.provider, t.item_id) not in in_excluded_genre]
         if rules.exclude_favorites:
             tracks = await with_user_favorites(self.mass, get_current_user(), tracks)
             tracks = [track for track in tracks if track.favorite is not True]
@@ -842,7 +842,7 @@ class SmartPlaylistProvider(PluginProvider):
         rules: SmartPlaylistRules,
     ) -> list[Track]:
         """Apply post-filters (popularity, favorites, genre, year) to a seed-derived track list."""
-        has_genre_filter = bool(rules.genre_ids or rules.excluded_genre_ids)
+        has_genre_filter = bool(rules.genre_ids)
 
         if rules.min_popularity is not None:
             tracks = [
