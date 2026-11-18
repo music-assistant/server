@@ -10,8 +10,9 @@ from aiosendspin.clock import ManualClock, RawMonotonicClock
 from aioslimproto.cli import SlimCLICommand, parse_args
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
-from music_assistant_models.enums import ProtocolRole, ProviderFeature
+from music_assistant_models.enums import EventType, ProtocolRole, ProviderFeature
 from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.event import MassEvent
 
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.squeezelite import SUPPORTED_FEATURES
@@ -53,6 +54,19 @@ def test_a_client_that_connects_is_set_up() -> None:
 
     player_class.assert_called_once_with(provider, "p1", client)
     provider.mass.create_task.assert_called_once_with(player_class.return_value.setup.return_value)
+
+
+def test_a_change_of_a_queue_reaches_every_player() -> None:
+    """Each player hears of a changed queue: the ones that play it show its repeat and shuffle."""
+    provider = MagicMock()
+    provider.protocols = [MagicMock(), MagicMock()]
+
+    SqueezelitePlayerProvider._on_queue_updated(
+        provider, MassEvent(event=EventType.QUEUE_UPDATED, object_id="queue_1")
+    )
+
+    for protocol in provider.protocols:
+        protocol.on_queue_updated.assert_called_once_with("queue_1")
 
 
 def test_the_display_name_is_the_one_set_in_music_assistant() -> None:

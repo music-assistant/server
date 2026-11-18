@@ -591,6 +591,30 @@ async def test_buttons_act_on_the_player_that_leads_the_sendspin_group(
     mass.player_queues.next.assert_awaited_once_with(queue.queue_id)
 
 
+@pytest.mark.parametrize(
+    ("target", "queue_of"), [("living_room", "living_room"), (None, "kitchen")]
+)
+def test_the_client_shows_repeat_and_shuffle_of_the_queue_it_plays(
+    target: str | None, queue_of: str
+) -> None:
+    """While the player plays for its bridge, that is the queue of its Sendspin group."""
+    player, bridge = _player_with_bridge()
+    mass = cast("MagicMock", player.mass)
+    player._player = MagicMock(player_id="kitchen")
+    bridge.transport_command_target.return_value = target
+    queue = mass.player_queues.get_active_queue.return_value
+    queue.repeat_mode = RepeatMode.ONE
+    queue.shuffle_enabled = True
+    client = cast("MagicMock", player.client)
+    client.extra_data = {"playlist repeat": 0, "playlist shuffle": 0}
+
+    player.on_player_media_updated()
+
+    mass.player_queues.get_active_queue.assert_called_once_with(queue_of)
+    assert client.extra_data == {"playlist repeat": 1, "playlist shuffle": 1}
+    client.signal_update.assert_called_once_with()
+
+
 def _button_event(data: dict[str, int | str]) -> SlimEvent:
     """Return a button event aioslimproto passes on for the device."""
     return SlimEvent(type=SlimEventType.PLAYER_BTN_EVENT, player_id="p1", data=data)

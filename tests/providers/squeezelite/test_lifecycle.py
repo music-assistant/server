@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import VisualisationType as SlimVisualisationType
-from music_assistant_models.enums import ProtocolRole
+from music_assistant_models.enums import ProtocolRole, RepeatMode
 
 from music_assistant.constants import CONF_PROTOCOL_KEY_SPLITTER, CONF_SYNC_ADJUST
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
@@ -225,3 +225,24 @@ async def test_a_sync_delay_set_before_the_split_is_that_of_its_squeezelite_outp
     assert _player(protocol).player_id == AMP_ONE
     assert _player(protocol).name == "Amp one"
     assert protocol.config.get_value(CONF_SYNC_ADJUST) == 30
+
+
+async def test_the_client_shows_repeat_and_shuffle_of_its_queue(scenario: Scenario) -> None:
+    """The status a client polls has repeat and shuffle of the queue its player plays."""
+    await scenario.add_provider("squeezelite")
+    client = _client(AMP_ONE, "Pi amp 1")
+    client.extra_data = {"playlist repeat": 0, "playlist shuffle": 0}
+    amp = await _connect(scenario, client)
+    queue_id = _player(amp).player_id
+    client.signal_update.reset_mock()
+
+    await scenario.mass.player_queues.set_repeat(queue_id, RepeatMode.ALL)
+    await scenario.mass.player_queues.set_shuffle(queue_id, True)
+    amp.on_queue_updated(queue_id)
+
+    assert client.extra_data == {"playlist repeat": 2, "playlist shuffle": 1}
+    client.signal_update.assert_called_once_with()
+    # the same values again, or a change of another queue, leave the client alone
+    amp.on_queue_updated(queue_id)
+    amp.on_queue_updated("another_queue")
+    client.signal_update.assert_called_once_with()

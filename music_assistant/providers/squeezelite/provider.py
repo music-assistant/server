@@ -11,7 +11,7 @@ from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
 from aioslimproto.server import SlimServer
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, ProtocolRole
+from music_assistant_models.enums import ConfigEntryType, EventType, ProtocolRole
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 
 from music_assistant.constants import CONF_PORT, VERBOSE_LOG_LEVEL
@@ -31,8 +31,11 @@ from .player import SqueezelitePlayer
 from .sendspin_bridge import BRIDGE_STREAM_PATH, SendspinBridgeManager
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from aiosendspin.clock import Clock
     from aioslimproto.cli import SlimCLICommand
+    from music_assistant_models.event import MassEvent
 
 
 class SqueezelitePlayerProvider(PlayerProvider):
@@ -43,6 +46,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
     # the clock every server time of slimproto is on: the one Sendspin runs on
     clock: Clock
     bridge_manager: SendspinBridgeManager
+    _unsub_queue_updated: Callable[[], None] | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -126,6 +130,9 @@ class SqueezelitePlayerProvider(PlayerProvider):
         self.mass.streams.register_dynamic_route(
             "/jsonrpc.js", self.slimproto.cli._handle_jsonrpc_client
         )
+        self._unsub_queue_updated = self.mass.subscribe(
+            self._on_queue_updated, EventType.QUEUE_UPDATED
+        )
 
     async def discover_players(self) -> None:
         """Attach the connected players that have no attached protocol, such as a removed one."""
@@ -140,6 +147,9 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        if self._unsub_queue_updated is not None:
+            self._unsub_queue_updated()
+            self._unsub_queue_updated = None
         # Stop all Sendspin bridges
         bridge_manager = getattr(self, "bridge_manager", None)
         if bridge_manager:
@@ -230,6 +240,13 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
         # forward all other events to the player itself
         player.handle_slim_event(event)
+
+    def _on_queue_updated(self, event: MassEvent) -> None:
+        """Let the players show repeat and shuffle of the queue they play."""
+        if (queue_id := event.object_id) is None:
+            return
+        for protocol in self.protocols:
+            cast("SqueezelitePlayer", protocol).on_queue_updated(queue_id)
 
     async def _serve_bridge_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve the stream of a Sendspin bridge to its player."""
