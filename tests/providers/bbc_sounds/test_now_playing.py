@@ -19,6 +19,7 @@ from music_assistant.providers.bbc_sounds.live_rewind import LiveProgrammeId
 
 PROGRAMME_START = datetime(2026, 11, 18, 9, 0, tzinfo=UTC)
 
+
 def _mock(service: object) -> AsyncMock:
     """Return a client service, which the client fixture replaces with a mock, as that mock."""
     assert isinstance(service, AsyncMock)
@@ -262,7 +263,12 @@ class TestLiveProgrammeMetadata:
 
     @staticmethod
     def _stream_details() -> StreamDetails:
-        programme = LiveProgrammeId("bbc_radio_two", "pid", int(PROGRAMME_START.timestamp()), int(PROGRAMME_START.timestamp()) + 3600)
+        programme = LiveProgrammeId(
+            "bbc_radio_two",
+            "pid",
+            int(PROGRAMME_START.timestamp()),
+            int(PROGRAMME_START.timestamp()) + 3600,
+        )
         return StreamDetails(
             provider="bbc_sounds",
             item_id=programme.item_id,
