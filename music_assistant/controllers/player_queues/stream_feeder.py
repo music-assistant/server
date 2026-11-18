@@ -624,8 +624,14 @@ class StreamFeederMixin(_PlayerQueuesBase):
         """
         for holder in provider.stream_slot_holders:
             holder_id = holder.queue_id
-            # a source that has its slot and no audio yet can still fail and give it back
-            if holder_id is None or holder_id == queue_id or not holder.ready.is_set():
+            # a source that has its slot and no audio yet can still fail and give it back,
+            # and one that is being given up only holds it until it has stopped
+            if (
+                holder_id is None
+                or holder_id == queue_id
+                or not holder.ready.is_set()
+                or holder.cancelled
+            ):
                 continue
             # a stop only releases the audio of a session, so a queue without one has
             # nothing to hand over
@@ -640,9 +646,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
         return (
             queue_data is not None
             and queue_data.queue.state == PlaybackState.PAUSED
-            # a play action of the queue is under way: its player reports the pause until the
-            # new track plays
-            and not queue_data.transitioning
+            # a queue in the middle of its own play action does not count as paused: its
+            # player reports the pause until the new track plays
+            and not queue_data.play_index_running
             and player is not None
             and player.playback_state == PlaybackState.PAUSED
             and player.active_source == queue_id
