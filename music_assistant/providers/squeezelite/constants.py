@@ -20,6 +20,9 @@ CACHE_CATEGORY_PREV_STATE = 1
 
 DEFAULT_PLAYER_VOLUME = 20
 DEFAULT_VISUALIZATION = SlimVisualisationType.NONE
+# The cover a player fetches for itself is scaled down for the player's own screen (a SqueezePlay
+# draws 160x128) instead of handing it the original, and the image proxy serves fixed sizes only.
+PLAYER_ARTWORK_SIZE = 160
 
 STATE_MAP = {
     SlimPlayerState.BUFFERING: PlaybackState.PLAYING,

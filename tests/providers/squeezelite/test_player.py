@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -24,6 +24,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
+from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
@@ -34,6 +35,7 @@ from music_assistant.providers.squeezelite.constants import (
     CONF_ENTRY_VISUALIZATION,
     CONF_STORED_VOLUME,
     DEFAULT_PLAYER_VOLUME,
+    PLAYER_ARTWORK_SIZE,
 )
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer, is_protocol_only_device
 from music_assistant.providers.squeezelite.provider import SqueezelitePlayerProvider
@@ -819,3 +821,122 @@ async def test_the_stream_of_the_bridge_reports_its_own_format() -> None:
     await _report_update(player)
 
     cast("AsyncMock", player.client.update_metadata).assert_not_called()
+
+
+# ---------------------------------------------------------------- live stream metadata
+
+LIVE_TITLE = StreamMetadata(title="Highway Star", artist="Deep Purple", image_url="https://a/1.jpg")
+PLAYER_ARTWORK_URL = "http://streams:8097/imageproxy/abc?size=160&fmt=jpeg"
+
+
+def _client_of(player: SqueezelitePlayer) -> MagicMock:
+    """Return the mocked slimproto client of a player."""
+    return cast("MagicMock", player.client)
+
+
+def _sent_metadata(player: SqueezelitePlayer) -> dict[str, Any]:
+    """Return the metadata the player last handed to its client."""
+    update_metadata = cast("AsyncMock", player.client.update_metadata)
+    assert update_metadata.await_args is not None
+    return cast("dict[str, Any]", update_metadata.await_args.args[0])
+
+
+def _player_playing_a_radio(
+    live: StreamMetadata | None = LIVE_TITLE, held_item: str = "item_1"
+) -> tuple[SqueezelitePlayer, MagicMock]:
+    """
+    Return a player with a radio in its queue, alongside its mocked mass instance.
+
+    :param live: What the stream plays right now, None for a stream that reports nothing.
+    :param held_item: The queue item the player holds the media of.
+    """
+    player, mass = _player_with_mocked_mass()
+    use_real_create_task(mass)
+    player.client = MagicMock(
+        connected=True,
+        name="Radio",
+        powered=True,
+        state=SlimPlayerState.PLAYING,
+        volume_level=20,
+        muted=False,
+        device_model="SqueezePlay",
+        device_type="baby",
+        device_address="10.0.0.9",
+    )
+    _client_of(player).current_media.metadata = {"title": "Station", "queue_item_id": held_item}
+    player.client.update_metadata = AsyncMock()
+    queue_item = MagicMock(queue_item_id="item_1")
+    queue_item.image = None
+    mass.player_queues.get_active_queue.return_value.current_item = queue_item
+    mass.streams.audio_analysis.shown_stream_metadata.return_value = live
+    mass.metadata.get_image_url.return_value = PLAYER_ARTWORK_URL
+    return player, mass
+
+
+async def test_a_live_stream_hands_its_title_and_cover_to_the_player() -> None:
+    """A radio changes title under one media item: the player is told what it carries now."""
+    player, mass = _player_playing_a_radio()
+
+    player.update_attributes()
+    await asyncio.sleep(0)
+
+    metadata = _sent_metadata(player)
+    assert (metadata["title"], metadata["artist"]) == ("Highway Star", "Deep Purple")
+    # the cover is fetched from this server, scaled for the screen of the player
+    assert metadata["image_url"] == PLAYER_ARTWORK_URL
+    assert mass.metadata.get_image_url.call_args.kwargs["size"] == PLAYER_ARTWORK_SIZE
+    # the media of the client is left alone: the library replaces its contents
+    assert _client_of(player).current_media.metadata["title"] == "Station"
+
+
+async def test_a_station_without_an_artist_clears_the_one_of_before() -> None:
+    """A station that sends no ICY titles must not keep the artist of the previous station."""
+    player, _mass = _player_playing_a_radio(
+        StreamMetadata(title="Radiostation", artist=None, image_url=None)
+    )
+
+    player.update_attributes()
+    await asyncio.sleep(0)
+
+    assert _sent_metadata(player)["artist"] == ""
+
+
+async def test_a_title_that_did_not_change_is_not_sent_again() -> None:
+    """Every status update runs this: only a stream that moved repaints the player."""
+    player, mass = _player_playing_a_radio()
+    _client_of(player).current_media.metadata = {
+        "title": LIVE_TITLE.title,
+        "artist": LIVE_TITLE.artist,
+        "image_url": PLAYER_ARTWORK_URL,
+        "queue_item_id": "item_1",
+    }
+    update_metadata = cast("AsyncMock", player.client.update_metadata)
+
+    player.update_attributes()
+    await asyncio.sleep(0)
+
+    update_metadata.assert_not_awaited()
+    mass.streams.audio_analysis.shown_stream_metadata.return_value = StreamMetadata(
+        title="Space Truckin'", artist="Deep Purple", image_url=LIVE_TITLE.image_url
+    )
+    player.update_attributes()
+    await asyncio.sleep(0)
+
+    assert _sent_metadata(player)["title"] == "Space Truckin'"
+
+
+async def test_the_item_that_plays_next_gets_no_live_title() -> None:
+    """A player that buffered the next item holds media that carries something else entirely."""
+    player, _mass = _player_playing_a_radio(held_item="item_2")
+    update_metadata = cast("AsyncMock", player.client.update_metadata)
+
+    player.update_attributes()
+    await asyncio.sleep(0)
+
+    update_metadata.assert_not_awaited()
+    # once that item is the one that plays, its own live title goes to the player again
+    _client_of(player).current_media.metadata["queue_item_id"] = "item_1"
+    player.update_attributes()
+    await asyncio.sleep(0)
+
+    assert _sent_metadata(player)["title"] == LIVE_TITLE.title
