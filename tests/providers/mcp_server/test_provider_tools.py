@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.auth import AuthProviderType, UserRole
 from music_assistant_models.config_entries import ProviderAccess
-from music_assistant_models.enums import ProviderSharing, ProviderType
+from music_assistant_models.enums import ProviderSharing, ProviderTier, ProviderType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.provider import ProviderManifest
 
+from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.mcp_tools import read_mcp_tools
+from music_assistant.mass import PROVIDERS_PATH
 from music_assistant.providers.mcp_server.registry import TOOLS, MCPTool
 from tests.common import set_music_source_access
 from tests.providers.mcp_server.test_mcp_server import (
@@ -36,6 +39,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 DOMAIN = "radio_box"
+DEMO = "_demo_plugin_provider"
 SHOW = {
     "id": "show_stations",
     "description": "List the saved stations of this service.",
@@ -549,6 +553,43 @@ async def test_provider_tool_never_replaces_a_builtin(
         await _post(mass, _call("get_players", {}), admin_token)
     assert tools["get_players"]["description"] == TOOLS["get_players"].description
     impostor.handler.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+def test_demo_plugin_tool_follows_the_rules() -> None:
+    """The demo plugin declares its tool without a problem."""
+    with open(os.path.join(PROVIDERS_PATH, DEMO, "manifest.json"), encoding="utf-8") as file:
+        tools, problems = read_mcp_tools(json_loads(file.read())["mcp_tools"], DEMO)
+    assert [tool.id for tool in tools] == ["list_sources"]
+    assert problems == []
+
+
+async def test_demo_plugin_tool(mass: MusicAssistant, admin_token: str) -> None:
+    """The tool of the demo plugin lists its audio source."""
+    await mass.register_provider_manifest(os.path.join(PROVIDERS_PATH, DEMO), ProviderTier.CORE)
+    step = await mass.config.setup_provider(DEMO)
+    assert step.result is not None
+    provider = mass.get_provider(step.result["instance_id"])
+    assert provider is not None
+    await provider.initialized.wait()
+
+    tool = (await _list(mass, admin_token))[f"{DEMO}__list_sources"]
+    assert tool["annotations"] == {"readOnlyHint": True}
+    response = await _post(
+        mass,
+        _call(f"{DEMO}__list_sources", {"include_format": True}),
+        admin_token,
+        headers={"MCP-Protocol-Version": "2025-06-18"},
+    )
+    assert _body(response)["result"]["structuredContent"] == {
+        "sources": [
+            {
+                "uri": f"{provider.instance_id}://audio_source/main",
+                "name": provider.name,
+                "in_use": False,
+                "audio_format": "s16le, 44100 Hz, 16 bit, 2 channels",
+            }
+        ]
+    }
 
 
 async def _from_home_assistant(mass: MusicAssistant, message: dict[str, Any]) -> web.Response:
