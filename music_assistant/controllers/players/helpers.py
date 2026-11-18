@@ -162,7 +162,12 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](  
             is_switched_off = player.offline_by_power_control
             if is_switched_off and switched_off == SwitchedOffAction.REFUSE:
                 msg = f"Player {player.name} is switched off"
-                raise PlayerUnavailableError(msg)
+                raise PlayerUnavailableError(
+                    msg,
+                    translation_key="player_switched_off",
+                    translation_owner=self.translation_owner,
+                    translation_args=[player.name],
+                )
             if switched_off == SwitchedOffAction.CANCEL_POWER_ON:
                 self._cancel_member_power_ons(player, self._resolve_playback_owner(player))
             if is_switched_off and switched_off in (

@@ -32,7 +32,7 @@ SYNOPSES = Synopses(
 @pytest.fixture
 def converter(provider: BBCSoundsProvider) -> PodcastConverter:
     """Create a PodcastConverter bound to the test provider."""
-    return PodcastConverter(Context(provider=provider, provider_domain="bbc_sounds"))
+    return PodcastConverter(Context(provider=provider))
 
 
 def _podcast() -> Podcast:

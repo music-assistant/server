@@ -255,8 +255,14 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
                 await self._remove_player(player.player_id, rediscover=False)
             removed.append(player.player_id)
         if waits and not removed:
-            msg = f"Players are still being found, try again in {math.ceil(max(waits))} seconds"
-            raise ActionUnavailable(msg)
+            seconds = math.ceil(max(waits))
+            msg = f"Players are still being found, try again in {seconds} seconds"
+            raise ActionUnavailable(
+                msg,
+                translation_key="players_still_being_found",
+                translation_owner=self.translation_owner,
+                translation_args=[seconds],
+            )
         return removed
 
     async def remove_absorbed_players(

@@ -122,7 +122,7 @@ class TestStationBrowsing:
         self, provider: BBCSoundsProvider, menu_id: str, dates_of: Callable[[], list[Any]]
     ) -> None:
         """Test a station opens a folder for each date, starting from today."""
-        path = f"bbc_sounds://{menu_id}/{RADIO_FOUR_SERVICE_ID}"
+        path = f"{provider.instance_id}://{menu_id}/{RADIO_FOUR_SERVICE_ID}"
 
         folders = await provider.browse_manager.browse(path)
 
@@ -140,7 +140,7 @@ class TestStationBrowsing:
         _mock(provider.client.schedules).get_schedule.return_value = None
 
         await provider.browse_manager.browse(
-            f"bbc_sounds://{menu_id}/{RADIO_FOUR_SERVICE_ID}/2000-01-01"
+            f"{provider.instance_id}://{menu_id}/{RADIO_FOUR_SERVICE_ID}/2000-01-01"
         )
 
         _mock(provider.client.schedules).get_schedule.assert_awaited_once_with(
@@ -167,7 +167,9 @@ class TestMenuPlaylists:
         clip = RadioClip(id="vpid", pid="clip_pid", titles=Titles(entity_title="Clip"))
         _mock(provider.client.content).get_playlist_contents.return_value = [clip]
 
-        items = await provider.browse_manager.browse("bbc_sounds://explore/podcasts/playlist_pid")
+        items = await provider.browse_manager.browse(
+            f"{provider.instance_id}://explore/podcasts/playlist_pid"
+        )
 
         _mock(provider.client.content).get_playlist_contents.assert_awaited_once_with(
             pid="playlist_pid"
