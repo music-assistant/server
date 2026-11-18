@@ -1,6 +1,7 @@
 """Now-playing code for the BBC Sounds provider."""
 
 import asyncio
+import copy
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -220,15 +221,16 @@ class NowPlayingManager:
 
                 self.logger.debug("No Spotify image, falling back to MA")
 
-                # MA looks up artwork from the stream's current metadata, so it must be set first
-                stream_details.stream_metadata = metadata
-                await self.mass.metadata.update_radio_stream_artwork(stream_details)
+                # Use a copy of the StreamDetails to update so we avoid races
+                lookup = copy.copy(stream_details)
+                lookup.stream_metadata = metadata
+                await self.mass.metadata.update_radio_stream_artwork(lookup)
         except TimeoutError:
             self.logger.debug("Timeout while waiting for artwork")
             return
 
         # MA updates the metadata directly, so grab it back out for the segment
-        if (found := stream_details.stream_metadata) and found.image_url:
+        if (found := lookup.stream_metadata) and found.image_url:
             self.logger.debug("MA found an image, using that.")
             segment.image_url = found.image_url
         else:
