@@ -10,9 +10,11 @@ from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.config_entries import PlayerConfig
 
 from music_assistant.constants import (
     CONF_PROTOCOL_EXPERIMENTAL_NOTE,
+    CONF_PROTOCOL_KEY_SPLITTER,
     CONF_PROTOCOL_OFF_BY_DEFAULT,
     CONF_UNDERLYING_PLAYER_ID,
 )
@@ -449,6 +451,151 @@ async def test_an_output_switched_on_over_cast_and_off_again_is_the_off_of_the_u
 
 
 # ---------------------------------------------------------------- rule 5: the default of Cast
+
+
+@pytest.mark.parametrize("full_form", [False, True], ids=["single key", "full form"])
+@pytest.mark.parametrize("carrier", ["squeezelite", "airplay"])
+async def test_saving_the_carrier_off_does_not_opt_in_to_cast(
+    full_form: bool, carrier: str
+) -> None:
+    """An unchanged output switch cannot opt in to an experimental carrier during a save."""
+    device = _device(cast=True)
+    if carrier == "squeezelite":
+        await device.switch(device.airplay, False)
+    else:
+        await device.switch(device.squeezelite, False)
+    await device.attach(device.protocols[carrier])
+    await device.attach(device.cast)
+    client_id = next(iter(device.outputs()))
+    device.timeline.clear()
+
+    await _save_player_config(device, carrier, False, full_form=full_form)
+
+    record = device.output()
+    assert record["enabled"] is False
+    assert CONF_SENDSPIN_CAST_OPT_IN not in record["values"]
+    assert record["values"][CONF_PROTOCOL_OFF_BY_DEFAULT] is True
+    assert record["values"][CONF_UNDERLYING_PLAYER_ID] == CAST_ID
+    assert record["values"][CONF_PROTOCOL_EXPERIMENTAL_NOTE] == SENDSPIN_CAST_EXPERIMENTAL_NOTE
+    assert device.state() == (None, client_id, "chromecast", "off-default")
+    assert ("registered", "chromecast") not in device.timeline
+
+
+@pytest.mark.parametrize("full_form", [False, True], ids=["single key", "full form"])
+@pytest.mark.parametrize("carrier", ["squeezelite", "airplay"])
+async def test_saving_a_carrier_on_restores_the_output_cast_left_off(
+    full_form: bool, carrier: str
+) -> None:
+    """An unchanged output switch cannot override the default of its new carrier."""
+    device = _device(cast=True)
+    await device.switch(device.airplay, False)
+    await device.switch(device.squeezelite, False)
+    await device.attach(device.cast)
+    client_id = next(iter(device.outputs()))
+    assert device.state() == (None, client_id, "chromecast", "off-default")
+    device.timeline.clear()
+
+    await _save_player_config(device, carrier, True, full_form=full_form)
+
+    record = device.output()
+    assert record["enabled"] is True
+    assert CONF_SENDSPIN_CAST_OPT_IN not in record["values"]
+    assert CONF_PROTOCOL_OFF_BY_DEFAULT not in record["values"]
+    assert CONF_PROTOCOL_EXPERIMENTAL_NOTE not in record["values"]
+    assert record["values"][CONF_UNDERLYING_PLAYER_ID] == device.protocols[carrier].protocol_id
+    assert device.state() == (carrier, client_id, carrier, "on")
+    assert ("registered", "chromecast") not in device.timeline
+
+
+@pytest.mark.parametrize("full_form", [False, True], ids=["single key", "full form"])
+async def test_saving_the_cast_output_switch_respects_the_users_choice(full_form: bool) -> None:
+    """Switching the Cast output on opts in, and switching it off keeps the user's off."""
+    device = _device(airplay=False, squeezelite=False, cast=True)
+    await device.attach(device.cast)
+    client_id = next(iter(device.outputs()))
+    assert device.state() == (None, client_id, "chromecast", "off-default")
+
+    await _save_player_config(device, client_id, True, full_form=full_form)
+
+    record = device.output()
+    assert record["enabled"] is True
+    assert record["values"][CONF_SENDSPIN_CAST_OPT_IN] is True
+    assert CONF_PROTOCOL_OFF_BY_DEFAULT not in record["values"]
+    assert record["values"][CONF_UNDERLYING_PLAYER_ID] == CAST_ID
+    assert record["values"][CONF_PROTOCOL_EXPERIMENTAL_NOTE] == SENDSPIN_CAST_EXPERIMENTAL_NOTE
+    assert device.state() == ("chromecast", client_id, "chromecast", "on")
+    assert ("registered", "chromecast") in device.timeline
+    device.timeline.clear()
+
+    await _save_player_config(device, client_id, False, full_form=full_form)
+
+    record = device.output()
+    assert record["enabled"] is False
+    assert record["values"][CONF_SENDSPIN_CAST_OPT_IN] is True
+    assert CONF_PROTOCOL_OFF_BY_DEFAULT not in record["values"]
+    assert record["values"][CONF_UNDERLYING_PLAYER_ID] == CAST_ID
+    assert device.state() == (None, client_id, "chromecast", "off-user")
+    assert ("registered", "chromecast") not in device.timeline
+
+
+async def _save_player_config(
+    device: BridgedDevice, target: str, enabled: bool, *, full_form: bool
+) -> None:
+    """Save a protocol switch through the player API, optionally with every other switch."""
+    protocol_id = device.protocols[target].protocol_id if target in device.protocols else target
+    values = (
+        {
+            f"{pid}{CONF_PROTOCOL_KEY_SPLITTER}enabled": record.get("enabled", True)
+            for pid, record in device.records().items()
+        }
+        if full_form
+        else {}
+    )
+    values[f"{protocol_id}{CONF_PROTOCOL_KEY_SPLITTER}enabled"] = enabled
+
+    async def _protocol_changed(pid: str, changed_keys: set[str]) -> None:
+        await device.on_protocol_config_change(pid, changed_keys)
+        if "enabled" in changed_keys and device.records()[pid]["enabled"]:
+            domain = device.records()[pid]["provider"]
+            if domain != "sendspin":
+                await device.attach(device.protocols[domain])
+
+    def _attached_protocol(pid: str) -> Any:
+        protocol = device.mass.players.get_protocol(pid)
+        if protocol is not None:
+            protocol.protocol_id = pid
+        return protocol
+
+    # The harness supplies config entries and discovery; the save and bridge paths are real.
+    config = device.config
+    player_config = PlayerConfig.parse(
+        [], {"player_id": PLAYER_ID, "provider": "sendspin", "values": {}}
+    )
+    with (
+        patch.object(config.mass, "get_provider", device.mass.get_provider, create=True),
+        patch.object(config.mass.players, "get_protocol", _attached_protocol),
+        patch.object(config.mass.players, "on_protocol_config_change", _protocol_changed),
+        patch.object(config, "get_player_config", AsyncMock(return_value=player_config)),
+        patch.object(config, "get_primary_protocol_id", return_value=None),
+        patch.object(
+            config,
+            "get_protocol_config",
+            AsyncMock(
+                side_effect=lambda protocol: PlayerConfig.parse(
+                    [], device.records()[protocol.protocol_id]
+                )
+            ),
+        ),
+        patch.object(
+            config,
+            "_signal_player_config_updated",
+            side_effect=lambda _: device.mass.create_task(
+                bridge_manager.evaluate_bridges_of_player(device.mass, PLAYER_ID)
+            ),
+        ),
+    ):
+        await config.save_player_config(PLAYER_ID, values)
+        await device.settle()
 
 
 @pytest.mark.parametrize("taker", ["airplay", "squeezelite"])

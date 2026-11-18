@@ -1762,11 +1762,15 @@ class PlayerConfigMixin:
         # contradictory request (for example, enabling a derived protocol while disabling its
         # underlying player) from becoming order-dependent or leaving a partial update behind.
         for protocol_player_id, proto_values in protocol_values.items():
-            if not proto_values.get(CONF_ENABLED):
-                continue
             record = self.get_protocol_record(protocol_player_id)
-            if record is not None and record.get(CONF_ENABLED, True):
-                # a form sends every switch: one that is on already is not switched on
+            if (
+                record is not None
+                and CONF_ENABLED in proto_values
+                and bool(proto_values[CONF_ENABLED]) == bool(record.get(CONF_ENABLED, True))
+            ):
+                # An unchanged form switch must not override a default applied during this save.
+                proto_values.pop(CONF_ENABLED)
+            if not proto_values.get(CONF_ENABLED):
                 continue
             underlying_player_id = self.get_protocol_value(
                 protocol_player_id, CONF_UNDERLYING_PLAYER_ID
