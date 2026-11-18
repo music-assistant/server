@@ -30,8 +30,6 @@ class TimelineMixin:
         play_queue_version: int
         play_queue_item_ids: dict[int, int]
         _ma_player_id: str | None
-        headers: dict[str, str]
-        plex_server: Any
 
     def _resolve_plex_state(self, player: Any, queue: Any) -> str:
         """
@@ -229,72 +227,29 @@ class TimelineMixin:
                 if resp.status < 400:
                     subscription["last_update"] = time.time()
         except Exception as e:
-            LOGGER.debug(f"Failed to send timeline to {client_id}: {e}")
+            LOGGER.debug("Failed to send timeline to %s: %s", client_id, e)
 
-    async def _send_timeline_to_server(self) -> None:
-        """Send timeline update to Plex server for activity tracking."""
-        if not self._ma_player_id:
-            return
+    def _play_queue_params(self) -> dict[str, str]:
+        """
+        Return the timeline params that place the current track of the queue in its play queue.
 
-        try:
-            player = self.provider.mass.players.get_player(self._ma_player_id)
-            queue = self.provider.mass.players.get_active_queue(player) if player else None
-
-            if (
-                not player
-                or not queue
-                or not queue.current_item
-                or not queue.current_item.media_item
-            ):
-                return
-
-            track = queue.current_item.media_item
-
-            plex_key = plex_key_for_item(track, self.provider.instance_id)
-            if not plex_key:
-                return
-
-            rating_key = plex_key.split("/")[-1]
-
-            plex_state = self._resolve_plex_state(player, queue)
-
-            position_ms = round(queue.corrected_elapsed_time * 1000)
-            duration_ms = round(track.duration * 1000) if track.duration else 0
-
-            container_key = ""
-            play_queue_item_id = ""
-            # playQueueItemIDs are server-global, so a guessed one points at an unrelated item
-            if (
-                self.play_queue_id
-                and queue.current_index is not None
-                and (known_item_id := self.play_queue_item_ids.get(queue.current_index))
-            ):
-                container_key = f"/playQueues/{self.play_queue_id}"
-                play_queue_item_id = str(known_item_id)
-
-            params: dict[str, str] = {
-                "ratingKey": rating_key,
-                "key": plex_key,
-                "state": plex_state,
-                "time": str(position_ms),
-                "duration": str(duration_ms),
+        The Plex provider adds these to the playback it reports to the Plex server.
+        """
+        queue = (
+            self.provider.mass.player_queues.get(self._ma_player_id) if self._ma_player_id else None
+        )
+        # playQueueItemIDs are server-global, so a guessed one points at an unrelated item
+        if (
+            self.play_queue_id
+            and queue
+            and queue.current_index is not None
+            and (play_queue_item_id := self.play_queue_item_ids.get(queue.current_index))
+        ):
+            return {
+                "containerKey": f"/playQueues/{self.play_queue_id}",
+                "playQueueItemID": str(play_queue_item_id),
             }
-
-            if container_key:
-                params["containerKey"] = container_key
-            if play_queue_item_id:
-                params["playQueueItemID"] = play_queue_item_id
-
-            plex_server = self.plex_server
-            headers = self.headers
-
-            def send_timeline() -> None:
-                plex_server.query("/:/timeline", params=params, headers=headers)
-
-            await asyncio.to_thread(send_timeline)
-
-        except Exception as e:
-            LOGGER.debug(f"Failed to send timeline to Plex server: {e}")
+        return {}
 
     async def _broadcast_timeline(self) -> None:
         """Send timeline to all subscribed controllers."""
@@ -306,7 +261,7 @@ class TimelineMixin:
                 if current_time - last_update > 90:
                     stale_clients.append(client_id)
             except ValueError, TypeError:
-                LOGGER.debug(f"Invalid last_update for client {client_id}, treating as stale")
+                LOGGER.debug("Invalid last_update for client %s, treating as stale", client_id)
                 stale_clients.append(client_id)
 
         for client_id in stale_clients:

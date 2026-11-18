@@ -19,7 +19,10 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat, AudioSource
 
-from music_assistant.controllers.players.audio_sources import AudioSourceMixin, AudioSourceSession
+from music_assistant.controllers.players.audio_sources import (
+    AudioSourceSession,
+    PlayerAudioSourcesMixin,
+)
 from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.models.player import PlayerMedia
@@ -40,7 +43,7 @@ def _session(player_id: str = OWNER_ID) -> AudioSourceSession:
     )
 
 
-class _SessionStore(AudioSourceMixin):
+class _SessionStore(PlayerAudioSourcesMixin):
     """Real session bookkeeping for the mocked player controller."""
 
     def __init__(self) -> None:
@@ -217,9 +220,11 @@ async def test_http_output_is_registered_to_the_source_session(
         session,
         MagicMock(),
         provider,
+        "tok-1",
     )
 
     assert result == (response, "encoded-audio")
+    assert ctrl.audio.get_audio_source_stream.call_args.kwargs["stream_session_id"] == "tok-1"
     ctrl.audio.get_player_output_plan.assert_called_once_with(
         protocol_id=player.protocol_id,
         input_format=pcm_format,

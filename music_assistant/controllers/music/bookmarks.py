@@ -61,13 +61,22 @@ class BookmarksController:
         """Initialize the bookmarks controller."""
         self.mass = mass
         self.mass.register_api_command(
-            "music/bookmarks", self.bookmarks, required_scope=Scope.LIBRARY_READ
+            "music/bookmarks",
+            self.bookmarks,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
-            "music/set_bookmark", self.set_bookmark, required_scope=Scope.LIBRARY_WRITE
+            "music/set_bookmark",
+            self.set_bookmark,
+            required_scope=Scope.LIBRARY_WRITE,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
-            "music/remove_bookmark", self.remove_bookmark, required_scope=Scope.LIBRARY_WRITE
+            "music/remove_bookmark",
+            self.remove_bookmark,
+            required_scope=Scope.LIBRARY_WRITE,
+            allow_impersonation=True,
         )
 
     async def bookmarks(
@@ -285,11 +294,15 @@ class BookmarksController:
             library_item = await self.mass.music.audiobooks.get_library_item_by_prov_id(
                 mapping_item_id, provider_instance_id
             )
+        # a library row that only holds a dislike, or keeps the metadata of a copy its provider
+        # dropped from the library, is not in the library
         mapping = next(
             (
                 x
                 for x in (library_item.provider_mappings if library_item else ())
-                if x.provider_instance == provider_instance_id and x.item_id == mapping_item_id
+                if x.provider_instance == provider_instance_id
+                and x.item_id == mapping_item_id
+                and x.in_library
             ),
             None,
         )

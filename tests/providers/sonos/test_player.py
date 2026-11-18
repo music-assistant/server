@@ -26,12 +26,14 @@ from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import AnnouncementFeature
 from music_assistant.providers.sonos.const import (
     PLAYER_SOURCE_MAP,
+    SOURCE_AIRPLAY,
     SOURCE_LINE_IN,
     SOURCE_SPOTIFY,
 )
 from music_assistant.providers.sonos.player import SonosPlayer, _is_wakeable
 
 if TYPE_CHECKING:
+    from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
     from aiosonos.api.models import PlaybackActions as PlaybackActionsData
 
 
@@ -64,10 +66,21 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._flow_queue_id = None
     player._queue_session_id = None
     player._hand_over_tasks = set()
+    player._airplay_rejoin_members = set()
+    player._own_airplay_session = False
+    player._reported_bonded_ids = set()
     player.upnp = MagicMock(
         follow=AsyncMock(), unfollow=AsyncMock(), follows=False, player_ip="192.168.1.20"
     )
     player._attr_options = []
+    player.discovery_info = cast(
+        "SonosDiscoveryInfo",
+        {"device": {"modelDisplayName": "Era 100", "capabilities": ["PLAYBACK"]}},
+    )
+    client.player.has_subwoofer = False
+    client.player.has_surrounds = False
+    client.player.is_stereo_pair = False
+    client.player.bonded_player_ids = []
     player.client = client
     player._provider = MagicMock(get_protocol=lambda pid: player.mass.players.get_protocol(pid))
     player._on_detach_callbacks = []
@@ -158,6 +171,51 @@ async def test_connect_timeout_reschedules_reconnect() -> None:
     args, _ = mass.call_later.call_args
     assert args[0] == min(30 + 30, 3600)
     assert args[1] == player._connect
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_on_fail", [3590, 3600])
+async def test_connect_timeout_caps_reconnect_delay(retry_on_fail: int) -> None:
+    """Test repeated timeouts never increase the retry delay beyond one hour."""
+    player, mass = _make_player()
+    player.client.connect = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ConnectionTimeoutError("Connection timeout to host https://x:1443")
+    )
+
+    await player._connect(retry_on_fail=retry_on_fail)
+
+    mass.call_later.assert_called_once()
+    args, _ = mass.call_later.call_args
+    assert args[0] == 3600
+    assert args[1] == player._connect
+    assert args[2] == 3600
+
+
+@pytest.mark.asyncio
+async def test_cancelled_connect_propagates_without_reconnecting() -> None:
+    """Test cancellation during a connection attempt does not schedule a retry."""
+    player, mass = _make_player()
+    player.client.connect = AsyncMock(side_effect=asyncio.CancelledError())  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await player._connect(retry_on_fail=30)
+
+    mass.call_later.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_connect_during_shutdown_does_not_contact_player() -> None:
+    """Test shutdown prevents a pending connection attempt from contacting the speaker."""
+    player, mass = _make_player()
+    mass.closing = True
+    player.client.connect = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ConnectionTimeoutError("Connection timeout to host https://x:1443")
+    )
+
+    await player._connect(retry_on_fail=30)
+
+    player.client.connect.assert_not_awaited()
+    mass.call_later.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -271,23 +329,32 @@ async def test_on_detach_cancels_a_scheduled_options_read(timer_mass: MusicAssis
 
 
 @pytest.mark.asyncio
-async def test_on_unload_cancels_a_scheduled_airplay_group_restore(
+async def test_on_unload_cancels_a_running_airplay_group_restore(
     timer_mass: MusicAssistant,
 ) -> None:
-    """Test the AirPlay group restore scheduled for a player does not run after the unload."""
+    """Test the AirPlay group restore of a player stops listening for its members on unload."""
     player, client = _bind_player(timer_mass)
     player._attr_name = "Sonos Player"
+    player.connected = True
     client.player.is_coordinator = True
     client.player.group_members = [player.protocol_id, "sonos_player_2"]
-    output_protocol = MagicMock()
-    output_protocol.protocol_domain = "airplay"
+    client.api.groups.get_groups = AsyncMock()
+    timer_mass.players = MagicMock()
+    timer_mass.players.get_protocol.return_value = None
+    # an AirPlay session that already renders: the members stay in the group
+    airplay_player = MagicMock(playback_state=PlaybackState.PLAYING)
+    player._airplay_output = lambda: airplay_player  # type: ignore[method-assign]
 
-    await player.on_protocol_playback(output_protocol)
-    handle = timer_mass._tracked_timers[f"restore_airplay_group_{player.protocol_id}"]
+    async with player.prepare_play_media():
+        pass
+    task = timer_mass._tracked_tasks[f"restore_airplay_group_{player.protocol_id}"]
 
     await player.on_detach()
 
-    assert handle.cancelled()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    client.subscribe.return_value.assert_called_once_with()
+    assert timer_mass._tracked_tasks == {}
     assert timer_mass._tracked_timers == {}
 
 
@@ -342,30 +409,37 @@ async def test_on_unload_cancels_every_pending_hand_over_of_a_moved_group(
 
 
 @pytest.mark.asyncio
-async def test_sendspin_bridge_over_airplay_schedules_the_airplay_group_restore(
-    timer_mass: MusicAssistant,
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        (OutputProtocol(output_protocol_id="ap", name="AirPlay", protocol_domain="airplay"), "ap"),
+        (
+            OutputProtocol(
+                output_protocol_id="bridge",
+                name="Sendspin",
+                protocol_domain="sendspin",
+                derived_from="ap",
+            ),
+            "ap",
+        ),
+        (OutputProtocol(output_protocol_id="dlna", name="DLNA", protocol_domain="dlna"), None),
+    ],
+)
+async def test_airplay_output_is_the_airplay_protocol_the_active_output_plays_over(
+    timer_mass: MusicAssistant, output: OutputProtocol, expected: str | None
 ) -> None:
-    """Test a Sendspin bridge riding on the AirPlay output also schedules the group restore."""
-    player, client = _bind_player(timer_mass)
-    player._attr_name = "Sonos Player"
-    client.player.is_coordinator = True
-    client.player.group_members = [player.protocol_id, "sonos_player_2"]
+    """Test AirPlay is found as the active output and as the base of a derived transport."""
+    player, _ = _bind_player(timer_mass)
     airplay_player = MagicMock()
     airplay_player.provider.domain = "airplay"
+    player._player = MagicMock(active_output_protocol=output.output_protocol_id)
+    player._player.get_linked_protocol.return_value = output
     timer_mass.players = MagicMock()
     timer_mass.players.get_protocol.side_effect = lambda pid: (
-        airplay_player if pid == "airplay_player" else None
-    )
-    output_protocol = OutputProtocol(
-        output_protocol_id="sendspin_bridge",
-        name="Sendspin",
-        protocol_domain="sendspin",
-        derived_from="airplay_player",
+        airplay_player if pid == "ap" else None
     )
 
-    await player.on_protocol_playback(output_protocol)
-
-    assert f"restore_airplay_group_{player.protocol_id}" in timer_mass._tracked_timers
+    assert player._airplay_output() is (airplay_player if expected else None)
 
 
 @pytest.mark.asyncio
@@ -1099,6 +1173,93 @@ def test_a_service_we_did_not_map_leaves_the_source_list_when_it_is_given_up_on(
 
     assert player._attr_active_source is None
     assert player.source_list == [PLAYER_SOURCE_MAP[SOURCE_LINE_IN]]
+
+
+def _report_airplay(
+    player: SonosPlayer, client: MagicMock, state: SonosPlayBackState, *, our_output: bool
+) -> None:
+    """Let the speaker report an AirPlay session, with or without our AirPlay output on it."""
+    group = client.player.group
+    group.playback_state = state
+    group.position = 0.0
+    group.container_type = ContainerType.AIRPLAY
+    group.active_service = None
+    group.playback_metadata = {
+        "container": {"name": "AirPlay", "type": "linein.airplay", "service": {"name": "Airplay"}}
+    }
+    group.playback_actions = _actions({})
+    player._airplay_output = MagicMock(  # type: ignore[method-assign]
+        return_value=MagicMock() if our_output else None
+    )
+    player.on_player_event(None)
+
+
+def _speaker_on_airplay() -> tuple[SonosPlayer, MagicMock]:
+    """Create a connected player that coordinates a group of its own."""
+    player, _, client = _connected_player()
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    return player, client
+
+
+def test_our_stopped_airplay_session_is_reported_idle_without_a_source() -> None:
+    """Test the paused AirPlay session the speaker keeps after our stream stopped is not a source."""
+    player, client = _speaker_on_airplay()
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=True)
+
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PAUSED, our_output=False)
+
+    assert player._attr_playback_state is PlaybackState.IDLE
+    assert player._attr_active_source is None
+
+
+def test_an_airplay_sender_of_its_own_is_reported_as_the_airplay_source() -> None:
+    """Test a phone that starts AirPlay on the speaker shows as source AirPlay."""
+    player, client = _speaker_on_airplay()
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=True)
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PAUSED, our_output=False)
+
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=False)
+
+    assert (player._attr_playback_state, player._attr_active_source) == (
+        PlaybackState.PLAYING,
+        SOURCE_AIRPLAY,
+    )
+
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PAUSED, our_output=False)
+
+    assert (player._attr_playback_state, player._attr_active_source) == (
+        PlaybackState.PAUSED,
+        SOURCE_AIRPLAY,
+    )
+
+
+def test_a_sender_that_takes_over_while_we_stream_keeps_the_session_ours() -> None:
+    """Test a phone that takes the speaker over mid-stream is not told apart from our stream."""
+    player, client = _speaker_on_airplay()
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=True)
+    # the speaker keeps playing through the takeover and our output stays the active one
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=True)
+
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PAUSED, our_output=True)
+
+    assert player._attr_playback_state is PlaybackState.IDLE
+    assert player._attr_active_source is None
+
+
+def test_other_speaker_events_keep_our_airplay_session() -> None:
+    """Test an event that leaves the playback alone, such as a volume change, keeps our session."""
+    player, client = _speaker_on_airplay()
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=True)
+    # our stream ends before the speaker reports its pause
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=False)
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PAUSED, our_output=False)
+
+    client.player.volume_level = 12
+    player.on_player_event(None)
+
+    assert player._attr_playback_state is PlaybackState.IDLE
+    assert player._attr_active_source is None
 
 
 def _wakeable_player() -> tuple[SonosPlayer, MagicMock]:

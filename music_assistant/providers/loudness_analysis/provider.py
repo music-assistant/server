@@ -10,7 +10,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, VolumeNormalizationMode
+from music_assistant_models.enums import ConfigEntryType, MediaType, VolumeNormalizationMode
 
 from music_assistant.constants import LOUDNESS_MEASUREMENT_MIN_LUFS
 from music_assistant.controllers.streams.audio_analysis import PROVIDER_LOUDNESS_DOMAIN
@@ -56,6 +56,10 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider that measures EBU R128 integrated loudness."""
 
     analysis_version: int = 2
+    # every media type the playback buffer hands to analysis
+    media_types = frozenset(
+        {MediaType.TRACK, MediaType.RADIO, MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE}
+    )
 
     def __init__(
         self,

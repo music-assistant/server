@@ -65,6 +65,15 @@ if interrupted:
     sys.stdout.flush()
 """
 
+# Exits once its stdin closes, like ffmpeg at the end of its input, but only after a
+# pause and after writing more to stdout than the pipe and asyncio's read buffer hold
+# together: unless something reads its stdout, it blocks on the full pipe instead of
+# exiting.
+_FLUSH_ON_EOF_CHILD = (
+    "import sys, time; sys.stdin.read(); time.sleep(0.3); "
+    "sys.stdout.write('x' * 2000000); sys.stdout.flush()"
+)
+
 
 @pytest.mark.parametrize("timeout", [False, True])
 async def test_communicate_releases_streams(timeout: bool) -> None:
@@ -563,6 +572,34 @@ async def test_close_reaps_a_child_while_its_attached_stderr_reader_is_blocked(
 
     assert proc.returncode == -SIGKILL
     assert reader.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_close_cancelled_mid_drain_does_not_wait_out_its_stderr_reader() -> None:
+    """
+    Cancellation landing on the stdout drain does not leave close() waiting on stderr.
+
+    An attached stderr reader only ends once the child exits, which a child with
+    output left to write cannot do while nothing reads its stdout: waiting for that
+    reader first spends the whole release budget on a child the reap ends at once.
+    """
+    proc = AsyncProcess(
+        [sys.executable, "-c", _FLUSH_ON_EOF_CHILD], stdin=True, stdout=True, stderr=True
+    )
+    await proc.start()
+    reader = asyncio.create_task(_collect_lines(proc.iter_stderr(), [], asyncio.Event()))
+    proc.attach_stderr_reader(reader)
+    started = time.monotonic()
+
+    # the child writes nothing before its pause is over, so the cancellation lands on
+    # the stdout drain
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.1):
+            await proc.close()
+
+    # far below STREAM_RELEASE_TIMEOUT, and with its output read the child exits by itself
+    assert time.monotonic() - started < 2.5
+    assert proc.returncode == 0
 
 
 @pytest.mark.asyncio

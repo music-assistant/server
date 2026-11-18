@@ -21,8 +21,12 @@ tests of the harness itself.
   one protocol per domain), with as many instances as the real domain allows.
 - **Devices**: `provider.protocol(...)` creates a device and its `FakeProtocol`. The scenario
   sets what it reports; its commands are recorded in `protocol.commands` and applied to its
-  state. A device that a leader adds to its group (`set_members`) leaves the group it was in,
-  as a real one does; `native_grouping_requires_own_stream` is reported like any other state. `role="native"`, `"audio"`, `"control"` or `"virtual"` (a group) stands for the role of
+  state. What the server tells it about the power of its device (`on_power_cut`,
+  `on_power_restored`) is recorded in `protocol.power_reports`, and with
+  `protocol.connects_when_power_is_back` set the protocol reads available once it is told that
+  the power is back. With `protocol.detach_time` set, its detach takes that long on the clock, as
+  one that closes a connection to its device. A device that a leader adds to its group (`set_members`) leaves the group it was in,
+  as a real one does, and a device told to play media reports its position from 0 at that moment; `native_grouping_requires_own_stream` is reported like any other state. `role="native"`, `"audio"`, `"control"` or `"virtual"` (a group) stands for the role of
   the protocol on its device, `session_only=True` for a protocol that reports it exists only
   while attached (a browser session). Every fake protocol has one config entry of its own,
   `FAKE_SETTING`, like a provider setting of the device. A device is present from `register()`
@@ -38,7 +42,8 @@ tests of the harness itself.
   restart.
 - **Time**: a virtual clock, starting at 1000.0. It stands still, also while the server works,
   and only moves through `advance(seconds)`, which stops at every timer that falls due on the way
-  (the 15 s an audio protocol waits for the hardware address of its device, debounces, polls),
+  (the 15 s an audio protocol waits for the hardware address of its device, the start-up time
+  of a player whose power control was switched on, debounces, polls),
   and `idle()`, which lets 10 s pass for the server's debounces and follow-up checks and fails
   (`ScenarioError`) when the server still has work due within as long or a protocol evaluation
   pending at all, which a scenario lets happen with `advance()`.
@@ -47,7 +52,7 @@ tests of the harness itself.
 - **Settling**: every action runs what is due at the current time until the loop is quiet:
   nothing runnable, no timer due, no work in a thread. What the server put on a timer only runs
   as the clock moves, so assert steady state, or that something did not happen, after `idle()`.
-  A server call that waits for the clock (a timeout, a delay, a device to come online) never
+  A server call that waits for the clock (a timeout, a delay, a player that starts up) never
   returns when it is awaited directly: run it with `command()`, move the clock, and await the
   task once it is done.
 - **Failures**: when the scenario closes, it fails (`ScenarioError`) on every warning or worse
@@ -62,7 +67,7 @@ tests of the harness itself.
 | `register(protocol, role=None)`, `unregister(protocol)` | the provider found the device (again, possibly in a new role), or lost it |
 | `report(protocol, **state)` | the device reports new state (`available`, `powered`, `identifiers`, ...); a None identifier value drops it |
 | `remove(player_id)`, `enable(id)`, `disable(id)`, `configure_player(id, **values)` | what a user does with a player |
-| `add_power_control(id, name)`, `switch(control, powered)` | an external power control (select it with `configure_player(id, power_control=...)`), switched by hand |
+| `add_power_control(id, name)`, `switch(control, powered)` | an external power control (select it with `configure_player(id, power_control=...)`, and say that it cuts the power of the player with `configure_player(id, power_control_cuts_power=True)` after that), switched by hand |
 | `play(player_id)` | play a track on the player through its queue, as a client does; returns once the player reports playing |
 | `command(coro)` | run a server call that may wait for the clock in the background; await the task once it is done |
 | `advance(seconds)`, `idle()`, `settle()` | let time pass, let the debounces run, run what is due now |

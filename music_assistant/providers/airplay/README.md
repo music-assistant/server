@@ -347,6 +347,24 @@ When adding a player to an already-playing session (`add_client()` in [stream_se
 
 **Note**: The projection can only push a joiner's anchor later, never earlier — `AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS` is the floor, and the one the anchor rests on whenever no projection arrives or the projection does not clear it. The binary also runs a post-commit clock verification that can pull an anchor forward, but it only arms when the receiver has still not probed by the time it reads the START, and only for an anchor that clears the receiver queue depth plus 500 ms. The deeper defaults in `AIRPLAY_BUFFER_DEPTH_DEFAULTS` ([constants.py](constants.py)) reach past ~2 s of effective depth, where a joiner's anchor no longer clears that — by design: the queue starts releasing frames one depth *before* the anchor, and a line with audio on the wire cannot move.
 
+**Stalled joiners**: A joiner whose receiver never answers the server's PTP clock renders silence, so it is removed from the session again (`remove_stalled_joiner()`) and the group plays on without it. The binary only reports that stall (`state=stalled`) at least five seconds after the join's START, well after the join is in place, so the removal follows the report rather than holding up the join.
+
+### Stalled Source Recovery
+
+When the audio source stalls, every member's binary recovers from the dry feed on its own.
+A realtime member pads silence and shifts its playout later by about its queue depth
+minus 250 ms (reported as `[STATUS] REANCHOR`); a buffered member keeps its timeline.
+So members on different routes or queue depths come out of a stall on different
+timelines.
+
+The session therefore compares the members' shifts once the stall is over
+(`AIRPLAY_STALL_SETTLE_SECONDS` after the last report). When they differ by more than
+`AIRPLAY_STALL_SHIFT_TOLERANCE_MS`, it restarts the playback at the current position
+through the players controller, the same flush and shared start as a seek. Members that
+shifted alike stay in sync and are left alone. A late joiner counts from the group shift
+it was mapped onto. Restarts back off (`AIRPLAY_STALL_RESYNC_HOLDOFF`, doubling), so a
+source that keeps stalling cannot restart the group in a loop.
+
 ## DACP (Digital Audio Control Protocol)
 
 ### Purpose
@@ -612,7 +630,7 @@ keeps the way they are combined with the other protocols of the device stable.
 ### General
 - **`password`**: Device password, stored encrypted (hidden). It is entered through the player's setup flow, not the settings form: a device that announces password protection without one stored - or that rejects the stored one - is marked as needing setup, which offers the password step again
 - **`ignore_volume`**: Ignore device volume reports (default: false)
-- **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; negative = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead is handled automatically by the binary.
+- **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; positive = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead is handled automatically by the binary.
 - **`buffer_depth`**: Advanced per-player override of how much audio the receiver keeps queued ahead of playback, in milliseconds. Defaults to the depth the device's family needs, or Automatic when no family matches; Automatic resolves through that same table at stream time, so it never downgrades an affected device. Receivers whose internal pipeline starves at the shallow default render nothing behind an otherwise healthy session, and deepening their queue is what makes them play. Applies to the AirPlay 2 route only - a player forced to RAOP keeps the binary's own depth. The cost is the delay under Known Issues below
 
 ### Pairing
@@ -685,7 +703,7 @@ AirPlay players can be bridged to the Sendspin protocol, enabling cross-protocol
 
 ### How It Works
 
-When the Sendspin provider is enabled, each AirPlay player is automatically registered as an external Sendspin client:
+When the Sendspin provider is enabled, an AirPlay player is registered as an external Sendspin client while its AirPlay connection carries the Sendspin output of its player (a squeezelite connection of the same speaker comes first; see the bridge section of the Sendspin README):
 
 1. **Registration**: The bridge registers the AirPlay player with the Sendspin server using the device's MAC address as the `client_id`
 2. **Protocol Linking**: The bridge's Sendspin protocol rides on the AirPlay protocol, so the player controller attaches it to the player the AirPlay protocol belongs to
@@ -727,7 +745,7 @@ The group re-join recovery in `stream.py` only covers native AirPlay grouping �
 
 ### Stalled Receiver Clocks
 
-A receiver that never answers the server's PTP clock renders silence. The bridge warns and anchors anyway, which follows a native group start rather than a late joiner: a joiner is dropped because the session plays on without it, whereas here dropping would stop the speaker — and a stall is not evidence enough for that. The binary reports it as a diagnosis rather than a verdict (a receiver that begins probing late reports probing and then ready as usual) and re-arms that reporting on every `FLUSH` and `START`, while the server latches the last reading it parsed — `state=cold` lines carry no projection and are dropped. The re-armed report waits on the audio loop's next pass, which the flush ack ordinarily beats, so a warm re-anchor is reading the cycle before it. Nothing is lost by that: a flush leaves the receiver's clock alone, so the projection still describes the same acquisition and the anchor is right to sit past it whether or not that instant has arrived; for a receiver that is not answering, that reading is the only evidence there is. Nor is this the give-up case above: the transport is healthy, so the bridge stays in its Sendspin session and the stall reaches the user through the warning the binary's report raises, which names the device and the UDP ports to check.
+A receiver that never answers the server's PTP clock renders silence. The bridge anchors anyway, which follows a native group start rather than a late joiner: a joiner is dropped because the session plays on without it, whereas here dropping would stop the speaker — and a stall is not evidence enough for that. The binary reports it as a diagnosis rather than a verdict (a receiver that begins probing late reports probing and then ready as usual) and re-arms that reporting on every `FLUSH` and `START`, while the server latches the last reading it parsed — `state=cold` lines carry no projection and are dropped. The re-armed report waits on the audio loop's next pass, which the flush ack ordinarily beats, so a warm re-anchor is reading the cycle before it. Nothing is lost by that: a flush leaves the receiver's clock alone, so the projection still describes the same acquisition and the anchor is right to sit past it whether or not that instant has arrived; for a receiver that is not answering, that reading is the only evidence there is. Nor is this the give-up case above: the transport is healthy, so the bridge stays in its Sendspin session and the stall reaches the user through the warning the binary's report raises once per stream, which names the device and the UDP ports to check.
 
 The binary diagnoses a stall deliberately more slowly than it projects readiness (see `AIRPLAY_CLOCK_READY_TIMEOUT_MS`), so a cold start reads `UNREPORTED` and anchors without a projection; a stall is what a warm re-anchor sees. Either way the receiver has not probed, so the post-commit clock verification described under Late Join Support arms wherever the anchor clears the receiver queue depth, and holds the join's `started` ack until it gives up short of the commanded anchor — bounded by that anchor, and well inside `AIRPLAY_JOIN_START_ACK_TIMEOUT_MS`.
 

@@ -663,7 +663,8 @@ class AlbumsController(MediaControllerBase[Album]):
 
         :param release_group_id: MusicBrainz release group id.
         :param allow_update_metadata: Whether the album's metadata may be refreshed on the way.
-        :raises ProviderUnavailableError: The MusicBrainz provider is not loaded.
+        :raises ProviderUnavailableError: The MusicBrainz provider is not loaded, or the
+            album was not found while a music provider was unavailable.
         :raises MediaNotFoundError: None of the user's music providers has the album.
         :raises ResourceTemporarilyUnavailable: The album was not found while a music
             provider or MusicBrainz could not answer.
@@ -674,13 +675,14 @@ class AlbumsController(MediaControllerBase[Album]):
             raise ProviderUnavailableError("MusicBrainz is not available")
         # a heavily reissued album has more editions than one page holds, of which the
         # likeliest few are wanted rather than the whole set
-        editions = [
-            release
-            for release in await musicbrainz.browse_releases_by_release_group(
-                release_group_id, complete=False
-            )
-            if release.status == "Official"
-        ]
+        with self._musicbrainz_request():
+            editions = [
+                release
+                for release in await musicbrainz.browse_releases_by_release_group(
+                    release_group_id, complete=False
+                )
+                if release.status == "Official"
+            ]
         # the digital editions of one group carry different ids on the providers, so each
         # edition's own links and barcode are tried, never those of the whole group; the
         # editions linked to the user's own services go first, as only those resolve by link
@@ -702,7 +704,8 @@ class AlbumsController(MediaControllerBase[Album]):
         could_not_answer: MusicAssistantError | None = None
         for edition in ranked[:_MAX_EDITION_LOOKUPS]:
             try:
-                release = await musicbrainz.get_release_details(edition.id)
+                with self._musicbrainz_request():
+                    release = await musicbrainz.get_release_details(edition.id)
             except InvalidDataError as err:
                 # a stale edition costs nothing but its turn
                 self.logger.debug("Release %s could not be looked up: %s", edition.id, err)
@@ -791,7 +794,8 @@ class AlbumsController(MediaControllerBase[Album]):
         ]
         async with self.mass.music.database.deferred_commit():
             if release is not None:
-                await self._link_tracks_to_release(album, db_tracks, release)
+                merged = await self._link_tracks_to_release(album, db_tracks, release)
+                db_tracks = [x for x in db_tracks if x.item_id not in merged]
             if not link_providers:
                 return
             for domain, mapping in album_mappings.items():
@@ -1200,7 +1204,7 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def _link_tracks_to_release(
         self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease
-    ) -> None:
+    ) -> set[str]:
         """Fill the recording ids and ISRCs of a release in on the library tracks at its positions."""
         recordings = {
             (medium.position, track.position): track.recording
@@ -1209,7 +1213,10 @@ class AlbumsController(MediaControllerBase[Album]):
             if track.position and track.recording
         }
         in_order = await self._recordings_in_order(album, db_tracks, release)
+        merged: set[str] = set()
         for db_track in db_tracks:
+            if db_track.item_id in merged:
+                continue
             if (recording := in_order.get(db_track.item_id)) is None:
                 # a digital release stores its single disc as disc 0 or 1
                 recording = recordings.get((db_track.disc_number or 1, db_track.track_number))
@@ -1219,7 +1226,9 @@ class AlbumsController(MediaControllerBase[Album]):
             if not changed and db_track.metadata.last_musicbrainz_lookup is not None:
                 continue
             db_track.metadata.last_musicbrainz_lookup = int(time())
+            merged |= await self.mass.music.tracks.merge_recording_duplicates(db_track)
             await self.mass.music.tracks.update_item_in_library(db_track.item_id, db_track)
+        return merged
 
     async def _recordings_in_order(
         self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease
@@ -1489,7 +1498,8 @@ class AlbumsController(MediaControllerBase[Album]):
         if musicbrainz is None:
             raise ProviderUnavailableError("MusicBrainz is not available")
         try:
-            release = await musicbrainz.get_release_details(release_id)
+            with self._musicbrainz_request():
+                release = await musicbrainz.get_release_details(release_id)
         except InvalidDataError as err:
             self.logger.debug("Release %s could not be looked up: %s", release_id, err)
             return None
@@ -1594,8 +1604,12 @@ class AlbumsController(MediaControllerBase[Album]):
                     candidate.provider_instance,
                     err,
                 )
-                if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
-                    could_not_answer = err
+                provider = self.mass.get_provider(
+                    candidate.provider_instance, return_unavailable=True
+                )
+                source = provider.name if provider else candidate.provider_instance
+                if unanswered := self._unanswered_lookup_error(err, source):
+                    could_not_answer = unanswered
         if could_not_answer is not None:
             raise could_not_answer
         return None

@@ -117,7 +117,7 @@ class Audibleprovider(MusicProvider):
                     else:
                         self.logger.warning("Cannot refresh: missing refresh_token or locale")
                 except Exception as refresh_error:
-                    self.logger.warning(f"Token refresh failed: {refresh_error}")
+                    self.logger.warning("Token refresh failed: %s", refresh_error)
                     if not has_signing_auth:
                         # Only fail if we don't have signing auth as fallback
                         raise LoginFailed(
@@ -142,7 +142,7 @@ class Audibleprovider(MusicProvider):
         except LoginFailed:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to authenticate with Audible: {e}")
+            self.logger.error("Failed to authenticate with Audible: %s", e)
             raise LoginFailed(f"Failed to authenticate with Audible: {e}") from e
 
     @property

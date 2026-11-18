@@ -75,6 +75,16 @@ from .events import ProviderEventRecorder
 AMSTERDAM = ZoneInfo("Europe/Amsterdam")
 
 
+@pytest.fixture(autouse=True)
+def resolved_ai_engine(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """Resolve no AI engine, so a failed generation names the configured one."""
+    resolve = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.rendering.resolve_ai_engine_setting", resolve
+    )
+    return resolve
+
+
 class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
     """Minimal harness exposing the render path."""
 
@@ -84,6 +94,8 @@ class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
     def __init__(self) -> None:
         """Initialize the harness with recording stubs."""
         self.logger = logging.getLogger("tests.ai_radio.rendering")
+        # tests that need the server give it the attributes they use
+        self.mass: Any = SimpleNamespace()
         self._hosts: dict[str, dict[str, Any]] = {}
         self._dj_queues: dict[str, DJQueueState] = {}
         self.paused: list[tuple[str, str]] = []
@@ -814,6 +826,24 @@ async def test_ai_and_tts_failures_count_alike(caplog: pytest.LogCaptureFixture)
     warnings = _pause_warnings(caplog)
     assert len(warnings) == 1
     assert "AI engine 'engine-x'" in warnings[0]
+
+
+async def test_a_failed_generation_names_the_engine_it_resolved(
+    caplog: pytest.LogCaptureFixture, resolved_ai_engine: AsyncMock
+) -> None:
+    """The pause names the engine the setting resolved to, such as the default engine."""
+    resolved_ai_engine.return_value = SimpleNamespace(uid="openai--1/gpt")
+    renderer, state = _failing_dj_renderer(3)
+    renderer.fail_tts = False
+    renderer.fail_generation = True
+
+    with caplog.at_level(logging.WARNING, logger="tests.ai_radio.rendering"):
+        await _fail_renders(renderer, "djlive_001", "djlive_002", "djlive_003")
+
+    assert state.render_health.cooling_down(asyncio.get_running_loop().time())
+    warnings = _pause_warnings(caplog)
+    assert len(warnings) == 1
+    assert "AI engine 'openai--1/gpt'" in warnings[0]
 
 
 async def test_a_failure_after_the_cool_down_restarts_it(caplog: pytest.LogCaptureFixture) -> None:

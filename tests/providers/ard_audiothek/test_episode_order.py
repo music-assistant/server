@@ -32,7 +32,9 @@ def _provider(episodes: list[dict[str, Any]]) -> ARDAudiothek:
     config.get_value.side_effect = lambda key, default=None: (
         "INFO" if key == "log_level" else default
     )
-    provider = ARDAudiothek(Mock(), Mock(domain="ard_audiothek"), config, SUPPORTED_FEATURES)
+    provider = ARDAudiothek(
+        Mock(), Mock(domain="ard_audiothek", features=set()), config, SUPPORTED_FEATURES
+    )
 
     async def _execute(query: Any) -> dict[str, Any]:
         if query is show_length_query:
@@ -44,6 +46,8 @@ def _provider(episodes: list[dict[str, Any]]) -> ARDAudiothek:
     session = Mock(execute=AsyncMock(side_effect=_execute))
     client = Mock(__aenter__=AsyncMock(return_value=session), __aexit__=AsyncMock())
     provider.get_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
+    provider._asset_ids = {}
+    provider._durations = {}
     provider._update_progress = AsyncMock()  # type: ignore[method-assign]
     provider._get_progress = Mock(return_value=(False, 0))  # type: ignore[method-assign]
     return provider

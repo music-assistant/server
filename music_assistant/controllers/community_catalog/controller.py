@@ -18,7 +18,6 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.community_catalog.constants import (
@@ -49,10 +48,12 @@ from music_assistant.controllers.community_catalog.models import (
 from music_assistant.controllers.community_catalog.store import CatalogStore
 from music_assistant.controllers.community_catalog.versions import VersionChanger
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.provider_manifest import read_manifest_file
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
+    from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
 
@@ -462,7 +463,7 @@ class CommunityCatalogController(CoreController):
             self._decisions[domain] = decision
             self._folder_hashes[domain] = folder_hash
             if decision.verdict == Verdict.LOAD:
-                providers[str(folder)] = await ProviderManifest.parse(str(folder / "manifest.json"))
+                providers[str(folder)] = (await read_manifest_file(folder / "manifest.json"))[0]
             elif decision.verdict != Verdict.SWITCH:
                 self.logger.warning(
                     "Not loading community provider %s: %s",
@@ -481,7 +482,7 @@ class CommunityCatalogController(CoreController):
         :param installed: What was installed.
         :param folder_hash: The content hash of the live folder before.
         """
-        # evaluate only asks for this with an entry in the index of this server's line
+        # evaluate only asks for this with an entry in the index of this server's channel
         assert self._store.index is not None
         entry = self._store.index.providers[domain]
         self.logger.info("Installing community provider %s again: its files changed", domain)

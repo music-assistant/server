@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderTier
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.controllers.community_catalog.gate import Verdict
 from music_assistant.controllers.community_catalog.models import (
@@ -13,12 +12,14 @@ from music_assistant.controllers.community_catalog.models import (
     CommunityProviderState,
     IndexStatus,
 )
+from music_assistant.helpers.provider_manifest import manifest_from_dict, read_manifest_file
 from music_assistant.helpers.util import set_provider_tier
 
 if TYPE_CHECKING:
     import logging
 
     from music_assistant_models.config_entries import ProviderError
+    from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.controllers.community_catalog.gate import Decision
     from music_assistant.controllers.community_catalog.installer import Installer
@@ -46,7 +47,7 @@ def installed_provider(
     :param installed: What was installed.
     :param manifest: Its manifest, as installed_manifest returns it.
     :param entry: The provider in the kept copy of the index.
-    :param own_entry: The provider in the index of this server's line.
+    :param own_entry: The provider in the index of this server's channel.
     :param decision: Whether it loads, None when it was not decided.
     :param update: The version the kept copy of the index offers to change to, if any.
     :param error: Why it does not load, as its settings entries show it.
@@ -114,7 +115,7 @@ async def installed_manifest(
             return manifest
     folder = installer.live_folder(domain)
     try:
-        manifest = await ProviderManifest.parse(str(folder / "manifest.json"))
+        manifest = (await read_manifest_file(folder / "manifest.json"))[0]
         set_provider_tier(manifest, ProviderTier.COMMUNITY)
     except (OSError, ValueError, LookupError) as err:
         # the live folder is gone or broken when installing it again failed
@@ -138,7 +139,7 @@ def available_provider(
     if (latest := entry.offered_version) is None:
         return None
     try:
-        manifest = ProviderManifest.from_dict(entry.manifest)
+        manifest = manifest_from_dict(entry.manifest)[0]
     except (ValueError, LookupError) as err:
         logger.warning("Not listing community provider %s: invalid manifest: %s", domain, err)
         return None

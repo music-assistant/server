@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast, final, overload
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER, ConfigValueType
 from music_assistant_models.constants import EXTRA_ATTRIBUTES_TYPES
 from music_assistant_models.enums import (
+    ChannelLayout,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -111,6 +112,7 @@ class PlayerProtocol(ABC):
     _attr_role: ProtocolRole = ProtocolRole.NATIVE
 
     _attr_type: PlayerType = PlayerType.PLAYER
+    _attr_channel_layout: ChannelLayout | None = None
     _attr_supported_features: set[PlayerFeature]
     _attr_group_members: list[str]
     _attr_static_group_members: list[str]
@@ -151,6 +153,7 @@ class PlayerProtocol(ABC):
     # on its own source list counts as a takeover of the remembered MA queue. Leave at
     # False for devices that also list the transport our own stream arrives on.
     _attr_trusts_reported_source: bool = False
+    _attr_paused_position_reliable: bool = False
 
     def __init__(self, provider: PlayerProvider, protocol_id: str) -> None:
         """Initialize the protocol object."""
@@ -199,6 +202,11 @@ class PlayerProtocol(ABC):
     def type(self) -> PlayerType:
         """Return the type of the player."""
         return self._attr_type
+
+    @property
+    def channel_layout(self) -> ChannelLayout | None:
+        """Return how the speakers of a multi-channel player are laid out, None if not known."""
+        return self._attr_channel_layout
 
     @property
     def name(self) -> str | None:
@@ -435,6 +443,17 @@ class PlayerProtocol(ABC):
         in, so a service Music Assistant has no name of its own for is recognised too.
         """
         return self._attr_trusts_reported_source
+
+    @property
+    def paused_position_reliable(self) -> bool:
+        """
+        Return if the paused player's elapsed time is the device's own report of its position.
+
+        A paused player's position is not trusted by default, as many players reset or
+        freeze it. Set this only while the elapsed time comes from the device itself,
+        so the queue (also in flow mode) follows it while paused.
+        """
+        return self._attr_paused_position_reliable
 
     @property
     def group_members(self) -> list[str]:
@@ -1050,6 +1069,32 @@ class PlayerProtocol(ABC):
         device, such as an entry in its list of manually added devices. The players
         controller holds an object that is not attached only weakly, so a provider with
         such a list keeps a reference to the object of every device on it.
+        """
+        return
+
+    async def on_power_cut(self) -> None:
+        """
+        Handle the power of the device being cut at its external power control.
+
+        Called for a player whose power control (a smart plug) is set to cut the power of
+        the player itself: once that control has read off for a while, or right after a
+        power off through it. The device is gone, so drop what the protocol holds of it,
+        stop trying to reach it and read unavailable. Override this when the provider
+        would otherwise keep a dead connection, or read available for long.
+        """
+        return
+
+    async def on_power_restored(self) -> None:
+        """
+        Handle the power of the device being back, once its start-up time is over.
+
+        Called when the start-up time of the player has passed since its power control
+        came on, also when on_power_cut was not called before that. Connect to the device
+        now, without relying on what the protocol still holds of it, and return once it is
+        reached or can not be: the players controller waits at most 10 seconds before the
+        playback that waited for the start-up goes to the protocols that read available.
+        Override this when the provider would otherwise only reach the device again on a
+        reconnect of its own, which can be minutes away.
         """
         return
 

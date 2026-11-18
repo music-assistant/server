@@ -11,9 +11,11 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 from music_assistant_models.enums import EventType
 
+from music_assistant.providers.plex.helpers import compute_client_id
+
 from .gdm import PlexGDMAdvertiser
 from .playback import PlaybackMixin
-from .plextv import build_version, compute_client_id
+from .plextv import build_version
 from .queue_commands import QueueCommandsMixin
 from .queue_sync import QueueSyncMixin
 from .timeline import TimelineMixin
@@ -64,7 +66,7 @@ class PlayerRemoteInstance:
         """Start this player's remote control."""
         if self.remote_control:
             LOGGER.info(
-                f"Created PlexServer for '{self.player_name}' with client ID: {self.client_id}"
+                "Created PlexServer for '%s' with client ID: %s", self.player_name, self.client_id
             )
 
             self.server = PlexRemoteControlServer(
@@ -75,8 +77,9 @@ class PlayerRemoteInstance:
                 device_class=self.device_class,
             )
             LOGGER.info(
-                f"Remote control server for '{self.player_name}' bound to MA player: "
-                f"{self.ma_player_id}"
+                "Remote control server for '%s' bound to MA player: %s",
+                self.player_name,
+                self.ma_player_id,
             )
 
             await self.server.start()
@@ -92,7 +95,7 @@ class PlayerRemoteInstance:
             )
             self.gdm.start()
 
-            LOGGER.info(f"Player '{self.player_name}' is now discoverable on port {self.port}")
+            LOGGER.info("Player '%s' is now discoverable on port %s", self.player_name, self.port)
 
     async def stop(self) -> None:
         """Stop this player's remote control."""
@@ -103,7 +106,7 @@ class PlayerRemoteInstance:
             if self.server:
                 await self.server.stop()
 
-            LOGGER.info(f"Stopped remote control for player '{self.player_name}'")
+            LOGGER.info("Stopped remote control for player '%s'", self.player_name)
 
 
 class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin, TimelineMixin):
@@ -152,19 +155,6 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
         # Flag to prevent circular updates when we modify the queue ourselves
         self._updating_from_plex = False
 
-        self.player = self.provider.mass.players.get_player(self._ma_player_id)  # type: ignore[arg-type]
-
-        self.device_name = f"{self.player.name}" if self.player else "Music Assistant"
-
-        self.headers = {
-            "X-Plex-Device-Name": self.device_name,
-            "X-Plex-Session-Identifier": self.client_id,
-            "X-Plex-Client-Identifier": self.client_id,
-            "X-Plex-Product": "Music Assistant",
-            "X-Plex-Platform": "Music Assistant",
-            "X-Plex-Platform-Version": platform.release(),
-        }
-
         self._setup_routes()
 
     def _setup_routes(self) -> None:
@@ -200,9 +190,15 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
 
         self.http_site = web.TCPSite(self.runner, "0.0.0.0", self.port)  # noqa: S104 - serves Plex clients on the LAN
         await self.http_site.start()
-        LOGGER.info(f"Plex remote control server started on HTTP port {self.port}")
+        LOGGER.info("Plex remote control server started on HTTP port %s", self.port)
 
         if self._ma_player_id:
+            # the Plex provider reports the player's playback to Plex, within this play queue
+            self._unsub_callbacks.append(
+                self.provider.playback_reporter.add_play_queue(
+                    self._ma_player_id, self._play_queue_params
+                )
+            )
             self._unsub_callbacks.append(
                 self.provider.mass.subscribe(
                     self._handle_state_event,
@@ -270,7 +266,7 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
             "last_update": time.time(),
         }
 
-        LOGGER.info(f"Controller {client_id} subscribed for timeline updates")
+        LOGGER.info("Controller %s subscribed for timeline updates", client_id)
         await self._send_timeline(client_id)
         return web.Response(status=200)
 
@@ -279,7 +275,7 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
         client_id = request.headers.get("X-Plex-Client-Identifier")
         if client_id in self.subscriptions:
             del self.subscriptions[client_id]
-            LOGGER.info(f"Controller {client_id} unsubscribed")
+            LOGGER.info("Controller %s unsubscribed", client_id)
         return web.Response(status=200)
 
     async def handle_poll(self, request: web.Request) -> web.Response:

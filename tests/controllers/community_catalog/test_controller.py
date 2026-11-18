@@ -225,14 +225,14 @@ async def test_no_longer_listed(tmp_path: Path, registry: Registry, github: GitH
         await _assert_not_loaded(mass, DOMAIN, CommunityProviderState.UNAVAILABLE, reason)
 
 
-async def test_copy_of_another_line(
+async def test_copy_of_another_channel(
     tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
 ) -> None:
-    """With only a copy of another line the provider loads, nothing is offered, a block applies."""
+    """With only a copy of another channel the provider loads, nothing is offered, a block applies."""
     await _install(tmp_path, registry, github)
     registry.status = 503
     kept = json.loads((catalog / "index.json").read_bytes())
-    kept["server_line"] = "2.11"
+    kept["channel"] = "2.11"
     kept["providers"]["other_one"] = _publish(github, "other_one")
     (catalog / "index.json").write_text(json.dumps(kept))
 
@@ -270,6 +270,32 @@ async def test_no_kept_copy(
             CommunityProviderState.UNAVAILABLE,
             _REASONS[Verdict.CATALOG_UNREACHABLE],
         )
+
+
+async def test_kept_copy_without_channel(
+    tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
+) -> None:
+    """A kept copy without a channel reads as no copy, until the next start that fetches the index."""
+    await _install(tmp_path, registry, github)
+    kept = json.loads((catalog / "index.json").read_bytes())
+    kept["server_line"] = kept.pop("channel")
+    (catalog / "index.json").write_text(json.dumps(kept))
+    registry.status = 503
+
+    async with _server(tmp_path) as mass:
+        await _assert_not_loaded(
+            mass,
+            DOMAIN,
+            CommunityProviderState.UNAVAILABLE,
+            _REASONS[Verdict.CATALOG_UNREACHABLE],
+        )
+
+    registry.status = 200
+    async with _server(tmp_path) as mass:
+        _assert_loaded(mass, catalog, DOMAIN)
+    # without a readable copy the server fetches the whole index, not only a change
+    assert registry.requests[-1] == ("nightly", None)
+    assert json.loads((catalog / "index.json").read_bytes())["channel"] == "nightly"
 
 
 @pytest.mark.parametrize(
@@ -611,6 +637,31 @@ async def test_remove_leaves_a_provider_of_the_server_alone(
             assert sys.modules[f"{providers_package.__name__}.{DOMAIN}"] is module
 
 
+async def test_broken_menu_actions_at_start(
+    tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
+) -> None:
+    """An installed provider with broken menu actions loads without them, next to the others."""
+    broken = "comm_two"
+    valid = {"id": "show", "label": "Show", "media_types": ["album"], "scope": "library.read"}
+    menu_actions = [{"id": "broken", "label": None}, valid]
+    registry.document = _index(
+        {
+            DOMAIN: _publish(github, DOMAIN),
+            broken: _publish(github, broken, manifest_keys={"menu_actions": menu_actions}),
+        }
+    )
+    _seed_instance(tmp_path, DOMAIN, broken)
+    async with _server(tmp_path) as mass:
+        await _switch(mass, enabled=True)
+        for domain in (DOMAIN, broken):
+            await mass.community_catalog.install_provider(domain)
+
+    async with _server(tmp_path) as mass:
+        _assert_loaded(mass, catalog, DOMAIN)
+        _assert_loaded(mass, catalog, broken)
+        assert [action.id for action in mass.get_provider_manifest(broken).menu_actions] == ["show"]
+
+
 def test_reasons_match_the_texts() -> None:
     """The reasons and errors in the code are the English texts of their translation keys."""
     strings_file = Path(music_assistant.__file__).parent / "strings.json"
@@ -623,7 +674,9 @@ def test_reasons_match_the_texts() -> None:
 
 
 @pytest.mark.usefixtures("registry")
-async def test_client_reads_why_a_command_is_refused(mass: MusicAssistant) -> None:
+async def test_client_reads_why_a_command_is_refused(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """
     A client gets the reason of a refusal, in a language without a translation of it in English.
 
@@ -642,6 +695,10 @@ async def test_client_reads_why_a_command_is_refused(mass: MusicAssistant) -> No
     )
     reason = f"{DOMAIN} is not installed from the community catalog."
     await mass.translations.ensure_locale_loaded("nl")
+    # Dutch without a translation of the reason, whatever Lokalise has for it
+    monkeypatch.delitem(
+        mass.translations._locales["nl"], f"common.errors.{error.translation_key}", raising=False
+    )
 
     for locale in ("en", "nl"):
         token = TRANSLATION_RESOLVER.set(partial(mass.translations.get_translation, locale=locale))
@@ -689,15 +746,22 @@ def _forget_imports(tmp_path: Path) -> None:
             sys.modules.pop(name, None)
 
 
-def _publish(github: GitHub, domain: str, *, requirements: Sequence[str] = ()) -> dict[str, Any]:
+def _publish(
+    github: GitHub,
+    domain: str,
+    *,
+    requirements: Sequence[str] = (),
+    manifest_keys: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Serve a provider on the fixture GitHub and return its listed entry in the index.
 
     :param github: The fixture GitHub.
     :param domain: The domain of the provider.
     :param requirements: The requirements in its manifest.
+    :param manifest_keys: Keys added to its manifest.
     """
-    files = _provider_files(domain, requirements)
+    files = _provider_files(domain, requirements, manifest_keys)
     commit = f"{domain}-{VERSION}"
     github.archives[commit] = build_archive({f"{domain}/{p}": c for p, c in files.items()})
     return {
@@ -723,12 +787,15 @@ def _publish(github: GitHub, domain: str, *, requirements: Sequence[str] = ()) -
     }
 
 
-def _provider_files(domain: str, requirements: Sequence[str] = ()) -> dict[str, bytes]:
+def _provider_files(
+    domain: str, requirements: Sequence[str] = (), manifest_keys: dict[str, Any] | None = None
+) -> dict[str, bytes]:
     """
     Return the files of a plugin provider that imports the version of its first requirement.
 
     :param domain: The domain of the provider.
     :param requirements: The requirements in its manifest.
+    :param manifest_keys: Keys added to its manifest.
     """
     manifest = {
         "type": "plugin",
@@ -737,6 +804,7 @@ def _provider_files(domain: str, requirements: Sequence[str] = ()) -> dict[str, 
         "description": "test provider",
         "codeowners": ["@someone"],
         "requirements": list(requirements),
+        **(manifest_keys or {}),
     }
     imports = ""
     if requirements:
@@ -750,10 +818,10 @@ def _provider_files(domain: str, requirements: Sequence[str] = ()) -> dict[str, 
 
 
 def _index(providers: dict[str, Any]) -> dict[str, Any]:
-    """Return an index of the line of a server run from source."""
+    """Return an index of the channel of a server run from source."""
     return {
         "schema": 1,
-        "server_line": "nightly",
+        "channel": "nightly",
         "generated": "2026-11-14T08:00:00Z",
         "providers": providers,
     }

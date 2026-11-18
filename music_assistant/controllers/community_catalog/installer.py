@@ -16,10 +16,13 @@ from typing import TYPE_CHECKING, Final, NoReturn
 import aiofiles
 from aiohttp import ClientError, ClientResponseError, ClientTimeout
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.provider import ProviderManifest
+
+from music_assistant.helpers.provider_manifest import manifest_from_json
 
 if TYPE_CHECKING:
     import logging
+
+    from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.controllers.community_catalog.models import IndexProvider, IndexVersion
     from music_assistant.mass import MusicAssistant
@@ -331,9 +334,7 @@ def _verify(folder: Path, domain: str, expected_hash: str) -> ProviderManifest:
         msg = "its content is not what the community catalog lists"
         raise ValueError(msg)
     try:
-        manifest = ProviderManifest.from_json(
-            (folder / "manifest.json").read_text(encoding="utf-8")
-        )
+        manifest = manifest_from_json((folder / "manifest.json").read_text(encoding="utf-8"))[0]
     except FileNotFoundError as err:
         msg = "it has no manifest.json"
         raise ValueError(msg) from err

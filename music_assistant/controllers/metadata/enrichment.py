@@ -486,6 +486,8 @@ class MetadataEnrichmentMixin:
                 album.metadata.update(_without_description(prov_item.metadata))
                 # backfill identifiers (e.g. barcode) missing on a sparse library add
                 album.external_ids.update(prov_item.external_ids)
+                if not album.artists and prov_item.artists:
+                    album.artists = UniqueList(prov_item.artists)
                 if album.year is None and prov_item.year:
                     album.year = prov_item.year
                 if album.album_type == AlbumType.UNKNOWN:
@@ -971,6 +973,7 @@ class MetadataEnrichmentMixin:
                 self.logger.debug("Track %s was not found on MusicBrainz", track.name)
             else:
                 fill_track_from_recording(track, recording)
+                await self.mass.music.tracks.merge_recording_duplicates(track)
                 if self.link_providers_via_musicbrainz:
                     await self.mass.music.tracks.link_musicbrainz_mappings(
                         track, relation_urls(recording.relations)

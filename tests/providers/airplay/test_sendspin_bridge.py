@@ -63,6 +63,7 @@ from music_assistant.providers.airplay.sendspin_bridge import (
     SendspinAirPlayBridge,
     SendspinBridgeManager,
     device_buffer_ahead_seconds,
+    get_bridge_client_id,
     sendspin_audible_instant_to_unix_ms,
     unix_ms_to_sendspin_audible_instant,
 )
@@ -215,6 +216,8 @@ def _make_bridge(
     # whatever was resolved. None models a group with no live decision.
     provider.bridge_manager.resolve_shared_ptp = MagicMock(return_value=False)
     provider.bridge_manager.group_shared_ptp = MagicMock(return_value=None)
+    # the player has no Sendspin output yet: its bridge registers one under the id of its device
+    provider.bridge_manager.bridge_client_id = get_bridge_client_id
     airplay_player = MagicMock()
     airplay_player.protocol_id = "apc43875e9e53a"
     airplay_player.display_name = "Test Player"
@@ -1495,7 +1498,7 @@ async def test_anchor_follows_the_clock_ready_projection() -> None:
 
 async def test_anchor_still_starts_a_receiver_whose_clock_stalled() -> None:
     """
-    A stalled receiver is anchored anyway, unlike a late joiner, and warned about.
+    A stalled receiver is anchored anyway, unlike a late joiner.
 
     A joiner is dropped because the session plays on without it, while here
     dropping would stop the speaker, and the binary's stall report is a
@@ -1506,12 +1509,30 @@ async def test_anchor_still_starts_a_receiver_whose_clock_stalled() -> None:
     stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.STALLED, 0))
     _prepare_anchor(bridge, stream, first_chunk_lead_ms=250)
 
-    with patch.object(bridge.logger, "warning") as warning:
-        assert await _anchor(bridge, stream) is True
+    assert await _anchor(bridge, stream) is True
 
     assert _commanded_instant(stream) == UNIX_NOW_MS + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
     assert bridge._started is True
-    assert len([call for call in warning.call_args_list if "PTP clock" in call.args[0]]) == 1
+
+
+async def test_warm_reanchors_leave_a_latched_stall_to_the_streams_own_warning() -> None:
+    """
+    Track changes on a kept stream do not repeat the stall warning.
+
+    The stall stays latched on the stream across warm re-anchors, and the stream
+    already warned about it once when the binary reported it.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    stream = _make_anchor_stream()
+    stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.STALLED, 0))
+
+    with patch.object(bridge.logger, "warning") as warning:
+        for _ in range(3):
+            _prepare_anchor(bridge, stream, first_chunk_lead_ms=WARM_LEAD_MS)
+            assert await _anchor(bridge, stream, warm=True) is True
+
+    assert stream.start.await_count == 3
+    assert not [call for call in warning.call_args_list if "PTP clock" in call.args[0]]
 
 
 async def test_anchor_never_precedes_content_already_scheduled() -> None:
@@ -1668,17 +1689,18 @@ async def test_content_before_the_acked_instant_is_dropped_and_trimmed() -> None
 
 async def test_sync_adjust_shifts_the_command_but_not_the_content_mapping() -> None:
     """The device's own offset rides on the command; the group timeline stays untouched."""
-    adjust_ms = 300
-    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US, sync_adjust=adjust_ms)
+    sync_adjust = 300
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US, sync_adjust=sync_adjust)
     anchor_ms = UNIX_NOW_MS + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
-    stream = _make_anchor_stream(ack=anchor_ms + adjust_ms)
+    # a positive sync adjust plays earlier
+    stream = _make_anchor_stream(ack=anchor_ms - sync_adjust)
     _prepare_anchor(bridge, stream, first_chunk_lead_ms=250)
 
     assert await _anchor(bridge, stream) is True
 
-    assert _commanded_instant(stream) == anchor_ms + adjust_ms
+    assert _commanded_instant(stream) == anchor_ms - sync_adjust
     # Pacing tracks the real wall-clock instant of byte 0 (adjust included)...
-    assert bridge._start_unix_ms == anchor_ms + adjust_ms
+    assert bridge._start_unix_ms == anchor_ms - sync_adjust
     # ...while the content is placed on the group timeline, without it.
     assert bridge._drop_until_us == SENDSPIN_EPOCH_US + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS * 1_000
 
@@ -1948,26 +1970,26 @@ async def test_anchoring_clears_the_folded_shift_baseline() -> None:
 
 
 @pytest.mark.parametrize(
-    ("warm_lead_ms", "flushed_head_offset_ms", "adjust_ms", "expected_anchor_offset_ms"),
+    ("warm_lead_ms", "flushed_head_offset_ms", "sync_adjust", "expected_anchor_offset_ms"),
     [
         (4000, 0, 0, 4000 + AIRPLAY_SPLICE_LEAD_MARGIN_MS),
-        (4000, 0, -600, 4600 + AIRPLAY_SPLICE_LEAD_MARGIN_MS),
+        (4000, 0, 600, 4600 + AIRPLAY_SPLICE_LEAD_MARGIN_MS),
         (0, 5000, 0, 5000 + AIRPLAY_SPLICE_LEAD_MARGIN_MS),
     ],
 )
 async def test_warm_anchor_clears_the_receivers_queued_audio(
     warm_lead_ms: int,
     flushed_head_offset_ms: int,
-    adjust_ms: int,
+    sync_adjust: int,
     expected_anchor_offset_ms: int,
 ) -> None:
     """
     A warm re-anchor lands beyond the audio the receiver still has queued.
 
-    A negative sync_adjust moves the commanded instant earlier and eats into that
+    A positive sync_adjust moves the commanded instant earlier and eats into that
     lead, so it is added back to the requirement.
     """
-    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US, sync_adjust=adjust_ms)
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US, sync_adjust=sync_adjust)
     stream = _make_anchor_stream(
         warm_lead_ms=warm_lead_ms,
         flushed_head_unix_ms=UNIX_NOW_MS + flushed_head_offset_ms if flushed_head_offset_ms else 0,
@@ -1976,7 +1998,7 @@ async def test_warm_anchor_clears_the_receivers_queued_audio(
 
     assert await _anchor(bridge, stream, warm=True) is True
 
-    assert _commanded_instant(stream) == UNIX_NOW_MS + expected_anchor_offset_ms + adjust_ms
+    assert _commanded_instant(stream) == UNIX_NOW_MS + expected_anchor_offset_ms - sync_adjust
 
 
 async def test_superseded_during_the_ack_mutates_nothing() -> None:
@@ -3012,6 +3034,8 @@ def _make_rejoin_bridge(
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     cast("MagicMock", bridge.airplay_player).stream = None
+    # A real False: a MagicMock reads as a speaker switched off at its power control.
+    cast("MagicMock", bridge.airplay_player).player.offline_by_power_control = False
     client = _make_grouped_client(group_members=group_members, has_active_stream=has_active_stream)
     bridge._sendspin_client = client
     group = MagicMock()
@@ -3099,6 +3123,27 @@ async def test_an_offline_speaker_is_looked_for_again_before_giving_up() -> None
     assert logger.debug.call_count == 2
     # the give-up is only reached once the attempts run out
     logger.warning.assert_called_once()
+
+
+async def test_a_switched_off_speaker_is_not_rejoined() -> None:
+    """
+    A speaker switched off at its power control is left out of the group for good.
+
+    Its protocol still reads available: a device without power says no goodbye.
+    Returning on the first look, rather than running out of attempts, is what
+    shows the bridge gave up instead of looking for it again.
+    """
+    bridge, _, group = _make_rejoin_bridge()
+    cast("MagicMock", bridge.airplay_player).player.offline_by_power_control = True
+    logger = MagicMock()
+    bridge.logger = logger
+
+    with patch(_NO_REJOIN_DELAYS, (0, 0)):
+        await bridge._rejoin_attempts(group)
+
+    group.add_client.assert_not_awaited()
+    logger.debug.assert_called_once()
+    logger.warning.assert_not_called()
 
 
 async def test_a_rejoin_is_abandoned_when_the_group_is_gone() -> None:

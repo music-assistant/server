@@ -225,6 +225,25 @@ AIRPLAY_REPLACEMENT_POLL_INTERVAL: Final[float] = 1.0
 # its queued audio.
 AIRPLAY_SPLICE_LEAD_MARGIN_MS: Final[int] = 150
 
+# How long a group waits after the last starvation shift ([STATUS] REANCHOR) of
+# any member before it compares the members' shifts. Each member recovers from a
+# dry feed on its own: a realtime member shifts by about its queue depth minus
+# the binary's 250 ms floor, and again every depth for as long as the feed stays
+# dry, while a buffered member never shifts. At the deepest queue (3 s) those
+# reports come up to 3 s apart, so this outlasts the reports of one stall.
+AIRPLAY_STALL_SETTLE_SECONDS: Final[float] = 4.0
+# How far apart the members' shifts may be and still play as one group. Members
+# with the same queue depth shift by the same amount, give or take a few ms of
+# scheduling jitter. Different depths, or a buffered member next to a realtime
+# one, put them hundreds of ms apart.
+AIRPLAY_STALL_SHIFT_TOLERANCE_MS: Final[int] = 30
+# Minimum time between two restarts that bring a group back in sync after a
+# stall. It doubles with each restart up to the cap, so a source that keeps
+# stalling cannot keep restarting the group. A group that drifts apart within it
+# is restarted once it has passed.
+AIRPLAY_STALL_RESYNC_HOLDOFF: Final[float] = 60.0
+AIRPLAY_STALL_RESYNC_MAX_HOLDOFF: Final[float] = 900.0
+
 # Floor for the late-join PCM ring, which has to hold every sample between the
 # audible position and the write head: a joiner's anchor maps onto content the
 # group was already fed but has not played yet. That distance - the write-head

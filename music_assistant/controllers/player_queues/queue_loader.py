@@ -28,6 +28,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     PlayerUnavailableError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
@@ -141,7 +142,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # another load of the item found its track in the meantime
             return
         with user_auth_context(user):
-            track = await self._external_track_on_a_provider(external_track.item_id)
+            try:
+                track = await self._external_track_on_a_provider(external_track.item_id)
+            except ProviderUnavailableError as err:
+                # the queue keeps the item and stops for an unavailable source, as it does
+                # for one that asks to back off
+                raise ResourceTemporarilyUnavailable(str(err)) from err
         if queue_item.media_item is not external_track:
             # the load that shared this lookup already put the track in place
             return
@@ -535,6 +541,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
     async def _get_resume_position(self, queue_item: QueueItem) -> int:
         """Return the position (in seconds) to resume an audiobook/episode from, 0 to start over."""
+        if getattr(queue_item.media_item, "fully_played", False):
+            return 0
         if not (resume_position_ms := getattr(queue_item.media_item, "resume_position_ms", 0)):
             return 0
         # the client may have fetched the item before its duration was known
@@ -892,7 +900,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             queue_items = [
                 build_queue_item(queue_id, track, origin=origin_for(artist, track, pin=False))
                 for track in tracks
-                if track.available
+                if can_be_enqueued(track)
             ]
             if queue_items:
                 break
@@ -1351,8 +1359,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
-        # a dynamic queue is an always-on smart mix; reflect that in the (now locked) shuffle state
+        # a dynamic queue is an always-on smart mix; reflect that in the (now locked) shuffle
+        # and repeat states
         queue.shuffle_enabled = True
+        queue.repeat_mode = RepeatMode.OFF
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         # rebuild from the buffered position so the already-prepared next track is kept and the
         # crossfade isn't disturbed; fall back to the current index (or the front when idle/empty)

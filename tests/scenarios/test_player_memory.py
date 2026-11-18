@@ -7,6 +7,9 @@ from music_assistant_models.enums import IdentifierType, PlaybackState
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerMedia
 
+from music_assistant.constants import DEFAULT_POWER_ON_STARTUP_TIME
+from music_assistant.controllers.players.power import EXTERNAL_POWER_OFF_STOP_DELAY
+
 from .harness import FakeProtocol, Scenario
 
 DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
@@ -99,13 +102,20 @@ async def test_a_source_selected_while_stopped_is_kept(scenario: Scenario) -> No
     assert _active_source(scenario, player_id) == other_queue
 
 
-async def test_a_stop_calls_off_a_power_on_that_waits_for_the_device(scenario: Scenario) -> None:
+@pytest.mark.parametrize("device", ["is back", "never came"])
+async def test_a_stop_calls_off_a_power_on_that_waits_for_the_startup(
+    scenario: Scenario, device: str
+) -> None:
     """
     A stop while a switched-off player is being powered on calls the power on off.
 
-    While the power on waits for the device the player shows available and powered on; the
-    stop makes the waiting power on fail as switched off, after which the player, whose
-    device never came, shows unavailable.
+    While the power on waits for the player to start up, the player shows available and
+    powered on. The stop makes the waiting power on fail as called off, and the plug stays
+    on: the player keeps starting up, idle, and gets no command. Once its start-up time is
+    over it is on and idle when its device is back, and unavailable when the device never
+    came.
+
+    :param device: Whether the device is back when the start-up time is over.
     """
     squeezelite = await scenario.add_provider("squeezelite")
     pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=BATHROOM)
@@ -113,8 +123,10 @@ async def test_a_stop_calls_off_a_power_on_that_waits_for_the_device(scenario: S
     player_id = scenario.single_player(pi).player_id
     plug = await scenario.add_power_control("switch.bathroom_plug", "Bathroom plug", powered=True)
     await scenario.configure_player(player_id, power_control=plug.control_id)
+    await scenario.configure_player(player_id, power_control_cuts_power=True)
     await scenario.switch(plug, False)
     await scenario.unregister(pi)
+    await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY)
     await scenario.idle()
 
     power_on = await scenario.command(scenario.mass.players.cmd_power(player_id, True))
@@ -123,11 +135,22 @@ async def test_a_stop_calls_off_a_power_on_that_waits_for_the_device(scenario: S
     assert (player.available, player.powered) == (True, True)
 
     await scenario.mass.players.cmd_stop(player_id)
-    # the power on looks for the device every 0.5 s
-    await scenario.advance(1)
-    with pytest.raises(PlayerUnavailableError):
+    await scenario.settle()
+    with pytest.raises(PlayerUnavailableError, match="power on of player Bathroom was called off"):
         await power_on
+
+    if device == "is back":
+        await scenario.register(pi)
+    await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME - 1)
+    player = scenario.player(player_id)
+    assert player is not None
+    assert (player.available, player.powered) == (True, True)
+    assert player.playback_state == PlaybackState.IDLE
+    await scenario.advance(2)
 
     player = scenario.player(player_id)
     assert player is not None
-    assert player.available is False
+    assert (player.available, player.powered) == (device == "is back", True)
+    assert player.playback_state == PlaybackState.IDLE
+    assert plug.commands == [True]
+    assert pi.commands == []

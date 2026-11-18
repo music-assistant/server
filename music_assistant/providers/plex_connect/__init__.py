@@ -23,6 +23,7 @@ from music_assistant_models.errors import ActionUnavailable
 from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
 from music_assistant.helpers.util import format_ip_for_url, is_port_in_use, select_free_port
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.providers.plex.helpers import compute_client_id
 
 from .plextv import (
     PlexTvAuthError,
@@ -31,7 +32,6 @@ from .plextv import (
     PlexTvIdentity,
     PlexTvPinExpiredError,
     build_version,
-    compute_client_id,
 )
 from .server import PlayerRemoteInstance
 
@@ -148,17 +148,17 @@ class PlexConnectProvider(PluginProvider):
                 break
             if attempt == 0:
                 self.logger.info(
-                    f"Waiting for Plex provider {self.plex_provider_id} to become available..."
+                    "Waiting for Plex provider %s to become available...", self.plex_provider_id
                 )
             await asyncio.sleep(retry_delay)
         else:
             timeout_seconds = max_retries * retry_delay
             self.logger.error(
-                f"Plex provider {self.plex_provider_id} not found after {timeout_seconds}s"
+                "Plex provider %s not found after %ss", self.plex_provider_id, timeout_seconds
             )
             return
 
-        self.logger.debug(f"Plex provider {self.plex_provider_id} is ready")
+        self.logger.debug("Plex provider %s is ready", self.plex_provider_id)
 
         # Subscribe to player events first; the availability check below must follow
         # without an await, so the tracker and the check see the same player state
@@ -175,7 +175,7 @@ class PlexConnectProvider(PluginProvider):
         # Now try to setup the player instance
         if get_available_player(self.mass, self._player_id) is None:
             self.logger.info(
-                f"Player {self._player_id} not available yet, waiting for it to come online"
+                "Player %s not available yet, waiting for it to come online", self._player_id
             )
         else:
             # Setup the player instance immediately
@@ -504,7 +504,7 @@ class PlexConnectProvider(PluginProvider):
 
         player = self.mass.players.get_player(self._player_id)
         if not player:
-            self.logger.warning(f"Player {self._player_id} not found")
+            self.logger.warning("Player %s not found", self._player_id)
             return
 
         # Resolve the long-term port for this instance (persisted across restarts)
@@ -528,8 +528,9 @@ class PlexConnectProvider(PluginProvider):
         try:
             await self._player_instance.start()
             self.logger.info(
-                f"Plex Connect ready: '{player_name}' is now available in Plex apps "
-                f"on port {self._allocated_port}"
+                "Plex Connect ready: '%s' is now available in Plex apps on port %s",
+                player_name,
+                self._allocated_port,
             )
         except Exception:
             self.logger.exception("Failed to start Plex remote control")
@@ -565,15 +566,15 @@ class PlexConnectProvider(PluginProvider):
         came_available = self._availability.became_available(event)
         if event.event == EventType.PLAYER_REMOVED:
             if event.object_id != player_id:
-                self.logger.info(f"Player {event.object_id} was merged into {player_id}")
+                self.logger.info("Player %s was merged into %s", event.object_id, player_id)
                 self.mass.create_task(self._restart_player_instance())
                 return
             # Player was removed - stop the instance
-            self.logger.info(f"Player {player_id} removed, stopping Plex Connect")
+            self.logger.info("Player %s removed, stopping Plex Connect", player_id)
             self.mass.create_task(self._teardown_player_instance())
 
         elif came_available:
             # Player came online - start the instance (if not already running)
             if not self._player_instance:
-                self.logger.info(f"Player {player_id} available, starting Plex Connect")
+                self.logger.info("Player %s available, starting Plex Connect", player_id)
                 self.mass.create_task(self._setup_player_instance())

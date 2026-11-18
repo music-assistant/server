@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
@@ -14,7 +14,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 
-from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.cache import forget_cached, use_cache
 from music_assistant.helpers.external_ids import (
     barcode_to_upc,
     is_valid_barcode,
@@ -159,7 +159,9 @@ class AppleMusicMediaManager:
         else:
             endpoint = f"catalog/{self.provider._storefront}/songs/{prov_track_id}"
             response = await self.api.get_data(endpoint, include="artists,albums")
-        return parse_track(self.provider, response["data"][0])
+        track = parse_track(self.provider, response["data"][0])
+        await self.provider.library_manager.mark_purchases_on_sale([(response["data"][0], track)])
+        return track
 
     async def get_playlist(
         self,
@@ -260,6 +262,11 @@ class AppleMusicMediaManager:
         except MediaNotFoundError:
             return None
 
+    async def forget_playlist_tracks(self, prov_playlist_id: str) -> None:
+        """Drop the kept pages of a playlist and its change marker, so they are fetched anew."""
+        await forget_cached(self._get_playlist_last_modified, prov_playlist_id)
+        await forget_cached(self._get_playlist_tracks_cached, prov_playlist_id)
+
     async def get_station_tracks(self, station_id: str) -> list[Track]:
         """Fetch the next batch of tracks for a radio station."""
         tracks = await self._fetch_station_tracks(station_id)
@@ -303,15 +310,18 @@ class AppleMusicMediaManager:
             endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}/tracks"
             response = await self.api.get_data(endpoint, include="artists")
         tracks = []
+        listed: list[tuple[dict[str, Any], Track]] = []
         for track_obj in response["data"]:
             if "id" not in track_obj:
                 continue
             track = parse_track(self.provider, track_obj)
+            listed.append((track_obj, track))
             # the listing omits the album relation, so parse_track would make the album name
             # stand in as its id; callers attach the album they asked for instead, which saves
             # fetching it again for every album a library sync imports
             track.album = None
             tracks.append(track)
+        await self.provider.library_manager.mark_purchases_on_sale(listed)
         return tracks
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -338,11 +348,14 @@ class AppleMusicMediaManager:
         )
         if not response or "data" not in response:
             return result
+        listed: list[tuple[dict[str, Any], Track]] = []
         for index, track in enumerate(response["data"]):
             if track and track["id"]:
                 parsed_track = parse_track(self.provider, track)
                 parsed_track.position = offset + index + 1
                 result.append(parsed_track)
+                listed.append((track, parsed_track))
+        await self.provider.library_manager.mark_purchases_on_sale(listed)
         return result
 
     async def _fetch_station_tracks(self, station_id: str) -> list[Track]:

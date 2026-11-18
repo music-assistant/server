@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 113
+API_SCHEMA_VERSION: Final[int] = 122
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -126,9 +126,12 @@ CONF_ENCRYPTION_KEY_MIGRATED: Final[str] = "encryption_key_migrated"
 CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED: Final[str] = "apple_music_sync_schedule_migrated"
 CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED: Final[str] = "emby_album_artists_heal_migrated"
 CONF_RAUMFELD_ICY_BASIC_MIGRATED: Final[str] = "raumfeld_icy_basic_migrated"
+CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: Final[str] = "airplay_sync_adjust_sign_migrated"
+CONF_SENDSPIN_ONE_OUTPUT_MIGRATED: Final[str] = "sendspin_one_output_migrated"
 CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING: Final[str] = "emby_album_artists_heal_pending"
 CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
+CONF_AI_DEFAULT_ENGINES_MIGRATED: Final[str] = "ai_default_engines_migrated"
 CONF_PLAYER_SPLIT_SESSION_ONLY: Final[str] = "player_split_session_only"
 CONF_PLAYER_SPLIT_TREE: Final[str] = "player_split_tree"
 CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
@@ -141,6 +144,7 @@ CONF_PROVIDERS: Final[str] = "providers"
 CONF_PLAYERS: Final[str] = "players"
 CONF_PLAYER_PROTOCOLS: Final[str] = "player_protocols"
 CONF_PLAYER_QUEUES: Final[str] = "player_queues"
+CONF_AI: Final[str] = "ai"
 CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
 CONF_NAME: Final[str] = "name"
@@ -170,6 +174,8 @@ WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")  # noqa: S104 - th
 SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_IDLE_POWER_OFF: Final[str] = "idle_power_off"
+CONF_POWER_CONTROL_CUTS_POWER: Final[str] = "power_control_cuts_power"
+CONF_POWER_ON_STARTUP_TIME: Final[str] = "power_on_startup_time"
 CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
@@ -183,6 +189,10 @@ CONF_ANNOUNCE_VOLUME_MIN: Final[str] = "announce_volume_min"
 CONF_ANNOUNCE_VOLUME_MAX: Final[str] = "announce_volume_max"
 CONF_PRE_ANNOUNCE_CHIME_URL: Final[str] = "pre_announcement_chime_url"
 CONF_ANNOUNCE_TTS_ENGINE: Final[str] = "announce_tts_engine"
+# the default engine of each kind, stored by the AI core module
+CONF_DEFAULT_TEXT_ENGINE: Final[str] = "text_engine"
+CONF_DEFAULT_SPEECH_ENGINE: Final[str] = "speech_engine"
+CONF_DEFAULT_IMAGE_ENGINE: Final[str] = "image_engine"
 CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
@@ -200,6 +210,7 @@ CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_MIN_VOLUME: Final[str] = "min_volume"
 CONF_MAX_VOLUME: Final[str] = "max_volume"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
+CONF_ALLOW_AUDIO_ANALYSIS: Final[str] = "allow_audio_analysis"
 CONF_LEGACY_IDS: Final[str] = "legacy_ids"  # ids a player is also known under
 # the player the user took a protocol off, which it is not merged back into by itself
 CONF_UNLINKED_FROM: Final[str] = "unlinked_from"
@@ -227,6 +238,9 @@ CONF_UNDERLYING_PLAYER_ID: Final[str] = (
 # experimental. Its presence also makes the output's enable entry default to disabled;
 # a stored enabled state still wins, so the provider persists that one itself.
 CONF_PROTOCOL_EXPERIMENTAL_NOTE: Final[str] = "protocol_experimental_note"
+# Marker a provider stores on a protocol it switched off itself as its default. Without
+# it a protocol that is switched off was switched off by the user.
+CONF_PROTOCOL_OFF_BY_DEFAULT: Final[str] = "protocol_off_by_default"
 CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
 CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
@@ -391,6 +405,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "player_queues",
     "tasks",
     "statistics",
+    "ai",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDER_LOAD_CONCURRENCY = 8
@@ -491,6 +506,28 @@ CONF_ENTRY_IDLE_POWER_OFF = ConfigEntry(
     depends_on=CONF_POWER_CONTROL,
     depends_on_value_not="none",
     category="player_controls",
+)
+
+CONF_ENTRY_POWER_CONTROL_CUTS_POWER = ConfigEntry(
+    key=CONF_POWER_CONTROL_CUTS_POWER,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    category="player_controls",
+)
+
+# The start-up time (in seconds) of a player whose power control cuts its power: what a
+# player gets unless the user sets it, and the shortest and longest that can be set.
+DEFAULT_POWER_ON_STARTUP_TIME: Final[int] = 30
+POWER_ON_STARTUP_TIME_RANGE: Final[tuple[int, int]] = (5, 300)
+
+CONF_ENTRY_POWER_ON_STARTUP_TIME = ConfigEntry(
+    key=CONF_POWER_ON_STARTUP_TIME,
+    type=ConfigEntryType.INTEGER,
+    default_value=DEFAULT_POWER_ON_STARTUP_TIME,
+    range=POWER_ON_STARTUP_TIME_RANGE,
+    depends_on=CONF_POWER_CONTROL_CUTS_POWER,
+    category="player_controls",
+    advanced=True,
 )
 
 CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP = ConfigEntry(
@@ -1001,7 +1038,6 @@ ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
 ATTR_IDLE_SINCE: Final[str] = "idle_since"
-ATTR_POWER_ON_DEADLINE: Final[str] = "power_on_deadline"
 
 # Album type detection patterns
 LIVE_INDICATORS = [

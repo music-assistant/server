@@ -326,10 +326,15 @@ class WebserverController(CoreController):
         if action == CONF_ACTION_VERIFY_SSL:
             # the certificate/key are read from the stored config, so they must be saved
             # before verifying - the action no longer receives the (unsaved) form values
-            cert_info = await verify_ssl_certificate(
-                str(self.get_config_value(CONF_SSL_CERTIFICATE, "")),
-                str(self.get_config_value(CONF_SSL_PRIVATE_KEY, "")),
-            )
+            certificate = str(self.get_config_value(CONF_SSL_CERTIFICATE) or "")
+            private_key = str(self.get_config_value(CONF_SSL_PRIVATE_KEY) or "")
+            if not certificate or not private_key:
+                raise InvalidDataError(
+                    "Save the certificate and private key first, then press Verify",
+                    translation_key="ssl_not_saved",
+                    translation_owner=self.translation_owner,
+                )
+            cert_info = await verify_ssl_certificate(certificate, private_key)
             if not cert_info.is_valid:
                 # a result only ever reports success, so an unusable certificate must raise
                 raise InvalidDataError(
@@ -1348,6 +1353,21 @@ class WebserverController(CoreController):
             code = request.query.get("code")
             state = request.query.get("state")
             provider_id = request.query.get("provider_id")
+
+            if error := request.query.get("error"):
+                if state:
+                    self.auth.pending_logins.pop(state)
+                self.logger.warning("Sign-in not completed, provider returned: %r", error[:100])
+                error_html = """
+                <html>
+                <body>
+                    <h1>Authentication Failed</h1>
+                    <p>The sign-in was cancelled or refused</p>
+                    <a href="/login">Back to Login</a>
+                </body>
+                </html>
+                """
+                return web.Response(text=error_html, content_type="text/html", status=400)
 
             if not code or not state or not provider_id:
                 return web.Response(status=400, text="code, state, and provider_id required")

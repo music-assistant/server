@@ -8,11 +8,11 @@ from unittest.mock import AsyncMock, PropertyMock, patch
 import pytest
 
 from music_assistant.helpers.datetime import utc_timestamp
-from music_assistant.providers.bbc_sounds import BBCSoundsProvider
-from music_assistant.providers.bbc_sounds.constants import _Constants
+from music_assistant.providers.bbc_sounds import BBCSoundsProvider, BrowseManager
+from music_assistant.providers.bbc_sounds.constants import Constants
 
 if TYPE_CHECKING:
-    from sounds.models import Menu
+    from auntie_sounds.models import Menu
 
 
 class TestMenuLoading:
@@ -22,35 +22,35 @@ class TestMenuLoading:
         self, provider: BBCSoundsProvider, blank_menu: Menu, uk_menu: Menu
     ) -> None:
         """Test that when a blank menu, it is refreshed from the API."""
-        provider.menu = blank_menu
-        provider.menu_last_fetched = utc_timestamp()
+        provider.browse_manager.menu = blank_menu
+        provider.browse_manager.menu_last_fetched = utc_timestamp()
 
         async def fake_refresh() -> None:
-            provider.menu = uk_menu
+            provider.browse_manager.menu = uk_menu
 
-        provider._refresh_menu_from_api = AsyncMock(side_effect=fake_refresh)  # type: ignore[method-assign]
+        provider.browse_manager.refresh_menu_from_api = AsyncMock(side_effect=fake_refresh)  # type: ignore[method-assign]
 
-        await provider._get_menu()
+        await provider.browse_manager._get_menu()
 
-        provider._refresh_menu_from_api.assert_awaited_once()
-        assert provider.menu is uk_menu
+        provider.browse_manager.refresh_menu_from_api.assert_awaited_once()
+        assert provider.browse_manager.menu is uk_menu
 
     async def test_expired_menu_is_refreshed(
         self, provider: BBCSoundsProvider, uk_menu: Menu
     ) -> None:
         """Test that when a menu has expired, it is refreshed from the API."""
-        provider.menu = uk_menu
-        provider.menu_last_fetched = utc_timestamp() - _Constants.SHORT_EXPIRATION - 1
-        provider._refresh_menu_from_api = AsyncMock()  # type: ignore[method-assign]
+        provider.browse_manager.menu = uk_menu
+        provider.browse_manager.menu_last_fetched = utc_timestamp() - Constants.SHORT_EXPIRATION - 1
+        provider.browse_manager.refresh_menu_from_api = AsyncMock()  # type: ignore[method-assign]
 
-        await provider._get_menu()
+        await provider.browse_manager._get_menu()
 
-        provider._refresh_menu_from_api.assert_awaited_once()
+        provider.browse_manager.refresh_menu_from_api.assert_awaited_once()
 
     @pytest.mark.parametrize(
-        "last_fetched", [1788517216, 1788517216 - _Constants.SHORT_EXPIRATION + 1]
+        "last_fetched", [1788517216, 1788517216 - Constants.SHORT_EXPIRATION + 1]
     )
-    @patch.object(BBCSoundsProvider, "_menu_is_stale", new_callable=PropertyMock)
+    @patch.object(BrowseManager, "_menu_is_stale", new_callable=PropertyMock)
     async def test_valid_menu_is_not_refreshed(
         self,
         mock_menu_is_stale: PropertyMock,
@@ -60,12 +60,12 @@ class TestMenuLoading:
     ) -> None:
         """Test that when we have a valid menu, it isn't refreshed."""
         mock_menu_is_stale.return_value = False
-        provider.menu = uk_menu
-        provider.menu_last_fetched = last_fetched
-        provider._refresh_menu_from_api = AsyncMock()  # type: ignore[method-assign]
-        provider._convert_menu = AsyncMock(return_value=uk_menu.sub_items)  # type: ignore[method-assign]
+        provider.browse_manager.menu = uk_menu
+        provider.browse_manager.menu_last_fetched = last_fetched
+        provider.browse_manager.refresh_menu_from_api = AsyncMock()  # type: ignore[method-assign]
+        provider.browse_manager._convert_menu = AsyncMock(return_value=uk_menu.sub_items)  # type: ignore[method-assign]
 
-        result = await provider._get_menu()
+        result = await provider.browse_manager._get_menu()
 
-        provider._refresh_menu_from_api.assert_not_called()
-        assert result == uk_menu.sub_items
+        provider.browse_manager.refresh_menu_from_api.assert_not_called()
+        assert result == uk_menu.sub_items  # type: ignore[comparison-overlap]
