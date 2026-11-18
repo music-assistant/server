@@ -495,7 +495,7 @@ class SetupSession:
                         LOGGER.error("Ignoring non-object JSON setup flow callback body")
                 else:
                     params.update({key: str(val) for key, val in (await request.post()).items()})
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - an outside request body can fail to parse in many ways
                 LOGGER.error("Failed to parse setup flow callback body: %s", err)
         # encrypted config values are never accepted as callback params
         params = {key: val for key, val in params.items() if not val.startswith(ENCRYPT_SUFFIX)}

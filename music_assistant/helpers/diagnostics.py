@@ -173,7 +173,7 @@ class CapturedException:
         """Render the representative traceback as text (may read source files)."""
         try:
             return "".join(self.traceback_exc.format())[-MAX_TRACEBACK_CHARS:]
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - rendering a traceback can fail in any way
             return f"<traceback rendering failed: {err!r}>"
 
 
@@ -202,7 +202,7 @@ class DiagnosticsLogHandler(logging.Handler):
             )
             if record.exc_info and record.exc_info[0] is not None:
                 self._capture_exception(record, message)
-        except Exception:  # noqa: S110 - capturing diagnostics may never break logging itself
+        except Exception:  # noqa: S110, BLE001 - capturing diagnostics may never break logging itself
             pass
 
     def snapshot(self) -> tuple[list[CapturedLogRecord], list[CapturedException]]:

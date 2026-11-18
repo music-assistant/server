@@ -430,7 +430,7 @@ class MusicAssistant:
         # database, neither of which is there while the library migrates.
         try:
             await self.music.favorites.settle_pending()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a startup step must not stop the server
             # the parked rows stay where they are and get another chance on the next start
             LOGGER.warning("Could not hand out the migrated favorites: %s", err)
         # repair sidebar shortcuts left pointing at a provider instance that no longer exists:

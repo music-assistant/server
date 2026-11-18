@@ -56,6 +56,7 @@ from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.setup_flow import (
     AbortFlow,
     SetupFlowContext,
+    SetupFlowError,
     SetupSession,
     StepExpiredError,
 )
@@ -638,7 +639,7 @@ async def test_finish_failure_author_retry_loop(flow_mass: MusicAssistant) -> No
             try:
                 await session.finish(values)
                 return
-            except Exception as err:
+            except SetupFlowError as err:
                 values = await session.form([USERNAME_ENTRY], errors={"base": str(err)})
 
     load_mock = AsyncMock(side_effect=[LoginFailed("bad creds"), None])
