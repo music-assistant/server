@@ -43,6 +43,7 @@ from music_assistant.providers.jellyfin.parsers import (
     parse_album,
     parse_artist,
     parse_loudness,
+    parse_lyrics,
     parse_playlist,
     parse_track,
     set_api_key,
@@ -454,10 +455,18 @@ class JellyfinProvider(MusicProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         try:
-            track = await self._client.get_track(prov_track_id)
+            jellyfin_track = await self._client.get_track(prov_track_id)
         except NotFound:
             raise MediaNotFoundError(f"Item {prov_track_id} not found")
-        return parse_track(self.logger, self.instance_id, self._client, track)
+        track = parse_track(self.logger, self.instance_id, self._client, jellyfin_track)
+        try:
+            raw = await self._client._session.get_json(f"/Audio/{prov_track_id}/Lyrics", params={})
+            track.metadata.lyrics, track.metadata.lrc_lyrics = parse_lyrics(raw)
+        except NotFound, ClientResponseError:
+            pass
+        except Exception as err:
+            self.logger.debug("Could not fetch lyrics for %s: %s", prov_track_id, err)
+        return track
 
     @use_cache(60 * 15)  # Cache for 15 minutes
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
