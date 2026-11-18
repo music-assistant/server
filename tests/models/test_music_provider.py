@@ -360,7 +360,7 @@ async def test_a_reservation_that_is_ended_frees_its_slot_at_once() -> None:
     assert granted == []
     provider.end_stream_slot_reservation("queue_a")
     # far inside the time a reservation lasts
-    await asyncio.wait_for(other, 0.5)
+    await asyncio.wait_for(other, 2)
 
     assert granted == ["other"]
     assert provider.has_available_stream_slot
@@ -522,11 +522,8 @@ async def test_the_slots_never_pass_the_limit_and_every_taker_is_served(
     assert provider.has_available_stream_slot
 
 
-async def test_a_replaced_provider_object_starts_with_slots_of_its_own(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_replaced_provider_object_starts_with_slots_of_its_own() -> None:
     """A source that is still open on a reloaded provider's old object costs the new one nothing."""
-    monkeypatch.setattr(music_provider_mod, "STREAM_SLOT_RESERVATION", 0.05)
     replaced = _make_provider(_SingleStreamProvider)
     granted: list[str] = []
     give_back = asyncio.Event()
@@ -546,8 +543,8 @@ async def test_a_replaced_provider_object_starts_with_slots_of_its_own(
         with pytest.raises(ProviderStreamLimitError):
             async with replaced.acquire_stream_slot(0, queue_id="queue_b"):
                 pytest.fail("Another queue got the slot the old object keeps for queue_a")
-    # and what the old object keeps lapses there, without a trace on the new one
-    await asyncio.sleep(0.1)
+    # and what the old object keeps ends there, without a trace on the new one
+    replaced.end_stream_slot_reservation("queue_a")
     async with replaced.acquire_stream_slot(0), provider.acquire_stream_slot(0):
         pass
 

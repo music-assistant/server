@@ -275,7 +275,7 @@ async def test_a_matchless_search_falls_back_to_the_blocking_wait(
     mass.cache.set.assert_not_awaited()
 
 
-def _refuse_held(_instance: str, _queue_id: str, **_kwargs: object) -> None:
+def _refuse_held(_instance: str, _queue_id: str) -> None:
     """Stand in for the queues controller refusing the busy source's held slot."""
     provider = MagicMock(spec=MusicProvider)
     provider.max_concurrent_streams = 1

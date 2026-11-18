@@ -23,10 +23,7 @@ from music_assistant_models.enums import CrossfadeMode, QueueOption, RepeatMode
 
 import music_assistant.controllers.streams.audio as audio_mod
 import music_assistant.models.music_provider as music_provider_mod
-from music_assistant.models.music_provider import (
-    ProviderStreamHeldError,
-    ProviderStreamLimitError,
-)
+from music_assistant.models.music_provider import ProviderStreamLimitError
 from tests.controllers.streams.stream_slot_rig import (
     OTHER_QUEUE_ID,
     PCM_FORMAT,
@@ -775,9 +772,8 @@ async def test_a_stale_capture_gives_its_slot_to_another_queue(
     """
     A capture nobody needs makes way for playback on another player of the same account.
 
-    Its slot is kept for its own queue first, which goes on playing from that account: the
-    other player is refused as while that queue plays, and starts once the queue did not come
-    for the slot.
+    Its slot is kept for its own queue first, which goes on playing from that account, and
+    goes to the other player once that queue did not come for it.
     """
     monkeypatch.setattr(music_provider_mod, "STREAM_SLOT_RESERVATION", 0.2)
     playing, _prepared, _later = rig.play("track 0", "track 1", "track 2")
@@ -787,10 +783,7 @@ async def test_a_stale_capture_gives_its_slot_to_another_queue(
     )
     (other_track,) = rig.play("track 7", queue_id=OTHER_QUEUE_ID, session_id="session-b")
 
-    with pytest.raises(ProviderStreamHeldError):
-        await rig.ask(other_track)
-    await asyncio.sleep(0.25)
-    buffer = await rig.ask(other_track, wait=0)
+    buffer = await rig.ask(other_track, wait=30)
 
     assert buffer is not None
     assert rig.fills(buffer)

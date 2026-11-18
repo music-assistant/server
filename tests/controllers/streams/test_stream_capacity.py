@@ -105,7 +105,7 @@ def _held_error(instance: str) -> ProviderStreamHeldError:
     return ProviderStreamHeldError(provider, holder)
 
 
-def _refuse_busy(instance: str, _queue_id: str, **_kwargs: object) -> None:
+def _refuse_busy(instance: str, _queue_id: str) -> None:
     """Stand in for the queues controller refusing the busy instance's held slot."""
     if instance == BUSY_INSTANCE:
         raise _held_error(instance)
