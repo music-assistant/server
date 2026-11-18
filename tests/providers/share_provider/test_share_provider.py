@@ -24,7 +24,7 @@ async def test_share_page_address_is_an_advanced_setting() -> None:
 
     entry = next(entry for entry in entries if entry.key == "share_base_url")
     assert entry.advanced is True
-    assert entry.default_value == "https://app.music-assistant.io/share"
+    assert entry.default_value == "https://share.music-assistant.io"
 
 
 async def test_generate_share_link_rejects_playlist_without_fetching_tracks() -> None:

@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 CONF_SHARE_BASE_URL = "share_base_url"
-DEFAULT_SHARE_BASE_URL = "https://app.music-assistant.io/share"
+DEFAULT_SHARE_BASE_URL = "https://share.music-assistant.io"
 LOGGER = logging.getLogger(__name__)
 __all__ = ["SharePayload", "ShareProvider", "setup"]
 

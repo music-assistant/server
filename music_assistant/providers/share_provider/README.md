@@ -33,7 +33,7 @@ or the sender's Music Assistant instance URL. The metadata is compressed, not
 encrypted: anyone with the link can read it. Opening public provider links or
 loading artwork contacts those external services.
 
-The default share-page address is `https://app.music-assistant.io/share`.
+The default share-page address is `https://share.music-assistant.io`.
 The plugin's base URL setting can point to another deployment of the share page;
 enter it without a trailing slash.
 

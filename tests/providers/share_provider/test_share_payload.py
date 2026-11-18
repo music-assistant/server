@@ -44,7 +44,7 @@ def _encode_data(data: object) -> str:
 @pytest.mark.parametrize(
     ("configured_base_url", "expected_base_url"),
     [
-        (None, "https://app.music-assistant.io/share"),
+        (None, "https://share.music-assistant.io"),
         ("https://shares.example", "https://shares.example"),
     ],
 )
@@ -180,7 +180,7 @@ async def test_share_base_url_is_an_instance_config_option() -> None:
     entries = await _provider().get_config_entries()
     assert len(entries) == 1
     assert entries[0].key == "share_base_url"
-    assert entries[0].default_value == "https://app.music-assistant.io/share"
+    assert entries[0].default_value == "https://share.music-assistant.io"
 
 
 @pytest.mark.parametrize(
