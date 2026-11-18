@@ -220,6 +220,16 @@ async def _take(
             await give_back.wait()
 
 
+def _always() -> bool:
+    """Answer yes."""
+    return True
+
+
+def _never() -> bool:
+    """Answer no."""
+    return False
+
+
 async def _turns() -> None:
     """Let everything that can run without waiting for time run."""
     for _ in range(5):
@@ -556,7 +566,7 @@ async def test_a_wait_in_line_keeps_the_slot_for_its_queue() -> None:
     give_back = asyncio.Event()
     source = asyncio.create_task(_take(provider, granted, "source", "queue_a", give_back))
     await asyncio.sleep(0)
-    waiting = asyncio.create_task(provider.wait_for_stream_slot(5, "queue_b", lambda: False))
+    waiting = asyncio.create_task(provider.wait_for_stream_slot(5, "queue_b", _never, _always))
     await _turns()
     later = asyncio.create_task(_take(provider, granted, "later"))
     await _turns()
@@ -588,7 +598,7 @@ async def test_a_wait_in_line_is_refused_once_a_holder_has_audio() -> None:
             raise ProviderStreamLimitError(provider, None)
         return False
 
-    waiting = asyncio.create_task(provider.wait_for_stream_slot(5, "queue_b", _refuse))
+    waiting = asyncio.create_task(provider.wait_for_stream_slot(5, "queue_b", _refuse, _always))
     await _turns()
     assert asked == []
     async with provider.acquire_stream_slot(0, holder, queue_id="queue_a"):
@@ -610,7 +620,7 @@ async def test_a_wait_in_line_that_is_given_up_leaves_without_a_slot() -> None:
     granted: list[str] = []
     async with provider.acquire_stream_slot(0, queue_id="queue_a", reserve=lambda: True):
         pass
-    waiting = asyncio.create_task(provider.wait_for_stream_slot(5, "queue_b", lambda: True))
+    waiting = asyncio.create_task(provider.wait_for_stream_slot(5, "queue_b", _always, _always))
     await _turns()
     later = asyncio.create_task(_take(provider, granted, "later"))
     await _turns()
@@ -618,6 +628,57 @@ async def test_a_wait_in_line_that_is_given_up_leaves_without_a_slot() -> None:
     async with provider.acquire_stream_slot(0, MagicMock(ready=asyncio.Event()), "queue_a"):
         await asyncio.wait_for(waiting, 1)
         assert _in_line(provider) == 1
+    await asyncio.wait_for(later, 1)
+
+    assert granted == ["later"]
+    assert provider.stream_slot_reservations == ()
+
+
+async def test_a_wait_in_line_notices_a_source_that_takes_the_slot_in_the_same_turn() -> None:
+    """A source that takes the kept slot in the loop turn the wait starts wakes the wait too."""
+    provider = _make_provider(_SingleStreamProvider)
+    async with provider.acquire_stream_slot(0, queue_id="queue_a", reserve=lambda: True):
+        pass
+    holder = MagicMock(ready=asyncio.Event())
+    asked: list[bool] = []
+
+    def _refuse() -> bool:
+        asked.append(holder.ready.is_set())
+        if holder.ready.is_set():
+            raise ProviderStreamLimitError(provider, None)
+        return False
+
+    async def _source_takes_the_slot() -> None:
+        async with provider.acquire_stream_slot(0, holder, queue_id="queue_a"):
+            await asyncio.Event().wait()
+
+    waiting = asyncio.create_task(provider.wait_for_stream_slot(5, "queue_b", _refuse, _always))
+    # its first step runs in the same loop turn, right after the first step of the wait
+    source = asyncio.create_task(_source_takes_the_slot())
+    try:
+        await _turns()
+        holder.ready.set()
+        with pytest.raises(ProviderStreamLimitError):
+            await asyncio.wait_for(waiting, 1)
+        assert asked == [False, True]
+    finally:
+        source.cancel()
+        await asyncio.gather(waiting, source, return_exceptions=True)
+
+
+async def test_a_wait_in_line_that_no_longer_wants_the_slot_passes_it_on() -> None:
+    """A slot that comes free for a wait whose queue no longer wants it goes to who waits next."""
+    provider = _make_provider(_SingleStreamProvider)
+    granted: list[str] = []
+    async with provider.acquire_stream_slot(0, queue_id="queue_a", reserve=lambda: True):
+        pass
+    waiting = asyncio.create_task(provider.wait_for_stream_slot(5, "queue_b", _never, _never))
+    await _turns()
+    later = asyncio.create_task(_take(provider, granted, "later"))
+    await _turns()
+
+    provider.end_stream_slot_reservation("queue_a")
+    await asyncio.wait_for(waiting, 1)
     await asyncio.wait_for(later, 1)
 
     assert granted == ["later"]
@@ -633,7 +694,7 @@ async def test_a_wait_in_line_that_times_out_leaves_nothing_behind() -> None:
     await asyncio.sleep(0)
 
     with pytest.raises(ProviderStreamLimitError):
-        await provider.wait_for_stream_slot(0.05, "queue_b", lambda: False)
+        await provider.wait_for_stream_slot(0.05, "queue_b", _never, _always)
     give_back.set()
     await source
 

@@ -640,6 +640,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
         return (
             queue_data is not None
             and queue_data.queue.state == PlaybackState.PAUSED
+            # a play action of the queue is under way: its player reports the pause until the
+            # new track plays
+            and not queue_data.transitioning
             and player is not None
             and player.playback_state == PlaybackState.PAUSED
             and player.active_source == queue_id
