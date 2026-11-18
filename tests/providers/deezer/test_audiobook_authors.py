@@ -51,6 +51,16 @@ def _album_node(album_id: str, *artists: SimpleNamespace) -> SimpleNamespace:
     )
 
 
+def _search_hits(author: SimpleNamespace, *artists: SimpleNamespace) -> SimpleNamespace:
+    """Build a search result with one audiobook by the author, and these artists."""
+    return SimpleNamespace(
+        results=SimpleNamespace(
+            albums=SimpleNamespace(edges=[SimpleNamespace(node=_album_node("1", author))]),
+            artists=SimpleNamespace(edges=[SimpleNamespace(node=artist) for artist in artists]),
+        )
+    )
+
+
 @pytest.fixture
 def gql(provider: DeezerProvider) -> AsyncMock:
     """Stub the GraphQL client and wire up a real media manager."""
@@ -176,19 +186,18 @@ async def test_author_has_no_music(provider: DeezerProvider, gql: AsyncMock, met
     "media_types", [[MediaType.ARTIST, MediaType.AUDIOBOOK], [MediaType.ARTIST]]
 )
 async def test_search_lists_the_author_after_the_artist(
-    provider: DeezerProvider, gql: AsyncMock, media_types: list[MediaType]
+    provider: DeezerProvider,
+    gql: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    media_types: list[MediaType],
 ) -> None:
     """An artist who wrote an audiobook hit is listed a second time, as author."""
     conni, other = _artist_node("75255", "Conni"), _artist_node("2", "Conny")
-    gql.search.return_value = SimpleNamespace(
-        results=SimpleNamespace(
-            albums=SimpleNamespace(edges=[SimpleNamespace(node=_album_node("1", conni))]),
-            artists=SimpleNamespace(
-                edges=[SimpleNamespace(node=conni), SimpleNamespace(node=other)]
-            ),
-        )
-    )
+    gql.search.return_value = _search_hits(conni, conni, other)
     gql.check_audiobook_ids.return_value = {"1"}
+    monkeypatch.setattr(
+        provider.media_manager, "get_artist_albums", AsyncMock(return_value=["album"])
+    )
 
     result = await _unwrap(DeezerMediaManager.search)(provider.media_manager, "conni", media_types)
 
@@ -199,6 +208,35 @@ async def test_search_lists_the_author_after_the_artist(
         ("2", ArtistType.SINGER),
     ]
     assert len(result.audiobooks) == (MediaType.AUDIOBOOK in media_types)
+
+
+@pytest.mark.parametrize(
+    ("artist_albums", "listed"),
+    [
+        (AsyncMock(return_value=[]), ["author_32067711"]),
+        (AsyncMock(side_effect=TimeoutError), ["32067711", "author_32067711"]),
+    ],
+    ids=["no music", "check fails"],
+)
+async def test_search_lists_an_author_without_music_only_as_author(
+    provider: DeezerProvider,
+    gql: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    artist_albums: AsyncMock,
+    listed: list[str],
+) -> None:
+    """An author is only listed as artist too if the artist page has music."""
+    tilda = _artist_node("32067711", "Tilda Apfelkern")
+    gql.search.return_value = _search_hits(tilda, tilda)
+    gql.check_audiobook_ids.return_value = {"1"}
+    monkeypatch.setattr(provider.media_manager, "get_artist_albums", artist_albums)
+
+    result = await _unwrap(DeezerMediaManager.search)(
+        provider.media_manager, "tilda", [MediaType.ARTIST]
+    )
+
+    assert [artist.item_id for artist in result.artists] == listed
+    artist_albums.assert_awaited_once_with("32067711")
 
 
 async def test_library_lists_the_authors_of_its_audiobooks(

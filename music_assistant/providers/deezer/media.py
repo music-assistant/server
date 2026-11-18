@@ -73,6 +73,7 @@ from .parsers import (
 
 if TYPE_CHECKING:
     from deezer_python_gql.generated.get_artist import GetArtistArtistAlbumsEdgesNode
+    from deezer_python_gql.generated.search import SearchSearchResultsArtistsEdgesNode
 
     from .provider import DeezerProvider
 
@@ -505,18 +506,10 @@ class DeezerMediaManager:
                 for author in audiobook.authors
                 if isinstance(author, Artist)
             }
-            artists: list[Artist] = []
-            for edge in result.results.artists.edges:
-                if edge.node is None:
-                    continue
-                artists.append(parse_artist(self.provider, edge.node))
-                # an author of an audiobook hit also gets listed as author
-                if f"{AUTHOR_ARTIST_PREFIX}{edge.node.id}" in author_ids:
-                    metadata = parse_artist(self.provider, edge.node).metadata
-                    artists.append(
-                        parse_author(self.provider, edge.node.id, edge.node.name, metadata)
-                    )
-            search_results.artists = artists
+            search_results.artists = await self._search_artists(
+                [edge.node for edge in result.results.artists.edges if edge.node is not None],
+                author_ids,
+            )
         if MediaType.PLAYLIST in media_types:
             search_results.playlists = [
                 parse_playlist(self.provider, edge.node)
@@ -982,3 +975,29 @@ class DeezerMediaManager:
             [node.id for node in releases]
         )
         return releases, audiobook_ids
+
+    async def _search_artists(
+        self, nodes: list[SearchSearchResultsArtistsEdgesNode], author_ids: set[str]
+    ) -> list[Artist]:
+        """List the artist hits, and an author of an audiobook hit as author too."""
+        artists: list[Artist] = []
+        for node in nodes:
+            artist = parse_artist(self.provider, node)
+            if f"{AUTHOR_ARTIST_PREFIX}{node.id}" not in author_ids:
+                artists.append(artist)
+                continue
+            # an author is listed as artist too only if the artist page has music
+            try:
+                has_music = bool(await self.get_artist_albums(node.id))
+            except (
+                ClientError,
+                GraphQLClientError,
+                InvalidDataError,
+                RetriesExhausted,
+                TimeoutError,
+            ):
+                has_music = True
+            if has_music:
+                artists.append(artist)
+            artists.append(parse_author(self.provider, node.id, node.name, artist.metadata))
+        return artists
