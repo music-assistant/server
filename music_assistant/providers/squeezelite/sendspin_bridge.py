@@ -10,7 +10,9 @@ Every Sendspin stream is a session: one stream over HTTP that the player starts
 at an instant of its own clock, on silence. A player starts later than it is told, by
 an amount that differs from start to start: the bridge measures that from the first
 positions the player reports and corrects it in the silence, so the first audio is
-heard on the timeline. The sync loop holds it there from the positions the player
+heard on the timeline. A stream whose audio is already due at its start, such as a
+restart, gets that audio at once and has its start corrected in it. The sync loop holds
+it there from the positions the player
 reports, and once it has little left to correct the bridge keeps the stream seconds ahead
 of what the player plays, as far as Sendspin delivered its audio, so the player plays on
 through a stall of its network.
