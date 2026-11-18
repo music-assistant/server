@@ -227,7 +227,7 @@ class TimelineMixin:
                 if resp.status < 400:
                     subscription["last_update"] = time.time()
         except Exception as e:
-            LOGGER.debug(f"Failed to send timeline to {client_id}: {e}")
+            LOGGER.debug("Failed to send timeline to %s: %s", client_id, e)
 
     def _play_queue_params(self) -> dict[str, str]:
         """
@@ -261,7 +261,7 @@ class TimelineMixin:
                 if current_time - last_update > 90:
                     stale_clients.append(client_id)
             except ValueError, TypeError:
-                LOGGER.debug(f"Invalid last_update for client {client_id}, treating as stale")
+                LOGGER.debug("Invalid last_update for client %s, treating as stale", client_id)
                 stale_clients.append(client_id)
 
         for client_id in stale_clients:
