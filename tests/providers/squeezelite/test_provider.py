@@ -286,6 +286,27 @@ async def test_the_bridge_stream_route_follows_the_provider() -> None:
     assert removed == routes
 
 
+async def test_the_provider_follows_queue_changes_while_loaded() -> None:
+    """Queue changes reach the players while the provider is loaded, and no longer after."""
+    provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
+    provider.slimproto = MagicMock(start=AsyncMock(), stop=AsyncMock())
+    provider.mass = MagicMock()
+    provider.bridge_manager = MagicMock(close=AsyncMock())
+
+    with patch.object(PlayerProvider, "loaded_in_mass", new=AsyncMock()):
+        await provider.loaded_in_mass()
+
+    provider.mass.subscribe.assert_called_once_with(
+        provider._on_queue_updated, EventType.QUEUE_UPDATED
+    )
+    unsubscribe = provider.mass.subscribe.return_value
+    unsubscribe.assert_not_called()
+
+    await provider.unload()
+
+    unsubscribe.assert_called_once_with()
+
+
 async def test_a_provider_that_failed_to_load_unloads_without_a_bridge_manager() -> None:
     """An unload after a failed setup finds no bridge manager."""
     provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
