@@ -22,7 +22,6 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
-    MusicAssistantError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
@@ -759,8 +758,8 @@ class BookOrbitProvider(MusicProvider):
                 concurrency=PLAYLOG_SYNC_CONCURRENCY,
             )
             await self._save_playlog_progress_memory()
-        except (MusicAssistantError, ClientError, TimeoutError, TypeError, OSError) as err:
-            self.logger.warning("BookOrbit playlog sync failed: %s", err)
+        except Exception:
+            self.logger.warning("BookOrbit playlog sync failed", exc_info=True)
 
     async def _playlog_poll_loop(self) -> None:
         """Periodically refresh continue-listening progress from BookOrbit."""
@@ -772,8 +771,8 @@ class BookOrbitProvider(MusicProvider):
                 )
             except asyncio.CancelledError:
                 raise
-            except (MusicAssistantError, ClientError, TimeoutError, TypeError, OSError) as err:
-                self.logger.debug("BookOrbit playlog poll failed: %s", err)
+            except Exception:
+                self.logger.debug("BookOrbit playlog poll failed", exc_info=True)
 
     def _commit_applied_mapping_details(self, skipped_ids: set[str]) -> None:
         """Record fingerprints for books that synced; keep prior values for failures."""

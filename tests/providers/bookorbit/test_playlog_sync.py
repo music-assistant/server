@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from aiohttp import ClientError
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
+from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS
 from music_assistant.providers.bookorbit import BookOrbitProvider
@@ -667,16 +667,32 @@ async def test_provider_sync_playlog_uses_playlog_and_continue_listening(
 
 @pytest.mark.asyncio
 async def test_provider_sync_playlog_swallows_errors(provider: BookOrbitProvider) -> None:
-    """Expected playlog sync failures never propagate to sync_library."""
+    """Unexpected playlog sync failures never propagate to sync_library."""
     with (
         patch.object(provider, "_playlog_candidate_book_ids", AsyncMock(return_value={1})),
         patch(
             "music_assistant.providers.bookorbit.sync_playlog",
             new_callable=AsyncMock,
-            side_effect=ProviderUnavailableError("boom"),
+            side_effect=RuntimeError("boom"),
         ),
     ):
         await provider._sync_playlog_from_bookorbit()
+
+
+@pytest.mark.asyncio
+async def test_playlog_poll_loop_survives_unexpected_errors(
+    provider: BookOrbitProvider,
+) -> None:
+    """An unexpected sync error must not end the forever poll loop."""
+    sync_mock = AsyncMock(side_effect=[RuntimeError("boom"), asyncio.CancelledError])
+    with (
+        patch("music_assistant.providers.bookorbit.asyncio.sleep", AsyncMock()),
+        patch.object(provider, "_playlog_poll_candidate_book_ids", AsyncMock(return_value={3})),
+        patch.object(provider, "_sync_playlog_from_bookorbit", sync_mock),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await provider._playlog_poll_loop()
+    assert sync_mock.await_count == 2
 
 
 @pytest.mark.asyncio
