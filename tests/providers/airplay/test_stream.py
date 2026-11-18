@@ -17,7 +17,6 @@ from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_PASSWORD
 from music_assistant.helpers.named_pipe import WRITE_POLL_INTERVAL_MS, AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
@@ -76,6 +75,7 @@ def _make_player() -> MagicMock:
     player.device_info.model = "Test1,1"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
+    player.device_password = None
     player.player.active_group = None
     player.streaming_mode = STREAMING_MODE_AUTO
     player.streaming_mode_options = [
@@ -300,6 +300,17 @@ async def test_cli_args_raop_override() -> None:
     assert "--hostname" not in args
     assert "--ptp-shared" not in args
     assert "--encrypt" in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_pass_the_device_password() -> None:
+    """The password the player connects with is handed to the binary."""
+    player = _make_player()
+    player.device_password = "s3cret"
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--password") == "s3cret"
 
 
 @pytest.mark.asyncio
@@ -4584,13 +4595,11 @@ async def test_password_preflight_passes_with_password_or_credentials() -> None:
     player = _make_player()
     player.password_required = True
     player.get_setup_value = MagicMock(return_value=None)
-    player.config.get_value = MagicMock(
-        side_effect=lambda key, default=None: "s3cret" if key == CONF_PASSWORD else default
-    )
+    player.device_password = "s3cret"
     AirPlayStream(player)._check_password_preflight()
 
     # credentials alone are enough: the binary's pair-verify leg may still succeed
-    player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
+    player.device_password = None
     player.get_setup_value = MagicMock(
         side_effect=lambda key, default=None: (
             "ab" * 96 if key == CONF_AIRPLAY_CREDENTIALS else default
