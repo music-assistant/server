@@ -668,7 +668,7 @@ class SpotifyProvider(MusicProvider):
             except MediaNotFoundError:
                 raise NotImplementedError("Episode not found on Spotify")
             except (ResourceTemporarilyUnavailable, RetriesExhausted, aiohttp.ClientError) as e:
-                self.logger.debug(f"Error fetching episode {item_id}: {e}")
+                self.logger.debug("Error fetching episode %s: %s", item_id, e)
                 raise NotImplementedError("Unable to fetch episode data from Spotify")
 
             if (
@@ -727,7 +727,7 @@ class SpotifyProvider(MusicProvider):
                 RetriesExhausted,
                 aiohttp.ClientError,
             ) as e:
-                self.logger.debug(f"Failed to get audiobook resume position for {item_id}: {e}")
+                self.logger.debug("Failed to get audiobook resume position for %s: %s", item_id, e)
                 raise NotImplementedError("Unable to get audiobook resume position from Spotify")
 
         else:
@@ -760,8 +760,11 @@ class SpotifyProvider(MusicProvider):
                 completion_percentage = 0
 
             self.logger.debug(
-                f"Episode played: {prov_item_id} at {safe_position}s "
-                f"({completion_percentage:.1f}%, fully_played: {fully_played})"
+                "Episode played: %s at %ss (%.1f%%, fully_played: %s)",
+                prov_item_id,
+                safe_position,
+                completion_percentage,
+                fully_played,
             )
 
             # Note: No API exists to sync playback position back to Spotify for episodes
@@ -779,8 +782,11 @@ class SpotifyProvider(MusicProvider):
                 completion_percentage = 0
 
             self.logger.debug(
-                f"Audiobook played: {prov_item_id} at {safe_position}s "
-                f"({completion_percentage:.1f}%, fully_played: {fully_played})"
+                "Audiobook played: %s at %ss (%.1f%%, fully_played: %s)",
+                prov_item_id,
+                safe_position,
+                completion_percentage,
+                fully_played,
             )
 
             # No API exists to sync playback position back to Spotify for audiobooks:
@@ -1747,7 +1753,7 @@ class SpotifyProvider(MusicProvider):
                 audiobook.duration = int(total_duration_seconds)
 
         except (MediaNotFoundError, ResourceTemporarilyUnavailable, ProviderUnavailableError) as e:
-            self.logger.warning(f"Failed to get chapters for audiobook {audiobook.item_id}: {e}")
+            self.logger.warning("Failed to get chapters for audiobook %s: %s", audiobook.item_id, e)
 
     @use_cache(43200)  # 12 hours - balances freshness with performance
     async def _get_podcast_episodes_data(self, prov_podcast_id: str) -> list[dict[str, Any]]:
