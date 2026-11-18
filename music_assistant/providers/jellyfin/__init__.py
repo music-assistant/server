@@ -87,6 +87,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.LYRICS,
 }
 
 
