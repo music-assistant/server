@@ -1910,6 +1910,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # this is just a guard for bad data
             raise QueueEmpty("Invalid item id for queue given.")
         next_item: QueueItem | None = None
+        # another playback can take over the queue while an item loads
+        session_id = self._queue_data[queue_id].session_id
         idx = 0
         while True:
             next_index = self._get_next_index(queue_id, cur_index + idx)
@@ -1947,7 +1949,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     "Skipping unplayable item %s (%s): %s", queue_item.name, queue_item.uri, err
                 )
                 queue_item.available = False
-                if isinstance(err, AudioError) and self.report_source_failure(queue_item):
+                if isinstance(err, AudioError) and self.report_source_failure(
+                    queue_item, session_id
+                ):
                     raise QueueEmpty("No audio from the source of the next tracks.") from err
                 idx += 1
         if idx != 0:

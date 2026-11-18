@@ -266,6 +266,23 @@ async def test_the_next_item_path_stops_walking_when_the_queue_stops() -> None:
     assert all(rig.item(item_id).available for item_id in ("b", "c", "d"))
 
 
+async def test_a_next_item_that_fails_after_another_playback_took_over_is_not_counted() -> None:
+    """A next item of the playback that was replaced while it loaded does not count."""
+    rig = _Rig()
+
+    async def _load_item(*_args: Any, **_kwargs: Any) -> None:
+        rig.queue_data.session_id = "session-2"
+        raise AudioError("Timeout waiting for audio data")
+
+    rig.ctrl._load_item = _load_item  # type: ignore[method-assign]
+
+    with pytest.raises(QueueEmpty):
+        await rig.ctrl.load_next_queue_item(QUEUE_ID, "a")
+
+    assert rig.queue_data.failed_source_items == {}
+    rig.handle_stop.assert_not_awaited()
+
+
 async def test_a_session_that_no_longer_plays_is_not_counted() -> None:
     """A stream of an earlier session, or of a queue that stopped, ended by our own hand."""
     rig = _Rig()
