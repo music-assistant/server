@@ -1248,15 +1248,19 @@ class AirPlayPlayer(PlayerProtocol):
         """
         if self.player is None or not self.available or self._airplay_record_gone:
             return
-        # what both current records tell, never a role remembered from an earlier record
-        if (own := parse_set_membership(self.airplay_discovery_info)) is None or own.position != 0:
+        # What both current records tell, never a role remembered from an earlier record. The
+        # records of a pair tell roles only while idle, and these can swap: which HomePod carries
+        # the pair is decided once.
+        if (
+            own := parse_set_membership(self.airplay_discovery_info)
+        ) is None or own.position is None:
             return
         provider = cast("AirPlayProvider", self.provider)
         speaker_ids = {
             speaker.protocol_id
             for speaker in self.speakers
             if (membership := parse_set_membership(speaker.airplay_discovery_info))
-            and membership.position
+            and membership.position is not None
             # the room of a set is never taken for the old player of one of its speakers
             and not provider.has_stored_room(speaker.protocol_id)
         }

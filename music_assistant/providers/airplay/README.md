@@ -237,7 +237,8 @@ stereo layout), the second is its speaker, and both are fed the whole stereo str
   records tell: the one whose stored player is the multi-channel room, or else the one with role
   0, once both HomePods told their roles. Until then both are left alone.
 - The player the second HomePod had before is only removed when both current records tell
-  their roles, never on a remembered one, and never when that player is a multi-channel room.
+  their roles, whichever they are, never on a remembered one, and never when that player is a
+  multi-channel room.
 - A HomePod that is in a pair and in the set of an Apple TV belongs to the set of the Apple TV.
 
 ### Protocol ID Format

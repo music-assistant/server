@@ -1162,6 +1162,60 @@ async def test_a_pair_whose_roles_swap_keeps_its_room(
 
 
 @pytest.mark.usefixtures("apple_controls")
+async def test_the_bridges_follow_a_pair_that_forms_and_breaks_up(
+    scenario: Scenario, provider: AirPlayProvider
+) -> None:
+    """
+    The HomePod that carries a pair keeps its bridge, which follows what it plays on.
+
+    The other HomePod gives its bridge up while it is in the pair, and gets one again once
+    the pair is broken up.
+    """
+    await _announce(scenario, provider, _pair_homepod(SECOND_PAIR_HOMEPOD_ID, None))
+    bridges = cast("MagicMock", provider._bridge_manager)
+    bridges.reset_mock()
+
+    await _form_pair(scenario, provider)
+
+    cast("AsyncMock", bridges.remove_bridge).assert_any_await(SECOND_PAIR_HOMEPOD_PROTOCOL_ID)
+    bridges.update_endpoints.assert_called_with(FIRST_HOMEPOD_PROTOCOL_ID)
+    bridges.reset_mock()
+
+    for device_id in (FIRST_HOMEPOD_ID, SECOND_PAIR_HOMEPOD_ID):
+        await _announce(scenario, provider, _pair_homepod(device_id, None))
+
+    bridges.update_endpoints.assert_any_call(FIRST_HOMEPOD_PROTOCOL_ID)
+    evaluated = [
+        call.args[0] for call in cast("AsyncMock", bridges.evaluate_bridge).await_args_list
+    ]
+    assert provider.get_player(SECOND_PAIR_HOMEPOD_PROTOCOL_ID) in evaluated
+
+
+@pytest.mark.usefixtures("apple_controls")
+@pytest.mark.parametrize("first_homepod_first", [True, False])
+async def test_a_homepod_back_in_its_pair_in_the_other_role_loses_its_player_of_meanwhile(
+    scenario: Scenario, provider: AirPlayProvider, first_homepod_first: bool
+) -> None:
+    """
+    A HomePod that left its pair and came back with the roles swapped loses the player it had.
+
+    The HomePod that carries the pair keeps it, whatever role its own record tells by then.
+    """
+    room_player_id = await _form_pair(scenario, provider)
+    meanwhile = _player_of(
+        await _announce(scenario, provider, _pair_homepod(SECOND_PAIR_HOMEPOD_ID, None))
+    ).player_id
+
+    await _swap_roles(scenario, provider, first_homepod_first=first_homepod_first)
+
+    assert provider.get_player(SECOND_PAIR_HOMEPOD_PROTOCOL_ID) is None
+    assert await scenario.player_config(meanwhile) is None
+    pair = provider.get_player(FIRST_HOMEPOD_PROTOCOL_ID)
+    assert pair is not None
+    assert _player_of(pair).player_id == room_player_id
+
+
+@pytest.mark.usefixtures("apple_controls")
 @pytest.mark.parametrize("first_homepod_first", [True, False])
 async def test_a_pair_whose_roles_swapped_across_a_restart_keeps_its_room(
     scenario: Scenario, provider: AirPlayProvider, first_homepod_first: bool
