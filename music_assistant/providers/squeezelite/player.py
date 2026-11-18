@@ -37,6 +37,7 @@ from .constants import (
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
     CONF_STORED_VOLUME,
+    REPEATMODE_BY_LMS_VALUE,
     REPEATMODE_MAP,
     STATE_MAP,
 )
@@ -44,6 +45,7 @@ from .constants import (
 if TYPE_CHECKING:
     from aioslimproto.client import SlimClient
     from aioslimproto.models import MediaMetadata
+    from music_assistant_models.player_queue import PlayerQueue
 
     from .provider import SqueezelitePlayerProvider
     from .sendspin_bridge import SendspinSqueezeliteBridge
@@ -129,6 +131,17 @@ class SqueezelitePlayer(PlayerProtocol):
         if (bridge := self.sendspin_bridge) is not None:
             # the stream of the bridge plays on from track to track
             bridge.update_now_playing()
+        if queue := self._active_queue():
+            self._report_repeat_shuffle(queue)
+
+    def on_queue_updated(self, queue_id: str) -> None:
+        """
+        Report repeat and shuffle to the client when the queue the player plays changes.
+
+        :param queue_id: The id of the queue that changed.
+        """
+        if (queue := self._active_queue()) and queue.queue_id == queue_id:
+            self._report_repeat_shuffle(queue)
 
     async def on_remove(self) -> None:
         """Handle logic when the protocol is removed for good."""
@@ -353,11 +366,7 @@ class SqueezelitePlayer(PlayerProtocol):
                 "queue_item_id": media.queue_item_id,
             },
         )
-        queue = None
-        if media.source_id and (queue := self.mass.player_queues.get(media.source_id)):
-            if self.player is not None:
-                self.player.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
-                self.player.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
+        queue = self.mass.player_queues.get(media.source_id) if media.source_id else None
         # live streams and announcements start on a smaller buffer (KB, tenths of a second) to cut
         # latency; a short announcement would never fill the default 2 second output buffer
         low_latency_stream = media.media_type in (
@@ -421,14 +430,7 @@ class SqueezelitePlayer(PlayerProtocol):
         # event data is str, not dict
         # TODO: fix this in the aioslimproto lib
         event_data = cast("str", event.data)
-        if self.player is None:
-            return
-        # while the player plays for its Sendspin bridge, its buttons act on the player
-        # that leads its Sendspin group
-        bridge = self.sendspin_bridge
-        player_id = (bridge.transport_command_target() if bridge else None) or self.player.player_id
-        queue = self.mass.player_queues.get_active_queue(player_id)
-        if not queue:
+        if not (queue := self._active_queue()):
             return
         if event_data.startswith("button preset_") and event_data.endswith(".single"):
             preset_id = event_data.split("preset_")[1].split(".")[0]
@@ -436,8 +438,13 @@ class SqueezelitePlayer(PlayerProtocol):
             if len(self.client.presets) >= preset_index + 1:
                 preset = self.client.presets[preset_index]
                 await self.mass.player_queues.play_media(queue.queue_id, preset.uri)
-        elif event_data == "button repeat":
-            if queue.repeat_mode == RepeatMode.OFF:
+        elif event_data == "button repeat" or event_data.startswith("playlist repeat"):
+            # a client such as a WiiM sends the mode it wants as its LMS number; a button,
+            # or a request without a number, cycles through the modes
+            lms_value = event_data.removeprefix("playlist repeat ")
+            if lms_value in REPEATMODE_BY_LMS_VALUE:
+                repeat_mode = REPEATMODE_BY_LMS_VALUE[lms_value]
+            elif queue.repeat_mode == RepeatMode.OFF:
                 repeat_mode = RepeatMode.ONE
             elif queue.repeat_mode == RepeatMode.ONE:
                 repeat_mode = RepeatMode.ALL
@@ -448,8 +455,13 @@ class SqueezelitePlayer(PlayerProtocol):
             # updates once the session's options echo lands
             self.client.extra_data["playlist repeat"] = REPEATMODE_MAP[repeat_mode]
             self.client.signal_update()
-        elif event_data == "button shuffle":
-            shuffle_enabled = not queue.shuffle_enabled
+        elif event_data == "button shuffle" or event_data.startswith("playlist shuffle"):
+            lms_value = event_data.removeprefix("playlist shuffle ")
+            # LMS shuffles by track (1) or by album (2); without a number it toggles
+            if lms_value in ("0", "1", "2"):
+                shuffle_enabled = lms_value != "0"
+            else:
+                shuffle_enabled = not queue.shuffle_enabled
             await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled)
             self.client.extra_data["playlist shuffle"] = int(shuffle_enabled)
             self.client.signal_update()
@@ -497,6 +509,30 @@ class SqueezelitePlayer(PlayerProtocol):
             self.logger.warning(
                 "Failed to handle the play or pause button of %s: %s", self.display_name, err
             )
+
+    def _active_queue(self) -> PlayerQueue | None:
+        """Return the queue the player plays and its buttons act on."""
+        if self.player is None:
+            return None
+        # while the player plays for its Sendspin bridge, that is the queue of the player
+        # that leads its Sendspin group
+        bridge = self.sendspin_bridge
+        player_id = (bridge.transport_command_target() if bridge else None) or self.player.player_id
+        return self.mass.player_queues.get_active_queue(player_id)
+
+    def _report_repeat_shuffle(self, queue: PlayerQueue) -> None:
+        """Report repeat and shuffle of a queue in the status the client polls or is pushed."""
+        repeat = REPEATMODE_MAP[queue.repeat_mode]
+        shuffle = int(queue.shuffle_enabled)
+        extra_data = self.client.extra_data
+        if (
+            extra_data.get("playlist repeat") == repeat
+            and extra_data.get("playlist shuffle") == shuffle
+        ):
+            return
+        extra_data["playlist repeat"] = repeat
+        extra_data["playlist shuffle"] = shuffle
+        self.client.signal_update()
 
     @property
     def _plays_for_bridge(self) -> bool:

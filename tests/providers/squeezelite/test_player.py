@@ -34,6 +34,7 @@ from music_assistant.providers.squeezelite.constants import (
     CONF_ENTRY_VISUALIZATION,
     CONF_STORED_VOLUME,
     DEFAULT_PLAYER_VOLUME,
+    REPEATMODE_MAP,
 )
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer, is_protocol_only_device
 from music_assistant.providers.squeezelite.provider import SqueezelitePlayerProvider
@@ -589,6 +590,95 @@ async def test_buttons_act_on_the_player_that_leads_the_sendspin_group(
 
     mass.player_queues.get_active_queue.assert_called_once_with(queue_of)
     mass.player_queues.next.assert_awaited_once_with(queue.queue_id)
+
+
+@pytest.mark.parametrize(
+    ("target", "queue_of"), [("living_room", "living_room"), (None, "kitchen")]
+)
+def test_the_client_shows_repeat_and_shuffle_of_the_queue_it_plays(
+    target: str | None, queue_of: str
+) -> None:
+    """While the player plays for its bridge, that is the queue of its Sendspin group."""
+    player, bridge = _player_with_bridge()
+    mass = cast("MagicMock", player.mass)
+    player._player = MagicMock(player_id="kitchen")
+    bridge.transport_command_target.return_value = target
+    queue = mass.player_queues.get_active_queue.return_value
+    queue.repeat_mode = RepeatMode.ONE
+    queue.shuffle_enabled = True
+    client = cast("MagicMock", player.client)
+    client.extra_data = {"playlist repeat": 0, "playlist shuffle": 0}
+
+    player.on_player_media_updated()
+
+    mass.player_queues.get_active_queue.assert_called_once_with(queue_of)
+    assert client.extra_data == {"playlist repeat": 1, "playlist shuffle": 1}
+    client.signal_update.assert_called_once_with()
+
+
+def _queue_of_a_player_alone(player: SqueezelitePlayer) -> MagicMock:
+    """Return the queue of the player itself, for a player without a Sendspin bridge."""
+    mass = cast("MagicMock", player.mass)
+    player._player = MagicMock(player_id="kitchen")
+    player.sendspin_bridge = None
+    player.logger = MagicMock()
+    player.client = MagicMock(extra_data={})
+    mass.player_queues.set_repeat = AsyncMock()
+    mass.player_queues.set_shuffle = AsyncMock()
+    return cast("MagicMock", mass.player_queues.get_active_queue.return_value)
+
+
+def _cli_event(data: str) -> SlimEvent:
+    """Return a CLI request aioslimproto passes on for the client."""
+    return SlimEvent(type=SlimEventType.PLAYER_CLI_EVENT, player_id="p1", data=data)
+
+
+@pytest.mark.parametrize(
+    ("event_data", "before", "after"),
+    [
+        ("playlist repeat 0", RepeatMode.ONE, RepeatMode.OFF),
+        ("playlist repeat 1", RepeatMode.ONE, RepeatMode.ONE),
+        ("playlist repeat 2", RepeatMode.OFF, RepeatMode.ALL),
+        ("playlist repeat", RepeatMode.OFF, RepeatMode.ONE),
+        ("button repeat", RepeatMode.ALL, RepeatMode.OFF),
+    ],
+)
+async def test_a_repeat_from_the_client_sets_its_queue(
+    event_data: str, before: RepeatMode, after: RepeatMode
+) -> None:
+    """A WiiM sets repeat by its LMS number; a button, or a request without one, cycles."""
+    player, mass = _player_with_mocked_mass()
+    queue = _queue_of_a_player_alone(player)
+    queue.repeat_mode = before
+
+    await player._handle_player_cli_event(_cli_event(event_data))
+
+    mass.player_queues.set_repeat.assert_awaited_once_with(queue.queue_id, after)
+    assert player.client.extra_data == {"playlist repeat": REPEATMODE_MAP[after]}
+
+
+@pytest.mark.parametrize(
+    ("event_data", "before", "after"),
+    [
+        ("playlist shuffle 0", True, False),
+        ("playlist shuffle 1", True, True),
+        ("playlist shuffle 2", False, True),
+        ("playlist shuffle", True, False),
+        ("button shuffle", False, True),
+    ],
+)
+async def test_a_shuffle_from_the_client_sets_its_queue(
+    event_data: str, before: bool, after: bool
+) -> None:
+    """A WiiM sets shuffle by its LMS number; a button, or a request without one, toggles."""
+    player, mass = _player_with_mocked_mass()
+    queue = _queue_of_a_player_alone(player)
+    queue.shuffle_enabled = before
+
+    await player._handle_player_cli_event(_cli_event(event_data))
+
+    mass.player_queues.set_shuffle.assert_awaited_once_with(queue.queue_id, after)
+    assert player.client.extra_data == {"playlist shuffle": int(after)}
 
 
 def _button_event(data: dict[str, int | str]) -> SlimEvent:

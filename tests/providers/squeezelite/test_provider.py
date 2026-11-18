@@ -10,8 +10,9 @@ from aiosendspin.clock import ManualClock, RawMonotonicClock
 from aioslimproto.cli import SlimCLICommand, parse_args
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
-from music_assistant_models.enums import ProtocolRole, ProviderFeature
+from music_assistant_models.enums import EventType, ProtocolRole, ProviderFeature
 from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.event import MassEvent
 
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.squeezelite import SUPPORTED_FEATURES
@@ -53,6 +54,19 @@ def test_a_client_that_connects_is_set_up() -> None:
 
     player_class.assert_called_once_with(provider, "p1", client)
     provider.mass.create_task.assert_called_once_with(player_class.return_value.setup.return_value)
+
+
+def test_a_change_of_a_queue_reaches_every_player() -> None:
+    """Each player hears of a changed queue: the ones that play it show its repeat and shuffle."""
+    provider = MagicMock()
+    provider.protocols = [MagicMock(), MagicMock()]
+
+    SqueezelitePlayerProvider._on_queue_updated(
+        provider, MassEvent(event=EventType.QUEUE_UPDATED, object_id="queue_1")
+    )
+
+    for protocol in provider.protocols:
+        protocol.on_queue_updated.assert_called_once_with("queue_1")
 
 
 def test_the_display_name_is_the_one_set_in_music_assistant() -> None:
@@ -270,6 +284,27 @@ async def test_the_bridge_stream_route_follows_the_provider() -> None:
     provider.mass.streams.unregister_dynamic_route.assert_any_call(BRIDGE_STREAM_PATH)
     removed = [route.args[0] for route in provider.mass.streams.unregister_dynamic_route.mock_calls]
     assert removed == routes
+
+
+async def test_the_provider_follows_queue_changes_while_loaded() -> None:
+    """Queue changes reach the players while the provider is loaded, and no longer after."""
+    provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
+    provider.slimproto = MagicMock(start=AsyncMock(), stop=AsyncMock())
+    provider.mass = MagicMock()
+    provider.bridge_manager = MagicMock(close=AsyncMock())
+
+    with patch.object(PlayerProvider, "loaded_in_mass", new=AsyncMock()):
+        await provider.loaded_in_mass()
+
+    provider.mass.subscribe.assert_called_once_with(
+        provider._on_queue_updated, EventType.QUEUE_UPDATED
+    )
+    unsubscribe = provider.mass.subscribe.return_value
+    unsubscribe.assert_not_called()
+
+    await provider.unload()
+
+    unsubscribe.assert_called_once_with()
 
 
 async def test_a_provider_that_failed_to_load_unloads_without_a_bridge_manager() -> None:
