@@ -40,7 +40,11 @@ from music_assistant_models.player_control import PlayerControl
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import CONF_PLAY_MEDIA_OVERRIDES_GROUP, CONF_POWER_CONTROL
+from music_assistant.constants import (
+    CONF_PLAY_MEDIA_OVERRIDES_GROUP,
+    CONF_POWER_CONTROL,
+    CONF_POWER_CONTROL_CUTS_POWER,
+)
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -428,9 +432,10 @@ async def test_a_request_without_option_that_adds_leaves_a_switched_off_owner_of
     setup = _Setup("synced", True, QueueOption.ADD.value)
     mass = cast("MagicMock", setup.players.mass)
     raw_config = mass.config.get_player_value.side_effect
+    on_the_plug = {CONF_POWER_CONTROL: "plug", CONF_POWER_CONTROL_CUTS_POWER: True}
     mass.config.get_player_value.side_effect = lambda player_id, key, default=None: (
-        "plug"
-        if key == CONF_POWER_CONTROL and player_id == "b"
+        on_the_plug[key]
+        if key in on_the_plug and player_id == "b"
         else raw_config(player_id, key, default)
     )
     setup.players._controls["plug"] = PlayerControl(

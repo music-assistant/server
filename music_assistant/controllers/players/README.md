@@ -196,9 +196,14 @@ Dependencies point one way:
 
 ## Player Types and Protocol Roles
 
-The type of a player (`PlayerType.PLAYER`, `GROUP`, `STEREO_PAIR`, and the kinds of Sendspin
+The type of a player (`PlayerType.PLAYER`, `GROUP`, `MULTI_CHANNEL`, and the kinds of Sendspin
 clients) is that of its own protocol, else the one stored for it. A player is never of the type
-`PROTOCOL`.
+`PROTOCOL`, and a `STEREO_PAIR` reads as `MULTI_CHANNEL`. A multi-channel player is one set of
+speakers that belong together (a stereo pair, a home theater set) and acts like a single speaker:
+it joins groups, leads a sync session and counts with its own level in the group volume. Its own
+protocol reports the layout of its speakers (`channel_layout`: stereo, 2.1, 5.1, ...). That
+protocol, of the primary speaker, delivers the set. The other speakers of the set have no player:
+their provider reports them, and their old players are removed (see [Lifecycle](#lifecycle)).
 
 What a protocol is for its device is its role (`ProtocolRole`):
 - `NATIVE`: the vendor's own control plane (Sonos, Bluesound, an Apple device over AirPlay, ...).
@@ -396,6 +401,7 @@ The lifecycle of players and protocols lives in [lifecycle.py](lifecycle.py).
 | A device goes away, or its provider unloads (`unregister`) | The protocol is detached and `on_detach()` runs. The player stays, unavailable while no other protocol is, and keeps its queue; the queue only stops when this protocol was the one that played. A player that only exists while connected and has no record goes with its last protocol, unless its queue has items: then it gets its record first (as `keep_player` gives it) and stays. |
 | A provider forgets a device (`remove_protocol`) | The protocol record goes, and so do the protocols that ride on it. An output or control choice of the player that names it falls back to its default. The player goes for good when no protocol record of it is left. |
 | The user removes a player | The player goes for good, with its protocol records, DSP and queue settings, saved queue, group memberships and user filter entries; `PLAYER_REMOVED` is sent once, also for a disabled player, which is not live. Every protocol gets `on_remove()`, also one whose player is not live. A device still on the network comes back as a new player. |
+| A provider reports the other speakers of a set (`remove_absorbed_players`) | Their players are removed for good, as when the user removes them, except that their providers are not asked to look for their devices again; a speaker that leaves its set later is found again as a new player. The ids of another provider, of the set's own player and of a group are skipped, and a report while the server shuts down removes nothing. |
 | The user removes what is unavailable | Every player that no protocol reaches goes for good, once its providers are loaded and had time to find their devices again. While only players remain whose providers still need that time, the request is refused, also as a dry run. |
 | The user disables a player | It is powered off (or stopped, without a power control), its protocols are detached and the player leaves the registry with a last `PLAYER_UPDATED` that says it is disabled and unavailable, whatever its power control, followed by the `PLAYER_CONFIG_UPDATED` of the save; it is not removed. Its config, its id and its saved queue stay. |
 | The user enables a player | It is created from its record, unavailable until a protocol attaches. |
@@ -408,7 +414,8 @@ config it stored for it. A failing attach is rolled back the same way.
 
 The controller asks providers to look for their devices again a few seconds later
 (`provider.schedule_discovery()`) when a device may be found again: after a player is enabled,
-after a player that is not a group is removed, and when a protocol that is not attached moves to
+after a player that is not a group is removed (not after the removal of the other speakers of a
+set), and when a protocol that is not attached moves to
 another player (in a merge, or when it is taken off its player) or is switched on again as an
 output.
 
@@ -575,50 +582,72 @@ control that only keeps the state in Music Assistant (kept across restarts, exce
 none, or an external power control (a `PlayerControl`, such as a smart plug another provider
 registers). Without a choice it is native when the own protocol supports power, else none.
 
-A player switched off at its external power control is published as available and powered off, so
-a client can still power it on or play to it. What a command does with it is part of the command
-(`SwitchedOffAction`): play, resume, play media and select source power it on first and wait for
-the device; stop and pause call off a power on under way and otherwise do nothing; volume, mute and
-ungroup do nothing; power, play/pause and announcements handle it themselves; every other command
-is refused.
+An external power control is a plain switch unless the user says that it cuts the power of the
+player itself, as a smart plug does (`power_control_cuts_power`, offered with the start-up time
+`power_on_startup_time` once an external control is the power control of the player, never for a
+group player). As a plain switch it changes nothing else about the player: the player is
+available while one of its protocols reaches its device, and a power on switches the control on
+and waits up to 15 seconds (`POWER_ON_REPORT_TIMEOUT`) for it to report on.
 
-Such a player is the one case of a player that is available and can not play yet, and it stays
-that while a power on still waits for its device, when it already shows as powered on. Code
-outside the controller reads the published `available` of another player to decide whether that
-player may take part, as a client does, and `offline_by_power_control` next to it where it has to
-know that the device is there now. It never switches the player on through its protocol or its
-control: the controller does that.
+A player whose power control cuts its power is off, starting up or on
+(`Player.offline_by_power_control` is true while it is off or starting up):
 
-Whether the device of a player with an external power control is there is told by the attached
-protocol that reports for it, its `device_protocol`: the player is switched off once that protocol
-no longer reaches the device while the control is off, and it is back once that protocol reaches
-it again. What its other protocols read does not count: an AirPlay receiver can read available
-for minutes after the power was cut. A device protocol that only controls needs an audio protocol
-that reaches the device next to it.
+| State | When | What clients see |
+|---|---|---|
+| Off | The control reads off | Available, powered off, idle |
+| Starting up | The control reads on and the start-up time of the player runs | Available, powered on, idle |
+| On | The control reads on and no start-up time runs | What its protocols report, as for any player |
 
-A protocol notices a power cut at its own pace, some only minutes later. So a few seconds after
-the control reports off (`DEVICE_CHECK_DELAY`), the device protocol is asked to check its device
-now (`PlayerProtocol.check_device`), unless it reads unavailable already or the control reports on
-again meanwhile; a protocol that finds its device gone reads unavailable. While a power on waits
-for the device, the device protocol is asked every few seconds to reach it
-(`DEVICE_CHECK_INTERVAL`), so it is back with its device instead of on its own reconnect backoff.
-A check runs in a task of its own and holds no lock; one that raises or does not come back within
-10 seconds changes nothing. A check is called off when its protocol is taken off its player, and
-a check that is still due when the player is removed or disabled goes with it. The controller
-keeps nothing about the device itself: what the device protocol reads stays the only truth. Until
-the device protocol finds the cut, by a check or by itself, the player reads as reachable and
-powered off, and a play in that window switches the control on and starts at once: a play within
-those first seconds, a device protocol that can not check, a power cut without an off report of
-the control. While the control is on and no power on waits, no new check starts: one that already
-runs when the control reports on, or that outlives the power on that started it, comes back by
-itself. The player plays through any protocol that reaches its device.
+What its protocols read does not count while it is off or starting up: an AirPlay receiver can
+read available for minutes after the power was cut, and a device that still boots can be found
+long before it plays. The start-up time (30 seconds unless the user sets another) runs from the
+moment the controller switches the control on, or from the report of the control that it came on
+when it was switched on elsewhere, and does not start over while it runs. It only follows a power
+cut. Home Assistant reports an entity that is unavailable for a moment as off, so a control that
+reads off counts as a cut once it has stayed off for `EXTERNAL_POWER_OFF_STOP_DELAY`, at once when
+the controller switched it off itself or the player was still starting up, and also when it reads
+off since before the server started. A control that comes back on sooner cut nothing: the player
+shows as off for that moment, no start-up time runs and what it played plays on.
+
+The protocols of the player are told (`_tell_protocols`): `on_power_cut` when the power counts as
+cut, and `on_power_restored` when the start-up time is over, so a protocol can drop its connection
+and connect again without waiting for its own detection or reconnect. They get
+`POWER_RESTORE_TIMEOUT` for it, as does a protocol that is still attaching. Then the player is on,
+and plays through any protocol that reaches its device.
+
+A player that is off or starting up is published as available, so a client can still power it on
+or play to it. What a command does with it is part of the command (`SwitchedOffAction`): play,
+resume, play media and select source power it on first; stop and pause call off a power on under
+way and otherwise do nothing; volume, mute and ungroup do nothing; power, play/pause and
+announcements handle it themselves; every other command is refused. A power on
+(`_power_on_switched_off_player`) switches the control on, unless the player starts up already,
+and waits for the rest of the start-up time. When no protocol can play by then, or one is still
+attaching, the command fails with the hint to raise the start-up time, and the player reads
+unavailable until a protocol reaches its device. A stop or a pause fails the commands that wait
+and leaves the control on: the start-up time runs on, and a later command waits for what is left
+of it. A switch-on that fails, or whose command is cancelled, ends the start-up only while the
+control still reads off, and the power is then cut as it was; once the control reads on, the
+start-up time runs on. A power off fails them too, switches the control off and ends the
+start-up. So does a change of the power control of the player, or of the setting that says it
+cuts its power: what
+the controller kept belongs to the control the player had (`_drop_power_state`), so a start-up
+time that runs ends, and a control that read off is no longer waited for to count as a cut.
+Protocols that were told of a power cut are then told that the power is back, as they are when
+the control itself goes away: nothing else tells them any more, so each `on_power_cut` is
+followed by an `on_power_restored`.
+
+Such a player is the one case of a player that is available and can not play yet. Code outside the
+controller reads the published `available` of another player to decide whether that player may
+take part, as a client does, and `offline_by_power_control` next to it where it has to know that
+the device is there now. It never switches the player on through its protocol or its control: the
+controller does that.
 
 A command that starts a group player waits for the members that are switched off at their power
 control: a play, a resume, a play of an item or of media on its queue, a play or a power on of
 the group player, a selection of a source that plays, a next, a previous or a seek on a group
 player that does not play, a play on a member that goes to its group, and a queue transfer that
-plays on it. Before it takes any lock it powers those members on and waits until their devices are
-online, all at once and each for at most 90 seconds (`_power_on_members`). Then it runs as it
+plays on it. Before it takes any lock it powers those members on and waits until they have started
+up, all at once and each for its own start-up time (`_power_on_members`). Then it runs as it
 does for a group whose members are on, so the group starts once, on all of them. `cmd_set_members`
 does the same for the players it adds to a leader or a group. The user who sends the command
 needs access to the group player (or the leader), not to each member.
@@ -632,8 +661,9 @@ move has played takes its place (`_drop_pending_step`): the move is dropped whil
 on, the start waits for the same members, and a resume or a play then starts the item the queue
 was moved to, from its beginning.
 
-A member that does not come online in time, or whose control fails to switch it on, is left out
-with one warning that names the member and the group, and the group starts on the others (a sync
+A member that no protocol reaches after its start-up time, or whose control fails to switch it on,
+is left out with one warning that names the member and the group, and the group starts on the
+others (a sync
 group that forms without a member also logs that, as it does for any member it can not reach).
 When no member can play, the command fails as it does for any group without a member that can
 play.
@@ -641,13 +671,19 @@ play.
 A stop, a pause or a power off of the group calls that wait off (`_cancel_member_power_ons`), also
 that of a member whose playback the group owns, and a power off of a group that still reads as off
 while it waits. The command that waits fails as unavailable and starts nothing, also
-not on the members that are on. The power controls stay on, and a device that comes online
+not on the members that are on. The power controls stay on, and a member that has started up
 afterwards stays idle (a sync group with a fixed member list that is formed takes a returning
 member back, as it does without this). Stopping the leader or group that a player is added to ends
 the addition the same way, and removing that player from it ends the wait for that player alone. A
-new start right after that waits again for a member whose device still boots: its control is on,
-switched on less than those 90 seconds ago, and it is waited for until they are over, without
+new start right after that waits for what is left of the start-up time of such a member, without
 switching its control once more.
+
+Two stops the server sends by itself do not call a wait off: while a command still waits for
+players to start up before it acts on a player (`_has_waiting_start`), the pause timeout of a
+queue does not stop the paused queue of that player and counts again from the end of the wait,
+and the stop that follows a power off outside of Music Assistant looks again once the wait is
+over. A sleep timer that ends is a stop the user asked for and calls the wait off, and so does
+the stop that frees a stream slot for another queue.
 
 Only such a command switches a member on; nothing does because a state changed. A play on a group
 player that plays already is ignored, as on any player, and switches nothing on. Neither does a
@@ -663,8 +699,8 @@ switched-off player powers that player on.
 A player whose power is turned off outside of Music Assistant while it plays its own queue has that
 queue stopped shortly after; a group member leaves its group instead. A player with an idle power
 off time is powered off once it was available, powered on and stopped for that long. An
-announcement that plays, a power on that still waits for the device, or a start that powered the
-player on and still waits for another one, holds that off.
+announcement that plays, a start-up time that still runs, or a start that powered the player on
+and still waits for another one, holds that off.
 
 ### Sleep Timer, Announcements and Audio Sources
 
@@ -679,10 +715,12 @@ player on and still waits for another one, holds that off.
   level. A group announcement goes to the
   members when they can start it together. An announcement holds the player (and its group) for as
   long as it plays.
-- **Audio sources** ([audio_sources.py](audio_sources.py)): a live source of a plugin (an
-  `AudioSource`, such as Spotify Connect) plays on a player independently of its queue. The
-  controller keeps the session per player and passes the transport commands for it to the plugin
-  that owns it; the queue keeps its items and goes inactive meanwhile.
+- **Audio sources** ([audio_sources.py](audio_sources.py)): a live source of a provider (an
+  `AudioSource`, such as Spotify Connect) plays on a player independently of its queue. Any
+  provider type can deliver them by mixing in `AudioSourceMixin`
+  (`music_assistant/models/media_capabilities.py`). The controller keeps the session per player
+  and passes the transport commands for it to the provider that owns it; the queue keeps its
+  items and goes inactive meanwhile.
 - **An app from outside**: an app Music Assistant did not start can play on an audio protocol of the
   player, such as a stream cast from a phone to its Chromecast receiver. The player shows it unless
   an audio protocol is its active output, its own protocol plays (a paused player keeps its place
@@ -773,8 +811,8 @@ the group up front costs nothing further down the call chain. The re-entrancy is
 group command fans out to its members in tasks of their own (a group announcement), those tasks
 take the member's lock only.
 
-A command that waits for a device holds no lock meanwhile: a power on of a player that is
-switched off at its power control, and that of the members of a group that is started or of the
+A command that waits for a player to start up holds no lock meanwhile: a power on of a player that
+is switched off at its power control, and that of the members of a group that is started or of the
 players that are added, run before the command takes its first lock. A command that already
 holds the group does not wait for a member.
 
@@ -859,9 +897,10 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
 `providers/_demo_player_provider` is the annotated example. In short:
 
 1. Implement one `PlayerProtocol` per device and report its role (`_attr_role`) and its type
-   (`PlayerType.PLAYER`, unless it is a group, a stereo pair or another kind of client the enum
-   names). Report besides, where it applies: `session_only` for something that is no device to
-   keep track of (a browser tab, an app), `underlying_protocol_id` for a transport that rides on
+   (`PlayerType.PLAYER`, unless it is a group, a set of speakers or another kind of client the
+   enum names), and for a set of speakers its layout (`_attr_channel_layout`). Report besides,
+   where it applies: `session_only` for something that is no device to keep track of (a browser
+   tab, an app), `underlying_protocol_id` for a transport that rides on
    another protocol, `enabled_by_default` for a device that starts out disabled,
    `default_output_protocol_domain` for a control protocol
    whose device plays best over one audio protocol, `prefer_native_grouping` for a device that runs
@@ -887,6 +926,14 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
 6. Ask `mass.players.wants_protocol(protocol_id)` before setting up a connection for a device.
    Pass the protocol object too when a client can connect either as a device or as a player of its
    own: whether the stored config applies depends on that.
+7. A protocol that delivers a set of speakers (a stereo pair, a home theater set) reports the other
+   speakers of the set with `mass.players.remove_absorbed_players(protocol_id, protocol_ids)`,
+   which removes their players for good. As that can not be undone, the provider must be sure that
+   the set itself names each of them as one of its speakers at this moment: the list comes from
+   what the speakers report, never from a speaker that is silent, from a timeout or from a list
+   that is incomplete. It names only protocol ids of the provider itself, and the provider
+   registers no protocol for a speaker while its set names it. A protocol of another provider that
+   still finds such a speaker gets a new player, which the user removes.
 
 **Important Notes:**
 - **Always validate MAC addresses** using `is_valid_mac_address()` before adding them

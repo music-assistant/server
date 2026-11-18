@@ -57,8 +57,10 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
 from music_assistant.helpers.plugin_engines import (
+    EngineKind,
+    EngineSetting,
     create_ai_engine_config_entries,
-    select_ai_engine,
+    resolve_ai_engine_setting,
 )
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.track_filter import filter_tracks
@@ -173,6 +175,8 @@ def _filter_by_last_played(tracks: list[Track], value: int | None, unit: str | N
 
 class SmartPlaylistProvider(PluginProvider):
     """Smart Playlist plugin provider for Music Assistant."""
+
+    engine_settings = (EngineSetting(EngineKind.TEXT, CONF_AI_ENGINE),)
 
     _rules_dir: str
     _rules_store: dict[str, SmartPlaylistRules]
@@ -809,11 +813,6 @@ class SmartPlaylistProvider(PluginProvider):
                 tracks, rules.last_played_before_value, rules.last_played_before_unit
             )
 
-            # In non-seed mode, _evaluate_and/_evaluate_or already query by genre_ids.
-            # Only enrich if excluded_genre_ids is set (needs track.metadata.genres).
-            if rules.excluded_genre_ids:
-                await self._enrich_tracks_with_db_genres(tracks)
-
         # Apply exclusions regardless of source mode. Recency (don't repeat recently-played) is
         # no longer handled here: the player queue owns it globally for dynamic playlists.
         excluded_genre_names, excl_album_type_ids = await asyncio.gather(
@@ -825,6 +824,11 @@ class SmartPlaylistProvider(PluginProvider):
         tracks = self._apply_exclusions(
             tracks, rules, excluded_genre_names, excl_album_type_ids or None
         )
+        if rules.excluded_genre_ids:
+            in_excluded_genre = await self.mass.music.genres.tracks_in_genres(
+                rules.excluded_genre_ids, tracks
+            )
+            tracks = [t for t in tracks if (t.provider, t.item_id) not in in_excluded_genre]
         if rules.exclude_favorites:
             tracks = await with_user_favorites(self.mass, get_current_user(), tracks)
             tracks = [track for track in tracks if track.favorite is not True]
@@ -838,7 +842,7 @@ class SmartPlaylistProvider(PluginProvider):
         rules: SmartPlaylistRules,
     ) -> list[Track]:
         """Apply post-filters (popularity, favorites, genre, year) to a seed-derived track list."""
-        has_genre_filter = bool(rules.genre_ids or rules.excluded_genre_ids)
+        has_genre_filter = bool(rules.genre_ids)
 
         if rules.min_popularity is not None:
             tracks = [
@@ -1538,9 +1542,9 @@ class SmartPlaylistProvider(PluginProvider):
         if not self.config.get_value(CONF_AI_DESCRIPTIONS):
             return None
         locale = self.mass.metadata.locale
-        # selected on first use rather than at init: providers load concurrently, so the
+        # resolved on use rather than at init: providers load concurrently, so the
         # plugin supplying the engines may not have been available back then
-        engine = await select_ai_engine(self, CONF_AI_ENGINE)
+        engine = await resolve_ai_engine_setting(self.mass, self.config.get_value(CONF_AI_ENGINE))
         if engine is None:
             return None
         query_timeout = asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS)

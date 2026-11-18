@@ -29,7 +29,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 from music_assistant_models.queue_item import QueueItem
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.controllers.streams import controller as controller_mod
 from music_assistant.controllers.streams.audio import (
@@ -154,6 +154,17 @@ async def _empty_mix(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]
     no_audio: tuple[bytes, ...] = ()
     for chunk in no_audio:
         yield chunk
+
+
+def _delivered_buffer() -> SimpleNamespace:
+    """Build the bare buffer of a source that delivered everything, which a flow stream uses."""
+    return SimpleNamespace(
+        eof=True,
+        cancelled=False,
+        has_error=False,
+        max_size_seconds=300,
+        release_if_unneeded=lambda: None,
+    )
 
 
 def _buffer(duration_available: float, ready: bool, eof: bool = False) -> AudioBuffer:
@@ -1380,7 +1391,7 @@ async def test_flow_realtime_item_yields_all_audio_as_plain_concatenation(
     realtime_details = SimpleNamespace(
         tail_overlap=None,
         audio_format=pcm_format,
-        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        buffer=_delivered_buffer(),
         fade_in=False,
         stream_error=False,
         uri="test://realtime",
@@ -1754,7 +1765,7 @@ async def test_flow_reports_no_fade_for_a_realtime_item_until_one_renders(
     realtime_details = SimpleNamespace(
         tail_overlap=None,
         audio_format=pcm_format,
-        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        buffer=_delivered_buffer(),
         fade_in=False,
         stream_error=False,
         uri="test://realtime",
@@ -1826,7 +1837,7 @@ async def test_flow_standard_fade_only_holds_back_its_overlap(
     first_details = SimpleNamespace(
         tail_overlap=None,
         audio_format=pcm_format,
-        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        buffer=_delivered_buffer(),
         fade_in=False,
         stream_error=False,
         uri="test://first",
@@ -1946,7 +1957,7 @@ def _flow_waiting_for_its_source(
     first_details = SimpleNamespace(
         tail_overlap=None,
         audio_format=pcm_format,
-        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        buffer=_delivered_buffer(),
         fade_in=False,
         stream_error=False,
         uri="test://first",
@@ -2369,6 +2380,7 @@ def _flow_handler(
     controller._log_request = MagicMock()
     controller._update_audio_processing_context = MagicMock()
     controller._open_item_streams = {}
+    controller._flow_bytes_sent = {}
     controller._active_output_streams = 0
     controller._flow_mode_owners = {}
     controller._boundary_mix_owners = {}
@@ -2449,6 +2461,8 @@ async def test_flow_with_icy_framing_writes_small_blocks_and_counts_to_the_inter
     """
     controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
     controller.mass.config.get_protocol_value.return_value = "full"
+    controller._audio_analysis = MagicMock()
+    controller._audio_analysis.shown_stream_metadata.return_value = None
     request.headers = {"Icy-MetaData": "1"}
     seen: dict[str, Any] = {}
     written: list[bytes] = []
@@ -2469,9 +2483,26 @@ async def test_flow_with_icy_framing_writes_small_blocks_and_counts_to_the_inter
     assert seen["chunk_size"] == ICY_WRITE_SIZE
     stream = b"".join(written)
     metadata = controller_mod._icy_metadata_block(
-        controller.mass.player_queues.get.return_value, full=True
+        controller.audio_analysis, controller.mass.player_queues.get.return_value, full=True
     )
     assert stream == b"a" * 256_000 + metadata + b"a" * 44_000
+
+
+def test_icy_title_is_the_metadata_shown_for_the_stream() -> None:
+    """The ICY title relayed to a player is what its stream shows, recognised or its own."""
+    streamdetails = _make_stream_details(MediaType.RADIO, is_realtime=True)
+    queue = SimpleNamespace(
+        current_item=SimpleNamespace(name="Station", streamdetails=streamdetails, image=None)
+    )
+    audio_analysis = MagicMock()
+    audio_analysis.shown_stream_metadata.return_value = StreamMetadata(
+        title="Recognised", artist="Someone"
+    )
+
+    metadata = controller_mod._icy_metadata_block(audio_analysis, cast("Any", queue), full=False)
+
+    audio_analysis.shown_stream_metadata.assert_called_once_with(streamdetails)
+    assert metadata[1:].rstrip(b"\x00") == b"StreamTitle='Someone - Recognised';"
 
 
 async def test_flow_producer_learns_when_its_player_left(monkeypatch: pytest.MonkeyPatch) -> None:

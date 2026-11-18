@@ -11,7 +11,7 @@ it is mixed into the controller and reads/mutates the controller's `PlayerQueueD
 from __future__ import annotations
 
 import random
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import (
@@ -203,33 +203,37 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # a prewarm still running for the old next track would otherwise resume after the
             # swap and warm audio for an item that is no longer on the queue
             self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
-            # Release the audio the outgoing items hold while they are still on the queue: the
-            # track being started needs their source slot, and once they are swapped out nothing
-            # reaches them any more.
-            await self._cleanup_queue_audio_data(queue_id)
-            # the player is still on the old index, so drop it: the swap would otherwise hand it a
-            # "next" item taken from the new list at that position. play_index sets the real one.
-            queue.index_in_buffer = None
-            # playback starts over below, and play_index reads this to decide whether to honour a
-            # stored resume position
-            queue.ended = False
-            if pin_first:
-                await self._load_pinned_first(
-                    queue_id,
-                    queue_items,
-                    insert_at_index=0,
-                    keep_remaining=False,
-                    keep_played=False,
-                )
-            else:
-                await self.load(
-                    queue_id,
-                    queue_items=queue_items,
-                    keep_remaining=False,
-                    keep_played=False,
-                    shuffle=shuffle,
-                )
-            await self.play_index(queue_id, 0)
+            # the replace starts playback: from the release of the outgoing audio until its
+            # track plays it is the queue's own play action
+            with self._own_play_action(queue_id):
+                # Release the audio the outgoing items hold while they are still on the queue:
+                # the track being started needs their source slot, and once they are swapped out
+                # nothing reaches them any more.
+                await self._cleanup_queue_audio_data(queue_id)
+                # the player is still on the old index, so drop it: the swap would otherwise hand
+                # it a "next" item taken from the new list at that position. play_index sets the
+                # real one.
+                queue.index_in_buffer = None
+                # playback starts over below, and play_index reads this to decide whether to
+                # honour a stored resume position
+                queue.ended = False
+                if pin_first:
+                    await self._load_pinned_first(
+                        queue_id,
+                        queue_items,
+                        insert_at_index=0,
+                        keep_remaining=False,
+                        keep_played=False,
+                    )
+                else:
+                    await self.load(
+                        queue_id,
+                        queue_items=queue_items,
+                        keep_remaining=False,
+                        keep_played=False,
+                        shuffle=shuffle,
+                    )
+                await self.play_index(queue_id, 0)
             return
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
         if option == QueueOption.NEXT:
@@ -541,6 +545,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
     async def _get_resume_position(self, queue_item: QueueItem) -> int:
         """Return the position (in seconds) to resume an audiobook/episode from, 0 to start over."""
+        if getattr(queue_item.media_item, "fully_played", False):
+            return 0
         if not (resume_position_ms := getattr(queue_item.media_item, "resume_position_ms", 0)):
             return 0
         # the client may have fetched the item before its duration was known
@@ -1380,6 +1386,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # players keep reading it during the fetch, which can take a while. Player reconciliation is
         # held off meanwhile, so a track change does not start a refill of the tail being replaced.
         self._set_transitioning(queue_id, True)
+        play_action = ExitStack()
         try:
             pool_tracks = await self._managed_pool.fill(
                 queue_id, is_initial=False, preceding_items=queue_data.items[:insert_at]
@@ -1415,9 +1422,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 raise MediaNotFoundError(
                     "No playable items found", translation_key="no_playable_items"
                 )
+            if start_playing:
+                # from the release of the audio it drops until its track plays, a rebuild that
+                # starts playback is the queue's own play action
+                play_action.enter_context(self._own_play_action(queue_id))
             if option == QueueOption.REPLACE:
                 # as on the linear path: end the prewarm of the old next track, release the
-                # outgoing audio while its items are still on the queue, and drop the stale position
+                # outgoing audio while its items are still on the queue, and drop the stale
+                # position
                 self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
                 await self._cleanup_queue_audio_data(queue_id)
                 queue.index_in_buffer = None
@@ -1447,6 +1459,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # give an idle/empty queue a current item without starting playback
                 self._ensure_current_index(queue_id)
         finally:
+            play_action.close()
             self._set_transitioning(queue_id, False)
         # the rebuild published its items while the queue was still transitioning, so the player
         # was not told about the upcoming track it replaced

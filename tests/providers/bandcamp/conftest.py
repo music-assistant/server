@@ -10,6 +10,6 @@ import pytest
 @pytest.fixture
 def manifest_mock() -> Mock:
     """Return a mock provider manifest."""
-    manifest = Mock()
+    manifest = Mock(features=set())
     manifest.domain = "bandcamp"
     return manifest

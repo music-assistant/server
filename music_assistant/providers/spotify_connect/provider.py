@@ -23,7 +23,6 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
     MediaType,
-    ProviderFeature,
     RepeatMode,
     SourceControl,
 )
@@ -43,7 +42,8 @@ from music_assistant.helpers.config_entries import (
     resolve_publish_name,
 )
 from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
-from music_assistant.models.plugin import PluginProvider, SourceControlValue
+from music_assistant.models.media_capabilities import SourceControlValue
+from music_assistant.models.plugin import PluginProvider
 
 from .base import (
     AUDIO_QUALITY_LOSSLESS,
@@ -95,8 +95,6 @@ VOLUME_MODE_OPTIONS: Final = [
     ConfigValueOption(VOLUME_MODE_PLAYER_ONLY),
     ConfigValueOption(VOLUME_MODE_SYNC_SPOTIFY),
 ]
-
-SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
 # When playback is paused the backend stops writing PCM. If no PCM arrives for
 # this long while we're not in a 'playing' state, end the stream (clean EOF) so
@@ -207,7 +205,7 @@ class SpotifyConnectProvider(PluginProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
+        super().__init__(mass, manifest, config)
         self._daemons: dict[str, _PlayerDaemon] = {}
         # players whose daemon gave up permanently; skipped by reconcile until the
         # player comes back or the provider reloads

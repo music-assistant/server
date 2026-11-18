@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import replace
@@ -120,6 +121,8 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
         register_dynamic_route=register_dynamic_route,
         unregister_dynamic_route=lambda path, _method="*": routes.pop(path, None),
         routes=routes,
+        # an unloaded instance drops its page addresses
+        provider_pages=MagicMock(),
     )
     mass_minimal.streams = SimpleNamespace(publish_ip="127.0.0.1")  # type: ignore[assignment]
     mass_minimal.music = MagicMock()
@@ -2295,7 +2298,8 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
         assert "accounts.spotify.com/authorize" in step.url
         # the fixed hosted redirect is used, with the local callback carried in `state`
         assert "music-assistant.io%2Fcallback" in step.url
-        assert step.flow_id in step.url
+        state = parse_qs(urlsplit(step.url).query)["state"][0]
+        assert step.flow_id in base64.urlsafe_b64decode(state + "=" * (-len(state) % 4)).decode()
         session = flow_mass.config._setup_flows[step.flow_id].session
         await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
         # playback needs an explicit backend choice; stay on librespot here

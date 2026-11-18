@@ -182,6 +182,12 @@ class SonosPlayerProvider(PlayerProvider):
                     "Ignoring %s (manual IP) as it is not reachable: %s", ip_address, str(err)
                 )
                 continue
+            if SonosCapability.PLAYBACK not in discovery_info["device"]["capabilities"]:
+                # this will happen for satellite speakers in a surround/stereo setup
+                self.logger.debug(
+                    "Ignoring %s (manual IP) as it is a passive satellite.", ip_address
+                )
+                continue
             protocol_id = discovery_info["device"]["id"]
             if self.get_protocol(protocol_id) or not self.mass.players.wants_protocol(protocol_id):
                 continue

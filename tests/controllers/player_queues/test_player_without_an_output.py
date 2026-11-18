@@ -9,6 +9,8 @@ from music_assistant_models.enums import IdentifierType, PlayerFeature, QueueOpt
 from music_assistant_models.errors import PlayerUnavailableError
 
 # the real server with fake providers, for a device whose audio protocol is away
+from music_assistant.constants import DEFAULT_POWER_ON_STARTUP_TIME
+from music_assistant.controllers.players.power import EXTERNAL_POWER_OFF_STOP_DELAY
 from tests.scenarios.conftest import scenario  # noqa: F401
 from tests.scenarios.harness import MUSIC_PROVIDER, TEST_TRACK_URI
 
@@ -84,16 +86,24 @@ async def test_playback_on_a_player_with_only_its_control_protocol_is_refused_up
     assert _queue_and_source(scenario, player_id) == before
 
 
-async def test_switched_off_player_plays_once_a_protocol_that_can_render_is_back(
+@pytest.mark.parametrize("output", ["is back", "stays away"])
+async def test_switched_off_player_plays_when_a_protocol_that_can_render_is_back(
     scenario: Scenario,  # noqa: F811
+    output: str,
 ) -> None:
-    """The power on of a play waits for the output of the device, not for its control."""
+    """
+    The play after a power on needs the output of the device, not only its control.
+
+    :param output: Whether the output of the device is back when its start-up time is over.
+    """
     player_id, control, audio = await _den(scenario)
     plug = await scenario.add_power_control("switch.den_plug", "Den plug", powered=True)
     await scenario.configure_player(player_id, power_control=plug.control_id)
+    await scenario.configure_player(player_id, power_control_cuts_power=True)
     await scenario.switch(plug, False)
     await scenario.unregister(control)
     await scenario.unregister(audio)
+    await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY)
     await scenario.idle()
     await scenario.mass.config._create_provider_instance(MUSIC_PROVIDER, {})
     await scenario.settle()
@@ -102,11 +112,17 @@ async def test_switched_off_player_plays_once_a_protocol_that_can_render_is_back
 
     assert plug.commands == [True]
     await scenario.register(control)
-    # the power on looks for the device every 0.5 s
-    await scenario.advance(1)
+    if output == "is back":
+        await scenario.register(audio)
+    await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME - 1)
     assert not play.done()
-    await scenario.register(audio)
-    await scenario.advance(1)
-    await play
+    await scenario.advance(2)
 
-    assert "play_media" in [command[0] for command in audio.commands]
+    assert play.done()
+    if output == "is back":
+        await play
+        assert "play_media" in [command[0] for command in audio.commands]
+    else:
+        with pytest.raises(PlayerUnavailableError, match="could not be reached"):
+            await play
+    assert "play_media" not in [command[0] for command in control.commands]

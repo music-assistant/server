@@ -6,6 +6,10 @@ BRIDGE_PREFIX = "spb_"
 VIRTUAL_PLAYER_ID_PREFIX = "sendspin_virtual_"
 
 CONF_SENDSPIN_STATIC_DELAY = "sendspin_static_delay"
+# the static delays the user set for the protocols that do not carry the output now, by their id
+CONF_SENDSPIN_BRIDGE_STATIC_DELAYS = "sendspin_bridge_static_delays"
+# the user switched the output on while a Cast protocol carried it
+CONF_SENDSPIN_CAST_OPT_IN = "sendspin_cast_opt_in"
 CONF_VIRTUAL_PLAYER_OWNER = "virtual_player_owner"
 DEFAULT_SENDSPIN_STATIC_DELAY = 0
 
