@@ -11,6 +11,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import ClientResponseError, RequestInfo
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
@@ -1110,8 +1111,15 @@ def _real_radio_provider(mass: MagicMock) -> RadioPlaylistProvider:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad_seeds", [[], ["not-a-uri", "library://track/9"]])
-async def test_tracks_from_seeds_pools_base_and_similar(bad_seeds: list[str]) -> None:
+@pytest.mark.parametrize(
+    "lookup_error",
+    [
+        None,
+        MediaNotFoundError("missing seed"),
+        ClientResponseError(MagicMock(spec=RequestInfo), (), status=503),
+    ],
+)
+async def test_tracks_from_seeds_pools_base_and_similar(lookup_error: Exception | None) -> None:
     """_tracks_from_seeds accumulates a seed's endless-mix batches, deduped, in call order."""
     mass = MagicMock()
     manifest = MagicMock()
@@ -1126,15 +1134,14 @@ async def test_tracks_from_seeds_pools_base_and_similar(bad_seeds: list[str]) ->
     sim2 = _make_mock_track("sim2", "library://track/sim2")
 
     ctrl = MagicMock()
-    ctrl.get = AsyncMock(
-        side_effect=[MediaNotFoundError("missing seed"), seed] if bad_seeds else [seed]
-    )
+    ctrl.get = AsyncMock(side_effect=[lookup_error, seed] if lookup_error else [seed])
     mass.music.get_controller = MagicMock(return_value=ctrl)
 
     radio_prov = MagicMock()
     radio_prov.get_dynamic_tracks = AsyncMock(return_value=[base, sim1, sim2])
     mass.get_provider = MagicMock(return_value=radio_prov)
 
+    bad_seeds = ["not-a-uri", "library://track/9"] if lookup_error else []
     result = await plugin._tracks_from_seeds(
         [*bad_seeds, "library://track/10"], target_size=10, is_dynamic=True
     )
