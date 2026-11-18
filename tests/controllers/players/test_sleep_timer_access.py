@@ -93,6 +93,14 @@ def test_the_users_own_client_player_is_permitted(controller: PlayerController) 
     assert player.sleep_timer_expires_at is None
 
 
+@pytest.mark.parametrize(
+    "command", ["players/sleep_timer/get", "players/sleep_timer/set", "players/sleep_timer/clear"]
+)
+def test_the_commands_accept_a_user(controller: PlayerController, command: str) -> None:
+    """Home Assistant can run the sleep timer commands as one of its users."""
+    assert cast("MagicMock", controller.mass).command_handlers[command].allow_impersonation
+
+
 def _api(controller: PlayerController, command: str) -> Callable[..., Any]:
     """Return the handler the server runs for the given API command."""
     return cast("MagicMock", controller.mass).command_handlers[command].target  # type: ignore[no-any-return]

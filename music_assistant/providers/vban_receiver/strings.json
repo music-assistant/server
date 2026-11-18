@@ -36,6 +36,10 @@
       "label": "Receiver: VBAN packets queue size",
       "description": "This can be increased if MA is running on a very low power device, otherwise this should not need to be changed."
     },
+    "allow_audio_analysis": {
+      "label": "[%key:common::config_entries::allow_audio_analysis::label%]",
+      "description": "[%key:common::config_entries::allow_audio_analysis::description%]"
+    },
     "log_vban_stream_stats": {
       "label": "Log VBAN stream statistics",
       "description": "Log VBAN stream statistics when DEBUG/VERBOSE logging is enabled. Target numbers not being hit will result in audio glitches/dropouts and is indicative of a low power device unable to keep up with the incoming stream rate."

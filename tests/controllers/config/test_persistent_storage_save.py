@@ -25,14 +25,22 @@ import pytest
 from music_assistant_models.enums import PlayerType
 
 from music_assistant.constants import (
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
     CONF_PLAYER_SPLIT_SESSION_ONLY,
     CONF_PLAYER_SPLIT_TREE,
     CONF_PLAYERS,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED,
 )
 from music_assistant.controllers.config.controller import ConfigController
 
 # settings that no migration has anything left to do on
-RECOVERED = {"recovered": True, CONF_PLAYER_SPLIT_SESSION_ONLY: True, CONF_PLAYER_SPLIT_TREE: True}
+RECOVERED = {
+    "recovered": True,
+    CONF_PLAYER_SPLIT_SESSION_ONLY: True,
+    CONF_PLAYER_SPLIT_TREE: True,
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: True,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED: True,
+}
 
 
 def _make_controller(tmp_path: Path) -> ConfigController:

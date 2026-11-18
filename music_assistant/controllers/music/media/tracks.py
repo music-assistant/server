@@ -66,6 +66,7 @@ from music_assistant.helpers.compare import (
     compare_track_title,
     get_keep_remasters_apart,
     loose_compare_strings,
+    track_durations_agree,
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.external_ids import is_valid_isrc, normalize_external_id
@@ -817,7 +818,43 @@ class TracksController(MediaControllerBase[Track]):
         if not changed:
             return
 
+        await self.merge_recording_duplicates(track)
         await self.update_item_in_library(int(track.item_id), track)
+
+    async def merge_recording_duplicates(self, track: Track) -> set[str]:
+        """
+        Merge other library tracks of the same MusicBrainz recording into this track.
+
+        :param track: The library track whose recording id to look for.
+        :return: The library ids of the tracks that were merged into it.
+        """
+        recording_ids = self._recording_ids(track)
+        if len(recording_ids) != 1:
+            return set()
+        merged: set[str] = set()
+        for other in await self.get_library_items_by_external_id(
+            recording_ids.pop(), ExternalID.MB_RECORDING, limit=None
+        ):
+            if (
+                int(other.item_id) == int(track.item_id)
+                or len(self._recording_ids(other)) != 1
+                or not track_durations_agree(other, track)
+                or not await self._confirm_library_candidate(other, track)
+            ):
+                continue
+            self.logger.debug(
+                "Merging track item id %s into item id %s: both are recording %s",
+                other.item_id,
+                track.item_id,
+                track.mbid,
+            )
+            merged_item = await self.merge_library_items(track.item_id, other.item_id)
+            track.provider_mappings.update(merged_item.provider_mappings)
+            if merged_item.duration > 0:
+                track.duration = merged_item.duration
+            track.date_added = merged_item.date_added
+            merged.add(other.item_id)
+        return merged
 
     async def get_preview_url(self, provider_instance_id_or_domain: str, item_id: str) -> str:
         """Return url to short preview sample."""
@@ -1993,6 +2030,15 @@ class TracksController(MediaControllerBase[Track]):
             "(json_extract(tracks.metadata, '$.explicit') IS NULL "
             "OR json_extract(tracks.metadata, '$.explicit') = 0)"
         ]
+
+    @staticmethod
+    def _recording_ids(track: Track) -> set[str]:
+        """Return the distinct MusicBrainz recording ids of a track."""
+        return {
+            normalize_external_id(ExternalID.MB_RECORDING, value)
+            for id_type, value in track.external_ids
+            if id_type == ExternalID.MB_RECORDING
+        }
 
     def _get_sort_sql(self, field: SortField, direction: SortDirection | None) -> str:
         """Return the ORDER BY clause for a sort field, ARTIST_NAME through the artists join."""

@@ -17,7 +17,6 @@ from music_assistant_models.enums import (
     EventType,
     ImageType,
     MediaType,
-    ProviderFeature,
     SourceControl,
     StreamType,
 )
@@ -60,7 +59,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
 
-SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
 # seconds the silence nudge waits for the audio pipe's consumer to reattach
 AUDIO_PIPE_READER_TIMEOUT = 1.0
@@ -158,7 +156,7 @@ class AirPlayReceiverProvider(PluginProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
+        super().__init__(mass, manifest, config)
         self._shairport_bin: str | None = None
         self._daemons: dict[str, _ReceiverDaemon] = {}
         # players whose daemon gave up permanently; skipped by reconcile until the
@@ -796,20 +794,16 @@ class AirPlayReceiverProvider(PluginProvider):
         """
         Build the shairport-sync ``general.interface`` directive, or an empty string.
 
-        When the stream server is bound to a specific interface (not 0.0.0.0), pin
-        the AirPlay mDNS advertisement to that same interface so the receiver is
-        announced on the intended network instead of an unrelated one (e.g. a
-        Docker bridge). Returns an empty string to advertise on all interfaces.
+        Pins the receiver's mDNS records to the interface of the stream server's bind IP,
+        or of its publish IP when it binds all interfaces, so senders only learn addresses
+        on the network Music Assistant is reached on instead of those of unrelated
+        interfaces (e.g. Docker or VPN). Returns an empty string to advertise on all
+        interfaces when no local interface holds that IP.
         """
-        bind_ip = await self.mass.streams.get_source_ip()
-        if not bind_ip:
-            return ""
-        iface_name = interface_name_for_ip(bind_ip)
+        ip = await self.mass.streams.get_source_ip() or self.mass.streams.publish_ip
+        iface_name = interface_name_for_ip(ip)
         if not iface_name:
-            self.logger.debug(
-                "No interface found for stream bind IP %s; advertising on all interfaces",
-                bind_ip,
-            )
+            self.logger.debug("No interface found for IP %s; advertising on all interfaces", ip)
             return ""
         return f'\tinterface = "{iface_name}";\n'
 

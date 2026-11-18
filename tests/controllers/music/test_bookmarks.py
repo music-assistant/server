@@ -386,3 +386,11 @@ async def test_episode_bookmarks_of_an_unavailable_account(
     ]
 
     assert listed == expected
+
+
+@pytest.mark.parametrize(
+    "command", ["music/bookmarks", "music/set_bookmark", "music/remove_bookmark"]
+)
+async def test_the_commands_accept_a_user(music_mass: MusicAssistant, command: str) -> None:
+    """Home Assistant can run the bookmark commands as one of its users."""
+    assert music_mass.command_handlers[command].allow_impersonation

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, ProviderFeature
 
 from music_assistant.providers.sendspin_source.provider import SendspinSourceProvider
 
@@ -189,6 +189,8 @@ class _FakePlayers:
         self.source_sessions: dict[str, Any] = {}
         self.deselected: list[str] = []
         self.updated: list[str] = []
+        # the rebuilt sources handed to a session, with the player it plays on
+        self.refreshed: list[tuple[str, Any]] = []
 
     def get_player(self, player_id: str, *args: Any, **kwargs: Any) -> _FakePlayer | None:
         return self.players.get(player_id)
@@ -204,6 +206,9 @@ class _FakePlayers:
 
     def trigger_player_update(self, player_id: str, **_: Any) -> None:
         self.updated.append(player_id)
+
+    def refresh_source(self, player_id: str, source: Any) -> None:
+        self.refreshed.append((player_id, source))
 
     async def deselect_source(
         self,
@@ -377,7 +382,10 @@ async def make_provider(
     # missing here and take the fake out of step with the provider.
     provider = SendspinSourceProvider(
         cast("MusicAssistant", _FakeMass(sendspin_provider)),
-        cast("Any", type("Manifest", (), {"domain": "sendspin_source"})()),
+        cast(
+            "Any",
+            SimpleNamespace(domain="sendspin_source", features={ProviderFeature.AUDIO_SOURCE}),
+        ),
         cast("Any", _FakeConfig(config_values)),
     )
     for client in clients:

@@ -72,7 +72,7 @@ async def test_player_bound_plugin_renders_a_toggle(mass_minimal: MusicAssistant
     entry = entries[0]
     assert entry.key == _PLUGIN_KEY
     assert entry.type == ConfigEntryType.BOOLEAN
-    assert entry.category == "plugins"
+    assert entry.category == "audio_sources"
     # the key is per-plugin (dynamic), so the entry pins a static catalog key
     assert entry.translation_key == "plugin_enable"
     assert entry.translation_params == ["Spotify Connect"]
@@ -121,7 +121,7 @@ def test_referenced_strings_exist() -> None:
     """The toggle's translation key and its category are authored in the common strings."""
     strings = json.loads(_STRINGS_PATH.read_text(encoding="utf-8"))
     assert "plugin_enable" in strings["config_entries"]
-    assert "plugins" in strings["config_categories"]
+    assert "audio_sources" in strings["config_categories"]
 
 
 async def test_toggle_on_adds_the_player_to_the_plugin(mass_minimal: MusicAssistant) -> None:

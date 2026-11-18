@@ -17,13 +17,13 @@ if TYPE_CHECKING:
     from music_assistant.controllers.community_catalog.store import CatalogStore
     from music_assistant.mass import MusicAssistant
 
-INDEX_URL: Final = "https://music-assistant.github.io/community-catalog/v1/{line}.json"
+INDEX_URL: Final = "https://catalog.music-assistant.io/v1/{channel}.json"
 _TIMEOUT: Final = ClientTimeout(total=10)
 
 
-def server_line(version: str) -> str:
+def catalog_channel(version: str) -> str:
     """
-    Return the line of the catalog a server version reads: nightly, beta or <major>.<minor>.
+    Return the channel of the catalog a server version reads: nightly, beta or <major>.<minor>.
 
     :param version: The version of the server, as in MusicAssistant.version.
     """
@@ -50,13 +50,13 @@ class IndexClient:
 
     async def fetch(self) -> bool | None:
         """
-        Fetch the index of this server's line and keep it when it is valid.
+        Fetch the index of this server's channel and keep it when it is valid.
 
         Any failure keeps the copy and logs a warning. Returns whether the index changed, None
         when it could not be fetched.
         """
-        line = server_line(self.mass.version)
-        url = INDEX_URL.format(line=line)
+        channel = catalog_channel(self.mass.version)
+        url = INDEX_URL.format(channel=channel)
         headers: dict[str, str] = {}
         if self.store.index is not None and self.store.state.index_etag:
             headers[hdrs.IF_NONE_MATCH] = self.store.state.index_etag
@@ -64,12 +64,18 @@ class IndexClient:
             async with self.mass.http_session.get(
                 url, headers=headers, timeout=_TIMEOUT
             ) as response:
+                # the index decides what this server installs, so no hop may go over plain http
+                if any(hop.url.scheme != "https" for hop in (*response.history, response)):
+                    self.logger.warning(
+                        "Could not fetch the community catalog from %s: not served over https", url
+                    )
+                    return None
                 if response.status == HTTPStatus.NOT_MODIFIED:
                     return False
                 response.raise_for_status()
                 content = await response.read()
                 etag = response.headers.get(hdrs.ETAG)
-            index = parse_index(json_loads(content), line)
+            index = parse_index(json_loads(content), channel)
         except TimeoutError:
             self.logger.warning("Could not fetch the community catalog from %s: no answer", url)
             return None

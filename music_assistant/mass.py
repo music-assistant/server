@@ -64,6 +64,7 @@ from music_assistant.constants import (
     UNHANDLED_PROVIDER_ERROR_CODE,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.ai import AIController
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.community_catalog import CommunityCatalogController
 from music_assistant.controllers.community_catalog.constants import (
@@ -276,6 +277,7 @@ class MusicAssistant:
     statistics: StatisticsController
     storage: StorageController
     community_catalog: CommunityCatalogController
+    ai: AIController
 
     def __init__(
         self,
@@ -381,6 +383,7 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.statistics))
             tg.create_task(setup_controller(self.storage))
             tg.create_task(setup_controller(self.community_catalog))
+            tg.create_task(setup_controller(self.ai))
 
         for controller_name in (
             "cache",
@@ -1485,6 +1488,7 @@ class MusicAssistant:
             self.statistics,
             self.storage,
             self.community_catalog,
+            self.ai,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
@@ -1524,6 +1528,7 @@ class MusicAssistant:
         self.statistics = StatisticsController(self)
         self.storage = StorageController(self)
         self.community_catalog = CommunityCatalogController(self)
+        self.ai = AIController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
             controller: CoreController = getattr(self, controller_name)

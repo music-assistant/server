@@ -38,7 +38,7 @@ async def test_podcast_episode_gets_the_release_date(
     expected: datetime | None,
 ) -> None:
     """The release date is used, or when the episode became available if it has none."""
-    converter = PodcastConverter(Context(provider=provider, provider_domain="bbc_sounds"))
+    converter = PodcastConverter(Context(provider=provider))
     episode = PodcastEpisode(
         id="e01",
         pid="e01",

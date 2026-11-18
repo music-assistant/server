@@ -14,12 +14,14 @@ import pytest
 from music_assistant_models.enums import IdentifierType
 
 from music_assistant.constants import (
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
     CONF_PLAYER_DSP,
     CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYER_SPLIT_SESSION_ONLY,
     CONF_PLAYER_SPLIT_TREE,
     CONF_PLAYERS,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED,
 )
 from music_assistant.controllers.config import player_split
 from music_assistant.controllers.config.controller import ConfigController
@@ -1311,7 +1313,12 @@ async def test_new_installation_gets_no_backup(tmp_path: Path) -> None:
 
     await controller._load()
 
-    assert controller._data == FLAGS
+    # and with the AirPlay sync adjust on its current sign and one Sendspin output per player
+    assert controller._data == {
+        **FLAGS,
+        CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: True,
+        CONF_SENDSPIN_ONE_OUTPUT_MIGRATED: True,
+    }
     assert list(tmp_path.iterdir()) == []
 
 

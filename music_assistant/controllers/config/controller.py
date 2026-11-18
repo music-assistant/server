@@ -18,9 +18,11 @@ from music_assistant_models import config_entries
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
     CONF_ENCRYPTION_KEY,
     CONF_ENCRYPTION_KEY_MIGRATED,
     CONF_ONBOARD_DONE,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED,
     CONF_SERVER_ID,
     ENCRYPT_SUFFIX,
 )
@@ -30,6 +32,7 @@ from music_assistant.controllers.config.dsp import DSPConfigMixin
 from music_assistant.controllers.config.flows import SetupFlowMixin
 from music_assistant.controllers.config.migrations import (
     migrate,
+    migrate_ai_default_engines,
     migrate_connected_player_plugins,
     migrate_provider_setup_data,
 )
@@ -99,7 +102,12 @@ class ConfigController(
         connected_plugins_migrated = migrate_connected_player_plugins(
             self._data, self.decrypt_string, self.mass.storage_path
         )
-        if setup_data_migrated or connected_plugins_migrated:
+        # one-off: seed the default AI engines from the engines the features picked and let
+        # the features with that same pick follow the default. Runs here since the AI Radio
+        # picks sit in its encrypted setup_data.
+        # TODO: remove after 2.12 release
+        ai_default_engines_migrated = migrate_ai_default_engines(self._data, self.decrypt_string)
+        if setup_data_migrated or connected_plugins_migrated or ai_default_engines_migrated:
             self.save(immediate=True)
         if not self.onboard_done:
             self.mass.register_api_command(
@@ -329,6 +337,10 @@ class ConfigController(
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
         mark_player_split_done(self._data)
+        # a new installation stores the AirPlay sync adjust with its current sign
+        self._data[CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED] = True
+        # and one Sendspin output per player, with what a Cast bridge leaves off marked
+        self._data[CONF_SENDSPIN_ONE_OUTPUT_MIGRATED] = True
 
     async def _backup_before_player_split(self, loaded_filename: str) -> None:
         """

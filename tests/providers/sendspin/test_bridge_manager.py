@@ -5,13 +5,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from music_assistant.constants import CONF_UNDERLYING_PLAYER_ID
 from music_assistant.providers.sendspin.bridge_manager import (
     SendspinBridgeManagerBase,
     evaluate_bridge_of,
 )
+from tests.common import use_real_bridge_holders
 
 BASE_ID = "base_1"
 CLIENT_ID = f"spb_{BASE_ID}"
@@ -48,17 +51,17 @@ class FakeBridgeManager(SendspinBridgeManagerBase[FakeBridge]):
 
     policy_result = True
 
-    def _bridge_client_id(self, protocol: Any) -> str | None:
-        """Return the Sendspin client_id used to bridge the given protocol."""
+    def qualifies(self, protocol: Any) -> bool:
+        """Return whether provider policy wants a bridge for this protocol."""
+        return self.policy_result
+
+    def _own_client_id(self, protocol: Any) -> str | None:
+        """Return the Sendspin client_id a bridge gives the device of the given protocol."""
         return f"spb_{protocol.protocol_id}"
 
     def _create_bridge(self, protocol: Any) -> FakeBridge:
         """Create a (not yet started) bridge instance for the given protocol."""
         return FakeBridge(self.sendspin_server, protocol)
-
-    def _should_have_bridge(self, protocol: Any) -> bool:
-        """Return whether provider policy wants a bridge for this protocol."""
-        return self.policy_result
 
 
 class _Environment:
@@ -78,6 +81,7 @@ class _Environment:
             side_effect=lambda coro, **_kwargs: asyncio.get_running_loop().create_task(coro)
         )
         self.sendspin_provider = MagicMock()
+        use_real_bridge_holders(self.sendspin_provider)
         mass.get_provider = MagicMock(
             side_effect=lambda domain: self.sendspin_provider if domain == "sendspin" else None
         )
@@ -86,13 +90,30 @@ class _Environment:
             side_effect=lambda protocol_id: protocol_id not in self.unwanted
         )
         mass.players.remove_protocol = AsyncMock()
+        # the player of the protocols, with those that are attached to it
+        self.player = MagicMock(player_id=PLAYER_ID, attached_protocols={})
+        mass.players.get_player = MagicMock(return_value=self.player)
+        mass.players.get_player_id_of_protocol = MagicMock(return_value=PLAYER_ID)
         mass.config.get_protocol_record = MagicMock(side_effect=self.records.get)
+        mass.config.get_protocol_ids_of_player = MagicMock(
+            side_effect=lambda player_id: [
+                protocol_id
+                for protocol_id, record in self.records.items()
+                if record["player_id"] == player_id
+            ]
+        )
+        mass.config.get_protocol_value = MagicMock(
+            side_effect=lambda protocol_id, key, default=None: (
+                self.records.get(protocol_id) or {"values": {}}
+            )["values"].get(key, default)
+        )
+        mass.config.is_protocol_switched_on = MagicMock(return_value=True)
         mass.config.get = MagicMock(
             side_effect=lambda key, default=None: self.player_records.get(key, default)
         )
         mass.config.save_protocol_config = AsyncMock()
         self.mass = mass
-        provider = MagicMock()
+        provider = MagicMock(domain="fake")
         provider.mass = mass
         provider.get_protocol = lambda protocol_id: self.protocols.get(protocol_id)
         provider.logger = logging.getLogger("test.bridge_manager")
@@ -111,9 +132,10 @@ class _Environment:
         protocol.protocol_id = protocol_id
         protocol.display_name = "Test Player"
         protocol.provider = self.provider
-        protocol.player = MagicMock(player_id=PLAYER_ID)
+        protocol.player = self.player
         protocol._on_detach_callbacks = []
         self.protocols[protocol_id] = protocol
+        self.player.attached_protocols[protocol_id] = protocol
         self.provider.protocols = list(self.protocols.values())
         return protocol
 
@@ -124,6 +146,7 @@ class _Environment:
         :param protocol: The protocol object to detach.
         """
         self.protocols.pop(protocol.protocol_id, None)
+        self.player.attached_protocols.pop(protocol.protocol_id, None)
         protocol.player = None
         callbacks, protocol._on_detach_callbacks = protocol._on_detach_callbacks, []
         for callback in callbacks:
@@ -138,6 +161,7 @@ class _Environment:
         """
         self.records[CLIENT_ID] = {
             "protocol_id": CLIENT_ID,
+            "provider": "sendspin",
             "player_id": PLAYER_ID,
             "enabled": enabled,
             "values": {CONF_UNDERLYING_PLAYER_ID: underlying_id},
@@ -346,6 +370,7 @@ async def test_stale_bridge_rebuilt_after_sendspin_reload() -> None:
 
     # Simulate a sendspin provider reload (new server instance)
     new_provider = MagicMock()
+    use_real_bridge_holders(new_provider)
     env.mass.get_provider = MagicMock(
         side_effect=lambda domain: new_provider if domain == "sendspin" else None
     )
@@ -362,9 +387,51 @@ async def test_provider_change_evaluates_the_attached_protocols_only() -> None:
     """A provider (un)loading re-evaluates the protocols that are attached to a player."""
     env = _Environment()
     waiting = env.attach("base_2")
+    del env.player.attached_protocols["base_2"]
     waiting.player = None
 
     await env.manager._on_providers_updated(MagicMock())
 
     assert env.manager.get_bridge(BASE_ID) is not None
     assert env.manager.get_bridge("base_2") is None
+
+
+@pytest.mark.parametrize("claimed", [False, True], ids=["registered", "claimed"])
+async def test_the_bridge_that_registers_or_claims_its_client_holds_it(claimed: bool) -> None:
+    """The bridge that registered or claimed a client holds it until its bridge goes."""
+    env = _Environment()
+
+    with patch.object(env.manager, "_try_claim_existing", AsyncMock(return_value=claimed)):
+        await env.manager.evaluate_bridge(env.protocol)
+
+    assert env.sendspin_provider.get_bridge_holder(CLIENT_ID) == BASE_ID
+
+    await env.manager.remove_bridge(BASE_ID)
+
+    assert env.sendspin_provider.get_bridge_holder(CLIENT_ID) is None
+
+
+async def test_a_bridge_that_fails_after_registering_takes_its_client_along() -> None:
+    """A bridge whose start fails after it registered its client holds it while it is stopped."""
+    env = _Environment()
+    holder_at_stop: list[str | None] = []
+
+    class _FailingBridge(FakeBridge):
+        async def start(self) -> None:
+            self.started = True
+            raise RuntimeError("the wiring after the registration failed")
+
+        async def stop(self) -> None:
+            holder_at_stop.append(env.sendspin_provider.get_bridge_holder(CLIENT_ID))
+            await super().stop()
+
+    with patch.object(
+        env.manager,
+        "_create_bridge",
+        lambda protocol: _FailingBridge(env.manager.sendspin_server, protocol),
+    ):
+        await env.manager.evaluate_bridge(env.protocol)
+
+    assert holder_at_stop == [BASE_ID], "the bridge did not hold its client when it was stopped"
+    assert env.sendspin_provider.get_bridge_holder(CLIENT_ID) is None
+    assert env.manager.get_bridge(BASE_ID) is None

@@ -820,11 +820,18 @@ class TestPlayAnnouncementMessage:
         controller, announce = self._make_player(mock_mass, announcements)
         engine = self._make_engine()
 
+        mock_mass.config.get_raw_core_config_value = MagicMock(return_value="global")
+
         with patch(
-            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
-        ):
+            f"{self.ANNOUNCE_MODULE}.resolve_tts_engine_setting", AsyncMock(return_value=engine)
+        ) as resolve_setting:
             await controller.play_announcement("player_1", message="dinner is ready")
 
+        # the stored setting is resolved, so a setting following the default speaks with it
+        mock_mass.config.get_raw_core_config_value.assert_called_with(
+            "players", "announce_tts_engine"
+        )
+        resolve_setting.assert_awaited_once_with(mock_mass, "global")
         # no language is sent, so the engine speaks in the language it is configured for
         engine.provider.get_tts_message.assert_awaited_once_with(
             "dinner is ready", language=None, engine_id="voice", options=None
@@ -840,7 +847,7 @@ class TestPlayAnnouncementMessage:
         engine = self._make_engine()
 
         with patch(
-            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
+            f"{self.ANNOUNCE_MODULE}.resolve_tts_engine_setting", AsyncMock(return_value=engine)
         ):
             await controller.play_announcement(
                 "player_1", message="het eten is klaar", language="nl-NL"
@@ -865,7 +872,7 @@ class TestPlayAnnouncementMessage:
         )
 
         with patch(
-            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
+            f"{self.ANNOUNCE_MODULE}.resolve_tts_engine_setting", AsyncMock(return_value=engine)
         ):
             await controller.play_announcement(
                 "player_1", message="dinner is ready", language="en-US"
@@ -891,7 +898,9 @@ class TestPlayAnnouncementMessage:
         engine.provider.get_tts_message = AsyncMock(side_effect=error)
 
         with (
-            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
+            patch(
+                f"{self.ANNOUNCE_MODULE}.resolve_tts_engine_setting", AsyncMock(return_value=engine)
+            ),
             pytest.raises(MusicAssistantError),
         ):
             await controller.play_announcement("player_1", message="dinner is ready")
@@ -909,14 +918,16 @@ class TestPlayAnnouncementMessage:
             patch(
                 f"{self.ANNOUNCE_MODULE}.resolve_tts_engine", AsyncMock(return_value=engine)
             ) as resolve,
-            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock()) as select,
+            patch(
+                f"{self.ANNOUNCE_MODULE}.resolve_tts_engine_setting", AsyncMock()
+            ) as resolve_setting,
         ):
             await controller.play_announcement(
                 "player_1", message="hello", tts_engine="tts_plugin/voice"
             )
 
         resolve.assert_awaited_once_with(mock_mass, "tts_plugin/voice")
-        select.assert_not_awaited()
+        resolve_setting.assert_not_awaited()
 
     async def test_pre_announce_follows_the_player_config(self, mock_mass: MagicMock) -> None:
         """A spoken message uses the player's pre-announce setting without sniffing the url."""
@@ -930,7 +941,7 @@ class TestPlayAnnouncementMessage:
         )
 
         with patch(
-            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
+            f"{self.ANNOUNCE_MODULE}.resolve_tts_engine_setting", AsyncMock(return_value=engine)
         ):
             await controller.play_announcement("player_1", message="dinner is ready")
 
@@ -947,7 +958,9 @@ class TestPlayAnnouncementMessage:
         query = AsyncMock(return_value=SimpleNamespace(path="http://speech/spoken.mp3"))
 
         with (
-            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
+            patch(
+                f"{self.ANNOUNCE_MODULE}.resolve_tts_engine_setting", AsyncMock(return_value=engine)
+            ),
             patch(f"{self.ANNOUNCE_MODULE}.query_tts_engine_with_language_fallback", query),
         ):
             await controller.play_announcement("player_1", message="hello")
@@ -983,7 +996,9 @@ class TestPlayAnnouncementMessage:
         engine.provider.get_tts_message = AsyncMock(side_effect=RuntimeError("engine down"))
 
         with (
-            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
+            patch(
+                f"{self.ANNOUNCE_MODULE}.resolve_tts_engine_setting", AsyncMock(return_value=engine)
+            ),
             pytest.raises(PlayerCommandFailed),
         ):
             await controller.play_announcement("player_1", message="hello")
@@ -1026,10 +1041,13 @@ class TestPlayAnnouncementMessage:
         controller, _announce = self._make_player(mock_mass, announcements)
 
         with (
-            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=None)),
-            pytest.raises(PlayerCommandFailed, match="No text-to-speech engine"),
+            patch(
+                f"{self.ANNOUNCE_MODULE}.resolve_tts_engine_setting", AsyncMock(return_value=None)
+            ),
+            pytest.raises(PlayerCommandFailed, match="No text-to-speech engine") as error,
         ):
             await controller.play_announcement("player_1", message="hello")
+        assert error.value.translation_key == "tts_engine_unavailable"
 
     async def test_audio_that_can_not_be_fetched_is_rejected(self, mock_mass: MagicMock) -> None:
         """An engine that only rendered to disk fails, since an announcement is fetched by url."""
@@ -1038,7 +1056,9 @@ class TestPlayAnnouncementMessage:
         engine = self._make_engine(path=str(ANNOUNCE_ALERT_FILE))
 
         with (
-            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
+            patch(
+                f"{self.ANNOUNCE_MODULE}.resolve_tts_engine_setting", AsyncMock(return_value=engine)
+            ),
             pytest.raises(PlayerCommandFailed, match="rendered the message to a local file"),
         ):
             await controller.play_announcement("player_1", message="hello")
@@ -1052,7 +1072,9 @@ class TestPlayAnnouncementMessage:
         engine = self._make_engine()
 
         with (
-            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
+            patch(
+                f"{self.ANNOUNCE_MODULE}.resolve_tts_engine_setting", AsyncMock(return_value=engine)
+            ),
             self._members_coordinate(),
         ):
             await controller.play_announcement("group_1", message="dinner is ready")

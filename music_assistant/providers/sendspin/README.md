@@ -193,7 +193,7 @@ Sendspin players support:
 - **Volume control** - Set volume level (0-100) and mute
 - **Synchronized playback** - Sample-accurate sync across grouped players
 - **Per-player DSP** - Individual equalizer settings per device
-- **Player grouping** - Create multi-room audio groups
+- **Player grouping** - Create multi-room audio groups. A group plays at the sample rate of what it plays, kept within the lowest and highest rate its members play; a member at another rate gets the group audio converted to its own rate
 - **Metadata display** - Track info, artwork, progress
 - **Playback control** - Play, pause, stop, next, previous
 - **Repeat/Shuffle** - Queue control from clients
@@ -237,13 +237,26 @@ External players are registered programmatically via `server_api.register_extern
 
 A client whose record says it rides on another protocol is that bridge again when it connects before its bridge is set up, as the Sendspin Cast receiver app does after a restart: it is no browser player of its own then, although it reports as one.
 
-The bridge managers (`SendspinBridgeManagerBase` in `bridge_manager.py`, subclassed by the AirPlay and Chromecast bridges) keep a bridge for as long as the protocol it bridges is attached and its Sendspin output is switched on. The interface they offer the bridged providers takes the protocol id of the bridged protocol.
+The bridge managers (`SendspinBridgeManagerBase` in `bridge_manager.py`, subclassed by the AirPlay, squeezelite and Chromecast bridges) keep a bridge for the protocol that carries the Sendspin output of its player, for as long as that protocol is attached and the output is switched on. The interface they offer the bridged providers takes the protocol id of the bridged protocol.
+
+A player has one Sendspin output, however many of its protocols can be bridged: one stored record with one switch and one set of settings. The record names its carrier, the protocol whose bridge registers the output, and keeps its client id for good. A bridge registers under the id of the record of its player; only a player without one gets a record, under an id of the device of the bridge that creates it. The player is what ties the bridges of one device together, because its protocols do not all report the same MAC address, or the same form of it.
+
+A device has one output also while its protocols sit on two players: a bridge gets no output of its own while another player has the client id it would register under, in either form of the MAC address of the device, as a stored output or as the client of its bridge. It takes the id once that player lets go of it, such as when that player is removed for good. A player removed while none of its protocols is loaded (its device away since the start) wakes nobody: the other player takes the id at its next evaluation, such as when one of its protocols reconnects. Two players that each have an output of the device stored keep both; whichever bridge registers first has the device while it holds the client, and the other waits for it. Unlinking the protocol that carries the output from its player moves the record along, as every protocol riding on it moves.
+
+Which protocol carries the output is decided in one place (`select_carrier`): the first in `BRIDGE_ORDER` (AirPlay, squeezelite, Chromecast) that holds it. A protocol the user has switched on holds the output when its manager says it qualifies while it is attached, and when it is the stored carrier while it is away or its provider still loads. So a speaker that is merely off keeps its place, while a protocol the user switched off, or whose provider is disabled, lets the next one take the output over. A protocol that never carried the output holds no place while it is away, because whether it qualifies is only known with its device there.
+
+A hand-over never removes or creates the record. Under a lock per player, one step without a suspension lets the record follow its carrier (the carrier it names, the static delay of that carrier and what Chromecast asks for, below); then the bridge of the carrier before stops and the bridge of the new one registers under the same client id. The static delay is kept per carrier: the delay set for the carrier before is put aside in the record (`sendspin_bridge_static_delays`, by protocol id), and the one set while the new carrier had the output before comes back; without one, the default of the new bridge applies.
+
+Sendspin over Chromecast is experimental. Chromecast leaves an output it carries switched off until the user switched it on once while Chromecast carried it (`sendspin_cast_opt_in`), and stores its warning with it (`protocol_experimental_note`). What it switched off is marked as its default (`protocol_off_by_default`), which tells that apart from an output its user switched off: AirPlay and squeezelite switch a default on when they take the output over, and leave an output its user switched off as it is. A save that switches an output drops the mark. An unchanged output switch submitted with a settings form leaves the carrier's default alone.
+
+The bridges of a player are evaluated when one of its bridged protocols attaches or detaches, when its outputs change, when a provider loads or unloads, when its Sendspin output is switched and when a config of the player is saved.
 
 ### Implemented Bridges
 
 | Provider | Bridge Location | Identifier |
 |----------|-----------------|------------|
 | AirPlay | `airplay/sendspin_bridge.py` | MAC address |
+| Squeezelite | `squeezelite/sendspin_bridge.py` | MAC address |
 | Chromecast | `chromecast/sendspin_bridge.py` | MAC address (Cast group: its uuid) |
 
 ### Implementing a New Bridge
