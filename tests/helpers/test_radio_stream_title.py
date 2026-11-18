@@ -162,3 +162,12 @@ def test_cleaning_streamtitle_html_entities() -> None:
     line = "&quot;Cornflake Girl&quot; by Tori Amos"
     assert clean_stream_title(line) == "Tori Amos - Cornflake Girl"
     assert parse_station_stream_title(line) == ("Cornflake Girl", "Tori Amos", None)
+
+    # an encoded quote inside a keyword field must not end the field early
+    line = 'title="Say &quot;Hello&quot;",artist="Example Artist"'
+    assert clean_stream_title(line) == 'Example Artist - Say "Hello"'
+
+    # station formats are decoded once, the same as the direct parser call
+    line = "&quot;Tom &amp;amp; Jerry&quot; by Tori Amos"
+    assert parse_station_stream_title(line) == ("Tom &amp; Jerry", "Tori Amos", None)
+    assert clean_stream_title(line) == "Tori Amos - Tom &amp; Jerry"

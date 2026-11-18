@@ -982,19 +982,19 @@ def clean_stream_title(line: str) -> str:
     """Strip junk text from radio streamtitle."""
     title: str = ""
     artist: str = ""
-    line = html.unescape(line)
 
     if not keyword_pattern.search(line):
         if parsed := parse_station_stream_title(line):
             track_name, artist_name, _ = parsed
             return f"{artist_name} - {track_name}"
-        return multi_strip(line)
+        return multi_strip(html.unescape(line))
 
+    # decode after extracting the quoted fields, as an encoded quote would end them early
     if match := title_pattern.search(line):
-        title = multi_strip(match.group("title"))
+        title = multi_strip(html.unescape(match.group("title")))
 
     if match := artist_pattern.search(line):
-        possible_artist = multi_strip(match.group("artist"))
+        possible_artist = multi_strip(html.unescape(match.group("artist")))
         if possible_artist and possible_artist != title:
             artist = possible_artist
 
