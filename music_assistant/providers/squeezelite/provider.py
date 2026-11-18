@@ -113,6 +113,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         await super().loaded_in_mass()
         assert self.slimproto is not None  # for type checker
         self.slimproto.cli.display_name_lookup = self._lookup_display_name
+        self.slimproto.cli.elapsed_lookup = self._lookup_elapsed
         # subscribe before starting the socket server: aioslimproto does not buffer
         # events, so a client connecting before we subscribe would be missed entirely
         self.slimproto.subscribe(self._handle_slimproto_event)
@@ -167,6 +168,11 @@ class SqueezelitePlayerProvider(PlayerProvider):
         """Return Music Assistant's display name for a slimproto player, or None if unknown."""
         mass_player = self.mass.players.get_player_by_protocol(player_id)
         return mass_player.name if mass_player else None
+
+    def _lookup_elapsed(self, player_id: str) -> float | None:
+        """Return the position in the track of a player as its Sendspin bridge has it, else None."""
+        bridge = self.bridge_manager.get_bridge(player_id)
+        return bridge.position_in_track if bridge else None
 
     async def _validate_all_ports(
         self, control_port: int, telnet_port: int | None, json_port: int | None

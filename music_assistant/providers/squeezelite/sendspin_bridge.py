@@ -553,6 +553,25 @@ class SendspinSqueezeliteBridge:
         return self._session is not None
 
     @property
+    def position_in_track(self) -> float | None:
+        """
+        Return the position in the track the player plays or holds for the bridge, in seconds.
+
+        It is the position Music Assistant shows for its player: the elapsed time of the
+        player counts from the start of a stream of the bridge, which starts mid-track and
+        plays on from track to track. None while the player has nothing of the bridge.
+        """
+        if (player := self.protocol.player) is None or (media := player.current_media) is None:
+            return None
+        if self._session is not None:
+            return media.corrected_elapsed_time
+        if self._holds_bridge_track():
+            # a stopped group stays where it stopped, and corrected_elapsed_time runs on
+            # whatever the playback state is
+            return media.elapsed_time
+        return None
+
+    @property
     def shared_group(self) -> SendspinGroup | None:
         """Return the Sendspin group the bridge shares with other clients or is to return to."""
         if self._rejoin_group is not None:
@@ -984,8 +1003,12 @@ class SendspinSqueezeliteBridge:
 
     def _clear_stopped_track(self) -> None:
         """Clear the track a stop of its group left on the player."""
-        if (media := self._client.current_media) is not None and BRIDGE_STREAM_PATH in media.url:
+        if self._holds_bridge_track():
             self.mass.create_task(self._client.clear_media())
+
+    def _holds_bridge_track(self) -> bool:
+        """Return whether the track on the player is that of a stream of the bridge."""
+        return (media := self._client.current_media) is not None and BRIDGE_STREAM_PATH in media.url
 
     def _bit_depth_limit(self) -> int | None:
         """
