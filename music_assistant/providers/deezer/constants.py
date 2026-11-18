@@ -31,6 +31,8 @@ PERSONAL_METADATA_VERSION = "2"
 AUTHOR_ARTIST_PREFIX = "author_"
 # Deezer's placeholder artist "Unknown"
 UNKNOWN_ARTIST_ID = "8592"
+# Bump when audiobook or release parsing changes to invalidate cached items.
+AUDIOBOOK_METADATA_VERSION = "1"
 
 # -- Pagination page sizes --
 

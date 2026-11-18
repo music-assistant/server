@@ -122,9 +122,11 @@ def test_audiobook_from_a_release_has_artist_authors(provider: DeezerProvider) -
 async def test_author_page_shows_the_artist_as_author(
     provider: DeezerProvider, gql: AsyncMock
 ) -> None:
-    """An author id fetches the real artist and returns it as author."""
+    """An author id fetches the real artist and returns it as author, favorite mark included."""
     gql.get_artist.return_value = SimpleNamespace(
-        **vars(_artist_node("75255", "Conni")), url=SimpleNamespace(web_url="https://x/75255")
+        **vars(_artist_node("75255", "Conni")),
+        url=SimpleNamespace(web_url="https://x/75255"),
+        is_favorite=True,
     )
 
     artist = await _unwrap(DeezerMediaManager.get_artist)(provider.media_manager, "author_75255")
@@ -132,6 +134,7 @@ async def test_author_page_shows_the_artist_as_author(
     gql.get_artist.assert_awaited_once_with(artist_id="75255")
     assert (artist.item_id, artist.artist_type) == ("author_75255", ArtistType.AUTHOR)
     assert [m.item_id for m in artist.provider_mappings] == ["author_75255"]
+    assert artist.favorite is True
 
 
 async def test_releases_are_split_into_albums_and_audiobooks(
@@ -314,51 +317,46 @@ async def test_library_lists_the_authors_of_its_audiobooks(
     ]
 
 
-@pytest.mark.parametrize("on_deezer", [False, True], ids=["artist with music", "author only"])
-async def test_author_favorites_go_to_deezer_without_music(
-    provider: DeezerProvider,
-    gql: AsyncMock,
-    monkeypatch: pytest.MonkeyPatch,
-    on_deezer: bool,
-) -> None:
-    """An author is a Deezer favorite only if the artist has no music, a dislike always bans."""
+async def test_author_favorites_go_to_deezer(provider: DeezerProvider, gql: AsyncMock) -> None:
+    """An author is the same Deezer artist: adding, removing and a dislike all reach Deezer."""
     manager = provider.media_manager
-    monkeypatch.setattr(manager, "_is_author_only", AsyncMock(return_value=on_deezer))
 
-    added = await manager.library_add(parse_author(provider, "32067711", "Tilda Apfelkern"))
-    removed = await manager.library_remove("author_32067711", MediaType.ARTIST)
-    await manager.set_favorite("author_32067711", MediaType.ARTIST, False)
+    added = await manager.library_add(parse_author(provider, "75255", "Conni"))
+    removed = await manager.library_remove("author_75255", MediaType.ARTIST)
+    await manager.set_favorite("author_75255", MediaType.ARTIST, False)
 
-    assert (added, removed) == (on_deezer, on_deezer)
-    assert gql.add_artist_to_favorite.await_args_list == [call(artist_id="32067711")] * on_deezer
-    assert gql.remove_artist_from_favorite.await_args_list == (
-        [call(artist_id="32067711")] * on_deezer
-    )
-    gql.ban_artist_from_recommendation.assert_awaited_once_with(artist_id="32067711")
+    assert (added, removed) == (True, True)
+    gql.add_artist_to_favorite.assert_awaited_once_with(artist_id="75255")
+    gql.remove_artist_from_favorite.assert_awaited_once_with(artist_id="75255")
+    gql.ban_artist_from_recommendation.assert_awaited_once_with(artist_id="75255")
 
 
 @pytest.mark.parametrize(
     ("check_fails", "listed"),
-    [(False, ["1", "author_32067711"]), (True, ["author_32067711"])],
-    ids=["author only", "check fails"],
+    [(False, ["1", "author_32067711", "3", "author_3"]), (True, ["author_32067711"])],
+    ids=["checked", "check fails"],
 )
-async def test_library_lists_favorite_authors_without_music_as_authors(
+async def test_library_lists_favorite_authors(
     provider: DeezerProvider,
     gql: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
     check_fails: bool,
     listed: list[str],
 ) -> None:
-    """A favorite artist with only audiobooks is a library author, once."""
+    """A favorite artist is an author if its newest release is an audiobook, an artist if it has music."""
     band = _artist_node("1", "Band", "10", "11")
     tilda = _artist_node("32067711", "Tilda Apfelkern", "20", "21")
+    conni = _artist_node("3", "Conni", "30", "31")
+    for node in (band, tilda, conni):
+        node.is_favorite = True
     page_info = SimpleNamespace(has_next_page=False, end_cursor=None)
-    edges = [SimpleNamespace(node=node, favorited_at=None) for node in (band, tilda)]
+    edges = [SimpleNamespace(node=node, favorited_at=None) for node in (band, tilda, conni)]
     gql.get_favorite_artists.return_value = SimpleNamespace(
         user_favorites=SimpleNamespace(artists=SimpleNamespace(edges=edges, page_info=page_info))
     )
+    audiobook_ids = {"20", "21", "30"}
     gql.check_audiobook_ids.side_effect = (
-        TimeoutError if check_fails else lambda ids: {i for i in ids if i.startswith("2")}
+        TimeoutError if check_fails else lambda ids: set(ids) & audiobook_ids
     )
     audiobook = parse_audiobook_from_album(provider, _album_node("2", tilda))  # type: ignore[arg-type]
 
@@ -376,5 +374,9 @@ async def test_library_lists_favorite_authors_without_music_as_authors(
     assert [artist.item_id for artist in artists] == listed
     assert report_skipped.call_count == check_fails
     if not check_fails:
-        # only the artist whose newest release is an audiobook gets the rest checked
-        assert gql.check_audiobook_ids.await_args_list == [call(["10", "20"]), call(["21"])]
+        assert all(artist.favorite for artist in artists)
+        # only the artists whose newest release is an audiobook get the rest checked
+        assert gql.check_audiobook_ids.await_args_list == [
+            call(["10", "20", "30"]),
+            call(["21", "31"]),
+        ]

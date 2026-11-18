@@ -343,6 +343,7 @@ def parse_author(
     artist_id: str,
     name: str,
     metadata: MediaItemMetadata | None = None,
+    favorite: bool | None = None,
 ) -> Artist:
     """Parse a Deezer artist as the author of audiobooks."""
     item_id = f"{AUTHOR_ARTIST_PREFIX}{artist_id}"
@@ -354,6 +355,7 @@ def parse_author(
         media_type=MediaType.ARTIST,
         provider_mappings={_provider_mapping(provider, item_id)},
         metadata=metadata or MediaItemMetadata(),
+        favorite=favorite,
     )
 
 
