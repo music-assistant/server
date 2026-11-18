@@ -284,11 +284,27 @@ class DeezerMediaManager:
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Deezer."""
+        seen_author_ids: set[str] = set()
         async for edge in self._iter_paged(
             self.provider.gql_client.get_favorite_artists,
             lambda r: r.user_favorites.artists,
         ):
             item = parse_artist(self.provider, edge.node)
+            try:
+                author_only = await self._is_author_only(edge.node.id)
+            except (
+                ClientError,
+                GraphQLClientError,
+                InvalidDataError,
+                RetriesExhausted,
+                TimeoutError,
+            ) as err:
+                # without the check the type is unknown, so the library stays as it is
+                self.provider.report_skipped_sync_item(MediaType.ARTIST, None, err)
+                continue
+            if author_only:
+                item = parse_author(self.provider, edge.node.id, edge.node.name, item.metadata)
+                seen_author_ids.add(item.item_id)
             if edge.favorited_at:
                 item.date_added = parse_date(edge.favorited_at)
             yield item
@@ -302,7 +318,6 @@ class DeezerMediaManager:
                     seen_artist_names.add(artist.name)
                     yield artist
         # Authors come and go with the audiobooks in the library
-        seen_author_ids: set[str] = set()
         async for audiobook in self.get_library_audiobooks():
             for author in audiobook.authors:
                 if isinstance(author, Artist) and author.item_id not in seen_author_ids:
@@ -847,10 +862,11 @@ class DeezerMediaManager:
     async def library_add(self, item: MediaItemType) -> bool:
         """Add an item to the provider's library/favorites."""
         if item.media_type == MediaType.ARTIST:
-            if item.item_id.startswith(AUTHOR_ARTIST_PREFIX):
-                # authors come and go with their audiobooks
+            artist_id = item.item_id.removeprefix(AUTHOR_ARTIST_PREFIX)
+            if artist_id != item.item_id and not await self._is_author_only(artist_id):
+                # an artist with music keeps the favorite on its artist entry
                 return False
-            await self.provider.gql_client.add_artist_to_favorite(artist_id=item.item_id)
+            await self.provider.gql_client.add_artist_to_favorite(artist_id=artist_id)
         elif item.media_type == MediaType.ALBUM:
             await self.provider.gql_client.add_album_to_favorite(album_id=item.item_id)
         elif item.media_type == MediaType.TRACK:
@@ -870,10 +886,11 @@ class DeezerMediaManager:
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove an item from the provider's library/favorites."""
         if media_type == MediaType.ARTIST:
-            if prov_item_id.startswith(AUTHOR_ARTIST_PREFIX):
-                # authors come and go with their audiobooks
+            artist_id = prov_item_id.removeprefix(AUTHOR_ARTIST_PREFIX)
+            if artist_id != prov_item_id and not await self._is_author_only(artist_id):
+                # an artist with music keeps the favorite on its artist entry
                 return False
-            await self.provider.gql_client.remove_artist_from_favorite(artist_id=prov_item_id)
+            await self.provider.gql_client.remove_artist_from_favorite(artist_id=artist_id)
         elif media_type == MediaType.ALBUM:
             await self.provider.gql_client.remove_album_from_favorite(album_id=prov_item_id)
         elif media_type == MediaType.TRACK:
@@ -975,6 +992,12 @@ class DeezerMediaManager:
             [node.id for node in releases]
         )
         return releases, audiobook_ids
+
+    async def _is_author_only(self, artist_id: str) -> bool:
+        """Tell whether a Deezer artist has audiobooks but no music."""
+        if await self.get_artist_albums(artist_id):
+            return False
+        return bool(await self.get_author_audiobooks(f"{AUTHOR_ARTIST_PREFIX}{artist_id}"))
 
     async def _search_artists(
         self, nodes: list[SearchSearchResultsArtistsEdgesNode], author_ids: set[str]

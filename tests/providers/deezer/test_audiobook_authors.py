@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from deezer_python_gql.generated.enums import AudiobookContributorRoles
@@ -266,12 +266,75 @@ async def test_library_lists_the_authors_of_its_audiobooks(
     ]
 
 
-async def test_authors_follow_their_audiobooks(provider: DeezerProvider, gql: AsyncMock) -> None:
-    """Adding or removing an author leaves Deezer alone, a dislike still bans the artist."""
-    assert not await provider.media_manager.library_add(parse_author(provider, "75255", "Conni"))
-    assert not await provider.media_manager.library_remove("author_75255", MediaType.ARTIST)
-    await provider.media_manager.set_favorite("author_75255", MediaType.ARTIST, False)
+@pytest.mark.parametrize(
+    ("artist_albums", "on_deezer"),
+    [(["album"], False), ([], True)],
+    ids=["artist with music", "author only"],
+)
+async def test_author_favorites_go_to_deezer_without_music(
+    provider: DeezerProvider,
+    gql: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    artist_albums: list[str],
+    on_deezer: bool,
+) -> None:
+    """An author is a Deezer favorite only if the artist has no music, a dislike always bans."""
+    manager = provider.media_manager
+    monkeypatch.setattr(manager, "get_artist_albums", AsyncMock(return_value=artist_albums))
+    monkeypatch.setattr(manager, "get_author_audiobooks", AsyncMock(return_value=["audiobook"]))
 
-    gql.add_artist_to_favorite.assert_not_called()
-    gql.remove_artist_from_favorite.assert_not_called()
-    gql.ban_artist_from_recommendation.assert_awaited_once_with(artist_id="75255")
+    added = await manager.library_add(parse_author(provider, "32067711", "Tilda Apfelkern"))
+    removed = await manager.library_remove("author_32067711", MediaType.ARTIST)
+    await manager.set_favorite("author_32067711", MediaType.ARTIST, False)
+
+    assert (added, removed) == (on_deezer, on_deezer)
+    assert gql.add_artist_to_favorite.await_args_list == [call(artist_id="32067711")] * on_deezer
+    assert gql.remove_artist_from_favorite.await_args_list == (
+        [call(artist_id="32067711")] * on_deezer
+    )
+    gql.ban_artist_from_recommendation.assert_awaited_once_with(artist_id="32067711")
+
+
+@pytest.mark.parametrize(
+    ("tilda_albums", "listed", "skipped"),
+    [
+        (AsyncMock(return_value=[]), ["1", "author_32067711"], 0),
+        (AsyncMock(side_effect=TimeoutError), ["1", "author_32067711"], 1),
+    ],
+    ids=["author only", "check fails"],
+)
+async def test_library_lists_favorite_authors_without_music_as_authors(
+    provider: DeezerProvider,
+    gql: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    tilda_albums: AsyncMock,
+    listed: list[str],
+    skipped: int,
+) -> None:
+    """A favorite artist with only audiobooks is a library author, once."""
+    band, tilda = _artist_node("1", "Band"), _artist_node("32067711", "Tilda Apfelkern")
+    page_info = SimpleNamespace(has_next_page=False, end_cursor=None)
+    edges = [SimpleNamespace(node=node, favorited_at=None) for node in (band, tilda)]
+    gql.get_favorite_artists.return_value = SimpleNamespace(
+        user_favorites=SimpleNamespace(artists=SimpleNamespace(edges=edges, page_info=page_info))
+    )
+    audiobook = parse_audiobook_from_album(provider, _album_node("2", tilda))  # type: ignore[arg-type]
+
+    async def library_audiobooks() -> AsyncGenerator[Audiobook]:
+        yield audiobook
+
+    async def artist_albums(artist_id: str) -> list[str]:
+        return ["album"] if artist_id == "1" else await tilda_albums(artist_id)
+
+    manager = provider.media_manager
+    report_skipped = Mock()
+    monkeypatch.setattr(provider, "report_skipped_sync_item", report_skipped)
+    monkeypatch.setattr(manager, "get_artist_albums", artist_albums)
+    monkeypatch.setattr(manager, "get_author_audiobooks", AsyncMock(return_value=["audiobook"]))
+    monkeypatch.setattr(manager, "_get_personal_songs", AsyncMock(return_value=[]))
+    monkeypatch.setattr(manager, "get_library_audiobooks", library_audiobooks)
+
+    artists = [artist async for artist in manager.get_library_artists()]
+
+    assert [artist.item_id for artist in artists] == listed
+    assert report_skipped.call_count == skipped
