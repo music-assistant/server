@@ -888,7 +888,8 @@ class SendspinSqueezeliteBridge:
             # nothing is left playing, or a new stream took the bridge over already
             return
         self.logger.debug("Explicit stop for %s", self.protocol.display_name)
-        self._close_session(session, stop_player=True)
+        # the player keeps the stopped track: its play key does nothing on an empty playlist
+        self._close_session(session, stop_player=True, keep_media=True)
 
     def _on_volume_change(self, volume: int) -> None:
         """Forward a volume change to the squeezelite player."""
@@ -920,7 +921,7 @@ class SendspinSqueezeliteBridge:
         """
         if (old := self._session) is not None:
             # no stop for the player: the stream request of the new session flushes it
-            self._close_session(old, replaced=True)
+            self._close_session(old, keep_media=True)
         if not self.protocol.available:
             self.logger.warning(
                 "Cannot start Sendspin stream for %s: player not available",
@@ -952,14 +953,15 @@ class SendspinSqueezeliteBridge:
         ]
 
     def _close_session(
-        self, session: BridgeSession, *, stop_player: bool = False, replaced: bool = False
+        self, session: BridgeSession, *, stop_player: bool = False, keep_media: bool = False
     ) -> None:
         """
         End a session and let go of the player.
 
         :param session: The session to end.
         :param stop_player: Stop the player at once instead of leaving it to what follows.
-        :param replaced: Another session takes over: the player shows what plays on.
+        :param keep_media: Leave the track on the player: another session takes over, or
+            its group stopped.
         """
         session.close()
         if self._session is session:
@@ -968,7 +970,7 @@ class SendspinSqueezeliteBridge:
         if stop_player:
             # never a power or mute command: those switch the output of the player off
             self.mass.create_task(self._client.stop())
-        if not replaced:
+        if not keep_media:
             # a stop keeps the media that played: the player would go on showing the
             # track of a group it left
             self.mass.create_task(self._client.clear_media())

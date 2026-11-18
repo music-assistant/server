@@ -17,6 +17,7 @@ import random
 import struct
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import replace
+from functools import partial
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -29,6 +30,7 @@ from aiosendspin.models.types import AudioCodec, PlayerCommand
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.events import ClientGroupChangedEvent
 from aiosendspin.server.roles import AudioChunk
+from aioslimproto.cli import SlimProtoCLI
 from aioslimproto.client import SlimClient
 from aioslimproto.models import ButtonCode, PlayerStatus, RemoteCode, SlimEvent
 from aioslimproto.models import EventType as SlimEventType
@@ -4150,7 +4152,7 @@ async def test_a_bridge_that_does_not_play_shows_nothing(rig: _Rig) -> None:
 
 
 @pytest.mark.parametrize(
-    "end", ["explicit stop", "taken back", "bridge removed", "ended before its start", "gave up"]
+    "end", ["taken back", "bridge removed", "ended before its start", "gave up"]
 )
 async def test_nothing_is_left_on_the_player_when_its_stream_is_over(rig: _Rig, end: str) -> None:
     """A stop keeps the media of a player: the bridge has it forgotten with its session."""
@@ -4158,10 +4160,7 @@ async def test_nothing_is_left_on_the_player_when_its_stream_is_over(rig: _Rig, 
     session = await rig.start_playing()
     rig.client.clear_media.assert_not_called()
 
-    if end == "explicit stop":
-        rig.bridge._on_stream_end()
-        rig.bridge._on_explicit_stop()
-    elif end == "taken back":
+    if end == "taken back":
         assert rig.bridge.stop_streaming()
     elif end == "bridge removed":
         await rig.bridge.stop()
@@ -4211,7 +4210,7 @@ async def test_a_session_that_is_replaced_keeps_what_the_player_shows(
     rig.client.clear_media.assert_not_called()
 
 
-async def test_the_player_shows_the_track_of_the_group_and_none_after_it(rig: _Rig) -> None:
+async def test_the_player_shows_the_track_of_the_group_and_keeps_it_on_a_stop(rig: _Rig) -> None:
     """With a real slimproto client: what its status and display report, start to stop."""
     reader, _sent = _real_client(rig)
     client = rig.client
@@ -4239,7 +4238,46 @@ async def test_the_player_shows_the_track_of_the_group_and_none_after_it(rig: _R
         rig.bridge._on_explicit_stop()
         await _settle()
         assert client.state == SlimPlayerState.STOPPED
-        assert shown() is None
+        assert shown() == (url, _metadata("Two"))
+    finally:
+        client._reader_task.cancel()
+
+
+async def test_the_play_key_of_a_player_resumes_its_stopped_group(rig: _Rig) -> None:
+    """A player only sends play for a track its status lists: a group stop leaves it one."""
+    reader, sent = _real_client(rig)
+    client = rig.client
+    server = MagicMock(logger=logging.getLogger("test.aioslimproto"))
+    server.get_player.side_effect = {PLAYER_ID: client}.get
+    cli = SlimProtoCLI(
+        server,
+        cli_port=None,
+        cli_port_json=None,
+        command_handler=partial(SqueezelitePlayerProvider._handle_cli_command, rig.provider),
+    )
+    rig.protocol.player.player_id = "kitchen"
+    rig.mass.players.cmd_play = AsyncMock()
+    try:
+        rig.protocol.player.current_media = _media("One")
+        rig.grouped()
+        await rig.start_playing()
+        await _player_reports(reader, b"STMs")
+
+        rig.bridge._on_stream_end()
+        rig.bridge._on_explicit_stop()
+        await _settle()
+        # the player confirms the stop of its stream
+        await _player_reports(reader, b"STMf")
+        status = await cli._handle_command((PLAYER_ID, ["status", "-", 10, "menu:menu"]))
+
+        assert (status["mode"], status["playlist_tracks"]) == ("stop", 1)
+        assert [item["track"] for item in status["item_loop"]] == ["One"]
+        sent.clear()
+        await cli._handle_command((PLAYER_ID, ["mode", "play"]))
+        # the player of the bridge, which Music Assistant hands on to the player that
+        # owns its playback
+        rig.mass.players.cmd_play.assert_awaited_once_with("kitchen")
+        assert _stream_commands(sent) == []
     finally:
         client._reader_task.cancel()
 
