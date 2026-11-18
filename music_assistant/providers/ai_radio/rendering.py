@@ -35,6 +35,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.streams.constants import VOICE_OVER_RAMP
 from music_assistant.helpers.audio import parse_loudnorm
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream, tls_verify_args, user_agent_args
+from music_assistant.helpers.plugin_engines import resolve_ai_engine_setting
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.tts import (
@@ -461,8 +462,12 @@ class AIRadioRenderMixin:
             self.logger.warning(
                 "AI Radio clip %s (%s) failed to generate: %s", clip_id, queue_item.name, err
             )
+            # name the engine the setting resolves to (also when it follows the default),
+            # or the configured value when none does
+            selected = self.get_setup_value(CONF_AI_ENGINE)
+            engine = await resolve_ai_engine_setting(self.mass, selected)
             self._record_render_failure(
-                queue_item, f"AI engine '{self.get_setup_value(CONF_AI_ENGINE)}'"
+                queue_item, f"AI engine '{engine.uid if engine else selected}'"
             )
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed to generate") from err
         if max_chars > 0:

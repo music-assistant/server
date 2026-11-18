@@ -21,7 +21,6 @@ from .provider import (
     CONF_BACKEND,
     CONF_SOLOIST_CONSENT,
     CONF_VOLUME_MODE,
-    SUPPORTED_FEATURES,
     VOLUME_MODE_OPTIONS,
     SpotifyConnectProvider,
 )
@@ -40,7 +39,6 @@ __all__ = [
     "CONF_BACKEND",
     "CONF_SOLOIST_CONSENT",
     "CONF_VOLUME_MODE",
-    "SUPPORTED_FEATURES",
     "VOLUME_MODE_OPTIONS",
     "SpotifyConnectProvider",
     "setup",

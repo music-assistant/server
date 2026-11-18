@@ -187,6 +187,9 @@ class FakeProtocol(PlayerProtocol):
         # whether the protocol reaches its device once it is told that the power is back, as
         # one does that only reconnects by itself minutes later; a test sets it
         self.connects_when_power_is_back = False
+        # how long the protocol takes to release what it holds when it is detached, on the
+        # clock, as one that closes a connection to its device; a test sets it
+        self.detach_time = 0.0
         # whether the protocol exists only while attached, like a browser session
         self._attr_session_only = device.session_only
         self._device = device
@@ -212,6 +215,12 @@ class FakeProtocol(PlayerProtocol):
                 required=False,
             ),
         ]
+
+    async def on_detach(self) -> None:
+        """Release what the protocol holds, which takes its detach_time on the clock."""
+        await super().on_detach()
+        if self.detach_time:
+            await asyncio.sleep(self.detach_time)
 
     async def on_power_cut(self) -> None:
         """Record that the power of the device was cut."""

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
-from music_assistant_models.enums import RepeatMode
+from music_assistant_models.enums import ChannelLayout, PlayerType, RepeatMode
 
 from music_assistant.providers.raumfeld.constants import HOST_CHECK_TIMEOUT, RENDERER_QUERY_TIMEOUT
 from music_assistant.providers.raumfeld.helpers import (
@@ -26,6 +26,7 @@ from music_assistant.providers.raumfeld.helpers import (
     parse_serial_number,
     play_mode_for,
     query_last_change,
+    room_player_type,
     room_udn_to_protocol_id,
     serial_to_protocol_id,
 )
@@ -326,3 +327,19 @@ def test_an_unknown_play_mode_is_not_guessed() -> None:
     """A play mode the renderer did not report, or one not seen before, stays unknown."""
     assert parse_play_mode(None) == (None, RepeatMode.UNKNOWN)
     assert parse_play_mode("INTRO") == (None, RepeatMode.UNKNOWN)
+
+
+@pytest.mark.parametrize(
+    ("speakers", "expected"),
+    [
+        (0, (PlayerType.PLAYER, None)),
+        (1, (PlayerType.PLAYER, None)),
+        (2, (PlayerType.MULTI_CHANNEL, ChannelLayout.STEREO)),
+        (3, (PlayerType.MULTI_CHANNEL, ChannelLayout.STEREO)),
+    ],
+)
+def test_a_room_of_several_speakers_is_a_stereo_set(
+    speakers: int, expected: tuple[PlayerType, ChannelLayout | None]
+) -> None:
+    """A room of several speakers is a multi-channel player in stereo, one speaker is not."""
+    assert room_player_type(speakers) == expected

@@ -1227,8 +1227,10 @@ async def test_remove_unavailable_is_refused_while_the_providers_find_their_devi
         await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
         await scenario.reload_provider(sonos)
 
-    with pytest.raises(ActionUnavailable):
+    with pytest.raises(ActionUnavailable) as error:
         await scenario.mass.players.remove_unavailable()
+    assert error.value.translation_key == "players_still_being_found"
+    assert error.value.translation_args == [REMOVE_UNAVAILABLE_GRACE]
     assert _stored(scenario) == ([player_id], ["RINCON_KITCHEN"])
 
     await scenario.advance(REMOVE_UNAVAILABLE_GRACE)

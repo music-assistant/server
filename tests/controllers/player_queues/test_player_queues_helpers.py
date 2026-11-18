@@ -280,6 +280,7 @@ class _FakePlayer:
 class _FakePlayers:
     def __init__(self, player_ids: set[str]) -> None:
         self._players = {player_id: _FakePlayer(player_id) for player_id in player_ids}
+        self.translation_owner = "core.players"
         self.locks_held = 0
         # (player_id, whether a lock was held) for every power on
         self.powered_on: list[tuple[str, bool]] = []
@@ -490,9 +491,12 @@ class TestHandlePlayAction:
         _switched_off(ctrl, "q1")
         sink: list[bool] = []
 
-        with pytest.raises(PlayerUnavailableError, match="switched off"):
+        with pytest.raises(PlayerUnavailableError, match="switched off") as error:
             await _flag_during(cast("PlayerQueuesController", ctrl), "q1", sink)
 
+        assert error.value.translation_key == "player_switched_off"
+        assert error.value.translation_owner == "core.players"
+        assert error.value.translation_args == ["q1"]
         assert sink == []
         assert ctrl.calls == []
 

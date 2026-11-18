@@ -28,7 +28,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 import music_assistant.providers.sendspin_source.provider as provider_module
-from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
+from music_assistant.constants import CONF_ALLOW_AUDIO_ANALYSIS, CONF_ENTRY_WARN_PREVIEW
 from music_assistant.providers.sendspin.constants import CONF_SOURCE_AUTOSTART_TARGET
 from music_assistant.providers.sendspin_source import get_config_entries
 from music_assistant.providers.sendspin_source.constants import (
@@ -125,6 +125,39 @@ async def test_audio_sources_follow_role_activation() -> None:
     assert sources[0].can_initiate is True
     # a live input the user feeds in, so analysis providers may follow it
     assert sources[0].allow_audio_analysis is True
+
+
+async def test_analysis_follows_the_setting_of_the_device() -> None:
+    """The user disables analysis per device, such as for a microphone; the default allows it."""
+    provider = await make_provider([_FakeClient("client-1", name="Cast Pro", has_player_role=True)])
+    get_config(provider).defaults[("client-1", CONF_ALLOW_AUDIO_ANALYSIS)] = True
+    assert [s.allow_audio_analysis for s in await provider.get_audio_sources()] == [True]
+    get_config(provider).values[("client-1", CONF_ALLOW_AUDIO_ANALYSIS)] = False
+    assert [s.allow_audio_analysis for s in await provider.get_audio_sources()] == [False]
+    assert [s.allow_audio_analysis for s in provider.get_player_input_sources("client-1")] == [
+        False
+    ]
+
+
+async def test_a_playing_input_follows_a_change_of_the_setting(fake_client: _FakeClient) -> None:
+    """Disabling analysis reaches the input that plays, not only its next selection."""
+    provider = await make_provider(
+        [fake_client, _FakeClient("client-2", name="Other", has_player_role=True)]
+    )
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-A")
+    get_config(provider).values[("client-1", CONF_ALLOW_AUDIO_ANALYSIS)] = False
+
+    # an input that is not playing has no session to hand it to
+    provider.on_client_config_updated("client-2")
+    assert get_players(provider).refreshed == []
+
+    provider.on_client_config_updated("client-1")
+    [(player_id, source)] = get_players(provider).refreshed
+    assert (player_id, source.item_id, source.allow_audio_analysis) == (
+        "queue-1",
+        "client-1",
+        False,
+    )
 
 
 async def test_source_name_follows_a_player_rename(fake_client: _FakeClient) -> None:
