@@ -224,6 +224,8 @@ class SonosPlayer(PlayerProtocol):
         # the AirPlay session on the speaker is Music Assistant's own; the speaker keeps
         # reporting it, paused, for a while after Music Assistant stopped streaming
         self._own_airplay_session = False
+        # the other speakers of this speaker's set, as last reported to the players controller
+        self._reported_bonded_ids: set[str] = set()
 
     @property
     def source_list(self) -> list[PlayerSource]:
@@ -355,6 +357,7 @@ class SonosPlayer(PlayerProtocol):
         if not self.connected and not self._marked_asleep:
             # the object attaches again after a detach closed its connection
             self.reconnect()
+        self._report_bonded_speakers()
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
@@ -1222,6 +1225,7 @@ class SonosPlayer(PlayerProtocol):
         self._attr_type = (
             PlayerType.PLAYER if self._attr_channel_layout is None else PlayerType.MULTI_CHANNEL
         )
+        self._report_bonded_speakers()
         # guard against the race where a volume event arrives before aiosonos'
         # async_init has populated _volume_data (the accessors raise AttributeError
         # on None). The next event re-runs once the data is there.
@@ -2318,6 +2322,17 @@ class SonosPlayer(PlayerProtocol):
             surrounds=self.client.player.has_surrounds,
             subwoofer=self.client.player.has_subwoofer,
         )
+
+    def _report_bonded_speakers(self) -> None:
+        """Report the speakers newly bonded into this player's set, whose players are removed."""
+        if self.player is None or not self.connected:
+            return
+        bonded = set(self.client.player.bonded_player_ids)
+        if added := bonded - self._reported_bonded_ids:
+            self.mass.create_task(
+                self.mass.players.remove_absorbed_players(self.protocol_id, sorted(added))
+            )
+        self._reported_bonded_ids = bonded
 
     @property
     def _options_device(self) -> SonosDevice:
