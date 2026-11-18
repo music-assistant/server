@@ -26,6 +26,7 @@ from music_assistant.controllers.community_catalog.dependencies import Dependenc
 from music_assistant.controllers.community_catalog.gate import _REASONS, Verdict
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
 from music_assistant.helpers.util import purge_provider_modules
+from music_assistant.mass import _PROVIDER_FOLDERS
 from music_assistant.testing import full_mass_context
 from tests.controllers.community_catalog.conftest import (
     ADDED,
@@ -72,6 +73,7 @@ def catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     monkeypatch.setattr(dependencies, "_UV_INDEX_ARGS", ["--no-index", "--find-links", str(wheels)])
     monkeypatch.setattr(sys, "path", list(sys.path))
     original_path = list(providers_package.__path__)
+    monkeypatch.setattr(_PROVIDER_FOLDERS, "_folders", {})
     yield tmp_path / "data" / "community_providers"
     providers_package.__path__[:] = original_path
     _forget_imports(tmp_path)

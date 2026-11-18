@@ -9,11 +9,14 @@ import os
 import pathlib
 import random
 import shutil
+import sys
 import threading
 import time
 from base64 import b64encode
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
+from importlib.abc import MetaPathFinder
+from importlib.util import spec_from_file_location
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast, overload
 from uuid import uuid4
@@ -129,7 +132,9 @@ from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.provider import Provider
 
 if TYPE_CHECKING:
-    from types import TracebackType
+    from collections.abc import Sequence
+    from importlib.machinery import ModuleSpec
+    from types import ModuleType, TracebackType
 
     from aiohttp import ClientSession
     from music_assistant_models.auth import User
@@ -1175,11 +1180,11 @@ class MusicAssistant:
         """
         Register the manifest of a provider, which makes the provider available for loading.
 
-        The texts of a community provider are loaded with it.
+        A community provider is imported under its domain, whatever its folder is named, and its
+        texts are loaded with it.
 
         :param provider_path: Folder of the provider, holding its manifest.json.
         :param tier: Who maintains the provider, which follows from where it loads.
-        :raises InvalidDataError: A community provider's folder is not named after its domain.
         :raises AlreadyRegisteredError: A community provider's domain is already registered.
         """
         manifest = await self._load_provider_manifest(provider_path, tier)
@@ -1202,6 +1207,7 @@ class MusicAssistant:
         if not manifest or manifest.tier != ProviderTier.COMMUNITY:
             return
         del self._provider_manifests[domain]
+        _PROVIDER_FOLDERS.remove(domain)
         self._provider_icons.pop(domain, None)
         self.translations.unload_provider_strings(domain)
         # a load that is still waiting for its retry has nothing left to load
@@ -1872,13 +1878,15 @@ class MusicAssistant:
         set_provider_tier(provider_manifest, tier)
         if tier == ProviderTier.COMMUNITY:
             domain = provider_manifest.domain
-            # the folder name is the module name, and a provider is imported by its domain
-            if Path(provider_path).name != domain:
-                msg = f"Provider folder {provider_path} is not named after its domain {domain}"
-                raise InvalidDataError(msg)
             if domain in self._provider_manifests:
                 msg = f"Provider domain {domain} is already registered"
                 raise AlreadyRegisteredError(msg)
+            # a provider is imported by its domain: a folder named after it from the folder that
+            # holds it, like the server's own providers, any other folder by itself
+            if Path(provider_path).name == domain:
+                self.add_provider_location(os.path.dirname(provider_path))
+            else:
+                _PROVIDER_FOLDERS.add(domain, provider_path)
         # detect provider icon image variants (svg preferred over png)
         icons = await detect_provider_icons(provider_path)
         if icons:
@@ -1995,3 +2003,48 @@ class MusicAssistant:
             # itself must still change so that shutdown can run to completion
             return
         self.signal_event(EventType.CORE_STATE_UPDATED, data=self.get_server_info())
+
+
+class _ProviderFolderFinder(MetaPathFinder):
+    """Imports a community provider from a folder that is not named after its domain."""
+
+    def __init__(self) -> None:
+        """Initialize without folders."""
+        self._folders: dict[str, str] = {}
+
+    def add(self, domain: str, path: str) -> None:
+        """
+        Import a provider from a folder under its domain.
+
+        :param domain: Domain of the provider.
+        :param path: Absolute path of the provider folder.
+        """
+        self._folders[f"{providers_package.__name__}.{domain}"] = path
+        # last, so a provider shipped with the server or in an added location always wins
+        if self not in sys.meta_path:
+            sys.meta_path.append(self)
+
+    def remove(self, domain: str) -> None:
+        """
+        Stop importing a provider from the folder added for its domain, if any.
+
+        :param domain: Domain of the provider.
+        """
+        self._folders.pop(f"{providers_package.__name__}.{domain}", None)
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: Sequence[str] | None,
+        target: ModuleType | None = None,
+    ) -> ModuleSpec | None:
+        """Return the spec of a provider package added here, None for any other module."""
+        if (folder := self._folders.get(fullname)) is None:
+            return None
+        # its modules import from the folder itself, the way a package's submodules do
+        return spec_from_file_location(
+            fullname, os.path.join(folder, "__init__.py"), submodule_search_locations=[folder]
+        )
+
+
+_PROVIDER_FOLDERS = _ProviderFolderFinder()
