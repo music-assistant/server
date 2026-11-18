@@ -2913,12 +2913,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue_data is None or queue_data.session_id is None:
             return False
         queue = queue_data.queue
-        if queue_data.halted_by_command or (
-            queue.state == PlaybackState.PAUSED and not queue_data.play_index_running
+        if not queue_data.own_play_action and (
+            queue_data.halted_by_command or queue.state == PlaybackState.PAUSED
         ):
             # a paused queue hands its slot over to a queue that starts, and one that was
             # told to pause does so before its player has reported it. A queue in the middle
-            # of its own play action goes on, though its player still reports the pause
+            # of its own play action goes on to the track it plays, also when a pause comes in
             return False
         items: list[QueueItem | None] = list(self.mass.streams.audio.claimed_items(queue_id))
         # where the queue goes on, not where its player still is: a start points the
@@ -3448,9 +3448,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._drop_pending_step(queue_id)
         # we set a flag to notify the update logic that we're transitioning to a new track
         self._set_transitioning(queue_id, True)
+        play_action = ExitStack()
         try:
+            play_action.enter_context(self._own_play_action(queue_id))
             queue_data = self._queue_data[queue_id]
-            queue_data.play_index_running = True
             queue = queue_data.queue
             queue.resume_pos = 0
             # A queue picked up from its end plays its items over from the start, so a resume point
@@ -3648,8 +3649,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 self.signal_update(queue_id)
         finally:
             self._set_transitioning(queue_id, False)
-            if (ended := self._queue_data.get(queue_id)) is not None:
-                ended.play_index_running = False
+            play_action.close()
 
     async def _only_enqueues_by_default(
         self,
@@ -3705,6 +3705,26 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if not uris:
             raise InvalidDataError("No valid items in queue to save as playlist.")
         return uris
+
+    @contextmanager
+    def _own_play_action(self, queue_id: str) -> Iterator[None]:
+        """
+        Count what runs in the block as the queue's own play action.
+
+        The queue goes on to the track that action plays, also while its player still reports
+        a pause. A block within another one ends nothing; the outermost one ends the action.
+
+        :param queue_id: The id of the queue.
+        """
+        queue_data = self._queue_data.get(queue_id)
+        if queue_data is None or queue_data.own_play_action:
+            yield
+            return
+        queue_data.own_play_action = True
+        try:
+            yield
+        finally:
+            queue_data.own_play_action = False
 
     @contextmanager
     def _show_play_action(self, queue_id: str, *, while_playing: bool = False) -> Iterator[None]:

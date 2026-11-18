@@ -577,7 +577,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
             and queue_data.queue.state == PlaybackState.PAUSED
             # a queue in the middle of its own play action does not count as paused: its
             # player reports the pause until the new track plays
-            and not queue_data.play_index_running
+            and not queue_data.own_play_action
             and player is not None
             and player.playback_state == PlaybackState.PAUSED
             and player.active_source == queue_id

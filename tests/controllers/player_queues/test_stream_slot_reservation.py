@@ -287,30 +287,36 @@ async def test_a_preview_that_waits_does_not_take_the_stream_at_a_skip(
     await asyncio.gather(preview, return_exceptions=True)
 
 
-async def test_a_queue_that_is_paused_while_it_skips_keeps_no_stream(rig: SlotRig) -> None:
-    """A pause that comes in while a skip loads its track leaves the stream to whoever waits."""
+async def test_a_pause_during_a_skip_does_not_take_the_stream_from_the_track_it_plays(
+    rig: SlotRig,
+) -> None:
+    """A pause that comes in while a skip loads its track leaves the stream to that track."""
     tracks = rig.play("track 0", "track 1", "track 2")
     await rig.ask(tracks[0])
-    preview = asyncio.create_task(_preview(rig, SOON))
+    preview = asyncio.create_task(_preview(rig, BRIEF_WAIT))
     await _turns()
     allow_starts(rig)
     served_at_the_stop: list[bool] = []
 
     async def _load(_queue_item: object, **_kwargs: object) -> None:
-        # what a pause command does to the queue while the skip is under way
+        # what a pause command does to the queue while the skip is under way; the skip goes
+        # on and hands its track to the player all the same
         queue_data = rig.queues._queue_data[QUEUE_ID]
         queue_data.queue.state = PlaybackState.PAUSED
         queue_data.halted_by_command = True
         await rig.queues._abort_superseded_source_buffers(tracks[2])
         await _turns()
         served_at_the_stop.append(preview.done())
+        await rig.audio.get_audio_buffer(tracks[2], reason="prepare", capacity_wait_timeout=0)
 
     rig.queues._load_item = AsyncMock(side_effect=_load)  # type: ignore[method-assign]
 
     await rig.queues._play_index(QUEUE_ID, 2, None, False)
 
-    assert served_at_the_stop == [True]
-    assert await preview
+    assert served_at_the_stop == [False]
+    assert rig.fills(rig.buffer(tracks[2]))
+    with pytest.raises(ProviderStreamLimitError):
+        await preview
 
 
 async def test_a_preview_that_waits_does_not_take_the_stream_at_a_seek(rig: SlotRig) -> None:
@@ -434,6 +440,67 @@ async def test_a_queue_that_replaces_its_tracks_keeps_the_stream_only_for_the_sa
         assert rig.fills(rig.buffer(new_track))
         with pytest.raises(ProviderStreamLimitError):
             await preview
+
+
+@pytest.mark.parametrize("dynamic", [False, True], ids=["tracks", "a dynamic mix"])
+async def test_a_paused_queue_that_replaces_its_tracks_keeps_the_stream(
+    rig: SlotRig, dynamic: bool
+) -> None:
+    """A paused speaker that plays an album of the same service keeps its stream at the swap."""
+    (playing,) = rig.play("track 0")
+    await rig.ask(playing)
+    # what a pause command leaves behind; the speaker reports the pause until the album plays
+    queue_data = rig.queues._queue_data[QUEUE_ID]
+    queue_data.queue.state = PlaybackState.PAUSED
+    queue_data.halted_by_command = True
+    preview = asyncio.create_task(_preview(rig, BRIEF_WAIT))
+    await _turns()
+    allow_starts(rig)
+    new_track = rig.track("track 9")
+    served_before_load: list[bool] = []
+
+    async def _load(queue_item: QueueItem, **_kwargs: object) -> None:
+        served_before_load.append(preview.done())
+        await rig.queues._abort_superseded_source_buffers(queue_item)
+        await rig.audio.get_audio_buffer(queue_item, reason="prepare", capacity_wait_timeout=0)
+
+    rig.queues._load_item = AsyncMock(side_effect=_load)  # type: ignore[method-assign]
+
+    if dynamic:
+        assert new_track.media_item is not None
+        rig.queues._managed_pool = SimpleNamespace(  # type: ignore[assignment]
+            fill=AsyncMock(return_value=[new_track.media_item])
+        )
+        rig.queues.is_smart_shuffle_active = MagicMock(return_value=False)  # type: ignore[method-assign]
+        rig.queues.update_next_item_on_player = MagicMock()  # type: ignore[method-assign]
+        rig.queues.load = AsyncMock(  # type: ignore[method-assign]
+            side_effect=lambda queue_id, *_args, **_kwargs: rig.queues.update_items(
+                queue_id, [new_track]
+            )
+        )
+        await rig.queues._enter_dynamic_mode(QUEUE_ID, QueueOption.REPLACE)
+    else:
+        await rig.queues._enqueue_with_option(QUEUE_ID, [new_track], QueueOption.REPLACE)
+
+    assert served_before_load == [False]
+    assert rig.fills(rig.buffer(new_track))
+    with pytest.raises(ProviderStreamLimitError):
+        await preview
+    assert not queue_data.own_play_action
+
+
+async def test_a_replace_that_fails_before_it_plays_ends_its_play_action(rig: SlotRig) -> None:
+    """A replace that breaks off before its track starts leaves a paused queue paused."""
+    (playing,) = rig.play("track 0")
+    await rig.ask(playing)
+    queue_data = rig.queues._queue_data[QUEUE_ID]
+    queue_data.queue.state = PlaybackState.PAUSED
+    rig.queues.load = AsyncMock(side_effect=RuntimeError("the swap broke off"))  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError):
+        await rig.queues._enqueue_with_option(QUEUE_ID, [rig.track("track 9")], QueueOption.REPLACE)
+
+    assert not queue_data.own_play_action
 
 
 async def test_a_source_that_fails_keeps_no_stream_for_its_own_track(rig: SlotRig) -> None:
