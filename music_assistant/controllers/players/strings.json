@@ -6,7 +6,10 @@
     },
     "announce_tts_engine": {
       "label": "Announcement text-to-speech engine",
-      "description": "The engine used to speak an announcement that is sent as a text message instead of an audio link. Unless you pick one, it uses the default text-to-speech engine from the AI settings."
+      "description": "The engine used to speak an announcement that is sent as a text message instead of an audio link. Unless you pick one, it uses the default text-to-speech engine from the AI settings.",
+      "option_descriptions": {
+        "global": "Follows the default engine in the AI settings."
+      }
     }
   },
   "manifest": {

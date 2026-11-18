@@ -447,21 +447,30 @@
     },
     "ai_engine": {
       "label": "AI engine",
-      "description": "The AI engine used for this feature. Unless you pick one, it uses the default AI engine from the AI settings."
+      "description": "The AI engine used for this feature. Unless you pick one, it uses the default AI engine from the AI settings.",
+      "option_descriptions": {
+        "global": "Follows the default engine in the AI settings."
+      }
     },
     "ai_engine_unavailable": {
       "label": "No AI engine is available. Set up a plugin that provides AI, for example the Home Assistant plugin with an AI task entity."
     },
     "tts_engine": {
       "label": "Text-to-speech engine",
-      "description": "The text-to-speech engine used for this feature. Unless you pick one, it uses the default text-to-speech engine from the AI settings."
+      "description": "The text-to-speech engine used for this feature. Unless you pick one, it uses the default text-to-speech engine from the AI settings.",
+      "option_descriptions": {
+        "global": "Follows the default engine in the AI settings."
+      }
     },
     "tts_engine_unavailable": {
       "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
     },
     "image_engine": {
       "label": "Image engine",
-      "description": "The image generation engine used for this feature. Unless you pick one, it uses the default image engine from the AI settings."
+      "description": "The image generation engine used for this feature. Unless you pick one, it uses the default image engine from the AI settings.",
+      "option_descriptions": {
+        "global": "Follows the default engine in the AI settings."
+      }
     },
     "image_engine_unavailable": {
       "label": "No image engine is available. Set up a plugin that can generate images, for example the Home Assistant plugin with an AI task entity that supports images, or the OpenAI Compatible plugin with an image model selected."
