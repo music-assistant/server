@@ -279,8 +279,9 @@ When such a source gives the slot back and the playback session of its queue goe
 provider, the slot stays reserved for that queue for a few seconds, and the queue's next source
 takes it at once. The queue goes on with a provider when the track its player fetches or a start is
 loading, the track after it, or a track a stream of that session claims still gets audio from there:
-a track without audio, with audio that still arrives, or without a source yet when it has a copy on
-that provider. The track the source was for only counts once its buffer was taken off it (a seek, a
+a track without audio, with audio that still arrives, or without a source yet when that provider is
+one the stream details could take it from (the same compatible accounts, without a copy that account
+no longer finds). The track the source was for only counts once its buffer was taken off it (a seek, a
 restart, a replace), so not after it delivered everything or broke off; a track that repeats itself
 and is longer than its buffer keeps is therefore not covered. So a queue that moves to its next
 track, skips, seeks or replaces its tracks does not lose its stream to a queue that asks in that
@@ -288,10 +289,15 @@ moment.
 
 A reservation refuses nobody: to every other taker the slot is only busy that much longer. A preview
 waits within its budget. A track that needs the slot as its last resort (a start on another queue, a
-track prepared ahead of time) first waits, within its budget, for as long as it is open who keeps the
-slot: while it is reserved for another queue, and while a realtime source has it and no audio yet.
-After that it is decided as at any other moment: the slot is free, or a realtime source of another
-queue holds it and the start is refused, naming the player to a user who may control it.
+track prepared ahead of time) while it is open who keeps the slot (it is reserved for another queue,
+or another queue's realtime source has it and no audio yet) waits in the provider's line, in the
+order it asked, within its budget. It looks again each time a source takes a slot or a holder gets
+its first audio: once a realtime source of another queue holds the slot with audio the start is
+refused, naming the player to a user who may control it, and a paused queue's source that got its
+audio hands its slot over as at any other moment. A queue in the middle of a play action does not
+count as paused, though its player still reports the pause. When the slot comes free for the start
+it stays reserved for its queue, so its source takes it next, unless the queue no longer wants that
+track or its consumer is gone: then it goes on to whoever waits next.
 
 Nothing is reserved after the last track of a queue, when the tracks the queue goes on with come
 from another provider, for a source that loads ahead of playback, for a queue that is paused or was

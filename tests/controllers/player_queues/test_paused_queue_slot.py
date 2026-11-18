@@ -450,6 +450,53 @@ async def test_a_paused_holder_without_audio_yet_is_taken_over_once_it_has_audio
     await buffer.clear()
 
 
+async def test_a_paused_queue_that_starts_a_track_is_not_stopped_by_a_start_that_waits(
+    rig: _Rig,
+) -> None:
+    """A start that waits behind a paused queue's own new track is refused, not handed the slot."""
+    first_audio = asyncio.Event()
+
+    async def _slow_to_deliver(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        await first_audio.wait()
+        async for chunk in _endless_source():
+            yield chunk
+
+    rig.audio._get_media_stream = _slow_to_deliver  # type: ignore[method-assign]
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED, realtime=True)
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+
+    async def _play_action() -> AudioBuffer:
+        # what a play action of the paused queue does: it holds the player while it loads the
+        # track and hands it over, and is under way until its player confirms or the wait for
+        # that ends. A slow speaker reports the pause all that time
+        rig.queues._set_transitioning(PAUSED_QUEUE, True)
+        try:
+            async with rig.playback_lock(PAUSED_QUEUE):
+                buffer = await rig.fill(paused_item)
+                await asyncio.sleep(0.2)
+                return buffer
+        finally:
+            rig.queues._set_transitioning(PAUSED_QUEUE, False)
+
+    playing = asyncio.create_task(_play_action())
+    while not rig.provider.stream_slot_holders:
+        await asyncio.sleep(0)
+    rig.audio._get_media_stream = _endless_source  # type: ignore[method-assign]
+    starting = asyncio.create_task(
+        rig.audio.get_audio_buffer(starting_item, reason="prepare", capacity_wait_timeout=30)
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+    first_audio.set()
+    paused_buffer = await playing
+
+    with pytest.raises(ProviderStreamHeldError):
+        await asyncio.wait_for(starting, 5)
+    rig.stop_device.assert_not_awaited()
+    assert paused_buffer.is_buffering
+    await paused_buffer.clear()
+
+
 async def test_an_item_resuming_from_its_own_buffer_is_not_refused(rig: _Rig) -> None:
     """Audio that already arrived needs no slot, so a held one is no reason to refuse it."""
     rig.audio._get_media_stream = _finite_source  # type: ignore[method-assign]
