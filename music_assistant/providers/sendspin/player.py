@@ -3342,7 +3342,7 @@ class SendspinPlayer(SendspinBasePlayer):
 
 
 class SendspinVisualizerPlayer(SendspinBasePlayer):
-    """A non-audio Sendspin player for visualizer/lighting devices."""
+    """A non-audio Sendspin player for display, visualizer, lighting and controller devices."""
 
     _attr_type = PlayerType.VISUALIZER
     # keep in line with SESSION_ONLY_DEFAULTS in controllers/config/player_split.py
