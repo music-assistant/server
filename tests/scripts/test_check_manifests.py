@@ -209,6 +209,17 @@ def test_menu_actions_breaking_the_rules_rejected() -> None:
     ]
 
 
+def test_page_checked() -> None:
+    """A valid page passes, and one that breaks the server's rules fails the check."""
+    manifest = _valid_manifest()
+    manifest["page"] = {"label": "Picture frame", "scope": "library.read", "icon": "mdi-image"}
+    assert _validate(manifest, "demo") == []
+    manifest["page"] = {"label": "Picture frame", "scope": "everything"}
+    assert _validate(manifest, "demo") == [
+        "page: needs a scope that Music Assistant knows, such as 'library.read'"
+    ]
+
+
 def _mcp_tool(**overrides: object) -> dict[str, object]:
     """Return a valid declared MCP tool, with fields changed."""
     return {

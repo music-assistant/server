@@ -32,5 +32,10 @@
         }
       }
     }
-  ]
+  ],
+  "page": {
+    "label": "Demo plugin page",
+    "scope": "library.read",
+    "icon": "mdi-puzzle-outline"
+  }
 }

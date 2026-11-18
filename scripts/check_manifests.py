@@ -9,10 +9,10 @@ provider. This pre-commit/CI guard scans every provider manifest up front and pr
 
 A manifest must not contain ``tier``: the server sets it from where the provider loads. An optional
 ``support_url`` must be an ``https`` URL with a host. Declared ``features`` must be known
-``ProviderFeature`` values, each listed once. Declared ``menu_actions`` and ``mcp_tools``
-must follow the rules the server applies when it reads a manifest
+``ProviderFeature`` values, each listed once. Declared ``menu_actions``, ``mcp_tools`` and
+``page`` must follow the rules the server applies when it reads a manifest
 (``music_assistant.helpers.menu_actions``, ``music_assistant.helpers.mcp_tools``); the server
-leaves out an action or tool that breaks them, here it is an error.
+leaves out an action, tool or page that breaks them, here it is an error.
 
 When invoked with file or folder arguments (as pre-commit does for the changed files) only the
 manifests in scope are validated; with no arguments every provider manifest is scanned.
@@ -32,7 +32,7 @@ from urllib.parse import urlsplit
 from music_assistant_models.enums import ProviderFeature
 
 from music_assistant.helpers.mcp_tools import read_mcp_tools
-from music_assistant.helpers.menu_actions import read_menu_actions
+from music_assistant.helpers.menu_actions import read_menu_actions, read_page
 
 # ruff: noqa: T201
 
@@ -152,6 +152,8 @@ def _validate(data: dict[str, object], folder_name: str) -> list[str]:
         issues.extend(read_menu_actions(data["menu_actions"])[1])
     if "mcp_tools" in data:
         issues.extend(read_mcp_tools(data["mcp_tools"], folder_name)[1])
+    if "page" in data:
+        issues.extend(read_page(data["page"])[1])
     return issues
 
 

@@ -55,6 +55,7 @@ from music_assistant.controllers.config.helpers import (
     _unavailable_provider_config,
     _with_translation_owner,
 )
+from music_assistant.helpers.action_result import without_insecure_open_url
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.provider_access import (
     source_access,
@@ -290,7 +291,7 @@ class ProviderConfigMixin:
             return []
         if isinstance(result, ConfigActionResult):
             result.translation_owner = result.translation_owner or f"provider.{provider.domain}"
-            return result
+            return without_insecure_open_url(provider, result)
         return self._wrap_provider_config_entries(provider, result)
 
     def seed_stored_config_values(self, config: ProviderConfig) -> None:
