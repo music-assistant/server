@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -12,11 +13,17 @@ from music_assistant_models.enums import CrossfadeMode, TaskScheduleType
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_AI,
+    CONF_AI_DEFAULT_ENGINES_MIGRATED,
     CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
+    CONF_ANNOUNCE_TTS_ENGINE,
     CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED,
     CONF_CORE,
     CONF_CROSSFADE_DURATION,
     CONF_CROSSFADE_MODE,
+    CONF_DEFAULT_IMAGE_ENGINE,
+    CONF_DEFAULT_SPEECH_ENGINE,
+    CONF_DEFAULT_TEXT_ENGINE,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
     CONF_ENABLE_ICY_METADATA,
@@ -67,6 +74,20 @@ LEGACY_HTTP_PROFILE_KEY = "http_profile"
 
 # domains of the removed builtin providers, whose stored configs nothing can load anymore
 RETIRED_BUILTIN_PROVIDER_DOMAINS = ("builtin_player", "universal_player")
+
+# the engine each feature picked before every kind of engine got a default, as (the key of the
+# default it seeds, provider domain or None for the players core module, section, key). Picks of
+# the same kind are listed in the order that breaks a tie between equally used engines.
+# TODO: remove after 2.12 release
+FEATURE_ENGINE_PICKS: tuple[tuple[str, str | None, str, str], ...] = (
+    (CONF_DEFAULT_SPEECH_ENGINE, None, "values", CONF_ANNOUNCE_TTS_ENGINE),
+    (CONF_DEFAULT_SPEECH_ENGINE, "ai_radio", "setup_data", "tts_engine"),
+    (CONF_DEFAULT_TEXT_ENGINE, "ai_radio", "setup_data", "ai_engine"),
+    (CONF_DEFAULT_TEXT_ENGINE, "smart_playlist", "values", "ai_engine"),
+    (CONF_DEFAULT_TEXT_ENGINE, "music_quiz", "values", "ai_engine"),
+    (CONF_DEFAULT_TEXT_ENGINE, "playlist_metadata", "values", "ai_text_engine"),
+    (CONF_DEFAULT_IMAGE_ENGINE, "playlist_metadata", "values", "ai_image_engine"),
+)
 
 
 # Canonical ids of the shared icon set (music-assistant/shared-icons v0.3.0);
@@ -743,6 +764,45 @@ def migrate_connected_player_plugins(
     if _clear_invalid_connected_players(all_provider_configs, decrypt):
         changed = True
     return changed
+
+
+# TODO: remove after 2.12 release
+def migrate_ai_default_engines(data: dict[str, Any], decrypt: Callable[[str], str]) -> bool:
+    """
+    Seed the default AI engines from the engines the features picked themselves, once.
+
+    Each kind of engine (text, speech, image) has a default now, which a feature follows unless
+    it picks an engine of its own. Every default that is not set yet is seeded with the engine
+    most features of its kind picked, as long as the plugin providing it is still configured and
+    enabled. A pick equal to the default of its kind is removed, so that feature follows the
+    default; any other pick stays the feature's own choice. Guarded by
+    CONF_AI_DEFAULT_ENGINES_MIGRATED, which is claimed even when nothing moved, so a pick equal
+    to the default that is made afterwards is kept. Returns True when the settings were
+    modified, including the first run's marker.
+
+    Runs after encryption is initialized, since the AI Radio picks sit in its encrypted
+    setup_data.
+
+    :param data: The persistent settings data to migrate in-place.
+    :param decrypt: Callback that decrypts a stored string value (a no-op for plain values).
+    """
+    if data.get(CONF_AI_DEFAULT_ENGINES_MIGRATED):
+        return False
+    picks = _read_feature_engine_picks(data, decrypt)
+    defaults = _seed_default_engines(data, picks)
+    followed = 0
+    for default_key, section, key, uid in picks:
+        if uid == defaults.get(default_key):
+            del section[key]
+            followed += 1
+    if defaults:
+        LOGGER.info(
+            "Default AI engines: %s; %d feature(s) follow them now",
+            ", ".join(f"{key}={uid}" for key, uid in defaults.items()),
+            followed,
+        )
+    data[CONF_AI_DEFAULT_ENGINES_MIGRATED] = True
+    return True
 
 
 def _collapse_connected_player_instances(
@@ -1641,3 +1701,100 @@ def _migrate_remove_retired_builtin_providers(data: dict[str, Any]) -> bool:
         del all_provider_configs[instance_id]
         LOGGER.info("Removed the config of the retired provider %s", instance_id)
     return bool(retired)
+
+
+def _read_feature_engine_picks(
+    data: dict[str, Any], decrypt: Callable[[str], str]
+) -> list[tuple[str, dict[str, Any], str, str]]:
+    """
+    Return the engines the features picked, as (default key, section, key, engine uid).
+
+    :param data: The persistent settings data to read.
+    :param decrypt: Callback that decrypts a stored string value.
+    """
+    all_provider_configs = data.get(CONF_PROVIDERS)
+    if not isinstance(all_provider_configs, dict):
+        all_provider_configs = {}
+    core_cfg = data.get(CONF_CORE)
+    players_cfg = core_cfg.get("players") if isinstance(core_cfg, dict) else None
+    picks: list[tuple[str, dict[str, Any], str, str]] = []
+    for default_key, domain, section_name, key in FEATURE_ENGINE_PICKS:
+        owners = (
+            [players_cfg]
+            if domain is None
+            else [
+                provider_cfg
+                for provider_cfg in all_provider_configs.values()
+                if isinstance(provider_cfg, dict) and provider_cfg.get("domain") == domain
+            ]
+        )
+        for owner in owners:
+            section = owner.get(section_name) if isinstance(owner, dict) else None
+            if not isinstance(section, dict) or not isinstance(value := section.get(key), str):
+                continue
+            try:
+                uid = decrypt(value)
+            except InvalidDataError:
+                LOGGER.warning("Could not read a stored %s; it is left in place", key)
+                continue
+            picks.append((default_key, section, key, uid))
+    return picks
+
+
+def _seed_default_engines(
+    data: dict[str, Any], picks: list[tuple[str, dict[str, Any], str, str]]
+) -> dict[str, str]:
+    """
+    Seed every default engine that is not set yet and return all defaults that are set.
+
+    :param data: The persistent settings data to seed the defaults in.
+    :param picks: The engines the features picked, see _read_feature_engine_picks.
+    """
+    core_cfg = data.get(CONF_CORE, {})
+    if not isinstance(core_cfg, dict):
+        return {}
+    ai_cfg = core_cfg.get(CONF_AI)
+    stored = ai_cfg.get("values") if isinstance(ai_cfg, dict) else None
+    if not isinstance(stored, dict):
+        stored = {}
+    all_provider_configs = data.get(CONF_PROVIDERS)
+    if not isinstance(all_provider_configs, dict):
+        all_provider_configs = {}
+    defaults: dict[str, str] = {}
+    seeds: dict[str, str] = {}
+    for default_key in (
+        CONF_DEFAULT_TEXT_ENGINE,
+        CONF_DEFAULT_SPEECH_ENGINE,
+        CONF_DEFAULT_IMAGE_ENGINE,
+    ):
+        if isinstance(value := stored.get(default_key), str) and value:
+            defaults[default_key] = value
+            continue
+        usable = [
+            uid
+            for pick_default_key, _section, _key, uid in picks
+            if pick_default_key == default_key
+            and _engine_provider_enabled(uid, all_provider_configs)
+        ]
+        if usable:
+            # an engine picked as often as another loses to the one picked first
+            seeds[default_key] = Counter(usable).most_common(1)[0][0]
+    if not seeds:
+        return defaults
+    data[CONF_CORE] = core_cfg
+    if not isinstance(ai_cfg, dict):
+        ai_cfg = core_cfg[CONF_AI] = {}
+    # a core block without its domain can not be parsed
+    ai_cfg.setdefault("domain", CONF_AI)
+    if not isinstance(ai_cfg.get("values"), dict):
+        ai_cfg["values"] = {}
+    ai_cfg["values"].update(seeds)
+    return {**defaults, **seeds}
+
+
+def _engine_provider_enabled(uid: str, all_provider_configs: dict[str, Any]) -> bool:
+    """Return whether the plugin providing an engine is configured and enabled."""
+    # an engine uid is the instance id of the providing plugin, a slash and the engine id
+    instance_id, separator, _engine_id = uid.partition("/")
+    provider_cfg = all_provider_configs.get(instance_id) if separator else None
+    return isinstance(provider_cfg, dict) and bool(provider_cfg.get("enabled", True))

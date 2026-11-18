@@ -24,7 +24,8 @@ tests of the harness itself.
   state. What the server tells it about the power of its device (`on_power_cut`,
   `on_power_restored`) is recorded in `protocol.power_reports`, and with
   `protocol.connects_when_power_is_back` set the protocol reads available once it is told that
-  the power is back. A device that a leader adds to its group (`set_members`) leaves the group it was in,
+  the power is back. With `protocol.detach_time` set, its detach takes that long on the clock, as
+  one that closes a connection to its device. A device that a leader adds to its group (`set_members`) leaves the group it was in,
   as a real one does, and a device told to play media reports its position from 0 at that moment; `native_grouping_requires_own_stream` is reported like any other state. `role="native"`, `"audio"`, `"control"` or `"virtual"` (a group) stands for the role of
   the protocol on its device, `session_only=True` for a protocol that reports it exists only
   while attached (a browser session). Every fake protocol has one config entry of its own,

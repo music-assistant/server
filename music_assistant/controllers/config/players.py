@@ -1876,7 +1876,7 @@ class PlayerConfigMixin:
                         for connected_id in connected_players
                     ),
                     default_value=False,
-                    category="plugins",
+                    category="audio_sources",
                     requires_reload=False,
                 )
             )

@@ -9,12 +9,13 @@ from typing import Any
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.mcp_tools import read_mcp_tools
 from music_assistant.helpers.menu_actions import read_menu_actions
 
 
 async def read_manifest_file(path: str | Path) -> tuple[ProviderManifest, list[str]]:
     """
-    Return the manifest in a manifest.json file, and why each left out menu action is left out.
+    Return the manifest in a manifest.json file, and why each left out menu action or MCP tool is left out.
 
     :param path: The manifest.json file.
     :raises OSError: The file cannot be read.
@@ -26,7 +27,7 @@ async def read_manifest_file(path: str | Path) -> tuple[ProviderManifest, list[s
 
 def manifest_from_json(text: str) -> tuple[ProviderManifest, list[str]]:
     """
-    Return the manifest in the contents of a manifest.json file, and why each left out menu action is left out.
+    Return the manifest in the contents of a manifest.json file, and why each left out menu action or MCP tool is left out.
 
     :param text: The contents of the manifest.json file.
     :raises ValueError: The text is not a valid manifest.
@@ -41,10 +42,11 @@ def manifest_from_json(text: str) -> tuple[ProviderManifest, list[str]]:
 
 def manifest_from_dict(data: dict[str, Any]) -> tuple[ProviderManifest, list[str]]:
     """
-    Return the manifest in the parsed data of a manifest, and why each left out menu action is left out.
+    Return the manifest in the parsed data of a manifest, and why each left out menu action or MCP tool is left out.
 
-    Whatever ``menu_actions`` holds, it never makes the manifest invalid: the actions that break a
-    rule are left out (see ``read_menu_actions``).
+    Whatever ``menu_actions`` or ``mcp_tools`` holds, it never makes the manifest invalid: the
+    actions and tools that break a rule are left out (see ``read_menu_actions`` and
+    ``read_mcp_tools``).
 
     :param data: The parsed contents of a manifest.json file.
     :raises ValueError: The data is not a valid manifest.
@@ -52,6 +54,8 @@ def manifest_from_dict(data: dict[str, Any]) -> tuple[ProviderManifest, list[str
     """
     fields = dict(data)
     raw_actions = fields.pop("menu_actions", [])
+    raw_tools = fields.pop("mcp_tools", [])
     manifest = ProviderManifest.from_dict(fields)
     manifest.menu_actions, problems = read_menu_actions(raw_actions)
-    return manifest, problems
+    manifest.mcp_tools, tool_problems = read_mcp_tools(raw_tools, manifest.domain)
+    return manifest, problems + tool_problems

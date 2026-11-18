@@ -288,6 +288,32 @@ async def test_source_that_does_not_allow_analysis_is_offered_to_no_provider(
     prov.start_analysis.assert_not_awaited()
 
 
+async def test_analysis_ends_when_the_source_stops_allowing_it(
+    controller: AudioAnalysisController, registry: dict[str, Any]
+) -> None:
+    """Analysis the user disables for a source that plays ends, and does not start again."""
+    follower = _aa_provider("follower", LIVE_ONLY)
+    registry["follower"] = follower
+    recognizer = _recognizer(controller, registry)
+    source_session = _source_session(controller)
+    placeholder = StreamMetadata(title="Turntable")
+    source_session.attach_streamdetails(_source_streamdetails(placeholder))
+    session_key = await _start_source(controller, source_session)
+    worker = controller._workers[session_key]
+    recognizer.report_stream_metadata(session_key, StreamMetadata(title="Recognised"))
+
+    _players(controller).refresh_source(PLAYER_ID, _audio_source(allow_audio_analysis=False))
+    controller.feed_source_analysis(session_key, b"\x00" * ONE_SECOND)
+    await _ended(worker)
+
+    follower.process_pcm_chunk.assert_not_awaited()
+    follower.cancel.assert_awaited_once_with(session_key)
+    assert source_session.stream_metadata is placeholder
+    _assert_nothing_left(controller, recognizer)
+    # a resume of the same selection asks again
+    assert _start_analysis(controller, source_session) is None
+
+
 @pytest.mark.asyncio
 async def test_provider_that_did_not_declare_live_sources_gets_nothing(
     controller: AudioAnalysisController, registry: dict[str, Any]

@@ -179,6 +179,11 @@ MAX_FLAC_BLOCKS: int = 12
 # While Sendspin has nothing to play, silence keeps the stream this far ahead, so the
 # player does not run dry and stays on the timeline.
 STARVED_LEAD_US: int = 500_000
+# And what the player can decode of a FLAC stream at least this far, so it decodes the
+# end of the audio before it plays it. Audio Sendspin delivers its buffer ahead leaves at
+# most a second and a half of it undecoded, so it can be decoded half a second ahead: no
+# silence takes its place.
+STARVED_DECODE_LEAD_US: int = 250_000
 # A write the player takes this long over is logged.
 SLOW_WRITE_US: int = 1_000_000
 
@@ -1140,9 +1145,12 @@ class SendspinSqueezeliteBridge:
         else:
             # counted from the real time to the start: silence sent while the player still
             # waits for it would take the place of audio that is yet to arrive. And from
-            # all that went out, whatever the player can decode of it: audio for what
-            # follows it can arrive until it is this close to being played.
-            starved_until = session.frames(since_start_us + STARVED_LEAD_US)
+            # all that went out: audio for what follows it can arrive until it is this
+            # close to being played, or until what the player can decode of it is that close.
+            starved_until = max(
+                session.frames(since_start_us + STARVED_LEAD_US),
+                session.frames(since_start_us + STARVED_DECODE_LEAD_US) + session.frames_held,
+            )
             if (frames := min(starved_until - cursor, max_frames)) <= 0:
                 return b""
             pcm = bytes(frames * session.frame_size)

@@ -249,8 +249,9 @@ async def test_set_autoplay_allows_disabling_but_rejects_enabling_while_repeat_l
     assert queue_data.autoplay_override is False
     assert queue_data.queue.autoplay_enabled is False
 
-    with pytest.raises(InvalidCommand):
+    with pytest.raises(InvalidCommand) as error:
         PlayerQueuesController.set_autoplay(queues, "q1", True)
+    assert error.value.translation_key == "autoplay_needs_repeat_off"
 
     with pytest.raises(InvalidCommand):
         PlayerQueuesController.set_dont_stop_the_music(queues, "q1", True)
@@ -352,9 +353,11 @@ async def test_repeat_still_rejects_dynamic_queues(repeat_mode: RepeatMode) -> N
     queue_data = _queue_data(is_dynamic=True)
     queues._queue_data["q1"] = queue_data
 
-    with pytest.raises(InvalidCommand):
+    with pytest.raises(InvalidCommand) as error:
         await PlayerQueuesController.set_repeat(queues, "q1", repeat_mode)
 
+    assert error.value.translation_key == "dynamic_queue_order_fixed"
+    assert error.value.translation_args == ["Queue"]
     queues.signal_update.assert_not_called()
     queues.mass.cancel_timer.assert_not_called()
     queues.mass.call_later.assert_not_called()
