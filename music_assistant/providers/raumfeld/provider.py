@@ -26,12 +26,16 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from async_upnp_client.exceptions import UpnpError
+from music_assistant_models.enums import IdentifierType, ProtocolRole
+from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.constants import (
     CONF_ENABLE_ICY_METADATA,
     CONF_IP_ADDRESS,
     CONF_PORT,
+    CONF_PROTOCOL_IDENTIFIERS,
 )
+from music_assistant.controllers.players.matching import DeviceIdentity, identifiers_match
 from music_assistant.models.player_provider import PlayerProvider
 
 from . import webservice
@@ -689,6 +693,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 if self.get_protocol(protocol_id) is player:
                     self._ensure_icy_default(protocol_id)
                     self.logger.debug("Registered Raumfeld room '%s' as %s", room, protocol_id)
+            await self._let_go_of_moved_speakers(rooms, ids)
 
     async def _refresh_room_events(self) -> None:
         """Follow the events of every room's own renderer, and tell each room which come in."""
@@ -1067,15 +1072,181 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # A speaker moved to another room (or a room set up again under a new UDN) still
         # holds its serial under the room it left. Kept, it would claim that serial first
         # and push the speaker in its new room onto a room-UDN id, a new player each move.
-        owners = {
+        owners = self._renderer_rooms(rooms)
+        for room, renderer_udn in list(self._room_serial_renderers.items()):
+            if owners.get(renderer_udn, room) != room:
+                self._forget_room(room)
+
+    def _renderer_rooms(self, rooms: list[str]) -> dict[str, str]:
+        """
+        Return the room each renderer the host lists sits in, by renderer UDN.
+
+        :param rooms: The rooms the host reports now.
+        """
+        return {
             renderer_udn: room
             for room in rooms
             if (room_udn := self._room_udn(room)) is not None
             for renderer_udn in self._room_renderer_list(room_udn)
         }
-        for room, renderer_udn in list(self._room_serial_renderers.items()):
-            if owners.get(renderer_udn, room) != room:
-                self._forget_room(room)
+
+    async def _let_go_of_moved_speakers(self, rooms: list[str], ids: dict[str, str]) -> None:
+        """
+        Let go of what belongs to a speaker that plays in another room now.
+
+        Only a speaker the host lists in another room counts: a speaker in deep standby is
+        not listed at all, the same as one that left the Raumfeld system, and comes back.
+
+        :param rooms: The rooms the host reports now.
+        :param ids: The protocol id of each room the host lists now that has one, by room name.
+        """
+        if self.mass.closing:
+            return
+        owners = self._renderer_rooms(rooms)
+        await self._remove_left_rooms(ids, owners)
+        await self._release_moved_outputs(ids, owners)
+
+    async def _remove_left_rooms(self, ids: dict[str, str], owners: dict[str, str]) -> None:
+        """
+        Remove the player of a room the host no longer lists, whose speaker is in another room now.
+
+        Moving the only speaker of a room into another one ends the room. Its player would stay
+        behind, unavailable, and keep the outputs of that speaker, so they would not show up
+        as the player of their own that a further speaker of a room gets.
+
+        :param ids: The protocol id of each room the host lists now that has one, by room name.
+        :param owners: The room each renderer the host lists sits in, by renderer UDN.
+        """
+        listed = set(ids.values())
+        kept = {
+            player_id
+            for protocol_id in listed
+            if (player_id := self.mass.players.get_player_id_of_protocol(protocol_id))
+        }
+        for protocol_id in self.mass.config.get_protocol_ids_of_provider(self.instance_id):
+            if protocol_id in listed or (renderer_uuid := self._stored_uuid(protocol_id)) is None:
+                continue
+            renderer_udn = f"uuid:{renderer_uuid}"
+            room = owners.get(renderer_udn)
+            # a room without an id yet may still take the id of the speaker; one that plays
+            # through the speaker may be the same room under another id, see _assign_room_ids
+            if room not in ids or self._room_renderer_udn(room) == renderer_udn:
+                continue
+            player_id = self.mass.players.get_player_id_of_protocol(protocol_id)
+            if player_id is None or player_id in kept:
+                continue
+            self.logger.info(
+                "The speaker of %s plays in room %s now; removing the player of the room it left",
+                protocol_id,
+                room,
+            )
+            await self.mass.players.remove(player_id)
+
+    async def _release_moved_outputs(self, ids: dict[str, str], owners: dict[str, str]) -> None:
+        """
+        Take the outputs of a speaker that is in another room now off the room it left.
+
+        An output gets a player of its own, which joins the room the speaker moved to when
+        that room plays through it. The room that let go of it may take the outputs of the
+        speaker it plays through now.
+
+        :param ids: The protocol id of each room the host lists now that has one, by room name.
+        :param owners: The room each renderer the host lists sits in, by renderer UDN.
+        """
+        # player id of a released output -> UDN of the speaker it belongs to
+        released: dict[str, str] = {}
+        changed: dict[str, RaumfeldPlayer] = {}
+        for room, protocol_id in ids.items():
+            protocol = self.get_protocol(protocol_id)
+            if not isinstance(protocol, RaumfeldPlayer) or protocol.player is None:
+                continue
+            own = [self._speaker_identity(udn) for udn in self.host.renderer_udns(room)]
+            elsewhere = {
+                udn: self._speaker_identity(udn) for udn, owner in owners.items() if owner != room
+            }
+            for output in list(protocol.player.attached_protocols.values()):
+                if (
+                    output.provider_id == self.instance_id
+                    or output.underlying_protocol_id is not None
+                    or output.role == ProtocolRole.VIRTUAL
+                ):
+                    continue
+                identity = DeviceIdentity(
+                    identifiers=output.identifiers,
+                    domains=frozenset({output.provider.domain}),
+                    native=output.role in (ProtocolRole.NATIVE, ProtocolRole.CONTROL),
+                )
+                if any(identifiers_match(identity, speaker) for speaker in own):
+                    continue
+                speaker_udn = next(
+                    (
+                        udn
+                        for udn, speaker in elsewhere.items()
+                        if identifiers_match(identity, speaker)
+                    ),
+                    None,
+                )
+                if speaker_udn is None:
+                    continue
+                try:
+                    player_id = await self.mass.players.unlink_protocol(output.protocol_id)
+                except MusicAssistantError as err:
+                    self.logger.debug("Could not release %s: %r", output.protocol_id, err)
+                    continue
+                self.logger.info(
+                    "%s belongs to a speaker in room %s now; taken off room %s",
+                    output.name,
+                    owners[speaker_udn],
+                    room,
+                )
+                released[player_id] = speaker_udn
+                changed[protocol_id] = protocol
+        for player_id, speaker_udn in released.items():
+            room = owners[speaker_udn]
+            target = self._room_player(room)
+            if (
+                target is None
+                or target.player is None
+                or self._room_renderer_udn(room) != speaker_udn
+            ):
+                continue
+            try:
+                await self.mass.players.merge_players(target.player.player_id, player_id)
+            except MusicAssistantError as err:
+                self.logger.debug("Could not add %s to room %s: %r", player_id, room, err)
+                continue
+            changed[target.protocol_id] = target
+        for protocol in changed.values():
+            # an unused player of the speaker the room plays through now may join it
+            await self.mass.players.register(protocol)
+
+    def _speaker_identity(self, renderer_udn: str) -> DeviceIdentity:
+        """
+        Return what the host tells about a speaker, to match the outputs of its device with.
+
+        :param renderer_udn: The UDN of the speaker's renderer.
+        """
+        identifiers = {(IdentifierType.UUID, renderer_udn.removeprefix("uuid:"))}
+        if (location := self.host.location(renderer_udn)) and (ip := urlparse(location).hostname):
+            identifiers.add((IdentifierType.IP_ADDRESS, ip))
+        return DeviceIdentity(
+            identifiers=frozenset(identifiers), domains=frozenset({self.domain}), native=True
+        )
+
+    def _stored_uuid(self, protocol_id: str) -> str | None:
+        """
+        Return the renderer UUID stored for a room, or ``None``.
+
+        :param protocol_id: The protocol id of the room.
+        """
+        record = self.mass.config.get_protocol_record(protocol_id) or {}
+        stored = (record.get("values") or {}).get(CONF_PROTOCOL_IDENTIFIERS)
+        if not isinstance(stored, list):
+            return None
+        for entry in stored:
+            if isinstance(entry, list) and len(entry) == 2 and entry[0] == IdentifierType.UUID:
+                return str(entry[1])
+        return None
 
     def _forget_room(self, room: str) -> None:
         """Drop the serial, model and control URL read for a room."""
