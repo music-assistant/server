@@ -24,7 +24,7 @@ FILE_URL_RESPONSE = {
 def provider() -> QobuzProvider:
     """Create a QobuzProvider whose API calls are mocked."""
     mass = Mock()
-    manifest = Mock()
+    manifest = Mock(features=set())
     manifest.domain = "qobuz"
     config = Mock()
     config.instance_id = "qobuz_test"

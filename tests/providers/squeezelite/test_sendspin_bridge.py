@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import random
 import struct
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import replace
+from functools import partial
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -28,6 +30,7 @@ from aiosendspin.models.types import AudioCodec, PlayerCommand
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.events import ClientGroupChangedEvent
 from aiosendspin.server.roles import AudioChunk
+from aioslimproto.cli import SlimProtoCLI
 from aioslimproto.client import SlimClient
 from aioslimproto.models import ButtonCode, PlayerStatus, RemoteCode, SlimEvent
 from aioslimproto.models import EventType as SlimEventType
@@ -70,6 +73,7 @@ from music_assistant.providers.squeezelite.sendspin_bridge import (
     PREROLL_US,
     RECONNECT_REJOIN_WINDOW,
     START_LEAD_US,
+    STARVED_DECODE_LEAD_US,
     STARVED_LEAD_US,
     STATUS_POLL_INTERVAL,
     STATUS_POLL_INTERVAL_FAST,
@@ -163,6 +167,56 @@ def _chunk(origin_us: int, first: int, count: int, *, shift_us: int = 0) -> Audi
 def _frames(pcm: bytes) -> list[int]:
     """Return the source frame number of every frame of PCM, -1 for silence."""
     return [value - 1 for (value,) in struct.iter_unpack("<I", pcm)]
+
+
+def _music(
+    seconds: float, ending: str = "tone", level: int = 8000, noise: int = 16
+) -> Callable[..., AudioChunk]:
+    """
+    Return what makes the chunks of a source of a 1 kHz tone that ends after a while.
+
+    The tone carries a little noise, as one from a lossy source does: an encoder makes a
+    fifth to a seventh of it, and a player leaves about a second of it undecoded.
+
+    :param seconds: How long the source lasts.
+    :param ending: How it ends: on the tone, on a fade-out over its last second, or on
+        50 ms of digital silence.
+    :param level: The peak of the tone.
+    :param noise: The peak of the noise.
+    """
+    rng = random.Random(level)  # noqa: S311
+    total = round(seconds * SECOND)
+    levels = [1.0] * total
+    if ending == "fade-out":
+        levels[-SECOND:] = [(SECOND - at) / SECOND for at in range(SECOND)]
+    elif ending == "digital silence":
+        levels[-SECOND // 20 :] = [0.0] * (SECOND // 20)
+    values = [
+        round(
+            levels[at]
+            * (level * math.sin(2 * math.pi * 1000 * at / SECOND) + rng.randint(-noise, noise))
+        )
+        for at in range(total)
+    ]
+    pcm = struct.pack(f"<{2 * total}h", *(value for value in values for _ in range(2)))
+
+    def chunk(origin_us: int, first: int, count: int) -> AudioChunk:
+        """Return the chunk of the source from a frame on, as far as the source goes."""
+        data = pcm[first * FRAME_SIZE : min(first + count, total) * FRAME_SIZE]
+        return AudioChunk(
+            data=data,
+            timestamp_us=origin_us + _frame_us(first),
+            duration_us=_frame_us(len(data) // FRAME_SIZE),
+            byte_count=len(data),
+        )
+
+    return chunk
+
+
+def _last_sound(pcm: bytes) -> int:
+    """Return the index of the last frame of 16-bit stereo PCM that is not silence."""
+    samples = struct.unpack(f"<{len(pcm) // 2}h", pcm)
+    return max(at for at, sample in enumerate(samples) if sample) // 2
 
 
 def _chunk_24(origin_us: int, first: int, count: int) -> AudioChunk:
@@ -374,6 +428,8 @@ class _BufferedPlayer(_Response):
         self.capacity_us = capacity_us
         # its connection takes nothing
         self.stalled = False
+        # the least audio it held as it played, before the bridge wrote more
+        self.least_held_us = 1 << 62
         self._rig = rig
         self._session = session
         # the sizes of the frames of a FLAC stream as they were made, and how many of
@@ -442,6 +498,7 @@ class _BufferedPlayer(_Response):
                 # it reports what it played, which is no more than it got
                 elapsed_us = min(played_us, _frame_us(self.frames))
                 self._rig.bridge.handle_slim_event(self._rig.status(elapsed_ms=elapsed_us // 1000))
+            self.least_held_us = min(self.least_held_us, self.held_us)
             await _settle()
             held.append(self.held_us)
         return held
@@ -505,7 +562,7 @@ class _Rig:
         self.sendspin_client.roles_by_family.return_value = [self.role]
         mass.get_provider.return_value = self.sendspin
         # the squeezelite provider, its player and the slimproto client of that player
-        self.provider = provider = MagicMock()
+        self.provider = provider = MagicMock(domain="squeezelite")
         provider.mass = mass
         provider.clock = self.clock
         provider.instance_id = "squeezelite"
@@ -530,7 +587,7 @@ class _Rig:
         protocol.volume_set = AsyncMock()
         protocol.release_native_playback = AsyncMock()
         protocol.sendspin_bridge = None
-        protocol.player.get_output_protocol_by_domain.return_value = None
+        protocol.player.attached_protocols = {PLAYER_ID: protocol}
         protocol.player.current_media = None
         protocol._on_detach_callbacks = []
         provider.get_protocol.side_effect = {PLAYER_ID: protocol}.get
@@ -880,8 +937,8 @@ def _timing() -> Any:
 
 async def test_a_player_with_a_timed_start_gets_a_bridge(rig: _Rig) -> None:
     """A player with a MAC address as id that can start at a set instant is bridged."""
-    assert rig.manager._bridge_client_id(rig.protocol) == CLIENT_ID
-    assert rig.manager._should_have_bridge(rig.protocol) is True
+    assert rig.manager.bridge_client_id(rig.protocol) == CLIENT_ID
+    assert rig.manager.qualifies(rig.protocol) is True
 
 
 @pytest.mark.parametrize("protocol_id", ["kitchen", "00:00:00:00:00:00", ""])
@@ -889,8 +946,8 @@ async def test_a_player_without_a_mac_address_gets_no_bridge(rig: _Rig, protocol
     """The bridge client id comes from the MAC address, so there is none without one."""
     rig.protocol.protocol_id = protocol_id
 
-    assert rig.manager._bridge_client_id(rig.protocol) is None
-    assert rig.manager._should_have_bridge(rig.protocol) is False
+    assert rig.manager.bridge_client_id(rig.protocol) is None
+    assert rig.manager.qualifies(rig.protocol) is False
 
 
 @pytest.mark.parametrize(
@@ -913,64 +970,7 @@ async def test_only_a_device_with_a_timed_start_gets_a_bridge(
     """The bridge starts a stream at a set instant, which not every device type can do."""
     rig.client.device_type = device_type
 
-    assert rig.manager._should_have_bridge(rig.protocol) is bridged
-
-
-async def test_a_player_with_an_airplay_output_gets_no_bridge(rig: _Rig) -> None:
-    """A device with AirPlay gets its Sendspin support over AirPlay."""
-    outputs = rig.protocol.player.get_output_protocol_by_domain
-    outputs.return_value = MagicMock()
-
-    assert rig.manager._should_have_bridge(rig.protocol) is False
-    outputs.assert_called_once_with("airplay")
-
-
-@pytest.mark.parametrize(
-    ("registered", "bridged"),
-    [
-        (CLIENT_ID, False),
-        # the same MAC address with its locally administered bit set
-        ("spb_a8bbccddeeff", False),
-        ("spb_aabbccddee00", True),
-    ],
-)
-async def test_a_device_another_bridge_registered_gets_no_bridge(
-    rig: _Rig, registered: str, bridged: bool
-) -> None:
-    """One device has one Sendspin client, whichever form of its MAC address that is under."""
-    rig.server.is_external_player.side_effect = lambda client_id: client_id == registered
-
-    assert rig.manager._should_have_bridge(rig.protocol) is bridged
-
-
-async def test_its_own_client_does_not_deny_the_bridge(rig: _Rig) -> None:
-    """The client of the bridge that is in place is not that of another bridge."""
-    await rig.manager.evaluate_bridge(rig.protocol)
-    rig.server.is_external_player.return_value = True
-
-    assert rig.manager._should_have_bridge(rig.protocol) is True
-
-
-async def test_the_bridge_goes_when_airplay_shows_up_and_returns_when_it_goes(rig: _Rig) -> None:
-    """The bridge follows the outputs of its player."""
-    await rig.manager.evaluate_bridge(rig.protocol)
-    assert rig.manager.get_bridge(PLAYER_ID) is not None
-    # the Sendspin protocol of the bridge client, which rides on the squeezelite protocol
-    rig.mass.players.get_protocol.return_value = MagicMock(
-        underlying_protocol_id=PLAYER_ID, session_bit_depth=None
-    )
-
-    rig.protocol.player.get_output_protocol_by_domain.return_value = MagicMock()
-    await rig.manager.evaluate_bridge(rig.protocol)
-
-    assert rig.manager.get_bridge(PLAYER_ID) is None
-    rig.server.remove_client.assert_awaited_once_with(CLIENT_ID)
-    rig.mass.players.remove_protocol.assert_awaited_once_with(CLIENT_ID)
-
-    rig.protocol.player.get_output_protocol_by_domain.return_value = None
-    await rig.manager.evaluate_bridge(rig.protocol)
-
-    assert rig.manager.get_bridge(PLAYER_ID) is not None
+    assert rig.manager.qualifies(rig.protocol) is bridged
 
 
 @pytest.mark.parametrize(
@@ -980,7 +980,7 @@ async def test_the_bridge_goes_when_airplay_shows_up_and_returns_when_it_goes(ri
 async def test_a_change_of_outputs_evaluates_the_bridge_again(
     rig: _Rig, changed: str, evaluated: bool
 ) -> None:
-    """A player whose outputs change may have gained or lost its AirPlay output."""
+    """A player whose outputs change may have another protocol to carry its Sendspin output."""
     other = MagicMock(provider=MagicMock())
     player = MagicMock(attached_protocols={PLAYER_ID: rig.protocol, "other": other})
 
@@ -1007,26 +1007,7 @@ async def test_a_bridge_tool_gets_no_bridge(rig: _Rig, device_model: str, bridge
     """A squeezelite player that is a bridge to a device of another protocol is not bridged."""
     rig.client.device_model = device_model
 
-    assert rig.manager.is_bridgeable(rig.protocol) is bridged
-    assert rig.manager._should_have_bridge(rig.protocol) is bridged
-
-
-@pytest.mark.parametrize("registered", [CLIENT_ID, "spb_a8bbccddeeff"])
-async def test_a_client_another_bridge_registered_leaves_the_player_bridgeable(
-    rig: _Rig, registered: str
-) -> None:
-    """Whether the player qualifies does not depend on the bridge that holds the device now."""
-    rig.server.is_external_player.side_effect = lambda client_id: client_id == registered
-
-    assert rig.manager._should_have_bridge(rig.protocol) is False
-    assert rig.manager.is_bridgeable(rig.protocol) is True
-
-
-async def test_a_player_with_an_airplay_output_is_not_bridgeable(rig: _Rig) -> None:
-    """AirPlay takes the device ahead of every other bridge."""
-    rig.protocol.player.get_output_protocol_by_domain.return_value = MagicMock()
-
-    assert rig.manager.is_bridgeable(rig.protocol) is False
+    assert rig.manager.qualifies(rig.protocol) is bridged
 
 
 # ---------------------------------------------------------------- registration
@@ -1936,6 +1917,85 @@ async def test_silence_keeps_a_flac_player_fed_that_sendspin_has_nothing_for(
     assert rig.client.play_url.await_count == 1
 
 
+@pytest.mark.parametrize("ending", ["tone", "fade-out", "digital silence"])
+async def test_a_flac_player_plays_a_source_that_ends_to_its_last_sample(
+    flac_rig: _Rig, ending: str
+) -> None:
+    """The end of a source is decoded before it plays: the player does not run dry on it."""
+    rig = flac_rig
+    source = _music(4, ending)
+    session = await rig.start_playing(frames=4 * SECOND, chunk=source)
+    session.claimed = session.preroll_sent = False
+    player = _BufferedPlayer(rig, session)
+    rig.serve(session, player)
+    await _settle()
+    await rig.align_served(session)
+
+    await player.play(6)
+
+    # what it can decode is kept ahead of what it plays, in silence after the source,
+    # less what it played since the last write
+    assert player.least_held_us > STARVED_DECODE_LEAD_US - 50_000 - _frame_us(BLOCK_FRAMES)
+    assert rig.session is session
+    # it decoded the source to its last sample, where its timestamp puts it after the
+    # frames the sync loop repeated: the last ones of a fade-out are 0
+    end = round((rig.origin_us - session.start_us) * SECOND / 1_000_000) + 4 * SECOND
+    if ending == "digital silence":
+        end -= SECOND // 20
+    pcm = player.pcm()[: player.frames * FRAME_SIZE]
+    assert abs(_last_sound(pcm) + 1 - (end - rig.dropped(session))) < 10
+
+
+async def test_a_flac_player_rides_out_a_source_that_stalls_after_audio_that_compresses_well(
+    flac_rig: _Rig,
+) -> None:
+    """A source that stops for a while leaves the player silence, and what comes after it plays."""
+    rig = flac_rig
+    source = _music(12, noise=2)
+    session = await rig.start_playing(frames=6 * SECOND, chunk=source)
+    session.claimed = session.preroll_sent = False
+    player = _BufferedPlayer(rig, session)
+    rig.serve(session, player)
+    await _settle()
+    await rig.align_served(session)
+    # the player can not decode more of it yet than a PCM player is kept ahead
+    await player.play(4)
+    assert session.frames_held > 2 * STARVED_LEAD_FRAMES
+
+    # the source stops after 6 seconds for a while, then delivers the rest
+    await player.play(4)
+    rig.bridge._on_audio_chunk(source(rig.origin_us, 6 * SECOND, 6 * SECOND))
+    await player.play(6)
+
+    assert player.least_held_us > STARVED_DECODE_LEAD_US - 50_000 - _frame_us(BLOCK_FRAMES)
+    assert rig.session is session
+    # the source plays on from where the stream is, to its last sample
+    end = round((rig.origin_us - session.start_us) * SECOND / 1_000_000) + 12 * SECOND
+    pcm = player.pcm()[: player.frames * FRAME_SIZE]
+    assert abs(_last_sound(pcm) + 1 - (end - rig.dropped(session))) < 10
+
+
+async def test_a_flac_player_is_stopped_at_once_at_the_end_of_its_source(flac_rig: _Rig) -> None:
+    """A stop as the source ends stops the player, which holds the silence after it."""
+    rig = flac_rig
+    session = await rig.start_playing(frames=2 * SECOND, chunk=_music(2, "fade-out"))
+    session.claimed = session.preroll_sent = False
+    player = _BufferedPlayer(rig, session)
+    task = rig.serve(session, player)
+    await _settle()
+    await rig.align_served(session)
+    end_us = rig.origin_us + 2_000_000
+    await player.play((end_us - rig.now_us) / 1_000_000)
+
+    rig.bridge._on_stream_end()
+    rig.bridge._on_explicit_stop()
+    await _settle()
+
+    assert task.done()
+    assert rig.bridge._session is None
+    rig.client.stop.assert_awaited_once()
+
+
 async def test_a_flac_stream_decodes_to_what_the_writer_made(flac_rig: _Rig) -> None:
     """Every frame of the PCM is in the stream once, the ones the sync loop repeated or dropped too."""
     rig = flac_rig
@@ -2408,6 +2468,22 @@ async def test_silence_keeps_a_player_fed_that_sendspin_has_nothing_for(rig: _Ri
     assert _frames(rig.drain(session))[0] == late_from
 
 
+async def test_a_pcm_player_is_kept_the_starved_lead_after_a_source_that_ends(rig: _Rig) -> None:
+    """A PCM player decodes all it got: silence keeps its stream half a second ahead, no more."""
+    session = await rig.start_playing(frames=2 * SECOND, chunk=_music(2, "fade-out"))
+    session.claimed = session.preroll_sent = False
+    player = _BufferedPlayer(rig, session)
+    rig.serve(session, player)
+    await _settle()
+    await rig.align_served(session)
+
+    await player.play(4)
+
+    assert player.least_held_us > STARVED_LEAD_US - 50_000 - _frame_us(BLOCK_FRAMES)
+    assert rig.lead_frames(session) == STARVED_LEAD_FRAMES
+    assert rig.session is session
+
+
 async def test_audio_that_is_still_to_arrive_is_not_replaced_by_silence(rig: _Rig) -> None:
     """A player that holds more than it needs gets no silence in the place of audio to come."""
     tenth = SECOND // 10
@@ -2743,10 +2819,10 @@ async def test_a_start_is_at_least_300_ms_ahead(rig: _Rig) -> None:
     assert MIN_START_AHEAD_US == 300_000
     assert session.start_us == rig.now_us + MIN_START_AHEAD_US
     rig.client.unpause_at.assert_awaited_once_with(rig.jiffies() + 300)
-    # the stream starts 200 ms into its audio and its start takes 500 ms of it to correct:
-    # that much is left out, and what follows is on the timeline
+    # the stream starts 200 ms into its audio, which follows the preroll: that much is left
+    # out, and what follows is on the timeline
     first, late_us = rig.first_audio(session, rig.align(session))
-    assert first == round(0.7 * SECOND)
+    assert first == round(0.45 * SECOND)
     assert late_us == 0
 
 
@@ -2756,7 +2832,7 @@ async def test_a_start_that_is_past_starts_as_soon_as_it_can(rig: _Rig) -> None:
 
     assert session.start_us == rig.now_us + MIN_START_AHEAD_US
     first, late_us = rig.first_audio(session, rig.align(session))
-    assert first == round(1.8 * SECOND)
+    assert first == round(1.55 * SECOND)
     assert late_us == 0
 
 
@@ -4076,19 +4152,26 @@ async def test_a_bridge_that_does_not_play_shows_nothing(rig: _Rig) -> None:
 
 
 @pytest.mark.parametrize(
-    "end", ["explicit stop", "taken back", "bridge removed", "ended before its start", "gave up"]
+    "end",
+    ["taken back", "taken out of its group", "bridge removed", "ended before its start", "gave up"],
 )
 async def test_nothing_is_left_on_the_player_when_its_stream_is_over(rig: _Rig, end: str) -> None:
     """A stop keeps the media of a player: the bridge has it forgotten with its session."""
-    rig.grouped()
+    client = rig.grouped()
     session = await rig.start_playing()
     rig.client.clear_media.assert_not_called()
 
-    if end == "explicit stop":
-        rig.bridge._on_stream_end()
-        rig.bridge._on_explicit_stop()
-    elif end == "taken back":
+    if end == "taken back":
         assert rig.bridge.stop_streaming()
+    elif end == "taken out of its group":
+        # the player lists the stream it plays
+        rig.client.current_media.url = (
+            f"{BASE_URL}{BRIDGE_STREAM_PATH}?player_id={PLAYER_ID}&sid={session.session_id}"
+        )
+        # as the group removes a member: its stream ends, it moves on, then it is stopped
+        rig.bridge._on_stream_end()
+        client.moved_to(MagicMock(clients=[client], has_active_stream=False))
+        rig.bridge._on_explicit_stop()
     elif end == "bridge removed":
         await rig.bridge.stop()
     elif end == "ended before its start":
@@ -4137,7 +4220,7 @@ async def test_a_session_that_is_replaced_keeps_what_the_player_shows(
     rig.client.clear_media.assert_not_called()
 
 
-async def test_the_player_shows_the_track_of_the_group_and_none_after_it(rig: _Rig) -> None:
+async def test_the_player_shows_the_track_of_the_group_and_keeps_it_on_a_stop(rig: _Rig) -> None:
     """With a real slimproto client: what its status and display report, start to stop."""
     reader, _sent = _real_client(rig)
     client = rig.client
@@ -4165,7 +4248,106 @@ async def test_the_player_shows_the_track_of_the_group_and_none_after_it(rig: _R
         rig.bridge._on_explicit_stop()
         await _settle()
         assert client.state == SlimPlayerState.STOPPED
-        assert shown() is None
+        assert shown() == (url, _metadata("Two"))
+    finally:
+        client._reader_task.cancel()
+
+
+async def test_the_play_key_of_a_player_resumes_its_stopped_group(rig: _Rig) -> None:
+    """A player only sends play for a track its status lists: a group stop leaves it one."""
+    reader, sent = _real_client(rig)
+    client = rig.client
+    server = MagicMock(logger=logging.getLogger("test.aioslimproto"))
+    server.get_player.side_effect = {PLAYER_ID: client}.get
+    cli = SlimProtoCLI(
+        server,
+        cli_port=None,
+        cli_port_json=None,
+        command_handler=partial(SqueezelitePlayerProvider._handle_cli_command, rig.provider),
+    )
+    rig.protocol.player.player_id = "kitchen"
+    rig.mass.players.cmd_play = AsyncMock()
+    try:
+        rig.protocol.player.current_media = _media("One")
+        rig.grouped()
+        await rig.start_playing()
+        await _player_reports(reader, b"STMs")
+
+        rig.bridge._on_stream_end()
+        rig.bridge._on_explicit_stop()
+        await _settle()
+        # the player confirms the stop of its stream
+        await _player_reports(reader, b"STMf")
+        status = await cli._handle_command((PLAYER_ID, ["status", "-", 10, "menu:menu"]))
+
+        assert (status["mode"], status["playlist_tracks"]) == ("stop", 1)
+        assert [item["track"] for item in status["item_loop"]] == ["One"]
+        sent.clear()
+        await cli._handle_command((PLAYER_ID, ["mode", "play"]))
+        # the player of the bridge, which Music Assistant hands on to the player that
+        # owns its playback
+        rig.mass.players.cmd_play.assert_awaited_once_with("kitchen")
+        assert _stream_commands(sent) == []
+    finally:
+        client._reader_task.cancel()
+
+
+@pytest.mark.parametrize("leaves_by", ["taken out of the group", "bridge removed"])
+async def test_a_player_that_leaves_its_stopped_group_shows_nothing(
+    rig: _Rig, leaves_by: str
+) -> None:
+    """The stopped track of a group is not left on a player that is no longer in it."""
+    reader, _sent = _real_client(rig)
+    client = rig.client
+    try:
+        rig.protocol.player.current_media = _media("One")
+        sendspin_client = rig.grouped()
+        await rig.start_playing()
+        await _player_reports(reader, b"STMs")
+        rig.bridge._on_stream_end()
+        rig.bridge._on_explicit_stop()
+        await _settle()
+        await _player_reports(reader, b"STMf")
+        assert client.current_media is not None
+
+        if leaves_by == "taken out of the group":
+            # as the group removes a member, with no stream left to end or stop
+            rig.bridge._on_stream_end()
+            sendspin_client.moved_to(MagicMock(clients=[sendspin_client], has_active_stream=False))
+            rig.bridge._on_explicit_stop()
+        else:
+            await rig.bridge.stop()
+        await _settle()
+
+        assert client.current_media is None
+    finally:
+        client._reader_task.cancel()
+
+
+@pytest.mark.parametrize("change", ["put into a group", "bridge removed"])
+async def test_a_player_keeps_a_track_of_its_own_when_its_bridge_moves_on(
+    rig: _Rig, change: str
+) -> None:
+    """What the player plays on its own is not for the bridge to clear."""
+    reader, _sent = _real_client(rig)
+    client = rig.client
+    try:
+        sendspin_client = rig.grouped()
+        sendspin_client.moved_to(MagicMock(clients=[sendspin_client], has_active_stream=False))
+        await client.play_url(f"{BASE_URL}/track.flac")
+        await _player_reports(reader, b"STMs")
+        media = client.current_media
+        assert media is not None
+
+        if change == "put into a group":
+            sendspin_client.moved_to(
+                MagicMock(clients=[sendspin_client, MagicMock()], has_active_stream=False)
+            )
+        else:
+            await rig.bridge.stop()
+        await _settle()
+
+        assert client.current_media is media
     finally:
         client._reader_task.cancel()
 
@@ -4199,9 +4381,113 @@ async def test_an_underrun_restarts_the_stream_on_the_timeline(rig: _Rig) -> Non
     # as soon as it can, which is 0.8 seconds into its audio
     assert second_session.start_us == rig.now_us + MIN_START_AHEAD_US
     assert second_session.start_us == rig.origin_us + 800_000
-    # the audio is heard from where it is once the start is corrected, half a second on
+    # the audio is heard from where it is once the preroll is played
     sent = rig.align(second_session) + rig.drain(second_session)
-    assert rig.first_audio(second_session, sent) == (round(1.3 * SECOND), 0)
+    assert rig.first_audio(second_session, sent) == (round(1.05 * SECOND), 0)
+
+
+async def test_a_restart_into_audio_that_is_due_goes_out_a_lead_ahead_from_its_first_write(
+    rig: _Rig,
+) -> None:
+    """A restart has no silence before its audio to correct its start in: it is corrected in the audio."""
+    first = await rig.start_playing(frames=SECOND)
+    for second in range(1, 6):
+        rig.bridge._on_audio_chunk(_chunk(rig.origin_us, second * SECOND, SECOND))
+    rig.align(first)
+    rig.clock.advance_us(first.start_us - rig.now_us + 1_950_000)
+    rig.drain(first)
+    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+    await _settle()
+    session = rig.session
+    rig.fetched(session)
+    rig.event(SlimEventType.PLAYER_BUFFER_READY)
+    await _settle()
+    loop = session.loop
+    assert loop is not None
+    assert session.first_audible_us is not None
+    assert session.first_audible_us - session.start_us == -800_000
+
+    sent = rig.drain(session)
+
+    # before its start instant: its audio on the timeline from the end of the preroll on,
+    # as far as the lead
+    first_frame = round(1.05 * SECOND)
+    assert _frames(sent) == list(
+        range(first_frame, first_frame + START_LEAD_FRAMES - PREROLL_FRAMES)
+    )
+    assert rig.first_audio(session, sent) == (first_frame, 0)
+    rig.clock.advance_us(session.start_us - rig.now_us)
+    assert rig.lead_frames(session) == START_LEAD_FRAMES
+    # a player that starts 5 ms late is corrected by the sync loop, not in a jump that is heard
+    rig.play(session, 1.0, late_ms=5)
+    assert loop.start_error_ms == pytest.approx(4.5)
+    assert loop.pending_jump == 0
+
+
+async def test_a_restarted_player_plays_on_through_a_stall_right_after_its_start(rig: _Rig) -> None:
+    """A player that takes nothing for 1.3 s from the start of its restarted stream does not run dry."""
+    first, player = await rig.serve_player()
+    await player.play(3)
+    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+    rig.map_clock()
+    await _settle()
+    session = rig.session
+    assert session is not first
+    restarted = _BufferedPlayer(rig, session)
+    rig.serve(session, restarted)
+    await _settle()
+    rig.event(SlimEventType.PLAYER_BUFFER_READY)
+    await _settle()
+    assert session.first_audible_us is not None
+    assert session.first_audible_us < session.start_us
+    rig.clock.advance_us(session.start_us - rig.now_us)
+    await _settle()
+
+    restarted.stalled = True
+    held = await restarted.play(1.3)
+    restarted.stalled = False
+
+    # what it got before its start instant: the lead, of which it played 1.3 s
+    assert min(held) == START_LEAD_US - 1_300_000
+
+
+async def test_positions_that_stay_impossible_after_a_restart_count_only_after_the_timeout(
+    rig: _Rig,
+) -> None:
+    """A restart into its audio does not take a position of the stream before for its start."""
+    first = await rig.start_playing(frames=SECOND)
+    for second in range(1, 6):
+        rig.bridge._on_audio_chunk(_chunk(rig.origin_us, second * SECOND, SECOND))
+    rig.align(first)
+    rig.clock.advance_us(first.start_us - rig.now_us + 1_950_000)
+    rig.drain(first)
+    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+    await _settle()
+    session = await rig.await_start()
+    loop = session.loop
+    assert loop is not None
+    assert not session.aligning
+
+    def _report_5_seconds_too_much() -> None:
+        rig.clock.advance_us(50_000)
+        played_ms = (rig.now_us - session.start_us) // 1000
+        rig.bridge.handle_slim_event(rig.status(elapsed_ms=played_ms + 5368))
+        rig.drain(session)
+
+    # for as long as a start is waited for, such a report does not count
+    while rig.now_us - session.start_us <= ALIGN_TIMEOUT_US:
+        _report_5_seconds_too_much()
+        assert loop.start_error_ms is None
+    assert rig.session is session
+
+    # from then on it is measured as it reports
+    for _ in range(3):
+        _report_5_seconds_too_much()
+    await _settle()
+
+    assert loop.start_error_ms == pytest.approx(-5368.5)
+    assert rig.session is not session
+    assert rig.client.play_url.await_count == 3
 
 
 async def test_an_underrun_tells_what_the_bridge_knew(
@@ -4255,7 +4541,7 @@ async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(
     # 0.2 seconds more to get through its decoder
     block = BLOCK_FRAMES if output_codec == "flac" else 0
     restarted_as = "flac" if output_codec == "flac" and plays_s == 9 else "wav"
-    resumes_s = 8.85 if restarted_as == "flac" else 8.65
+    resumes_s = 8.6 if restarted_as == "flac" else 8.4
     # what it plays longer before the stall, in whole chunks, comes on top of every position
     later = (plays_s - 3) * SECOND
     try:
@@ -4295,8 +4581,8 @@ async def test_a_player_that_ran_dry_carries_on_with_what_it_did_not_play(
         await rig.align_served(second)
         await restarted.play(2)
 
-        # nothing twice, and all of it from where the new stream could begin: 0.8 seconds
-        # for its start and its correction, in the chunk the first stream had begun
+        # nothing twice, and all of it from where the new stream could begin: 0.55 seconds
+        # for its start and its preroll, in the chunk the first stream had begun
         audio = restarted.audio()
         assert played[-1] < audio[0] < 9 * SECOND + later
         assert audio[0] == pytest.approx(resumes_s * SECOND + later, abs=SECOND // 10)
@@ -4852,8 +5138,7 @@ async def test_the_bridge_of_a_reconnected_player_returns_to_its_group(rig: _Rig
     new_client.group = MagicMock(clients=[new_client], has_active_stream=False)
     new_client.roles_by_family.return_value = [SlimprotoBridgeRole(client=new_client)]
     rig.server.register_external_player.return_value = new_client
-    rig.protocol.player = MagicMock()
-    rig.protocol.player.get_output_protocol_by_domain.return_value = None
+    rig.protocol.player = MagicMock(attached_protocols={PLAYER_ID: rig.protocol})
     with patch(f"{MODULE}.RECONNECT_REJOIN_DELAYS", (0,)):
         await rig.manager.evaluate_bridge(rig.protocol)
         await _settle()
@@ -4892,8 +5177,7 @@ async def test_a_group_is_only_returned_to_after_a_reconnect(rig: _Rig, case: st
     new_client.group = MagicMock(clients=[new_client], has_active_stream=False)
     new_client.roles_by_family.return_value = [SlimprotoBridgeRole(client=new_client)]
     rig.server.register_external_player.return_value = new_client
-    rig.protocol.player = MagicMock()
-    rig.protocol.player.get_output_protocol_by_domain.return_value = None
+    rig.protocol.player = MagicMock(attached_protocols={PLAYER_ID: rig.protocol})
     with patch(f"{MODULE}.RECONNECT_REJOIN_DELAYS", (0,)):
         await rig.manager.evaluate_bridge(rig.protocol)
         await _settle()

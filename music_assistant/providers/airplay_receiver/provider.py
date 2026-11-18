@@ -17,7 +17,6 @@ from music_assistant_models.enums import (
     EventType,
     ImageType,
     MediaType,
-    ProviderFeature,
     SourceControl,
     StreamType,
 )
@@ -46,7 +45,8 @@ from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import interface_name_for_ip
-from music_assistant.models.plugin import PluginProvider, SourceControlValue
+from music_assistant.models.media_capabilities import SourceControlValue
+from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.airplay_receiver.helpers import get_shairport_sync_binary
 from music_assistant.providers.airplay_receiver.metadata import MetadataReader
 
@@ -60,7 +60,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
 
-SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
 # seconds the silence nudge waits for the audio pipe's consumer to reattach
 AUDIO_PIPE_READER_TIMEOUT = 1.0
@@ -158,7 +157,7 @@ class AirPlayReceiverProvider(PluginProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
+        super().__init__(mass, manifest, config)
         self._shairport_bin: str | None = None
         self._daemons: dict[str, _ReceiverDaemon] = {}
         # players whose daemon gave up permanently; skipped by reconcile until the

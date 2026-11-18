@@ -15,7 +15,7 @@ This core controller owns network discovery in Music Assistant:
 
 - Build a single shared Zeroconf browser from all provider manifests.
 - Periodically run SSDP discovery for active providers and fan out results through provider callbacks.
-- Replay cached mDNS results when a provider loads so providers do not need to wait for the next announcement.
+- Replay cached mDNS results when a provider loads so providers do not need to wait for the next announcement. A service not heard in the last 30 seconds is asked on the network first and only replayed when its device answers, because a device that stops a service without a goodbye stays in the cache until its TTL runs out.
 - Register and unregister the Music Assistant server's own Zeroconf service.
 
 ## Provider Integration

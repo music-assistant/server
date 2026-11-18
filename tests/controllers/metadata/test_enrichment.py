@@ -110,6 +110,7 @@ def _enrichment(musicbrainz: MagicMock | None = None) -> MetadataEnrichmentMixin
         controller.link_musicbrainz_mappings = AsyncMock(return_value=[])
     music.get_controller.return_value.set_external_ids = AsyncMock()
     music.artists.merge_library_artists_by_mbid = AsyncMock(return_value=1)
+    music.tracks.merge_recording_duplicates = AsyncMock(return_value=set())
     music.albums.get_library_album_tracks = AsyncMock(return_value=[])
     music.albums.link_album_tracks = AsyncMock()
     return enrichment

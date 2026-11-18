@@ -40,6 +40,7 @@ from music_assistant.providers.filesystem_yandex_disk.auth import (
     request_device_code,
 )
 from music_assistant.providers.filesystem_yandex_disk.provider import YandexDiskFileSystemProvider
+from tests.common import virtual_loop_clock
 
 provider_module = sys.modules[YandexDiskFileSystemProvider.__module__]
 auth_module = sys.modules[request_device_code.__module__]
@@ -422,26 +423,31 @@ async def test_overall_deadline_interrupts_pending_device_login() -> None:
         raise AssertionError("finish must not be called")
 
     session, _mass = _make_session(finish)
-    request = mock.AsyncMock(return_value=_grant())
+    request = mock.AsyncMock(return_value=_grant(interval=5))
     poll = mock.AsyncMock(return_value=DevicePollState.PENDING)
-    started = time.monotonic()
-    started_wall = time.time()
+    # a budget that runs out while the 300 s device code is still valid
+    budget = 60.0
+    loop = asyncio.get_running_loop()
     with (
+        virtual_loop_clock(),
+        # the overall budget follows the loop clock as well
+        mock.patch.object(setup_flow, "time", mock.Mock(monotonic=loop.time)),
         mock.patch.object(setup_flow, "request_device_code", request),
         mock.patch.object(setup_flow, "poll_device_token", poll),
-        mock.patch.object(setup_flow, "AUTHORIZATION_TIMEOUT", 0.2),
-        pytest.raises(StepExpiredError),
+        mock.patch.object(setup_flow, "AUTHORIZATION_TIMEOUT", budget),
     ):
-        # a regression would wait out the 300 s device code; fail fast instead
-        async with asyncio.timeout(5):
+        started = loop.time()
+        with pytest.raises(StepExpiredError):
             await setup_flow._authorize(session, "client-id", "client-secret")
+        waited = loop.time() - started
 
-    assert time.monotonic() - started < 2
+    assert waited == pytest.approx(budget, abs=1e-3)
     assert request.await_count == 1
+    poll.assert_awaited()
     assert session.current_step is not None
     # the published countdown is capped by the budget, not the 300 s device code
     assert session.current_step.expires_at is not None
-    assert session.current_step.expires_at <= started_wall + 1
+    assert session.current_step.expires_at <= time.time() + budget
 
 
 async def test_poll_slow_down_increases_interval() -> None:

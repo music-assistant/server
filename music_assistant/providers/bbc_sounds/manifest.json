@@ -14,7 +14,7 @@
   "requirements": [
     "auntie-sounds==3.1.0"
   ],
-  "multi_instance": false,
+  "multi_instance": true,
   "menu_actions": [
     {
       "id": "listen_from_start",

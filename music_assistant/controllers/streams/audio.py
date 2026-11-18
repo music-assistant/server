@@ -98,7 +98,11 @@ from music_assistant.constants import (
 from music_assistant.controllers.streams.audio_analysis import (
     LOUDNESS_PROVIDER_PRIORITY,
 )
-from music_assistant.controllers.streams.audio_buffer import AudioBuffer, BufferUser
+from music_assistant.controllers.streams.audio_buffer import (
+    AudioBuffer,
+    AudioNotWanted,
+    BufferUser,
+)
 from music_assistant.controllers.streams.audio_processing import (
     AudioOutputPlan,
     get_normalization_details,
@@ -838,8 +842,9 @@ class StreamsAudio:
         :param consumer_connected: Reports whether the consumer this audio is for is still
             connected; once it reports False, no source is opened for it.
         :param user: The party the buffer is for, which uses it from here until it calls
-            ``release``. Without one the buffer only counts as used while this call waits.
-        :return: The buffer, or None when the consumer reported it left.
+            ``release``. Without one this call only waits for the buffer, which keeps nothing.
+        :return: The buffer, or None when the consumer reported it left or the queue no
+            longer wants audio for the item.
         :raises ProviderStreamLimitError: If no source slot becomes available within the budget.
         :raises ProviderStreamHeldError: If another player's realtime playback holds the only
             slot of the source and the item needs a new one, refused without waiting.
@@ -888,7 +893,8 @@ class StreamsAudio:
         :param source_wait_timeout: Maximum seconds to wait for a free source-stream slot
             on the providing music provider, or None to wait without a timeout.
         :param slot_holder: The audio buffer this stream fills, which the provider lists as
-            the holder of its slot.
+            the holder of its slot. A buffer that is no longer needed once the slot is there
+            gets no audio: its source is not opened.
         :raises ProviderStreamLimitError: If the provider has no free slot within the timeout.
         """
         get_stream = (
@@ -912,6 +918,10 @@ class StreamsAudio:
             else nullcontext()
         )
         async with stream_slot, aclosing(media_stream):
+            # the wait for the slot can outlast the need for the audio: asked here, as the
+            # first read below is what opens the source
+            if slot_holder is not None and slot_holder.release_if_unneeded() is not None:
+                return
             async for chunk in media_stream:
                 yield chunk
 
@@ -2351,6 +2361,9 @@ class StreamsAudio:
                     queue.index_in_buffer = self.mass.player_queues.index_by_id(
                         queue.queue_id, next_queue_item.queue_item_id
                     )
+                    # no audio is asked for when the next item's is in hand already, so
+                    # what left the queue's scope with this move is released here
+                    self.mass.player_queues.release_unneeded_audio(queue.queue_id)
                 except QueueEmpty:
                     # end of queue reached, no next item
                     next_queue_item = None
@@ -3623,6 +3636,30 @@ class StreamsAudio:
         if pending := self._crossfade_pending.pop(queue_id, None):
             pending[1].set()
 
+    def item_claimed(self, queue_item: QueueItem) -> bool:
+        """
+        Return whether a stream of its queue's playback session decided to play the item.
+
+        :param queue_item: The queue item to check.
+        """
+        return any(self._claim_holds(claim, queue_item) for claim in self._item_claims)
+
+    def claim_item(self, queue_item: QueueItem, session_id: str, name: str) -> Callable[[], None]:
+        """
+        Claim a queue item for a consumer that decided to play it, before it reads any of it.
+
+        Until the claim ends the item's audio is kept for the playback session of its queue,
+        whatever the queue plays now or next.
+
+        :param queue_item: The queue item the consumer decided to play.
+        :param session_id: The playback session the consumer plays in.
+        :param name: Who claims, for log lines.
+        :return: Ends the claim. To be called exactly once, however the consumer ends.
+        """
+        claim = _ItemClaim(name, session_id)
+        self._claim_item(claim, queue_item)
+        return partial(self._claim_item, claim, None)
+
     def get_stream_providers(
         self, mapping: ProviderMapping, allowed: list[str] | None
     ) -> list[Provider]:
@@ -4124,7 +4161,8 @@ class StreamsAudio:
         :param consumer_connected: Reports whether the consumer this audio is for is still
             connected, or None when there is no consumer to lose.
         :param user: The party the buffer is for, or None when it is only waited for.
-        :return: The buffer, or None when the consumer reported it left.
+        :return: The buffer, or None when the consumer reported it left or the queue no
+            longer wants audio for the item.
         """
         loop = asyncio.get_running_loop()
         # the playback intent lives on the details we start from; keep it across a reselection
@@ -4138,6 +4176,8 @@ class StreamsAudio:
         prefer_album_loudness = bool(
             initial_streamdetails and initial_streamdetails.prefer_album_loudness
         )
+        # what left the queue's scope gives its audio, and the slot of its source, up first
+        self.mass.player_queues.release_unneeded_audio(queue_item.queue_id)
         allowed, preferred = await playback_sources(self.mass, queue_item.queue_id)
         all_candidate_instances = {
             provider.instance_id
@@ -4271,11 +4311,15 @@ class StreamsAudio:
                         queue_item.queue_item_id,
                     ),
                     user=user,
-                    may_release=partial(
-                        self._may_release_source, queue_item, streamdetails.provider
-                    ),
+                    may_release=partial(self._may_release_audio, queue_item),
                     on_created=partial(self.mass.player_queues.register_audio_buffer, queue_item),
+                    wanted=partial(self.mass.player_queues.wants_audio, queue_item),
                 )
+            except AudioNotWanted:
+                self.logger.debug(
+                    "Not buffering %s: its queue no longer wants its audio", queue_item.name
+                )
+                return None
             except ProviderStreamLimitError as err:
                 last_capacity_error = err
                 last_failed_streamdetails = streamdetails
@@ -4324,37 +4368,14 @@ class StreamsAudio:
                 queue_item.streamdetails = last_failed_streamdetails
                 final_pass = True
 
-    def _may_release_source(
-        self, queue_item: QueueItem, provider_instance: str, audio_buffer: AudioBuffer
-    ) -> bool:
+    def _may_release_audio(self, queue_item: QueueItem, audio_buffer: AudioBuffer) -> bool:
         """
-        Return whether a buffer that has no user may give up its source.
+        Return whether a buffer that nobody reads may give up its audio.
 
         :param queue_item: The queue item the buffer was created for.
-        :param provider_instance: The provider instance the buffer's source streams from.
-        :param audio_buffer: The buffer, which still fills.
+        :param audio_buffer: The buffer.
         """
-        provider = self.mass.get_provider(provider_instance, return_unavailable=True)
-        if not isinstance(provider, MusicProvider) or provider.has_available_stream_slot:
-            # a provider with a slot to spare keeps every source it has
-            return False
-        streamdetails = queue_item.streamdetails
-        if streamdetails is None or streamdetails.buffer is not audio_buffer:
-            # another buffer took its place on the item, so nothing reads this one again
-            return True
-        if any(self._claim_holds(claim, queue_item) for claim in self._item_claims):
-            # a stream of the item's playback decided to play it, whether or not it reads
-            # this buffer yet
-            return False
-        queues = self.mass.player_queues
-        if (
-            queues.queue_data_or_none(queue_item.queue_id) is None
-            or queues.get_item(queue_item.queue_id, queue_item.queue_item_id) is None
-        ):
-            # its item is on no queue
-            return True
-        # on its queue, it is needed while that queue plays it now or next
-        return not queues.plays_now_or_next(queue_item)
+        return not self.mass.player_queues.audio_in_scope(queue_item, audio_buffer)
 
     def _claim_item(self, claim: _ItemClaim, queue_item: QueueItem | None) -> None:
         """

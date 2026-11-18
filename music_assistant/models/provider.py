@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import logging
-from typing import TYPE_CHECKING, Any, TypeVar, final, overload
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, final, overload
 
 from music_assistant_models.config_entries import UI_ONLY, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, EventType
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.helpers.json import SerializableType
+    from music_assistant.helpers.plugin_engines import EngineSetting
     from music_assistant.mass import MusicAssistant
 
 # TypeVar for config value type inference
@@ -41,6 +42,9 @@ class Provider:
     # set to True in providers that capture a mass.streams address or port while loading,
     # to have them reloaded onto the new one when the streamserver network changes
     reload_on_streams_network_change: bool = False
+    # the AI engine settings of this provider, listed on the AI settings page; engine choices
+    # kept in the provider's own data (such as the voice of an AI Radio host) are not listed
+    engine_settings: ClassVar[tuple[EngineSetting, ...]] = ()
 
     def __init__(
         self,
@@ -53,7 +57,7 @@ class Provider:
         self.mass = mass
         self.manifest = manifest
         self.config = config
-        self._supported_features = supported_features or set()
+        self._supported_features = {*manifest.features, *(supported_features or ())}
         self._set_log_level_from_config(config)
         self.cache = mass.cache
         self.available = False
@@ -116,6 +120,25 @@ class Provider:
         :param player_id: The player to act on for an action that requires a player, else None.
         """
         raise ActionUnavailable(f"Unknown menu action: {action_id}")
+
+    async def handle_mcp_tool(
+        self, tool_id: str, arguments: dict[str, Any], player_id: str | None
+    ) -> dict[str, Any]:
+        """
+        Run a tool this provider declares in its manifest, for an AI assistant.
+
+        Override when the manifest declares ``mcp_tools``. The server only calls this for a user
+        who may use this provider instance and holds the scope of the tool, with arguments that
+        match its input schema (every declared property present: the passed value, else its
+        default, else None), and for a tool that requires a player with a player that user may
+        use. Return a dict of JSON values for the model to read; refer to media items by uri.
+        Raise a ``MusicAssistantError`` to report a failure.
+
+        :param tool_id: The id of the tool in the manifest.
+        :param arguments: The arguments of the call.
+        :param player_id: The player to act on for a tool that requires a player, else None.
+        """
+        raise ActionUnavailable(f"Unknown tool: {tool_id}")
 
     async def handle_async_init(self) -> None:
         """
