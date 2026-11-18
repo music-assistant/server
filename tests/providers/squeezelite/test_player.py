@@ -385,7 +385,7 @@ def _connected_player(device_model: str = "SqueezeLite") -> tuple[SqueezelitePla
 async def test_the_protocol_advertises_the_mute_it_implements(device_model: str) -> None:
     """Mute is in the feature set, because the provider implements it and a host cannot call it otherwise."""
     player, _mass = _connected_player(device_model)
-    player.client.mute = AsyncMock()
+    player.client.mute = AsyncMock()  # type: ignore[method-assign]
 
     assert PlayerFeature.VOLUME_MUTE in player.supported_features
 
