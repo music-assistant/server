@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import logging
-from typing import TYPE_CHECKING, Any, TypeVar, final, overload
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, final, overload
 
 from music_assistant_models.config_entries import UI_ONLY, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, EventType
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.helpers.json import SerializableType
+    from music_assistant.helpers.plugin_engines import EngineSetting
     from music_assistant.mass import MusicAssistant
 
 # TypeVar for config value type inference
@@ -41,6 +42,8 @@ class Provider:
     # set to True in providers that capture a mass.streams address or port while loading,
     # to have them reloaded onto the new one when the streamserver network changes
     reload_on_streams_network_change: bool = False
+    # the AI engine settings of this provider, listed on the AI settings page
+    engine_settings: ClassVar[tuple[EngineSetting, ...]] = ()
 
     def __init__(
         self,
