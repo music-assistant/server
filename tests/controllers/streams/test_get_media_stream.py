@@ -236,8 +236,10 @@ class _TwoMinuteFFMpeg(_FakeFFMpeg):
     """FFMpeg double that emits exactly two minutes of PCM at the format below."""
 
     seconds_emitted = 120
+    reported_duration: int | None = None
 
     async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
+        self.parsed_duration = self.reported_duration
         for _ in range(self.seconds_emitted):
             yield b"\x00" * _PCM_SAMPLE_SIZE
 
@@ -590,6 +592,36 @@ async def test_get_media_stream_keeps_duration_when_the_source_stops_short(
 
     # the fake source delivered two minutes of a one hour book
     assert streamdetails.duration == 3600
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_the_source_reports_more_than_it_served(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A source announcing the whole item but ending after two minutes did not finish."""
+    streamdetails = _seekable_streamdetails()
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3600)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert streamdetails.duration == 3600
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_corrects_a_declared_length_the_source_never_had(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A source that served everything it reports corrects a declared length that was too long."""
+    streamdetails = _seekable_streamdetails()
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 120)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert streamdetails.duration == 120
 
 
 @pytest.mark.asyncio
@@ -1465,3 +1497,27 @@ def test_delivered_media_covers_item(declared: int, delivered: float, covers: bo
     streamdetails = SimpleNamespace(duration=declared)
 
     assert audio_mod._delivered_media_covers_item(streamdetails, delivered) is covers  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("declared", "reported", "delivered", "covers"),
+    [
+        (3600, 3540, 3540.0, True),  # the source served all it reports
+        (3600, 3540, 3530.0, True),  # ... within the tolerance of what it reports
+        (3600, 3540, 3400.0, False),  # short of both the declared and the reported length
+        (3600, 3600, 120.0, False),  # a source announcing everything, serving two minutes
+        (3600, 4000, 3595.0, True),  # a reported length that is too high does not hide a full item
+        (0, 3540, 10.0, False),  # no declared length: the source's own one counts
+        (0, 3540, 3540.0, True),
+    ],
+)
+def test_delivered_media_covers_item_the_source_reports(
+    declared: int, reported: int, delivered: float, covers: bool
+) -> None:
+    """The length a source reports counts next to the declared one."""
+    streamdetails = SimpleNamespace(duration=declared)
+
+    assert (
+        audio_mod._delivered_media_covers_item(streamdetails, delivered, reported)  # type: ignore[arg-type]
+        is covers
+    )
