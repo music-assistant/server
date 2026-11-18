@@ -115,6 +115,29 @@ def test_support_url_must_be_https() -> None:
         assert any("'support_url' must be" in issue for issue in _validate(manifest, "demo"))
 
 
+def test_valid_features_accepted() -> None:
+    """Declared features that are known ProviderFeature values produce no issues."""
+    manifest = _valid_manifest()
+    manifest["features"] = ["audio_source", "scrobble"]
+    assert _validate(manifest, "demo") == []
+    manifest["features"] = []
+    assert _validate(manifest, "demo") == []
+
+
+def test_features_breaking_the_rules_rejected() -> None:
+    """Features that are not a list of known, unique ProviderFeature values are reported."""
+    manifest = _valid_manifest()
+    manifest["features"] = "audio_source"
+    assert _validate(manifest, "demo") == ["'features' must be a list"]
+    manifest["features"] = ["audio_source", "teleport", "unknown", 1, "audio_source"]
+    assert _validate(manifest, "demo") == [
+        "feature 'teleport' is not a known ProviderFeature",
+        "feature 'unknown' is not a known ProviderFeature",
+        "feature '1' is not a known ProviderFeature",
+        "feature 'audio_source' is listed more than once",
+    ]
+
+
 def test_real_tree_is_clean() -> None:
     """Every shipped provider manifest passes validation."""
     assert find_violations() == []

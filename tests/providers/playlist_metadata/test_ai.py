@@ -104,11 +104,11 @@ async def provider(tmp_path: Path) -> AsyncGenerator[PlaylistMetadataProvider]:
     await provider.loaded_in_mass()
     with (
         patch(
-            "music_assistant.providers.playlist_metadata.ai.select_image_engine",
+            "music_assistant.providers.playlist_metadata.ai.resolve_image_engine_setting",
             AsyncMock(return_value=provider.test_engine),  # type: ignore[attr-defined]
         ),
         patch(
-            "music_assistant.providers.playlist_metadata.ai.select_ai_engine",
+            "music_assistant.providers.playlist_metadata.ai.resolve_ai_engine_setting",
             AsyncMock(return_value=provider.test_text_engine),  # type: ignore[attr-defined]
         ),
     ):
@@ -502,11 +502,11 @@ async def test_without_an_image_engine_nothing_is_generated(tmp_path: Path) -> N
     await provider.loaded_in_mass()
     with (
         patch(
-            "music_assistant.providers.playlist_metadata.ai.select_image_engine",
+            "music_assistant.providers.playlist_metadata.ai.resolve_image_engine_setting",
             AsyncMock(return_value=None),
         ),
         patch(
-            "music_assistant.providers.playlist_metadata.ai.select_ai_engine",
+            "music_assistant.providers.playlist_metadata.ai.resolve_ai_engine_setting",
             AsyncMock(return_value=None),
         ),
     ):
@@ -771,9 +771,9 @@ async def test_preview_leaves_the_description_out_when_descriptions_are_off(
 async def test_the_cover_key_names_the_text_engine_picked_for_the_concept(
     provider: PlaylistMetadataProvider,
 ) -> None:
-    """The key holds the engine the concept is written with, also before one was picked."""
+    """The key holds the engine the concept is written with, also when it follows the default."""
     _set_config(provider, **{CONF_USE_PROMPT_ENGINE: True, CONF_DESCRIPTIONS: False})
-    # nothing picked yet: the stored selection is empty until an engine is adopted
+    # nothing picked: the setting follows the default engine
     provider.config.get_value.side_effect = (  # type: ignore[attr-defined]
         lambda key, default=None: (
             None if key == CONF_TEXT_ENGINE else provider._test_config.get(key, default)  # type: ignore[attr-defined]
@@ -801,13 +801,60 @@ async def test_a_missing_concept_engine_keeps_the_current_cover(
     cover = playlist.image
 
     with patch(
-        "music_assistant.providers.playlist_metadata.ai.select_ai_engine",
+        "music_assistant.providers.playlist_metadata.ai.resolve_ai_engine_setting",
         AsyncMock(return_value=None),
     ):
         await _metadata(provider, playlist)
 
     assert playlist.image == cover
     assert _engine_calls(provider) == 1
+
+
+async def test_a_missing_default_concept_engine_keeps_the_current_cover(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """While the default text engine is away, a cover following it is kept as well."""
+    _set_config(
+        provider,
+        **{CONF_USE_PROMPT_ENGINE: True, CONF_DESCRIPTIONS: False, CONF_TEXT_ENGINE: "global"},
+    )
+    playlist = _smart_playlist()
+    await _metadata(provider, playlist)
+    cover = playlist.image
+    _mass(provider).config.get_raw_core_config_value = MagicMock(
+        return_value="openai_compatible--test/gone"
+    )
+
+    with patch(
+        "music_assistant.providers.playlist_metadata.ai.resolve_ai_engine_setting",
+        AsyncMock(return_value=None),
+    ):
+        await _metadata(provider, playlist)
+
+    assert playlist.image == cover
+    assert _engine_calls(provider) == 1
+
+
+async def test_without_any_text_engine_the_cover_uses_the_default_concept(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """Following the default before any text engine exists, covers are still generated."""
+    _set_config(
+        provider,
+        **{CONF_USE_PROMPT_ENGINE: True, CONF_DESCRIPTIONS: False, CONF_TEXT_ENGINE: "global"},
+    )
+    _mass(provider).config.get_raw_core_config_value = MagicMock(return_value=None)
+    playlist = _smart_playlist()
+
+    with patch(
+        "music_assistant.providers.playlist_metadata.ai.resolve_ai_engine_setting",
+        AsyncMock(return_value=None),
+    ):
+        await _metadata(provider, playlist)
+
+    assert _engine_calls(provider) == 1
+    assert _text_calls(provider) == 0
+    assert playlist.image is not None
 
 
 async def test_preview_asks_for_the_visual_concept_once(

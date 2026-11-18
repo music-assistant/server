@@ -78,7 +78,6 @@ if TYPE_CHECKING:
     )
     from aiosendspin.server.roles import SourceV1Role
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
-    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -135,10 +134,9 @@ class SendspinSourceProvider(PluginProvider):
         mass: MusicAssistant,
         manifest: ProviderManifest,
         config: ProviderConfig,
-        supported_features: set[ProviderFeature] | None = None,
     ) -> None:
         """Initialize the provider."""
-        super().__init__(mass, manifest, config, supported_features)
+        super().__init__(mass, manifest, config)
         self._clients: dict[str, _SourceClientState] = {}
         # Playback session of the last stream released per source, to tell a retry from a selection.
         self._released_playback_sessions: dict[str, str] = {}
