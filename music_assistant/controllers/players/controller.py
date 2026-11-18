@@ -42,7 +42,11 @@ from music_assistant.constants import (
     CONF_ANNOUNCE_TTS_ENGINE,
     CONF_VOLUME_STEP,
 )
-from music_assistant.helpers.plugin_engines import create_tts_engine_config_entries
+from music_assistant.helpers.plugin_engines import (
+    EngineKind,
+    EngineSetting,
+    create_tts_engine_config_entries,
+)
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -90,6 +94,7 @@ class PlayerController(
     """Controller holding all logic to control the players it owns."""
 
     domain: str = "players"
+    engine_settings = (EngineSetting(EngineKind.SPEECH, CONF_ANNOUNCE_TTS_ENGINE),)
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize core controller."""

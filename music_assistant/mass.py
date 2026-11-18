@@ -1488,6 +1488,7 @@ class MusicAssistant:
             self.statistics,
             self.storage,
             self.community_catalog,
+            self.ai,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):

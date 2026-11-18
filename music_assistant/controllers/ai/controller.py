@@ -4,10 +4,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from music_assistant_models.auth import Scope
+
 from music_assistant.constants import CONF_AI
+from music_assistant.helpers.api import api_command
 from music_assistant.helpers.plugin_engines import (
+    EngineInfo,
     EngineKind,
+    EngineUsage,
     create_default_engine_config_entries,
+    list_engine_usage,
+    list_engines,
 )
 from music_assistant.models.core_controller import CoreController
 
@@ -36,6 +43,20 @@ class AIController(CoreController):
             *await create_default_engine_config_entries(self.mass, EngineKind.SPEECH),
             *await create_default_engine_config_entries(self.mass, EngineKind.IMAGE),
         )
+
+    @api_command("ai/engines", required_scope=Scope.CONFIG_CORE_READ)
+    async def get_engines(self, kind: EngineKind | None = None) -> list[EngineInfo]:
+        """
+        Return the available engines, of one kind or of all kinds.
+
+        :param kind: The kind of engine to return, or None for all kinds.
+        """
+        return await list_engines(self.mass, kind)
+
+    @api_command("ai/usage", required_scope=Scope.CONFIG_CORE_READ)
+    async def get_usage(self) -> list[EngineUsage]:
+        """Return each engine setting of the core modules and providers, with its engine."""
+        return await list_engine_usage(self.mass)
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of the AI controller."""
