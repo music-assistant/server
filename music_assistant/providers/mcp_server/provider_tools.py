@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
+
+from music_assistant_models.provider import is_menu_action_label
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
 
@@ -14,6 +16,9 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+
+# a provider or instance name that is longer, or not one readable line, is shown by its id
+MAX_SHOWN_NAME_LENGTH: Final = 64
 
 
 def get_provider_tools(mass: MusicAssistant) -> list[MCPTool]:
@@ -46,15 +51,19 @@ def _provider_tool(declared: ProviderMCPTool, providers: list[ProviderInstanceTy
     :param providers: The instances of the provider the current user may use.
     """
     manifest = providers[0].manifest
+    origin = _shown_name(manifest.name, manifest.domain)
     declared_properties: dict[str, Any] = declared.input_schema.get("properties", {})
     properties: dict[str, Any] = {}
     required: list[str] = []
     if len(providers) > 1:
-        names = ", ".join(f'"{provider.instance_id}": {provider.name}' for provider in providers)
+        names = ", ".join(
+            f'"{provider.instance_id}": {_shown_name(provider.name, provider.instance_id)}'
+            for provider in providers
+        )
         properties["instance"] = {
             "type": "string",
             "enum": [provider.instance_id for provider in providers],
-            "description": f"The id of the {manifest.name} instance to use: {names}.",
+            "description": f"The id of the {origin} instance to use: {names}.",
         }
         required.append("instance")
     if declared.requires_player:
@@ -71,12 +80,13 @@ def _provider_tool(declared: ProviderMCPTool, providers: list[ProviderInstanceTy
             provider = next(p for p in providers if p.instance_id == instance_id)
         # the tool is built for the user who lists it, a call may act as another user
         if all(p.instance_id != provider.instance_id for p in mass.get_providers()):
-            raise ToolError(f"Not allowed: {provider.name} is not available to this user")
+            what = "that instance" if len(providers) > 1 else "this tool"
+            raise ToolError(f"Not allowed: {what} is not available to this user")
         player_id = None
         if declared.requires_player:
             player_id = _resolve_player(mass, arguments.pop("player")).player_id
         values = {
-            key: arguments.get(key, spec.get("default"))
+            key: arguments[key] if key in arguments else _default_value(spec)
             for key, spec in declared_properties.items()
         }
         result: object = await provider.handle_mcp_tool(declared.id, values, player_id)
@@ -90,8 +100,25 @@ def _provider_tool(declared: ProviderMCPTool, providers: list[ProviderInstanceTy
 
     return MCPTool(
         name=f"{manifest.domain}__{declared.id}",
-        description=f"{declared.description} (from the {manifest.name} provider)",
+        description=f"{declared.description} (from the {origin} provider)",
         scopes=(declared.scope,),
         input_schema={"type": "object", "properties": properties, "required": required},
         handler=run,
     )
+
+
+def _default_value(spec: dict[str, Any]) -> Any:
+    """Return the default of a declared argument, as a value of the call's own."""
+    default = spec.get("default")
+    # a provider may change the list it is handed, the manifest keeps its own
+    return list(default) if isinstance(default, list) else default
+
+
+def _shown_name(name: str, fallback: str) -> str:
+    """
+    Return a name as an assistant gets to read it.
+
+    :param name: The name of a provider or of one of its instances.
+    :param fallback: The id shown when the name is no short, readable line.
+    """
+    return name if is_menu_action_label(name, MAX_SHOWN_NAME_LENGTH) else fallback
