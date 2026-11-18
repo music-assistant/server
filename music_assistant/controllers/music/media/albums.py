@@ -794,7 +794,8 @@ class AlbumsController(MediaControllerBase[Album]):
         ]
         async with self.mass.music.database.deferred_commit():
             if release is not None:
-                await self._link_tracks_to_release(album, db_tracks, release)
+                merged = await self._link_tracks_to_release(album, db_tracks, release)
+                db_tracks = [x for x in db_tracks if x.item_id not in merged]
             if not link_providers:
                 return
             for domain, mapping in album_mappings.items():
@@ -1203,7 +1204,7 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def _link_tracks_to_release(
         self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease
-    ) -> None:
+    ) -> set[str]:
         """Fill the recording ids and ISRCs of a release in on the library tracks at its positions."""
         recordings = {
             (medium.position, track.position): track.recording
@@ -1212,7 +1213,10 @@ class AlbumsController(MediaControllerBase[Album]):
             if track.position and track.recording
         }
         in_order = await self._recordings_in_order(album, db_tracks, release)
+        merged: set[str] = set()
         for db_track in db_tracks:
+            if db_track.item_id in merged:
+                continue
             if (recording := in_order.get(db_track.item_id)) is None:
                 # a digital release stores its single disc as disc 0 or 1
                 recording = recordings.get((db_track.disc_number or 1, db_track.track_number))
@@ -1222,7 +1226,9 @@ class AlbumsController(MediaControllerBase[Album]):
             if not changed and db_track.metadata.last_musicbrainz_lookup is not None:
                 continue
             db_track.metadata.last_musicbrainz_lookup = int(time())
+            merged |= await self.mass.music.tracks.merge_recording_duplicates(db_track)
             await self.mass.music.tracks.update_item_in_library(db_track.item_id, db_track)
+        return merged
 
     async def _recordings_in_order(
         self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease
