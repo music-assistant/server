@@ -616,3 +616,38 @@ async def test_a_speaker_away_for_a_while_keeps_its_outputs_on_its_room(
     assert _player(_attached(provider, BAR)).player_id == bar_player
     assert scenario.player_of(own) == bar_player
     assert scenario.player_of(second) not in (None, bar_player)
+
+
+async def test_a_speaker_that_returns_to_the_room_it_left_is_the_rooms_again(
+    scenario: Scenario,
+) -> None:
+    """
+    A room takes back the outputs of its speaker once that returns from another room.
+
+    The outputs of the other speaker of the room, which it took meanwhile, go off it again.
+    """
+    provider = await _raumfeld(scenario)
+    dlna = await scenario.add_provider("dlna")
+    bar_pair = replace(BAR_SPEAKER, others=(BAR_SPEAKER_2.renderer_udn,))
+    await _sync(scenario, provider, {"Bar": bar_pair, "TV": TV_SPEAKER})
+    moved = _dlna_output(dlna, BAR_SPEAKER, "00:1e:c0:00:00:01")
+    stays = _dlna_output(dlna, BAR_SPEAKER_2, "00:1e:c0:00:00:02")
+    await scenario.register(moved)
+    await scenario.register(stays)
+    await scenario.idle()
+    bar_player = _player(_attached(provider, BAR)).player_id
+    with _no_device_reads(provider):
+        await _sync(
+            scenario,
+            provider,
+            {"Bar": BAR_SPEAKER_2, "TV": replace(TV_SPEAKER, others=(BAR_SPEAKER.renderer_udn,))},
+        )
+        await scenario.idle()
+        assert scenario.player_of(stays) == bar_player
+
+        await _sync(scenario, provider, {"Bar": bar_pair, "TV": TV_SPEAKER})
+        await scenario.idle()
+
+    assert _player(_attached(provider, BAR)).player_id == bar_player
+    assert scenario.player_of(moved) == bar_player
+    assert scenario.player_of(stays) not in (None, bar_player)
