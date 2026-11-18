@@ -680,8 +680,16 @@ class SendspinProvider(PlayerProvider):
         """
         if self._bridge_holders.get(client_id) == protocol_id:
             del self._bridge_holders[client_id]
-            for callback in self._bridge_waiters.pop(client_id, {}).values():
-                callback()
+            self.wake_bridge_waiters(client_id)
+
+    def wake_bridge_waiters(self, client_id: str) -> None:
+        """
+        Call back, once, the protocols that wait for a bridge client to be let go.
+
+        :param client_id: The bridge client id.
+        """
+        for callback in self._bridge_waiters.pop(client_id, {}).values():
+            callback()
 
     def wait_for_bridge_client(
         self, client_id: str, protocol_id: str, callback: Callable[[], None]

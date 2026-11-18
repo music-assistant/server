@@ -40,6 +40,8 @@ from .bridge_harness import (
     AIRPLAY_ID,
     CAST_CLIENT,
     CAST_ID,
+    OTHER_INTERFACE_AIRPLAY_CLIENT,
+    OTHER_INTERFACE_AIRPLAY_ID,
     OTHER_PLAYER_ID,
     PLAYER_ID,
     SAME_ID_AIRPLAY_ID,
@@ -599,15 +601,82 @@ async def test_a_bridge_that_stops_qualifying_takes_the_output_along_only_as_its
 # ---------------------------------------------------------------- one output per player
 
 
-async def test_bridges_on_players_of_their_own_each_have_an_output() -> None:
-    """Protocols on two players are two speakers, each with its own output."""
-    device = _device()
+@pytest.mark.parametrize(
+    ("airplay_id", "airplay_client"),
+    [
+        pytest.param(AIRPLAY_ID, AIRPLAY_CLIENT, id="one device"),
+        pytest.param(OTHER_INTERFACE_AIRPLAY_ID, OTHER_INTERFACE_AIRPLAY_CLIENT, id="two devices"),
+    ],
+)
+async def test_bridges_on_players_of_their_own_have_one_output_per_device(
+    airplay_id: str, airplay_client: str
+) -> None:
+    """
+    Protocols on two players get an output each, unless they are of one device.
+
+    The other form of the MAC address of a device is the same device: its second player
+    gets no output while the first one has the output of the device.
+    """
+    device = _device(airplay_id=airplay_id)
     await device.attach(device.airplay)
     await device.attach(device.squeezelite, device.other_player)
 
-    assert set(device.outputs()) == {AIRPLAY_CLIENT, SQUEEZELITE_CLIENT}
+    if airplay_client == AIRPLAY_CLIENT:
+        assert set(device.outputs()) == {AIRPLAY_CLIENT}, "a device has a second output"
+        assert device.manager_of(device.squeezelite).get_bridge(SQUEEZELITE_ID) is None
+        assert device.manager_of(device.squeezelite).bridge_client_id(device.squeezelite) is None
+    else:
+        assert set(device.outputs()) == {airplay_client, SQUEEZELITE_CLIENT}
+        assert device.outputs()[SQUEEZELITE_CLIENT]["player_id"] == OTHER_PLAYER_ID
+        assert device.manager_of(device.squeezelite).get_bridge(SQUEEZELITE_ID) is not None
+
+
+async def test_a_device_split_over_two_players_and_merged_back_has_one_output() -> None:
+    """Taking squeezelite off an AirPlay speaker and back leaves the speaker its one output."""
+    device = _device()
+    await device.attach(device.airplay)
+    await device.attach(device.squeezelite)
+    assert device.state() == ("airplay", AIRPLAY_CLIENT, "airplay", "on")
+    device.timeline.clear()
+
+    # unlinked: squeezelite on a player of its own
+    await device.detach(device.squeezelite)
+    await device.attach(device.squeezelite, device.other_player)
+
+    assert device.timeline == [], "the bridge registered the other form of the id of the device"
+    # a merge is refused while both players have a Sendspin output stored
+    assert [
+        output_id
+        for output_id, record in device.outputs().items()
+        if record["player_id"] == OTHER_PLAYER_ID
+    ] == []
+
+    await device.link(device.squeezelite)
+
+    assert device.state() == ("airplay", AIRPLAY_CLIENT, "airplay", "on")
+    assert device.manager_of(device.squeezelite).bridge_client_id(device.squeezelite) == (
+        AIRPLAY_CLIENT
+    )
+
+
+async def test_a_split_off_player_gets_the_output_once_the_player_of_the_device_is_gone() -> None:
+    """The player left of a device takes the id once the one that had the output is removed."""
+    device = _device()
+    await device.attach(device.airplay)
+    await device.attach(device.squeezelite, device.other_player)
+    assert set(device.outputs()) == {AIRPLAY_CLIENT}
+
+    # removed for good, in the order of the players controller: the protocols are detached,
+    # everything stored of the player is deleted, then the provider removes the protocol
+    await device.detach(device.airplay)
+    for protocol_id in (AIRPLAY_ID, AIRPLAY_CLIENT):
+        device.records().pop(protocol_id)
+    device.config.data["players"].pop(PLAYER_ID)
+    await device.manager_of(device.airplay).remove_bridge(AIRPLAY_ID, permanent=True)
+    await asyncio.wait_for(_until(lambda: SQUEEZELITE_CLIENT in device.outputs()), timeout=1)
+
     assert device.outputs()[SQUEEZELITE_CLIENT]["player_id"] == OTHER_PLAYER_ID
-    assert device.manager_of(device.squeezelite).get_bridge(SQUEEZELITE_ID) is not None
+    assert device.timeline[-1] == ("registered", "squeezelite")
 
 
 async def test_a_bridge_does_not_register_the_output_of_another_player() -> None:

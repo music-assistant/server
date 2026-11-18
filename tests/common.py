@@ -224,6 +224,7 @@ def use_real_bridge_holders(sendspin_provider: Any) -> None:
         "release_bridge_client",
         "wait_for_bridge_client",
         "stop_waiting_for_bridge_client",
+        "wake_bridge_waiters",
         "bridge_lock",
     ):
         method = MethodType(getattr(SendspinProvider, name), sendspin_provider)

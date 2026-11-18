@@ -44,6 +44,7 @@ from .constants import (
     CONF_SENDSPIN_CAST_OPT_IN,
     CONF_SENDSPIN_STATIC_DELAY,
 )
+from .helpers import bridge_client_id_variants
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -301,14 +302,12 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
                 self._hold_client(protocol)
                 self._remove_bridge_on_detach(protocol)
                 return
-            if client_id and self._is_held_by_another_player(protocol, client_id):
-                # its output is not stored yet, so no other check sees whose it is
+            if client_id and (taken_id := self._taken_by_another_player(protocol, client_id)):
+                # a bridge of another player registered it meanwhile
                 self.logger.debug(
-                    "Not bridging %s: a bridge of another player registered %s",
-                    protocol.display_name,
-                    client_id,
+                    "Not bridging %s: another player has %s", protocol.display_name, taken_id
                 )
-                self._evaluate_on_release(protocol, client_id)
+                self._evaluate_on_release(protocol, taken_id)
                 return
             bridge: BridgeT | None = None
             try:
@@ -351,6 +350,9 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             removed_any = await self._remove_client_protocol(protocol_id, client_id) or removed_any
         if client_id and (sendspin_provider := self.sendspin_provider):
             sendspin_provider.release_bridge_client(client_id, protocol_id)
+            if permanent:
+                # its player may be gone for good, with the output another player waited for
+                sendspin_provider.wake_bridge_waiters(client_id)
         if removed_any:
             self.logger.debug("Sendspin bridge removed for protocol %s", protocol_id)
 
@@ -489,16 +491,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             return output_id
         if (client_id := self._own_client_id(protocol)) is None:
             return None
-        player = protocol.player
-        record = self.mass.config.get_protocol_record(client_id)
-        other_player_id = record.get("player_id") if isinstance(record, dict) else None
-        if (
-            player is not None
-            and isinstance(other_player_id, str)
-            and other_player_id != player.player_id
-            and self.mass.config.get(f"{CONF_PLAYERS}/{other_player_id}")
-        ):
-            # the id is that of the Sendspin output of another player
+        if self._taken_by_another_player(protocol, client_id):
             return None
         return client_id
 
@@ -532,29 +525,59 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         ):
             sendspin_provider.release_bridge_client(client_id, protocol.protocol_id)
 
-    def _is_held_by_another_player(self, protocol: PlayerProtocol, client_id: str) -> bool:
+    def _taken_by_another_player(self, protocol: PlayerProtocol, client_id: str) -> str | None:
         """
-        Return whether the bridge of a protocol of another player holds a client id.
+        Return the form of a client id that another player has, if one has it.
 
-        :param protocol: The protocol to bridge, which is attached to its player.
+        That is the id of the stored Sendspin output of another player, or of the client a
+        bridge of another player holds, in either form of the MAC address of the device.
+
+        :param protocol: The protocol to bridge.
         :param client_id: The client id its bridge would register under.
         """
+        if (player := protocol.player) is None:
+            return None
+        own_protocol_ids = {
+            *player.attached_protocols,
+            *self.mass.config.get_protocol_ids_of_player(player.player_id),
+        }
         sendspin_provider = self.sendspin_provider
-        holder = sendspin_provider.get_bridge_holder(client_id) if sendspin_provider else None
-        if holder is None or (player := protocol.player) is None:
-            return False
-        return holder not in player.attached_protocols and holder not in (
-            self.mass.config.get_protocol_ids_of_player(player.player_id)
-        )
+        for variant in bridge_client_id_variants(client_id):
+            record = self.mass.config.get_protocol_record(variant)
+            owner_id = record.get("player_id") if isinstance(record, dict) else None
+            if (
+                isinstance(owner_id, str)
+                and owner_id != player.player_id
+                and self.mass.config.get(f"{CONF_PLAYERS}/{owner_id}")
+            ):
+                return variant
+            holder = sendspin_provider.get_bridge_holder(variant) if sendspin_provider else None
+            if holder is not None and holder not in own_protocol_ids:
+                return variant
+        return None
+
+    def _wait_for_owner(self, protocol: PlayerProtocol) -> None:
+        """
+        Evaluate the bridge of a protocol again once another player lets go of its client id.
+
+        Nothing happens when no other player has it.
+
+        :param protocol: The protocol to bridge, which is attached to its player.
+        """
+        if (client_id := self._own_client_id(protocol)) and (
+            taken_id := self._taken_by_another_player(protocol, client_id)
+        ):
+            self._evaluate_on_release(protocol, taken_id)
 
     def _evaluate_on_release(self, protocol: PlayerProtocol, client_id: str) -> None:
         """
-        Evaluate the bridge of a protocol again once the bridge that holds its client id lets go.
+        Evaluate the bridge of a protocol again once another player lets go of a client id.
 
-        Nothing happens when the protocol was detached before.
+        That is when the bridge that holds it lets go, or the protocol it rides on is removed
+        for good. Nothing happens when the protocol was detached before.
 
         :param protocol: The protocol to bridge, which is attached to its player.
-        :param client_id: The client id its bridge registers under.
+        :param client_id: The client id another player has.
         """
         if (sendspin_provider := self.sendspin_provider) is None:
             return
@@ -874,6 +897,7 @@ def _settle_carrier(
             manager._client_ids[protocol.protocol_id] = client_id
         else:
             manager._client_ids.pop(protocol.protocol_id, None)
+            manager._wait_for_owner(protocol)
     stored_carrier_id = (
         mass.config.get_protocol_value(stored_id, CONF_UNDERLYING_PLAYER_ID) if stored_id else None
     )
