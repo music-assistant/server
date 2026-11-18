@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from aiohttp import ClientError
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 
 from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS
 from music_assistant.providers.bookorbit import BookOrbitProvider
@@ -667,13 +667,13 @@ async def test_provider_sync_playlog_uses_playlog_and_continue_listening(
 
 @pytest.mark.asyncio
 async def test_provider_sync_playlog_swallows_errors(provider: BookOrbitProvider) -> None:
-    """A failing playlog sync never propagates to sync_library."""
+    """Expected playlog sync failures never propagate to sync_library."""
     with (
         patch.object(provider, "_playlog_candidate_book_ids", AsyncMock(return_value={1})),
         patch(
             "music_assistant.providers.bookorbit.sync_playlog",
             new_callable=AsyncMock,
-            side_effect=RuntimeError("boom"),
+            side_effect=ProviderUnavailableError("boom"),
         ),
     ):
         await provider._sync_playlog_from_bookorbit()
