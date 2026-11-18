@@ -549,6 +549,99 @@ async def test_a_replaced_provider_object_starts_with_slots_of_its_own() -> None
         pass
 
 
+async def test_a_wait_in_line_keeps_the_slot_for_its_queue() -> None:
+    """A queue that waited in line finds the slot kept for it, ahead of a later taker."""
+    provider = _make_provider(_SingleStreamProvider)
+    granted: list[str] = []
+    give_back = asyncio.Event()
+    source = asyncio.create_task(_take(provider, granted, "source", "queue_a", give_back))
+    await asyncio.sleep(0)
+    waiting = asyncio.create_task(provider.wait_for_stream_slot(5, "queue_b", lambda: False))
+    await _turns()
+    later = asyncio.create_task(_take(provider, granted, "later"))
+    await _turns()
+
+    give_back.set()
+    await source
+    await asyncio.wait_for(waiting, 1)
+    await _turns()
+
+    assert granted == ["source"]
+    assert provider.stream_slot_reservations == ("queue_b",)
+    async with provider.acquire_stream_slot(0, queue_id="queue_b"):
+        granted.append("queue_b")
+    await asyncio.wait_for(later, 1)
+    assert granted == ["source", "queue_b", "later"]
+
+
+async def test_a_wait_in_line_is_refused_once_a_holder_has_audio() -> None:
+    """A wait is asked again when a source takes the slot and when it gets audio, not before."""
+    provider = _make_provider(_SingleStreamProvider)
+    async with provider.acquire_stream_slot(0, queue_id="queue_a", reserve=lambda: True):
+        pass
+    asked: list[bool] = []
+    holder = MagicMock(ready=asyncio.Event())
+
+    def _refuse() -> bool:
+        asked.append(holder.ready.is_set())
+        if holder.ready.is_set():
+            raise ProviderStreamLimitError(provider, None)
+        return False
+
+    waiting = asyncio.create_task(provider.wait_for_stream_slot(5, "queue_b", _refuse))
+    await _turns()
+    assert asked == []
+    async with provider.acquire_stream_slot(0, holder, queue_id="queue_a"):
+        await _turns()
+        assert asked == [False]
+        holder.ready.set()
+        with pytest.raises(ProviderStreamLimitError):
+            await asyncio.wait_for(waiting, 1)
+
+    assert asked == [False, True]
+    assert _in_line(provider) == 0
+    assert provider.has_available_stream_slot
+    assert provider.stream_slot_reservations == ()
+
+
+async def test_a_wait_in_line_that_is_given_up_leaves_without_a_slot() -> None:
+    """A wait that ends without a slot leaves the line, and the slot goes to who waits next."""
+    provider = _make_provider(_SingleStreamProvider)
+    granted: list[str] = []
+    async with provider.acquire_stream_slot(0, queue_id="queue_a", reserve=lambda: True):
+        pass
+    waiting = asyncio.create_task(provider.wait_for_stream_slot(5, "queue_b", lambda: True))
+    await _turns()
+    later = asyncio.create_task(_take(provider, granted, "later"))
+    await _turns()
+
+    async with provider.acquire_stream_slot(0, MagicMock(ready=asyncio.Event()), "queue_a"):
+        await asyncio.wait_for(waiting, 1)
+        assert _in_line(provider) == 1
+    await asyncio.wait_for(later, 1)
+
+    assert granted == ["later"]
+    assert provider.stream_slot_reservations == ()
+
+
+async def test_a_wait_in_line_that_times_out_leaves_nothing_behind() -> None:
+    """A wait in line that runs out of time leaves the line and keeps nothing."""
+    provider = _make_provider(_SingleStreamProvider)
+    granted: list[str] = []
+    give_back = asyncio.Event()
+    source = asyncio.create_task(_take(provider, granted, "source", "queue_a", give_back))
+    await asyncio.sleep(0)
+
+    with pytest.raises(ProviderStreamLimitError):
+        await provider.wait_for_stream_slot(0.05, "queue_b", lambda: False)
+    give_back.set()
+    await source
+
+    assert _in_line(provider) == 0
+    assert provider.has_available_stream_slot
+    assert provider.stream_slot_reservations == ()
+
+
 def _listing(*positions: int) -> list[MagicMock]:
     """Return a mocked listing page whose items carry the given playlist positions."""
     return [MagicMock(position=position) for position in positions]

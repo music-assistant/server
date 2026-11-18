@@ -12,6 +12,7 @@ loads ahead of playback.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncGenerator
 from functools import partial
 from types import SimpleNamespace
@@ -267,6 +268,44 @@ async def test_a_preview_that_waits_does_not_take_the_stream_at_a_seek(rig: Slot
     assert rig.fills(capture)
     with pytest.raises(ProviderStreamLimitError):
         await preview
+
+
+async def test_another_queue_does_not_take_the_stream_at_a_skip_to_another_account(
+    rig: SlotRig,
+) -> None:
+    """A skip to a track known on another account of the service plays from this account."""
+    playing, target = rig.play("track 0", "track 1")
+    resolved = target.streamdetails
+    assert target.media_item is not None
+    target.streamdetails = None
+    # the account the track was added from is gone; this account serves the same item id
+    target.media_item.provider_mappings = {
+        ProviderMapping(
+            item_id=target.media_item.item_id,
+            provider_domain="single",
+            provider_instance="single--account_gone",
+            audio_format=PCM_FORMAT,
+        )
+    }
+    rig.provider.get_stream_details = AsyncMock(return_value=resolved)  # type: ignore[method-assign]
+    await rig.ask(playing)
+    (other,) = rig.play("track 7", queue_id=OTHER_QUEUE_ID, session_id="session-b")
+    allow_starts(rig)
+    other_started = count_starts(rig, "track 7")
+
+    async def _load(queue_item: QueueItem, **_kwargs: object) -> None:
+        # what the start of a track does first: stop the sources in its way
+        await rig.queues._abort_superseded_source_buffers(queue_item)
+        with contextlib.suppress(ProviderStreamLimitError):
+            await rig.ask(other, wait=0)
+        await rig.ask(queue_item, wait=0)
+
+    rig.queues._load_item = AsyncMock(side_effect=_load)  # type: ignore[method-assign]
+
+    await rig.queues.play_index(QUEUE_ID, 1)
+
+    assert rig.fills(rig.buffer(target))
+    assert other_started == []
 
 
 # --- nothing is kept where the queue does not go on
@@ -724,6 +763,73 @@ async def test_a_start_behind_a_source_without_audio_yet_is_refused_once_it_has_
     with pytest.raises(ProviderStreamHeldError, match="already playing on Queue A"):
         await asyncio.wait_for(asking, SOON)
     assert other_started == []
+
+
+async def test_a_start_that_waits_for_a_kept_stream_is_served_before_a_later_preview(
+    rig: SlotRig,
+) -> None:
+    """A start keeps its place in line while the stream is kept, and plays when it is let go."""
+    ended = await _play_through(rig, "track 0", "track 1")
+    (other,) = rig.play("track 7", queue_id=OTHER_QUEUE_ID, session_id="session-b")
+    await _source_ends(rig, ended)
+    asking = asyncio.create_task(rig.ask(other, wait=LONG_WAIT))
+    await _turns()
+    preview = asyncio.create_task(_preview(rig, LONG_WAIT))
+    await _turns()
+
+    rig.provider.end_stream_slot_reservation(QUEUE_ID)
+    buffer = await asyncio.wait_for(asking, SOON)
+
+    assert buffer is not None
+    assert rig.fills(buffer)
+    assert not preview.done()
+    preview.cancel()
+    await asyncio.gather(preview, return_exceptions=True)
+
+
+async def test_a_start_behind_a_source_that_fails_is_served_before_a_later_preview(
+    rig: SlotRig,
+) -> None:
+    """A start that waits for a source without audio yet gets the slot when that source fails."""
+    (playing,) = rig.play("track 0")
+    breaks_off = asyncio.Event()
+    rig.sources["track 0"] = partial(source, 0, 0, breaks_off, fails=True)
+    starting = asyncio.create_task(rig.ask(playing))
+    await _turns()
+    (other,) = rig.play("track 7", queue_id=OTHER_QUEUE_ID, session_id="session-b")
+    asking = asyncio.create_task(rig.ask(other, wait=LONG_WAIT))
+    await _turns()
+    preview = asyncio.create_task(_preview(rig, LONG_WAIT))
+    await _turns()
+
+    breaks_off.set()
+    await asyncio.gather(starting, return_exceptions=True)
+    buffer = await asyncio.wait_for(asking, SOON)
+
+    assert buffer is not None
+    assert rig.fills(buffer)
+    assert not preview.done()
+    preview.cancel()
+    await asyncio.gather(preview, return_exceptions=True)
+
+
+async def test_a_start_that_is_given_up_while_it_waits_leaves_the_line(rig: SlotRig) -> None:
+    """A start that is cancelled while the stream is kept leaves no wait and opens nothing."""
+    ended = await _play_through(rig, "track 0", "track 1")
+    (other,) = rig.play("track 7", queue_id=OTHER_QUEUE_ID, session_id="session-b")
+    await _source_ends(rig, ended)
+    asking = asyncio.create_task(rig.ask(other, wait=LONG_WAIT))
+    await _turns()
+
+    asking.cancel()
+    await asyncio.gather(asking, return_exceptions=True)
+    rig.provider.end_stream_slot_reservation(QUEUE_ID)
+    await _turns()
+
+    # the slot that came free is neither taken nor kept for the start that was given up
+    assert rig.provider.stream_slot_holders == ()
+    assert rig.provider.stream_slot_reservations == ()
+    assert rig.opened["track 7"] == 0
 
 
 async def test_a_start_behind_a_source_that_loads_ahead_waits_in_line_for_the_slot(
