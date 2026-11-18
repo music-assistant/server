@@ -1,8 +1,10 @@
 """Exercise Jellyfin playlist editing through its authenticated HTTP contract."""
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
+from copy import copy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest import mock
@@ -12,8 +14,9 @@ import pytest
 from aiohttp import web
 from aiojellyfin import Connection
 from aiojellyfin.session import SessionConfiguration
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import Playlist
 
 from music_assistant.providers.jellyfin import SUPPORTED_FEATURES, JellyfinProvider
 
@@ -28,61 +31,7 @@ async def playlist_server(
     aiohttp_server: AiohttpServer, mass: MusicAssistant
 ) -> AsyncGenerator[tuple[JellyfinProvider, dict[str, Any]]]:
     """Serve a duplicate-containing playlist and the connected user's permissions."""
-    track = json.loads((Path(__file__).parent / "fixtures/tracks/do_i_wanna_know.json").read_text())
-    track["Id"] = "same-track"
-    state: dict[str, Any] = {
-        "items": [{**track, "PlaylistItemId": f"entry-{i}"} for i in range(105)],
-        "can_edit": True,
-        "status": 200,
-        "writes": [],
-        "reads": [],
-    }
-
-    async def permissions(request: web.Request) -> web.Response:
-        assert request.match_info["user_id"] == "own-user"
-        if state["status"] != 200:
-            return web.Response(status=state["status"])
-        return web.json_response({"UserId": "own-user", "CanEdit": state["can_edit"]})
-
-    async def items(request: web.Request) -> web.Response:
-        assert 'Token="test-token"' in request.headers["Authorization"]
-        if request.method == "GET":
-            assert request.query.get("userId", "own-user") == "own-user"
-            start = int(request.query.get("startIndex", 0))
-            limit = int(request.query.get("limit", 100))
-            state["reads"].append(start)
-            return web.json_response(
-                {
-                    "Items": state["items"][start : start + limit],
-                    "TotalRecordCount": len(state["items"]),
-                    "StartIndex": start,
-                }
-            )
-        if not state["can_edit"]:
-            return web.Response(status=403)
-        if state["status"] != 200:
-            return web.Response(status=state["status"])
-        state["writes"].append((request.method, dict(request.query)))
-        if request.method == "POST":
-            assert request.query["userId"] == "own-user"
-            state["items"].extend(
-                {**track, "Id": item, "PlaylistItemId": f"added-{index}"}
-                for index, item in enumerate(request.query["ids"].split(","))
-            )
-        else:
-            removed = request.query["entryIds"].split(",")
-            state["items"] = [x for x in state["items"] if x["PlaylistItemId"] not in removed]
-        return web.Response(status=204)
-
-    async def metadata(_request: web.Request) -> web.Response:
-        return web.json_response(
-            {"Id": "playlist", "Name": "Test", "Type": "Playlist", "ImageTags": {}}
-        )
-
-    app = web.Application()
-    app.router.add_get("/jellyfin/Users/own-user/Items/playlist", metadata)
-    app.router.add_get("/jellyfin/Playlists/playlist/Users/{user_id}", permissions)
-    app.router.add_route("*", "/jellyfin/Playlists/playlist/Items", items)
+    app, state = _playlist_app()
     server = await aiohttp_server(app)
     async with aiohttp.ClientSession() as session:
         config = SessionConfiguration(
@@ -95,6 +44,7 @@ async def playlist_server(
         )
         provider = object.__new__(JellyfinProvider)
         provider.mass = mass
+        provider._playlist_permission_semaphore = asyncio.Semaphore(5)
         provider.logger = logging.getLogger("test.jellyfin")
         provider.config = mock.Mock(instance_id="jellyfin--playlist-test")
         provider.manifest = mock.Mock(domain="jellyfin", name="Jellyfin")
@@ -159,6 +109,7 @@ async def test_missing_permission_is_readonly(
 async def test_permission_revoked(playlist_server: tuple[JellyfinProvider, dict[str, Any]]) -> None:
     """Let the server reject a write when permission changed after listing."""
     provider, state = playlist_server
+    assert (await provider.get_playlist("playlist")).is_editable
     state["can_edit"] = False
     with pytest.raises(aiohttp.ClientResponseError, match="403"):
         await provider.add_playlist_tracks("playlist", ["track-a"])
@@ -211,3 +162,276 @@ async def test_edit_invalidates_all_playlist_pages(
     assert state["reads"] == [0, 0, 100]
     assert await cache.get("sync-tracks", provider=provider.instance_id, category=1) == ["keep"]
     assert await cache.get("other-playlist", provider=provider.instance_id) == ["keep"]
+
+
+async def test_large_append_is_batched(
+    playlist_server: tuple[JellyfinProvider, dict[str, Any]],
+) -> None:
+    """Append hundreds of real-sized IDs in order without oversized request lines."""
+    provider, state = playlist_server
+    ids = [f"{index:032x}" for index in range(305)]
+    await provider.add_playlist_tracks("playlist", ids)
+    assert [x["Id"] for x in state["items"]][-305:] == ids
+    assert len(state["writes"]) > 1
+    assert max(state["request_sizes"]) < 8192
+
+
+async def test_large_removal_resolves_before_batches(
+    playlist_server: tuple[JellyfinProvider, dict[str, Any]],
+) -> None:
+    """Resolve every occurrence before any mutation can shift later positions."""
+    provider, state = playlist_server
+    original = [{**state["items"][0], "PlaylistItemId": f"{index:032x}"} for index in range(550)]
+    state["items"] = original.copy()
+    await provider.remove_playlist_tracks("playlist", tuple(range(1, 501)))
+    assert state["items"] == original[500:]
+    assert len(state["writes"]) > 1
+    assert state["reads_at_write"] == [5] * len(state["writes"])
+    assert max(state["request_sizes"]) < 8192
+
+
+@pytest.mark.parametrize("status", [200, 403, 404])
+async def test_permission_cache_shared_by_read_paths(
+    playlist_server: tuple[JellyfinProvider, dict[str, Any]], status: int
+) -> None:
+    """Reuse positive and negative permissions across detail, search and library reads."""
+    provider, state = playlist_server
+    state["status"] = status
+    first = await provider.get_playlist("playlist-0")
+    await _wait_for_permission_cache(provider, ["playlist-0"])
+    search = await provider.search("first", [MediaType.PLAYLIST], 12)
+    await _wait_for_permission_cache(provider, [p["Id"] for p in state["playlists"]])
+    assert len(state["permission_reads"]) == 12
+    library = [item async for item in provider.get_library_playlists()]
+    assert len(state["permission_reads"]) == 12
+    again = await provider.search("second", [MediaType.PLAYLIST], 12)
+    assert [p.item_id for p in search.playlists] == [p["Id"] for p in state["playlists"]]
+    assert [p.item_id for p in library] == [p.item_id for p in search.playlists]
+    assert all(
+        isinstance(p, Playlist) and p.is_editable == (status == 200)
+        for p in [first, *library, *again.playlists]
+    )
+    assert len(state["permission_reads"]) == 12
+
+
+@pytest.mark.parametrize("read_path", ["search", "library"])
+async def test_listing_permissions_have_bounded_concurrency(
+    playlist_server: tuple[JellyfinProvider, dict[str, Any]], read_path: str
+) -> None:
+    """Overlap permission round trips without exceeding five in-flight requests."""
+    provider, state = playlist_server
+    gate = asyncio.Event()
+    state["permission_gate"] = gate
+
+    async def read() -> list[str]:
+        if read_path == "search":
+            result = await provider.search("test", [MediaType.PLAYLIST], 12)
+            return [item.item_id for item in result.playlists]
+        return [item.item_id async for item in provider.get_library_playlists()]
+
+    task = asyncio.create_task(read())
+    try:
+        await asyncio.wait_for(state["permission_parallel"].wait(), timeout=2)
+        assert 1 < state["permission_peak"] <= 5
+    finally:
+        gate.set()
+        result = await task
+    assert result == [p["Id"] for p in state["playlists"]]
+    assert state["permission_peak"] <= 5
+
+
+def _playlist_app() -> tuple[web.Application, dict[str, Any]]:
+    """Build the HTTP fixture for playlist edits and permission listings."""
+    track = json.loads((Path(__file__).parent / "fixtures/tracks/do_i_wanna_know.json").read_text())
+    track["Id"] = "same-track"
+    state: dict[str, Any] = {
+        "items": [{**track, "PlaylistItemId": f"entry-{i}"} for i in range(105)],
+        "can_edit": True,
+        "status": 200,
+        "writes": [],
+        "reads": [],
+        "permission_reads": [],
+        "permission_active": 0,
+        "permission_peak": 0,
+        "permission_parallel": asyncio.Event(),
+        "permission_gate": None,
+        "request_sizes": [],
+        "reads_at_write": [],
+        "fail_write_number": None,
+        "playlists": [
+            {
+                "Id": f"playlist-{index}",
+                "Name": f"Test {index}",
+                "Type": "Playlist",
+                "ImageTags": {},
+            }
+            for index in range(12)
+        ],
+    }
+
+    async def permissions(request: web.Request) -> web.Response:
+        user_id = request.match_info["user_id"]
+        state["permission_reads"].append(request.match_info["playlist_id"])
+        state["permission_active"] += 1
+        state["permission_peak"] = max(state["permission_peak"], state["permission_active"])
+        if state["permission_active"] > 1:
+            state["permission_parallel"].set()
+        try:
+            if state["permission_gate"] is not None:
+                await state["permission_gate"].wait()
+            if state["status"] != 200:
+                return web.Response(status=state["status"])
+            return web.json_response(
+                {
+                    "UserId": user_id,
+                    "CanEdit": state["can_edit"] if user_id == "own-user" else False,
+                }
+            )
+        finally:
+            state["permission_active"] -= 1
+
+    async def items(request: web.Request) -> web.Response:
+        assert 'Token="test-token"' in request.headers["Authorization"]
+        if request.method == "GET":
+            assert request.query.get("userId", "own-user") == "own-user"
+            start = int(request.query.get("startIndex", 0))
+            limit = int(request.query.get("limit", 100))
+            state["reads"].append(start)
+            return web.json_response(
+                {
+                    "Items": state["items"][start : start + limit],
+                    "TotalRecordCount": len(state["items"]),
+                    "StartIndex": start,
+                }
+            )
+        state["request_sizes"].append(len(request.raw_path.encode()))
+        if len(request.raw_path.encode()) > 8192:
+            return web.Response(status=414)
+        if state["fail_write_number"] == len(state["writes"]) + 1:
+            return web.Response(status=503)
+        if not state["can_edit"]:
+            return web.Response(status=403)
+        if state["status"] != 200:
+            return web.Response(status=state["status"])
+        state["reads_at_write"].append(len(state["reads"]))
+        state["writes"].append((request.method, dict(request.query)))
+        if request.method == "POST":
+            assert request.query["userId"] == "own-user"
+            state["items"].extend(
+                {**track, "Id": item, "PlaylistItemId": f"added-{index}"}
+                for index, item in enumerate(request.query["ids"].split(","))
+            )
+        else:
+            removed = request.query["entryIds"].split(",")
+            state["items"] = [x for x in state["items"] if x["PlaylistItemId"] not in removed]
+        return web.Response(status=204)
+
+    async def metadata(request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "Id": request.match_info["playlist_id"],
+                "Name": "Test",
+                "Type": "Playlist",
+                "ImageTags": {},
+            }
+        )
+
+    async def listing(request: web.Request) -> web.Response:
+        if not request.query:
+            return await folders(request)
+        rows = state["playlists"]
+        start = int(request.query.get("startIndex", 0))
+        limit = int(request.query.get("limit", 100))
+        return web.json_response(
+            {
+                "Items": rows[start : start + limit],
+                "TotalRecordCount": len(rows),
+                "StartIndex": start,
+            }
+        )
+
+    async def folders(_request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "Items": [{"Id": "folder", "Name": "Playlists", "CollectionType": "playlists"}],
+                "TotalRecordCount": 1,
+                "StartIndex": 0,
+            }
+        )
+
+    app = web.Application()
+    app.router.add_get("/jellyfin/Users/{user_id}/Items/{playlist_id}", metadata)
+    app.router.add_get("/jellyfin/Items", listing)
+    app.router.add_get("/jellyfin/Playlists/{playlist_id}/Users/{user_id}", permissions)
+    app.router.add_route("*", "/jellyfin/Playlists/playlist/Items", items)
+    return app, state
+
+
+async def _wait_for_permission_cache(provider: JellyfinProvider, ids: list[str]) -> None:
+    """Wait for use_cache's background writes before testing a subsequent cache hit."""
+    async with asyncio.timeout(3):
+        for item_id in ids:
+            while (
+                await provider.mass.cache.get(
+                    f"_can_edit_playlist.{item_id}", provider=provider.instance_id
+                )
+                is None
+            ):
+                await asyncio.sleep(0.01)
+
+
+@pytest.mark.parametrize("operation", ["add", "remove"])
+async def test_failed_later_batch_invalidates_cache(
+    playlist_server: tuple[JellyfinProvider, dict[str, Any]], operation: str
+) -> None:
+    """Expose a partial edit after a later batch fails, without continuing to write."""
+    provider, state = playlist_server
+    if operation == "add":
+        page, before_count, after_count = 1, 5, 100
+    else:
+        state["items"] = [
+            {**state["items"][0], "PlaylistItemId": f"{index:032x}"} for index in range(305)
+        ]
+        page, before_count, after_count = 2, 100, 5
+    assert len(await provider.get_playlist_tracks("playlist", page)) == before_count
+    state["fail_write_number"] = 2
+    edit = (
+        provider.add_playlist_tracks("playlist", [f"{index:032x}" for index in range(205)])
+        if operation == "add"
+        else provider.remove_playlist_tracks("playlist", tuple(range(1, 206)))
+    )
+    with pytest.raises(aiohttp.ClientResponseError, match="503"):
+        await edit
+    assert len(state["writes"]) == 1
+    assert len(state["request_sizes"]) == 2
+    assert len(await provider.get_playlist_tracks("playlist", page)) == after_count
+
+
+async def test_invalid_late_position_makes_no_batched_removal(
+    playlist_server: tuple[JellyfinProvider, dict[str, Any]],
+) -> None:
+    """Validate the entire selection before deleting even the first batch."""
+    provider, state = playlist_server
+    state["items"] = [
+        {**state["items"][0], "PlaylistItemId": f"{index:032x}"} for index in range(305)
+    ]
+    with pytest.raises(InvalidDataError):
+        await provider.remove_playlist_tracks("playlist", (*range(1, 301), 999))
+    assert not state["writes"]
+    assert len(state["items"]) == 305
+
+
+async def test_permission_cache_isolated_between_accounts(
+    playlist_server: tuple[JellyfinProvider, dict[str, Any]],
+) -> None:
+    """A cached owner permission must not make another account's playlist editable."""
+    provider, state = playlist_server
+    assert (await provider.get_playlist("playlist-0")).is_editable
+    await _wait_for_permission_cache(provider, ["playlist-0"])
+    other = copy(provider)
+    other.config = mock.Mock(instance_id="jellyfin--other-account")
+    other._client = Connection(provider._client._session_config, "other-user", "other-token")
+    assert not (await other.get_playlist("playlist-0")).is_editable
+    await _wait_for_permission_cache(other, ["playlist-0"])
+    assert (await provider.get_playlist("playlist-0")).is_editable
+    assert len(state["permission_reads"]) == 2
