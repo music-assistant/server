@@ -109,8 +109,8 @@ AIRPLAY, SQUEEZELITE, CAST = "airplay", "squeezelite", "chromecast"
 
 
 def test_the_order_of_the_bridges() -> None:
-    """AirPlay carries the output of a device before squeezelite, and Cast comes last."""
-    assert BRIDGE_ORDER == (AIRPLAY, SQUEEZELITE, CAST)
+    """Squeezelite carries the output of a device before AirPlay, and Cast comes last."""
+    assert BRIDGE_ORDER == (SQUEEZELITE, AIRPLAY, CAST)
 
 
 @pytest.mark.parametrize(
@@ -125,17 +125,24 @@ def test_the_order_of_the_bridges() -> None:
         pytest.param([_off(CAST)], CAST, None, id="cast only, switched off"),
         pytest.param([_there(CAST, qualifies=False)], CAST, None, id="cast only, blocked"),
         # airplay and squeezelite
-        pytest.param([_there(AIRPLAY), _there(SQUEEZELITE)], None, AIRPLAY, id="ap+sq"),
-        pytest.param([_there(AIRPLAY), _there(SQUEEZELITE)], SQUEEZELITE, AIRPLAY, id="ap+sq, sq"),
+        pytest.param([_there(AIRPLAY), _there(SQUEEZELITE)], None, SQUEEZELITE, id="ap+sq"),
+        pytest.param(
+            [_there(AIRPLAY), _there(SQUEEZELITE)], AIRPLAY, SQUEEZELITE, id="ap+sq, ap had it"
+        ),
+        pytest.param(
+            [_there(AIRPLAY), _there(SQUEEZELITE)], SQUEEZELITE, SQUEEZELITE, id="ap+sq, sq"
+        ),
         pytest.param([_off(AIRPLAY), _there(SQUEEZELITE)], AIRPLAY, SQUEEZELITE, id="ap off, sq"),
-        pytest.param([_away(AIRPLAY), _there(SQUEEZELITE)], AIRPLAY, AIRPLAY, id="ap away, sq"),
+        pytest.param([_away(AIRPLAY), _there(SQUEEZELITE)], AIRPLAY, SQUEEZELITE, id="ap away, sq"),
         pytest.param(
             [_away(AIRPLAY), _there(SQUEEZELITE)], None, SQUEEZELITE, id="ap away new, sq"
         ),
         pytest.param(
             [_away(AIRPLAY), _there(SQUEEZELITE)], SQUEEZELITE, SQUEEZELITE, id="ap away, sq had it"
         ),
-        pytest.param([_there(AIRPLAY), _away(SQUEEZELITE)], SQUEEZELITE, AIRPLAY, id="ap, sq away"),
+        pytest.param(
+            [_there(AIRPLAY), _away(SQUEEZELITE)], SQUEEZELITE, SQUEEZELITE, id="ap, sq away"
+        ),
         pytest.param([_there(AIRPLAY), _off(SQUEEZELITE)], SQUEEZELITE, AIRPLAY, id="ap, sq off"),
         pytest.param(
             [_there(AIRPLAY, qualifies=False), _there(SQUEEZELITE)],
@@ -166,7 +173,7 @@ def test_the_order_of_the_bridges() -> None:
         ),
         # all three
         pytest.param(
-            [_there(AIRPLAY), _there(SQUEEZELITE), _there(CAST)], None, AIRPLAY, id="triple"
+            [_there(AIRPLAY), _there(SQUEEZELITE), _there(CAST)], None, SQUEEZELITE, id="triple"
         ),
         pytest.param(
             [_off(AIRPLAY), _there(SQUEEZELITE), _there(CAST)], AIRPLAY, SQUEEZELITE, id="ap off"
@@ -184,7 +191,7 @@ def test_the_order_of_the_bridges() -> None:
             [_off(AIRPLAY), _away(SQUEEZELITE), _there(CAST)], CAST, CAST, id="ap off, sq away new"
         ),
         pytest.param(
-            [_away(AIRPLAY), _there(SQUEEZELITE), _there(CAST)], AIRPLAY, AIRPLAY, id="ap away"
+            [_away(AIRPLAY), _there(SQUEEZELITE), _there(CAST)], AIRPLAY, SQUEEZELITE, id="ap away"
         ),
         pytest.param(
             [_away(AIRPLAY), _there(SQUEEZELITE), _there(CAST)],
@@ -311,19 +318,19 @@ async def test_the_static_delay_follows_the_carrier_there_and_back(switched_on: 
     if not switched_on:
         await device.switch_output(False)
 
-    await device.switch(device.airplay, False)
+    await device.switch(device.squeezelite, False)
 
-    assert _delays(device) == (SQUEEZELITE_ID, None, {SAME_ID_AIRPLAY_ID: 77})
+    assert _delays(device) == (SAME_ID_AIRPLAY_ID, None, {SQUEEZELITE_ID: 77})
     device.output()["values"][CONF_SENDSPIN_STATIC_DELAY] = 15
 
-    await device.switch(device.airplay, True)
-    await device.attach(device.airplay)
+    await device.switch(device.squeezelite, True)
+    await device.attach(device.squeezelite)
 
-    assert _delays(device) == (SAME_ID_AIRPLAY_ID, 77, {SQUEEZELITE_ID: 15})
+    assert _delays(device) == (SQUEEZELITE_ID, 77, {SAME_ID_AIRPLAY_ID: 15})
 
-    await device.switch(device.airplay, False)
+    await device.switch(device.squeezelite, False)
 
-    assert _delays(device) == (SQUEEZELITE_ID, 15, {SAME_ID_AIRPLAY_ID: 77})
+    assert _delays(device) == (SAME_ID_AIRPLAY_ID, 15, {SQUEEZELITE_ID: 77})
     assert device.state()[3] == ("on" if switched_on else "off-user")
 
 
@@ -385,8 +392,8 @@ async def test_an_output_the_user_switched_off_stays_off_whatever_the_connection
 
     await device.switch_output(False)
 
-    assert device.timeline == [("stopped", "airplay")]
-    assert device.state() == (None, AIRPLAY_CLIENT, "airplay", "off-user")
+    assert device.timeline == [("stopped", "squeezelite")]
+    assert device.state() == (None, AIRPLAY_CLIENT, "squeezelite", "off-user")
     device.timeline.clear()
     carriers: list[str | None] = []
     for protocol in device.protocols.values():
@@ -401,13 +408,13 @@ async def test_an_output_the_user_switched_off_stays_off_whatever_the_connection
 
     assert device.timeline == [], "a bridge registered an output its user switched off"
     # the output keeps naming a connection that is switched on, so its switch can be used
-    assert carriers == ["squeezelite", "airplay", "airplay"][: len(device.protocols)]
-    assert device.state() == (None, AIRPLAY_CLIENT, "airplay", "off-user")
+    assert carriers == ["squeezelite", "airplay", "squeezelite"][: len(device.protocols)]
+    assert device.state() == (None, AIRPLAY_CLIENT, "squeezelite", "off-user")
     assert device.output()["values"][CONF_SENDSPIN_STATIC_DELAY] == 120
 
     await device.switch_output(True)
 
-    assert device.state() == ("airplay", AIRPLAY_CLIENT, "airplay", "on")
+    assert device.state() == ("squeezelite", AIRPLAY_CLIENT, "squeezelite", "on")
 
 
 async def test_an_output_the_user_switched_off_stays_off_when_cast_is_left_to_carry_it() -> None:
@@ -427,7 +434,7 @@ async def test_an_output_the_user_switched_off_stays_off_when_cast_is_left_to_ca
     await device.attach(device.squeezelite)
 
     assert device.state() == (None, AIRPLAY_CLIENT, "squeezelite", "off-user")
-    assert device.timeline[-1] == ("stopped", "airplay")
+    assert device.timeline[-1] == ("stopped", "squeezelite")
 
 
 async def test_an_output_switched_on_over_cast_and_off_again_is_the_off_of_the_user() -> None:
@@ -715,9 +722,9 @@ async def test_the_player_shows_the_new_carrier_of_an_output_that_is_switched_of
     await device.switch_output(False)
     device.player.update_state.reset_mock()
 
-    await device.switch(device.airplay, False)
+    await device.switch(device.squeezelite, False)
 
-    assert device.state() == (None, AIRPLAY_CLIENT, "squeezelite", "off-user")
+    assert device.state() == (None, AIRPLAY_CLIENT, "airplay", "off-user")
     device.player.update_state.assert_called_with(force_update=True)
 
 
@@ -807,16 +814,16 @@ async def test_bridges_on_players_of_their_own_have_one_output_per_device(
 
 
 async def test_a_device_split_over_two_players_and_merged_back_has_one_output() -> None:
-    """Taking squeezelite off an AirPlay speaker and back leaves the speaker its one output."""
+    """Taking AirPlay off a squeezelite speaker and back leaves the speaker its one output."""
     device = _device()
-    await device.attach(device.airplay)
     await device.attach(device.squeezelite)
-    assert device.state() == ("airplay", AIRPLAY_CLIENT, "airplay", "on")
+    await device.attach(device.airplay)
+    assert device.state() == ("squeezelite", SQUEEZELITE_CLIENT, "squeezelite", "on")
     device.timeline.clear()
 
-    # unlinked: squeezelite on a player of its own
-    await device.detach(device.squeezelite)
-    await device.attach(device.squeezelite, device.other_player)
+    # unlinked: AirPlay on a player of its own
+    await device.detach(device.airplay)
+    await device.attach(device.airplay, device.other_player)
 
     assert device.timeline == [], "the bridge registered the other form of the id of the device"
     # a merge is refused while both players have a Sendspin output stored
@@ -826,11 +833,11 @@ async def test_a_device_split_over_two_players_and_merged_back_has_one_output() 
         if record["player_id"] == OTHER_PLAYER_ID
     ] == []
 
-    await device.link(device.squeezelite)
+    await device.link(device.airplay)
 
-    assert device.state() == ("airplay", AIRPLAY_CLIENT, "airplay", "on")
-    assert device.manager_of(device.squeezelite).bridge_client_id(device.squeezelite) == (
-        AIRPLAY_CLIENT
+    assert device.state() == ("squeezelite", SQUEEZELITE_CLIENT, "squeezelite", "on")
+    assert device.manager_of(device.airplay).bridge_client_id(device.airplay) == (
+        SQUEEZELITE_CLIENT
     )
 
 
@@ -869,8 +876,8 @@ async def test_a_bridge_does_not_register_the_output_of_another_player() -> None
 
     await device.link(device.squeezelite)
 
-    # one speaker now: its output stays with the bridge that comes first
-    assert device.state() == ("airplay", SQUEEZELITE_CLIENT, "airplay", "on")
+    # one speaker now: its output goes to the bridge that comes first
+    assert device.state() == ("squeezelite", SQUEEZELITE_CLIENT, "squeezelite", "on")
     assert device.manager_of(device.squeezelite).bridge_client_id(device.squeezelite) == (
         SQUEEZELITE_CLIENT
     )

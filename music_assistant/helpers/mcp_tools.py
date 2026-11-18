@@ -66,6 +66,29 @@ def read_mcp_tools(raw: object, domain: str) -> tuple[list[ProviderMCPTool], lis
     return kept, problems
 
 
+def matches_mcp_tool_type(value: object, spec: dict[str, Any]) -> bool:
+    """
+    Return True when a value matches the type (and enum) of a property or items schema.
+
+    :param value: The value to check.
+    :param spec: The schema of an MCP tool argument, or of the items of an array argument.
+    """
+    match spec["type"]:
+        case "string":
+            return isinstance(value, str) and value in spec.get("enum", [value])
+        case "boolean":
+            return isinstance(value, bool)
+        case "integer":
+            return isinstance(value, int) and not isinstance(value, bool)
+        case "number":
+            return isinstance(value, int | float) and not isinstance(value, bool)
+        case "array":
+            return isinstance(value, list) and all(
+                matches_mcp_tool_type(entry, spec["items"]) for entry in value
+            )
+    return False
+
+
 def _has_field_types(item: dict[str, object]) -> bool:
     """Return True when a declared MCP tool has the types its fields need."""
     return (
@@ -173,7 +196,7 @@ def _find_property_problem(prop: object) -> str | None:
             f"needs an enum only with type 'string', of 1 to {MAX_MCP_TOOL_ENUM_VALUES} strings "
             f"of at most {MAX_MCP_TOOL_ENUM_VALUE_LENGTH} characters"
         )
-    if "default" in prop and not _matches_type(prop["default"], prop):
+    if "default" in prop and not matches_mcp_tool_type(prop["default"], prop):
         return "needs a default of its type (and in its enum)"
     return None
 
@@ -192,21 +215,3 @@ def _has_valid_enum(spec: dict[str, Any]) -> bool:
             for value in enum
         )
     )
-
-
-def _matches_type(value: object, spec: dict[str, Any]) -> bool:
-    """Return True when a value matches the type (and enum) of a property or items schema."""
-    match spec["type"]:
-        case "string":
-            return isinstance(value, str) and value in spec.get("enum", [value])
-        case "boolean":
-            return isinstance(value, bool)
-        case "integer":
-            return isinstance(value, int) and not isinstance(value, bool)
-        case "number":
-            return isinstance(value, int | float) and not isinstance(value, bool)
-        case "array":
-            return isinstance(value, list) and all(
-                _matches_type(entry, spec["items"]) for entry in value
-            )
-    return False

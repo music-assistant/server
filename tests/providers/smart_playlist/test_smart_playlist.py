@@ -2266,9 +2266,10 @@ async def test_enrich_tracks_with_db_genres_handles_empty_list() -> None:
 
 
 @pytest.mark.asyncio
-async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
-    """Seed mode should enrich genres when excluded_genre_ids or excluded_genre_names are set."""
+async def test_seed_mode_checks_genre_links_when_excluded_genres_present() -> None:
+    """Seed mode checks excluded genres by the library links, without enriching genres."""
     mass = MagicMock()
+    mass.music.genres.tracks_in_genres = AsyncMock(return_value=set())
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
     config = MagicMock()
@@ -2288,7 +2289,7 @@ async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
     # Mock _tracks_from_seeds to return our test track
     cast("Any", plugin)._tracks_from_seeds = AsyncMock(return_value=[track])
 
-    # Mock _enrich_tracks_with_db_genres to verify it gets called
+    # Mock _enrich_tracks_with_db_genres to verify it is not called
     enrich_mock = AsyncMock()
     cast("Any", plugin)._enrich_tracks_with_db_genres = enrich_mock
 
@@ -2306,8 +2307,8 @@ async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
     )
     await plugin._evaluate_rules(rules)
 
-    # Verify enrichment was called in seed mode
-    enrich_mock.assert_called_once()
+    enrich_mock.assert_not_called()
+    mass.music.genres.tracks_in_genres.assert_awaited_once_with([1], [track])
 
 
 @pytest.mark.asyncio
