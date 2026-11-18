@@ -253,6 +253,66 @@ async def test_another_queue_does_not_take_the_stream_at_a_skip(rig: SlotRig) ->
     assert other_started == []
 
 
+@pytest.mark.parametrize("paused", [False, True], ids=["playing", "paused"])
+async def test_a_preview_that_waits_does_not_take_the_stream_at_a_skip(
+    rig: SlotRig, paused: bool
+) -> None:
+    """A queue that skips goes on with the stream also when it was paused before the skip."""
+    tracks = rig.play("track 0", "track 1", "track 2")
+    stopped_capture = await rig.ask(tracks[0])
+    assert stopped_capture is not None
+    if paused:
+        # what a pause command leaves behind; the speaker reports the pause until the skip plays
+        queue_data = rig.queues._queue_data[QUEUE_ID]
+        queue_data.queue.state = PlaybackState.PAUSED
+        queue_data.halted_by_command = True
+    preview = asyncio.create_task(_preview(rig, LONG_WAIT))
+    await _turns()
+    allow_starts(rig)
+    served_at_the_stop: list[bool] = []
+
+    async def _load(_queue_item: object, **_kwargs: object) -> None:
+        await rig.queues._abort_superseded_source_buffers(tracks[2])
+        await _turns()
+        served_at_the_stop.append(preview.done())
+        await rig.audio.get_audio_buffer(tracks[2], reason="prepare", capacity_wait_timeout=0)
+
+    rig.queues._load_item = AsyncMock(side_effect=_load)  # type: ignore[method-assign]
+
+    await rig.queues._play_index(QUEUE_ID, 2, None, False)
+
+    assert served_at_the_stop == [False]
+    assert rig.fills(rig.buffer(tracks[2]))
+    preview.cancel()
+    await asyncio.gather(preview, return_exceptions=True)
+
+
+async def test_a_queue_that_is_paused_while_it_skips_keeps_no_stream(rig: SlotRig) -> None:
+    """A pause that comes in while a skip loads its track leaves the stream to whoever waits."""
+    tracks = rig.play("track 0", "track 1", "track 2")
+    await rig.ask(tracks[0])
+    preview = asyncio.create_task(_preview(rig, SOON))
+    await _turns()
+    allow_starts(rig)
+    served_at_the_stop: list[bool] = []
+
+    async def _load(_queue_item: object, **_kwargs: object) -> None:
+        # what a pause command does to the queue while the skip is under way
+        queue_data = rig.queues._queue_data[QUEUE_ID]
+        queue_data.queue.state = PlaybackState.PAUSED
+        queue_data.halted_by_command = True
+        await rig.queues._abort_superseded_source_buffers(tracks[2])
+        await _turns()
+        served_at_the_stop.append(preview.done())
+
+    rig.queues._load_item = AsyncMock(side_effect=_load)  # type: ignore[method-assign]
+
+    await rig.queues._play_index(QUEUE_ID, 2, None, False)
+
+    assert served_at_the_stop == [True]
+    assert await preview
+
+
 async def test_a_preview_that_waits_does_not_take_the_stream_at_a_seek(rig: SlotRig) -> None:
     """The slot a seek frees goes to the same track's new source, also on the last track."""
     (track,) = rig.play("track 0")
@@ -937,6 +997,46 @@ async def test_a_request_whose_player_hung_up_while_it_waits_holds_nobody_up(
     assert await asyncio.wait_for(preview, SOON)
     assert await request is None
     assert rig.opened["track 7"] == 0
+
+
+async def test_a_start_is_not_refused_behind_a_source_that_is_given_up_before_its_audio(
+    rig: SlotRig,
+) -> None:
+    """A source that loads and is given up before its first audio refuses nobody that waits."""
+    loading, *upcoming = rig.play("track 0", "track 1", "track 2")
+    first_audio = asyncio.Event()
+
+    async def _slow_to_start_and_stop() -> AsyncGenerator[bytes]:
+        try:
+            await first_audio.wait()
+            async for chunk in realtime_capture():
+                yield chunk
+        finally:
+            # a connection or process behind a source takes a moment to close
+            await asyncio.sleep(0.05)
+
+    rig.sources["track 0"] = _slow_to_start_and_stop
+    starting = asyncio.create_task(
+        rig.audio.get_audio_buffer(loading, reason="prepare", capacity_wait_timeout=BRIEF_WAIT)
+    )
+    await _turns()
+    (other,) = rig.play("track 7", queue_id=OTHER_QUEUE_ID, session_id="session-b")
+    asking = asyncio.create_task(rig.ask(other, wait=LONG_WAIT))
+    await _turns()
+    assert not asking.done()
+
+    # the queue moved on to tracks of another service: the loading source is needed no more
+    for item in upcoming:
+        assert item.streamdetails is not None
+        item.streamdetails.provider = ELSEWHERE
+    queue = rig.queues._queue_data[QUEUE_ID].queue
+    queue.current_index = queue.index_in_buffer = 1
+    rig.queues.release_unneeded_audio(QUEUE_ID)
+
+    assert await starting is None
+    buffer = await asyncio.wait_for(asking, SOON)
+    assert buffer is not None
+    assert rig.fills(buffer)
 
 
 async def test_a_start_that_is_given_up_while_it_waits_leaves_the_line(rig: SlotRig) -> None:

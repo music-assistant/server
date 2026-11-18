@@ -122,9 +122,9 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.media_capabilities import AudioSourceMixin
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.models.plugin import PluginProvider
 from music_assistant.models.provider import Provider
 
 if TYPE_CHECKING:
@@ -1391,8 +1391,8 @@ class MusicAssistant:
             # provider that is already gone, or run discovery against a reused instance id
             if post_load_task := self._tracked_tasks.get(f"post_load_provider_{instance_id}"):
                 post_load_task.cancel()
-            if isinstance(provider, PluginProvider):
-                # a live source cannot outlive the plugin exposing it: the player would go
+            if isinstance(provider, AudioSourceMixin):
+                # a live source cannot outlive the provider exposing it: the player would go
                 # on naming a source that can no longer be streamed, its queue held inactive
                 await self.players.release_provider_sources(instance_id)
             if isinstance(provider, MusicProvider):
@@ -1488,6 +1488,7 @@ class MusicAssistant:
             self.statistics,
             self.storage,
             self.community_catalog,
+            self.ai,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):

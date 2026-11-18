@@ -46,9 +46,9 @@ if TYPE_CHECKING:
     from music_assistant_models.player import OutputProtocol
     from music_assistant_models.player_queue import PlayerQueue
 
+    from music_assistant.models.media_capabilities import AudioSourceMixin, SourceControlValue
     from music_assistant.models.player import PlayerMedia
     from music_assistant.models.player_protocol import PlayerProtocol
-    from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
     from .audio_sources import AudioSourceSession
     from .constants import PlayerLockPurpose
@@ -796,7 +796,7 @@ class _PlayerControllerBase(CoreController):
         async def select_source(self, player_id: str, source: str | None) -> None: ...
         def _get_active_audio_source(
             self, player: Player
-        ) -> tuple[AudioSource, PluginProvider] | None: ...
+        ) -> tuple[AudioSource, AudioSourceMixin] | None: ...
         def _is_ma_managed_source(self, player: Player, source: str | None) -> bool: ...
         async def _notify_source_volume_change(self, player: Player, volume_level: int) -> None: ...
         def _resolve_command_target(self, player: Player, source_id: str | None) -> str: ...

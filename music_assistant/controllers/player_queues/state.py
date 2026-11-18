@@ -76,6 +76,9 @@ class PlayerQueueData:
     # runtime-only fields below; not persisted, reset to these defaults on restart
     prev_state: CompareState | None = None
     transitioning: bool = False
+    # the queue's own play action (_play_index) runs: it loads a track and hands it to the
+    # player, which can still report a pause until the track plays
+    play_index_running: bool = False
     # a command (a pause, a stop) halted the playback of the queue's items and it has not played
     # since: the queue keeps its place, and its player going idle is not the end of the queue
     halted_by_command: bool = False

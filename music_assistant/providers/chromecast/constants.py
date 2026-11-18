@@ -47,16 +47,6 @@ SENDSPIN_CAST_EXPERIMENTAL_NOTE = "sendspin_cast_experimental"
 # Kept on the Cast player rather than on the bridge, which is removed for good once set.
 CONF_SENDSPIN_UNSUPPORTED = "sendspin_unsupported"
 
-# Marker on a Cast player that was never offered the Sendspin bridge before, so its
-# output has to end up switched off. Persisted the moment the device is first bridged,
-# because applying the opt-out needs the protocol link, which may not be in place before
-# the run that decided it ends.
-CONF_SENDSPIN_OPT_OUT_PENDING = "sendspin_opt_out_pending"
-
-# Bounded wait for the protocol link of a freshly registered Sendspin Cast bridge to
-# be persisted, before the bridge is switched off again for the user to opt in.
-SENDSPIN_LINK_WAIT_INTERVAL = 0.5
-SENDSPIN_LINK_WAIT_TRIES = 20
 
 # Seconds to wait for a Cast device to report which app runs, before playback over
 # Sendspin goes ahead on the last status it reported.
