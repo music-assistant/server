@@ -298,10 +298,10 @@ track or its consumer is gone: then it goes on to whoever waits next.
 
 Nothing is reserved after the last track of a queue, when the tracks the queue goes on with come
 from another provider, for a source that loads ahead of playback, for a queue that is paused or was
-told to pause or stop (`halted_by_command`), or without a session. A queue in the middle of a play
-action (a skip, a seek, a resume: `_play_index`) does not count as paused, though its player still
-reports the pause until the new track plays: it keeps its reservation, and its slot is not handed
-over. A pause command during that play action still keeps nothing. A reservation ends when its queue
+told to pause or stop (`halted_by_command`), or without a session. A play action of the queue (a
+skip, a seek, a resume, a replace) keeps its stream until it ends, though its player still reports
+the pause until the new track plays: it keeps its reservation, and its slot is not handed over. A
+pause during it does not end it, as the action still plays its track. A reservation ends when its queue
 is paused (at the pause command, and at a pause its player reports by itself), when its session
 ends, when a start goes to tracks of another provider, and when a start has loaded its track without
 using it.
