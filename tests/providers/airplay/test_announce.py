@@ -87,6 +87,7 @@ def _make_player(player_id: str, stream: MagicMock | None = None) -> MagicMock:
     player.player.volume_level = 30
     player.has_live_audio = stream is not None
     player.stream = stream
+    player.session = stream.session if stream is not None else None
     player._lock = asyncio.Lock()
     player.logger = logging.getLogger("test.airplay.announce")
     player.mass.create_task = MagicMock(
@@ -111,7 +112,7 @@ def _make_playing_group(*streams: MagicMock) -> list[MagicMock]:
     session = MagicMock()
     session.sync_clients = members
     for member in members:
-        member.stream.session = session
+        member.stream.session = member.session = session
     return members
 
 
