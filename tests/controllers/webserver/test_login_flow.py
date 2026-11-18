@@ -16,9 +16,14 @@ from music_assistant.controllers.webserver import websocket_client
 from music_assistant.controllers.webserver.helpers import login_flow
 from music_assistant.controllers.webserver.helpers.login_flow import (
     MAX_PENDING_LOGINS,
+    MAX_PENDING_LOGINS_PER_SOURCE,
+    MAX_TRACKED_SOURCES,
     PENDING_LOGIN_TTL,
     AuthTransport,
+    PendingLogin,
     PendingLoginStore,
+    SourceRateLimiter,
+    source_key,
     verify_pkce,
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
@@ -68,13 +73,7 @@ def test_state_prefix_follows_the_return_url(return_url: str | None, prefix: str
     :param return_url: The URL the sign-in returns to.
     :param prefix: The expected state prefix.
     """
-    pending = PendingLoginStore().start(
-        "homeassistant",
-        AuthTransport.DIRECT,
-        "http://ma.local/cb",
-        "verifier",
-        return_url=return_url,
-    )
+    pending = _start(PendingLoginStore(), return_url=return_url)
 
     assert pending.state.startswith(prefix)
     assert len(pending.state) > 40
@@ -83,7 +82,7 @@ def test_state_prefix_follows_the_return_url(return_url: str | None, prefix: str
 def test_a_pending_sign_in_is_used_once() -> None:
     """Popping a pending sign-in returns it once."""
     store = PendingLoginStore()
-    pending = store.start("homeassistant", AuthTransport.DIRECT, "http://ma.local/cb", "verifier")
+    pending = _start(store)
 
     assert store.pop(pending.state) is pending
     assert store.pop(pending.state) is None
@@ -93,7 +92,7 @@ def test_a_pending_sign_in_is_used_once() -> None:
 def test_an_expired_sign_in_is_not_returned() -> None:
     """A pending sign-in popped after its lifetime is refused and removed."""
     store = PendingLoginStore()
-    pending = store.start("homeassistant", AuthTransport.DIRECT, "http://ma.local/cb", "verifier")
+    pending = _start(store)
 
     with _monotonic_after(PENDING_LOGIN_TTL):
         assert store.pop(pending.state) is None
@@ -103,17 +102,89 @@ def test_an_expired_sign_in_is_not_returned() -> None:
 def test_starts_beyond_the_limit_are_refused_until_some_expire() -> None:
     """A start at the limit is refused, and accepted again once the pending ones expired."""
     store = PendingLoginStore()
-    for _ in range(MAX_PENDING_LOGINS):
-        store.start("homeassistant", AuthTransport.DIRECT, "http://ma.local/cb", "verifier")
+    for index in range(MAX_PENDING_LOGINS):
+        _start(store, key=f"peer:10.0.0.{index}")
 
     with pytest.raises(RateLimited):
-        store.start("homeassistant", AuthTransport.DIRECT, "http://ma.local/cb", "verifier")
+        _start(store, key="peer:10.0.1.1")
     with _monotonic_after(PENDING_LOGIN_TTL):
-        pending = store.start(
-            "homeassistant", AuthTransport.DIRECT, "http://ma.local/cb", "verifier"
-        )
+        pending = _start(store, key="peer:10.0.1.1")
 
     assert list(store._pending) == [pending.state]
+
+
+def test_one_source_can_not_exhaust_the_store_for_another() -> None:
+    """However many sign-ins one source starts, another source can still start one."""
+    store = PendingLoginStore()
+    for _ in range(MAX_PENDING_LOGINS * 2):
+        _start(store, key="peer:10.0.0.66")
+
+    pending = _start(store, key="peer:10.0.0.2")
+
+    assert store.pop(pending.state) is pending
+
+
+def test_a_source_at_its_cap_replaces_its_oldest_sign_in() -> None:
+    """A source at its cap loses its own oldest sign-in, never another source's."""
+    store = PendingLoginStore()
+    other = _start(store, key="peer:10.0.0.2")
+    own = [_start(store) for _ in range(MAX_PENDING_LOGINS_PER_SOURCE)]
+
+    newest = _start(store)
+
+    assert store.pop(own[0].state) is None
+    assert all(store.pop(entry.state) is entry for entry in [*own[1:], newest, other])
+
+
+def test_the_limiter_allows_a_burst_then_recovers_over_time() -> None:
+    """A source gets a burst, then one request per refill interval; others are unaffected."""
+    limiter = SourceRateLimiter(burst=3, refill_seconds=10)
+
+    assert [limiter.take("peer:a") for _ in range(4)] == [True, True, True, False]
+    assert not limiter.allows("peer:a")
+    assert limiter.allows("peer:b")
+    with _monotonic_after(9):
+        assert not limiter.allows("peer:a")
+    with _monotonic_after(10):
+        assert limiter.take("peer:a")
+        assert not limiter.take("peer:a")
+    with _monotonic_after(1000):
+        assert [limiter.take("peer:a") for _ in range(4)] == [True, True, True, False]
+
+
+def test_the_limiter_forgets_refilled_sources() -> None:
+    """Sources whose bucket refilled completely are dropped once many are tracked."""
+    limiter = SourceRateLimiter(burst=1, refill_seconds=1)
+    for index in range(MAX_TRACKED_SOURCES):
+        limiter.take(f"peer:{index}")
+
+    with _monotonic_after(1):
+        limiter.take("peer:new")
+
+    assert list(limiter._buckets) == ["peer:new"]
+
+
+@pytest.mark.parametrize(
+    ("peer_address", "session_id", "expected"),
+    [
+        ("192.168.1.20", None, "peer:192.168.1.20"),
+        ("2001:db8:1:2:aaaa::1", None, "peer:2001:db8:1:2::/64"),
+        ("2001:db8:1:2:bbbb::9", None, "peer:2001:db8:1:2::/64"),
+        ("fe80::1%eth0", None, "peer:fe80::/64"),
+        ("::ffff:192.168.1.20", None, "peer:192.168.1.20"),
+        ("127.0.0.1", "abc", "remote:abc"),
+        (None, None, "unknown"),
+    ],
+)
+def test_source_key(peer_address: str | None, session_id: str | None, expected: str) -> None:
+    """
+    IPv4 peers are keyed on the address, IPv6 peers on the /64, remote clients on the session.
+
+    :param peer_address: The address of the socket peer.
+    :param session_id: The verified WebRTC session id, if any.
+    :param expected: The expected source key.
+    """
+    assert source_key(peer_address, session_id) == expected
 
 
 @pytest.mark.parametrize(
@@ -176,6 +247,47 @@ async def test_an_ingress_connection_is_ingress(webserver: WebserverController) 
         client = _ws_client(webserver, "172.30.32.2", None)
 
     assert client.auth_transport is AuthTransport.INGRESS
+
+
+@pytest.mark.parametrize(
+    ("session_id", "expected"),
+    [("live", "remote:live"), ("gone", "peer:127.0.0.1"), (None, "peer:127.0.0.1")],
+    ids=["remote", "spoofed_session", "no_session"],
+)
+async def test_only_a_verified_remote_client_is_keyed_on_its_session(
+    webserver: WebserverController, session_id: str | None, expected: str
+) -> None:
+    """
+    A Remote Access client is keyed on its session, a client claiming a session on its address.
+
+    :param session_id: The WebRTC session id the connection claims, if any.
+    :param expected: The expected source key.
+    """
+    webserver.remote_access.gateway = MagicMock(
+        local_ws_url="ws://127.0.0.1:8095/ws", sessions={"live": MagicMock()}
+    )
+
+    assert _ws_client(webserver, "127.0.0.1", session_id).source_key == expected
+
+
+def _start(
+    store: PendingLoginStore, key: str = "peer:10.0.0.1", return_url: str | None = None
+) -> PendingLogin:
+    """
+    Start a sign-in on a store and return it.
+
+    :param store: The store to start the sign-in on.
+    :param key: The source the sign-in is started from.
+    :param return_url: The URL the sign-in returns to.
+    """
+    return store.start(
+        "homeassistant",
+        AuthTransport.DIRECT,
+        "http://ma.local/cb",
+        "verifier",
+        key=key,
+        return_url=return_url,
+    )
 
 
 def _ws_client(

@@ -61,7 +61,7 @@ from .helpers.auth_middleware import (
     set_impersonated_user,
     set_sendspin_player_id,
 )
-from .helpers.login_flow import AuthTransport
+from .helpers.login_flow import AuthTransport, source_key
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -140,6 +140,13 @@ class WebsocketClientHandler:
         ):
             return AuthTransport.REMOTE
         return AuthTransport.DIRECT
+
+    @property
+    def source_key(self) -> str:
+        """Return the source that sign-in limits count this client's requests against."""
+        if self.auth_transport is AuthTransport.REMOTE:
+            return source_key(None, self._webrtc_session_id)
+        return source_key(self._peer_address)
 
     @property
     def request_host(self) -> str:
