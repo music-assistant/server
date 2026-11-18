@@ -442,8 +442,6 @@ class PodcastConverter(BaseConverter):
                 allow_seek=True,
                 can_seek=True,
                 duration=(episode.duration or None),
-                seek_position=(int(episode.position) if episode.position else 0),
-                seconds_streamed=(int(episode.position) if episode.position else 0),
             )
         elif episode and isinstance(episode, Track) and source_obj.stream:
             # Try to work out the best network/series name to display
