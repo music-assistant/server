@@ -39,7 +39,10 @@
     },
     "ai_image_engine": {
       "label": "Image engine",
-      "description": "The engine that draws the covers, for example a Home Assistant AI Task entity that supports images or an image model of the OpenAI Compatible plugin (such as OpenRouter)."
+      "description": "The engine that draws the covers, for example a Home Assistant AI Task entity that supports images or an image model of the OpenAI Compatible plugin (such as OpenRouter). Unless you pick one, it uses the default image engine from the AI settings.",
+      "option_descriptions": {
+        "global": "Follows the default engine in the AI settings."
+      }
     },
     "ai_style": {
       "label": "Style",
@@ -137,7 +140,10 @@
     },
     "ai_text_engine": {
       "label": "Text engine",
-      "description": "The AI engine that writes the descriptions and, when enabled, the visual concept of the covers."
+      "description": "The AI engine that writes the descriptions and, when enabled, the visual concept of the covers. Unless you pick one, it uses the default AI engine from the AI settings.",
+      "option_descriptions": {
+        "global": "Follows the default engine in the AI settings."
+      }
     },
     "ai_use_prompt_engine": {
       "label": "Let the text engine write the visual concept",

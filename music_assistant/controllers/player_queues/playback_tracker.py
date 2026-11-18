@@ -333,6 +333,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # refill the queue (dynamic mode or autoplay) when running low on tracks, and keep the
         # Smart Fades ordering ahead of playback
         if "current_item_id" in changed_keys:
+            self.release_unneeded_audio(queue_id)
             running_low = (
                 queue.current_index is not None and (queue.items - queue.current_index) < 5
             )

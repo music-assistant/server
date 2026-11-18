@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 120
+API_SCHEMA_VERSION: Final[int] = 122
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -127,9 +127,11 @@ CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED: Final[str] = "apple_music_sync_schedule
 CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED: Final[str] = "emby_album_artists_heal_migrated"
 CONF_RAUMFELD_ICY_BASIC_MIGRATED: Final[str] = "raumfeld_icy_basic_migrated"
 CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: Final[str] = "airplay_sync_adjust_sign_migrated"
+CONF_SENDSPIN_ONE_OUTPUT_MIGRATED: Final[str] = "sendspin_one_output_migrated"
 CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING: Final[str] = "emby_album_artists_heal_pending"
 CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
+CONF_AI_DEFAULT_ENGINES_MIGRATED: Final[str] = "ai_default_engines_migrated"
 CONF_PLAYER_SPLIT_SESSION_ONLY: Final[str] = "player_split_session_only"
 CONF_PLAYER_SPLIT_TREE: Final[str] = "player_split_tree"
 CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
@@ -142,6 +144,7 @@ CONF_PROVIDERS: Final[str] = "providers"
 CONF_PLAYERS: Final[str] = "players"
 CONF_PLAYER_PROTOCOLS: Final[str] = "player_protocols"
 CONF_PLAYER_QUEUES: Final[str] = "player_queues"
+CONF_AI: Final[str] = "ai"
 CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
 CONF_NAME: Final[str] = "name"
@@ -186,6 +189,10 @@ CONF_ANNOUNCE_VOLUME_MIN: Final[str] = "announce_volume_min"
 CONF_ANNOUNCE_VOLUME_MAX: Final[str] = "announce_volume_max"
 CONF_PRE_ANNOUNCE_CHIME_URL: Final[str] = "pre_announcement_chime_url"
 CONF_ANNOUNCE_TTS_ENGINE: Final[str] = "announce_tts_engine"
+# the default engine of each kind, stored by the AI core module
+CONF_DEFAULT_TEXT_ENGINE: Final[str] = "text_engine"
+CONF_DEFAULT_SPEECH_ENGINE: Final[str] = "speech_engine"
+CONF_DEFAULT_IMAGE_ENGINE: Final[str] = "image_engine"
 CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
@@ -231,6 +238,9 @@ CONF_UNDERLYING_PLAYER_ID: Final[str] = (
 # experimental. Its presence also makes the output's enable entry default to disabled;
 # a stored enabled state still wins, so the provider persists that one itself.
 CONF_PROTOCOL_EXPERIMENTAL_NOTE: Final[str] = "protocol_experimental_note"
+# Marker a provider stores on a protocol it switched off itself as its default. Without
+# it a protocol that is switched off was switched off by the user.
+CONF_PROTOCOL_OFF_BY_DEFAULT: Final[str] = "protocol_off_by_default"
 CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
 CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
@@ -395,6 +405,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "player_queues",
     "tasks",
     "statistics",
+    "ai",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDER_LOAD_CONCURRENCY = 8

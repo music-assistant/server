@@ -399,7 +399,12 @@ async def test_browse_root_is_searched_sorted_and_paged(mass: MusicAssistant) ->
     async def _root(**kwargs: Any) -> list[str]:
         return _names(await mass.music.browse(**kwargs))
 
-    with patch.object(mass, "get_providers_supporting_feature", side_effect=_supporting):
+    with (
+        patch.object(mass, "get_providers_supporting_feature", side_effect=_supporting),
+        # this library-only instance runs no players controller
+        patch.object(mass, "players", MagicMock(), create=True) as players,
+    ):
+        players.get_audio_source_providers.return_value = []
         assert await _root() == ["Zvuk", "Apple Music", "Deezer"]
         assert await _root(sort_field=SortField.NAME) == ["Apple Music", "Deezer", "Zvuk"]
         assert await _root(search="deez") == ["Deezer"]

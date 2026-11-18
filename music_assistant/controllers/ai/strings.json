@@ -1,0 +1,23 @@
+{
+  "config_entries": {
+    "text_engine": {
+      "label": "Default AI engine",
+      "description": "The AI engine every feature uses unless it picks one of its own, for example to write playlist descriptions or AI Radio breaks."
+    },
+    "speech_engine": {
+      "label": "Default text-to-speech engine",
+      "description": "The text-to-speech engine every feature uses unless it picks one of its own, for example to speak announcements or AI Radio breaks."
+    },
+    "image_engine": {
+      "label": "Default image engine",
+      "description": "The image generation engine every feature uses unless it picks one of its own, for example to draw playlist covers."
+    },
+    "selected_engine_unavailable": {
+      "label": "The selected engine is not available. Choose another one, or bring back the plugin that provides it."
+    }
+  },
+  "manifest": {
+    "name": "AI",
+    "description": "The default AI engines the features of Music Assistant use."
+  }
+}

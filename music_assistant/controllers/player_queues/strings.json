@@ -205,7 +205,7 @@
     },
     "default_enqueue_option_live_sources": {
       "label": "Default enqueue option for Radio and Live Input item(s).",
-      "description": "Default enqueue action for live, infinite streams — radio stations and plugin AudioSources (Spotify Connect, AirPlay receiver, etc.).",
+      "description": "Default enqueue action for live, infinite streams — radio stations and audio sources (Spotify Connect, AirPlay receiver, etc.).",
       "options": {
         "play": "Play (and keep queue)",
         "replace": "Play (and replace queue)"

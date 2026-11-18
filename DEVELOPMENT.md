@@ -292,6 +292,8 @@ The manifest file contains metadata and configuration about a provider. The supp
 | self_service | Whether members may set up and reconfigure an instance of the provider as a music source of their own. Defaults to `true`. A provider whose setup reaches into the server itself, like a folder on its disk, may only keep it `true` when its setup flow checks what a member picks against what that member may use (the Local files flow checks every folder against `mass.storage.can_hold_music_source`); otherwise set it to `false` | boolean |
 | credits | List of credits/attributions, e.g. for libraries or icons used. Accepts markdown formatting. | array[string] |
 | menu_actions | Entries the provider adds to the menu of a media item, see [Menu actions](#-menu-actions). | array[object] |
+| mcp_tools | Tools the provider offers to AI assistants, see [Tools for AI assistants (MCP)](#-tools-for-ai-assistants-mcp). | array[object] |
+| features | Features the provider offers whatever its config, such as `audio_source`. The app uses them to decide where the provider is listed, and they are merged into its supported features. | array[string] |
 
 A provider's config entries are not declared in the manifest. They are built in code by overriding `get_config_entries` on the provider, and their values are read via `self.config.get_value(key)`. One-time setup input is collected by the provider's setup flow (`setup_flow.py`).
 
@@ -323,6 +325,38 @@ A provider can add its own entries to the menu of a track, album, artist, playli
 When a user chooses an entry, the app calls the API command `providers/invoke_menu_action` with the instance of the provider, the id of the action, the `uri` of the item and, for an action that requires a player, the `player_id`. The server checks that the user may use that instance and holds the scope of the action, that the `uri` is of one of its media types and that the user may use the player, and then calls `handle_menu_action(action_id, uri, player_id)` on that instance. The server only checks the kind of item in the `uri`, not that the item exists or that it belongs to your provider, so `handle_menu_action` looks the item up itself. Implement it in your provider: it answers nothing, or a `ConfigActionResult` with a message the app shows and/or a url it opens once. To say the action failed, raise a `MusicAssistantError`. The provider registers no command. A provider that allows several instances needs nothing extra: the entries are offered for each instance, and each instance handles the actions chosen for it.
 
 The server checks the declared actions when it reads the manifest. An action that breaks one of the rules above, has the same `id` as an earlier one, or comes after the first ten valid ones is left out with a warning in the log, and the provider loads without it. For a provider in this repository the same rules fail the `check_manifests` check. A provider in its own repository declares menu actions in the same way, with its texts in the `strings.json` and `translations/` of its own folder.
+
+## 🤖 Tools for AI assistants (MCP)
+A provider can offer its own tools to AI assistants, such as Home Assistant Assist, that use the MCP server of Music Assistant. It declares them in `mcp_tools` in its manifest and implements them in `handle_mcp_tool`; the MCP server offers them next to its own tools. The demo plugin (`_demo_plugin_provider`) has a complete example.
+
+```json
+"mcp_tools": [
+  {
+    "id": "play_station",
+    "description": "Play one of the user's saved stations of this service on a player.",
+    "scope": "queues.control",
+    "requires_player": true,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "station": {"type": "string", "description": "The name of the station."},
+        "shuffle": {"type": "boolean", "description": "Shuffle the station.", "default": false}
+      },
+      "required": ["station"]
+    }
+  }
+]
+```
+
+* `id`: names the tool within the provider, in groups of lower case letters and digits joined by single underscores (at most 32). The assistant sees the tool as `<domain>__<id>`, of at most 64 characters.
+* `description`: what the tool does, one readable line of at most 300 characters, in English and not translated, as a language model reads it. Like the results, it only describes the tool and its outcome, and never instructs the assistant about other tools, the user or the conversation.
+* `scope`: what a user needs to use the tool, such as `library.read` or `queues.control` (the values of `Scope` in the models). A user without it does not get the tool. A tool with a scope that ends in `.read` is announced as read-only; for any other tool a client may ask the user to confirm.
+* `requires_player`: optional, `true` when the tool acts on a player.
+* `input_schema`: optional, the arguments: `type` `object`, at most 10 `properties` and the `required` ones. A property name is lower case letters, digits and underscores, starts with a letter (at most 32) and is not `player` or `instance`. A property has a `type` (`string`, `integer`, `number`, `boolean` or `array`, whose `items` have one of the other types), a `description` (one readable line of at most 200 characters), and optionally a `default` of its type and, for strings, an `enum` of at most 50 values of at most 64 characters. Nothing else is accepted. A tool without `input_schema` takes no arguments.
+
+The server adds a required `player` argument (a player name or id) to a tool that requires a player, a required `instance` argument when the user may use several instances of the provider, and ` (from the <provider name> provider)` to the description. It checks that the user may use the instance and holds the scope, that the arguments match the schema and that the user may use the player, and then calls `handle_mcp_tool(tool_id, arguments, player_id)` on that instance. `arguments` holds every declared property: the value passed, else its default, else `None`; `player_id` is the checked player, or `None` for a tool without one. What the tool calls on `mass` runs as the user, so it sees only the players and music sources the user may use; a tool that acts on a player other than `player_id` calls `mass.players.check_player_access` first. Return a `dict` of JSON values, short (at most 50 rows) and with media items by their `uri`. To say the tool failed, raise a `MusicAssistantError`: the assistant reads its message. Any other exception, or a result that is no `dict` of JSON values, is logged and the assistant reads "Internal error". The provider registers nothing: its tools come and go with it.
+
+The server checks the declared tools when it reads the manifest, as it does menu actions: a tool that breaks a rule above, has the same `id` as an earlier one, or comes after the first ten valid ones is left out with a warning in the log, and for a provider in this repository it fails the `check_manifests` check.
 
 ## 🤝 Contributing a provider
 **Consider the community catalog first.** Instead of adding a provider to the server itself, which comes with the expectations below and a longer wait for reviews, you can publish it in the [community catalog](https://github.com/music-assistant/.github/blob/main/COMMUNITY_CATALOG_RULES.md), especially when it covers a limited use case or a small group of users. There you keep it in your own repository and release whenever you want, and users install it from the Marketplace in Music Assistant. The [provider template](https://github.com/music-assistant/community-provider-template) gets you started.

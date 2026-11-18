@@ -29,6 +29,7 @@ from music_assistant.constants import (
     CONF_PLAYER_SPLIT_SESSION_ONLY,
     CONF_PLAYER_SPLIT_TREE,
     CONF_PLAYERS,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED,
 )
 from music_assistant.controllers.config.controller import ConfigController
 
@@ -38,6 +39,7 @@ RECOVERED = {
     CONF_PLAYER_SPLIT_SESSION_ONLY: True,
     CONF_PLAYER_SPLIT_TREE: True,
     CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: True,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED: True,
 }
 
 
