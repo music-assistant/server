@@ -49,6 +49,8 @@ from music_assistant.constants import (
     CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
+    CONF_ENTRY_POWER_CONTROL_CUTS_POWER,
+    CONF_ENTRY_POWER_ON_STARTUP_TIME,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
@@ -1256,10 +1258,10 @@ class PlayerConfigMixin:
         :param player: the protocol object
         """
         default_entries: list[ConfigEntry]
-        is_dedicated_group_player = player.type in (
-            PlayerType.GROUP,
-            PlayerType.STEREO_PAIR,
-        ) and not player.protocol_id.startswith((UGP_PREFIX, SGP_PREFIX))
+        is_dedicated_group_player = (
+            player.type == PlayerType.GROUP
+            and not player.protocol_id.startswith((UGP_PREFIX, SGP_PREFIX))
+        )
         is_http_based_player_protocol = player.provider.domain not in NON_HTTP_PROVIDERS
         if player.type == PlayerType.GROUP and not is_dedicated_group_player:
             # no audio related entries for universal group players or sync group players
@@ -1356,7 +1358,7 @@ class PlayerConfigMixin:
                 icon_entry,
             ]
             return entries
-        # normal player (or stereo pair) config entries
+        # normal player (or multi-channel player) config entries
         entries += [
             icon_entry,
             # add default entries for announce feature
@@ -1450,9 +1452,16 @@ class PlayerConfigMixin:
             # group volume and mute are always fanned out to the members and use each
             # member's own control, so a group only gets the (opt-in) power control
             return [power_entry]
+        # only an external power control can cut the power of the player itself
+        cuts_power_entries = (
+            [CONF_ENTRY_POWER_CONTROL_CUTS_POWER, CONF_ENTRY_POWER_ON_STARTUP_TIME]
+            if any(control.id == player.power_control for control in power_controls)
+            else []
+        )
         # return final config entries for all options
         return [
             power_entry,
+            *cuts_power_entries,
             # Volume control config entry
             ConfigEntry(
                 key=CONF_VOLUME_CONTROL,
@@ -1867,7 +1876,7 @@ class PlayerConfigMixin:
                         for connected_id in connected_players
                     ),
                     default_value=False,
-                    category="plugins",
+                    category="audio_sources",
                     requires_reload=False,
                 )
             )

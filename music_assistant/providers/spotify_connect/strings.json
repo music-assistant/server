@@ -2,7 +2,7 @@
   "config_entries": {
     "connected_players": {
       "label": "[%key:common::config_entries::connected_players::label%]",
-      "description": "The Music Assistant players to expose via Spotify Connect. Every selected player appears as its own device in the Spotify app; audio streamed to it plays on that player. Leave empty to keep the plugin idle."
+      "description": "The Music Assistant players to expose via Spotify Connect. Every selected player appears as its own device in the Spotify app; audio streamed to it plays on that player. Leave empty to keep Spotify Connect idle."
     },
     "publish_name_template": {
       "label": "[%key:common::config_entries::publish_name_template::label%]",

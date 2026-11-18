@@ -889,7 +889,7 @@ class AirPlayPlayer(PlayerProtocol):
                     and ipaddress.ip_address(new_address) in _DOCKER_SUBNET
                     and ipaddress.ip_address(cur_address) not in _DOCKER_SUBNET
                 ):
-                    self.logger.warning(
+                    self.logger.debug(
                         "Ignoring mDNS update from %s to Docker address %s",
                         cur_address,
                         new_address,
@@ -1030,13 +1030,16 @@ class AirPlayPlayer(PlayerProtocol):
         late-join path after a short backoff. Any user action on the player (or it
         joining a session by other means) cancels the re-join; when the group is
         no longer playing, its membership was changed meanwhile or the device is
-        offline, the re-join is abandoned and the player simply stays idle.
+        offline or switched off at its power control, the re-join is abandoned and
+        the player simply stays idle.
 
         :param candidate_ids: Protocol ids of the AirPlay players that led or shared
             the group at the moment the stream was lost, used to resolve the re-join
             target (the leadership may transfer while the backoff runs).
         """
         self.cancel_group_rejoin()
+        if self.player is not None and self.player.offline_by_power_control:
+            return
         self.logger.info(
             "Scheduling automatic re-join of %s to its group after unexpected stream loss",
             self.display_name,
@@ -1446,6 +1449,13 @@ class AirPlayPlayer(PlayerProtocol):
                 # may well have switched it off on purpose
                 self.logger.debug(
                     "Automatic group re-join for %s cancelled: player is unavailable",
+                    self.display_name,
+                )
+                return
+            if self.player is not None and self.player.offline_by_power_control:
+                # the protocol may read available long after the power was cut
+                self.logger.debug(
+                    "Automatic group re-join for %s cancelled: player is switched off",
                     self.display_name,
                 )
                 return

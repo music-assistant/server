@@ -31,6 +31,7 @@ from music_assistant.controllers.config.dsp import DSPConfigMixin
 from music_assistant.controllers.config.flows import SetupFlowMixin
 from music_assistant.controllers.config.migrations import (
     migrate,
+    migrate_ai_default_engines,
     migrate_connected_player_plugins,
     migrate_provider_setup_data,
 )
@@ -100,7 +101,12 @@ class ConfigController(
         connected_plugins_migrated = migrate_connected_player_plugins(
             self._data, self.decrypt_string, self.mass.storage_path
         )
-        if setup_data_migrated or connected_plugins_migrated:
+        # one-off: seed the default AI engines from the engines the features picked and let
+        # the features with that same pick follow the default. Runs here since the AI Radio
+        # picks sit in its encrypted setup_data.
+        # TODO: remove after 2.12 release
+        ai_default_engines_migrated = migrate_ai_default_engines(self._data, self.decrypt_string)
+        if setup_data_migrated or connected_plugins_migrated or ai_default_engines_migrated:
             self.save(immediate=True)
         if not self.onboard_done:
             self.mass.register_api_command(

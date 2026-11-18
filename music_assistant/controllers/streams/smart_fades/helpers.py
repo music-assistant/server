@@ -25,6 +25,18 @@ MIX_OUT_ENERGY_FRACTION = 0.70
 # quiet: a segue overlaps only material below it
 SEGUE_ENERGY_FRACTION = 10 ** (-8 / 20)
 
+# Four bars: fewer beats cannot pin a tempo against the tracker's 20 ms quantization
+_LOCAL_BPM_MIN_BEATS = 16
+# Beats further than this off the fitted grid are mistracked, two tracker frames
+_LOCAL_BPM_MAX_RESIDUAL = 0.04
+# A beat further than this fraction of a period off the nominal grid is not on it
+_LOCAL_BPM_MAX_PHASE_ERROR = 0.25
+# Refits after outlier rejection; the inlier set settles within a few
+_LOCAL_BPM_FIT_PASSES = 3
+# With a smaller share of the window's beats on it, a fit reads a stretch of the
+# window, not the window
+_LOCAL_BPM_MIN_AGREEMENT = 0.8
+
 
 def detect_effective_audio_end(
     rms_energy: npt.NDArray[np.float32] | list[float] | None,
@@ -64,6 +76,54 @@ def detect_effective_audio_end(
         - max(0.0, track_duration - buffer_duration),
         buffer_duration,
     )
+
+
+def local_bpm(beats: npt.NDArray[np.float32], fallback_bpm: float) -> float:
+    """
+    Return the tempo of the beat grid in a window of a track.
+
+    Mistracked beats (dropped, doubled or off the grid) do not count. Returns
+    ``fallback_bpm`` when the window holds no steady grid.
+
+    :param beats: Beat positions in seconds within the window, ascending.
+    :param fallback_bpm: Whole-track tempo, also the nominal beat period for indexing.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    period = 60.0 / fallback_bpm
+    # index each beat by whole periods since the last kept beat, so a dropped beat
+    # advances the index by two; a beat off the nominal grid (doubled, double time
+    # or offbeat) is skipped
+    times: list[float] = []
+    indices: list[float] = []
+    for beat in np.asarray(beats, dtype=np.float64):
+        periods = (beat - times[-1]) / period if times else 0.0
+        step = round(periods)
+        if times and (step == 0 or abs(periods - step) > _LOCAL_BPM_MAX_PHASE_ERROR):
+            continue
+        indices.append(indices[-1] + step if indices else 0.0)
+        times.append(float(beat))
+    if len(times) < _LOCAL_BPM_MIN_BEATS:
+        return fallback_bpm
+    t = np.asarray(times)
+    idx = np.asarray(indices)
+
+    # seed with the median slope over half-window spans, robust to outliers and
+    # fine enough against 20 ms quantization for the residual gate to hold
+    half = len(t) // 2
+    slope = float(np.median((t[half : 2 * half] - t[:half]) / (idx[half : 2 * half] - idx[:half])))
+    intercept = float(np.median(t - slope * idx))
+    min_inliers = max(_LOCAL_BPM_MIN_BEATS, _LOCAL_BPM_MIN_AGREEMENT * len(beats))
+    for _ in range(_LOCAL_BPM_FIT_PASSES):
+        inliers = np.abs(t - (slope * idx + intercept)) <= _LOCAL_BPM_MAX_RESIDUAL
+        if np.count_nonzero(inliers) < min_inliers:
+            return fallback_bpm
+        # centered least squares, so an exact grid reads its exact tempo
+        x = idx[inliers] - idx[inliers].mean()
+        y = t[inliers] - t[inliers].mean()
+        slope = float(x @ y / (x @ x))
+        intercept = float(t[inliers].mean() - slope * idx[inliers].mean())
+    return 60.0 / slope
 
 
 def extrapolate_downbeats(

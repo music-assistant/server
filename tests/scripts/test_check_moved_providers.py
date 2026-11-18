@@ -14,7 +14,7 @@ from scripts.check_moved_providers import (
     MOVED_FILE,
     LookupFailedError,
     NotFoundError,
-    lines_for,
+    channels_for,
     offline_problems,
     online_problems,
     parse_changes,
@@ -33,7 +33,7 @@ class FakeCatalog:
         """
         Initialize the answers.
 
-        :param indexes: The providers of each index by server line; a missing line answers 404.
+        :param indexes: The providers of each index by channel; a missing channel answers 404.
         :param moving: The domains the registry lists as moving.
         """
         self.indexes = indexes
@@ -48,10 +48,10 @@ class FakeCatalog:
             return json.dumps({"moving": self.moving}).encode()
         if url == check.SOURCE_URL.format(sha=BASE_SHA, path=MOVED_FILE):
             return self.base_source.encode()
-        line = url.rsplit("/", 1)[-1].removesuffix(".json")
-        if line not in self.indexes:
+        channel = url.rsplit("/", 1)[-1].removesuffix(".json")
+        if channel not in self.indexes:
             raise NotFoundError(url)
-        return json.dumps({"providers": self.indexes[line]}).encode()
+        return json.dumps({"providers": self.indexes[channel]}).encode()
 
 
 def _listed(version: str | None = "1.0.0", status: str = "listed") -> dict[str, object]:
@@ -61,9 +61,10 @@ def _listed(version: str | None = "1.0.0", status: str = "listed") -> dict[str, 
 
 @pytest.fixture
 def catalog(monkeypatch: pytest.MonkeyPatch) -> FakeCatalog:
-    """Return a catalog where old_music is offered on every line dev reaches."""
+    """Return a catalog where old_music is offered on every channel dev reaches."""
     fake = FakeCatalog(
-        {line: {"old_music": _listed()} for line in ("nightly", "beta", "2.11")}, ["old_music"]
+        {channel: {"old_music": _listed()} for channel in ("nightly", "beta", "2.11")},
+        ["old_music"],
     )
     monkeypatch.setattr(check, "_fetch", fake.fetch)
     monkeypatch.setattr(check, "_server_tags", lambda: TAGS)
@@ -127,7 +128,7 @@ def test_nothing_is_asked_without_a_removal_or_a_change_of_the_list(catalog: Fak
 
 
 def test_a_move_the_catalog_offers_everywhere_passes(catalog: FakeCatalog) -> None:
-    """A removed provider in the moved list passes when every line offers a passed version."""
+    """A removed provider in the moved list passes when every channel offers a passed version."""
     changes = [*REMOVED, ("modified", MOVED_FILE)]
 
     assert online_problems(changes, "dev", BASE_SHA, frozenset({"old_music"})) == []
@@ -139,37 +140,41 @@ def test_a_move_the_catalog_offers_everywhere_passes(catalog: FakeCatalog) -> No
 
 
 @pytest.mark.parametrize(
-    ("line", "entry", "problem"),
+    ("channel", "entry", "problem"),
     [
-        ("beta", None, "old_music: the community catalog index of beta offers no version"),
-        ("nightly", _listed(None), "old_music: the community catalog index of nightly offers no"),
+        ("beta", None, "old_music: the community catalog index of the beta channel offers no"),
+        (
+            "nightly",
+            _listed(None),
+            "old_music: the community catalog index of the nightly channel offers",
+        ),
         (
             "2.11",
             _listed(status="blocked"),
-            "old_music: the community catalog index of 2.11 offers",
+            "old_music: the community catalog index of the stable 2.11 channel offers",
         ),
     ],
 )
-def test_a_move_a_line_does_not_offer_fails(
-    catalog: FakeCatalog, line: str, entry: dict[str, object] | None, problem: str
+def test_a_move_a_channel_does_not_offer_fails(
+    catalog: FakeCatalog, channel: str, entry: dict[str, object] | None, problem: str
 ) -> None:
-    """A line without the provider, without a passed version or with it blocked fails."""
+    """A channel without the provider, without a passed version or with it blocked fails."""
     if entry is None:
-        del catalog.indexes[line]["old_music"]
+        del catalog.indexes[channel]["old_music"]
     else:
-        catalog.indexes[line]["old_music"] = entry
+        catalog.indexes[channel]["old_music"] = entry
 
     [found] = online_problems(REMOVED, "dev", BASE_SHA, frozenset({"old_music"}))
 
     assert found.startswith(problem)
 
 
-def test_a_line_without_an_index_fails(catalog: FakeCatalog) -> None:
-    """The coming stable line needs an index of its own before a provider moves."""
+def test_a_channel_without_an_index_fails(catalog: FakeCatalog) -> None:
+    """The coming stable channel needs an index of its own before a provider moves."""
     del catalog.indexes["2.11"]
 
     assert online_problems(REMOVED, "dev", BASE_SHA, frozenset({"old_music"})) == [
-        "the community catalog has no index for the server line 2.11 yet"
+        "the community catalog has no index for the stable 2.11 channel yet"
     ]
 
 
@@ -182,7 +187,7 @@ def test_a_domain_added_to_the_list_is_checked(catalog: FakeCatalog) -> None:
     )
 
     assert problems == [
-        "old_music: the community catalog index of beta offers no version that passed"
+        "old_music: the community catalog index of the beta channel offers no version that passed"
     ]
 
 
@@ -213,7 +218,7 @@ def test_a_provider_that_is_dropped_passes(catalog: FakeCatalog) -> None:
 
 
 @pytest.mark.parametrize(
-    ("tags", "dev_line", "stable_line"),
+    ("tags", "dev_channel", "stable_channel"),
     [
         # a beta phase: dev heads for 2.11, stable patches 2.10
         (TAGS, "2.11", "2.10"),
@@ -225,14 +230,14 @@ def test_a_provider_that_is_dropped_passes(catalog: FakeCatalog) -> None:
         ([*TAGS, "2.11.0rc1", "2.11.0", "2.11.1"], "2.12", "2.11"),
     ],
 )
-def test_the_lines_a_branch_reaches(
-    monkeypatch: pytest.MonkeyPatch, tags: list[str], dev_line: str, stable_line: str
+def test_the_channels_a_branch_reaches(
+    monkeypatch: pytest.MonkeyPatch, tags: list[str], dev_channel: str, stable_channel: str
 ) -> None:
-    """A change reaches the line of the next release from its branch, as the release names it."""
+    """A change reaches the channel of the next release from its branch, as the release names it."""
     monkeypatch.setattr(check, "_server_tags", lambda: tags)
 
-    assert lines_for("dev") == ["nightly", "beta", dev_line]
-    assert lines_for("stable") == [stable_line]
+    assert channels_for("dev") == ["nightly", "beta", dev_channel]
+    assert channels_for("stable") == [stable_channel]
 
 
 def test_a_renamed_manifest_counts_as_removed() -> None:

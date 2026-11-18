@@ -272,6 +272,11 @@ def _rg(
 # ---------------------------------------------------------------------------
 
 
+def test_offered_tracks_only() -> None:
+    """Podcasts and audiobooks never reach the fingerprinter: the provider is offered tracks."""
+    assert AcoustidLookupProvider.media_types == frozenset({MediaType.TRACK})
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
@@ -286,15 +291,6 @@ def _rg(
         pytest.param({}, {}, "0000-mbid", None, True, False, id="mbid_already_present"),
         pytest.param({}, {}, None, "USRC17607839", True, False, id="isrc_already_present"),
         pytest.param({}, {}, None, None, False, False, id="no_library_row"),
-        pytest.param(
-            {},
-            {"media_type": MediaType.PODCAST_EPISODE},
-            None,
-            None,
-            False,
-            False,
-            id="non_track_media",
-        ),
         pytest.param(
             {"analyse_streaming": False},
             {"stream_type": StreamType.HTTP},

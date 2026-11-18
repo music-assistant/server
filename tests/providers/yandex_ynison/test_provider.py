@@ -181,6 +181,7 @@ def _make_mock_manifest() -> MagicMock:
     """Create a mock ProviderManifest."""
     manifest = MagicMock()
     manifest.domain = "yandex_ynison"
+    manifest.features = {ProviderFeature.AUDIO_SOURCE}
     return manifest
 
 
@@ -189,7 +190,7 @@ def _make_provider(player_id: str = "player1") -> YandexYnisonProvider:
     mass = _make_mock_mass()
     config = _make_mock_config({CONF_MASS_PLAYER_ID: player_id})
     manifest = _make_mock_manifest()
-    provider = YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
+    provider = YandexYnisonProvider(mass, manifest, config)
     provider._credential_source = YandexMusicCredentialSource(mass, provider._ym_instance_id)
     return provider
 
@@ -246,7 +247,6 @@ class TestProviderInit:
             mass,
             _make_mock_manifest(),
             config,
-            {ProviderFeature.AUDIO_SOURCE},
         )
 
         assert provider._ym_instance_id == "ym-primary"
@@ -266,7 +266,6 @@ class TestProviderInit:
                 mass,
                 _make_mock_manifest(),
                 _make_mock_config(),
-                {ProviderFeature.AUDIO_SOURCE},
             )
             with pytest.raises(LoginFailed, match="Reconfigure this Ynison instance"):
                 await provider.handle_async_init()
@@ -282,7 +281,6 @@ class TestProviderInit:
             mass,
             _make_mock_manifest(),
             _make_mock_config(),
-            {ProviderFeature.AUDIO_SOURCE},
         )
         _stub_attr(provider, "_resolve_token", AsyncMock(return_value=SecretStr("unused")))
 
@@ -354,7 +352,7 @@ class TestProviderInit:
         config = _make_mock_config({CONF_DEVICE_ID: None})
         manifest = _make_mock_manifest()
 
-        provider = YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
+        provider = YandexYnisonProvider(mass, manifest, config)
 
         # Should have generated a device ID and saved it
         mass.config.set_raw_provider_config_value.assert_called()
@@ -366,7 +364,7 @@ class TestProviderInit:
         config = _make_mock_config({CONF_DEVICE_ID: "existing-uuid"})
         manifest = _make_mock_manifest()
 
-        provider = YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
+        provider = YandexYnisonProvider(mass, manifest, config)
 
         assert provider._device_id == "existing-uuid"
 
@@ -544,7 +542,6 @@ class TestSourceSelection:
             mass,
             _make_mock_manifest(),
             config,
-            {ProviderFeature.AUDIO_SOURCE},
         )
         mass.players.get_player.return_value = MagicMock()
         _attach_protocols(
@@ -611,7 +608,7 @@ class TestSourceSelection:
         mass = _make_mock_mass()
         config = _make_mock_config({CONF_ALLOW_PLAYER_SWITCH: False})
         manifest = _make_mock_manifest()
-        provider = YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
+        provider = YandexYnisonProvider(mass, manifest, config)
 
         # Set default player
         provider._default_player_id = "default-player"
@@ -638,7 +635,7 @@ class TestSourceSelection:
         mass = _make_mock_mass()
         config = _make_mock_config({CONF_ALLOW_PLAYER_SWITCH: False})
         manifest = _make_mock_manifest()
-        provider = YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
+        provider = YandexYnisonProvider(mass, manifest, config)
 
         provider._default_player_id = "default-player"
         mass.players.get_player.return_value = MagicMock()
@@ -5021,7 +5018,6 @@ class TestStableOnlySource:
             _make_mock_mass(),
             _make_mock_manifest(),
             _make_mock_config({"stream_mode": "max_quality_dynamic"}),
-            {ProviderFeature.AUDIO_SOURCE},
         )
         assert not hasattr(provider, "_dynamic_task")
         assert provider._normalized_format.content_type == ContentType.PCM_S16LE
@@ -5046,7 +5042,7 @@ def _merged_provider() -> YandexYnisonProvider:
         side_effect=lambda player_id: merged_into if player_id == "player2" else None
     )
     config = _make_mock_config({CONF_MASS_PLAYER_ID: "player1", CONF_ALLOW_PLAYER_SWITCH: False})
-    return YandexYnisonProvider(mass, _make_mock_manifest(), config, {ProviderFeature.AUDIO_SOURCE})
+    return YandexYnisonProvider(mass, _make_mock_manifest(), config)
 
 
 class TestMergedConnectedPlayer:

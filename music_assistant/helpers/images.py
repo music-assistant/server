@@ -25,6 +25,7 @@ from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailabl
 from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import APPLICATION_NAME, CONF_PROVIDERS
+from music_assistant.helpers.diagnostics import redact_url_credentials
 from music_assistant.helpers.security import has_control_chars, is_safe_path
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.helpers.util import join_task
@@ -502,7 +503,8 @@ async def _fetch_source_image(
         try:
             return await _fetch_remote_image(mass, path_or_url), True
         except ClientError as err:
-            msg = f"Failed to fetch image from {path_or_url}: {err}"
+            # the URL and the aiohttp error text may carry a provider token (Plex, Jellyfin)
+            msg = redact_url_credentials(f"Failed to fetch image from {path_or_url}: {err}")
             raise FileNotFoundError(msg) from err
     # handle base64 embedded images
     if path_or_url.startswith("data:image"):

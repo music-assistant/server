@@ -310,7 +310,7 @@ def _tracker(*items: Any) -> Any:
         QUEUE_ID: SimpleNamespace(
             items=list(items),
             flow_mode_stream_log=[],
-            served_item_ids={"i1"},
+            served_item_ids={"i1": None},
             sleep_timer_stopped_target=None,
             halted_by_command=False,
             started_session_id=None,

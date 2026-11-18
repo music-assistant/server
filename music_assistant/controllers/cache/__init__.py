@@ -10,7 +10,7 @@ from .constants import (
     MAX_CACHE_DB_SIZE_MB,
 )
 from .controller import CacheController
-from .helpers import use_cache
+from .helpers import forget_cached, use_cache
 
 __all__ = [
     "BYPASS_CACHE",
@@ -18,5 +18,6 @@ __all__ = [
     "MAX_CACHE_DB_SIZE_MB",
     "CacheController",
     "SerializableType",
+    "forget_cached",
     "use_cache",
 ]

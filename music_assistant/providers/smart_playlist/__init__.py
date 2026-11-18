@@ -58,7 +58,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.plugin_engines import (
     create_ai_engine_config_entries,
-    select_ai_engine,
+    resolve_ai_engine_setting,
 )
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.track_filter import filter_tracks
@@ -1538,9 +1538,9 @@ class SmartPlaylistProvider(PluginProvider):
         if not self.config.get_value(CONF_AI_DESCRIPTIONS):
             return None
         locale = self.mass.metadata.locale
-        # selected on first use rather than at init: providers load concurrently, so the
+        # resolved on use rather than at init: providers load concurrently, so the
         # plugin supplying the engines may not have been available back then
-        engine = await select_ai_engine(self, CONF_AI_ENGINE)
+        engine = await resolve_ai_engine_setting(self.mass, self.config.get_value(CONF_AI_ENGINE))
         if engine is None:
             return None
         query_timeout = asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS)

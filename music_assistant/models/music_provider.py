@@ -54,6 +54,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     PlaylistPlayableItem,
 )
+from music_assistant.controllers.cache.helpers import forget_cached
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_text,
@@ -79,6 +80,7 @@ if TYPE_CHECKING:
         PodcastSyncDetails,
         TrackSyncDetails,
     )
+    from music_assistant.controllers.streams.audio_buffer import AudioBuffer
     from music_assistant.mass import MusicAssistant
 
 CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
@@ -273,6 +275,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             if max_concurrent_streams is not None
             else None
         )
+        self._stream_slot_holders: set[AudioBuffer] = set()
 
     def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool:
         """
@@ -319,12 +322,21 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """Return whether a source stream can start without waiting."""
         return self._stream_semaphore is None or not self._stream_semaphore.locked()
 
+    @property
+    def stream_slot_holders(self) -> tuple[AudioBuffer, ...]:
+        """Return the audio buffers whose sources hold a source-stream slot right now."""
+        return tuple(self._stream_slot_holders)
+
     @asynccontextmanager
-    async def acquire_stream_slot(self, wait_timeout: float | None) -> AsyncGenerator[None]:
+    async def acquire_stream_slot(
+        self, wait_timeout: float | None, holder: AudioBuffer | None = None
+    ) -> AsyncGenerator[None]:
         """
         Acquire one source-stream slot for the duration of the context.
 
         :param wait_timeout: Maximum seconds to wait, or None to wait without a timeout.
+        :param holder: The audio buffer the slot is for, listed in ``stream_slot_holders``
+            for as long as it holds the slot.
         :raises ProviderStreamLimitError: If no slot becomes available before the timeout.
         """
         semaphore = self._stream_semaphore
@@ -339,9 +351,13 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     await semaphore.acquire()
         except TimeoutError as err:
             raise ProviderStreamLimitError(self, wait_timeout) from err
+        if holder is not None:
+            self._stream_slot_holders.add(holder)
         try:
             yield
         finally:
+            if holder is not None:
+                self._stream_slot_holders.discard(holder)
             semaphore.release()
 
     @property
@@ -723,6 +739,17 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_EDIT.
         """
         raise NotImplementedError
+
+    async def forget_playlist_tracks(self, prov_playlist_id: str) -> None:
+        """
+        Drop what the provider keeps of a playlist's tracks, so the next read fetches them anew.
+
+        Called once Music Assistant changed the playlist. The default drops what use_cache
+        keeps of get_playlist_tracks; override it when the provider keeps them another way.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        """
+        await forget_cached(self.get_playlist_tracks, prov_playlist_id)
 
     async def move_playlist_track(
         self, prov_playlist_id: str, from_position: int, to_position: int

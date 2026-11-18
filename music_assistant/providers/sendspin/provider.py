@@ -543,8 +543,6 @@ class SendspinProvider(PlayerProvider):
                 else:
                     self._unencrypted_clients.discard(client_id)
                 self._set_held_elsewhere(client_id, held=False)
-                if isinstance(player := self.get_protocol(client_id), SendspinBasePlayer):
-                    player.on_client_connected()
                 # A reconnect within aiosendspin's cleanup delay reuses the player, and this
                 # event fires before the new connection's roles are attached.
                 self.mass.loop.call_soon(self._refresh_player_state, client_id)

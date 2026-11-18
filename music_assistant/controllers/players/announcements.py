@@ -46,7 +46,7 @@ from music_assistant.helpers.plugin_engines import (
     engine_display_name,
     get_tts_engines,
     resolve_tts_engine,
-    select_core_tts_engine,
+    resolve_tts_engine_setting,
 )
 from music_assistant.helpers.tts import (
     query_tts_engine_with_language_fallback,
@@ -127,7 +127,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
         ):
             raise PlayerCommandFailed("Invalid pre-announce chime URL specified.")
         # a player switched off at its power control is powered on for the announcement (and
-        # then stays on), before the lock is taken: waiting for it to come online takes far
+        # then stays on), before the lock is taken: waiting for it to start up takes far
         # longer than other commands wait for the lock
         player = await self._power_on_switched_off_player(player.player_id)
         # A member's announcement detaches it from its (sync)group and joins it back
@@ -472,11 +472,22 @@ class AnnouncementsMixin(_PlayerControllerBase):
         if tts_engine:
             engine = await resolve_tts_engine(self.mass, tts_engine)
             if engine is None:
-                raise PlayerCommandFailed(f"TTS engine '{tts_engine}' is not available.")
+                raise PlayerCommandFailed(
+                    f"TTS engine '{tts_engine}' is not available.",
+                    translation_key="tts_engine_unavailable",
+                    translation_owner=self.translation_owner,
+                )
         else:
-            engine = await select_core_tts_engine(self.mass, self.domain, CONF_ANNOUNCE_TTS_ENGINE)
+            engine = await resolve_tts_engine_setting(
+                self.mass,
+                self.mass.config.get_raw_core_config_value(self.domain, CONF_ANNOUNCE_TTS_ENGINE),
+            )
             if engine is None:
-                raise PlayerCommandFailed("No text-to-speech engine is available.")
+                raise PlayerCommandFailed(
+                    "No text-to-speech engine is available.",
+                    translation_key="tts_engine_unavailable",
+                    translation_owner=self.translation_owner,
+                )
         stream_details = await query_tts_engine_with_language_fallback(
             engine,
             message,

@@ -14,12 +14,14 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import ClientSession, web
-from aiohttp.client_exceptions import ClientError
+from aiohttp import ClientSession, RequestInfo, web
+from aiohttp.client_exceptions import ClientError, ClientResponseError
 from aiohttp.test_utils import TestServer
+from multidict import CIMultiDict, CIMultiDictProxy
 from music_assistant_models.enums import ProviderIconVariant
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from PIL import Image
+from yarl import URL
 
 from music_assistant.helpers import images
 from music_assistant.helpers.images import (
@@ -681,6 +683,40 @@ async def test_failed_source_retried_after_ttl_or_invalidation(
     monkeypatch.setattr(images, "_fetch_remote_image", ok_remote_fetch)
     assert await get_image_data(mass_minimal, remote_url, "builtin") == b"remote-image-bytes"
     assert len(fetch_calls) == 3
+
+
+@pytest.mark.parametrize(
+    "remote_url",
+    [
+        "http://plex.local:32400/library/metadata/1/thumb/2?X-Plex-Token=s3cr3t-token",
+        "http://jellyfin.local:8096/Items/abc/Images/Primary?api_key=s3cr3t-token",
+        "http://user:s3cr3t-token@art.example.com/cover.jpg",
+    ],
+)
+async def test_failed_fetch_hides_url_credentials(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    remote_url: str,
+) -> None:
+    """A failed fetch keeps the token in the URL out of the error and the log."""
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+
+    async def failing_remote_fetch(_mass: MusicAssistant, url: str) -> bytes:
+        request_info = RequestInfo(URL(url), "GET", CIMultiDictProxy(CIMultiDict()), URL(url))
+        raise ClientResponseError(request_info, (), status=401, message="Unauthorized")
+
+    monkeypatch.setattr(images, "_fetch_remote_image", failing_remote_fetch)
+    caplog.set_level(logging.WARNING, logger="music_assistant.helpers.images")
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        await get_image_data(mass_minimal, remote_url, "builtin")
+
+    assert "401" in str(exc_info.value)
+    assert "s3cr3t-token" not in str(exc_info.value)
+    assert caplog.records
+    assert all("s3cr3t-token" not in rec.getMessage() for rec in caplog.records)
 
 
 async def test_remote_http_404_yields_file_not_found(mass_minimal: MusicAssistant) -> None:

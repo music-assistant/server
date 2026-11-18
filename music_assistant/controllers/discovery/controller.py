@@ -14,7 +14,9 @@ from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, EventType
-from zeroconf import (
+from zeroconf import (  # type: ignore[attr-defined]  # AddressResolver is missing in __all__
+    AddressResolver,
+    IPVersion,
     NonUniqueNameException,
     ServiceStateChange,
     Zeroconf,
@@ -27,6 +29,7 @@ from music_assistant.constants import (
     INGRESS_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.helpers.build_info import release_channel
 from music_assistant.helpers.hassio import SupervisorError, supervisor_request
 from music_assistant.helpers.util import get_ip_pton, get_zeroconf_args
 from music_assistant.models.core_controller import CoreController
@@ -51,6 +54,11 @@ UPNP_DISCOVERY_TIMER_ID = "discovery_upnp_timer"
 
 # mDNS service types that devices of any kind announce: seeing one says nothing about a provider
 GENERIC_MDNS_TYPES: Final = frozenset({"_http._tcp.local."})
+
+# The mDNS hostname a server claims when no other host on the network answers for it
+MASS_MDNS_HOSTNAME: Final = "musicassistant.local."
+MASS_MDNS_HOSTNAME_PROBE_TIMEOUT: Final = 1000  # milliseconds
+MASS_SERVICE_TASK_ID: Final = "discovery_register_mass_service"
 
 # Re-announce daily so the HA integration token rotates before expiry, also on long uptimes
 HA_ANNOUNCE_INTERVAL = 86400
@@ -80,6 +88,8 @@ class DiscoveryController(CoreController):
         self._aiozc: AsyncZeroconf | None = None
         self._mdns_browser: AsyncServiceBrowser | None = None
         self._mass_service_info: AsyncServiceInfo | None = None
+        self._mass_service_lock = asyncio.Lock()
+        self._mass_hostname: str | None = None
         self._mdns_locks: dict[str, asyncio.Lock] = {}
         self._upnp_locks: dict[str, asyncio.Lock] = {}
         self._upnp_run_lock = asyncio.Lock()
@@ -106,7 +116,8 @@ class DiscoveryController(CoreController):
         self.config = config
         self._configure_library_loggers()
         await self._setup_mdns_browser()
-        await self._register_mass_service()
+        # claiming the hostname probes the network, which must not delay the startup
+        self.mass.create_task(self._register_mass_service(), task_id=MASS_SERVICE_TASK_ID)
         # the mdns record embeds the server info, so refresh it when that info
         # changes (e.g. the server was renamed or its state/urls changed)
         self.mass.subscribe(self._on_core_state_updated, EventType.CORE_STATE_UPDATED)
@@ -133,6 +144,7 @@ class DiscoveryController(CoreController):
         self.mass.cancel_timer(UPNP_DISCOVERY_TIMER_ID)
         self.mass.cancel_task(UPNP_DISCOVERY_TASK_ID)
         self.mass.cancel_timer(HA_ANNOUNCE_TIMER_ID)
+        self.mass.cancel_task(MASS_SERVICE_TASK_ID)
 
         await self._cancel_mdns_browser()
 
@@ -328,29 +340,56 @@ class DiscoveryController(CoreController):
 
     async def _register_mass_service(self) -> None:
         """Register the Music Assistant server on the network via Zeroconf."""
-        zeroconf_type = "_mass._tcp.local."
-        server_id = self.mass.server_id
-        self.logger.debug("Starting Zeroconf broadcast...")
-        info = AsyncServiceInfo(
-            zeroconf_type,
-            name=f"{server_id}.{zeroconf_type}",
-            addresses=[
+        async with self._mass_service_lock:
+            zeroconf_type = "_mass._tcp.local."
+            server_id = self.mass.server_id
+            self.logger.debug("Starting Zeroconf broadcast...")
+            addresses = [
                 await get_ip_pton(address) for address in self.mass.webserver.publish_addresses
-            ],
-            port=self.mass.webserver.publish_port,
-            properties=self.mass.get_server_info().to_dict(),
-            server="mass.local.",
-        )
-        try:
-            if self._mass_service_info:
-                await self.aiozc.async_update_service(info)
-            else:
-                await self.aiozc.async_register_service(info)
-            self._mass_service_info = info
-        except NonUniqueNameException:
-            self.logger.error(
-                "Music Assistant instance with identical name present in the local network!"
+            ]
+            if self._mass_hostname is None:
+                self._mass_hostname = await self._choose_mass_hostname(addresses)
+            info = AsyncServiceInfo(
+                zeroconf_type,
+                name=f"{server_id}.{zeroconf_type}",
+                addresses=addresses,
+                port=self.mass.webserver.publish_port,
+                properties=self.mass.get_server_info().to_dict(),
+                server=self._mass_hostname,
             )
+            try:
+                if self._mass_service_info:
+                    await self.aiozc.async_update_service(info)
+                else:
+                    await self.aiozc.async_register_service(info)
+                self._mass_service_info = info
+            except NonUniqueNameException:
+                self.logger.error(
+                    "Music Assistant instance with identical name present in the local network!"
+                )
+
+    async def _choose_mass_hostname(self, own_addresses: list[bytes]) -> str:
+        """
+        Return the mDNS hostname to advertise the server on.
+
+        :param own_addresses: The packed IP addresses the server publishes.
+        """
+        fallback = f"musicassistant-{self.mass.server_id[:6]}.local."
+        if release_channel(self.mass.version) == "nightly":
+            self.logger.debug("Using mDNS hostname %s", fallback)
+            return fallback
+        resolver = AddressResolver(MASS_MDNS_HOSTNAME)
+        await resolver.async_request(self.aiozc.zeroconf, MASS_MDNS_HOSTNAME_PROBE_TIMEOUT)
+        # an answer with only our own addresses comes from this host, which may carry the name
+        if set(resolver.addresses_by_version(IPVersion.All)) - set(own_addresses):
+            self.logger.info(
+                "Another host on the network uses %s, using %s instead",
+                MASS_MDNS_HOSTNAME,
+                fallback,
+            )
+            return fallback
+        self.logger.debug("Using mDNS hostname %s", MASS_MDNS_HOSTNAME)
+        return MASS_MDNS_HOSTNAME
 
     async def _on_core_state_updated(self, event: MassEvent) -> None:
         """Refresh the advertised mdns record after the server info changed."""
