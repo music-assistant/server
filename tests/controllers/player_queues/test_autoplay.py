@@ -278,7 +278,7 @@ def test_get_queue_config_entries_categories_and_dependencies() -> None:
     assert by_key["autoplay_playlist"].depends_on_value == AutoplayMode.PLAYLIST.value
     assert by_key["crossfade_mode"].category == "crossfade"
     assert by_key["crossfade_mode"].default_value == CONF_VALUE_GLOBAL
-    assert by_key["volume_normalization"].category == "audio"
+    assert by_key["volume_normalization"].category == "volume_normalization"
     assert by_key["volume_normalization"].default_value == CONF_VALUE_GLOBAL
     # crossfade duration and the recency windows are global-only, so they are not per-queue entries
     assert "crossfade_duration" not in by_key

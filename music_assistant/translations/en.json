@@ -1,8 +1,8 @@
 {
+  "common.config_categories.account_access": "Account access",
   "common.config_categories.advanced": "Advanced",
   "common.config_categories.airplay": "AirPlay specific settings",
   "common.config_categories.announcements": "Announcements",
-  "common.config_categories.audio": "Audio",
   "common.config_categories.audio_analysis": "Audio Analysis",
   "common.config_categories.audio_sources": "Audio sources",
   "common.config_categories.autoplay": "Autoplay",
@@ -34,6 +34,7 @@
   "common.config_categories.source_selection": "Source selection",
   "common.config_categories.status": "Status",
   "common.config_categories.sync_options": "Sync/import options",
+  "common.config_categories.volume_normalization": "Volume normalization",
   "common.config_categories.web_player": "Web Player",
   "common.config_entries.ai_engine.description": "The AI engine used for this feature. Unless you pick one, it uses the default AI engine from the AI settings.",
   "common.config_entries.ai_engine.label": "AI engine",

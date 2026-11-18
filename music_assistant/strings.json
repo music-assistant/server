@@ -494,6 +494,7 @@
     "click_actions": "Click actions",
     "autoplay": "Autoplay",
     "crossfade": "Crossfade",
+    "volume_normalization": "Volume normalization",
     "smart_shuffle": "Smart shuffle",
     "protocol_settings": "Output Protocol(s)",
     "protocol_output_settings": "Enable {0} support",
@@ -501,7 +502,6 @@
     "audio_sources": "Audio sources",
     "dsp": "Digital Signal Processing (DSP)",
     "options": "Player options",
-    "audio": "Audio",
     "preferences": "Preferences",
     "display_settings": "Display",
     "airplay": "AirPlay specific settings",
@@ -515,7 +515,8 @@
     "discover": "Discover",
     "debug": "Debug",
     "server": "Server",
-    "recommendations": "Recommendations"
+    "recommendations": "Recommendations",
+    "account_access": "Account access"
   },
   "media": {
     "genre": {
