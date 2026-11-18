@@ -322,6 +322,8 @@
     "playback_speed_not_supported": "The playback speed can only be changed for audiobooks and podcasts.",
     "length_unknown": "The length of {0} is unknown, so this is not possible.",
     "seek_past_end": "That position is past the end of {0}.",
-    "live_input_plays_alone": "A live input can only be played on its own, not together with other items."
+    "live_input_plays_alone": "A live input can only be played on its own, not together with other items.",
+    "no_audio_from_provider": "Could not get audio from {0}.",
+    "no_audio_from_sources": "Could not get audio for the tracks in the queue."
   }
 }
