@@ -757,7 +757,7 @@ class OpenSonicProvider(MusicProvider):
                 matches = await self.conn.get_sonic_similar_tracks(
                     song_id=prov_track_id, count=limit
                 )
-            except SonicError as e:
+            except (SonicError, ClientResponseError, TimeoutError) as e:
                 # A server can advertise the extension while its analysis backend is
                 # unavailable, so fall back to the metadata based getSimilarSongs.
                 self.logger.debug(
