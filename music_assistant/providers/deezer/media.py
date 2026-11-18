@@ -284,25 +284,36 @@ class DeezerMediaManager:
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Deezer."""
+        edges = [
+            edge
+            async for edge in self._iter_paged(
+                self.provider.gql_client.get_favorite_artists,
+                lambda r: r.user_favorites.artists,
+            )
+        ]
+        try:
+            author_ids = await self._get_authors_without_music(
+                {
+                    edge.node.id: [
+                        release.node.id for release in edge.node.albums.edges if release.node
+                    ]
+                    for edge in edges
+                }
+            )
+        except (
+            ClientError,
+            GraphQLClientError,
+            InvalidDataError,
+            RetriesExhausted,
+            TimeoutError,
+        ) as err:
+            # without the check the type is unknown, so the library stays as it is
+            self.provider.report_skipped_sync_item(MediaType.ARTIST, None, err)
+            edges, author_ids = [], set()
         seen_author_ids: set[str] = set()
-        async for edge in self._iter_paged(
-            self.provider.gql_client.get_favorite_artists,
-            lambda r: r.user_favorites.artists,
-        ):
+        for edge in edges:
             item = parse_artist(self.provider, edge.node)
-            try:
-                author_only = await self._is_author_only(edge.node.id)
-            except (
-                ClientError,
-                GraphQLClientError,
-                InvalidDataError,
-                RetriesExhausted,
-                TimeoutError,
-            ) as err:
-                # without the check the type is unknown, so the library stays as it is
-                self.provider.report_skipped_sync_item(MediaType.ARTIST, None, err)
-                continue
-            if author_only:
+            if edge.node.id in author_ids:
                 item = parse_author(self.provider, edge.node.id, edge.node.name, item.metadata)
                 seen_author_ids.add(item.item_id)
             if edge.favorited_at:
@@ -993,11 +1004,27 @@ class DeezerMediaManager:
         )
         return releases, audiobook_ids
 
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def _is_author_only(self, artist_id: str) -> bool:
         """Tell whether a Deezer artist has audiobooks but no music."""
-        if await self.get_artist_albums(artist_id):
+        result = await self.provider.gql_client.get_artist(artist_id=artist_id)
+        if result is None:
             return False
-        return bool(await self.get_author_audiobooks(f"{AUTHOR_ARTIST_PREFIX}{artist_id}"))
+        release_ids = [edge.node.id for edge in result.albums.edges if edge.node is not None]
+        return artist_id in await self._get_authors_without_music({artist_id: release_ids})
+
+    async def _get_authors_without_music(self, releases: dict[str, list[str]]) -> set[str]:
+        """Return the artists whose newest releases are all audiobooks."""
+        check_audiobook_ids = self.provider.gql_client.check_audiobook_ids
+        newest_audiobooks = await check_audiobook_ids([ids[0] for ids in releases.values() if ids])
+        # only an artist with an audiobook as newest release needs the rest checked
+        candidates = {
+            artist_id: ids
+            for artist_id, ids in releases.items()
+            if ids and ids[0] in newest_audiobooks
+        }
+        audiobooks = await check_audiobook_ids([i for ids in candidates.values() for i in ids[1:]])
+        return {artist_id for artist_id, ids in candidates.items() if set(ids[1:]) <= audiobooks}
 
     async def _search_artists(
         self, nodes: list[SearchSearchResultsArtistsEdgesNode], author_ids: set[str]
@@ -1011,7 +1038,7 @@ class DeezerMediaManager:
                 continue
             # an author is listed as artist too only if the artist page has music
             try:
-                has_music = bool(await self.get_artist_albums(node.id))
+                has_music = not await self._is_author_only(node.id)
             except (
                 ClientError,
                 GraphQLClientError,
