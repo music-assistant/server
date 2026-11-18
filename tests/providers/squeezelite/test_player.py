@@ -37,6 +37,7 @@ from music_assistant.providers.squeezelite.constants import (
     DEFAULT_PLAYER_VOLUME,
 )
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer, is_protocol_only_device
+from music_assistant.providers.squeezelite.provider import SqueezelitePlayerProvider
 from tests.common import use_real_create_task
 
 if TYPE_CHECKING:
@@ -681,22 +682,29 @@ def _player_for_volume_restore(
         ({}, None, DEFAULT_PLAYER_VOLUME),
     ],
 )
-async def test_setup_restores_volume_without_a_valid_cache_entry(
+async def test_connect_restores_volume_without_a_valid_cache_entry(
     stored: dict[str, object],
     legacy_cache: list[object] | None,
     expected_volume: int,
 ) -> None:
-    """Reconnecting restores the last volume even after the cache entry expired."""
-    player, mass = _player_for_volume_restore(stored, legacy_cache)
+    """A reconnecting player starts at its last volume even after the cache entry expired."""
+    _, mass = _player_for_volume_restore(stored, legacy_cache)
+    provider = MagicMock(mass=mass, instance_id="squeezelite_1")
+
+    assert await SqueezelitePlayerProvider._get_initial_volume(provider, "p1") == expected_volume
+
+
+async def test_setup_sends_no_volume() -> None:
+    """The volume goes out once, on connect: a WiiM keeps the first of two quick volume commands."""
+    player, mass = _player_for_volume_restore({CONF_STORED_VOLUME: 35}, None)
 
     with patch.object(player, "update_attributes"):
         await player.setup()
 
     client = cast("MagicMock", player.client)
     client.mute.assert_not_called()
-    client.volume_set.assert_awaited_once_with(expected_volume)
+    client.volume_set.assert_not_called()
     mass.players.register.assert_awaited_once_with(player)
-    assert stored[CONF_STORED_VOLUME] == expected_volume
 
 
 async def test_a_first_connect_stores_the_volume_once_attached() -> None:
