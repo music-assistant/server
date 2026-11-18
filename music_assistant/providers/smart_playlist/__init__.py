@@ -21,9 +21,11 @@ from contextlib import suppress
 from dataclasses import replace as dc_replace
 from itertools import zip_longest
 from pathlib import Path
+from sqlite3 import IntegrityError, OperationalError
 from types import EllipsisType
 from typing import TYPE_CHECKING, Any, cast
 
+from hass_client.exceptions import BaseHassClientError
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
@@ -34,7 +36,12 @@ from music_assistant_models.enums import (
     ProviderFeature,
     SortField,
 )
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    InvalidProviderURI,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant_models.media_items import (
     BrowseFolder,
     Genre,
@@ -47,6 +54,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.media_items.metadata import MediaItemImage, MediaItemMetadata
+from orjson import JSONDecodeError
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.controllers.cache import use_cache
@@ -288,7 +296,7 @@ class SmartPlaylistProvider(PluginProvider):
                     await self.mass.music.remove_item_from_library(
                         MediaType.PLAYLIST, library_item.item_id
                     )
-                except Exception as exc:
+                except (MusicAssistantError, OperationalError, IntegrityError) as exc:
                     self.logger.debug(
                         "Could not remove playlist %s from library: %s", playlist_id, exc
                     )
@@ -439,7 +447,7 @@ class SmartPlaylistProvider(PluginProvider):
                 self.logger.info("Re-adding missing smart playlist '%s' to library", playlist_id)
                 playlist = await self._build_playlist(playlist_id, rules)
                 await self.mass.music.playlists.add_item_to_library(playlist)
-            except Exception as exc:
+            except (MusicAssistantError, OperationalError, IntegrityError) as exc:
                 self.logger.warning("Could not re-add smart playlist %s: %s", playlist_id, exc)
 
     async def _on_media_item_deleted(self, event: MassEvent) -> None:
@@ -698,11 +706,12 @@ class SmartPlaylistProvider(PluginProvider):
         # Try to resolve as a library DB id
         try:
             library_item = await self.mass.music.playlists.get_library_item(playlist_id)
-            for mapping in library_item.provider_mappings:
-                if mapping.provider_instance == self.instance_id:
-                    return mapping.item_id
-        except Exception as err:
+        except (ValueError, MediaNotFoundError) as err:
             self.logger.debug("Could not resolve playlist id %s: %s", playlist_id, err)
+            return None
+        for mapping in library_item.provider_mappings:
+            if mapping.provider_instance == self.instance_id:
+                return mapping.item_id
         return None
 
     async def _build_playlist(
@@ -1378,13 +1387,17 @@ class SmartPlaylistProvider(PluginProvider):
         for uri in seed_uris:
             try:
                 media_type, provider, item_id = await parse_uri(uri)
-            except Exception:
+            except InvalidProviderURI:
                 self.logger.warning("Cannot parse seed URI: %s", uri)
                 continue
             try:
                 ctrl = self.mass.music.get_controller(media_type)
+            except NotImplementedError as exc:
+                self.logger.warning("Could not resolve seed %s: %s", uri, exc)
+                continue
+            try:
                 seeds.append(await ctrl.get(item_id, provider))
-            except Exception as exc:
+            except (MusicAssistantError, OSError) as exc:
                 self.logger.warning("Could not resolve seed %s: %s", uri, exc)
         if not seeds:
             return []
@@ -1476,7 +1489,7 @@ class SmartPlaylistProvider(PluginProvider):
             await self.mass.music.playlists.update_item_in_library(
                 library_item_id, updated, overwrite=True
             )
-        except Exception as exc:
+        except (MusicAssistantError, OperationalError, IntegrityError) as exc:
             self.logger.debug("Could not update description for %s: %s", library_item_id, exc)
 
     def _visible_folders(self, folder_paths: list[str]) -> list[str]:
@@ -1547,13 +1560,12 @@ class SmartPlaylistProvider(PluginProvider):
         engine = await resolve_ai_engine_setting(self.mass, self.config.get_value(CONF_AI_ENGINE))
         if engine is None:
             return None
+        prompt = self._build_ai_prompt(name, rules, locale)
         query_timeout = asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS)
         try:
             async with query_timeout:
-                response = await engine.provider.ai_query(
-                    self._build_ai_prompt(name, rules, locale), engine_id=engine.id
-                )
-        except Exception as exc:
+                response = await engine.provider.ai_query(prompt, engine_id=engine.id)
+        except (MusicAssistantError, BaseHassClientError, TimeoutError) as exc:
             # expired() tells our own cap apart from a timeout raised inside the engine
             details: str | Exception = (
                 f"no response within {AI_QUERY_TIMEOUT_SECONDS}s"
@@ -1589,9 +1601,15 @@ class SmartPlaylistProvider(PluginProvider):
             return
         try:
             data = await read_json(rules_file)
+            if not isinstance(data, dict):
+                self.logger.warning("Failed to load smart playlist rules: expected a JSON object")
+                return
             for playlist_id, entry in data.items():
+                if not isinstance(entry, dict) or not isinstance(entry.get("rules"), dict):
+                    self.logger.warning("Invalid rules for smart playlist %s", playlist_id)
+                    return
                 self._rules_store[playlist_id] = SmartPlaylistRules.from_dict(entry["rules"])
-                self._names_store[playlist_id] = entry.get("name", playlist_id)
+                self._names_store[playlist_id] = entry.get("name", str(playlist_id))
                 # a description persisted before the size cap existed is dropped here too
                 description = entry.get("ai_description")
                 if (
@@ -1600,7 +1618,7 @@ class SmartPlaylistProvider(PluginProvider):
                     and len(description.encode("utf-8")) <= MAX_AI_DESCRIPTION_BYTES
                 ):
                     self._descriptions_store[playlist_id] = description
-        except Exception as exc:
+        except (OSError, JSONDecodeError, UnicodeDecodeError, InvalidDataError) as exc:
             self.logger.warning("Failed to load smart playlist rules: %s", exc)
 
     async def _save_rules(self, playlist_id: str, rules: SmartPlaylistRules) -> None:

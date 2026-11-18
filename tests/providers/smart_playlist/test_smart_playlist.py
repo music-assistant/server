@@ -21,7 +21,12 @@ from music_assistant_models.enums import (
     ProviderSharing,
     ProviderType,
 )
-from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     BrowseFolder,
     Genre,
@@ -1105,7 +1110,8 @@ def _real_radio_provider(mass: MagicMock) -> RadioPlaylistProvider:
 
 
 @pytest.mark.asyncio
-async def test_tracks_from_seeds_pools_base_and_similar() -> None:
+@pytest.mark.parametrize("bad_seeds", [[], ["not-a-uri", "library://track/9"]])
+async def test_tracks_from_seeds_pools_base_and_similar(bad_seeds: list[str]) -> None:
     """_tracks_from_seeds accumulates a seed's endless-mix batches, deduped, in call order."""
     mass = MagicMock()
     manifest = MagicMock()
@@ -1120,7 +1126,9 @@ async def test_tracks_from_seeds_pools_base_and_similar() -> None:
     sim2 = _make_mock_track("sim2", "library://track/sim2")
 
     ctrl = MagicMock()
-    ctrl.get = AsyncMock(return_value=seed)
+    ctrl.get = AsyncMock(
+        side_effect=[MediaNotFoundError("missing seed"), seed] if bad_seeds else [seed]
+    )
     mass.music.get_controller = MagicMock(return_value=ctrl)
 
     radio_prov = MagicMock()
@@ -1128,7 +1136,7 @@ async def test_tracks_from_seeds_pools_base_and_similar() -> None:
     mass.get_provider = MagicMock(return_value=radio_prov)
 
     result = await plugin._tracks_from_seeds(
-        ["library://track/10"], target_size=10, is_dynamic=True
+        [*bad_seeds, "library://track/10"], target_size=10, is_dynamic=True
     )
 
     first_call = radio_prov.get_dynamic_tracks.await_args_list[0]
@@ -2510,7 +2518,7 @@ async def test_generate_ai_description_no_provider_returns_none(tmp_path: Any) -
 async def test_generate_ai_description_provider_error_returns_none(tmp_path: Any) -> None:
     """A failing AI provider falls back to None instead of raising."""
     ai_provider = _make_ai_provider()
-    ai_provider.ai_query = AsyncMock(side_effect=Exception("boom"))
+    ai_provider.ai_query = AsyncMock(side_effect=ProviderUnavailableError("AI unavailable"))
     plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=ai_provider)
 
     result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
@@ -2560,7 +2568,7 @@ async def test_generate_ai_description_reports_a_provider_side_timeout_as_a_fail
 async def test_generate_ai_description_stays_on_the_configured_engine(tmp_path: Any) -> None:
     """A failing selection yields no description instead of asking another engine."""
     failing = _make_ai_provider(instance_id="ai--bad")
-    failing.ai_query = AsyncMock(side_effect=Exception("boom"))
+    failing.ai_query = AsyncMock(side_effect=ProviderUnavailableError("AI unavailable"))
     other = _make_ai_provider("Second provider result.", instance_id="ai--good")
     plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_engine="ai--bad/engine")
     cast("Any", plugin.mass).get_providers_supporting_feature = MagicMock(
@@ -2962,6 +2970,22 @@ async def test_refresh_ai_description_oversized_reply_uses_fallback(tmp_path: An
     assert "abc" not in plugin._descriptions_store
     written = cast("Any", plugin)._update_playlist_description.await_args.args[1]
     assert written == f"[Smart Playlist] {rules.human_readable()}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("contents", ["{", "[]", '{"broken": {"rules": null}}'])
+async def test_load_malformed_rules_logs_failure(
+    tmp_path: Any, caplog: pytest.LogCaptureFixture, contents: str
+) -> None:
+    """Malformed persisted rules are logged without preventing initialization."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    (tmp_path / "smart_playlists" / RULES_FILENAME).write_text(contents, encoding="utf-8")
+
+    await plugin._load_rules_from_disk()
+
+    assert not plugin._rules_store
+    assert any("rules" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio
