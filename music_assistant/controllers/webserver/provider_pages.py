@@ -51,6 +51,20 @@ PAGE_HEADERS: Final = {
     # secret address is the credential
     "Access-Control-Allow-Origin": "*",
 }
+# headers that act on the server's host or origin rather than on the page's own document, so
+# the sandbox does not contain them: cookies, wiping the app's storage (Clear-Site-Data), https
+# forced on every port of the host (Strict-Transport-Security), traffic for the origin sent
+# elsewhere (Alt-Svc), a wider service worker scope (Service-Worker-Allowed) and client hints
+# remembered for the origin (Accept-CH, Critical-CH)
+ORIGIN_WIDE_HEADERS: Final = (
+    "Set-Cookie",
+    "Clear-Site-Data",
+    "Strict-Transport-Security",
+    "Alt-Svc",
+    "Service-Worker-Allowed",
+    "Accept-CH",
+    "Critical-CH",
+)
 # headers that would have a browser report the page's address elsewhere
 REPORTING_HEADERS: Final = (
     "Content-Security-Policy-Report-Only",
@@ -92,19 +106,9 @@ class ProviderPageManager:
         self.webserver = webserver
         self.mass = webserver.mass
         self._sessions: dict[str, _PageSession] = {}
-        self._unsub_access_revoked: Callable[[], None] | None = None
-
-    def setup(self) -> None:
-        """Start dropping the page addresses of a user whose access is withdrawn."""
-        self._unsub_access_revoked = self.webserver.auth.subscribe_user_access_revoked(
-            lambda user: self.drop_user(user.user_id)
-        )
 
     def close(self) -> None:
         """Drop all page addresses."""
-        if self._unsub_access_revoked:
-            self._unsub_access_revoked()
-            self._unsub_access_revoked = None
         self._drop(lambda _session: True)
 
     def create_address(self, user_id: str, provider: Provider, scope: Scope) -> str:
@@ -211,7 +215,7 @@ class ProviderPageManager:
             response.headers.add(hdrs.CONTENT_SECURITY_POLICY, policy)
         for key, value in PAGE_HEADERS.items():
             response.headers[key] = value
-        for key in (hdrs.SET_COOKIE, *REPORTING_HEADERS):
+        for key in (*ORIGIN_WIDE_HEADERS, *REPORTING_HEADERS):
             response.headers.popall(key, None)
 
     def _drop(self, matches: Callable[[_PageSession], bool]) -> None:

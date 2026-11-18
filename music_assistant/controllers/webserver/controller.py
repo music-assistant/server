@@ -430,7 +430,6 @@ class WebserverController(CoreController):
             )
         )
         await self.auth.setup()
-        self.provider_pages.setup()
         # start the webserver
         if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor we start an additional TCP site
@@ -555,7 +554,10 @@ class WebserverController(CoreController):
 
     def disconnect_websockets_for_user(self, user_id: str) -> None:
         """
-        Disconnect all WebSocket clients of the given user.
+        Disconnect all WebSocket clients of the given user, and drop its provider page addresses.
+
+        Call this whenever the access of the user changes, so that nothing it opened before goes
+        on with the access it had.
 
         :param user_id: Id of the user whose sessions must be closed.
         """
@@ -566,6 +568,7 @@ class WebserverController(CoreController):
             ),
             "user action",
         )
+        self.provider_pages.drop_user(user_id)
 
     def update_active_user_filters(
         self,

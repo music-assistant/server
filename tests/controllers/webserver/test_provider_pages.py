@@ -23,6 +23,7 @@ from music_assistant import providers as providers_package
 from music_assistant.controllers.webserver import provider_pages
 from music_assistant.controllers.webserver.provider_pages import (
     MAX_PAGES_PER_USER,
+    ORIGIN_WIDE_HEADERS,
     PAGE_IDLE_TIMEOUT,
     PAGE_MAX_AGE,
 )
@@ -78,6 +79,12 @@ class PageProvider(PluginProvider):
                 "Report-To": '{"group":"grp","endpoints":[{"url":"https://example.org/r"}]}',
                 "Reporting-Endpoints": 'grp="https://example.org/r"',
                 "NEL": '{"report_to":"grp","max_age":86400}',
+                "Clear-Site-Data": '"cookies", "storage"',
+                "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                "Alt-Svc": 'h3=":443"; ma=86400',
+                "Service-Worker-Allowed": "/",
+                "Accept-CH": "Sec-CH-UA-Platform",
+                "Critical-CH": "Sec-CH-UA-Platform",
             },
         )
 
@@ -186,6 +193,26 @@ async def test_reporting_removed(mass: MusicAssistant, location: Path) -> None:
             "NEL",
         ):
             assert header not in response.headers
+
+
+async def test_origin_wide_headers_removed(mass: MusicAssistant, location: Path) -> None:
+    """Nothing in a page's response can act on the server's host or origin beyond the sandbox."""
+    instance_id = await _register(mass, location)
+    _, token = await _user(mass, UserRole.USER)
+
+    async with _get(mass, await _open(mass, token, instance_id)) as response:
+        assert response.status == 200
+        for header in ORIGIN_WIDE_HEADERS:
+            assert header not in response.headers
+    assert {
+        "Set-Cookie",
+        "Clear-Site-Data",
+        "Strict-Transport-Security",
+        "Alt-Svc",
+        "Service-Worker-Allowed",
+        "Accept-CH",
+        "Critical-CH",
+    } <= set(ORIGIN_WIDE_HEADERS)
 
 
 async def test_page_posts_json_and_upgrades_to_websocket(
@@ -368,6 +395,20 @@ async def test_addresses_and_websockets_dropped_with_the_user(
     if withdraw == "disable":
         # an account enabled again does not get its old addresses back
         await _api(mass, admin_token, "auth/user/enable", user_id=user.user_id)
+    async with _get(mass, address) as response:
+        assert response.status == 410
+
+
+async def test_role_change_ends_open_websockets(mass: MusicAssistant, location: Path) -> None:
+    """A role change drops the user's addresses and ends the WebSockets open on them."""
+    instance_id = await _register(mass, location)
+    user, token = await _user(mass, UserRole.USER)
+    address = await _open(mass, token, instance_id)
+    _, admin_token = await _user(mass, UserRole.ADMIN)
+
+    async with _ws(mass, address) as ws:
+        await _api(mass, admin_token, "auth/user/update", user_id=user.user_id, role="guest")
+        await _assert_closed(ws)
     async with _get(mass, address) as response:
         assert response.status == 410
 
