@@ -172,6 +172,7 @@ from music_assistant.helpers.ffmpeg import (
     add_input_fflag,
     get_ffmpeg_overlay_stream,
     get_ffmpeg_stream,
+    seeks_by_byte_offset,
 )
 from music_assistant.helpers.mp3 import (
     NO_SEEK_HINTS,
@@ -5225,19 +5226,28 @@ class StreamsAudio:
             extra_input_args += ["-readrate", "1", "-readrate_initial_burst", "0.5"]
 
         # skip a remote MP3's ID3 tag on every launch and handle seek support
+        ffmpeg_seek_position = 0
+        ffmpeg_input_format = arriving_audio_format(streamdetails)
         if streamdetails.duration and streamdetails.allow_seek:
             await self._add_remote_mp3_input_args(
                 streamdetails, audio_source, extra_input_args, seeking=bool(seek_position)
             )
             if seek_position:
                 extra_input_args += ["-ss", str(int(seek_position))]
+                # a seek by byte offset lands near the position, so where the stream
+                # started is not known and nothing measured from it can be trusted
+                approximate_seek = seeks_by_byte_offset(
+                    audio_source if isinstance(audio_source, str) else "-",
+                    ffmpeg_input_format,
+                    extra_input_args,
+                )
+                ffmpeg_seek_position = 0 if approximate_seek else int(seek_position)
 
         bytes_sent = 0
         finished = False
         cancelled = False
         first_chunk_received = False
         ffmpeg_loglevel = "debug" if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else "info"
-        ffmpeg_input_format = arriving_audio_format(streamdetails)
         pass_fds: tuple[int, ...] = ()
         if isinstance(audio_source, str):
             inputs, pass_fds = await self.open_local_files(streamdetails, [audio_source])
@@ -5363,12 +5373,18 @@ class StreamsAudio:
             # determine how many seconds we've received
             # for pcm output we can calculate this easily
             seconds_received = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-            # store accurate duration, but only for a playthrough from the very start:
-            # a seeked stream yields the remaining audio, not the item's full length
             # seconds_received is media-time: the buffer applies playback speed when reading
-            if finished and not requested_seek_position and seconds_received:
+            # store accurate duration, but only where it is known how far into the item the
+            # stream started: a seek the source took itself yields just the remaining audio
+            if (
+                finished
+                and seconds_received
+                and (ffmpeg_seek_position or not requested_seek_position)
+            ):
                 _store_measured_duration(
-                    streamdetails, seconds_received, source_duration=ffmpeg_proc.parsed_duration
+                    streamdetails,
+                    ffmpeg_seek_position + seconds_received,
+                    source_duration=ffmpeg_proc.parsed_duration,
                 )
 
             logger.log(
