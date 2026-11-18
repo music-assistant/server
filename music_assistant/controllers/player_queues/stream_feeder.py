@@ -179,49 +179,27 @@ class StreamFeederMixin(_PlayerQueuesBase):
         """
         return self._paused_stream_slot_holder(provider_instance, queue_id) is not None
 
-    def refuse_held_stream_slot(
-        self, provider_instance: str, queue_id: str, behind_reservation: bool = True
-    ) -> None:
+    def refuse_held_stream_slot(self, provider_instance: str, queue_id: str) -> None:
         """
         Raise when another queue's realtime playback holds the only slot of a provider.
 
         A realtime source hands its audio over at playback pace, so its slot stays taken for
         as long as its item plays: a queue starting on that provider has nothing to wait
-        for. A paused holder is left alone, as it hands its slot over instead. A slot that
-        is reserved for another queue is held by that queue as well: it is between two
-        sources of its realtime playback.
+        for. A paused holder is left alone, as it hands its slot over instead.
 
         :param provider_instance: The provider instance a slot is needed on.
         :param queue_id: The queue that needs the slot.
-        :param behind_reservation: Whether a slot that is reserved for another queue counts
-            as held. Not for a track that is prepared ahead of time, which waits for it.
         :raises ProviderStreamHeldError: Naming the holding player, when the caller may
             control it.
         :raises ProviderStreamLimitError: When the holding player is not one the caller may
             control.
         """
-        provider = self.mass.get_provider(provider_instance, return_unavailable=True)
+        provider = self._full_provider(provider_instance)
         # one realtime holder says nothing about the other slots of a larger budget
-        if not isinstance(provider, MusicProvider) or provider.max_concurrent_streams != 1:
+        if provider is None or provider.max_concurrent_streams != 1:
             return
-        if not provider.has_available_stream_slot:
-            holder_ids = [
-                holder_id
-                for holder_id, holder in self._held_stream_slots(provider, queue_id)
-                if holder.is_realtime
-            ]
-        elif behind_reservation:
-            # no source is open, and the slot is not free either. A queue that was removed
-            # meanwhile holds nothing: its reservation only has to lapse
-            holder_ids = [
-                holder_id
-                for holder_id in provider.stream_slot_reservations
-                if holder_id != queue_id and holder_id in self._queue_data
-            ]
-        else:
-            return
-        for holder_id in holder_ids:
-            if self._is_paused(holder_id):
+        for holder_id, holder in self._held_stream_slots(provider, queue_id):
+            if not holder.is_realtime or self._is_paused(holder_id):
                 continue
             # a player outside the caller's filter stays out of sight: the refusal then
             # reads like any other capacity error

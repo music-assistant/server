@@ -1107,6 +1107,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # the pause did not go through, so the queue plays on
                 queue_data.halted_by_command = False
             raise
+        # a stream slot that is still kept for the queue is free to everyone again
+        self._end_stream_slot_reservations(queue_id)
 
         async def _watch_pause(player: Player) -> None:
             count = 0
@@ -1961,7 +1963,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         It does when the source of the buffer delivers at playback pace and the playback
         session of its queue goes on with that provider: the track its player fetches or a
         start is loading, the one after it, or one a stream of that session decided to
-        play still gets audio from there. A paused queue keeps nothing.
+        play still gets audio from there. A queue that is paused, or was told to pause or
+        to stop, keeps nothing.
 
         :param audio_buffer: The buffer whose source gives its slot back.
         :param provider_instance: The provider instance the slot is of.
@@ -1969,35 +1972,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_id = audio_buffer.queue_id
         if not audio_buffer.is_realtime or queue_id is None:
             return False
-        queue_data = self._queue_data.get(queue_id)
-        if queue_data is None or queue_data.session_id is None:
-            return False
-        queue = queue_data.queue
-        if queue.state == PlaybackState.PAUSED:
-            # a paused queue hands its slot over to a queue that starts
-            return False
-        items: list[QueueItem | None] = list(self.mass.streams.audio.claimed_items(queue_id))
-        # where the queue goes on, not where its player still is: a start points the
-        # buffered position at the track it loads before it stops the source in its way
-        position = (
-            queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
-        )
-        if position is not None:
-            items += [self.get_item(queue_id, position), self.get_next_item(queue_id, position)]
-        for item in items:
-            if item is None:
-                continue
-            if (streamdetails := item.streamdetails) is None:
-                # its source is not chosen yet, so it can turn out to be this provider
-                return True
-            if streamdetails.provider != provider_instance:
-                continue
-            buffer = streamdetails.buffer
-            # the track this source was for only counts once this buffer was taken off it
-            # (a seek, a restart); another track counts until all of its audio arrived
-            if buffer is None or (buffer is not audio_buffer and not buffer.eof):
-                return True
-        return False
+        return self._goes_on_with_provider(queue_id, provider_instance, audio_buffer)
 
     async def release_failed_item_source(self, queue_id: str, queue_item_id: str) -> None:
         """
@@ -2815,15 +2790,70 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 streamdetails.buffer = None
                 self.mass.create_task(buffer.clear())
 
-    def _end_stream_slot_reservations(self, queue_id: str) -> None:
+    def _end_stream_slot_reservations(self, queue_id: str, unneeded_only: bool = False) -> None:
         """
         End the reservation of a stream slot the given queue has on any music provider.
 
         :param queue_id: The queue whose reservations to end.
+        :param unneeded_only: Leave the reservation on a provider the queue goes on with.
         """
         for provider in self.mass.providers:
-            if isinstance(provider, MusicProvider):
-                provider.end_stream_slot_reservation(queue_id)
+            if (
+                not isinstance(provider, MusicProvider)
+                or queue_id not in provider.stream_slot_reservations
+            ):
+                continue
+            if unneeded_only and self._goes_on_with_provider(queue_id, provider.instance_id):
+                continue
+            provider.end_stream_slot_reservation(queue_id)
+
+    def _goes_on_with_provider(
+        self, queue_id: str, provider_instance: str, given_up: AudioBuffer | None = None
+    ) -> bool:
+        """
+        Return whether the playback session of a queue goes on with a music provider.
+
+        :param queue_id: The queue to check.
+        :param provider_instance: The provider instance to check for.
+        :param given_up: A buffer whose source ends, which is no audio to go on with.
+        """
+        queue_data = self._queue_data.get(queue_id)
+        if queue_data is None or queue_data.session_id is None:
+            return False
+        queue = queue_data.queue
+        if queue.state == PlaybackState.PAUSED or queue_data.halted_by_command:
+            # a paused queue hands its slot over to a queue that starts, and one that was
+            # told to pause does so before its player has reported it
+            return False
+        items: list[QueueItem | None] = list(self.mass.streams.audio.claimed_items(queue_id))
+        # where the queue goes on, not where its player still is: a start points the
+        # buffered position at the track it loads before it stops the source in its way
+        position = (
+            queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
+        )
+        if position is not None:
+            items += [self.get_item(queue_id, position), self.get_next_item(queue_id, position)]
+        for item in items:
+            if item is None:
+                continue
+            if (streamdetails := item.streamdetails) is None:
+                # its source is not chosen yet: it can turn out to be this provider when the
+                # item has a copy there, or when its copies are not known
+                media_item = item.media_item
+                if media_item is None or any(
+                    mapping.provider_instance == provider_instance
+                    for mapping in media_item.provider_mappings
+                ):
+                    return True
+                continue
+            if streamdetails.provider != provider_instance:
+                continue
+            buffer = streamdetails.buffer
+            # the track a source was for only counts once its buffer was taken off it
+            # (a seek, a restart); another track counts until all of its audio arrived
+            if buffer is None or (buffer is not given_up and not buffer.eof):
+                return True
+        return False
 
     def _audio_buffers(self, queue_data: PlayerQueueData) -> list[tuple[QueueItem, AudioBuffer]]:
         """
@@ -3369,6 +3399,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # always update session id when we start a new playback session
             queue_data.session_id = queue_data.started_session_id = shortuuid.random(length=8)
             self.release_unneeded_audio(queue_id)
+            # a stream slot that is kept for the queue on a provider it does not go on with
+            # from here, as after a replace, is free to everyone again
+            self._end_stream_slot_reservations(queue_id, unneeded_only=True)
             self.mass.streams.audio_processing.start_session(
                 queue_id,
                 queue_data.session_id,

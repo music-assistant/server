@@ -414,6 +414,42 @@ async def test_a_paused_realtime_holder_is_taken_over_rather_than_refused(rig: _
     await buffer.clear()
 
 
+async def test_a_paused_holder_without_audio_yet_is_taken_over_once_it_has_audio(
+    rig: _Rig,
+) -> None:
+    """A start that finds a paused queue's source on its way in takes the slot over as well."""
+    first_audio = asyncio.Event()
+
+    async def _slow_to_deliver(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        await first_audio.wait()
+        async for chunk in _endless_source():
+            yield chunk
+
+    rig.audio._get_media_stream = _slow_to_deliver  # type: ignore[method-assign]
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED, realtime=True)
+    filling = asyncio.create_task(rig.fill(paused_item))
+    while not rig.provider.stream_slot_holders:
+        await asyncio.sleep(0)
+    rig.audio._get_media_stream = _endless_source  # type: ignore[method-assign]
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+
+    starting = asyncio.create_task(
+        rig.audio.get_audio_buffer(starting_item, reason="prepare", capacity_wait_timeout=30)
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert not starting.done()
+    first_audio.set()
+    paused_buffer = await filling
+    buffer = await asyncio.wait_for(starting, 5)
+
+    assert buffer is not None
+    assert buffer.is_buffering
+    rig.stop_device.assert_awaited_once_with(PAUSED_QUEUE)
+    assert paused_buffer.cancelled
+    await buffer.clear()
+
+
 async def test_an_item_resuming_from_its_own_buffer_is_not_refused(rig: _Rig) -> None:
     """Audio that already arrived needs no slot, so a held one is no reason to refuse it."""
     rig.audio._get_media_stream = _finite_source  # type: ignore[method-assign]

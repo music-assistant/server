@@ -227,6 +227,10 @@ BUFFER_INACTIVITY_TIMEOUT: Final[int] = 300
 # Total capacity budget when an actual playback start retries/reselects provider mappings.
 STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT: Final[float] = 15.0
 
+# Seconds between two looks at a provider's only slot while it is open whether realtime
+# playback keeps it.
+STREAM_SLOT_VERDICT_INTERVAL: Final[float] = 0.1
+
 # Maximum time spent searching other streaming providers for an alternative mapping
 # when every known candidate is capacity-saturated.
 STREAM_SLOT_MATCH_TIMEOUT: Final[float] = 5.0
