@@ -111,56 +111,44 @@ class NowPlayingManager:
             await self._cache_programme_segments(vpid, segments)
         return segments
 
-    async def _update_on_demand_stream_metadata(
+    async def update_on_demand_stream_metadata(
         self, stream_details: StreamDetails, elapsed_time: int
     ) -> None:
-        """
-        Get the currently playing segment (song) for on-demand episodes.
-
-        Called by the callback function in StreamDetails.
-        """
+        """Show the segment playing at elapsed_time, or the episode between segments."""
         self.logger.log(VERBOSE_LOG_LEVEL, "Updating on-demand stream metadata")
 
-        if not stream_details or not stream_details.stream_metadata:
-            return
-
-        vpid = stream_details.data.get("vpid")
-        if not vpid:
-            self.logger.warning("No VPID found")
-            return
-
-        # Store the segments here rather than the cache so we don't have to worry about
-        # caching a show's segments before they are available
-        segments = stream_details.data.get("segments")
-        # A show with no segments is valid, so only check for None
-        if segments is None:
-            segments = await self._get_programme_segments(vpid)
-            stream_details.data["segments"] = segments
-        if not segments:
-            return
+        data = stream_details.data
+        if (segments := data.get("segments")) is None:
+            self.logger.debug("No segments found on stream_details.data, loading them...")
+            segments = data["segments"] = await self._load_programme_segments(data["vpid"])
 
         segment = _find_segment(segments, elapsed_time)
+        segment_id = segment.id if segment else None
 
-        if segment:
-            # Spotify has no thumbnail for some tracks, so only ask once per segment
-            image_lookups: set[str] = stream_details.data.setdefault("image_lookups", set())
-            if segment.id not in image_lookups:
-                self.logger.debug("No image lookups for current segment.")
-                image_lookups.add(segment.id)
-                image_before = segment.image_url
-                await self.client.content.ensure_segment_image(segment)
-                if segment.image_url != image_before:
-                    self.logger.debug("Updated image lookup for current segment.")
-                    await self._cache_programme_segments(vpid, segments)
+        # We're either showing the correct segment, or we're correctly showing the episode metadata
+        if segment_id == data.get("segment_id"):
+            self.logger.log(
+                VERBOSE_LOG_LEVEL, "No need to update metadata, segment_id=%s", segment_id
+            )
+            return
+        data["segment_id"] = segment_id
 
-            stream_details.stream_metadata = _segment_to_metadata(segment)
+        if segment is None:
+            self.logger.debug("Between segments, showing episode metadata")
+            self._set_metadata(stream_details, data["episode_metadata"])
             return
 
-        # No song playing, so show episode metadata
-        if title := stream_details.data.get("episode_title"):
-            stream_details.stream_title = title
-        if metadata := stream_details.data.get("episode_metadata"):
-            stream_details.stream_metadata = metadata
+        self._set_metadata(stream_details, _segment_to_metadata(segment))
+        image_before = segment.image_url
+        await self._fill_segment_image(stream_details, segment)
+        if segment.image_url == image_before:
+            return
+        await self._save_programme_segments(data["vpid"], segments)
+        # Check we don't try and set an old segment's metadata if we took too long
+        if data["segment_id"] == segment.id:
+            self._set_metadata(stream_details, _segment_to_metadata(segment))
+
+            return
 
     @use_cache(expiration=Constants.DYNAMIC_EXPIRATION, base_class=StreamMetadata)
     async def _station_current_programme_metadata(self, station_id: str) -> StreamMetadata | None:
