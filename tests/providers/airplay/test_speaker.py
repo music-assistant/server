@@ -642,3 +642,120 @@ async def test_a_stereo_pair_plays_on_both_of_its_speakers() -> None:
 
     assert session_factory.call_args.args[1] == [speaker, other]
     assert apple_tv.session_endpoints == [speaker, other, apple_tv]
+
+
+_PAIR_ID = "7C1E5A20-3B4D-4F6A-9E8C-1D2F3A4B5C6D"
+
+
+def _pair_record(device_id: str, role: int) -> AsyncServiceInfo:
+    """
+    Return the _airplay._tcp record of a HomePod of a stereo pair, while nobody plays to it.
+
+    :param device_id: The device id the HomePod advertises.
+    :param role: Its role in the pair.
+    """
+    return AsyncServiceInfo(
+        AIRPLAY_DISCOVERY_TYPE,
+        f"{device_id}.{AIRPLAY_DISCOVERY_TYPE}",
+        addresses=[socket.inet_aton("192.168.1.71")],
+        port=7000,
+        properties={
+            "deviceid": device_id,
+            "features": AP2_FEATURES,
+            "flags": "0xa0c04",
+            "tsid": _PAIR_ID,
+            "gpn": "Loft",
+            "gid": f"{_PAIR_ID}+{role}+5A1B2C3D-0000-4000-8000-00000000000{role}",
+        },
+    )
+
+
+def _stereo_pair() -> tuple[AirPlayPlayer, AirPlaySpeaker, MagicMock]:
+    """Build the two HomePods of a stereo pair on one mock provider: the pair and its speaker."""
+    provider = MagicMock()
+    stored: dict[tuple[str, str], object] = {}
+    provider.mass.config.get_protocol_value.side_effect = lambda protocol_id, key, default=None: (
+        stored.get((protocol_id, key), default)
+    )
+    provider.mass.config.get_base_protocol_config.side_effect = lambda *_args: _config({})
+    devices = [
+        cls(
+            provider=provider,
+            protocol_id=f"apaabbcc00330{role + 1}",
+            raop_discovery_info=None,
+            airplay_discovery_info=_pair_record(f"AA:BB:CC:00:33:0{role + 1}", role),
+            address=f"192.168.1.7{role + 1}",
+            display_name=f"HomePod Loft {role + 1}",
+            manufacturer="Apple",
+            model="HomePod",
+        )
+        for cls, role in ((AirPlayPlayer, 0), (AirPlaySpeaker, 1))
+    ]
+    pair, speaker = devices
+    assert isinstance(speaker, AirPlaySpeaker)
+    provider.get_set_carrier.return_value = pair
+    provider.get_set_speakers.return_value = [speaker]
+    provider.get_pair_position.side_effect = lambda protocol_id, _pair_id: (
+        0 if protocol_id == pair.protocol_id else 1
+    )
+    return pair, speaker, provider
+
+
+async def test_a_stereo_pair_plays_on_both_homepods_at_one_volume() -> None:
+    """Both HomePods of a pair are heard and take its one volume; there is nothing silent."""
+    pair, speaker, _ = _stereo_pair()
+    session = MagicMock()
+    pair.stream = _playing_stream(session)
+    speaker.stream = _playing_stream(session)
+
+    assert pair.carries_set is True
+    assert pair.carries_home_theater is False
+    assert pair.endpoints == [pair, speaker]
+    assert (pair.renders_audio, pair.silent_member, pair.homepods_only) == (True, None, False)
+    assert PlayerFeature.OPTIONS not in pair.supported_features
+    assert pair.name == "Loft"
+
+    await pair.volume_set(15)
+
+    pair.stream.send_cli_command.assert_awaited_once_with("VOLUME=15")
+    speaker.stream.send_cli_command.assert_awaited_once_with("VOLUME=15")
+
+
+def test_a_stereo_pair_is_idle_only_once_both_homepods_are() -> None:
+    """The second HomePod stopping leaves the pair playing while the first plays on."""
+    pair, speaker, _ = _stereo_pair()
+    pair.stream = MagicMock(running=True)
+    speaker.stream = MagicMock(running=False)
+    pair._attr_playback_state = PlaybackState.PLAYING
+
+    speaker.set_state_from_stream(PlaybackState.IDLE, 0, stream=speaker.stream)
+
+    assert pair.playback_state == PlaybackState.PLAYING
+
+
+def test_a_stereo_pair_plays_24_bit_only_when_both_homepods_do() -> None:
+    """The formats of a pair are those of both of its HomePods."""
+    pair, speaker, _ = _stereo_pair()
+    with patch("music_assistant.providers.airplay.player.default_hires_enabled", return_value=True):
+        speaker.advertised_audio_formats = 1 << 21
+        assert pair.hires_playback_enabled is False
+        pair.advertised_audio_formats = 1 << 21
+        speaker.advertised_audio_formats = 0
+        assert pair.hires_playback_enabled is False
+        speaker.advertised_audio_formats = 1 << 21
+        assert pair.hires_playback_enabled is True
+
+
+def test_a_homepod_of_a_pair_keeps_its_place_whatever_role_its_record_tells() -> None:
+    """The place of a HomePod in its pair is the one decided, not the role its record reads."""
+    pair, speaker, _ = _stereo_pair()
+    # the roles the records read now are swapped
+    for device, role in ((pair, 1), (speaker, 0)):
+        info = device.airplay_discovery_info
+        assert info is not None
+        device.airplay_discovery_info = _pair_record(str(info.decoded_properties["deviceid"]), role)
+
+    assert pair.carries_set is True
+    membership = speaker.set_membership
+    assert membership is not None
+    assert membership.position == 1

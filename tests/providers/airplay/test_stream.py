@@ -86,6 +86,7 @@ def _make_player() -> MagicMock:
     player.synced_to = None
     player.group_members = []
     player.owner = player
+    player.speakers = []
     # A real None: a stream only speaks for the player while it is the published
     # one, and a bare MagicMock reads as some other stream having taken over.
     player.stream = None
@@ -4793,3 +4794,31 @@ async def test_wait_for_connection_sends_no_volume_to_the_apple_tv_of_a_set() ->
         await stream.wait_for_connection()
 
     send_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_stereo_pair_losing_the_stream_of_its_first_homepod_stops() -> None:
+    """A pair plays on both of its HomePods or not at all, whichever one lost its stream."""
+    pair = _make_player()
+    pair.speakers = [MagicMock()]
+    session = MagicMock()
+    session.stop = MagicMock(return_value="stop-coro")
+    pair.provider.mass.create_task = MagicMock()
+
+    stream = AirPlayStream(pair)
+    stream.session = session
+    stream._leave_group = MagicMock()  # type: ignore[method-assign]
+    pair.stream = stream
+    process = MagicMock()
+    stream._cli_proc = process
+
+    async def _stderr_lines() -> AsyncGenerator[str]:
+        yield "some final log line"
+
+    with (
+        patch.object(process, "iter_stderr", return_value=_stderr_lines()),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream._stderr_reader()
+
+    pair.provider.mass.create_task.assert_any_call("stop-coro")

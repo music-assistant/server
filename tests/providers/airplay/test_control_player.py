@@ -1132,6 +1132,9 @@ async def test_provider_selects_player_model_from_device_identity(
         )
     }
     provider._mrp_info_by_address = {}
+    provider._pair_roles = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
     provider.mass.players.register = AsyncMock()
     provider.mass.players.get_protocol.return_value = None
@@ -1172,6 +1175,9 @@ async def test_apple_device_setup_attaches_discovered_companion_service() -> Non
     provider.dashboards = MagicMock()
     provider._companion_info_by_address = {}
     provider._mrp_info_by_address = {}
+    provider._pair_roles = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     companion_info = _service_info(
         COMPANION_DISCOVERY_TYPE,
         properties={"rpFl": "0x367A2"},
@@ -1277,6 +1283,9 @@ async def test_mrp_discovery_is_attached_by_shared_address() -> None:
     provider = AirPlayProvider.__new__(AirPlayProvider)
     provider.mass = MagicMock()
     provider._mrp_info_by_address = {}
+    provider._pair_roles = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     player = _make_control_player(companion_flags=None)
     set_mrp_info = AsyncMock()
     player.set_mrp_discovery_info = set_mrp_info  # type: ignore[method-assign]
@@ -1344,6 +1353,9 @@ async def test_generic_device_setup_skips_control_discovery() -> None:
     provider.dashboards = MagicMock()
     provider._companion_info_by_address = {}
     provider._mrp_info_by_address = {}
+    provider._pair_roles = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
     provider.mass.players.register = AsyncMock()
     provider.mass.players.get_protocol.return_value = None
