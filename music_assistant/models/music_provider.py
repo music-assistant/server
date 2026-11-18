@@ -394,8 +394,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             _StreamSlots(max_concurrent_streams) if max_concurrent_streams is not None else None
         )
         self._stream_slot_holders: set[AudioBuffer] = set()
-        # set for a moment whenever a source takes a slot and is listed as its holder
-        self._stream_slot_held = asyncio.Event()
+        # the waits in line, each woken once a source takes a slot and is listed as its holder
+        self._stream_slot_watches: set[asyncio.Future[None]] = set()
 
     def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool:
         """
@@ -492,8 +492,9 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             raise ProviderStreamLimitError(self, wait_timeout) from err
         if holder is not None:
             self._stream_slot_holders.add(holder)
-            self._stream_slot_held.set()
-            self._stream_slot_held.clear()
+            for watch in self._stream_slot_watches:
+                if not watch.done():
+                    watch.set_result(None)
         try:
             yield
         finally:
@@ -502,7 +503,11 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             slots.give_back(queue_id, reserve)
 
     async def wait_for_stream_slot(
-        self, wait_timeout: float, queue_id: str, gives_up: Callable[[], bool]
+        self,
+        wait_timeout: float,
+        queue_id: str,
+        gives_up: Callable[[], bool],
+        wanted: Callable[[], bool],
     ) -> None:
         """
         Wait in line for a source-stream slot, and keep the slot for the given queue.
@@ -515,6 +520,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         :param gives_up: Asked whenever a source takes a slot, or a holder of one gets its
             first audio, during the wait: True ends the wait without a slot, and it may raise
             to refuse the wait.
+        :param wanted: Asked when a slot comes free for the wait: False passes it on at once
+            instead of keeping it for the queue.
         :raises ProviderStreamLimitError: If no slot comes free within the timeout.
         """
         slots = self._stream_slots
@@ -535,7 +542,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             # a wait that ends without the slot leaves the line, and gives back a slot that
             # was granted in that moment
             if not taking.cancel():
-                slots.give_back(queue_id, lambda: granted)
+                slots.give_back(queue_id, lambda: granted and wanted())
 
     def end_stream_slot_reservation(self, queue_id: str) -> None:
         """
@@ -1541,18 +1548,21 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
 
         :param taking: The wait in line for a slot.
         """
-        watches: list[asyncio.Future[Any]] = [
-            asyncio.ensure_future(event.wait())
-            for event in (
-                self._stream_slot_held,
-                *(holder.ready for holder in self._stream_slot_holders),
-            )
-            if not event.is_set()
+        # registered before anything else runs, so a source that takes a slot in this same
+        # loop turn wakes the wait too
+        held: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._stream_slot_watches.add(held)
+        ready_watches: list[asyncio.Future[Any]] = [
+            asyncio.ensure_future(holder.ready.wait())
+            for holder in self._stream_slot_holders
+            if not holder.ready.is_set()
         ]
         try:
-            await asyncio.wait([taking, *watches], return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait([taking, held, *ready_watches], return_when=asyncio.FIRST_COMPLETED)
         finally:
-            for watch in watches:
+            self._stream_slot_watches.discard(held)
+            held.cancel()
+            for watch in ready_watches:
                 watch.cancel()
 
     async def _run_library_sync(self, media_type: MediaType) -> None:  # noqa: PLR0915

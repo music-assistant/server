@@ -2934,9 +2934,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 media_item = item.media_item
                 if media_item is None or any(
                     provider.instance_id == provider_instance
-                    for mapping in media_item.provider_mappings
-                    if mapping.available
-                    for provider in self.mass.streams.audio.get_stream_providers(mapping, None)
+                    for _mapping, provider in self.mass.streams.audio.get_stream_candidates(
+                        media_item.provider_mappings, None
+                    )
                 ):
                     return True
                 continue

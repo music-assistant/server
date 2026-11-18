@@ -60,6 +60,8 @@ SOON = 2.0
 # seconds a start may wait for a slot when the test decides what ends that wait
 LONG_WAIT = 30.0
 ELSEWHERE = "elsewhere--account_y"
+SIBLING = "single--account_z"
+THIRD_QUEUE_ID = "queue_c"
 
 
 @pytest.fixture
@@ -573,6 +575,36 @@ async def test_a_preview_that_waits_gets_the_stream_when_the_next_track_is_from_
     assert await asyncio.wait_for(preview, SOON)
 
 
+async def test_a_next_track_this_account_no_longer_finds_keeps_no_stream(rig: SlotRig) -> None:
+    """A next track known on another account, but no longer found on this one, keeps nothing."""
+    ended = await _play_through(rig, "track 0", "track 1")
+    upcoming = rig.queues._queue_data[QUEUE_ID].items[1]
+    assert upcoming.media_item is not None
+    upcoming.streamdetails = None
+    config = MagicMock(instance_id=SIBLING)
+    config.name = "Sibling"
+    config.get_value.return_value = "GLOBAL"
+    sibling = SingleStreamProvider(rig.mass, rig.provider.manifest, config)
+    sibling.available = True
+    rig.mass.providers = [rig.provider, sibling]
+    upcoming.media_item.provider_mappings = {
+        ProviderMapping(
+            item_id=upcoming.media_item.item_id,
+            provider_domain="single",
+            provider_instance=instance_id,
+            available=instance_id == SIBLING,
+            audio_format=PCM_FORMAT,
+        )
+        for instance_id in (INSTANCE, SIBLING)
+    }
+    preview = asyncio.create_task(_preview(rig, SOON))
+    await _turns()
+
+    await _source_ends(rig, ended)
+
+    assert await asyncio.wait_for(preview, SOON)
+
+
 async def test_a_next_track_without_a_source_yet_keeps_the_stream(rig: SlotRig) -> None:
     """A next track with a copy here whose source is not chosen yet can come from here: kept."""
     ended = await _play_through(rig, "track 0", "track 1")
@@ -811,6 +843,100 @@ async def test_a_start_behind_a_source_that_fails_is_served_before_a_later_previ
     assert not preview.done()
     preview.cancel()
     await asyncio.gather(preview, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    "source_first", [False, True], ids=["the start asks first", "the source asks first"]
+)
+async def test_a_start_is_refused_when_the_kept_stream_is_used_in_the_turn_it_asks(
+    rig: SlotRig, source_first: bool
+) -> None:
+    """The next track of the queue the stream is kept for takes it in the turn a start asks."""
+    _playing, upcoming = rig.play("track 0", "track 1")
+    (other,) = rig.play("track 7", queue_id=OTHER_QUEUE_ID, session_id="session-b")
+    async with rig.provider.acquire_stream_slot(0, queue_id=QUEUE_ID, reserve=lambda: True):
+        pass
+    other_started = count_starts(rig, "track 7")
+
+    if source_first:
+        starting = asyncio.create_task(rig.ask(upcoming, wait=0))
+        asking = asyncio.create_task(rig.ask(other, wait=LONG_WAIT))
+    else:
+        asking = asyncio.create_task(rig.ask(other, wait=LONG_WAIT))
+        starting = asyncio.create_task(rig.ask(upcoming, wait=0))
+
+    assert await starting is not None
+    with pytest.raises(ProviderStreamHeldError, match="already playing on Queue A"):
+        await asyncio.wait_for(asking, SOON)
+    assert other_started == []
+
+
+async def _start_behind_a_source_that_fails(rig: SlotRig) -> tuple[asyncio.Event, QueueItem]:
+    """
+    Let queue A's source take the slot without audio yet, and queue B's track wait for it.
+
+    :param rig: The rig to put the queues on.
+    :return: The event that lets queue A's source fail, and queue B's track.
+    """
+    (playing,) = rig.play("track 0")
+    breaks_off = asyncio.Event()
+    rig.sources["track 0"] = partial(source, 0, 0, breaks_off, fails=True)
+    rig.tasks.append(asyncio.create_task(rig.ask(playing)))
+    await _turns()
+    (other,) = rig.play("track 7", queue_id=OTHER_QUEUE_ID, session_id="session-b")
+    return breaks_off, other
+
+
+async def test_a_start_whose_queue_was_stopped_while_it_waits_holds_nobody_up(
+    rig: SlotRig,
+) -> None:
+    """A start that waits for a slot and is stopped keeps nothing once the slot comes free."""
+    breaks_off, other = await _start_behind_a_source_that_fails(rig)
+    stopped = asyncio.create_task(rig.ask(other, wait=LONG_WAIT))
+    await _turns()
+    rig.queues._end_session(rig.queues._queue_data[OTHER_QUEUE_ID], "session-b")
+    await _turns()
+    (third,) = rig.play("track 8", queue_id=THIRD_QUEUE_ID, session_id="session-c")
+    asking = asyncio.create_task(rig.ask(third, wait=LONG_WAIT))
+    await _turns()
+    preview = asyncio.create_task(_preview(rig, BRIEF_WAIT))
+    await _turns()
+
+    breaks_off.set()
+    buffer = await asyncio.wait_for(asking, SOON)
+
+    assert await stopped is None
+    assert buffer is not None
+    assert rig.fills(buffer)
+    assert OTHER_QUEUE_ID not in rig.provider.stream_slot_reservations
+    preview.cancel()
+    await asyncio.gather(preview, return_exceptions=True)
+
+
+async def test_a_request_whose_player_hung_up_while_it_waits_holds_nobody_up(
+    rig: SlotRig,
+) -> None:
+    """A speaker's request that waits for a slot and is given up keeps nothing for its queue."""
+    breaks_off, other = await _start_behind_a_source_that_fails(rig)
+    connected = True
+    request = asyncio.create_task(
+        rig.audio.get_audio_buffer(
+            other,
+            reason="streaming",
+            capacity_wait_timeout=LONG_WAIT,
+            consumer_connected=lambda: connected,
+        )
+    )
+    await _turns()
+    connected = False
+    preview = asyncio.create_task(_preview(rig, SOON))
+    await _turns()
+
+    breaks_off.set()
+
+    assert await asyncio.wait_for(preview, SOON)
+    assert await request is None
+    assert rig.opened["track 7"] == 0
 
 
 async def test_a_start_that_is_given_up_while_it_waits_leaves_the_line(rig: SlotRig) -> None:

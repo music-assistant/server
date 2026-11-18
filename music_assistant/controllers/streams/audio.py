@@ -3698,6 +3698,48 @@ class StreamsAudio:
         """
         return self._get_mapping_providers(mapping, allowed)
 
+    def get_stream_candidates(
+        self,
+        provider_mappings: Iterable[ProviderMapping],
+        allowed: list[str] | None,
+        excluded_provider_instances: set[str] | None = None,
+    ) -> list[tuple[ProviderMapping, Provider]]:
+        """
+        Return the mappings of an item with the loaded providers that may stream them, unranked.
+
+        :param provider_mappings: Mappings attached to the media item.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        :param excluded_provider_instances: Provider instances to leave out, if any.
+        """
+        mappings = list(provider_mappings)
+        candidates: dict[tuple[str, str], tuple[ProviderMapping, Provider]] = {}
+        # an account that no longer finds an item id is no stand-in for it either
+        unavailable = {
+            (mapping.provider_instance, mapping.item_id)
+            for mapping in mappings
+            if not mapping.available
+        }
+        # best mapping first, so an account standing in for a sibling's item id is backed by
+        # the sibling's best mapping
+        for mapping in rank_provider_mappings(mappings):
+            if not mapping.available:
+                self.logger.debug("Skipping unavailable %s", mapping)
+                continue
+            for provider in self._get_mapping_providers(mapping, allowed):
+                if excluded_provider_instances and (
+                    provider.instance_id in excluded_provider_instances
+                ):
+                    continue
+                candidate_id = (provider.instance_id, mapping.item_id)
+                if candidate_id in unavailable:
+                    continue
+                # a sibling account only stands in for an item id when the item has no
+                # mapping of its own on that account
+                if candidate_id in candidates and provider.instance_id != mapping.provider_instance:
+                    continue
+                candidates[candidate_id] = (mapping, provider)
+        return list(candidates.values())
+
     def has_alternative_match_providers(
         self, media_item: Playlist | Album | Track, allowed: list[str] | None
     ) -> bool:
@@ -4309,20 +4351,25 @@ class StreamsAudio:
             if last_resort and not resumes:
                 # a realtime source keeps its slot until its item ends, so the budget would
                 # run out with nothing to show for it: refused as soon as one holds it instead
-                gives_up = partial(
-                    self._leaves_stream_slot_line,
-                    streamdetails.provider,
-                    queue_item.queue_id,
-                    stop_paused_queues,
+                self.mass.player_queues.refuse_held_stream_slot(
+                    streamdetails.provider, queue_item.queue_id
                 )
-                gives_up()
                 provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
                 if isinstance(provider, MusicProvider) and self._stream_slot_undecided(
                     provider, queue_item.queue_id
                 ):
-                    await provider.wait_for_stream_slot(remaining, queue_item.queue_id, gives_up)
-                    # the slot is kept for the queue now, or a paused queue hands its slot over;
-                    # the wait can have outlasted the consumer
+                    await provider.wait_for_stream_slot(
+                        remaining,
+                        queue_item.queue_id,
+                        partial(
+                            self._leaves_stream_slot_line,
+                            streamdetails.provider,
+                            queue_item.queue_id,
+                            stop_paused_queues,
+                        ),
+                        partial(self._wants_stream_slot, queue_item, consumer_connected),
+                    )
+                    # the slot is kept for the queue now, or a paused queue hands its slot over
                     continue
             source_wait = remaining if last_resort else 0.0
             # record whose audio this is before it exists: a queue stop releases only the
@@ -4476,6 +4523,20 @@ class StreamsAudio:
             provider_instance, queue_id
         )
 
+    def _wants_stream_slot(
+        self, queue_item: QueueItem, consumer_connected: Callable[[], bool] | None
+    ) -> bool:
+        """
+        Return whether a start that waited in line still wants the slot for its item.
+
+        :param queue_item: The queue item the slot is for.
+        :param consumer_connected: Reports whether the consumer of the audio is still
+            connected, or None when there is no consumer to lose.
+        """
+        if consumer_connected is not None and not consumer_connected():
+            return False
+        return self.mass.player_queues.wants_audio(queue_item)
+
     def _stream_slot_undecided(self, provider: MusicProvider, queue_id: str) -> bool:
         """
         Return whether it is open if another queue's realtime playback keeps the only slot.
@@ -4597,38 +4658,18 @@ class StreamsAudio:
         :param pinned: The (provider instance, item id) the item is to be played from, if any.
         :return: Ordered provider mapping candidates.
         """
-        mappings = list(provider_mappings)
-        candidates: dict[tuple[str, str], SourceCandidate] = {}
-        # an account that no longer finds an item id is no stand-in for it either
-        unavailable = {
-            (mapping.provider_instance, mapping.item_id)
-            for mapping in mappings
-            if not mapping.available
-        }
-        # best mapping first, so an account standing in for a sibling's item id is backed by
-        # the sibling's best mapping
-        for mapping in rank_provider_mappings(mappings):
-            if not mapping.available:
-                self.logger.debug("Skipping unavailable %s", mapping)
-                continue
-            for provider in self._get_mapping_providers(mapping, allowed):
-                if provider.instance_id in excluded_provider_instances:
-                    continue
-                candidate_id = (provider.instance_id, mapping.item_id)
-                if candidate_id in unavailable:
-                    continue
-                # a sibling account only stands in for an item id when the item has no
-                # mapping of its own on that account
-                if candidate_id in candidates and provider.instance_id != mapping.provider_instance:
-                    continue
-                candidates[candidate_id] = SourceCandidate(
-                    mapping=mapping,
-                    provider=provider,
-                    is_streaming=isinstance(provider, MusicProvider)
-                    and provider.is_streaming_provider,
-                )
+        candidates = [
+            SourceCandidate(
+                mapping=mapping,
+                provider=provider,
+                is_streaming=isinstance(provider, MusicProvider) and provider.is_streaming_provider,
+            )
+            for mapping, provider in self.get_stream_candidates(
+                provider_mappings, allowed, excluded_provider_instances
+            )
+        ]
         ranked = rank_stream_sources(
-            candidates.values(), pinned=pinned, preferred=preferred_providers, policy=policy
+            candidates, pinned=pinned, preferred=preferred_providers, policy=policy
         )
         if ranked and self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(
