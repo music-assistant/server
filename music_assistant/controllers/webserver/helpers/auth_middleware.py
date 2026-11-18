@@ -358,8 +358,13 @@ def _parse_provider_user_arg(value: Mapping[str, Any]) -> tuple[AuthProviderType
     provider = value.get("provider")
     user_id = value.get("user_id")
     required = value.get("required", True)
-    # explicit membership check: AuthProviderType coerces unknown values to BUILTIN
-    if not isinstance(provider, str) or provider not in AuthProviderType:
+    # explicit membership check: AuthProviderType coerces unknown values to UNKNOWN, and
+    # UNKNOWN itself names no provider a user could be linked to
+    if (
+        not isinstance(provider, str)
+        or provider not in AuthProviderType
+        or provider == AuthProviderType.UNKNOWN
+    ):
         raise InvalidDataError(f"Invalid auth provider type: {provider}")
     if not isinstance(user_id, str) or not user_id:
         raise InvalidDataError("A user_id is required to impersonate a user by auth provider.")

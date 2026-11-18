@@ -599,6 +599,18 @@ async def test_disable_enable_user(auth_manager: AuthenticationManager) -> None:
     assert enabled_user is not None
 
 
+async def test_unknown_provider_type_is_never_linked(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the UNKNOWN provider type can not be linked and never resolves a user.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="unknownlink", role=UserRole.USER)
+    with pytest.raises(InvalidDataError):
+        await auth_manager.link_user_to_provider(user, AuthProviderType.UNKNOWN, "someone")
+    assert await auth_manager.get_user_by_provider_link(AuthProviderType.UNKNOWN, "someone") is None
+
+
 async def test_user_lookups_include_a_disabled_user_only_on_request(
     auth_manager: AuthenticationManager,
 ) -> None:
