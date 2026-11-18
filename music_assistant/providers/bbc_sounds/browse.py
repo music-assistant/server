@@ -38,7 +38,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers import datetime
 from music_assistant.providers.bbc_sounds.constants import Constants, ValidMenuIDs
-from music_assistant.providers.bbc_sounds.now_playing import station_programme_display
+from music_assistant.providers.bbc_sounds.now_playing import live_station_to_metadata
 
 if TYPE_CHECKING:
     from music_assistant.providers.bbc_sounds.provider import BBCSoundsProvider
@@ -422,7 +422,7 @@ class BrowseManager:
             ):
                 # A plain Station has no programme, so its titles and synopses are empty
                 station_info = (
-                    station_programme_display(station)
+                    live_station_to_metadata(station)
                     if show_current_programme and isinstance(station, LiveStation)
                     else None
                 )
