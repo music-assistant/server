@@ -5,6 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+from music_assistant_models.errors import AudioError
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
@@ -14,6 +16,17 @@ if TYPE_CHECKING:
 
     from music_assistant.helpers.json import SerializableType
     from music_assistant.providers.spotify.provider import SpotifyProvider
+
+
+class StreamSupersededError(AudioError):
+    """
+    Raised when Music Assistant replaced the stream that was delivering an item.
+
+    A backend that serves a queue from one session cuts the stream of an item it
+    is asked to serve from a new one - a seek - and refuses it the session again,
+    whichever part of the item it comes back for: nothing beyond the cut is that
+    stream's to deliver.
+    """
 
 
 class SpotifyPlaybackBackend(ABC):
@@ -79,6 +92,7 @@ class SpotifyPlaybackBackend(ABC):
         seek_position: int = 0,
         *,
         streamdetails: StreamDetails | None = None,
+        continuation: bool = False,
     ) -> AsyncGenerator[bytes]:
         """
         Yield the audio for one Spotify URI in this backend's audio format.
@@ -90,6 +104,21 @@ class SpotifyPlaybackBackend(ABC):
             Backends that fetch each item on its own ignore these; a backend
             that keeps one session needs them to know which queue and which
             item of it this audio belongs to.
+        :param continuation: Whether this URI continues an item stream already
+            under way - a later chapter of the audiobook being streamed - rather
+            than starting one.
+        :raises StreamSupersededError: When Music Assistant took the item off
+            this stream, leaving it nothing to deliver.
+        """
+
+    async def feed_next(self, media_key: str, spotify_uri: str) -> None:  # noqa: B027
+        """
+        Line up the item that follows the one being streamed.
+
+        Backends that fetch each item on its own have nothing to line up.
+
+        :param media_key: The StreamDetails uri of the item being streamed.
+        :param spotify_uri: Canonical Spotify URI of the item that follows it.
         """
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:

@@ -10,11 +10,16 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.models.setup_flow import SetupFlowError
+from music_assistant.providers.bbc_sounds.constants import Constants
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
 
 _ENTRIES = (
+    ConfigEntry(
+        key=Constants.CONF_INTRO,
+        type=ConfigEntryType.LABEL,
+    ),
     ConfigEntry(key=CONF_USERNAME, type=ConfigEntryType.STRING, required=False),
     ConfigEntry(key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, required=False),
 )
@@ -22,7 +27,7 @@ _ENTRIES = (
 
 async def run_setup(session: SetupSession) -> None:
     """Run the setup flow: collect the (optional) credentials and create the provider."""
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     setup_data = dict(session.context.setup_data)
     while True:
         entries = [
@@ -34,4 +39,4 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}

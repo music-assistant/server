@@ -1,0 +1,5 @@
+{
+  "manifest": {
+    "description": "Lets AI assistants such as Home Assistant Assist, Claude and ChatGPT search music and control playback through the Model Context Protocol."
+  }
+}

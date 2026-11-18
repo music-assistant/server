@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import CoreState
 
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.sonos_s1.constants import DISCOVERY_INTERVAL
 from music_assistant.providers.sonos_s1.provider import SonosPlayerProvider
@@ -102,6 +103,26 @@ async def test_repeated_discovery_arms_a_single_reschedule(harness: DiscoveryHar
     assert len(harness.armed_reschedules) == 1
 
 
+async def test_unusable_manual_ip_is_logged(harness: DiscoveryHarness) -> None:
+    """A manual IP address the speaker cannot be created for is logged and skipped."""
+    provider = harness.make_provider()
+    config = MagicMock()
+    config.get_value.side_effect = lambda key, *_args, **_kwargs: (
+        ["not-an-ip"] if key == CONF_ENTRY_MANUAL_DISCOVERY_IPS.key else False
+    )
+    provider.config = config
+    logger = MagicMock()
+    provider.logger = logger
+
+    with (
+        patch("music_assistant.providers.sonos_s1.provider.SoCo", side_effect=ValueError),
+        patch("music_assistant.providers.sonos_s1.provider.discover", return_value=set()),
+    ):
+        await provider.discover_players()
+
+    assert "not-an-ip" in logger.warning.call_args.args
+
+
 async def test_unload_disarms_the_reschedule(harness: DiscoveryHarness) -> None:
     """An unloaded provider must not keep a discovery reschedule armed."""
     provider = harness.make_provider()
@@ -184,8 +205,8 @@ async def test_unload_stops_an_untracked_discovery_from_rescheduling(
 def _make_provider() -> tuple[SonosPlayerProvider, MagicMock]:
     """Create a provider bound to a mocked server, and return both."""
     mass = MagicMock()
-    mass.players.get_player.return_value = None
-    mass.config.get_raw_player_config_value.return_value = True
+    mass.players.get_protocol.return_value = None
+    mass.players.wants_protocol.return_value = True
     provider = object.__new__(SonosPlayerProvider)
     provider.mass = mass
     provider.logger = logging.getLogger("test.sonos_s1.provider")
@@ -207,12 +228,13 @@ def _make_soco(ip_address: str = "127.0.0.1") -> MagicMock:
 async def test_disabled_speaker_is_not_interrogated() -> None:
     """A speaker the user disabled must not be queried over the network at all."""
     provider, mass = _make_provider()
-    mass.config.get_raw_player_config_value.return_value = False
+    mass.players.wants_protocol.return_value = False
     soco = _make_soco()
 
     with patch("music_assistant.providers.sonos_s1.provider.SonosPlayer") as player_cls:
         await provider._setup_player(soco)
 
+    mass.players.wants_protocol.assert_called_once_with(soco.uid)
     soco.get_speaker_info.assert_not_called()
     player_cls.assert_not_called()
 
@@ -252,7 +274,7 @@ async def test_speaker_found_at_a_new_address_is_handed_the_rediscovered_device(
     existing = MagicMock()
     existing.soco.ip_address = "127.0.0.1"
     existing.update_ip = AsyncMock()
-    mass.players.get_player.return_value = existing
+    mass.players.get_protocol.return_value = existing
     soco = _make_soco("127.0.0.2")
 
     await provider._setup_player(soco)
@@ -266,8 +288,11 @@ async def test_known_speaker_at_the_same_address_is_left_alone() -> None:
     existing = MagicMock()
     existing.soco.ip_address = "127.0.0.1"
     existing.update_ip = AsyncMock()
-    mass.players.get_player.return_value = existing
+    mass.players.get_protocol.return_value = existing
 
-    await provider._setup_player(_make_soco("127.0.0.1"))
+    with patch("music_assistant.providers.sonos_s1.provider.SonosPlayer") as player_cls:
+        await provider._setup_player(_make_soco("127.0.0.1"))
 
     existing.update_ip.assert_not_awaited()
+    # the attached speaker is not set up a second time
+    player_cls.assert_not_called()

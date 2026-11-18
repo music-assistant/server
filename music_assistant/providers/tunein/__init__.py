@@ -264,7 +264,8 @@ class TuneInProvider(MusicProvider):
         if "--" in item_id:
             # handle this for backwards compatibility
             item_id = item_id.split("--", maxsplit=1)[0]
-        if stream_info := await self._get_stream_info(item_id):
+        # stations move to new stream hosts, so resolve the current url at playback time
+        if stream_info := await self._get_stream_info(item_id, refresh=True):
             # assuming here that the streams are sorted by quality (bitrate)
             # and the first one is the best quality
             preferred_stream = stream_info[0]
@@ -323,11 +324,9 @@ class TuneInProvider(MusicProvider):
             if item_type == "audio":
                 preset_id = item.get("preset_id")
                 if not isinstance(preset_id, str) or not preset_id:
-                    self.report_skipped_sync_item(
-                        MediaType.RADIO,
-                        None,
-                        InvalidDataError("TuneIn audio preset has no id"),
-                    )
+                    # not a favourite (audio entries are keyed by preset id), so it can never match a
+                    # library item; skip it like browse does instead of holding back deletions
+                    self.logger.debug("Skipping TuneIn audio entry without preset id: %s", item)
                     continue
                 item_text = item.get("text")
                 if not isinstance(item_text, str) or not item_text:
@@ -524,19 +523,22 @@ class TuneInProvider(MusicProvider):
             )
         return radio
 
-    async def _get_stream_info(self, preset_id: str) -> list[dict[str, Any]]:
-        """Get stream info for a radio station."""
+    async def _get_stream_info(
+        self, preset_id: str, *, refresh: bool = False
+    ) -> list[dict[str, Any]]:
+        """Get stream info for a radio station, optionally bypassing the cache."""
         cached_data = await self.mass.cache.get(
             preset_id, provider=self.instance_id, category=CACHE_CATEGORY_STREAMS
         )
-        if cached_data is not None:
-            # We know from cache this is the right type
-            assert isinstance(cached_data, list)
+        # We know from cache this is the right type
+        assert cached_data is None or isinstance(cached_data, list)
+        if cached_data and not refresh:
             return cached_data
 
         data = await self.__get_data("Tune.ashx", id=preset_id)
-        if not data:
-            return []
+        if not data or not data.get("body"):
+            # fall back to the last known streams when TuneIn returns none
+            return cached_data or []
 
         body_data = data["body"]
         assert isinstance(body_data, list)

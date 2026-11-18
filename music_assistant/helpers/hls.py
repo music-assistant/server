@@ -7,8 +7,11 @@ For simple variant stream selection from master playlists, use helpers.playlists
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from music_assistant_models.errors import InvalidDataError
+
+from music_assistant.helpers.datetime import from_iso_string
 
 
 @dataclass
@@ -31,6 +34,16 @@ class HLSMediaSegment:
             return float(duration_part.strip())
         except IndexError, ValueError:
             return 0.0
+
+    @property
+    def start_time(self) -> datetime | None:
+        """Return the wall-clock time from the #EXT-X-PROGRAM-DATE-TIME tag, if present."""
+        if not self.program_date_time:
+            return None
+        try:
+            return from_iso_string(self.program_date_time.split(":", 1)[1].strip())
+        except IndexError, ValueError:
+            return None
 
     @property
     def title(self) -> str | None:
@@ -58,6 +71,35 @@ class HLSMediaPlaylist:
     header_lines: list[str] = field(default_factory=list)
     segments: list[HLSMediaSegment] = field(default_factory=list)
     footer_lines: list[str] = field(default_factory=list)
+
+    @property
+    def media_sequence(self) -> int:
+        """Return the media sequence number of the first segment (0 when not given)."""
+        try:
+            return int(self._header_value("#EXT-X-MEDIA-SEQUENCE:") or 0)
+        except ValueError:
+            return 0
+
+    @property
+    def target_duration(self) -> float | None:
+        """Return the maximum segment duration in seconds, if given."""
+        try:
+            value = self._header_value("#EXT-X-TARGETDURATION:")
+            return float(value) if value else None
+        except ValueError:
+            return None
+
+    @property
+    def ended(self) -> bool:
+        """Return whether no more segments will be added to the playlist."""
+        return "#EXT-X-ENDLIST" in self.footer_lines
+
+    def _header_value(self, tag: str) -> str | None:
+        """Return the value of a header tag, if present."""
+        for line in self.header_lines:
+            if line.startswith(tag):
+                return line.removeprefix(tag).strip()
+        return None
 
 
 class HLSMediaPlaylistParser:

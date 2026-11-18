@@ -3,12 +3,12 @@
   "domain": "chromecast",
   "stage": "stable",
   "name": "Chromecast",
-  "description": "Cast music and podcasts to Chromecast or Google Cast devices.",
+  "description": "Cast music and podcasts to Chromecast or Google Cast devices, such as Google Nest speakers.",
   "codeowners": ["@music-assistant"],
   "credits": [
     "[PyChromecast](https://github.com/home-assistant-libs/pychromecast)"
   ],
-  "requirements": ["PyChromecast==14.0.10"],
+  "requirements": ["PyChromecast==14.1.1"],
   "documentation": "https://music-assistant.io/player-support/google-cast/",
   "multi_instance": false,
   "builtin": false,

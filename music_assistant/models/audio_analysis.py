@@ -13,11 +13,37 @@ every install that only does e.g. loudness normalization.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, fields
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 
 from mashumaro import DataClassDictMixin
+from music_assistant_models.media_items import AudioMetadata
+
+from music_assistant.helpers.camelot import camelot_key
+
+# extra_data keys that earlier versions used for arrays that are typed fields now; __post_init__
+# lifts them so rows written before the fields existed decode into the same shape.
+_LEGACY_EXTRA_DATA_FIELDS: Final[dict[str, str]] = {
+    "clap_embedding": "clap_embedding",
+    "vocal_activity": "vocal_activity",
+}
+_LEGACY_BAND_RMS_FIELDS: Final[dict[str, str]] = {
+    "low": "band_rms_low",
+    "low_mid": "band_rms_low_mid",
+    "mid": "band_rms_mid",
+    "high": "band_rms_high",
+}
+
+# Fixed energy level calibration (mean, sd, weight), so a track scores the same on every install.
+_ENERGY_BRIGHTNESS: Final[tuple[float, float, float]] = (0.1404, 0.0608, 0.40)
+_ENERGY_LOUDNESS: Final[tuple[float, float, float]] = (-11.4158, 3.0752, 0.35)
+_ENERGY_AROUSAL_LOGIT: Final[tuple[float, float, float]] = (-1.1500, 1.3019, 0.25)
+_ENERGY_Z_LIMIT: Final = 3.0
+_ENERGY_AROUSAL_EPS: Final = 0.0001
+# Score divisor of the energy level curve, a smaller value pushes more tracks toward 1 and 10.
+_ENERGY_CURVE_WIDTH: Final = 1.3
 
 
 class AudioAnalysisError(Exception):
@@ -83,9 +109,23 @@ class AudioAnalysisData(DataClassDictMixin):
     # Spectral centroid in Hz. Fixed 1800 bins. Convert to a numpy array for array math.
     spectral_centroid: list[float] | None = None
 
+    # Envelopes and embeddings (arrays produced by specific providers)
+
+    # Vocal presence per bin, 0.0-1.0. Fixed 1800 bins. Convert to a numpy array for array math.
+    vocal_activity: list[float] | None = None
+    # Per-band RMS envelopes, normalized 0.0-1.0 against the track peak. Fixed 1800 bins each.
+    # Band edges are defined by BAND_RMS_BANDS in the smart fades controller.
+    band_rms_low: list[float] | None = None
+    band_rms_low_mid: list[float] | None = None
+    band_rms_mid: list[float] | None = None
+    band_rms_high: list[float] | None = None
+    # CLAP audio embedding, 1024 floats, L2-normalized. Convert to a numpy array for array math.
+    clap_embedding: list[float] | None = None
+
     # High-Level Descriptors (all normalized 0.0-1.0)
 
-    # Overall perceived energy: 0.0 = very low, 1.0 = very high.
+    # Mean RMS clamped to 0.0-1.0, so it follows the mastering level, not perceived energy.
+    # Use energy_level for perceived energy.
     energy: float | None = None
     # Rhythmic regularity and groove: 0.0 = not danceable, 1.0 = very danceable.
     danceability: float | None = None
@@ -115,6 +155,45 @@ class AudioAnalysisData(DataClassDictMixin):
     # Catch-all dict for provider-specific data
     extra_data: dict[str, Any] | None = None
 
+    def __post_init__(self) -> None:
+        """
+        Lift arrays that older rows stored under extra_data into their typed fields.
+
+        Only values actually lifted (or already superseded by a typed field of the
+        same name) are removed from extra_data; anything else under a legacy key
+        (e.g. a non-list value, or an unrecognized band_rms entry) is left in place
+        so it is not silently discarded on the next write. The non-dict guard below
+        is defensive for direct construction only; from_dict validates the field
+        type before this hook runs.
+        """
+        if self.extra_data is not None and not isinstance(self.extra_data, dict):
+            return  # type: ignore[unreachable]
+        if not self.extra_data:
+            if self.extra_data is not None:
+                self.extra_data = None
+            return
+        extra = dict(self.extra_data)
+        for key, field_name in _LEGACY_EXTRA_DATA_FIELDS.items():
+            value = extra.get(key)
+            if isinstance(value, list):
+                if getattr(self, field_name) is None:
+                    setattr(self, field_name, value)
+                del extra[key]
+        band_rms = extra.get("band_rms")
+        if isinstance(band_rms, dict):
+            remaining_band_rms = dict(band_rms)
+            for band, field_name in _LEGACY_BAND_RMS_FIELDS.items():
+                value = band_rms.get(band)
+                if isinstance(value, list):
+                    if getattr(self, field_name) is None:
+                        setattr(self, field_name, value)
+                    del remaining_band_rms[band]
+            if remaining_band_rms:
+                extra["band_rms"] = remaining_band_rms
+            else:
+                del extra["band_rms"]
+        self.extra_data = extra or None
+
     def update(self, new_values: AudioAnalysisData) -> AudioAnalysisData:
         """Merge new analysis data (in-place). Latest-write-wins for non-None fields."""
         for fld in fields(self):
@@ -123,3 +202,49 @@ class AudioAnalysisData(DataClassDictMixin):
                 continue
             setattr(self, fld.name, new_val)
         return self
+
+    @property
+    def energy_level(self) -> float | None:
+        """
+        Perceived energy of the track, between 1.0 (calmest) and 10.0 (most energetic).
+
+        An average track scores 5.5. None unless brightness, arousal and loudness_integrated
+        are all set. loudness_integrated should be the EBU R128 value of a loudness domain,
+        Sonic Analysis' RMS approximation reads about two levels too low.
+        """
+        if self.brightness is None or self.arousal is None or self.loudness_integrated is None:
+            return None
+        arousal = min(max(self.arousal, _ENERGY_AROUSAL_EPS), 1.0 - _ENERGY_AROUSAL_EPS)
+        score = (
+            _energy_term(self.brightness, _ENERGY_BRIGHTNESS)
+            + _energy_term(self.loudness_integrated, _ENERGY_LOUDNESS)
+            + _energy_term(math.log(arousal / (1.0 - arousal)), _ENERGY_AROUSAL_LOGIT)
+        )
+        # tanh is steep around an average track and flattens toward both ends of the scale
+        return 5.5 + 4.5 * math.tanh(score / _ENERGY_CURVE_WIDTH)
+
+    def as_audio_metadata(self) -> AudioMetadata | None:
+        """
+        Return the bpm, musical key and energy level as track AudioMetadata.
+
+        The energy level is rounded to a whole number. Returns None when it holds none of them.
+        """
+        energy_level = self.energy_level
+        if self.bpm is None and self.key is None and energy_level is None:
+            return None
+        musical_key: str | None = None
+        if self.key is not None:
+            musical_key = f"{self.key} {self.mode}" if self.mode else self.key
+        return AudioMetadata(
+            bpm=self.bpm,
+            musical_key=musical_key,
+            camelot_key=camelot_key(self.key, self.mode),
+            energy_level=None if energy_level is None else round(energy_level),
+        )
+
+
+def _energy_term(value: float, calibration: tuple[float, float, float]) -> float:
+    """Return the weighted, clipped z-score of value for one energy_level input."""
+    mean, sd, weight = calibration
+    z = (value - mean) / sd
+    return weight * min(max(z, -_ENERGY_Z_LIMIT), _ENERGY_Z_LIMIT)

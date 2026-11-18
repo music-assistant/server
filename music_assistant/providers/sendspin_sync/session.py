@@ -6,10 +6,15 @@ Sendspin virtual player and starts the calibration track on that anchor's queue
 exactly once. The phone-side probe then measures one speaker at a time, driven
 by :meth:`CalibrationSession.solo`.
 
-A member is the speaker as the user sees it, not the hidden Sendspin protocol
-player behind it: grouping, volume and mute are all driven at that level and the
-controller translates them to the protocol player itself. Only a static delay is
-written to the Sendspin side, resolved with :func:`resolve_sendspin_player`.
+A member is the speaker as the user sees it, not the Sendspin protocol it plays
+through: grouping, volume and mute are all driven at that level and the controller
+translates them to the protocol itself. Only a static delay is written to the
+Sendspin side, resolved with :func:`resolve_sendspin_protocol`.
+
+A speaker that plays over Sendspin through a bridge (AirPlay, squeezelite, Chromecast)
+keeps one static delay per protocol that carries its output. A session measures a
+speaker over whatever carries it when the session starts, and everything it reads or
+writes is the delay of that carrier.
 
 Two properties of the orchestration are load-bearing for the measurement:
 
@@ -64,6 +69,7 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
+    from music_assistant.models.player_protocol import PlayerProtocol
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
 # Name of the hidden anchor player. It is never shown in the UI, but it does end
@@ -71,11 +77,9 @@ if TYPE_CHECKING:
 ANCHOR_DISPLAY_NAME = "Sendspin Calibration"
 
 # Player types that render audio and can therefore be calibrated. A session drives
-# the player a user sees, so this deliberately excludes PlayerType.PROTOCOL: the
-# hidden half of a speaker MA presents through its parent, reached by resolving that
-# parent with resolve_sendspin_player. Sendspin also registers display, visualizer and
-# light players, none of which is a speaker; an allowlist keeps a future player type
-# out until it is considered.
+# the player a user sees. Sendspin also registers display, visualizer and light
+# players, none of which is a speaker; an allowlist keeps a future player type out
+# until it is considered.
 CALIBRATABLE_PLAYER_TYPES = (PlayerType.PLAYER, PlayerType.STEREO_PAIR)
 
 # States in which a player is considered busy with the user's own content.
@@ -94,8 +98,8 @@ class CalibrationPlayer(DataClassDictMixin):
     """
     A speaker a calibration session can be run against.
 
-    Identified and named as the user sees it, which for a physical speaker is the
-    visible player wrapping its Sendspin client rather than that client.
+    Identified and named as the user sees it: the player, not the Sendspin protocol it
+    plays through.
     """
 
     player_id: str
@@ -142,14 +146,18 @@ class CalibrationSessionState(DataClassDictMixin):
 
 @dataclass(frozen=True, slots=True)
 class StaticDelaySnapshot:
-    """The static delay a session took off a member, and the player to write it back to."""
+    """The static delay a session took off a member, and where to write it back to."""
 
-    # the Sendspin player the delay came off, held rather than resolved again at
+    # the Sendspin protocol the delay came off, held rather than resolved again at
     # teardown: a member whose Sendspin side has meanwhile gone resolves to nothing, and
     # one that reconnected in between could resolve to a different client than the delay
     # was taken from
-    sendspin_player_id: str
+    sendspin_protocol_id: str
     delay_ms: int
+    # the protocol that carried the output when the delay came off, None for a Sendspin
+    # client of its own. The delay goes back to that carrier, also when another one has
+    # taken the output over since.
+    carrier_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +203,9 @@ class CalibrationSession:
         # once, like _silenced: an entry means the delay was taken off and not yet put
         # back, and it is dropped by the restore or by an apply that superseded it.
         self._zeroed_delays: dict[str, StaticDelaySnapshot] = {}
+        # the protocol that carried the output of each member MA can write a delay to
+        # when the session took it, by member id: what the member is measured over
+        self._measured_carriers: dict[str, str | None] = {}
         self._soloed_player_id: str | None = None
         self._stopped = False
 
@@ -222,7 +233,7 @@ class CalibrationSession:
         :param owner_instance_id: Instance id of the provider that owns the session;
             the anchor player is removed when it unloads.
         :param player_ids: The speakers to calibrate, in the order given, as the user
-            sees them - not the Sendspin protocol players behind them.
+            sees them - not the Sendspin protocols they play through.
         :param force: Take over players that are busy playing the user's own content.
         :raises InvalidDataError: If no players were given, or the same player twice.
         :raises PlayerUnavailableError: If a given player is unknown or unavailable.
@@ -376,6 +387,21 @@ class CalibrationSession:
                 await self._silence(other_id)
         self._soloed_player_id = player_id
 
+    def is_measured_over(self, player_id: str, carrier_id: str | None) -> bool:
+        """
+        Return whether a member is still carried by what this session measured it over.
+
+        A bridged speaker has one latency, and one static delay, per protocol that
+        carries its Sendspin output. A measurement taken over one carrier is no
+        correction for another, so a member whose output was handed over mid-session
+        has to be measured again.
+
+        :param player_id: The session member to check.
+        :param carrier_id: Id of the protocol that carries the member's output now, None
+            for a Sendspin client of its own.
+        """
+        return self._measured_carriers.get(player_id) == carrier_id
+
     def keep_applied_static_delay(self, player_id: str) -> None:
         """
         Take a member out of the static delay restore, once a correction was written to it.
@@ -513,18 +539,18 @@ class CalibrationSession:
         :param sendspin: The Sendspin provider the delay is written through.
         :param player: The member to zero, as the user sees it.
         """
-        sendspin_player = resolve_sendspin_player(player)
-        if sendspin_player is None or not sendspin.supports_player_static_delay(
-            sendspin_player.player_id
-        ):
+        protocol = resolve_sendspin_protocol(player)
+        if protocol is None or not sendspin.supports_player_static_delay(protocol.protocol_id):
             return
-        delay_ms = sendspin.get_player_static_delay(sendspin_player.player_id)
+        carrier_id = sendspin.get_player_static_delay_carrier(protocol.protocol_id)
+        self._measured_carriers[player.player_id] = carrier_id
+        delay_ms = sendspin.get_player_static_delay(protocol.protocol_id)
         if delay_ms == 0:
             return
-        await sendspin.set_player_static_delay(sendspin_player.player_id, 0)
+        await sendspin.set_player_static_delay(protocol.protocol_id, 0)
         # recorded only once the write landed, so a failed one leaves nothing to undo
         self._zeroed_delays[player.player_id] = StaticDelaySnapshot(
-            sendspin_player.player_id, delay_ms
+            protocol.protocol_id, delay_ms, carrier_id
         )
 
     async def _restore_static_delay(self, player_id: str) -> None:
@@ -544,7 +570,11 @@ class CalibrationSession:
         # for as long as it takes to walk a house, and the Sendspin provider that carries
         # the delay may have reloaded in the meantime
         sendspin = _require_sendspin(self.mass, self.translation_owner)
-        await sendspin.set_player_static_delay(zeroed.sendspin_player_id, zeroed.delay_ms)
+        # named by its carrier: a bridged speaker whose output another protocol took
+        # over since gets the delay back for the carrier it came off, not for the new one
+        await sendspin.set_player_static_delay(
+            zeroed.sendspin_protocol_id, zeroed.delay_ms, carrier_id=zeroed.carrier_id
+        )
         # dropped only once the value is back, so anything that raised above is still
         # owed and gets named by the sweep at the end of the restore
         del self._zeroed_delays[player_id]
@@ -727,29 +757,26 @@ class CalibrationSession:
         await self._restore_volume_and_mute(player, self._snapshots[player_id])
 
 
-def resolve_sendspin_player(player: Player) -> Player | None:
+def resolve_sendspin_protocol(player: Player) -> PlayerProtocol | None:
     """
-    Return the Sendspin player the given player renders audio through.
+    Return the Sendspin protocol the given player renders audio through.
 
-    A physical Sendspin speaker is registered twice: a hidden protocol player that
-    speaks the protocol, and the visible player MA presents the device as. Grouping,
-    volume and mute are driven on the visible one - the protocol player is not even in
-    the anchor's ``can_group_with``, which carries visible ids - while a static delay is
-    written to the Sendspin one. A session therefore holds the visible player and
-    resolves it here when it needs the speaker's Sendspin side. A Sendspin web or app
-    player is its own protocol endpoint and resolves to itself.
+    A player is the speaker as the user sees it, made up of the protocols that reach
+    its device. Grouping, volume and mute are driven on the player, while a static
+    delay is written to its Sendspin protocol. A session therefore holds the player and
+    resolves it here when it needs the speaker's Sendspin side: the client of a
+    Sendspin speaker, web or app player, or the bridge of a speaker that plays over
+    Sendspin through AirPlay, squeezelite or Chromecast.
 
     :param player: The player to resolve.
-    :return: The Sendspin player, or None when this player has no Sendspin output to
+    :return: The Sendspin protocol, or None when this player has no Sendspin output to
         render through - it plays over other protocols only, or its Sendspin client is
         gone or not ready to take a stream.
     """
-    if player.provider.domain == SENDSPIN_DOMAIN:
-        return player
-    protocol = player.get_output_protocol_by_domain(SENDSPIN_DOMAIN)
-    if protocol is None or not protocol.available:
+    output = player.get_output_protocol_by_domain(SENDSPIN_DOMAIN)
+    if output is None or not output.available:
         return None
-    return player.get_protocol_player(protocol.output_protocol_id)
+    return player.get_output_protocol(output.output_protocol_id)
 
 
 def is_eligible(mass: MusicAssistant, player: Player) -> bool:
@@ -761,7 +788,7 @@ def is_eligible(mass: MusicAssistant, player: Player) -> bool:
     """
     if not player.state.available:
         return False
-    if resolve_sendspin_player(player) is None:
+    if resolve_sendspin_protocol(player) is None:
         # only a speaker that renders over Sendspin can be given a Sendspin static delay
         return False
     if player.state.type not in CALIBRATABLE_PLAYER_TYPES:
@@ -946,7 +973,7 @@ def _reject_uncovered_group(
     would come out less aligned than it went in.
     """
     if unknown_ids := offsets_ms.keys() - current_delays_ms.keys():
-        player_id = sorted(unknown_ids)[0]
+        player_id = min(unknown_ids)
         raise InvalidDataError(
             f"Player {player_id} is not part of this calibration session",
             translation_key="player_not_in_session",
@@ -954,7 +981,7 @@ def _reject_uncovered_group(
             translation_owner=translation_owner,
         )
     if unmeasured_ids := current_delays_ms.keys() - offsets_ms.keys():
-        player_id = sorted(unmeasured_ids)[0]
+        player_id = min(unmeasured_ids)
         raise InvalidDataError(
             f"Player {player_id} was not measured, so the group can not be equalised",
             translation_key="player_not_measured",

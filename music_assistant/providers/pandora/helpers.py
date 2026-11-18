@@ -39,7 +39,6 @@ def handle_pandora_error(response_data: dict[str, Any]) -> None:
 
     message = response_data.get("message", response_data.get("errorString", "Unknown error"))
 
-    # Use the categorized sets for cleaner logic
     if error_code in AUTH_ERRORS:
         raise LoginFailed(f"Authentication failed: {message}")
 
@@ -99,7 +98,8 @@ def create_auth_headers(csrf_token: str, auth_token: str | None = None) -> dict[
         "Content-Type": "application/json;charset=utf-8",
         "X-CsrfToken": csrf_token,
         "Cookie": f"csrftoken={csrf_token}",
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0",
+        # mimics a browser on the Pandora web player, whose API this uses (#2503)
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0",
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
         "Origin": "https://www.pandora.com",
@@ -110,3 +110,12 @@ def create_auth_headers(csrf_token: str, auth_token: str | None = None) -> dict[
         headers["X-AuthToken"] = auth_token
 
     return headers
+
+
+def read_account_flags(response_data: dict[str, Any]) -> set[str]:
+    """
+    Return the capability flags Pandora reported for the logged-in account.
+
+    :param response_data: A parsed `/v1/auth/login` response.
+    """
+    return set((response_data.get("config") or {}).get("flags") or [])

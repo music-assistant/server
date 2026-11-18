@@ -530,6 +530,7 @@ class MusicTimelineQuizType(QuizType):
             top_tracks = await self.mass.music.artists.top_tracks(
                 item_id=artist.item_id,
                 provider_instance_id_or_domain=artist.provider,
+                limit=None,
             )
         except Exception as err:
             LOGGER.debug("Could not fetch top tracks for %s: %s", artist.name, err)

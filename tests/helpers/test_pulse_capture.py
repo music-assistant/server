@@ -81,7 +81,7 @@ class FakeVolumeController:
 
     instances: ClassVar[list[FakeVolumeController]] = []
 
-    def __init__(self, server: str | None = None) -> None:
+    def __init__(self, server: str) -> None:
         """Record the server address used to connect."""
         self.server = server
         self.load_module_calls: list[tuple[str, str]] = []
@@ -123,7 +123,7 @@ def server(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> PulseCaptureServe
     monkeypatch.setattr(pulse_capture, "_READY_POLL_INTERVAL", 0.01)
     monkeypatch.setattr(pulse_capture, "_RESTART_BACKOFF_INITIAL", 0.01)
     mass = Mock()
-    mass.cache_path = str(tmp_path)
+    mass.runtime_path = str(tmp_path)
     return PulseCaptureServer(mass)
 
 
@@ -183,6 +183,9 @@ async def test_daemon_env_isolation(server: PulseCaptureServer, tmp_path: Path) 
         assert proc.env["XDG_RUNTIME_DIR"] == private_dir
         assert proc.env["PULSE_RUNTIME_PATH"] == private_dir
         assert proc.env["PULSE_STATE_PATH"] == private_dir
+        # PA writes an auth cookie under HOME and refuses to start when it is
+        # unwritable, as it is when the container runs as a uid with no passwd entry
+        assert proc.env["HOME"] == private_dir
         # the generated config loads only the native protocol on the private socket
         config_text = (Path(private_dir) / "pulse_capture.pa").read_text(encoding="utf-8")
         assert config_text.startswith("load-module module-native-protocol-unix ")
@@ -362,11 +365,11 @@ async def test_release_during_restart_backoff(
 def test_get_pulse_capture_server_is_shared(tmp_path: Path) -> None:
     """The accessor returns one shared instance per mass object."""
     mass = Mock()
-    mass.cache_path = str(tmp_path)
+    mass.runtime_path = str(tmp_path)
     first = pulse_capture.get_pulse_capture_server(mass)
     assert pulse_capture.get_pulse_capture_server(mass) is first
     other_mass = Mock()
-    other_mass.cache_path = str(tmp_path)
+    other_mass.runtime_path = str(tmp_path)
     assert pulse_capture.get_pulse_capture_server(other_mass) is not first
     # a second mass must not evict the first mass's server (it may hold a
     # running daemon that would otherwise leak unreferenced)

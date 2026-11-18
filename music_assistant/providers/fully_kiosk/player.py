@@ -21,13 +21,14 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import (
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
+    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_AAC,
     CONF_PASSWORD,
     CONF_SSL_FINGERPRINT,
     CONF_USE_SSL,
     CONF_VERIFY_SSL,
 )
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import DeviceInfo, PlayerMedia
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.setup_flow import SetupFlowError
 
 if TYPE_CHECKING:
@@ -70,7 +71,7 @@ def _build_fingerprint(value: str) -> Fingerprint:
     return Fingerprint(digest)
 
 
-class FullyKioskPlayer(Player):
+class FullyKioskPlayer(PlayerProtocol):
     """FullyKiosk Player implementation."""
 
     _attr_poll_interval = 10
@@ -78,12 +79,12 @@ class FullyKioskPlayer(Player):
     def __init__(
         self,
         provider: FullyKioskProvider,
-        player_id: str,
+        protocol_id: str,
         host: str,
         port: int = DEFAULT_PORT,
     ) -> None:
         """Initialize the FullyKiosk Player."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self.host = host
         self.port = port
         self.fully_kiosk: FullyKiosk | None = None
@@ -124,7 +125,9 @@ class FullyKioskPlayer(Player):
                 required=False,
                 advanced=True,
             ),
-            CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
+            # Fully Kiosk aborts a long lived MP3 stream after roughly 8m45s and re-requests
+            # the url, so radio and long queues never play through. AAC is not affected.
+            CONF_ENTRY_OUTPUT_CODEC_DEFAULT_AAC,
         ]
 
     async def on_config_updated(self) -> None:
@@ -135,7 +138,7 @@ class FullyKioskPlayer(Player):
             self._attr_needs_setup = True
             self._attr_setup_reason = "password_required"
             self._attr_available = False
-            self._dashboards.unregister(self.player_id)
+            self._dashboards.unregister(self.protocol_id)
             self.update_state()
             return
         await self._connect()
@@ -145,14 +148,14 @@ class FullyKioskPlayer(Player):
         entries = [
             ConfigEntry(key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, required=True)
         ]
-        errors: dict[str, str] | None = None
+        errors: dict[str, str | SetupFlowError] | None = None
         while True:
             values = await session.form(entries, step_id="user", errors=errors, last_step=True)
             try:
                 await session.finish({CONF_PASSWORD: str(values[CONF_PASSWORD])})
                 return
             except SetupFlowError as err:
-                errors = {"base": err.translation_key or str(err)}
+                errors = {"base": err}
 
     async def poll(self) -> None:
         """Poll player for state updates."""
@@ -171,7 +174,7 @@ class FullyKioskPlayer(Player):
             )
             self._attr_available = False
             self.fully_kiosk = None
-            self._dashboards.unregister(self.player_id)
+            self._dashboards.unregister(self.protocol_id)
             self.update_state()
             return
         self._sync_state()
@@ -202,7 +205,7 @@ class FullyKioskPlayer(Player):
         """Handle PLAY MEDIA on given player."""
         if self.fully_kiosk is None:
             raise PlayerCommandFailed("Fully Kiosk device is not connected.")
-        url = await self.mass.streams.resolve_stream_url(self.player_id, media)
+        url = await self.mass.streams.resolve_stream_url(self.protocol_id, media)
         await self.fully_kiosk.playSound(url, AUDIOMANAGER_STREAM_MUSIC)
         self._attr_current_media = media
         self._attr_elapsed_time = 0
@@ -210,10 +213,14 @@ class FullyKioskPlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
-        await super().on_unload()
-        self._dashboards.unregister(self.player_id)
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
+        await super().on_detach()
+        self._dashboards.unregister(self.protocol_id)
+
+    async def on_remove(self) -> None:
+        """Take the device out of the hosts the provider is set up with."""
+        cast("FullyKioskProvider", self.provider).forget_host(self.host, self.port)
 
     async def _connect(self) -> None:
         """Establish a connection to the Fully Kiosk device."""
@@ -223,14 +230,14 @@ class FullyKioskPlayer(Player):
             self._attr_setup_reason = "password_required"
             self._attr_available = False
             self.fully_kiosk = None
-            self._dashboards.unregister(self.player_id)
+            self._dashboards.unregister(self.protocol_id)
             self.update_state()
             return
 
         session_info = self._resolve_http_session()
         if session_info is None:
             self._attr_available = False
-            self._dashboards.unregister(self.player_id)
+            self._dashboards.unregister(self.protocol_id)
             self.update_state()
             return
         http_session, use_ssl, verify_ssl = session_info
@@ -256,7 +263,7 @@ class FullyKioskPlayer(Player):
             )
             self.fully_kiosk = None
             self._attr_available = False
-            self._dashboards.unregister(self.player_id)
+            self._dashboards.unregister(self.protocol_id)
             self.update_state()
             return
 

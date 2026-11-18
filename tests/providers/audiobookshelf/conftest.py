@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import Mock
 
 import pytest
@@ -14,7 +15,7 @@ from music_assistant.providers.audiobookshelf.helpers import LibraryHelper
 def provider() -> Audiobookshelf:
     """Create a real Audiobookshelf provider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock()
+    manifest = Mock(features=set())
     manifest.domain = "audiobookshelf"
     config = Mock()
     config.instance_id = "audiobookshelf--test123"
@@ -26,4 +27,5 @@ def provider() -> Audiobookshelf:
     provider = Audiobookshelf(mass, manifest, config, SUPPORTED_FEATURES)
     provider.libraries.audiobooks["lib1"] = LibraryHelper(name="Audiobooks")
     provider._client = Mock()
+    provider.library_item_lock = asyncio.Lock()
     return provider

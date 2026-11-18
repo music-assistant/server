@@ -5,7 +5,12 @@ from __future__ import annotations
 from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ArtistEntityType, ExternalID, RecommendationFolderType
+from music_assistant_models.enums import (
+    ArtistEntityType,
+    ExternalID,
+    RecommendationFolderType,
+    SortField,
+)
 from music_assistant_models.media_items import (
     Artist,
     RecommendationFolder,
@@ -124,15 +129,11 @@ class MusicBrainzRecommendationManager:
 
         matched: list[Artist] = []
         scanned = 0
-        async for artist in self.mass.music.artists.iter_library_items(order_by="name"):
+        async for artist in self.mass.music.artists.iter_library_items(sort_field=SortField.NAME):
             mbid = artist.get_external_id(ExternalID.MB_ARTIST)
             if not mbid:
                 continue
             scanned += 1
-            last_refresh = artist.metadata.last_refresh if artist.metadata else None
-            if last_refresh is None:
-                self.mass.metadata.schedule_update_metadata(artist)
-                continue
             life_span = artist.metadata.life_span if artist.metadata else None
             if not life_span:
                 continue

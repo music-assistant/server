@@ -17,7 +17,7 @@ from music_assistant_models.enums import ConfigEntryType, ProviderType
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError
 
-from . import CONF_MASS_PLAYER_ID, CONF_PLEX_PROVIDER_ID
+from . import CONF_MASS_PLAYER_ID, CONF_PLEX_PROVIDER_ID, CONF_PLEXTV_TOKEN
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType
@@ -39,11 +39,12 @@ async def run_setup(session: SetupSession) -> None:
         # the engine's depends_on check only guarantees an enabled plex config exists,
         # not that the instance actually loaded
         raise AbortFlow("no_plex_provider")
-    player_options = _player_options(session.mass)
+    setup_data = dict(session.context.setup_data)
+    original_values = {**session.context.values, **setup_data}
+    player_options = _player_options(session.mass, original_values.get(CONF_MASS_PLAYER_ID))
     if not player_options:
         raise AbortFlow("no_players")
-    setup_data = dict(session.context.setup_data)
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         # setup_data (reconfigure) wins over the instance's stored option values, which
         # still hold the selection on installs made before this flow existed
@@ -61,12 +62,25 @@ async def run_setup(session: SetupSession) -> None:
             errors=errors,
             last_step=True,
         )
+        linked = (
+            session.mass.config.get_provider_setup_value(
+                session.context.instance_id, CONF_PLEXTV_TOKEN
+            )
+            if session.context.instance_id
+            else setup_data.get(CONF_PLEXTV_TOKEN)
+        )
+        if linked and any(
+            submitted[key] != original_values.get(key)
+            for key in (CONF_PLEX_PROVIDER_ID, CONF_MASS_PLAYER_ID)
+        ):
+            errors = {"base": "plextv_unlink_required"}
+            continue
         setup_data.update(submitted)
         try:
-            await session.finish(setup_data)
+            await session.finish(submitted)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 def _plex_provider_options(mass: MusicAssistant) -> list[ConfigValueOption]:
@@ -79,15 +93,23 @@ def _plex_provider_options(mass: MusicAssistant) -> list[ConfigValueOption]:
     ]
 
 
-def _player_options(mass: MusicAssistant) -> list[ConfigValueOption]:
-    """Return a picker option for every available and enabled Music Assistant player."""
+def _player_options(mass: MusicAssistant, selected: ConfigValueType) -> list[ConfigValueOption]:
+    """
+    Return a picker option for every available and enabled Music Assistant player.
+
+    A session-only player (a browser or app player) is only offered while it is selected.
+
+    :param mass: The Music Assistant instance providing the current players.
+    :param selected: The id of the player selected now.
+    """
     return [
-        ConfigValueOption(player.player_id, title=player.display_name)
+        ConfigValueOption(player.player_id, title=player.name)
         for player in sorted(
             mass.players.all_players(False, False),
-            key=lambda player: player.display_name.lower(),
+            key=lambda player: player.name.lower(),
         )
         if player.type in PLAYBACK_TARGET_TYPES
+        and (not player.session_only or player.player_id == selected)
     ]
 
 

@@ -20,7 +20,12 @@ from music_assistant.constants import (
     DEFAULT_CORE_CONFIG_ENTRIES,
 )
 from music_assistant.controllers.config.constants import _ConfigValueT
-from music_assistant.controllers.config.helpers import _with_translation_owner
+from music_assistant.controllers.config.helpers import (
+    _mask_encrypted,
+    _raw_config_to_store,
+    _reject_encrypted_values,
+    _with_translation_owner,
+)
 from music_assistant.controllers.player_queues.constants import CONF_AUTOPLAY_PLAYLIST
 from music_assistant.helpers.api import api_command
 
@@ -50,10 +55,7 @@ class CoreConfigMixin:
             if include_values
             else cast(
                 "CoreConfig",
-                CoreConfig.parse(
-                    [],
-                    self.get(f"{CONF_CORE}/{core_controller}", {"domain": core_controller}),
-                ),
+                CoreConfig.parse([], self._get_raw_core_config(core_controller)),
             )
             for core_controller in CONFIGURABLE_CORE_CONTROLLERS
         ]
@@ -61,11 +63,7 @@ class CoreConfigMixin:
     @api_command("config/core/get", required_scope=Scope.CONFIG_CORE_READ)
     async def get_core_config(self, domain: str) -> CoreConfig:
         """Return configuration for a single core controller."""
-        raw_conf = self.get(f"{CONF_CORE}/{domain}", {})
-        if not isinstance(raw_conf, dict):
-            raw_conf = {}
-        if "domain" not in raw_conf:
-            raw_conf = {**raw_conf, "domain": domain}
+        raw_conf = self._get_raw_core_config(domain)
         # build the schema straight from the controller (no dynamic UI options):
         # CoreConfig.parse stamps the translation owner itself
         controller: CoreController = getattr(self.mass, domain)
@@ -124,14 +122,14 @@ class CoreConfigMixin:
         """
         # prefer stored value so we don't have to retrieve all config entries every time
         if (raw_value := self.get_raw_core_config_value(domain, key)) is not None:
-            return raw_value
+            return _mask_encrypted(raw_value)
         conf = await self.get_core_config(domain)
         if key not in conf.values:
             if default is not None:
                 return default
             msg = f"Config key {key} not found for core controller {domain}"
             raise KeyError(msg)
-        return (
+        return _mask_encrypted(
             conf.values[key].value
             if conf.values[key].value is not None
             else conf.values[key].default_value
@@ -178,19 +176,29 @@ class CoreConfigMixin:
         values: dict[str, ConfigValueType],
     ) -> CoreConfig:
         """Save CoreController Config values."""
+        _reject_encrypted_values(values)
         config = await self.get_core_config(domain)
-        prev_config = config.to_raw()
+        stored_conf = self._get_raw_core_config(domain)
+        stored_values = stored_conf.get("values", {})
         changed_keys = config.update(values)
         # validate the new config
         config.validate()
-        if not changed_keys:
+        raw_conf = _raw_config_to_store(config, stored_values, values)
+        if not changed_keys and raw_conf["values"] == stored_values:
             # no changes
             return config
         # save the config first before reloading to avoid issues on reload
         # for example when reloading the webserver we might be cancelled here
         conf_key = f"{CONF_CORE}/{domain}"
-        self.set(conf_key, config.to_raw())
+        # Preserve the keys the stored block keeps next to the values (state a controller
+        # writes at runtime, e.g. the scheduler state of the tasks controller) - to_raw()
+        # only rebuilds the config itself.
+        raw_conf.update({k: v for k, v in stored_conf.items() if k not in raw_conf})
+        self.set(conf_key, raw_conf)
         self.save(immediate=True)
+        if not changed_keys:
+            # only the storage changed, not the config: nothing to apply
+            return config
         try:
             controller: CoreController = getattr(self.mass, domain)
             await controller.update_config(config, changed_keys)
@@ -198,11 +206,9 @@ class CoreConfigMixin:
             pass
         except Exception:
             # revert to previous config on error
-            self.set(conf_key, prev_config)
+            self.set(conf_key, stored_conf)
             self.save(immediate=True)
             raise
-        # reload succeeded; clear last_error and persist the final state
-        config.last_error = None
         # return full config
         return await self.get_core_config(domain)
 
@@ -241,15 +247,42 @@ class CoreConfigMixin:
 
         Note that this only stores the (raw) value without any validation or default.
         """
-        if not self.get(f"{CONF_CORE}/{core_module}"):
-            # create base object first if needed
-            self.set(f"{CONF_CORE}/{core_module}", CoreConfig({}, core_module).to_raw())
+        self.ensure_core_config_base(core_module)
         self.set(f"{CONF_CORE}/{core_module}/values/{key}", value)
         # also update the controller's in-place config copy (if any) so
         # object-local value reads stay in sync with raw writes
         controller = getattr(self.mass, core_module, None)
         if (config := getattr(controller, "config", None)) and (entry := config.values.get(key)):
             entry.value = value
+
+    def ensure_core_config_base(self, core_module: str) -> None:
+        """
+        Create or repair the stored config block of a core controller.
+
+        Call this before storing a raw value in the block, so the block is left in a state
+        that still parses as a CoreConfig.
+
+        :param core_module: The domain of the core controller.
+        """
+        raw_conf = self.get(f"{CONF_CORE}/{core_module}")
+        if not isinstance(raw_conf, dict) or not raw_conf:
+            self.set(f"{CONF_CORE}/{core_module}", CoreConfig({}, core_module).to_raw())
+        elif "domain" not in raw_conf:
+            self.set(f"{CONF_CORE}/{core_module}/domain", core_module)
+
+    def _get_raw_core_config(self, domain: str) -> dict[str, Any]:
+        """
+        Return the stored raw config of a core controller, ready to parse as a CoreConfig.
+
+        :param domain: The domain of the core controller.
+        """
+        raw_conf = self.get(f"{CONF_CORE}/{domain}", {})
+        if not isinstance(raw_conf, dict):
+            raw_conf = {}
+        if "domain" not in raw_conf:
+            # older versions could store the block without its mandatory domain key
+            return {**raw_conf, "domain": domain}
+        return raw_conf
 
     async def _resolve_core_config_entries(
         self, domain: str, entries: tuple[ConfigEntry, ...]

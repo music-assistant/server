@@ -45,7 +45,9 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         """Get stream details (streaming URL and format) for given item."""
         if media_type is not MediaType.TRACK:
             raise MediaNotFoundError(f"Media type {media_type} is not supported for stream details")
-        return await self.service_manager.video.get_stream_details(item_id)
+        # The cached track provides the artist and album for the stream metadata
+        track = await self.get_track(item_id)
+        return await self.service_manager.video.get_stream_details(item_id, track)
 
     @override
     async def get_audio_stream(
@@ -54,12 +56,8 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         """
         Get audio stream with dynamic playlist generation for optimized seeking.
 
-        Args:
-            streamdetails: Stream details containing domand_bid and parsed_playlist in data field
-            seek_position: Position to seek to in seconds
-
-        Yields:
-            Audio data bytes
+        :param streamdetails: Stream details whose data holds the NicovideoStreamData (domand_bid and parsed HLS playlist).
+        :param seek_position: Position to seek to in seconds.
         """
         if not isinstance(streamdetails.data, NicovideoStreamData):
             msg = f"Invalid stream data type: {type(streamdetails.data)}"

@@ -21,6 +21,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
 if TYPE_CHECKING:
@@ -264,7 +265,7 @@ def parse_podcast(podcast_obj: dict[str, Any], provider: SpotifyProvider) -> Pod
     if podcast_obj.get("languages"):
         podcast.metadata.languages = UniqueList(podcast_obj["languages"])
 
-    podcast.metadata.genres = {"Spoken Word"}
+    podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
     return podcast
 
@@ -394,7 +395,7 @@ def parse_audiobook(audiobook_obj: dict[str, Any], provider: SpotifyProvider) ->
     if audiobook_obj.get("languages"):
         audiobook.metadata.languages = UniqueList(audiobook_obj["languages"])
 
-    audiobook.metadata.genres = {"Spoken Word"}
+    audiobook.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
     # Set publication date if available
     if audiobook_obj.get("publication_date"):

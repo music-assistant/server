@@ -15,7 +15,7 @@ import asyncio
 import random
 import time
 import urllib.parse
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import ContentType
@@ -25,6 +25,7 @@ from music_assistant.controllers.streams.audio_processing import (
     AudioOutputPlan,
     get_media_session_id,
 )
+from music_assistant.helpers.audio import resolve_output_player_ids
 from music_assistant.helpers.buffered_generator import buffered
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.providers.snapcast.socket_server import SnapcastSocketServer
@@ -35,6 +36,8 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant_models.player import PlayerMedia
 
     from music_assistant.helpers.dsp import ComplexFilter
@@ -96,8 +99,11 @@ class SnapcastMAStream:
         self._setup_done = False
         self._is_streaming = False
         self._restart_requested: bool = False
+        # only a restart stops without draining, as play_media detaches the group first
+        self._stop_without_drain: bool = False
         self._stop_requested: bool = False
         self._streaming_started_at: float | None = None
+        self._played_out_at: float | None = None
         self._output_plan: AudioOutputPlan | None = None
 
         self._socket_server: SnapcastSocketServer | None = None
@@ -107,6 +113,7 @@ class SnapcastMAStream:
         self._streamer_started_evt = asyncio.Event()
         self._stop_timer: asyncio.Handle | None = None
         self._stop_timer_started_at: float | None = None
+        self._pins: set[str] = set()
         self._filter_settings: list[str | ComplexFilter] | None = None
 
     @property
@@ -136,12 +143,10 @@ class SnapcastMAStream:
         """
         if self._streaming_started_at is None:
             return None
-        if self._provider._use_builtin_server:
-            buffer_ms = self._provider._snapcast_server_buffer_size
-            if time.time() - self._streaming_started_at < buffer_ms / 1000.0:
-                return None
-            return self._streaming_started_at + buffer_ms / 1000.0
-        return self._streaming_started_at
+        started_at = self._streaming_started_at + self._get_playback_delay()
+        if time.time() < started_at:
+            return None
+        return started_at
 
     async def setup(self) -> None:
         """
@@ -185,27 +190,35 @@ class SnapcastMAStream:
         """
         Start streaming the configured media to the Snapcast source.
 
+        If the stream is still stopping after a stop request, this waits until that run has
+        finished, so a group attached afterwards does not hear its leftover audio.
+
         Raises:
             RuntimeError: If the streamer task is already running.
         """
         await self.setup()
+        stopping_task: asyncio.Task[None] | None = None
         async with self._lifecycle_lock:
             if self._streamer_task and not self._streamer_task.done():
                 if not allow_restart:
                     raise RuntimeError("streamer already running")
                 if self._stop_requested or self._stop_streamer_evt.is_set():
+                    if not self._restart_requested:
+                        stopping_task = self._streamer_task
                     # stop in flight; _on_streamer_done will start the fresh run
                     self._restart_requested = True
                 else:
                     self._restart_if_running()
-                return
-
-            self._stop_requested = False
-            self._restart_requested = False
-            self._stop_streamer_evt.clear()
-            self._streamer_started_evt.clear()
-            self._streamer_task = self._mass.create_task(self._streamer_task_impl())
-            self._streamer_task.add_done_callback(self._on_streamer_done)
+            else:
+                self._stop_requested = False
+                self._restart_requested = False
+                self._stop_streamer_evt.clear()
+                self._streamer_started_evt.clear()
+                self._streamer_task = self._mass.create_task(self._streamer_task_impl())
+                self._streamer_task.add_done_callback(self._on_streamer_done)
+        if stopping_task:
+            # snapserver plays the stopped run's buffered audio until that run has finished
+            await asyncio.wait({stopping_task})
 
     async def wait_for_started(self, timeout_sec: float | None = None) -> None:
         """
@@ -257,6 +270,7 @@ class SnapcastMAStream:
         """
         self._stop_requested = True
         self._restart_requested = False  # explicit stop cancels any pending restart
+        self._stop_without_drain = False
         self._stop_streamer_evt.set()
 
         self._stop_timer_started_at = None
@@ -268,15 +282,33 @@ class SnapcastMAStream:
         Mark the stream as in-use or idle.
 
         When marked idle, a delayed stop is scheduled. When marked in-use, any pending
-        delayed stop is canceled.
+        delayed stop is canceled. A pinned stream is never scheduled for a delayed stop.
         """
         if in_use:
             self._stop_timer_started_at = None
             if self._stop_timer:
                 self._stop_timer.cancel()
-        elif self._stop_timer_started_at is None and not self._stop_requested:
+        elif not self._pins and self._stop_timer_started_at is None and not self._stop_requested:
             self._stop_timer_started_at = self._mass.loop.time()
             self._stop_timer = self._mass.loop.call_later(3.0, self.request_stop_stream)
+
+    def pin(self, owner: str) -> None:
+        """
+        Keep the stream alive on behalf of the given owner while no group is assigned.
+
+        A pinned stream is exempt from the inactivity stop timer. Pins are held per owner,
+        so concurrent announcements across group members do not release each other's hold.
+        """
+        self._pins.add(owner)
+        self.set_in_use(True)
+
+    def unpin(self, owner: str) -> None:
+        """
+        Release the given owner's hold on the stream.
+
+        Once the last owner releases, the stream returns to the regular in-use bookkeeping.
+        """
+        self._pins.discard(owner)
 
     async def wait_for_stopped(self, timeout_sec: float | None = None) -> None:
         """
@@ -315,6 +347,7 @@ class SnapcastMAStream:
             raise RuntimeError("The path to stream to is not set")
 
         self._logger.debug("Start streaming to %s", stream_path)
+        self._played_out_at = None
         self._stop_streamer_evt.clear()
         self._streamer_started_evt.clear()
         if self._filter_settings_owner:
@@ -331,14 +364,16 @@ class SnapcastMAStream:
         stream_format = self._provider.stream_audio_format
         # ffmpeg reads this pipeline at 1x (-re) and snapserver only holds ~1 second,
         # so buffer here to give the source room to hiccup without starving the server
-        audio_source = buffered(
-            self._mass.streams.get_stream(
-                self.media,
-                stream_format,
-                self._filter_settings_owner,
-            ),
-            buffer_size=30,
-            min_buffer_before_yield=1,
+        audio_source = self._track_sent_audio(
+            buffered(
+                self._mass.streams.get_stream(
+                    self.media,
+                    stream_format,
+                    self._filter_settings_owner,
+                ),
+                buffer_size=30,
+                min_buffer_before_yield=1,
+            )
         )
         try:
             async with FFMpeg(
@@ -352,7 +387,15 @@ class SnapcastMAStream:
                 wait_ffmpeg = self._mass.create_task(ffmpeg_proc.wait())
                 wait_stop = self._mass.create_task(self._stop_streamer_evt.wait())
                 self._streaming_started_at = time.time()
-                self._streamer_started_evt.set()
+                # refresh the players once playback_started_at is known (after the server buffer)
+                self._mass.call_later(
+                    self._get_playback_delay(),
+                    self._snap_on_stream_update,
+                    task_id=f"snapcast_playback_started_{self.stream_name}",
+                )
+                # a run stopped while FFmpeg started must not release the wait for its replacement
+                if not self._stop_streamer_evt.is_set():
+                    self._streamer_started_evt.set()
                 self._is_streaming = True
 
                 done, pending = await asyncio.wait(
@@ -364,12 +407,16 @@ class SnapcastMAStream:
                     self._logger.debug("Stopping stream %s requested.", self.stream_name)
                     wait_ffmpeg.cancel()
                     await asyncio.gather(wait_ffmpeg, return_exceptions=True)
+                    if self._stop_without_drain:
+                        await ffmpeg_proc.kill()
                     return
 
                 await wait_ffmpeg
                 for t in pending:
                     t.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
+                # switching the group away drops the audio the clients still have buffered
+                await self._wait_played_out()
         except asyncio.CancelledError:
             self._logger.debug("Snapcast stream %s cancelled", self.stream_name)
             raise
@@ -380,6 +427,27 @@ class SnapcastMAStream:
             self._is_streaming = False
             self._logger.debug("Finished streaming to %s", stream_path)
             await self._wait_stream_idle()
+
+    async def _track_sent_audio(self, audio_source: AsyncGenerator[bytes]) -> AsyncGenerator[bytes]:
+        """Pass the audio through, tracking when the clients will have played it."""
+        bytes_per_second = self._provider.stream_audio_format.pcm_sample_size
+        async with aclosing(audio_source):
+            async for chunk in audio_source:
+                # a source stall delays everything sent after it
+                earliest_start = time.time() + self._get_playback_delay()
+                self._played_out_at = max(self._played_out_at or 0.0, earliest_start) + (
+                    len(chunk) / bytes_per_second
+                )
+                yield chunk
+
+    async def _wait_played_out(self) -> None:
+        """Wait until the clients played all sent audio, or a stop is requested."""
+        if self._played_out_at is None:
+            return
+        if (remaining := self._played_out_at - time.time()) <= 0:
+            return
+        with suppress(TimeoutError):
+            await asyncio.wait_for(self._stop_streamer_evt.wait(), remaining)
 
     async def _wait_stream_idle(self) -> None:
         """Wait for the Snapcast stream to become idle after streaming ends."""
@@ -422,6 +490,7 @@ class SnapcastMAStream:
             # reset per-run state
             self._restart_requested = False
             self._stop_requested = False
+            self._stop_without_drain = False
             self._stop_streamer_evt.clear()
             self._streamer_started_evt.clear()
 
@@ -441,7 +510,11 @@ class SnapcastMAStream:
 
         self._restart_requested = True
         self._stop_requested = True
+        self._stop_without_drain = True
         self._stop_streamer_evt.set()
+        self._streamer_started_evt.clear()
+        # the group can rejoin before the old run ends; its start must not anchor elapsed time
+        self._streaming_started_at = None
 
         self._stop_timer_started_at = None
         if self._stop_timer:
@@ -496,15 +569,16 @@ class SnapcastMAStream:
         session_id = get_media_session_id(self.media)
         if self._output_plan is None or queue_id is None or session_id is None:
             return
-        player_ids = set(self._output_plan.output_details.player_ids)
+        protocol_ids: set[str] = set()
         if self.snap_stream:
             for group in self._provider._snapserver.groups:
                 if group.stream != self.snap_stream.identifier:
                     continue
                 for client_id in group.clients:
-                    if player_id := self._provider._get_ma_id(client_id):
-                        player_ids.add(player_id)
-        for player_id in player_ids:
+                    if protocol_id := self._provider._get_ma_id(client_id):
+                        protocol_ids.add(protocol_id)
+        player_ids = set(self._output_plan.output_details.player_ids)
+        for player_id in player_ids | resolve_output_player_ids(self._mass, protocol_ids):
             self._mass.streams.audio_processing.update_output(
                 player_id,
                 self._output_plan,
@@ -572,7 +646,7 @@ class SnapcastMAStream:
             found within 20 attempts (extremely rare; the range has 201 values).
         """
         for _ in range(20):
-            port = random.randint(4953, 4953 + 200)
+            port = random.randint(4953, 4953 + 200)  # noqa: S311 - port pick
             if port not in used:
                 return port
         return None
@@ -704,7 +778,7 @@ class SnapcastMAStream:
         uri = self.snap_stream._stream.get("uri", {})
         uri_host = uri.get("host", "")
         stream_path = self.snap_stream.path or f"tcp://{uri_host}"
-        return stream_path.replace("0.0.0.0", self._provider._snapcast_server_host)
+        return stream_path.replace("0.0.0.0", self._provider._snapcast_server_host)  # noqa: S104 - string replace, not a bind
 
     def _snap_on_stream_update(self, stream: SnapstreamProto | None = None) -> None:
         """Handle Snapcast stream updates and trigger group member refresh."""
@@ -753,3 +827,7 @@ class SnapcastMAStream:
         await self._socket_server.stop()
         self._socket_server = None
         self._logger.debug("Stopped socket server for queue %s", self._cntrl_queue_id)
+
+    def _get_playback_delay(self) -> float:
+        """Return the delay in seconds between streaming start and playback at the clients."""
+        return self._provider._snapcast_server_buffer_size / 1000.0

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ExternalID
+from music_assistant_models.enums import ExternalID, ProviderFeature, ProviderType
+from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import Album, Artist, ProviderMapping, UniqueList
 
 from music_assistant.constants import DB_TABLE_EXTERNAL_ID_LOOKUP
@@ -23,6 +25,11 @@ async def music(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]
     """Return a music controller with a real library database."""
     controller = MusicController(mass_minimal)
     mass_minimal.music = controller
+    # remove_item_from_library routes audio analysis cleanup through the AA controller
+    mass_minimal.streams = MagicMock()
+    mass_minimal.streams.audio_analysis.delete_audio_analysis = AsyncMock()
+    # a lookup on the providers remembers what it found in the cache
+    await mass_minimal.cache._setup_database()
     await controller._setup_database()
     yield controller
     if controller._database:
@@ -97,7 +104,7 @@ async def test_same_isrc_from_two_providers_dedupes(music: MusicController) -> N
 
     assert library_track_1.item_id == library_track_2.item_id
     assert len(library_track_2.provider_mappings) == 2
-    assert await music.tracks.library_count() == 1
+    assert await music.database.get_count(music.tracks.db_table) == 1
 
 
 async def test_formatted_isrc_from_two_providers_dedupes(music: MusicController) -> None:
@@ -137,7 +144,7 @@ async def test_matching_checks_more_than_fifty_external_id_candidates(
     )
 
     assert matched.item_id == expected.item_id
-    assert await music.tracks.library_count() == 51
+    assert await music.database.get_count(music.tracks.db_table) == 51
 
 
 async def test_non_unique_external_id_candidates_are_all_verified(
@@ -169,7 +176,7 @@ async def test_non_unique_external_id_candidates_are_all_verified(
 
     assert matched.item_id == expected.item_id
     assert matched.item_id != unrelated.item_id
-    assert await music.albums.library_count() == 2
+    assert await music.database.get_count(music.albums.db_table) == 2
     assert {mapping.provider_instance for mapping in matched.provider_mappings} == {
         "apple_music_1",
         "qobuz_1",
@@ -201,6 +208,40 @@ async def test_get_library_item_by_external_id(music: MusicController) -> None:
     assert await music.tracks.get_library_item_by_external_id(ISRC, ExternalID.BARCODE) is None
     assert await music.tracks.get_library_item_by_external_id("something-else") is None
     assert await music.tracks.get_library_item_by_external_id(ISRC[:-1]) is None
+
+
+async def test_get_item_by_external_id_provider_fallback_logs_instance(
+    music: MusicController, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Provider fallback resolves a remote match and logs the failed instance ID for diagnostics."""
+    unavailable = MagicMock()
+    unavailable.type = ProviderType.MUSIC
+    unavailable.available = True
+    unavailable.domain = "spotify"
+    unavailable.instance_id = "spotify_1"
+    unavailable.supported_features = {ProviderFeature.TRACK_BY_EXTERNAL_ID}
+    unavailable.get_track_by_external_id = AsyncMock(
+        side_effect=ProviderUnavailableError("offline")
+    )
+
+    remote = MagicMock()
+    remote.type = ProviderType.MUSIC
+    remote.available = True
+    remote.domain = "spotify"
+    remote.instance_id = "spotify_2"
+    remote.supported_features = {ProviderFeature.TRACK_BY_EXTERNAL_ID}
+    remote_track = create_track("spotify_2", "track_remote")
+    remote.get_track_by_external_id = AsyncMock(return_value=remote_track)
+
+    music.mass._providers = {"spotify_1": unavailable, "spotify_2": remote}
+
+    result = await music.tracks.get_item_by_external_id(ISRC, ExternalID.ISRC)
+
+    assert result is not None
+    assert result.item_id == remote_track.item_id
+    assert "spotify_1" in caplog.text
+    unavailable.get_track_by_external_id.assert_awaited_once()
+    remote.get_track_by_external_id.assert_awaited_once()
 
 
 async def test_external_id_lookup_rows_follow_item_updates(music: MusicController) -> None:

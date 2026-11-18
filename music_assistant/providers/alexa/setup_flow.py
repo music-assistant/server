@@ -50,7 +50,7 @@ async def run_setup(session: SetupSession) -> None:
     :param session: The setup session driving the flow.
     """
     collected = dict(session.context.setup_data)
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         values = await session.form(
             _credential_entries(collected), step_id="credentials", errors=errors, last_step=False
@@ -73,7 +73,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(collected)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 def _credential_entries(prefill: dict[str, ConfigValueType]) -> list[ConfigEntry]:

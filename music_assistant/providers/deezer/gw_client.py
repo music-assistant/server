@@ -7,126 +7,54 @@ cookie based on the api_token.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
-from http.cookies import BaseCookie, Morsel
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from aiohttp import ClientSession, ClientTimeout
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, RateLimited
 from yarl import URL
 
 from music_assistant.helpers.datetime import future_timestamp, utc_timestamp
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
+
+from .constants import API_RATE_LIMIT, API_RATE_PERIOD
 
 if TYPE_CHECKING:
+    from aiohttp import ClientResponse
     from music_assistant_models.streamdetails import StreamDetails
 
+# mimics a browser on the Deezer web player, whose private gw-light API this uses (#625)
 USER_AGENT_HEADER = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/79.0.3945.130 Safari/537.36"
 )
 
 GW_LIGHT_URL = "https://www.deezer.com/ajax/gw-light.php"
+MEDIA_GET_URL = "https://media.deezer.com/v1/get_url"
+GW_TIMEOUT = ClientTimeout(total=30)
+# Deezer's stream formats, best first
+STREAM_FORMATS = ("FLAC_24", "FLAC", "MP3_320", "MP3_128")
 
 
 class DeezerGWError(Exception):
     """Exception type for GWClient related exceptions."""
 
 
+class DeezerGWAuthError(DeezerGWError):
+    """The GW API did not return a user for the supplied ARL."""
+
+
+class DeezerGWNoSubscriptionError(DeezerGWError):
+    """The GW API returned an account without a streaming subscription."""
+
+
 class GWClient:
     """The GWClient class can be used to perform actions not being of the official API."""
-
-    _arl_token: str
-    _gw_csrf_token: str | None
-    _license: str | None
-    _license_expiration_timestamp: int
-    _user_id: int
-    session: ClientSession
-    formats: ClassVar[list[dict[str, str]]] = [
-        {"cipher": "BF_CBC_STRIPE", "format": "MP3_128"},
-    ]
-    user_country: str
-
-    def __init__(self, session: ClientSession, arl_token: str) -> None:
-        """Provide an aiohttp ClientSession and the deezer ARL token."""
-        self._arl_token = arl_token
-        self.session = session
-
-    async def _set_cookie(self) -> None:
-        cookie: Morsel[str] = Morsel()
-
-        cookie.set("arl", self._arl_token, self._arl_token)
-        cookie.update({"domain": ".deezer.com", "path": "/", "httponly": "True"})
-
-        self.session.cookie_jar.update_cookies(BaseCookie({"arl": cookie}), URL(GW_LIGHT_URL))
-
-    async def _update_user_data(self) -> None:
-        user_data = await self._gw_api_call("deezer.getUserData", False)
-        if not user_data["results"]["USER"]["USER_ID"]:
-            await self._set_cookie()
-            user_data = await self._gw_api_call("deezer.getUserData", False)
-
-        if not user_data["results"]["OFFER_ID"]:
-            msg = "Free subscriptions cannot be used in MA. Make sure you set a valid ARL."
-            raise DeezerGWError(msg)
-
-        self._gw_csrf_token = user_data["results"]["checkForm"]
-        self._user_id = int(user_data["results"]["USER"]["USER_ID"])
-        self._license = user_data["results"]["USER"]["OPTIONS"]["license_token"]
-        self._license_expiration_timestamp = user_data["results"]["USER"]["OPTIONS"][
-            "expiration_timestamp"
-        ]
-        web_qualities = user_data["results"]["USER"]["OPTIONS"]["web_sound_quality"]
-        mobile_qualities = user_data["results"]["USER"]["OPTIONS"]["mobile_sound_quality"]
-        if web_qualities["high"] or mobile_qualities["high"]:
-            self.formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "MP3_320"})
-        if web_qualities["lossless"] or mobile_qualities["lossless"]:
-            self.formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "FLAC"})
-
-        self.user_country = user_data["results"]["COUNTRY"]
-
-    async def setup(self) -> None:
-        """Call this to let the client get its cookies, license and tokens."""
-        await self._set_cookie()
-        await self._update_user_data()
-
-    async def _get_license(self) -> str | None:
-        if self._license_expiration_timestamp < future_timestamp(days=1):
-            await self._update_user_data()
-        return self._license
-
-    async def _gw_api_call(
-        self,
-        method: str,
-        use_csrf_token: bool = True,
-        args: dict[str, Any] | None = None,
-        params: dict[str, Any] | None = None,
-        http_method: str = "POST",
-        retry: bool = True,
-    ) -> dict[str, Any]:
-        csrf_token = self._gw_csrf_token if use_csrf_token else "null"
-        if params is None:
-            params = {}
-        parameters = {"api_version": "1.0", "api_token": csrf_token, "input": "3", "method": method}
-        parameters |= params
-        result = await self.session.request(
-            http_method,
-            GW_LIGHT_URL,
-            params=cast("Mapping[str, str]", parameters),
-            timeout=ClientTimeout(total=30),
-            json=args,
-            headers={"User-Agent": USER_AGENT_HEADER},
-        )
-        result_json = await result.json()
-
-        if result_json["error"]:
-            if retry:
-                await self._update_user_data()
-                return await self._gw_api_call(
-                    method, use_csrf_token, args, params, http_method, False
-                )
-            msg = "Failed to call GW-API"
-            raise DeezerGWError(msg, result_json["error"])
-        return cast("dict[str, Any]", result_json)
 
     # Content support descriptor for page.get — tells the API which module types to return
     _PAGE_SUPPORT: ClassVar[dict[str, Any]] = {
@@ -138,6 +66,46 @@ class GWClient:
         "filterable-grid": ["album", "playlist"],
         "large-card": ["album", "playlist"],
     }
+
+    _arl_token: str
+    _gw_csrf_token: str | None
+    _license: str | None
+    _license_expiration_timestamp: int
+    _user_id: int
+    session: ClientSession
+    formats: list[dict[str, str]]
+    user_country: str
+
+    def __init__(
+        self,
+        session: ClientSession,
+        arl_token: str,
+        account_id: str | None = None,
+        max_format: str = "FLAC_24",
+        throttler: ThrottlerManager | None = None,
+    ) -> None:
+        """
+        Provide an aiohttp ClientSession, the deezer ARL token and an optional Family profile.
+
+        :param max_format: The best format to request, from the quality setting.
+        :param throttler: Throttler shared with the other clients of the account, None for one
+            of its own.
+        """
+        self._arl_token = arl_token
+        self._account_id = account_id
+        self._max_format = max_format
+        self.session = session
+        self.throttler = throttler or ThrottlerManager(
+            rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD
+        )
+        self.logger = logging.getLogger(__name__)
+        # the session is shared server-wide, so this client keeps its cookies to itself
+        self._cookies: dict[str, str] = {}
+        self.formats = [{"cipher": "BF_CBC_STRIPE", "format": "MP3_128"}]
+
+    async def setup(self) -> None:
+        """Call this to let the client get its license and tokens."""
+        await self._update_user_data()
 
     async def get_page(self, page: str, language: str = "en") -> dict[str, Any]:
         """
@@ -188,12 +156,7 @@ class GWClient:
             ],
             "track_tokens": [track_token],
         }
-        url_response = await self.session.post(
-            "https://media.deezer.com/v1/get_url",
-            json=url_data,
-            headers={"User-Agent": USER_AGENT_HEADER},
-        )
-        result_json = await url_response.json()
+        result_json = await self._request("POST", MEDIA_GET_URL, json=url_data)
 
         if error := result_json["data"][0].get("errors"):
             error_code = error[0].get("code") if isinstance(error, list) and error else None
@@ -234,7 +197,8 @@ class GWClient:
                 "media": {
                     "id": last_track.item_id,
                     "type": "song",
-                    "format": last_track.data["format"],
+                    # Deezer drops a listen reported as FLAC_24, a hi-res play counts as FLAC
+                    "format": last_track.data["format"].removesuffix("_24"),
                 },
                 "type": 1,
                 "stat": {
@@ -244,7 +208,8 @@ class GWClient:
                     "next": bool(next_track),
                 },
                 "lt": int(seconds_streamed),
-                "ctxt": {"t": "search_page", "id": last_track.item_id},
+                "ctxt": last_track.data.get("context")
+                or {"t": "search_page", "id": last_track.item_id},
                 "dev": {"v": "10020230525142740", "t": 0},
                 "ls": [],
                 "ts_listen": int(last_track.data["start_ts"]),
@@ -266,3 +231,135 @@ class GWClient:
             args={"start": start, "nb": nb},
         )
         return cast("dict[str, Any]", result["results"])
+
+    def _request_cookies(self, url: str) -> dict[str, str]:
+        """
+        Return the cookies to send with a request to the given url.
+
+        :param url: The request URL.
+        """
+        # aiohttp merges per-request cookies with the shared jar. Blank every cookie
+        # the jar would send before applying this instance's cookies and ARL.
+        blanked = dict.fromkeys(self.session.cookie_jar.filter_cookies(URL(url)), "")
+        return blanked | self._cookies | {"arl": self._arl_token}
+
+    def _store_cookies(self, response: ClientResponse) -> None:
+        """Store response cookies for this instance."""
+        self._cookies.update({name: morsel.value for name, morsel in response.cookies.items()})
+        if "jwt" in response.cookies:
+            # user.loginMulti logs in like the web player. Pipe rejects every request with
+            # a jwt cookie, even a blanked one, so it must not stay in the shared jar.
+            self.session.cookie_jar.clear(
+                lambda morsel: morsel.key == "jwt" and morsel["domain"] == "deezer.com"
+            )
+
+    async def _update_user_data(self) -> None:
+        # Retry an anonymous response with the session cookies Deezer just returned.
+        # Disable the API call's retry to avoid recursing into this method.
+        for _ in range(2):
+            user_data = await self._gw_api_call("deezer.getUserData", False, retry=False)
+            if int(user_data["results"]["USER"]["USER_ID"] or 0):
+                break
+        else:
+            msg = "The Deezer GW API returned no authenticated user after retrying."
+            raise DeezerGWAuthError(msg)
+
+        if self._account_id and str(user_data["results"]["USER"]["USER_ID"]) != self._account_id:
+            # switch the session to the Family profile, the way Deezer's web player does
+            self._gw_csrf_token = user_data["results"]["checkForm"]
+            await self._gw_api_call(
+                "user.loginMulti", args={"account_id": int(self._account_id)}, retry=False
+            )
+            user_data = await self._gw_api_call("deezer.getUserData", False, retry=False)
+            if str(user_data["results"]["USER"]["USER_ID"]) != self._account_id:
+                msg = f"Deezer did not switch the session to Family profile {self._account_id}."
+                raise DeezerGWAuthError(msg)
+
+        if not user_data["results"]["OFFER_ID"]:
+            msg = "The Deezer account has no streaming subscription."
+            raise DeezerGWNoSubscriptionError(msg)
+
+        self._gw_csrf_token = user_data["results"]["checkForm"]
+        self._user_id = int(user_data["results"]["USER"]["USER_ID"])
+        self._license = user_data["results"]["USER"]["OPTIONS"]["license_token"]
+        self._license_expiration_timestamp = user_data["results"]["USER"]["OPTIONS"][
+            "expiration_timestamp"
+        ]
+        # Rebuilt on every license refresh, so start from the default list
+        formats = [{"cipher": "BF_CBC_STRIPE", "format": "MP3_128"}]
+        web_qualities = user_data["results"]["USER"]["OPTIONS"]["web_sound_quality"]
+        mobile_qualities = user_data["results"]["USER"]["OPTIONS"]["mobile_sound_quality"]
+        if web_qualities["high"] or mobile_qualities["high"]:
+            formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "MP3_320"})
+        if web_qualities["lossless"] or mobile_qualities["lossless"]:
+            formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "FLAC"})
+            # hi-res comes with lossless, Deezer has no flag for it
+            formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "FLAC_24"})
+        # leave out the formats above the quality setting
+        allowed = STREAM_FORMATS[STREAM_FORMATS.index(self._max_format) :]
+        self.formats = [fmt for fmt in formats if fmt["format"] in allowed]
+
+        self.user_country = user_data["results"]["COUNTRY"]
+
+    async def _get_license(self) -> str | None:
+        if self._license_expiration_timestamp < future_timestamp(days=1):
+            await self._update_user_data()
+        return self._license
+
+    async def _gw_api_call(
+        self,
+        method: str,
+        use_csrf_token: bool = True,
+        args: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        http_method: str = "POST",
+        retry: bool = True,
+    ) -> dict[str, Any]:
+        csrf_token = self._gw_csrf_token if use_csrf_token else "null"
+        if params is None:
+            params = {}
+        parameters = {"api_version": "1.0", "api_token": csrf_token, "input": "3", "method": method}
+        parameters |= params
+        result_json = await self._request(
+            http_method,
+            GW_LIGHT_URL,
+            params=cast("Mapping[str, str]", parameters),
+            json=args,
+        )
+
+        if result_json["error"]:
+            if retry:
+                await self._update_user_data()
+                return await self._gw_api_call(
+                    method, use_csrf_token, args, params, http_method, False
+                )
+            msg = "Failed to call GW-API"
+            raise DeezerGWError(msg, result_json["error"])
+        return cast("dict[str, Any]", result_json)
+
+    @throttle_with_retries
+    async def _request(self, /, http_method: str, url: str, **kwargs: Any) -> Any:
+        """
+        Send a request on the throttler of the account and return its JSON response.
+
+        :param http_method: The HTTP method of the request.
+        :param url: The request URL.
+        :param kwargs: Further arguments for the request, such as params and json.
+        :raises RetriesExhausted: When Deezer keeps rate limiting the account.
+        """
+        response = await self.session.request(
+            http_method,
+            url,
+            timeout=GW_TIMEOUT,
+            headers={"User-Agent": USER_AGENT_HEADER},
+            cookies=self._request_cookies(url),
+            **kwargs,
+        )
+        self._store_cookies(response)
+        if response.status == 429:
+            response.release()
+            raise RateLimited(
+                "Deezer rate limit",
+                backoff_time=parse_retry_after(response.headers.get("Retry-After")),
+            )
+        return await response.json()

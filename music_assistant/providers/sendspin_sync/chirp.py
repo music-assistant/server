@@ -59,7 +59,7 @@ def build_chirp_period() -> bytes:
     both channels. Streaming it back to back reproduces the calibration track
     with sample-exact chirp spacing.
     """
-    bed_noise = random.Random(BED_SEED)
+    bed_noise = random.Random(BED_SEED)  # noqa: S311 - a repeatable noise bed, no secret
     samples: list[int] = []
     for frame in range(PERIOD_FRAMES):
         if frame < CHIRP_FRAMES:

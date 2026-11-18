@@ -67,16 +67,14 @@ async def test_run_setup_retries_with_preserved_token_after_validation_error() -
         {CONF_TOKEN: "rejected-token"},
         {CONF_TOKEN: "replacement-token"},
     ]
-    session.finish.side_effect = [
-        SetupFlowError("Rejected", translation_key="login_failed"),
-        None,
-    ]
+    finish_error = SetupFlowError("Rejected", translation_key="login_failed")
+    session.finish.side_effect = [finish_error, None]
 
     await run_setup(session)
 
     second_entries = session.form.await_args_list[1].args[0]
     assert second_entries[-1].value == "rejected-token"
-    assert session.form.await_args_list[1].kwargs["errors"] == {"base": "login_failed"}
+    assert session.form.await_args_list[1].kwargs["errors"] == {"base": finish_error}
     assert session.finish.await_args_list[-1].args[0] == {CONF_TOKEN: "replacement-token"}
 
 

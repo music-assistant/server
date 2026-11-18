@@ -24,7 +24,7 @@ def sync_run() -> Iterator[SyncRunState]:
 def provider() -> SoundcloudMusicProvider:
     """Create a real SoundcloudMusicProvider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock()
+    manifest = Mock(features=set())
     manifest.domain = "soundcloud"
     config = Mock()
     config.instance_id = "soundcloud--test123"
@@ -38,10 +38,5 @@ def provider() -> SoundcloudMusicProvider:
     prov._soundcloud = AsyncMock()
     prov._soundcloud.client_id = "test-client-id"
     prov._soundcloud.headers = {"Authorization": "OAuth test-token"}
-    prov._soundcloud.get_user_details.return_value = {
-        "id": 1,
-        "username": "Some Artist",
-        "permalink": "some-artist",
-    }
     prov._user_id = "1"
     return prov

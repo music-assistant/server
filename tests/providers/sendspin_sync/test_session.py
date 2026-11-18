@@ -23,7 +23,7 @@ from music_assistant.providers.sendspin_sync.session import (
     CalibrationSession,
     CalibrationSessionState,
     is_eligible,
-    resolve_sendspin_player,
+    resolve_sendspin_protocol,
 )
 
 if TYPE_CHECKING:
@@ -634,6 +634,34 @@ async def test_stop_restores_the_remaining_delays_when_one_write_fails() -> None
     assert _static_delays(mass) == {"a": 0, "b": 20}
 
 
+async def test_the_delay_goes_back_to_the_carrier_it_came_off() -> None:
+    """
+    A bridged speaker gets its delay back for the protocol that carried it at the start.
+
+    Each carrier of a speaker has a static delay of its own, so a delay taken off while
+    AirPlay carried the output is no delay for the protocol that took it over since.
+    """
+    mass = _make_mass(_make_speaker("a", client_id="a_client"), static_delays_ms={"a_client": 250})
+    _sendspin(mass).get_player_static_delay_carrier.return_value = "a_airplay"
+    session = await _start(mass, ["a"])
+
+    await session.stop()
+
+    _sendspin(mass).set_player_static_delay.assert_awaited_with(
+        "a_client", 250, carrier_id="a_airplay"
+    )
+
+
+async def test_a_member_is_measured_over_the_carrier_it_started_on() -> None:
+    """A session knows what carried each member when it took it, also one at zero."""
+    mass = _make_mass(_make_speaker("a", client_id="a_client"))
+    _sendspin(mass).get_player_static_delay_carrier.return_value = "a_airplay"
+    session = await _start(mass, ["a"])
+
+    assert session.is_measured_over("a", "a_airplay") is True
+    assert session.is_measured_over("a", "a_squeezelite") is False
+
+
 async def test_a_member_that_vanished_is_named_rather_than_left_at_zero_in_silence() -> None:
     """
     A speaker that went away mid-session is reported with the delay it should get back.
@@ -864,32 +892,32 @@ async def test_a_physical_speaker_is_eligible_and_resolves_to_its_sendspin_clien
     """
     A speaker that plays over Sendspin qualifies, whichever provider presents it.
 
-    Only web and app players are Sendspin players in their own right; every physical
-    speaker is a hidden Sendspin protocol player behind a visible one, which is the
-    object a user picks and the session drives.
+    A speaker is a player made up of the protocols that reach its device, which is
+    the object a user picks and the session drives; its delay is written to the
+    Sendspin protocol among them.
     """
     speaker = _make_speaker("living_room", client_id="ss_client")
 
     assert is_eligible(_make_mass(speaker), speaker) is True
-    resolved = resolve_sendspin_player(speaker)
+    resolved = resolve_sendspin_protocol(speaker)
     assert resolved is not None
-    assert resolved.player_id == "ss_client"
+    assert resolved.protocol_id == "ss_client"
 
 
 async def test_a_web_player_resolves_to_itself() -> None:
-    """A Sendspin web player is its own protocol endpoint, so it carries its own delay."""
+    """A Sendspin web player renders through its own protocol, which carries its delay."""
     player = _make_player("browser")
 
-    resolved = resolve_sendspin_player(player)
+    resolved = resolve_sendspin_protocol(player)
     assert resolved is not None
-    assert resolved.player_id == "browser"
+    assert resolved.protocol_id == "browser"
 
 
 async def test_a_speaker_that_does_not_play_over_sendspin_is_not_eligible() -> None:
     """A speaker reachable over other protocols only can not be given a Sendspin delay."""
     player = _make_player("airplay_only", domain="universal_player")
 
-    assert resolve_sendspin_player(player) is None
+    assert resolve_sendspin_protocol(player) is None
     assert is_eligible(_make_mass(player), player) is False
 
 
@@ -902,7 +930,7 @@ async def test_a_speaker_whose_sendspin_client_cannot_take_a_stream_is_not_eligi
     """
     speaker = _make_speaker("garage", client_ready=False)
 
-    assert resolve_sendspin_player(speaker) is None
+    assert resolve_sendspin_protocol(speaker) is None
     assert is_eligible(_make_mass(speaker), speaker) is False
 
 
@@ -1044,11 +1072,11 @@ def _fail_for(mock: AsyncMock, player_id: str, error: Exception) -> None:
     """
     original = mock.side_effect
 
-    async def _side_effect(target_id: str, *args: object) -> None:
+    async def _side_effect(target_id: str, *args: object, **kwargs: object) -> None:
         if target_id == player_id:
             raise error
         if original is not None:
-            await original(target_id, *args)
+            await original(target_id, *args, **kwargs)
 
     mock.side_effect = _side_effect
 
@@ -1072,16 +1100,15 @@ def _make_speaker(
     **overrides: object,
 ) -> MagicMock:
     """
-    Return a stub of a physical speaker: a visible player wrapping a Sendspin client.
+    Return a stub of a physical speaker: a player with a Sendspin protocol among its outputs.
 
-    That is how every Sendspin speaker that is not a web or app player is registered -
-    a hidden protocol player plus the player MA presents the device as - so a session
-    holds the visible one and resolves the client behind it for the static delay.
+    A session holds the player and resolves the Sendspin protocol it renders through
+    for the static delay.
 
-    :param player_id: Id and display name of the visible player.
-    :param client_id: Id of the hidden Sendspin protocol player behind it.
-    :param client_ready: Whether that client can currently take a stream.
-    :param overrides: PlayerState attributes to set on the visible player.
+    :param player_id: Id and display name of the player.
+    :param client_id: Id of the Sendspin protocol of the player.
+    :param client_ready: Whether that protocol can currently take a stream.
+    :param overrides: PlayerState attributes to set on the player.
     """
     player = _make_player(player_id, domain="universal_player", **overrides)
     client_id = client_id or f"{player_id}_client"
@@ -1091,11 +1118,12 @@ def _make_speaker(
         protocol_domain="sendspin",
         available=client_ready,
     )
-    client = _make_player(client_id, type=PlayerType.PROTOCOL)
+    client = MagicMock()
+    client.protocol_id = client_id
     player.get_output_protocol_by_domain = MagicMock(
         side_effect=lambda domain: protocol if domain == "sendspin" else None
     )
-    player.get_protocol_player = MagicMock(
+    player.get_output_protocol = MagicMock(
         side_effect=lambda protocol_id: client if protocol_id == client_id else None
     )
     return player
@@ -1111,12 +1139,22 @@ def _make_player(player_id: str, *, domain: str = "sendspin", **overrides: objec
     """
     player = MagicMock()
     player.player_id = player_id
-    player.provider.domain = domain
     player.extra_data = {}
-    # a player of another provider renders over Sendspin only if something says so;
+    # a Sendspin web or app player renders through its own protocol, which has its id.
+    # A player of another provider renders over Sendspin only if something says so;
     # _make_speaker is what wires that up
-    player.get_output_protocol_by_domain = MagicMock(return_value=None)
-    player.get_protocol_player = MagicMock(return_value=None)
+    native = OutputProtocol(
+        output_protocol_id="native", name="Sendspin", protocol_domain=domain, is_native=True
+    )
+    own = MagicMock()
+    own.protocol_id = player_id
+    is_sendspin = domain == "sendspin"
+    player.get_output_protocol_by_domain = MagicMock(
+        side_effect=lambda asked: native if is_sendspin and asked == "sendspin" else None
+    )
+    player.get_output_protocol = MagicMock(
+        side_effect=lambda output_id: own if is_sendspin and output_id == "native" else None
+    )
     state: dict[str, object] = {
         "name": player_id,
         "available": True,
@@ -1191,7 +1229,7 @@ def _make_mass(
             raise UnsupportedFeaturedException(player_id)
         return delays_ms.get(player_id, 0)
 
-    async def _set_delay(player_id: str, delay_ms: int) -> None:
+    async def _set_delay(player_id: str, delay_ms: int, **_kwargs: object) -> None:
         if player_id in refused:
             raise UnsupportedFeaturedException(player_id)
         delays_ms[player_id] = delay_ms
@@ -1200,6 +1238,7 @@ def _make_mass(
     sendspin.is_virtual_player = MagicMock(return_value=False)
     sendspin.supports_player_static_delay = MagicMock(side_effect=lambda p: p not in refused)
     sendspin.get_player_static_delay = MagicMock(side_effect=_get_delay)
+    sendspin.get_player_static_delay_carrier = MagicMock(return_value=None)
     sendspin.set_player_static_delay = AsyncMock(side_effect=_set_delay)
     sendspin.static_delays_ms = delays_ms
     mass.get_provider = MagicMock(return_value=sendspin)

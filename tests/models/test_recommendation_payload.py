@@ -56,6 +56,7 @@ class _PayloadProvider(RecommendationPayloadMixin, _UnloadableBase):
         self.logger = logging.getLogger(__name__)
         self._fetch = fetch
         self._cache_store: dict[str, Any] = {}
+        self._cache_checksums: dict[str, str | None] = {}
         # freshness the fake cache reports for a hit; set False to simulate an
         # expired persistent entry (returned as stale data, is_fresh=False)
         self.cache_is_fresh = True
@@ -69,12 +70,16 @@ class _PayloadProvider(RecommendationPayloadMixin, _UnloadableBase):
         result: list[RecommendationFolder] = await self._fetch()
         return result
 
-    def seed_cache(self, payload: list[RecommendationFolder]) -> None:
+    def seed_cache(self, payload: list[RecommendationFolder], checksum: str | None = None) -> None:
         """Pre-fill the persistent cache store, as a previous run's store task would."""
         self._cache_store[_PAYLOAD_CACHE_KEY] = _payload_dicts(payload)
+        self._cache_checksums[_PAYLOAD_CACHE_KEY] = checksum
 
     async def _cache_get(self, key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
         if key not in self._cache_store:
+            return None, False, False
+        # mirrors production: a requested checksum must match the stored one
+        if (checksum := kwargs.get("checksum")) and self._cache_checksums[key] != checksum:
             return None, False, False
         data = self._cache_store[key]
         base_class = kwargs.get("base_class")
@@ -89,6 +94,7 @@ class _PayloadProvider(RecommendationPayloadMixin, _UnloadableBase):
     async def _cache_set(self, key: str, data: Any, **kwargs: Any) -> None:
         # mirrors production: entries are stored serialized (to_dict), reconstructed
         # via base_class.from_dict above on a hit
+        self._cache_checksums[key] = kwargs.get("checksum")
         if isinstance(data, list):
             self._cache_store[key] = [item.to_dict() for item in data]
         elif data is not None:
@@ -348,6 +354,28 @@ async def test_fresh_persistent_entry_serves_cold_instance_without_fetch() -> No
     cast("AsyncMock", provider.mass.cache.get_with_freshness).assert_awaited_once()
     assert [row.item_id for row in rows] == [folder.item_id for folder in payload]
     assert [item.item_id for item in items] == ["t1"]
+
+
+@pytest.mark.parametrize(("stored_version", "fetched"), [(None, True), ("2", False)])
+@pytest.mark.asyncio
+async def test_persisted_payload_of_other_version_is_refetched(
+    stored_version: str | None, fetched: bool
+) -> None:
+    """A payload persisted by code with another payload version is refetched, then stored."""
+    stale = _make_payload()
+    fresh = _make_fresh_payload()
+    fetch = AsyncMock(return_value=fresh)
+    provider = _PayloadProvider(fetch)
+    provider.recommendation_payload_version = "2"
+    provider.seed_cache(stale, checksum=stored_version)
+
+    rows = await provider._recommendation_rows_from_payload()
+    await _drain_background(provider)
+
+    assert fetch.await_count == int(fetched)
+    expected = fresh if fetched else stale
+    assert [row.item_id for row in rows] == [folder.item_id for folder in expected]
+    assert provider._cache_checksums[_PAYLOAD_CACHE_KEY] == "2"
 
 
 @pytest.mark.asyncio

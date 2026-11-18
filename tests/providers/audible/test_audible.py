@@ -1,13 +1,16 @@
 """Test Audible Provider."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import audible
+import httpx
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import ProviderUnavailableError, RateLimited, RetriesExhausted
 from music_assistant_models.media_items import PodcastEpisode
 
 from music_assistant.providers.audible import Audibleprovider
@@ -209,6 +212,67 @@ async def test_set_last_position_without_cache(
         assert call_args["body"]["acr"] == "fetched_acr"
 
 
+def _status_error(
+    error: type[audible.exceptions.StatusError], status: int, headers: dict[str, str] | None = None
+) -> audible.exceptions.StatusError:
+    """Return the error the Audible client raises for the given HTTP status."""
+    request = httpx.Request("GET", "https://api.audible.com/1.0/library")
+    return error(httpx.Response(status, headers=headers, request=request), {"message": "refused"})
+
+
+async def test_every_api_request_takes_a_throttler_slot(
+    helper: AudibleHelper, audible_client_mock: AsyncMock
+) -> None:
+    """Test GET, POST and PUT requests to the Audible API each take a slot of the throttler."""
+    audible_client_mock.get.return_value = {"items": []}
+    audible_client_mock.post.return_value = {
+        "content_license": {"acr": "acr", "license_response": "http://stream.url"}
+    }
+    with patch.object(
+        helper.throttler.throttler, "acquire", AsyncMock(return_value=0)
+    ) as mock_acquire:
+        await helper._call_api("library")
+        assert mock_acquire.await_count == 1
+        await helper.get_stream("B001", MediaType.PODCAST_EPISODE)
+        assert mock_acquire.await_count == 2
+        await helper.set_last_position("B001", 10, MediaType.PODCAST_EPISODE)
+        assert mock_acquire.await_count == 3
+    audible_client_mock.get.assert_awaited_once()
+    audible_client_mock.post.assert_awaited_once()
+    audible_client_mock.put.assert_awaited_once()
+
+
+async def test_rate_limit_arms_the_cooldown(
+    helper: AudibleHelper, audible_client_mock: AsyncMock
+) -> None:
+    """Test an HTTP 429 from Audible raises RateLimited and holds back the whole provider."""
+    audible_client_mock.get.side_effect = _status_error(
+        audible.exceptions.RatelimitError, 429, {"Retry-After": "30"}
+    )
+    helper.throttler.retry_attempts = 1
+
+    with pytest.raises(RateLimited) as exc_info:
+        await AudibleHelper._request.__wrapped__(helper, "get", "library")  # type: ignore[attr-defined]
+    assert exc_info.value.backoff_time == 30
+
+    with pytest.raises(ProviderUnavailableError) as call_exc_info:
+        await helper._call_api("library")
+    assert isinstance(call_exc_info.value.__cause__, RetriesExhausted)
+    assert helper.throttler.cooldown_remaining > 25
+
+
+async def test_ordinary_api_failure_is_not_a_rate_limit(
+    helper: AudibleHelper, audible_client_mock: AsyncMock
+) -> None:
+    """Test a non rate limit failure raises ProviderUnavailableError without a retry or cooldown."""
+    audible_client_mock.get.side_effect = _status_error(audible.exceptions.NotFoundError, 404)
+
+    with pytest.raises(ProviderUnavailableError, match="Audible API request failed for 'library'"):
+        await helper._call_api("library")
+    audible_client_mock.get.assert_awaited_once()
+    assert helper.throttler.cooldown_remaining == 0
+
+
 async def test_podcast_parent_fallback(helper: AudibleHelper) -> None:
     """Test podcast episode parsing handles missing parent ASIN."""
     episode_data = {
@@ -222,6 +286,21 @@ async def test_podcast_parent_fallback(helper: AudibleHelper) -> None:
 
     assert isinstance(episode, PodcastEpisode)
     assert episode.podcast.item_id == ""
+
+
+async def test_podcast_episode_release_date(helper: AudibleHelper) -> None:
+    """The publication timestamp of an episode becomes its release date."""
+    episode_data = {
+        "asin": "ep1",
+        "title": "Episode 1",
+        "relationships": [],
+        "release_date": "2022-08-21",
+        "publication_datetime": "2022-08-21T15:02:44Z",
+    }
+
+    episode = helper._parse_podcast_episode(episode_data, None, 0)
+
+    assert episode.metadata.release_date == datetime(2022, 8, 21, 15, 2, 44, tzinfo=UTC)
 
 
 def _mock_auth(locale: str) -> MagicMock:

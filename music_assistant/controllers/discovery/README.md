@@ -2,10 +2,14 @@
 
 This core controller owns network discovery in Music Assistant:
 
-- the shared `AsyncZeroconf` instance and interface selection used by discovery consumers
+- the shared `AsyncZeroconf` instance and interface selection used by discovery consumers; the
+  instance lives for the whole server run (an interface change applies on restart), so consumers
+  may hold on to it
 - mDNS/Zeroconf browsing for provider-declared `mdns_discovery` subscriptions
 - SSDP/UPnP search cycles for provider-declared `upnp_discovery` subscriptions
-- Music Assistant server advertisement on `_mass._tcp.local.`
+- Music Assistant server advertisement on `_mass._tcp.local.`, on host name
+  `musicassistant.local.` unless another host already answers for it, otherwise (and always on
+  dev builds) on a per-server `musicassistant-<server id prefix>.local.`
 
 ## Responsibilities
 

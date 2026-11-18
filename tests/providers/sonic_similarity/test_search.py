@@ -13,6 +13,7 @@ from music_assistant_models.errors import MusicAssistantError
 from music_assistant.providers.sonic_similarity import SonicSimilarityPlugin, setup
 from music_assistant.providers.sonic_similarity import clap_index as clap_index_module
 from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
+from tests.common import scheduled_call
 from tests.providers.sonic_similarity.conftest import make_track
 
 if TYPE_CHECKING:
@@ -93,7 +94,10 @@ class TestTextEncoderWarmsLazily:
         assert isinstance(plugin, SonicSimilarityPlugin)
         await plugin.loaded_in_mass()
 
-        mock_mass.create_task.assert_not_called()
+        # the only task scheduled at load is the index rebuild, not the encoder warm
+        assert mock_mass.create_task.call_count == 1
+        name, _ = scheduled_call(mock_mass.create_task.call_args.args[0])
+        assert name == "SonicSimilarityPlugin._rebuild_indexes"
 
     @pytest.mark.asyncio
     async def test_no_warm_task_when_text_search_disabled(self, mock_mass: MagicMock) -> None:
@@ -101,7 +105,10 @@ class TestTextEncoderWarmsLazily:
         plugin = await setup(mock_mass, _make_manifest(), _make_config(enable_text_search=False))
         await plugin.loaded_in_mass()
 
-        mock_mass.create_task.assert_not_called()
+        # the only task scheduled at load is the index rebuild, not the encoder warm
+        assert mock_mass.create_task.call_count == 1
+        name, _ = scheduled_call(mock_mass.create_task.call_args.args[0])
+        assert name == "SonicSimilarityPlugin._rebuild_indexes"
 
 
 def _make_tensor_chain(vector: np.ndarray) -> MagicMock:
@@ -179,9 +186,12 @@ class TestSearch:
         assert list(result.tracks) == []
         plugin._load_text_encoder.assert_not_called()
         plugin._clap_index.search.assert_not_called()
-        plugin.mass.create_task.assert_called_once_with(
-            plugin._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
-        )
+        plugin.mass.create_task.assert_called_once()
+        name, _ = scheduled_call(plugin.mass.create_task.call_args.args[0])
+        assert name.endswith("_get_text_encoder")
+        assert plugin.mass.create_task.call_args.kwargs == {
+            "task_id": "sonic_similarity_text_encoder_warm"
+        }
 
     @pytest.mark.asyncio
     async def test_happy_path_returns_resolved_tracks(

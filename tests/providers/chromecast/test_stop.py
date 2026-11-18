@@ -54,6 +54,7 @@ def _fake_cast(
     fake.cc.app_id = running_app_id
     fake.app_quit_sent = False
     fake._app_quit_task_id = "cast_quit_app_test"
+    fake._app_track_change_task_id = "cast_app_track_change_test"
     fake.cancel_pending_app_quit = partial(
         ChromecastPlayer.cancel_pending_app_quit, cast("ChromecastPlayer", fake)
     )
@@ -66,7 +67,6 @@ def _fake_cast(
     status.player_is_playing = player_state in ("PLAYING", "BUFFERING")
     status.player_is_paused = player_state == "PAUSED"
     status.media_session_id = media_session_id
-    fake._flow_stream_underrun.return_value = False
     return fake
 
 
@@ -174,16 +174,6 @@ async def test_receiver_app_in_use_is_not_quit(player_state: str) -> None:
     await _quit_app_when_unused(fake)
 
     fake.cc.quit_app.assert_not_called()
-
-
-async def test_a_device_that_ran_dry_at_the_end_of_the_flow_stream_is_quit() -> None:
-    """A device stuck buffering at flow EOF has no audio coming, so it is not in use."""
-    fake = _fake_cast(player_state="BUFFERING")
-    fake._flow_stream_underrun.return_value = True
-
-    await _quit_app_when_unused(fake)
-
-    fake.cc.quit_app.assert_called_once()
 
 
 async def test_a_sent_quit_is_recorded() -> None:

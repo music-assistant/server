@@ -1,0 +1,29 @@
+{
+  "query": "Billy Strings Red Rocks",
+  "result": {
+    "albums": [],
+    "artists": [
+      {
+        "id": 1125,
+        "name": "Billy Strings"
+      }
+    ],
+    "songs": [],
+    "venues": [
+      {
+        "id": 42,
+        "name": "Red Rocks Amphitheatre"
+      },
+      {
+        "id": 5363,
+        "name": "Red Rocks"
+      },
+      {
+        "id": 164,
+        "name": "Red Rocks Amphitheatre"
+      }
+    ],
+    "performanceYears": [],
+    "performanceDates": []
+  }
+}

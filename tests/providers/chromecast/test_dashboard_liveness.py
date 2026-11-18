@@ -28,7 +28,7 @@ def _make_dashboards() -> ChromecastDashboards:
     )
     provider.mass.loop.call_soon_threadsafe = MagicMock(side_effect=lambda func, *args: func(*args))
     provider.mass.loop.call_later = MagicMock()
-    provider.mass.players.get_player.return_value = None
+    provider.mass.players.get_protocol.return_value = None
     return ChromecastDashboards(provider)
 
 

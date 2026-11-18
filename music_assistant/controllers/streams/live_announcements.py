@@ -38,6 +38,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
     has_scope,
     is_request_from_ingress,
+    is_request_from_ingress_proxy,
     set_current_user,
 )
 from music_assistant.helpers.audio import create_streaming_wave_header
@@ -76,7 +77,8 @@ HANDSHAKE_TIMEOUT = 10
 # Live announcements are spoken one at a time by a person, so a handful of sessions is
 # already generous; the cap bounds the audio that can be buffered at once.
 MAX_CONCURRENT_SESSIONS = 4
-# Room for the whole clip to play out and the player to be restored. A player provider
+# Room for the whole clip to play out and for the player to be restored, on top of the time
+# a player that is switched off at its power control needs to start up. A player provider
 # that never returns would otherwise hold one of the session slots until a restart.
 ANNOUNCEMENT_TIMEOUT = MAX_CLIP_SECONDS + 60
 # A close frame carries 125 bytes, two of which are taken by the status code.
@@ -354,7 +356,8 @@ class LiveAnnouncementManager:
             # a player that plays announcements natively hands off to its provider, which
             # has no deadline of its own - one that never returns would otherwise keep
             # this session (and its slot) alive for as long as the server runs
-            async with asyncio.timeout(ANNOUNCEMENT_TIMEOUT):
+            timeout = ANNOUNCEMENT_TIMEOUT + self.mass.players.get_power_on_wait(player_id)
+            async with asyncio.timeout(timeout):
                 await self.mass.players.play_announcement(
                     player_id,
                     url=session.url,
@@ -389,7 +392,7 @@ class LiveAnnouncementManager:
         :param ws: The prepared WebSocket response.
         :return: True when the client may announce.
         """
-        is_ingress = is_request_from_ingress(request)
+        is_ingress = is_request_from_ingress_proxy(request)
         if is_ingress:
             user = await get_authenticated_user(request)
         elif (message := await self._read_message(request, ws, "auth")) is None:
@@ -400,7 +403,7 @@ class LiveAnnouncementManager:
             user = await self.mass.webserver.auth.authenticate_with_token(str(token))
         if user is None:
             return await self._reject(request, ws, "Authentication failed")
-        if not is_ingress and user.username == HOMEASSISTANT_SYSTEM_USER:
+        if not is_request_from_ingress(request) and user.username == HOMEASSISTANT_SYSTEM_USER:
             # the token of the Home Assistant system user is only meant to travel over
             # the ingress connection, mirroring the policy of the websocket api
             return await self._reject(

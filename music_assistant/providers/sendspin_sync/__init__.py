@@ -49,7 +49,7 @@ from .session import (
     CalibrationSessionState,
     is_busy,
     is_eligible,
-    resolve_sendspin_player,
+    resolve_sendspin_protocol,
     resolve_static_delays,
 )
 
@@ -287,9 +287,8 @@ class SendspinSyncProvider(PluginProvider):
 
         Only speakers that play over Sendspin qualify, and only those that can be taken
         out of the mix - a player with neither a mute nor a volume control can never be
-        isolated. Every player is offered under the name the user knows it by: a physical
-        speaker is presented by the visible player MA wraps its Sendspin client in, not
-        by that hidden client.
+        isolated. Every speaker is offered as the player the user knows it by, not as the
+        Sendspin protocol it plays through.
 
         A speaker whose client does not accept a static delay is still offered, with
         ``adjustable`` false: it can be measured like any other, and its result comes
@@ -301,11 +300,11 @@ class SendspinSyncProvider(PluginProvider):
             return []
         offered: list[CalibrationPlayer] = []
         # all_players (not iter_players) so a non-admin user is only offered the
-        # speakers they are allowed to see. Unfiltered by provider: the visible player
-        # of a physical Sendspin speaker belongs to whichever provider wraps its client.
+        # speakers they are allowed to see. Unfiltered by provider: a speaker that plays
+        # over Sendspin can be a player of any provider.
         for player in self.mass.players.all_players(return_unavailable=False):
-            sendspin_player = resolve_sendspin_player(player)
-            if sendspin_player is None or not is_eligible(self.mass, player):
+            protocol = resolve_sendspin_protocol(player)
+            if protocol is None or not is_eligible(self.mass, player):
                 continue
             offered.append(
                 CalibrationPlayer(
@@ -314,7 +313,7 @@ class SendspinSyncProvider(PluginProvider):
                     busy=is_busy(player),
                     # asked of the speaker's Sendspin side, which is the only object
                     # that carries a static delay
-                    adjustable=sendspin.supports_player_static_delay(sendspin_player.player_id),
+                    adjustable=sendspin.supports_player_static_delay(protocol.protocol_id),
                 )
             )
         return offered
@@ -521,12 +520,11 @@ class SendspinSyncProvider(PluginProvider):
         self, sendspin: SendspinProvider, player_ids: list[str]
     ) -> dict[str, str | None]:
         """
-        Return the Sendspin player each session member's static delay is written to.
+        Return the Sendspin protocol each session member's static delay is written to.
 
-        A member is the speaker as the user sees it, so the Sendspin player behind it is
-        resolved here - for a physical speaker that is the hidden protocol player MA
-        wraps, and for a web player the member itself. The value is None for a member MA
-        can not write a delay to, which is what splits the result of an apply.
+        A member is the speaker as the user sees it, so the Sendspin protocol it plays
+        through is resolved here. The value is None for a member MA can not write a
+        delay to, which is what splits the result of an apply.
 
         Resolved in one pass up front, because a client is free to change its answer
         across a reconnect and this one answer governs both halves of the calculation:
@@ -539,27 +537,38 @@ class SendspinSyncProvider(PluginProvider):
             Sendspin side a delay would be written to. Sendspin answers the same False
             for a speaker that has left as for one that refuses a delay, and reporting
             the first as "set this one by hand" would be a lie.
+        :raises ActionUnavailable: If another protocol has taken over the output of a
+            bridged member since the session started. Its measurement was taken over the
+            carrier before, and each carrier has a latency and a static delay of its own.
         """
+        assert self._session is not None
         targets: dict[str, str | None] = {}
         for player_id in player_ids:
             player = self.mass.players.get_player(player_id)
-            sendspin_player = (
-                resolve_sendspin_player(player)
+            protocol = (
+                resolve_sendspin_protocol(player)
                 if player is not None and player.state.available
                 else None
             )
-            if sendspin_player is None:
+            if protocol is None:
                 raise PlayerUnavailableError(
                     f"Player {player_id} is not available",
                     translation_key="player_unavailable",
                     translation_args=[player_id],
                     translation_owner=self.translation_owner,
                 )
-            targets[player_id] = (
-                sendspin_player.player_id
-                if sendspin.supports_player_static_delay(sendspin_player.player_id)
-                else None
-            )
+            if not sendspin.supports_player_static_delay(protocol.protocol_id):
+                targets[player_id] = None
+                continue
+            carrier_id = sendspin.get_player_static_delay_carrier(protocol.protocol_id)
+            if not self._session.is_measured_over(player_id, carrier_id):
+                raise ActionUnavailable(
+                    f"Player {player_id} plays through another protocol than it was measured over",
+                    translation_key="player_output_changed",
+                    translation_args=[player.state.name if player else player_id],
+                    translation_owner=self.translation_owner,
+                )
+            targets[player_id] = protocol.protocol_id
         if fixed := [player_id for player_id, target in targets.items() if target is None]:
             # a speaker reported back for the user to adjust by hand leaves no other
             # trace, so a client whose support flapped can be told apart from one that

@@ -1,0 +1,173 @@
+{
+  "methodName": "catalog.search",
+  "responseAvailabilityCode": 0,
+  "responseAvailabilityCodeStr": "AVAILABLE",
+  "Response": {
+    "catalogSearchTypeContainers": [
+      {
+        "matchType": 1,
+        "catalogSearchContainers": [
+          {
+            "scHeader": "Artist: Billy Strings",
+            "catalogSearchResultItems": [
+              {
+                "containerName": "Billy Strings, 2017/12/29 The Riviera Theatre, Chicago, IL ",
+                "performanceDate": "12/29/2017",
+                "artistName": "Billy Strings",
+                "artistID": "1125",
+                "pageURL": "/live-music/0,20635/Billy-Strings-mp3-flac-download-12-29-2017-The-Riviera-Theatre-Chicago-IL.html",
+                "containerID": 20635,
+                "trackID": 0,
+                "songID": 0,
+                "img": {
+                  "picID": 30358,
+                  "orderID": 1,
+                  "height": 160,
+                  "width": 290,
+                  "caption": "",
+                  "url": "/images/shows/bstr171229_01.jpg"
+                },
+                "venueCity": "Chicago",
+                "venueState": "IL",
+                "venueName": "The Riviera Theatre",
+                "venue": "The Riviera Theatre, Chicago, IL ",
+                "availability": 1,
+                "availabilityStr": "AVAILABLE"
+              },
+              {
+                "containerName": "Billy Strings, 2017/12/30 Riviera Theater, Chicago, IL ",
+                "performanceDate": "12/30/2017",
+                "artistName": "Billy Strings",
+                "artistID": "1125",
+                "pageURL": "/live-music/0,20636/Billy-Strings-mp3-flac-download-12-30-2017-Riviera-Theater-Chicago-IL.html",
+                "containerID": 20636,
+                "trackID": 0,
+                "songID": 0,
+                "img": {
+                  "picID": 30359,
+                  "orderID": 1,
+                  "height": 160,
+                  "width": 290,
+                  "caption": "",
+                  "url": "/images/shows/bstr171230_01.jpg"
+                },
+                "venueCity": "Chicago",
+                "venueState": "IL",
+                "venueName": "Riviera Theater",
+                "venue": "Riviera Theater, Chicago, IL ",
+                "availability": 1,
+                "availabilityStr": "AVAILABLE"
+              }
+            ],
+            "matchedStr": "Billy Strings",
+            "strMatchType": "Artist",
+            "matchType": 1
+          },
+          {
+            "scHeader": "Artist: Billy Strings & Don Julin",
+            "catalogSearchResultItems": [
+              {
+                "containerName": "Rock Of Ages",
+                "performanceDate": null,
+                "artistName": "Billy Strings & Don Julin",
+                "artistID": "978",
+                "pageURL": "/music/0,11170/Billy-Strings---Don-Julin-mp3-flac-download-Rock-Of-Ages.html",
+                "containerID": 11170,
+                "trackID": 0,
+                "songID": 0,
+                "img": {
+                  "picID": 38864,
+                  "orderID": 1,
+                  "height": 160,
+                  "width": 290,
+                  "caption": "",
+                  "url": "/images/shows/acd91029_01.jpg"
+                },
+                "venueCity": null,
+                "venueState": null,
+                "venueName": null,
+                "venue": null,
+                "availability": 1,
+                "availabilityStr": "AVAILABLE"
+              }
+            ],
+            "matchedStr": "Billy Strings & Don Julin",
+            "strMatchType": "Artist",
+            "matchType": 1
+          }
+        ]
+      },
+      {
+        "matchType": 2,
+        "catalogSearchContainers": [
+          {
+            "scHeader": "Song: Billy Strings Intro",
+            "catalogSearchResultItems": [
+              {
+                "containerName": "The String Cheese Incident, 2022/07/17 Red Rocks Amphitheatre, Morrison, CO ",
+                "performanceDate": "7/17/2022",
+                "artistName": "The String Cheese Incident",
+                "artistID": "2",
+                "pageURL": "/live-music/0,29573/The-String-Cheese-Incident-mp3-flac-download-7-17-2022-Red-Rocks-Amphitheatre-Morrison-CO.html",
+                "containerID": 29573,
+                "trackID": 529421,
+                "songID": 61395,
+                "img": {
+                  "picID": 40433,
+                  "orderID": 1,
+                  "height": 160,
+                  "width": 290,
+                  "caption": "",
+                  "url": "/images/shows/sci220717_01.jpg"
+                },
+                "venueCity": "Morrison",
+                "venueState": "CO",
+                "venueName": "Red Rocks Amphitheatre",
+                "venue": "Red Rocks Amphitheatre, Morrison, CO ",
+                "availability": 1,
+                "availabilityStr": "AVAILABLE"
+              }
+            ],
+            "matchedStr": "Billy Strings Intro",
+            "strMatchType": "Song",
+            "matchType": 2
+          },
+          {
+            "scHeader": "Song: Intro Billy Strings",
+            "catalogSearchResultItems": [
+              {
+                "containerName": "Greensky Bluegrass, 2015/11/19 The Ogden Theater, Denver, CO ",
+                "performanceDate": "11/19/2015",
+                "artistName": "Greensky Bluegrass",
+                "artistID": "565",
+                "pageURL": "/live-music/0,14143/Greensky-Bluegrass-mp3-flac-download-11-19-2015-The-Ogden-Theater-Denver-CO.html",
+                "containerID": 14143,
+                "trackID": 275342,
+                "songID": 44956,
+                "img": {
+                  "picID": 22795,
+                  "orderID": 1,
+                  "height": 160,
+                  "width": 290,
+                  "caption": "",
+                  "url": "/images/shows/gsky151119_01.jpg"
+                },
+                "venueCity": "Denver",
+                "venueState": "CO",
+                "venueName": "The Ogden Theater",
+                "venue": "The Ogden Theater, Denver, CO ",
+                "availability": 1,
+                "availabilityStr": "AVAILABLE"
+              }
+            ],
+            "matchedStr": "Intro Billy Strings",
+            "strMatchType": "Song",
+            "matchType": 2
+          }
+        ]
+      }
+    ],
+    "searchError": 0,
+    "searchErrorStr": "VALID"
+  }
+}

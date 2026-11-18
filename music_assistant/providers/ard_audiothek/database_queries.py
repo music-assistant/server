@@ -164,7 +164,9 @@ query Show($showId: ID!, $first: Int, $offset: Int, $filter: ItemFilter) {
         title
         status
         episodeNumber
+        publishDate
         coreId
+        assetId
         summary"""
     + audio_list
     + image_list
@@ -196,9 +198,10 @@ query ShowEpisode($coreId: String!) {
     duration
     title
     episodeNumber
+    publishDate
     coreId
+    assetId
     showId
-    rowId
     synopsis
     summary"""
     + audio_list
@@ -277,66 +280,13 @@ query CheckLogin($loginId: String!) {
 )
 
 
-get_subscriptions_query = gql(
+episode_asset_id_query = gql(
     """
-query GetBookmarksByLoginId($loginId: String!) {
-  allEndUsers(filter: { loginId: { eq: $loginId } }) {
-    count
-    nodes {
-      subscriptions {
-        programSets {
-          nodes {
-            subscribedProgramSet {
-              coreId
-            }
-          }
-        }
-      }
-    }
+query EpisodeAssetId($coreId: String!) {
+  itemByCoreId(coreId: $coreId) {
+    assetId
+    duration
   }
 }
 """
-)
-
-
-get_history_query = gql(
-    """
-query GetBookmarksByLoginId($loginId: String!, $count: Int = 96) {
-  allEndUsers(filter: { loginId: { eq: $loginId } }) {
-    count
-    nodes {
-      history(first: $count, orderBy: LASTLISTENEDAT_DESC) {
-        nodes {
-          progress
-          item {
-            coreId
-            duration
-          }
-        }
-      }
-    }
-  }
-}
-"""
-)
-
-update_history_entry = gql(
-    """
-mutation AddHistoryEntry(
-  $itemId: ID!
-  $progress: Float!
-) {
-  upsertHistoryEntry(
-    input: {
-      item: { id: $itemId }
-      progress: $progress
-    }
-  ) {
-    changedHistoryEntry {
-      id
-      progress
-      lastListenedAt
-    }
-  }
-}"""
 )

@@ -19,19 +19,19 @@ from unittest.mock import AsyncMock, patch
 
 from music_assistant.constants import (
     CONF_PLAYER_DSP,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
-    CONF_PROTOCOL_PARENT_ID,
     CONF_PROVIDERS,
     CONF_RETIRED_LOCAL_AUDIO_CLEANED,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
 )
 from music_assistant.controllers.config.retired_local_audio import cleanup_retired_local_audio
 from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
 )
-from tests.conftest import full_mass_context
+from music_assistant.testing import full_mass_context
 
 if TYPE_CHECKING:
     import pathlib
@@ -72,17 +72,29 @@ def _store_install(mass: MusicAssistant, provider_enabled: bool = True) -> None:
                 "values": {},
             },
         )
+        mass.config.set(
+            f"{CONF_PLAYER_PROTOCOLS}/{player_id}",
+            {
+                "protocol_id": player_id,
+                "provider": "local_audio",
+                "player_id": player_id,
+                "role": "native",
+                "enabled": True,
+                "values": {},
+            },
+        )
         mass.config.set(f"{CONF_PLAYER_QUEUES}/{player_id}", {"queue_id": player_id, "values": {}})
         mass.config.set(f"{CONF_PLAYER_DSP}/{player_id}", {"enabled": True})
-    # the sendspin bridge child that the local audio player was linked to
+    # the sendspin bridge protocol of the local audio player
     mass.config.set(
-        f"{CONF_PLAYERS}/{BRIDGE_ID}",
+        f"{CONF_PLAYER_PROTOCOLS}/{BRIDGE_ID}",
         {
-            "player_id": BRIDGE_ID,
+            "protocol_id": BRIDGE_ID,
             "provider": "sendspin",
-            "player_type": "protocol",
+            "player_id": ANALOG_ID,
+            "role": "audio",
             "enabled": True,
-            "values": {CONF_PROTOCOL_PARENT_ID: ANALOG_ID},
+            "values": {},
         },
     )
     # an unrelated player that must survive untouched
@@ -103,7 +115,7 @@ def _store_install(mass: MusicAssistant, provider_enabled: bool = True) -> None:
 async def _store_playlog_entry(mass: MusicAssistant, player_id: str) -> None:
     """Store a playlog row that credits the given player/queue with a playback."""
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": "track_1",
             "provider": "spotify",
@@ -185,8 +197,9 @@ async def test_unused_install_is_torched(mass: MusicAssistant) -> None:
         assert mass.config.get(f"{CONF_PLAYERS}/{player_id}") is None
         assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{player_id}") is None
         assert mass.config.get(f"{CONF_PLAYER_DSP}/{player_id}") is None
-    # the orphaned sendspin bridge child follows its dead parent
-    assert mass.config.get(f"{CONF_PLAYERS}/{BRIDGE_ID}") is None
+    # the sendspin bridge protocol goes with its player
+    for protocol_id in (ANALOG_ID, HDMI_ID, BRIDGE_ID):
+        assert mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}") is None
     assert mass.config.get(f"{CONF_PLAYERS}/{OTHER_PLAYER_ID}") is not None
     assert mass.config.get(CONF_RETIRED_LOCAL_AUDIO_CLEANED) is True
     await _wait_for_queue_cache_purge(mass, ANALOG_ID)
@@ -228,7 +241,7 @@ async def test_playlog_entry_keeps_the_config(mass: MusicAssistant) -> None:
     await cleanup_retired_local_audio(mass)
 
     _assert_kept(mass)
-    assert mass.config.get(f"{CONF_PLAYERS}/{BRIDGE_ID}") is not None
+    assert mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{BRIDGE_ID}") is not None
     assert mass.config.get(CONF_RETIRED_LOCAL_AUDIO_CLEANED) is True
 
 
@@ -399,16 +412,16 @@ async def test_a_failing_removal_never_escapes_startup(
     """
     A removal that fails part-way is logged and retried, not raised into start().
 
-    The user-filter rewrite is the fallible step, and it runs once the configs are already
-    gone; letting it escape would abort the boot on a half-deleted install. The flag stays
-    unset instead, so the next startup finishes what is left - every step is idempotent.
+    Letting a failing removal step escape would abort the boot on a half-deleted install.
+    The flag stays unset instead, so the next startup finishes what is left - every step
+    is idempotent.
     """
     _store_install(mass)
 
     async def _raise(*_args: Any, **_kwargs: Any) -> None:
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(mass.webserver.auth, "remove_from_user_filters", _raise)
+    monkeypatch.setattr(mass.players, "remove", _raise)
 
     await cleanup_retired_local_audio(mass)
 

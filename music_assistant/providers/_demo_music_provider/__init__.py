@@ -72,6 +72,8 @@ if TYPE_CHECKING:
         ConfigEntry,
         ProviderConfig,
     )
+    from music_assistant_models.enums import PlaybackState
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -213,7 +215,7 @@ class MyDemoMusicprovider(MusicProvider):
         # OPTIONAL - the default (derived from the LIBRARY_* features) is usually correct.
         return super().supported_media_types
 
-    async def search(  # type: ignore[empty-body]
+    async def search(
         self,
         search_query: str,
         media_types: list[MediaType],
@@ -232,6 +234,7 @@ class MyDemoMusicprovider(MusicProvider):
         # See the model for SearchResults for more information on what to return, but
         # in general you should return a list of MediaItems for each media type.
         # For radio, a simple search of the available channel names is acceptable
+        return SearchResults()
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
@@ -355,6 +358,8 @@ class MyDemoMusicprovider(MusicProvider):
         """Get a list of all albums for the given artist."""
         # Get a list of all albums for the given artist.
         # Mandatory only if you reported ARTIST_ALBUMS in the supported_features.
+        # NOTE: When the API pages through the discography, stop at ARTIST_ALBUMS_LIMIT
+        # releases (music_assistant.models.music_provider) to keep the request count bounded.
         # NOTE: Because this is often static data, it is advised to apply caching here
         # to avoid too many calls to the provider's API.
         # You can use the @use_cache decorator from music_assistant.controllers.cache
@@ -553,6 +558,19 @@ class MyDemoMusicprovider(MusicProvider):
         # stream_type is set to CUSTOM in the get_stream_details method.
         yield  # type: ignore[misc]
 
+    async def on_stream_started(
+        self,
+        streamdetails: StreamDetails,
+    ) -> None:
+        """
+        Handle callback when the first audio of given streamdetails reaches a player.
+
+        Called once per playback, so unlike get_stream_details never for a preload.
+        A playback that triggers this callback is followed by at least one on_streamed.
+        """
+        # This is an OPTIONAL callback that is called when an item starts playing.
+        # You can use this e.g. to report the start of playback to the music service.
+
     async def on_streamed(
         self,
         streamdetails: StreamDetails,
@@ -599,6 +617,27 @@ class MyDemoMusicprovider(MusicProvider):
         """
         # This is an OPTIONAL callback that is called when an item has been streamed.
         # You can use this e.g. for playback reporting or statistics.
+
+    async def on_playback_progress(
+        self,
+        report: MediaItemPlaybackProgressReport,
+        prov_item_id: str,
+        state: PlaybackState,
+    ) -> None:
+        """
+        Handle callback when the playback of an item this provider streamed progresses.
+
+        Called only on the provider instance that streamed the item, and only once a player
+        received audio of it: when it starts, pauses, resumes or stops, when the next item
+        starts and every 30s while it plays.
+
+        :param report: The playback progress report; ``player_id`` names the playing player.
+        :param prov_item_id: The provider-specific id of the streamed item.
+        :param state: PLAYING or PAUSED while the item is current, IDLE once it stopped,
+            ended or was skipped.
+        """
+        # This is an OPTIONAL callback for reporting playback back to the music service,
+        # e.g. the device and position the service shows as playing now.
 
     async def resolve_image(self, path: str) -> str | bytes:
         """

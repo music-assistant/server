@@ -1,12 +1,11 @@
 """
 Smart Fades - vocal-activity contract and vocal-collision math.
 
-Parses the optional 1800-bin ``vocal_activity`` list stored in
-``AudioAnalysisData.extra_data``, turns it into hysteresis-gated vocal windows,
-and scores how much two tracks' vocals would collide inside a candidate
-crossfade. Every function here works over plain floats and lists - no NumPy -
-so a missing or malformed timeline never pulls it onto a path that would
-otherwise stay numpy-free.
+Parses the optional 1800-bin ``AudioAnalysisData.vocal_activity`` list, turns
+it into hysteresis-gated vocal windows, and scores how much two tracks'
+vocals would collide inside a candidate crossfade. Every function here works
+over plain floats and lists - no NumPy - so a missing or malformed timeline
+never pulls it onto a path that would otherwise stay numpy-free.
 """
 
 from __future__ import annotations
@@ -124,8 +123,8 @@ def parse_vocal_probabilities(analysis: AudioAnalysisData) -> VocalTimeline | No
     """
     Validate and return the stored 1800-bin vocal-activity timeline.
 
-    Returns ``None`` when ``extra_data["vocal_activity"]`` is absent or fails
-    any part of the contract: it is not a list of exactly 1800 finite numeric
+    Returns ``None`` when ``vocal_activity`` is absent or fails any part of
+    the contract: it is not a list of exactly 1800 finite numeric
     probabilities in the inclusive range 0..1, or the analysis has no finite
     positive duration. Callers must treat that as "vocal-aware logic is
     unavailable for this track".
@@ -140,7 +139,7 @@ def parse_vocal_probabilities(analysis: AudioAnalysisData) -> VocalTimeline | No
         or duration <= 0.0
     ):
         return None
-    vocal_activity = (analysis.extra_data or {}).get("vocal_activity")
+    vocal_activity = analysis.vocal_activity
     if not isinstance(vocal_activity, list) or len(vocal_activity) != VOCAL_ACTIVITY_BINS:
         return None
     values: list[float] = []
@@ -226,6 +225,27 @@ def build_vocal_windows(
         else:
             windows.append((padded_left, padded_right))
     return VocalMask(windows=windows)
+
+
+def first_vocal_onset(analysis: AudioAnalysisData) -> float | None:
+    """
+    Return the second at which singing starts, or None when it cannot be told.
+
+    :param analysis: Stored analysis row to read the vocal-activity timeline from.
+    """
+    if (timeline := parse_vocal_probabilities(analysis)) is None:
+        return None
+    assert analysis.duration is not None  # guaranteed by the validated timeline
+    mask = build_vocal_windows(
+        timeline.probabilities,
+        timeline.frame_duration,
+        0.0,
+        analysis.duration,
+        beat_duration=60.0 / analysis.bpm if analysis.bpm and analysis.bpm > 0.0 else None,
+        # a weak run counts: a voice placed over singing costs more than one cut short
+        config=PROTECTIVE_VOCAL_CONFIG,
+    )
+    return mask.windows[0][0] if mask.windows else None
 
 
 def mask_saturated(mask: VocalMask, span: float) -> bool:

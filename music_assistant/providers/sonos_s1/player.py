@@ -32,6 +32,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
     AVAILABILITY_TIMEOUT,
@@ -69,7 +70,7 @@ class SonosSubscriptionsFailed(PlayerCommandFailed):
     """Subscription creation failed."""
 
 
-class SonosPlayer(Player):
+class SonosPlayer(PlayerProtocol):
     """Sonos Player implementation for S1 speakers."""
 
     def __init__(
@@ -113,9 +114,11 @@ class SonosPlayer(Player):
         # Subscriptions and events
         self._subscriptions: list[SubscriptionBase] = []
         self._subscription_lock: asyncio.Lock = asyncio.Lock()
+        self._avtransport_event_lock: asyncio.Lock = asyncio.Lock()
+        self._avtransport_tasks: set[asyncio.Task[None]] = set()
         self._last_activity: float = NEVER_TIME
         self._resub_cooldown_expires_at: float | None = None
-        self._poll_task_id: str = f"sonos_poll_{self.player_id}"
+        self._poll_task_id: str = f"sonos_poll_{self.protocol_id}"
         self._unloaded: bool = False
 
     @property
@@ -137,7 +140,12 @@ class SonosPlayer(Player):
 
         await asyncio.to_thread(_read_speaker_state)
         await self.subscribe()
-        await self.mass.players.register_or_update(self)
+        await self.mass.players.register(self)
+        if self.provider.get_protocol(self.protocol_id) is not self:
+            # the attach skipped it (e.g. a disabled player or during a teardown):
+            # release the subscriptions setup opened, as only an attached protocol
+            # gets detached
+            await self.on_detach()
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all provider-specific configuration entries for the player."""
@@ -148,9 +156,19 @@ class SonosPlayer(Player):
         async with self._subscription_lock:
             await self._offline()
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
-        await super().on_unload()
+    async def on_attach(self, player: Player) -> None:
+        """
+        Follow the speaker's events again when the object attaches after a detach.
+
+        :param player: The player the protocol is attached to.
+        """
+        if self._unloaded:
+            self._unloaded = False
+            await self.subscribe()
+
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
+        await super().on_detach()
         # a poll already running in its worker thread cannot be interrupted, so the flag
         # is what keeps its results from reaching a player the controller no longer has
         self._unloaded = True
@@ -158,6 +176,9 @@ class SonosPlayer(Player):
         # the poll runs as a task under the same id and cancel_task is what stops it
         self.mass.cancel_timer(self._poll_task_id)
         self.mass.cancel_task(self._poll_task_id)
+        # playback events still queued on the lock must not query the speaker any more
+        for task in self._avtransport_tasks:
+            task.cancel()
         # unsubscribe directly: offline() skips a speaker that is already marked
         # unavailable, which would leave its subscriptions behind. The lock keeps a
         # subscribe() that is still in flight from re-populating them afterwards.
@@ -169,7 +190,7 @@ class SonosPlayer(Player):
         if self.synced_to:
             self.logger.debug(
                 "Ignore STOP command for %s: Player is synced to another player.",
-                self.player_id,
+                self.protocol_id,
             )
             return
         if self._attr_active_source in LINEIN_SOURCE_IDS:
@@ -186,7 +207,7 @@ class SonosPlayer(Player):
         if self.synced_to:
             self.logger.debug(
                 "Ignore PLAY command for %s: Player is synced to another player.",
-                self.player_id,
+                self.protocol_id,
             )
             return
         await asyncio.to_thread(self.soco.play)
@@ -197,7 +218,7 @@ class SonosPlayer(Player):
         if self.synced_to:
             self.logger.debug(
                 "Ignore PAUSE command for %s: Player is synced to another player.",
-                self.player_id,
+                self.protocol_id,
             )
             return
 
@@ -247,7 +268,7 @@ class SonosPlayer(Player):
                 translation_args=[self.display_name],
             )
 
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         if not media.duration:
             # Sonos really does not like FLAC streams without duration
             stream_url = stream_url.replace(".flac", ".mp3")
@@ -276,7 +297,7 @@ class SonosPlayer(Player):
                 translation_args=[self.display_name],
             )
 
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         didl_metadata = create_didl_metadata(media, stream_url)
 
         def add_to_queue() -> None:
@@ -322,12 +343,12 @@ class SonosPlayer(Player):
 
         if player_ids_to_remove:
             for player_id in player_ids_to_remove:
-                if player_to_remove := cast("SonosPlayer", self.mass.players.get_player(player_id)):
+                if player_to_remove := cast("SonosPlayer", self.provider.get_protocol(player_id)):
                     await player_to_remove._unjoin()
 
         if player_ids_to_add:
             for player_id in player_ids_to_add:
-                if player_to_add := cast("SonosPlayer", self.mass.players.get_player(player_id)):
+                if player_to_add := cast("SonosPlayer", self.provider.get_protocol(player_id)):
                     await player_to_add._join(self.soco)
 
     def schedule_poll(self) -> None:
@@ -401,7 +422,7 @@ class SonosPlayer(Player):
             manufacturer=self._attr_device_info.manufacturer,
         )
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, soco.ip_address)
-        self._attr_device_info.add_identifier(IdentifierType.UUID, self.player_id)
+        self._attr_device_info.add_identifier(IdentifierType.UUID, self.protocol_id)
         mac_address = self._extract_mac_from_player_id()
         if mac_address:
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
@@ -462,7 +483,7 @@ class SonosPlayer(Player):
                 for result in results:
                     self.log_subscription_result(result, "Creating subscription", logging.WARNING)
                 if any(isinstance(result, Exception) for result in results):
-                    raise SonosSubscriptionsFailed
+                    raise SonosSubscriptionsFailed  # noqa: TRY301 - handled by except below
             except SonosSubscriptionsFailed:
                 self.logger.warning("Creating subscriptions failed for %s", self.display_name)
                 # the subscription lock is already held here and is not reentrant
@@ -525,7 +546,7 @@ class SonosPlayer(Player):
             group_members_ids = []
 
             for uid in group:
-                speaker = self.mass.players.get_player(uid)
+                speaker = self.provider.get_protocol(uid)
                 if speaker:
                     group_members_ids.append(uid)
                 else:
@@ -587,7 +608,7 @@ class SonosPlayer(Player):
         except TimeoutError:
             self.logger.warning("Timeout waiting for target groups %s", groups)
 
-        if players := self.mass.players.all_players(provider_filter=_provider.instance_id):
+        if players := _provider.protocols:
             any_speaker = cast("SonosPlayer", players[0])
             any_speaker.soco.zone_group_state.clear_cache()
 
@@ -617,8 +638,7 @@ class SonosPlayer(Player):
         :return: MAC address string in XX:XX:XX:XX:XX:XX format, or None if not extractable.
         """
         # Remove RINCON_ prefix if present
-        player_id = self.player_id
-        player_id = player_id.removeprefix("RINCON_")
+        player_id = self.protocol_id.removeprefix("RINCON_")
 
         # Remove the 01400 suffix (or similar) - should be last 5 chars
         if len(player_id) >= 17:  # 12 hex chars for MAC + 5 chars suffix
@@ -717,7 +737,9 @@ class SonosPlayer(Player):
             self.update_player()
             return
         if service_type == "AVTransport":
-            self._handle_avtransport_event(event)
+            task = self.mass.create_task(self._handle_avtransport_event(event))
+            self._avtransport_tasks.add(task)
+            task.add_done_callback(self._avtransport_tasks.discard)
             return
         if service_type == "RenderingControl":
             self._handle_rendering_control_event(event)
@@ -726,7 +748,7 @@ class SonosPlayer(Player):
             self._handle_zone_group_topology_event(event)
             return
 
-    def _handle_avtransport_event(self, event: SonosEvent) -> None:
+    async def _handle_avtransport_event(self, event: SonosEvent) -> None:
         """Update information about currently playing media from an event."""
         # NOTE: The new coordinator can be provided in a media update event but
         # before the ZoneGroupState updates. If this happens the playback
@@ -744,34 +766,40 @@ class SonosPlayer(Player):
             return
         self._attr_poll_interval = POLL_INTERVAL
 
-        evars = event.variables
-        new_status = _convert_state(evars["transport_state"])
-        state_changed = new_status != self._attr_playback_state
+        # the lock keeps a burst of events applied in the order they arrived
+        async with self._avtransport_event_lock:
+            if self._unloaded:
+                return
+            evars = event.variables
+            new_status = _convert_state(evars["transport_state"])
+            state_changed = new_status != self._attr_playback_state
 
-        self._attr_playback_state = new_status
+            self._attr_playback_state = new_status
 
-        track_uri = evars["enqueued_transport_uri"] or evars["current_track_uri"]
-        audio_source = self.soco.music_source_from_uri(track_uri)
+            track_uri = evars["enqueued_transport_uri"] or evars["current_track_uri"]
+            audio_source = SoCo.music_source_from_uri(track_uri)
 
-        self._set_basic_track_info(update_position=state_changed)
-        ct_md = evars["current_track_meta_data"]
+            # querying the speaker must not block the loop. On a radio start it only answers
+            # once it has connected to the stream, which is served from this same loop
+            await asyncio.to_thread(self._set_basic_track_info, update_position=state_changed)
+            ct_md = evars["current_track_meta_data"]
 
-        et_uri_md = evars["enqueued_transport_uri_meta_data"]
+            et_uri_md = evars["enqueued_transport_uri_meta_data"]
 
-        channel = ""
-        if audio_source == MUSIC_SRC_RADIO:
-            if et_uri_md:
-                channel = et_uri_md.title
+            channel = ""
+            if audio_source == MUSIC_SRC_RADIO:
+                if et_uri_md:
+                    channel = et_uri_md.title
 
-            # Extra guards for S1 compatibility
-            if ct_md and hasattr(ct_md, "radio_show") and ct_md.radio_show:
-                radio_show = ct_md.radio_show.split(",")[0]
-                channel = " • ".join(filter(None, [channel, radio_show]))
+                # Extra guards for S1 compatibility
+                if ct_md and hasattr(ct_md, "radio_show") and ct_md.radio_show:
+                    radio_show = ct_md.radio_show.split(",")[0]
+                    channel = " • ".join(filter(None, [channel, radio_show]))
 
-            if isinstance(et_uri_md, DidlAudioBroadcast) and self._attr_current_media:
-                self._attr_current_media.title = self._attr_current_media.title or channel
+                if isinstance(et_uri_md, DidlAudioBroadcast) and self._attr_current_media:
+                    self._attr_current_media.title = self._attr_current_media.title or channel
 
-        self.update_player()
+            self.update_player()
 
     def _handle_rendering_control_event(self, event: SonosEvent) -> None:
         """Update information about currently volume settings."""

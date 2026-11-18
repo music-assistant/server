@@ -44,8 +44,6 @@ class LibrariesHelper(DataClassDictMixin):
     playlists_podcasts: dict[str, set[str]] = field(default_factory=dict)
     authors: dict[str, set[str]] = field(default_factory=dict)
     narrators: dict[str, set[str]] = field(default_factory=dict)
-    # audiobook_id is key. Abs does not have a dedicated narrator endpoint.
-    audiobook_narrators: dict[str, set[NarratorHelper]] = field(default_factory=dict)
 
 
 @dataclass(kw_only=True)
@@ -53,8 +51,8 @@ class SessionHelper:
     """Helper class to store some session information."""
 
     abs_session_id: str
+    device_slot: int
     last_sync_time: float
-    failed_sync_count: int = 0
 
 
 @dataclass(kw_only=True)
@@ -119,6 +117,9 @@ class ProgressGuard:
         mass external updates. Here, we compare this property against a potential
         stored one.
         """
+        # abs sends no library item id for a progress it could not map to an item
+        if abs_progress.library_item_id is None:
+            return False
         return self.guard_ok_mass(abs_progress.library_item_id, abs_progress.episode_id)
 
     def guard_ok_mass(self, item_id: str, episode_id: str | None = None) -> bool:

@@ -1,0 +1,71 @@
+"""Test BBC Sounds provider menu handling."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, PropertyMock, patch
+
+import pytest
+
+from music_assistant.helpers.datetime import utc_timestamp
+from music_assistant.providers.bbc_sounds import BBCSoundsProvider, BrowseManager
+from music_assistant.providers.bbc_sounds.constants import Constants
+
+if TYPE_CHECKING:
+    from auntie_sounds.models import Menu
+
+
+class TestMenuLoading:
+    """Tests for initial/refresh menu loading."""
+
+    async def test_blank_menu_is_refreshed(
+        self, provider: BBCSoundsProvider, blank_menu: Menu, uk_menu: Menu
+    ) -> None:
+        """Test that when a blank menu, it is refreshed from the API."""
+        provider.browse_manager.menu = blank_menu
+        provider.browse_manager.menu_last_fetched = utc_timestamp()
+
+        async def fake_refresh() -> None:
+            provider.browse_manager.menu = uk_menu
+
+        provider.browse_manager.refresh_menu_from_api = AsyncMock(side_effect=fake_refresh)  # type: ignore[method-assign]
+
+        await provider.browse_manager._get_menu()
+
+        provider.browse_manager.refresh_menu_from_api.assert_awaited_once()
+        assert provider.browse_manager.menu is uk_menu
+
+    async def test_expired_menu_is_refreshed(
+        self, provider: BBCSoundsProvider, uk_menu: Menu
+    ) -> None:
+        """Test that when a menu has expired, it is refreshed from the API."""
+        provider.browse_manager.menu = uk_menu
+        provider.browse_manager.menu_last_fetched = utc_timestamp() - Constants.SHORT_EXPIRATION - 1
+        provider.browse_manager.refresh_menu_from_api = AsyncMock()  # type: ignore[method-assign]
+
+        await provider.browse_manager._get_menu()
+
+        provider.browse_manager.refresh_menu_from_api.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "last_fetched", [1788517216, 1788517216 - Constants.SHORT_EXPIRATION + 1]
+    )
+    @patch.object(BrowseManager, "_menu_is_stale", new_callable=PropertyMock)
+    async def test_valid_menu_is_not_refreshed(
+        self,
+        mock_menu_is_stale: PropertyMock,
+        provider: BBCSoundsProvider,
+        uk_menu: Menu,
+        last_fetched: float,
+    ) -> None:
+        """Test that when we have a valid menu, it isn't refreshed."""
+        mock_menu_is_stale.return_value = False
+        provider.browse_manager.menu = uk_menu
+        provider.browse_manager.menu_last_fetched = last_fetched
+        provider.browse_manager.refresh_menu_from_api = AsyncMock()  # type: ignore[method-assign]
+        provider.browse_manager._convert_menu = AsyncMock(return_value=uk_menu.sub_items)  # type: ignore[method-assign]
+
+        result = await provider.browse_manager._get_menu()
+
+        provider.browse_manager.refresh_menu_from_api.assert_not_called()
+        assert result == uk_menu.sub_items  # type: ignore[comparison-overlap]

@@ -49,37 +49,28 @@ def parse_now_playing(data: dict[str, Any]) -> StreamMetadata | None:
 
     Returns None when no track is currently playing (e.g. talk programming).
 
-    :param data: JSON response from the ABC Radio now-playing API.
+    :param data: JSON response from the ABC core-next musicNowPlaying API.
     """
-    play: dict[str, Any] = data.get("now") or {}
-    recording: dict[str, Any] = play.get("recording") or {}
-    title = recording.get("title")
+    # mapiNow is null when nothing is playing.
+    play: dict[str, Any] = data.get("mapiNow") or {}
+    title = play.get("title")
     if not title:
         return None
 
-    # Prefer the display artist ABC's own players use; the recording artist list
-    # contains separate performer/composer entries (e.g. for classical works).
-    artist = (play.get("summary") or {}).get("artist") or ", ".join(
-        name
-        for entry in recording.get("artists") or []
-        if entry.get("type") == "primary" and (name := entry.get("name"))
-    )
-
-    # The play-level release is not always populated; fall back to the
-    # first release attached to the recording.
-    releases: list[dict[str, Any]] = recording.get("releases") or []
-    release: dict[str, Any] = play.get("release") or (releases[0] if releases else {})
-    album = release.get("title")
-    if album and (year := release.get("release_year")):
+    release: dict[str, Any] = play.get("release") or {}
+    album = play.get("releaseTitle") or release.get("title")
+    # Only the Classic stations fill in properties (year, performers, label).
+    if album and (year := (play.get("properties") or {}).get("year")):
         album = f"{album} ({year})"
 
+    # Prefer the full-size release artwork; primaryImage is a 340px resize.
     artwork: list[dict[str, Any]] = release.get("artwork") or []
-    image_url = artwork[0].get("url") if artwork else None
+    image_url = (artwork[0].get("url") if artwork else None) or play.get("primaryImage")
 
     return StreamMetadata(
         title=title,
-        artist=artist or None,
+        artist=play.get("artist") or None,
         album=album,
         image_url=image_url,
-        duration=recording.get("duration"),
+        duration=play.get("duration"),
     )

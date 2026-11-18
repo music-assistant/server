@@ -3,14 +3,15 @@ Tests for the Spotify provider's playback backend selection and wiring.
 
 The playback backend is an explicit per-instance choice stored in setup_data:
 configs predating the choice (key unset) must stay on librespot, "soloist"
-selects the single-track Soloist backend. The concurrency budget (the same on
-either backend) and librespot's URI translation are locked down here as well.
+selects the Soloist backend. The concurrency budget (three librespot
+fetches, one soloist run) and librespot's URI translation are locked down here
+as well.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Self, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType
@@ -50,16 +51,24 @@ def test_backend_defaults_to_librespot() -> None:
 
 
 def test_backend_soloist_is_selected() -> None:
-    """A stored soloist choice selects the Soloist single-track backend."""
+    """A stored soloist choice selects the Soloist backend."""
     prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
     assert isinstance(prov._create_backend(), SoloistBackend)
 
 
-def test_max_concurrent_streams_is_two_on_either_backend() -> None:
-    """Two source streams either way: parallel librespot fetches, or one session handover."""
-    assert _make_provider({}).max_concurrent_streams == 2
-    assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}).max_concurrent_streams == 2
-    assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}).max_concurrent_streams == 2
+def test_max_concurrent_streams_follows_the_backend_choice() -> None:
+    """Three parallel librespot fetches; the soloist engine serves one run at a time."""
+    assert _make_provider({}).max_concurrent_streams == 3
+    assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}).max_concurrent_streams == 3
+    assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}).max_concurrent_streams == 1
+
+
+async def test_the_soloist_choice_sizes_the_stream_semaphore() -> None:
+    """The single-run budget is live at construction time, sized from the stored choice."""
+    prov = _construct_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    async with prov.acquire_stream_slot(0.1):
+        assert not prov.has_available_stream_slot
+    assert prov.has_available_stream_slot
 
 
 async def test_the_quality_option_is_offered_for_soloist_only() -> None:
@@ -111,8 +120,10 @@ def test_another_queues_session_does_not_answer_for_normalization(normalizes: bo
     cast("MagicMock", prov.config).get_value = MagicMock(return_value=normalizes)
     backend = SoloistBackend(prov)
     prov.backend = backend
-    backend._session = _session(queue_id="queue-1", normalizes=not normalizes)
+    run = _session(queue_id="queue-1", normalizes=not normalizes)
     other_queue = _streamdetails(queue_id="queue-2")
+    run.media_key = _streamdetails(queue_id="queue-1").uri + "-other-item"
+    backend._run = run
 
     assert backend.session_normalizes(other_queue) is None
     # so the configuration answers for normalization
@@ -235,12 +246,12 @@ def _streamdetails(*, queue_id: str | None = None, item_id: str = "track-1") -> 
 
 
 def _session(*, queue_id: str, normalizes: bool = True) -> MagicMock:
-    """Return a stand-in for a running soloist session serving one queue."""
-    session = MagicMock()
-    session.usable = True
-    session.queue_id = queue_id
-    session.engine_normalizes = normalizes
-    return session
+    """Return a stand-in for a running soloist engine run."""
+    run = MagicMock()
+    run.queue_id = queue_id
+    run.engine_normalizes = normalizes
+    run.serves = lambda media_key: media_key == run.media_key
+    return run
 
 
 def _make_provider(setup_data: dict[str, Any]) -> SpotifyProvider:
@@ -261,6 +272,19 @@ def _make_provider(setup_data: dict[str, Any]) -> SpotifyProvider:
     mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)
     prov.mass = mass
     return prov
+
+
+def _construct_provider(setup_data: dict[str, Any]) -> SpotifyProvider:
+    """Return a SpotifyProvider built through the real constructor with the given setup_data."""
+    mass = MagicMock()
+    mass.config.get = MagicMock(return_value=setup_data)
+    mass.config.get_raw_provider_config_value = MagicMock(return_value=None)
+    mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)
+    manifest = MagicMock(domain="spotify")
+    config = MagicMock(instance_id="spotify--test")
+    config.get_value = MagicMock(return_value=None)
+    config.values = {}
+    return SpotifyProvider(mass, manifest, config)
 
 
 def _make_librespot_backend(tmp_path: Path) -> LibrespotBackend:
@@ -308,3 +332,42 @@ def _install_fake_librespot_process(monkeypatch: pytest.MonkeyPatch) -> list[lis
         "music_assistant.providers.spotify.backends.librespot.AsyncProcess", _FakeProcess
     )
     return captured
+
+
+def _details(media_type: MediaType, item_id: str) -> StreamDetails:
+    """Return stream details of a Spotify item for the hint tests."""
+    return StreamDetails(
+        provider="spotify--test",
+        item_id=item_id,
+        audio_format=AudioFormat(content_type=ContentType.PCM_S16LE),
+        media_type=media_type,
+    )
+
+
+@pytest.mark.parametrize(
+    ("media_type", "expected"),
+    [(MediaType.TRACK, "spotify:track:bbb"), (MediaType.PODCAST_EPISODE, "spotify:episode:bbb")],
+)
+async def test_a_hint_hands_the_backend_the_next_items_uri(
+    media_type: MediaType, expected: str
+) -> None:
+    """The backend learns which Spotify item follows the one being streamed."""
+    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    prov.backend = MagicMock(feed_next=AsyncMock())
+    playing = _details(MediaType.TRACK, "aaa")
+    await prov.hint_next_item(playing, _details(media_type, "bbb"))
+    prov.backend.feed_next.assert_awaited_once_with(playing.uri, expected)
+
+
+@pytest.mark.parametrize("audiobook_side", ["playing", "upcoming"])
+async def test_an_audiobook_takes_no_hint(audiobook_side: str) -> None:
+    """An audiobook's next chapter follows it, so nothing is lined up around one."""
+    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    prov.backend = MagicMock(feed_next=AsyncMock())
+    book = _details(MediaType.AUDIOBOOK, "book")
+    track = _details(MediaType.TRACK, "bbb")
+    if audiobook_side == "playing":
+        await prov.hint_next_item(book, track)
+    else:
+        await prov.hint_next_item(track, book)
+    prov.backend.feed_next.assert_not_awaited()

@@ -11,7 +11,7 @@ class TestDecrypt:
     def test_decrypt_valid_response(self) -> None:
         """Test decrypting a real MusicMe API response."""
         # This is an actual encrypted error response from the MusicMe API:
-        # {"code":2,"type":"OperationForbidden","message":"invalid credentials"}
+        # {"code":2,"type":"OperationForbidden","message":"invalid credentials"}  # noqa: ERA001
         encrypted = (
             "4A29BFAE794933B19DF3C4888688C7CFD9D9CBCDCF889088C3C4DCCBC6C3CE"
             "8AC9D8CFCECFC4DEC3CBC6D988D7D188C9C5CECF8890988688DED3DACF8890"

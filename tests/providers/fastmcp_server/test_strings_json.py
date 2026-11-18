@@ -45,6 +45,8 @@ def test_every_category_is_known_or_declared(mock_mass: MagicMock) -> None:
         category = getattr(entry, "category", None)
         if not category:
             continue
+        if entry.category_label is not None:
+            continue
         assert category in COMMON_CATEGORIES or category in declared, (
             f"category {category!r} is neither common nor declared in config_categories"
         )
@@ -54,11 +56,11 @@ def test_static_entries_carry_no_inline_text(mock_mass: MagicMock) -> None:
     """
     All static entries are de-literalized — ``strings.json`` owns their text.
 
-    Only ``LABEL``-type entries may carry inline text: their content is composed
-    at runtime (e.g. the endpoint info label embeds the live ``base_url``).
+    Runtime-composed labels are allowed for the native dynamic policy block,
+    where current-user token names and hashed entry keys cannot live in strings.json.
     """
     for entry in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH):
-        if entry.type is ConfigEntryType.LABEL:
+        if entry.type is ConfigEntryType.LABEL or entry.category == "policy":
             continue
         assert entry.label is None, f"inline label on {entry.key!r}"
         assert entry.description is None, f"inline description on {entry.key!r}"
@@ -71,7 +73,57 @@ def test_deliteralized_entries_have_strings(mock_mass: MagicMock) -> None:
     for entry in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH):
         if entry.label is not None:
             continue
-        assert entry.key in config_entries, f"missing strings.json entry for {entry.key!r}"
-        text = config_entries[entry.key]
-        assert text.get("label"), f"empty label for {entry.key!r}"
-        assert text.get("description"), f"empty description for {entry.key!r}"
+        translation_key = entry.translation_key or entry.key
+        assert translation_key in config_entries, (
+            f"missing strings.json entry for {translation_key!r}"
+        )
+        text = config_entries[translation_key]
+        assert text.get("label"), f"empty label for {translation_key!r}"
+        assert text.get("description"), f"empty description for {translation_key!r}"
+
+
+def test_strings_expose_only_v2_policy_configuration_contract() -> None:
+    """The breaking release publishes v2 policy help without dormant v1 controls."""
+    data = _load_strings()
+    entries = data["config_entries"]
+
+    assert entries.keys() >= {
+        "policy_capability",
+        "policy_default",
+        "policy_manual_token_ids",
+        "policy_token",
+    }
+    assert "Advanced mode" in entries["policy_default"]["description"]
+    expected_profile_options = {
+        "Safe queries": "Safe queries",
+        "Home control": "Home control",
+        "Interactive admin": "Interactive admin",
+        "Trusted": "Trusted",
+        "Custom": "Custom (Advanced mode required)",
+    }
+    assert entries["policy_default"]["options"] == expected_profile_options
+    assert entries["policy_token"]["label"] == "{0}"
+    assert entries["policy_token"]["options"] == {
+        "Inherit": "Inherit",
+        **expected_profile_options,
+    }
+    assert entries["policy_capability"]["label"] == "{0}"
+    assert entries["policy_capability"]["options"] == {
+        "deny": "Deny",
+        "allow": "Allow",
+        "confirm": "Confirm",
+    }
+    assert set(entries).isdisjoint(
+        {
+            "require_confirmation",
+            "dynamic_api_read",
+            "dynamic_api_control",
+            "dynamic_api_write",
+            "dynamic_api_system",
+            "query_library",
+            "control_playback",
+            "edit_library",
+            "delete_library",
+        }
+    )
+    assert data["config_categories"]["policy"] == "Permissions & confirmations"

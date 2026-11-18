@@ -10,6 +10,7 @@ from music_assistant_models.enums import ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST
+from music_assistant.controllers.streams.constants import SEEK_WAIT_THRESHOLD
 
 DOMAIN = "airplay"
 
@@ -51,25 +52,32 @@ class ClockReadiness(StrEnum):
     UNREPORTED = "unreported"
 
 
-CONF_PASSWORD: Final[str] = "password"
 # Storage-only marker (no config entry) set when the device rejected the stored
 # password, so the player keeps asking for setup across restarts until a working
 # password is entered.
-CONF_PASSWORD_INVALID: Final[str] = "password_invalid"
+CONF_PASSWORD_INVALID: Final[str] = "password_invalid"  # noqa: S105 - config key
 # Provider marker that the stored password verdicts were reviewed once. Releases
 # that could not tell a password challenge apart from a flat refusal wrote the
 # key above for both, so what they left behind is no evidence about a password
 # and is dropped a single time; a device that really challenges marks itself
 # again on its next connect.
-CONF_PASSWORD_MARKERS_REVIEWED: Final[str] = "password_markers_reviewed"
+CONF_PASSWORD_MARKERS_REVIEWED: Final[str] = "password_markers_reviewed"  # noqa: S105 - config key
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device streaming mode: pins the protocol/timing lane for
 # receivers whose automatic route misbehaves. Options are offered per device
-# capability; Automatic is the default and the only value MA itself writes away
-# from: a receiver that never answers PTP is switched to NTP, while one whose
-# native control channel conclusively fails is switched to compatibility mode.
+# capability; Automatic is the default and the setting is only ever written by
+# the user — a failing automatic route is reported, never switched away from.
 CONF_STREAMING_MODE: Final[str] = "streaming_mode"
+# Per-device 24-bit toggle, only offered for devices that advertise 24-bit
+# support. Defaults per device family (see default_hires_enabled).
+CONF_ENABLE_HIRES: Final[str] = "enable_hires"
+# Provider marker that the compatibility-mode pins were reset once. Earlier
+# releases switched a player here themselves when its native control channel
+# failed (usually a network dropout), pinning it to a lane many devices reject
+# outright, so those machine-written values are returned to Automatic a single
+# time; a deliberate choice can simply be made again.
+CONF_COMPAT_PINS_REVIEWED: Final[str] = "compat_pins_reviewed"
 STREAMING_MODE_AUTO: Final[str] = "auto"
 STREAMING_MODE_AP2_PTP: Final[str] = "ap2_ptp"
 STREAMING_MODE_AP2_NTP: Final[str] = "ap2_ntp"
@@ -89,6 +97,10 @@ COMPANION_DISCOVERY_TYPE: Final[str] = "_companion-link._tcp.local."
 MRP_DISCOVERY_TYPE: Final[str] = "_mediaremotetv._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
+
+# Fallback ports for the two streaming services above, for when discovery has none.
+AIRPLAY_DEFAULT_PORT: Final[int] = 7000
+RAOP_DEFAULT_PORT: Final[int] = 5000
 
 # Floor for a late joiner's anchor, and the one it rests on whenever the binary
 # reports no readiness projection ([STATUS] clock_ready). A joiner cannot
@@ -139,6 +151,11 @@ CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
 # cliairplay then makes up to 12 attempts, 500 ms apart. Cover that 5.5-second
 # retry span plus control-response and status-delivery margin.
 AIRPLAY_START_ACK_TIMEOUT_MS: Final[int] = 7000
+# How long a forced stop waits for the binary to confirm STOP ([STATUS] stopped)
+# before it kills the process. The binary first releases the receiver (RTSP
+# TEARDOWN), which some receivers need to free their output (squeezelite-esp32);
+# that normally takes milliseconds.
+AIRPLAY_STOP_ACK_TIMEOUT: Final[float] = 2.0
 # A join can additionally withhold its ack while receiver-clock verification
 # settles. Keep its independently named bound aligned with the buffered retry
 # span too; command failures still answer either wait immediately.
@@ -170,12 +187,62 @@ AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 # audibly out of sync. Warm re-anchors reuse a locked clock and keep the
 # short leads above; solo cold starts have no sync partner to miss.
 AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
+# How far out a cold group whose members all stream buffered first anchors, so
+# every receiver has accepted an anchor before any audio leaves. A strict
+# receiver can reject anchors for the whole 5.5-second retry span of
+# AIRPLAY_START_ACK_TIMEOUT_MS, and audio leaves up to one send window before
+# the anchor (3 s at the deepest CONF_BUFFER_DEPTH), so this clears both with
+# 500 ms to spare. A re-START after audio has left never puts it back: that
+# member skips what it was already sent and plays ahead of the others.
+AIRPLAY_ANCHOR_SEAT_LEAD_MS: Final[int] = 9000
+
+# How long a start waits for the source to hand over its first audio before it
+# judges the members on what they never received. A seek may land up to
+# SEEK_WAIT_THRESHOLD seconds ahead of what the source has produced, and the
+# wait has to outlast the producer covering that; the margin covers its own
+# spin-up. It is a backstop rather than a budget: this runs under the player
+# lock, so a producer that neither delivers nor gives up would otherwise hold
+# every command for the player behind it.
+AIRPLAY_FEED_START_TIMEOUT: Final[float] = SEEK_WAIT_THRESHOLD + 5
+# Hard cap on how long the stdin EOF withheld for a predicted replacement stream
+# is held. What normally releases that wait is the queue itself: it clears the
+# transition on any failure between rotating its stream session and the
+# play_media that carries the replacement (an item that fails to load, a
+# provider error), and that is the signal no replacement is coming. This only
+# covers a transition that neither completes nor clears. It sits past the load
+# that carries a replacement - the queue's buffer prepare (BUFFER_READY_TIMEOUT,
+# 15s) plus the provider source slot its producer may wait out first - so a slow
+# but real seek is never cut short into a cold restart.
+AIRPLAY_REPLACEMENT_EOF_TIMEOUT: Final[float] = 35.0
+# How often the queue is asked whether it is still loading that replacement.
+# It only bounds how quickly a cleared transition is noticed, so it trades no
+# accuracy for a poll this cheap (one dict lookup).
+AIRPLAY_REPLACEMENT_POLL_INTERVAL: Final[float] = 1.0
 # Margin added on top of a member's reported warm lead (the splice-timeline
 # queue depth; that timeline is the default for every native AirPlay 2 session)
 # when anchoring a warm re-start: covers the command round-trips between the
 # flush acks and the shared START so every member's skip target lands beyond
 # its queued audio.
 AIRPLAY_SPLICE_LEAD_MARGIN_MS: Final[int] = 150
+
+# How long a group waits after the last starvation shift ([STATUS] REANCHOR) of
+# any member before it compares the members' shifts. Each member recovers from a
+# dry feed on its own: a realtime member shifts by about its queue depth minus
+# the binary's 250 ms floor, and again every depth for as long as the feed stays
+# dry, while a buffered member never shifts. At the deepest queue (3 s) those
+# reports come up to 3 s apart, so this outlasts the reports of one stall.
+AIRPLAY_STALL_SETTLE_SECONDS: Final[float] = 4.0
+# How far apart the members' shifts may be and still play as one group. Members
+# with the same queue depth shift by the same amount, give or take a few ms of
+# scheduling jitter. Different depths, or a buffered member next to a realtime
+# one, put them hundreds of ms apart.
+AIRPLAY_STALL_SHIFT_TOLERANCE_MS: Final[int] = 30
+# Minimum time between two restarts that bring a group back in sync after a
+# stall. It doubles with each restart up to the cap, so a source that keeps
+# stalling cannot keep restarting the group. A group that drifts apart within it
+# is restarted once it has passed.
+AIRPLAY_STALL_RESYNC_HOLDOFF: Final[float] = 60.0
+AIRPLAY_STALL_RESYNC_MAX_HOLDOFF: Final[float] = 900.0
 
 # Floor for the late-join PCM ring, which has to hold every sample between the
 # audible position and the write head: a joiner's anchor maps onto content the
@@ -208,13 +275,14 @@ AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS: Final[float] = 2.0
 # footprint.
 AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 
-# Delay (seconds) before automatically re-joining a group member whose
+# Delays (seconds) between automatic re-join attempts for a group member whose
 # cliairplay process died unexpectedly mid-session (e.g. the device rode out a
-# network blackout longer than the binary's own keepalive tolerance). A single
-# attempt keeps the behaviour predictable: it waits long enough for a short
-# blackout to clear, and if the device is still gone the player is left idle.
-# Staged retries can be reintroduced by adding entries to the tuple.
-AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5,)
+# network blackout longer than the binary's own keepalive tolerance). A device
+# recovering from a network dropout typically needs tens of seconds to come
+# back, so the ladder stretches to a few minutes; every attempt re-validates
+# that the group still plays and the player was not repurposed meanwhile, and
+# the whole schedule is abandoned as soon as either no longer holds.
+AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5, 15, 30, 60, 120)
 
 # Shared audible instant for a native announcement over a live stream: now +
 # the largest member span + this margin. A member can only mix the clip into
@@ -298,7 +366,7 @@ CONF_ENTRY_SYNC_ADJUST_AIRPLAY = replace(CONF_ENTRY_SYNC_ADJUST, advanced=False)
 CONF_PAIRING_PIN: Final[str] = "pairing_pin"
 # every AirPlay pairing PIN (streaming, Companion, MRP) is 4 digits
 PAIRING_PIN_FORMAT: Final[str] = "####"
-CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"
+CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"  # noqa: S105 - config key
 CONF_COMPANION_PAIRING_PIN: Final[str] = "companion_pairing_pin"
 CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"
 CONF_PAIR_NOW: Final[str] = "pair_now"
@@ -314,17 +382,17 @@ AIRPLAY_VOLUME_ECHO_GRACE_S: Final[float] = 2.0
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )
-# Sample rates advertised for a receiver that supports 24-bit (AirPlay 2 flow
-# only). At 24-bit the cliairplay binary expects raw s32le on stdin and truncates
-# to 24-bit ALAC internally.
-AIRPLAY_HIRES_SAMPLE_RATES: Final[list[tuple[int, int]]] = [(44100, 24), (48000, 24)]
-
-# Bits in the audioFormat bit space (shared with the receiver's /info format
-# tables) that mark 24-bit ALAC: 44.1 kHz and 48 kHz respectively. Receivers
-# understate these - the Apple TV lists them for its buffered stream only, yet
-# renders them fine on the realtime stream - so a device advertising either bit
-# on either stream is treated as 24-bit capable.
-AIRPLAY_HIRES_AUDIO_FORMATS: Final[int] = (1 << 19) | (1 << 21)
+# 24-bit ALAC sample rates (AirPlay 2 flow only) by their bit in the audioFormat
+# bit space, shared with the receiver's /info format tables. Receivers understate
+# the stream they list them for - the Apple TV lists them for its buffered stream
+# only, yet renders them fine on the realtime stream - so a format listed on
+# either stream counts. At 24-bit the cliairplay binary expects raw s32le on
+# stdin and truncates to 24-bit ALAC internally.
+AIRPLAY_HIRES_FORMATS: Final[dict[int, int]] = {1 << 19: 44100, 1 << 21: 48000}
+AIRPLAY_HIRES_AUDIO_FORMATS: Final[int] = sum(AIRPLAY_HIRES_FORMATS)
+AIRPLAY_HIRES_SAMPLE_RATES: Final[list[tuple[int, int]]] = [
+    (sample_rate, 24) for sample_rate in AIRPLAY_HIRES_FORMATS.values()
+]
 
 BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PLAY_MEDIA,

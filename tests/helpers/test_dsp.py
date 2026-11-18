@@ -20,6 +20,7 @@ from music_assistant_models.dsp import (
     ToneControlFilter,
     TransposeFilter,
 )
+from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.helpers.dsp import (
@@ -27,8 +28,10 @@ from music_assistant.helpers.dsp import (
     ComplexFilterInput,
     filter_to_ffmpeg_params,
 )
+from music_assistant.helpers.ffmpeg import get_ffmpeg_args
 
 INPUT_FORMAT = AudioFormat(sample_rate=48000)
+MONO_INPUT_FORMAT = AudioFormat(sample_rate=48000, channels=1)
 IR_DIR = "/irs"
 
 
@@ -76,11 +79,51 @@ def test_balance_filter_zero_is_passthrough() -> None:
     assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir=IR_DIR) == []
 
 
-def test_balance_filter_mono_is_skipped() -> None:
-    """Test that balance is skipped on a mono source (stereo-only operation)."""
+def test_balance_filter_mono_right() -> None:
+    """Test that balance towards the right widens a mono source and attenuates the left."""
     dsp_filter = BalanceFilter(enabled=True, balance=40)
-    mono_format = AudioFormat(sample_rate=48000, channels=1)
-    assert filter_to_ffmpeg_params(dsp_filter, mono_format, ir_dir=IR_DIR) == []
+    assert filter_to_ffmpeg_params(dsp_filter, MONO_INPUT_FORMAT, ir_dir=IR_DIR) == [
+        "pan=stereo|FL=0.6*c0|FR=c0"
+    ]
+
+
+def test_balance_filter_mono_left() -> None:
+    """Test that balance towards the left widens a mono source and attenuates the right."""
+    dsp_filter = BalanceFilter(enabled=True, balance=-40)
+    assert filter_to_ffmpeg_params(dsp_filter, MONO_INPUT_FORMAT, ir_dir=IR_DIR) == [
+        "pan=stereo|FL=c0|FR=0.6*c0"
+    ]
+
+
+def test_balance_filter_mono_full_deflection_mutes_opposite_channel() -> None:
+    """Test that full balance deflection fully mutes the opposite channel on a mono source."""
+    dsp_filter = BalanceFilter(enabled=True, balance=100)
+    assert filter_to_ffmpeg_params(dsp_filter, MONO_INPUT_FORMAT, ir_dir=IR_DIR) == [
+        "pan=stereo|FL=0.0*c0|FR=c0"
+    ]
+
+
+def test_balance_filter_mono_keeps_the_level_of_a_centered_one() -> None:
+    """Test that leaving the centre on a mono source does not change the favoured channel."""
+    dsp_filter = BalanceFilter(enabled=True, balance=40)
+    params = filter_to_ffmpeg_params(dsp_filter, MONO_INPUT_FORMAT, ir_dir=IR_DIR)
+    input_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16, channels=1
+    )
+    output_format = AudioFormat(
+        content_type=ContentType.FLAC, sample_rate=48000, bit_depth=16, channels=2
+    )
+
+    args = get_ffmpeg_args(input_format, output_format, [*params])
+
+    # the output stage widens the mono source at unity, which the balance must not undo
+    assert args[args.index("-af") + 1] == "pan=stereo|c0=c0|c1=c0,pan=stereo|FL=0.6*c0|FR=c0"
+
+
+def test_balance_filter_mono_zero_is_passthrough() -> None:
+    """Test that a centered balance filter emits no ffmpeg filter on a mono source."""
+    dsp_filter = BalanceFilter(enabled=True, balance=0)
+    assert filter_to_ffmpeg_params(dsp_filter, MONO_INPUT_FORMAT, ir_dir=IR_DIR) == []
 
 
 def test_transpose_filter_octaves() -> None:

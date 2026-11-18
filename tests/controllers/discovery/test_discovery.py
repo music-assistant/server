@@ -1,6 +1,8 @@
 """Tests for the discovery core controller."""
 
+import asyncio
 import logging
+from ipaddress import ip_address
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,7 +10,7 @@ import pytest
 from zeroconf import IPVersion
 from zeroconf.asyncio import AsyncZeroconf
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_SERVER_ID, VERBOSE_LOG_LEVEL
 from music_assistant.mass import MusicAssistant
 
 
@@ -24,6 +26,45 @@ class StubUpnpProvider:
         self.manifest = MagicMock(mdns_discovery=None, upnp_discovery=["roku:ecp"])
         self.on_mdns_service_state_change = AsyncMock()
         self.on_upnp_service_discovered = AsyncMock()
+
+
+SERVER_ID = "0a1b2c3d4e5f60718293a4b5c6d7e8f9"
+FALLBACK_HOSTNAME = "musicassistant-0a1b2c.local."
+
+
+def _prepare_mass_service(mass: MusicAssistant, version: str = "2.11.0") -> MagicMock:
+    """
+    Prepare the server for advertising itself, with a mocked zeroconf instance.
+
+    :param mass: The Music Assistant instance.
+    :param version: The server version, a release build by default.
+    """
+    mass.version = version
+    mass.config.set(CONF_SERVER_ID, SERVER_ID)
+    mass.webserver = MagicMock(
+        publish_ip="192.168.1.10",
+        publish_addresses=["192.168.1.10", "fd00::10"],
+        publish_port=8095,
+        base_url="http://192.168.1.10:8095",
+    )
+    mock_zc = MagicMock(spec=AsyncZeroconf)
+    mock_zc.zeroconf = MagicMock()
+    mock_zc.async_register_service = AsyncMock()
+    mock_zc.async_update_service = AsyncMock()
+    mass.discovery._aiozc = mock_zc
+    return mock_zc
+
+
+def _mock_address_resolver(*addresses: str) -> MagicMock:
+    """
+    Return an AddressResolver stand-in whose lookups get the given addresses as answer.
+
+    :param addresses: The addresses the network answers with.
+    """
+    resolver = MagicMock()
+    resolver.async_request = AsyncMock(return_value=bool(addresses))
+    resolver.addresses_by_version.return_value = [ip_address(addr).packed for addr in addresses]
+    return MagicMock(return_value=resolver)
 
 
 @pytest.mark.parametrize(
@@ -122,6 +163,7 @@ async def test_discovery_controller_owns_async_zeroconf(mass_minimal: MusicAssis
             return_value=zc_args,
         ) as mock_get_zeroconf_args,
     ):
+        await mass_minimal.discovery.start_zeroconf()
         await mass_minimal.discovery.setup(await mass_minimal.config.get_core_config("discovery"))
         assert mass_minimal.discovery.aiozc is mock_zc
 
@@ -163,6 +205,33 @@ async def test_mass_service_advertises_webserver_publish_addresses(
     assert mock_service_info.call_args.kwargs["addresses"] == [b"192.168.1.10", b"fd00::10"]
 
 
+async def test_refresh_mdns_browser_follows_registered_manifests(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A refresh replaces the mDNS browser by one for the manifests registered at that time."""
+    mass_minimal.discovery._aiozc = MagicMock()
+    mass_minimal._provider_manifests["first"] = MagicMock(mdns_discovery=["_first._tcp.local."])
+
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncServiceBrowser"
+    ) as mock_browser:
+        first_browser = MagicMock(async_cancel=AsyncMock())
+        mock_browser.return_value = first_browser
+        await mass_minimal.discovery.refresh_mdns_browser()
+        assert mock_browser.call_args.args[1] == ["_first._tcp.local."]
+
+        del mass_minimal._provider_manifests["first"]
+        mass_minimal._provider_manifests["second"] = MagicMock(
+            mdns_discovery=["_second._tcp.local."]
+        )
+        mock_browser.return_value = MagicMock(async_cancel=AsyncMock())
+        await mass_minimal.discovery.refresh_mdns_browser()
+
+    first_browser.async_cancel.assert_awaited_once()
+    assert mock_browser.call_args.args[1] == ["_second._tcp.local."]
+    assert mass_minimal.discovery._mdns_browser is mock_browser.return_value
+
+
 async def test_mass_service_refreshes_on_core_state_update(
     mass_minimal: MusicAssistant,
 ) -> None:
@@ -190,6 +259,103 @@ async def test_mass_service_refreshes_on_core_state_update(
 
     mock_zc.async_update_service.assert_awaited_once()
     mock_zc.async_register_service.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("answers", "expected_hostname"),
+    [
+        ((), "musicassistant.local."),
+        (("192.168.1.10", "fd00::10"), "musicassistant.local."),
+        (("192.168.1.20",), FALLBACK_HOSTNAME),
+        (("192.168.1.10", "192.168.1.20"), FALLBACK_HOSTNAME),
+    ],
+    ids=["free", "own-addresses", "other-host", "own-and-other-host"],
+)
+async def test_mass_service_claims_hostname_only_when_free(
+    mass_minimal: MusicAssistant, answers: tuple[str, ...], expected_hostname: str
+) -> None:
+    """A release build advertises on musicassistant.local unless another host answers for it."""
+    mock_zc = _prepare_mass_service(mass_minimal)
+    mock_resolver = _mock_address_resolver(*answers)
+
+    with patch(
+        "music_assistant.controllers.discovery.controller.AddressResolver", new=mock_resolver
+    ):
+        await mass_minimal.discovery._register_mass_service()
+
+    mock_resolver.assert_called_once_with("musicassistant.local.")
+    assert mock_zc.async_register_service.await_args.args[0].server == expected_hostname
+
+
+@pytest.mark.parametrize("version", ["0.0.0", "2.11.0.dev2026111601"])
+async def test_mass_service_dev_build_uses_own_hostname(
+    mass_minimal: MusicAssistant, version: str
+) -> None:
+    """A dev build advertises on its own hostname, without probing for the friendly one."""
+    mock_zc = _prepare_mass_service(mass_minimal, version)
+    mock_resolver = _mock_address_resolver()
+
+    with patch(
+        "music_assistant.controllers.discovery.controller.AddressResolver", new=mock_resolver
+    ):
+        await mass_minimal.discovery._register_mass_service()
+
+    mock_resolver.assert_not_called()
+    assert mock_zc.async_register_service.await_args.args[0].server == FALLBACK_HOSTNAME
+
+
+async def test_mass_service_refresh_keeps_hostname(mass_minimal: MusicAssistant) -> None:
+    """A server info change re-advertises on the hostname chosen at startup, without a probe."""
+    mock_zc = _prepare_mass_service(mass_minimal)
+    with patch(
+        "music_assistant.controllers.discovery.controller.AddressResolver",
+        new=_mock_address_resolver("192.168.1.20"),
+    ):
+        await mass_minimal.discovery._register_mass_service()
+
+    mock_resolver = _mock_address_resolver()
+    with patch(
+        "music_assistant.controllers.discovery.controller.AddressResolver", new=mock_resolver
+    ):
+        await mass_minimal.discovery._on_core_state_updated(MagicMock())
+
+    mock_resolver.assert_not_called()
+    assert mock_zc.async_update_service.await_args.args[0].server == FALLBACK_HOSTNAME
+
+
+async def test_mass_service_registers_after_setup(mass_minimal: MusicAssistant) -> None:
+    """Setup does not wait for the hostname probe, and a refresh during the probe waits for it."""
+    mock_zc = _prepare_mass_service(mass_minimal)
+    probe_answered = asyncio.Event()
+
+    async def wait_for_answer(*_args: Any) -> bool:
+        await probe_answered.wait()
+        return False
+
+    mock_resolver = _mock_address_resolver()
+    mock_resolver.return_value.async_request = AsyncMock(side_effect=wait_for_answer)
+    with (
+        patch(
+            "music_assistant.controllers.discovery.controller.AddressResolver", new=mock_resolver
+        ),
+        # resolve the addresses without yielding, so each registration runs straight to the probe
+        patch(
+            "music_assistant.controllers.discovery.controller.get_ip_pton",
+            new=AsyncMock(side_effect=lambda ip: ip_address(ip).packed),
+        ),
+    ):
+        await mass_minimal.discovery.setup(await mass_minimal.config.get_core_config("discovery"))
+        mock_zc.async_register_service.assert_not_awaited()
+
+        refresh = asyncio.create_task(mass_minimal.discovery._on_core_state_updated(MagicMock()))
+        await asyncio.sleep(0)
+        probe_answered.set()
+        await refresh
+
+    mock_resolver.assert_called_once()
+    mock_zc.async_register_service.assert_awaited_once()
+    mock_zc.async_update_service.assert_awaited_once()
+    assert mock_zc.async_update_service.await_args.args[0].server == "musicassistant.local."
 
 
 async def test_async_find_mdns_service_matches_exact_device_name(mass: MusicAssistant) -> None:
@@ -229,6 +395,93 @@ async def test_async_find_mdns_service_no_substring_match(mass: MusicAssistant) 
 
     assert result is None
     mock_service_info.assert_not_called()
+
+
+async def test_async_find_mdns_service_without_filter_matches_any_instance(
+    mass: MusicAssistant,
+) -> None:
+    """Omitting the name filter accepts whichever instance of the service type answers."""
+    mass.discovery.aiozc.zeroconf.cache.cache = {
+        "amplipi-b827eb8f8d85._amplipi._tcp.local.": {},
+    }
+    mock_info = MagicMock()
+    mock_info.async_request = AsyncMock(return_value=True)
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
+        return_value=mock_info,
+    ) as mock_service_info:
+        result = await mass.discovery.async_find_mdns_service("_amplipi._tcp.local.", timeout=1.0)
+
+    assert result is mock_info
+    mock_service_info.assert_called_once_with(
+        "_amplipi._tcp.local.", "amplipi-b827eb8f8d85._amplipi._tcp.local."
+    )
+
+
+async def test_async_find_mdns_service_tries_past_a_stale_record(mass: MusicAssistant) -> None:
+    """A cached record that no longer answers must not starve the candidates behind it."""
+    mass.discovery.aiozc.zeroconf.cache.cache = {
+        "amplipi-one._amplipi._tcp.local.": {},
+        "amplipi-two._amplipi._tcp.local.": {},
+    }
+    attempts: list[str] = []
+
+    class _Info:
+        def __init__(self, _service_type: str, name: str) -> None:
+            self.name = name
+
+        async def async_request(self, _zeroconf: object, timeout: float) -> bool:
+            attempts.append(self.name)
+            # candidates come off a set, so which name is tried first varies by hash seed;
+            # fail whichever it is, after burning the whole slice it was handed
+            if len(attempts) == 1:
+                await asyncio.sleep(timeout / 1000)
+                return False
+            return True
+
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
+        new=_Info,
+    ):
+        result = await mass.discovery.async_find_mdns_service("_amplipi._tcp.local.", timeout=0.2)
+
+    assert len(attempts) == 2
+    assert result is not None
+    assert result.name == attempts[1]
+
+
+async def test_async_find_mdns_service_rescans_after_a_stale_request(
+    mass: MusicAssistant,
+) -> None:
+    """An instance announcing itself while a stale record is being resolved must still be found."""
+    cache = mass.discovery.aiozc.zeroconf.cache.cache = {
+        "amplipi-stale._amplipi._tcp.local.": {},
+    }
+    attempts: list[str] = []
+
+    class _Info:
+        def __init__(self, _service_type: str, name: str) -> None:
+            self.name = name
+
+        async def async_request(self, _zeroconf: object, timeout: float) -> bool:
+            attempts.append(self.name)
+            if "stale" in self.name:
+                # the live instance announces itself midway through the stale request
+                cache["amplipi-live._amplipi._tcp.local."] = {}
+                for waiter in mass.discovery._mdns_waiters:
+                    waiter.set()
+                await asyncio.sleep(timeout / 1000)
+                return False
+            return True
+
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
+        new=_Info,
+    ):
+        result = await mass.discovery.async_find_mdns_service("_amplipi._tcp.local.", timeout=0.2)
+
+    assert result is not None
+    assert result.name == "amplipi-live._amplipi._tcp.local."
 
 
 async def test_async_find_mdns_service_preserves_at_sign_in_name(mass: MusicAssistant) -> None:

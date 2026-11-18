@@ -172,6 +172,7 @@ class PhishInProvider(MusicProvider):
         if prov_artist_id != PHISH_ARTIST_ID:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
 
+        # the one artist is the whole catalogue, so no ARTIST_ALBUMS_LIMIT: it's a few cached pages
         albums = []
         page = 1
         per_page = 750  # Phish.in limit is 1000 but this caused asyncio warnings
@@ -274,7 +275,7 @@ class PhishInProvider(MusicProvider):
             show_data = await api_request(self, endpoint)
 
             if not show_data:
-                raise MediaNotFoundError(f"Show {prov_album_id} not found")
+                raise MediaNotFoundError(f"Show {prov_album_id} not found")  # noqa: TRY301 - re-raised by except below
 
             return show_to_album(self, show_data)
 
@@ -292,7 +293,7 @@ class PhishInProvider(MusicProvider):
             track_data = await api_request(self, endpoint)
 
             if not track_data:
-                raise MediaNotFoundError(f"Track {prov_track_id} not found")
+                raise MediaNotFoundError(f"Track {prov_track_id} not found")  # noqa: TRY301 - re-raised by except below
 
             # Extract show data from the track response
             show_data = track_data.get("show")
@@ -313,7 +314,7 @@ class PhishInProvider(MusicProvider):
             show_data = await api_request(self, endpoint)
 
             if not show_data:
-                raise MediaNotFoundError(f"Show {prov_album_id} not found")
+                raise MediaNotFoundError(f"Show {prov_album_id} not found")  # noqa: TRY301 - re-raised by except below
 
             tracks = []
             for track_data in show_data.get("tracks", []):
@@ -343,7 +344,7 @@ class PhishInProvider(MusicProvider):
                     break
 
             if not mp3_url:
-                raise MediaNotFoundError(f"No audio URL found for track {item_id}")
+                raise MediaNotFoundError(f"No audio URL found for track {item_id}")  # noqa: TRY301 - re-raised by except below
 
             return StreamDetails(
                 provider=self.instance_id,
@@ -399,7 +400,7 @@ class PhishInProvider(MusicProvider):
         try:
             playlist_info = await self._resolve_playlist(prov_playlist_id)
             if not playlist_info:
-                raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
+                raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")  # noqa: TRY301 - re-raised by except below
             return playlist_to_ma_playlist(self, playlist_info)
         except MediaNotFoundError:
             raise
@@ -606,8 +607,8 @@ class PhishInProvider(MusicProvider):
     @use_cache(expiration=21600)  # 6 hours - today's shows are historical but queried daily
     async def _browse_today(self) -> list[Album]:
         """Get shows that happened on this day in history."""
+        today = now()
         try:
-            today = now()
             target_date = today.strftime("%Y-%m-%d")
 
             shows_data = await api_request(

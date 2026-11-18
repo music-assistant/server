@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -10,7 +9,7 @@ import pytest
 from aiosendspin.models.types import PairMethod
 from aiosendspin.noise.keys import PSK_SIZE, b64url_encode
 from aiosendspin.noise.pairing import PairingError
-from aiosendspin.noise.pairing_token import PSKPairingToken, encode_token
+from aiosendspin.noise.pairing_token import PSKPairingToken, encode_psk_token
 from aiosendspin.noise.trust_store import PskCategory
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.errors import InvalidCommand
@@ -19,7 +18,7 @@ import music_assistant.providers.sendspin.provider as provider_module
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.providers.sendspin.player import SendspinBasePlayer
 
-from .test_pin_session import _FakeServerApi, _make_provider
+from .test_pin_session import _FakeServerApi, _make_provider, _offer
 
 if TYPE_CHECKING:
     from aiosendspin.server.client import SendspinClient
@@ -28,7 +27,7 @@ if TYPE_CHECKING:
 
 _CLIENT_ID = b64url_encode(bytes(range(32)))
 _PAIRING_PSK = bytes(range(100, 100 + PSK_SIZE))
-_TOKEN = encode_token(PSKPairingToken(client_id=_CLIENT_ID, pairing_psk=_PAIRING_PSK))
+_TOKEN = encode_psk_token(PSKPairingToken(client_id=_CLIENT_ID, pairing_psk=_PAIRING_PSK))
 
 
 class _FakePairingStore:
@@ -56,7 +55,7 @@ class _WebPlayerServerApi(_FakeServerApi):
     def __init__(
         self, *, connected: bool = True, paired: bool = False, record_owner: str | None = None
     ) -> None:
-        super().__init__([], await_pin=False, connected=connected)
+        super().__init__(_offer(), await_pin=False, connected=connected)
         self.pairing_store = _FakePairingStore(paired=paired, record_owner=record_owner)
 
 
@@ -66,7 +65,7 @@ def _make_web_provider(
     *,
     is_web_player: bool = True,
     registered: bool = True,
-    initialized: bool = True,
+    attached: bool = True,
     psk_category: PskCategory | None = PskCategory.SENTINEL,
     caller_has_access: bool = True,
 ) -> tuple[SendspinProvider, list[str]]:
@@ -77,15 +76,14 @@ def _make_web_provider(
     # the provider resolves its translation namespace through the manifest
     cast("Any", provider).manifest = SimpleNamespace(domain="sendspin")
     player = SendspinBasePlayer.__new__(SendspinBasePlayer)
+    player._provider = provider
     player.is_web_player = is_web_player
     security = None if psk_category is None else SimpleNamespace(psk_category=psk_category)
     player.api = cast("SendspinClient", SimpleNamespace(connection_security=security))
-    # initialized is a read-only property over a private Event, so seed it directly
-    player._Player__initialized = asyncio.Event()  # type: ignore[attr-defined]
-    if initialized:
-        player.set_initialized()
+    # a protocol that still waits for its player is not attached yet
+    player._player = cast("Any", SimpleNamespace(player_id="pl_web")) if attached else None
     cast("Any", provider.mass).players = SimpleNamespace(
-        get_player=lambda _client_id: player if registered else None
+        get_protocol=lambda _client_id: player if registered else None
     )
     monkeypatch.setattr(provider_module, "WEB_PLAYER_CONNECT_TIMEOUT", 0.3)
     return provider, refreshed
@@ -200,9 +198,9 @@ async def test_pair_web_player_refuses_an_unregistered_client(
 async def test_pair_web_player_waits_out_a_half_registered_player(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A player still registering is not paired, so the pairing refresh cannot be dropped."""
+    """A protocol still waiting for its player is not paired, so the pairing refresh cannot be dropped."""
     api = _WebPlayerServerApi()
-    provider, refreshed = _make_web_provider(api, monkeypatch, initialized=False)
+    provider, refreshed = _make_web_provider(api, monkeypatch, attached=False)
     with pytest.raises(InvalidCommand, match="did not register"):
         await provider.pair_web_player(_TOKEN)
     assert api.attempts == []

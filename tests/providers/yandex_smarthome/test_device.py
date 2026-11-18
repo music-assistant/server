@@ -71,6 +71,7 @@ class MockPlayer:
     supported_features: set[str] = field(default_factory=set)
     source_list: list[MockPlayerSource] = field(default_factory=list)
     active_source: str | None = None
+    legacy_ids: list[str] = field(default_factory=list)
     group_members: list[str] = field(default_factory=list)
     group_volume: int | None = None
     group_volume_muted: bool | None = None
@@ -121,7 +122,7 @@ class MockMass:
 
 
 # ---------------------------------------------------------------------------
-# Tests: get_device_description
+# Tests for get_device_description
 # ---------------------------------------------------------------------------
 
 
@@ -198,7 +199,7 @@ class TestGetDeviceDescription:
 
 
 # ---------------------------------------------------------------------------
-# Tests: normalize_device_name
+# Tests for normalize_device_name
 # ---------------------------------------------------------------------------
 
 
@@ -317,7 +318,7 @@ class TestGetDeviceState:
 
 
 # ---------------------------------------------------------------------------
-# Tests: execute_capability_action
+# Tests for execute_capability_action
 # ---------------------------------------------------------------------------
 
 
@@ -616,7 +617,7 @@ class TestExecuteCapabilityAction:
 
 
 # ---------------------------------------------------------------------------
-# Tests: is_player_exposable
+# Tests for is_player_exposable
 # ---------------------------------------------------------------------------
 
 
@@ -639,9 +640,16 @@ class TestIsPlayerExposable:
         """Test synced to another."""
         assert is_player_exposable(_player(synced_to="other_player")) is False
 
+    def test_selected_player_merged_into_another_stays_exposed(self) -> None:
+        """A selected player that was merged into another is exposed as that one."""
+        merged_into = _player(player_id="player2", legacy_ids=["player1"])
+
+        assert is_player_exposable(merged_into, exposed_ids={"player1"}) is True
+        assert is_player_exposable(merged_into, exposed_ids={"player3"}) is False
+
 
 # ---------------------------------------------------------------------------
-# Tests: error helpers
+# Tests for error helpers
 # ---------------------------------------------------------------------------
 
 
@@ -674,7 +682,7 @@ class TestErrorHelpers:
 
 
 # ---------------------------------------------------------------------------
-# Tests: channel capability (next/previous track)
+# Tests for channel capability (next/previous track)
 # ---------------------------------------------------------------------------
 
 
@@ -750,7 +758,7 @@ class TestChannelCapability:
 
 
 # ---------------------------------------------------------------------------
-# Tests: input_source capability (mode/input_source)
+# Tests for input_source capability (mode/input_source)
 # ---------------------------------------------------------------------------
 
 
@@ -856,7 +864,7 @@ class TestInputSourceCapability:
 
 
 # ---------------------------------------------------------------------------
-# Tests: input_source playlist sources (mode/input_source backed by playlists)
+# Tests for input_source playlist sources (mode/input_source backed by playlists)
 # ---------------------------------------------------------------------------
 
 
@@ -1024,7 +1032,7 @@ class TestPlaylistInputSources:
 
 
 # ---------------------------------------------------------------------------
-# Tests: player filter (exposed_ids)
+# Tests for player filter (exposed_ids)
 # ---------------------------------------------------------------------------
 
 

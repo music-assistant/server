@@ -1,0 +1,104 @@
+{
+  "methodName": "catalog.search",
+  "responseAvailabilityCode": 0,
+  "responseAvailabilityCodeStr": "AVAILABLE",
+  "Response": {
+    "catalogSearchTypeContainers": [
+      {
+        "matchType": 2,
+        "catalogSearchContainers": [
+          {
+            "scHeader": "Song: Dust In A Baggie",
+            "catalogSearchResultItems": [
+              {
+                "containerName": "Rock Of Ages",
+                "performanceDate": null,
+                "artistName": "Billy Strings & Don Julin",
+                "artistID": "978",
+                "pageURL": "/music/0,11170/Billy-Strings---Don-Julin-mp3-flac-download-Rock-Of-Ages.html",
+                "containerID": 11170,
+                "trackID": 504753,
+                "songID": 40673,
+                "img": {
+                  "picID": 38864,
+                  "orderID": 1,
+                  "height": 160,
+                  "width": 290,
+                  "caption": "",
+                  "url": "/images/shows/acd91029_01.jpg"
+                },
+                "venueCity": null,
+                "venueState": null,
+                "venueName": null,
+                "venue": null,
+                "availability": 1,
+                "availabilityStr": "AVAILABLE"
+              },
+              {
+                "containerName": "Billy Strings, 2017/12/29 The Riviera Theatre, Chicago, IL ",
+                "performanceDate": "12/29/2017",
+                "artistName": "Billy Strings",
+                "artistID": "1125",
+                "pageURL": "/live-music/0,20635/Billy-Strings-mp3-flac-download-12-29-2017-The-Riviera-Theatre-Chicago-IL.html",
+                "containerID": 20635,
+                "trackID": 385749,
+                "songID": 40673,
+                "img": {
+                  "picID": 30358,
+                  "orderID": 1,
+                  "height": 160,
+                  "width": 290,
+                  "caption": "",
+                  "url": "/images/shows/bstr171229_01.jpg"
+                },
+                "venueCity": "Chicago",
+                "venueState": "IL",
+                "venueName": "The Riviera Theatre",
+                "venue": "The Riviera Theatre, Chicago, IL ",
+                "availability": 1,
+                "availabilityStr": "AVAILABLE"
+              }
+            ],
+            "matchedStr": "Dust In A Baggie",
+            "strMatchType": "Song",
+            "matchType": 2
+          },
+          {
+            "scHeader": "Song: Glendale Train / Dust in a Baggie",
+            "catalogSearchResultItems": [
+              {
+                "containerName": "Mountain Grass Unit, 2024/07/10 Aggie Theatre, Fort Collins, CO ",
+                "performanceDate": "7/10/2024",
+                "artistName": "Mountain Grass Unit",
+                "artistID": "1631",
+                "pageURL": "/live-music/0,37894/Mountain-Grass-Unit-mp3-flac-download-7-10-2024-Aggie-Theatre-Fort-Collins-CO.html",
+                "containerID": 37894,
+                "trackID": 643128,
+                "songID": 71854,
+                "img": {
+                  "picID": 49261,
+                  "orderID": 1,
+                  "height": 160,
+                  "width": 290,
+                  "caption": "",
+                  "url": "/images/shows/mountaingr240710_01.png"
+                },
+                "venueCity": "Fort Collins",
+                "venueState": "CO",
+                "venueName": "Aggie Theatre",
+                "venue": "Aggie Theatre, Fort Collins, CO ",
+                "availability": 1,
+                "availabilityStr": "AVAILABLE"
+              }
+            ],
+            "matchedStr": "Glendale Train / Dust in a Baggie",
+            "strMatchType": "Song",
+            "matchType": 2
+          }
+        ]
+      }
+    ],
+    "searchError": 0,
+    "searchErrorStr": "VALID"
+  }
+}

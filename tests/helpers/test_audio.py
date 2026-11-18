@@ -4,36 +4,35 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.helpers import audio as audio_helper
 from music_assistant.helpers.audio import (
     build_concat_filelist,
     calculate_content_length,
+    get_output_format_key,
     parse_loudnorm,
     realtime_pcm_pacer,
     resolve_output_player_ids,
 )
 from music_assistant.helpers.ffmpeg import DEFAULT_MP3_BIT_RATE
+from tests.common import MockProvider, attach_mock, mock_player_mass
 
 
-def test_resolve_output_player_ids_resolves_parents_and_duplicates() -> None:
-    """Output destinations use visible protocol parents without duplicates."""
-    mass = MagicMock()
-    players = {
-        "leader": SimpleNamespace(protocol_parent_id=None),
-        "protocol-child": SimpleNamespace(protocol_parent_id="child"),
-        "child": SimpleNamespace(protocol_parent_id=None),
-    }
-    mass.players.get_player.side_effect = players.get
+def test_resolve_output_player_ids_names_players_without_duplicates() -> None:
+    """Output destinations name the player of a protocol, each player once."""
+    mass = mock_player_mass()
+    provider = MockProvider("test", mass=mass)
+    attach_mock(provider, "leader-device", player_id="leader")
+    attach_mock(provider, "child-device", player_id="child")
 
     result = resolve_output_player_ids(
         mass,
-        ("leader", "leader", "protocol-child", "child", "missing", "missing"),
+        ("leader", "leader", "child-device", "child", "missing", "missing"),
     )
 
     assert result == {"leader", "child", "missing"}
@@ -75,6 +74,36 @@ def test_build_concat_filelist_escapes_multiple_apostrophes() -> None:
     """Every apostrophe in a path is escaped, not just the first."""
     result = build_concat_filelist(["/x/it's a, b's & c's.mp3"])
     assert result == "file '/x/it'\\''s a, b'\\''s & c'\\''s.mp3'\n"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/music/a.mp3\nb.mp3",
+        "/music/a.mp3\rb.mp3",
+        "http://example.com/a.mp3\x00",
+        "/music/a\x7f.mp3",
+    ],
+)
+def test_build_concat_filelist_rejects_control_characters(path: str) -> None:
+    """A path containing a control character is refused rather than written."""
+    with pytest.raises(InvalidDataError):
+        build_concat_filelist(["/music/ok.mp3", path])
+
+
+def test_build_concat_filelist_skips_tls_verify_on_request() -> None:
+    """With verify_ssl off, every http(s) part gets the directive, local paths do not."""
+    result = build_concat_filelist(
+        ["https://192.168.1.10/a.mp3", "http://example.com/b.mp3", "/music/c.mp3"],
+        verify_ssl=False,
+    )
+    assert result == (
+        "file 'https://192.168.1.10/a.mp3'\n"
+        "option tls_verify 0\n"
+        "file 'http://example.com/b.mp3'\n"
+        "option tls_verify 0\n"
+        "file '/music/c.mp3'\n"
+    )
 
 
 # verbatim ffmpeg 7.1 output: the report is a block below the marker line, not inline
@@ -149,3 +178,19 @@ async def test_realtime_pcm_pacer_grants_bounded_initial_burst() -> None:
     # than realtime (burst granted) but still paced (not instant). Bounds are
     # deliberately wide to stay robust on loaded CI runners.
     assert 0.3 < elapsed < 0.9
+
+
+def test_the_content_length_key_moves_with_the_encoder_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A measured content length must not outlive the encoder settings it was measured under.
+
+    The cached value is a byte count announced to the player as Content-Length, so an
+    entry from an older encoder leaves it waiting out a body that already ended.
+    """
+    fmt = AudioFormat(content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16, channels=2)
+    before = get_output_format_key(fmt)
+    monkeypatch.setattr(audio_helper, "OUTPUT_ENCODING_REVISION", 99)
+
+    assert get_output_format_key(fmt) != before

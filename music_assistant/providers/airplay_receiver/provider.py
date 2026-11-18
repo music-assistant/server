@@ -17,7 +17,6 @@ from music_assistant_models.enums import (
     EventType,
     ImageType,
     MediaType,
-    ProviderFeature,
     SourceControl,
     StreamType,
 )
@@ -43,6 +42,7 @@ from music_assistant.helpers.config_entries import (
     resolve_publish_name,
 )
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
+from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import interface_name_for_ip
 from music_assistant.models.plugin import PluginProvider, SourceControlValue
@@ -59,7 +59,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
 
-SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
 # seconds the silence nudge waits for the audio pipe's consumer to reattach
 AUDIO_PIPE_READER_TIMEOUT = 1.0
@@ -101,7 +100,8 @@ def airplay_receiver_ports(instance_id: str, player_ids: Iterable[str]) -> dict[
 class _ReceiverDaemon:
     """State for one connected player's shairport-sync receiver."""
 
-    # the connected player this receiver plays on; doubles as the AudioSource item_id
+    # the connected player this receiver plays on, as stored (also after that player was
+    # merged into another one); doubles as the AudioSource item_id and keys the port
     player_id: str
     # player_id sanitized for use in filesystem paths
     safe_player_id: str
@@ -156,9 +156,14 @@ class AirPlayReceiverProvider(PluginProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
+        super().__init__(mass, manifest, config)
         self._shairport_bin: str | None = None
         self._daemons: dict[str, _ReceiverDaemon] = {}
+        # players whose daemon gave up permanently; skipped by reconcile until the
+        # player comes back or the provider reloads
+        self._failed_player_ids: set[str] = set()
+        # seeded where the player events are subscribed, so no event is missed in between
+        self._availability: PlayerAvailabilityTracker
         self._reconcile_lock = asyncio.Lock()
         self._unload_called = False
         self._unsubscribe: Callable[[], None] | None = None
@@ -213,18 +218,10 @@ class AirPlayReceiverProvider(PluginProvider):
         """Start the receiver daemons and follow the connected players' lifecycle."""
         await super().loaded_in_mass()
         if self._assigned_player_ids:
-            self._unsubscribe = self.mass.subscribe(
-                self._on_player_event,
-                event_filter=(
-                    EventType.PLAYER_ADDED,
-                    EventType.PLAYER_REMOVED,
-                    EventType.PLAYER_CONFIG_UPDATED,
-                    EventType.PLAYER_UPDATED,
-                ),
-                id_filter=self._assigned_player_ids,
-            )
-        # players register after plugins load, so on a cold boot this typically starts
-        # nothing yet: the PLAYER_ADDED events drive the actual daemon startups
+            self._availability = PlayerAvailabilityTracker(self.mass)
+            self._subscribe_player_events()
+        # players come online after plugins load, so on a cold boot this typically starts
+        # nothing yet: the events of players becoming available drive the daemon startups
         await self._reconcile()
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -248,8 +245,11 @@ class AirPlayReceiverProvider(PluginProvider):
 
     def get_player_audio_sources(self, player_id: str) -> list[AudioSource]:
         """Return the AudioSource bound to the given connected player, if any."""
-        daemon = self._daemons.get(player_id)
-        return [daemon.audio_source] if daemon else []
+        return [
+            daemon.audio_source
+            for stored_id, daemon in self._daemons.items()
+            if self.mass.players.resolve_player_id(stored_id) == player_id
+        ]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -386,38 +386,61 @@ class AirPlayReceiverProvider(PluginProvider):
         """Reconcile the receiver daemons after a connected player's lifecycle event."""
         if self._unload_called:
             return
-        if event.event == EventType.PLAYER_REMOVED:
+        # a removal passes the tracker too, so the player's return is recognized
+        came_available = self._availability.became_available(event)
+        if event.event == EventType.PLAYER_REMOVED and event.object_id:
+            if self.mass.players.resolve_player_id(event.object_id) != event.object_id:
+                # merged into another player: the receiver plays on that one from now on
+                self._subscribe_player_events()
+                await self._reconcile()
+                return
             # permanent removal: stop the daemon; a temporarily unavailable player
             # (which fires only PLAYER_UPDATED) keeps its running daemon so the
             # advertised device identity stays stable across the outage
             async with self._reconcile_lock:
-                if event.object_id and (daemon := self._daemons.pop(event.object_id, None)):
-                    # the session may be consumed by ANOTHER player (cross-select or
-                    # sync-group owner); release it so that player is not left bound
-                    # to a source that can no longer stream
-                    self._clear_active_player(daemon)
-                    await self._stop_receiver(daemon)
+                for stored_id in self._stored_ids_of(event.object_id):
+                    if daemon := self._daemons.pop(stored_id, None):
+                        # the session may be consumed by ANOTHER player (cross-select or
+                        # sync-group owner); release it so that player is not left bound
+                        # to a source that can no longer stream
+                        self._clear_active_player(daemon)
+                        await self._stop_receiver(daemon)
             return
+        if came_available and event.object_id:
+            # a player that comes back earns a permanently failed daemon a fresh start
+            self._failed_player_ids.difference_update(self._stored_ids_of(event.object_id))
         await self._reconcile()
 
     async def _reconcile(self) -> None:
         """
         Align the running receiver daemons with the connected players.
 
-        Starts a daemon for every connected player that is registered, and restarts
-        a daemon whose advertised name drifted from the player's current name.
+        Starts a daemon for every connected player that is available, and restarts
+        a daemon whose advertised name drifted from the player's current name. A player
+        keeps one receiver, also when several connected players were merged into it.
         """
         async with self._reconcile_lock:
             if self._unload_called:
                 return
             template = self.get_config_value(CONF_PUBLISH_NAME_TEMPLATE)
-            for player_id in self._assigned_player_ids:
-                player = self.mass.players.get_player(player_id)
+            receiver_ids = self._receiver_ids.values()
+            for stored_id in self._daemons.keys() - receiver_ids:
+                # merged into another connected player, whose own receiver stays
+                merged = self._daemons.pop(stored_id)
+                self._clear_active_player(merged)
+                await self._stop_receiver(merged)
+                self.mass.players.trigger_player_update(stored_id)
+            for player_id in receiver_ids:
+                if player_id in self._failed_player_ids:
+                    # this daemon gave up permanently; blocked from restarts until the
+                    # player comes back or the provider reloads
+                    continue
+                player = get_available_player(self.mass, player_id)
                 if player is None:
-                    # not (yet) registered: never start a daemon for it; an already
+                    # not available (yet): never start a daemon for it; an already
                     # running one is deliberately kept (see _on_player_event)
                     continue
-                airplay_name = resolve_publish_name(template, player.display_name)
+                airplay_name = resolve_publish_name(template, player.name)
                 daemon = self._daemons.get(player_id)
                 if daemon is not None and daemon.airplay_name == airplay_name:
                     continue
@@ -429,25 +452,73 @@ class AirPlayReceiverProvider(PluginProvider):
                     self._clear_active_player(daemon)
                     del self._daemons[player_id]
                     await self._stop_receiver(daemon)
-                self._start_receiver(player, airplay_name)
+                self._start_receiver(player_id, player, airplay_name)
                 # the standing source entry feeds the player's cached source list
                 self.mass.players.trigger_player_update(player_id)
 
-    def _start_receiver(self, player: Player, airplay_name: str) -> None:
+    @property
+    def _connected_player_ids(self) -> tuple[str, ...]:
+        """Return the ids the connected players answer to now, also after one was merged."""
+        return tuple(self._receiver_ids)
+
+    @property
+    def _receiver_ids(self) -> dict[str, str]:
+        """
+        Return the stored id that keys the receiver of each connected player, by its id now.
+
+        That is the id of the player itself when it is connected, else the first connected
+        player that was merged into it: the receiver keeps the port and name it had.
+        """
+        receiver_ids: dict[str, str] = {}
+        for stored_id in self._assigned_player_ids:
+            player_id = self.mass.players.resolve_player_id(stored_id)
+            if player_id not in receiver_ids or stored_id == player_id:
+                receiver_ids[player_id] = stored_id
+        return receiver_ids
+
+    def _stored_ids_of(self, player_id: str) -> set[str]:
+        """
+        Return the stored ids of the connected players that answer to a player id now.
+
+        :param player_id: Id of a player.
+        """
+        return {
+            stored_id
+            for stored_id in self._assigned_player_ids
+            if self.mass.players.resolve_player_id(stored_id) == player_id
+        }
+
+    def _subscribe_player_events(self) -> None:
+        """Follow the lifecycle events of the connected players."""
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+        self._unsubscribe = self.mass.subscribe(
+            self._on_player_event,
+            event_filter=(
+                EventType.PLAYER_ADDED,
+                EventType.PLAYER_REMOVED,
+                EventType.PLAYER_CONFIG_UPDATED,
+                EventType.PLAYER_UPDATED,
+            ),
+            id_filter=self._connected_player_ids,
+        )
+
+    def _start_receiver(self, player_id: str, player: Player, airplay_name: str) -> None:
         """
         Create the receiver state for a connected player and start its daemon.
 
-        :param player: The (registered) player this receiver plays on.
+        :param player_id: The connected player as stored, which keys the receiver and its port.
+        :param player: The (available) player this receiver plays on.
         :param airplay_name: The name to advertise in the AirPlay device list.
         """
-        player_id = player.player_id
         safe_player_id = re.sub(r"[^A-Za-z0-9_.-]", "_", player_id)
         receiver_key = f"{self.instance_id}_{safe_player_id}"
+        runtime_path = self.mass.runtime_path
         audio_source = AudioSource(
             # the player id is stable across renames, so the source uri survives them
             item_id=player_id,
             provider=self.instance_id,
-            name=f"{self.name} ({player.display_name})",
+            name=f"{self.name} ({player.name})",
             provider_mappings={
                 ProviderMapping(
                     item_id=player_id,
@@ -469,11 +540,11 @@ class AirPlayReceiverProvider(PluginProvider):
             safe_player_id=safe_player_id,
             airplay_name=airplay_name,
             port=self._ports[player_id],
-            audio_pipe=AsyncNamedPipeWriter(f"/tmp/ma_airplay_audio_{receiver_key}"),  # noqa: S108
+            audio_pipe=AsyncNamedPipeWriter(f"{runtime_path}/ma_airplay_audio_{receiver_key}"),
             metadata_pipe=AsyncNamedPipeWriter(
-                f"/tmp/ma_airplay_metadata_{receiver_key}"  # noqa: S108
+                f"{runtime_path}/ma_airplay_metadata_{receiver_key}"
             ),
-            config_file=f"/tmp/ma_shairport_sync_{receiver_key}.conf",  # noqa: S108
+            config_file=f"{runtime_path}/ma_shairport_sync_{receiver_key}.conf",
             audio_source=audio_source,
             stream_metadata=StreamMetadata(title=f"AirPlay | {airplay_name}"),
         )
@@ -516,6 +587,33 @@ class AirPlayReceiverProvider(PluginProvider):
         # Reset the shairport process reference
         daemon.shairport_proc = None
         daemon.started.clear()
+
+    async def _give_up_receiver(self, daemon: _ReceiverDaemon, error: str) -> None:
+        """
+        Permanently stop a single failed receiver, leaving the other receivers running.
+
+        :param daemon: The receiver whose daemon failed permanently.
+        :param error: The daemon's failure description.
+        """
+        async with self._reconcile_lock:
+            # a rename restart, player removal or unload may have replaced or
+            # stopped the receiver meanwhile; only the live one gives up
+            if self._daemons.get(daemon.player_id) is not daemon:
+                return
+            del self._daemons[daemon.player_id]
+            self._failed_player_ids.add(daemon.player_id)
+            self.logger.warning(
+                "Giving up on AirPlay receiver '%s' for player %s: %s "
+                "Other players are unaffected; reload the provider to retry.",
+                daemon.airplay_name,
+                daemon.player_id,
+                error,
+            )
+            # release a consuming player so it is not left bound to a dead source
+            self._clear_active_player(daemon)
+            await self._stop_receiver(daemon)
+        # drop the standing source entry from the player's cached source list
+        self.mass.players.trigger_player_update(daemon.player_id)
 
     def _setup_shairport_daemon(self, daemon: _ReceiverDaemon) -> None:
         """Handle setup of the shairport-sync daemon for a receiver."""
@@ -578,17 +676,34 @@ class AirPlayReceiverProvider(PluginProvider):
             # Clean up pipes and config
             await self._cleanup_pipes_and_config(daemon)
 
-            if daemon.stop_called:
-                # deliberately stopped (unload, rename restart or player removal)
-                pass
-            elif not daemon.started.is_set():
-                self.unload_with_error("Unable to initialize shairport-sync daemon.")
-            # Auto restart if not stopped manually
-            elif daemon.runner_error_count >= 5:
-                self.unload_with_error("shairport-sync daemon failed to start multiple times.")
-            else:
-                daemon.runner_error_count += 1
-                self.mass.call_later(2, self._setup_shairport_daemon, daemon)
+            self._handle_runner_exit(daemon)
+
+    def _handle_runner_exit(self, daemon: _ReceiverDaemon) -> None:
+        """
+        Decide how to follow up on a receiver's daemon exit (restart, give up or unload).
+
+        :param daemon: The receiver daemon whose shairport-sync process exited.
+        """
+        if daemon.stop_called:
+            # deliberately stopped (unload, rename restart or player removal)
+            return
+        if not daemon.started.is_set():
+            # the binary produced no output at all: an environment-level problem
+            # every receiver would hit alike
+            self.unload_with_error("Unable to initialize shairport-sync daemon.")
+        # Auto restart if not stopped manually
+        elif daemon.runner_error_count >= 5:
+            # deferred task (no eager start): this runs on the daemon's own
+            # runner task, which the give-up is about to stop
+            self.mass.create_task(
+                self._give_up_receiver(
+                    daemon, "shairport-sync daemon failed to start multiple times."
+                ),
+                eager_start=False,
+            )
+        else:
+            daemon.runner_error_count += 1
+            self.mass.call_later(2, self._setup_shairport_daemon, daemon)
 
     def _process_shairport_log_line(self, daemon: _ReceiverDaemon, line: str) -> None:
         """
@@ -597,6 +712,11 @@ class AirPlayReceiverProvider(PluginProvider):
         :param daemon: The receiver daemon the log line originates from.
         :param line: The log line to process.
         """
+        # any output proves the binary runs: a subsequent exit is then handled by
+        # the supervised restart path (per receiver) instead of unloading the
+        # provider as uninitializable
+        if not daemon.started.is_set():
+            daemon.started.set()
         # Check for fatal errors (log them, but process will exit on its own)
         if "fatal error:" in line.lower() or "unknown option" in line.lower():
             self.logger.error("Fatal error from shairport-sync: %s", line)
@@ -608,8 +728,6 @@ class AirPlayReceiverProvider(PluginProvider):
             # Note: Play begin/stop events are now handled via sessioncontrol hooks
             # through the metadata pipe, so we don't need to parse stderr logs
             self.logger.debug(line)
-        if not daemon.started.is_set():
-            daemon.started.set()
 
     async def _setup_pipes_and_config(self, daemon: _ReceiverDaemon) -> None:
         """
@@ -676,20 +794,16 @@ class AirPlayReceiverProvider(PluginProvider):
         """
         Build the shairport-sync ``general.interface`` directive, or an empty string.
 
-        When the stream server is bound to a specific interface (not 0.0.0.0), pin
-        the AirPlay mDNS advertisement to that same interface so the receiver is
-        announced on the intended network instead of an unrelated one (e.g. a
-        Docker bridge). Returns an empty string to advertise on all interfaces.
+        Pins the receiver's mDNS records to the interface of the stream server's bind IP,
+        or of its publish IP when it binds all interfaces, so senders only learn addresses
+        on the network Music Assistant is reached on instead of those of unrelated
+        interfaces (e.g. Docker or VPN). Returns an empty string to advertise on all
+        interfaces when no local interface holds that IP.
         """
-        bind_ip = await self.mass.streams.get_source_ip()
-        if not bind_ip:
-            return ""
-        iface_name = interface_name_for_ip(bind_ip)
+        ip = await self.mass.streams.get_source_ip() or self.mass.streams.publish_ip
+        iface_name = interface_name_for_ip(ip)
         if not iface_name:
-            self.logger.debug(
-                "No interface found for stream bind IP %s; advertising on all interfaces",
-                bind_ip,
-            )
+            self.logger.debug("No interface found for IP %s; advertising on all interfaces", ip)
             return ""
         return f'\tinterface = "{iface_name}";\n'
 
@@ -803,7 +917,9 @@ class AirPlayReceiverProvider(PluginProvider):
                     # and leave the first task untracked for teardown cancellation
                     return
                 # an explicitly selected player wins, else the receiver's own player
-                target_player_id = daemon.active_player_id or daemon.player_id
+                target_player_id = daemon.active_player_id or self.mass.players.resolve_player_id(
+                    daemon.player_id
+                )
                 self.logger.info("Starting AirPlay playback on player %s", target_player_id)
                 daemon.active_player_id = target_player_id
                 daemon.pending_start_task = self.mass.create_task(

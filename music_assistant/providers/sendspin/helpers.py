@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
-from aiosendspin.models.core import PairMethodDescriptor
-from aiosendspin.models.types import PairAbortReason, PairMethod
+from aiosendspin.models.types import PairAbortReason, PairingCodeFormat, PairMethod
 from aiosendspin.noise.driver import HandshakeAbortedError
 from aiosendspin.noise.pairing import PairingAbortError, PairingError, PairingTimeoutError
 from music_assistant_models.config_entries import ConfigEntry
@@ -15,10 +14,16 @@ from music_assistant_models.enums import ConfigEntryType
 from .constants import BRIDGE_PREFIX
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
-    from aiosendspin.models.core import ClientHelloPayload
+    from aiosendspin.models.core import (
+        ClientHelloPayload,
+        DynamicPairMethodDescriptor,
+        PairMethodDescriptor,
+    )
     from aiosendspin.models.management import ManagementResultData
+
+    from music_assistant.mass import MusicAssistant
+
+    from .provider import SendspinProvider
 
 
 class SecurityActionError(Exception):
@@ -43,8 +48,7 @@ _PAIR_ABORT_KEYS = {
     PairAbortReason.ATTEMPT_TIMEOUT: "pairing_error_timeout",
     PairAbortReason.CONCURRENT_ATTEMPT: "pairing_error_concurrent",
     PairAbortReason.METHOD_NOT_SUPPORTED: "pairing_error_method_unsupported",
-    PairAbortReason.PIN_LENGTH_UNACCEPTABLE: "pairing_error_pin_length",
-    PairAbortReason.PIN_MISMATCH: "pairing_error_pin_mismatch",
+    PairAbortReason.PAIRING_CODE_MISMATCH: "pairing_error_pin_mismatch",
     PairAbortReason.USER_CANCELLED: "pairing_error_cancelled",
 }
 
@@ -81,40 +85,41 @@ def action_entry(action: str, *, advanced: bool = False) -> ConfigEntry:
 
 def effective_pair_methods(
     info: ClientHelloPayload | None, config: ManagementResultData | None
-) -> list[PairMethodDescriptor]:
+) -> dict[PairMethod, PairMethodDescriptor | DynamicPairMethodDescriptor | None]:
     """
-    Return the pairing methods the device currently offers.
+    Return the pairing methods the device currently offers, with their hello descriptors.
 
     A pairing config fetched over a management session on the current connection is
     authoritative; the hello advertisement cannot reflect config changes until reconnect.
-    Methods the config enables beyond the hello get a synthesized descriptor.
+    A method the config enables beyond the hello maps to None. The dynamic pairing code is
+    left out when the hello rules out entering it as digits.
     """
-    hello_methods = list(info.supported_pair_methods or []) if info is not None else []
+    offered = info.supported_pair_methods if info is not None else None
+    advertised: dict[PairMethod, PairMethodDescriptor | DynamicPairMethodDescriptor | None] = {}
+    if offered is not None:
+        advertised = {
+            PairMethod.PAIRING_PSK: offered.pairing_psk,
+            PairMethod.STATIC_PAIRING_CODE: offered.static_pairing_code,
+            PairMethod.DYNAMIC_PAIRING_CODE: offered.dynamic_pairing_code,
+        }
+    methods: dict[PairMethod, PairMethodDescriptor | DynamicPairMethodDescriptor | None]
     if config is None:
-        return hello_methods
-    advertised = {descriptor.method: descriptor for descriptor in hello_methods}
-    methods: list[PairMethodDescriptor] = []
-    for method, method_config in (
-        (PairMethod.PAIRING_PSK, config.pairing_psk),
-        (PairMethod.STATIC_PIN, config.static_pin),
-        (PairMethod.DYNAMIC_PIN, config.dynamic_pin),
-    ):
-        if method_config is None or not method_config.enabled:
-            continue
-        descriptor = advertised.get(method) or PairMethodDescriptor(method=method)
-        methods.append(replace(descriptor, min_pin_length=method_config.min_pin_length))
+        methods = {method: d for method, d in advertised.items() if d is not None}
+    else:
+        enabled = {
+            PairMethod.PAIRING_PSK: config.pairing_psk,
+            PairMethod.STATIC_PAIRING_CODE: config.static_pairing_code,
+            PairMethod.DYNAMIC_PAIRING_CODE: config.dynamic_pairing_code,
+        }
+        methods = {
+            method: advertised.get(method)
+            for method, method_config in enabled.items()
+            if method_config is not None and method_config.enabled
+        }
+    dynamic = offered.dynamic_pairing_code if offered is not None else None
+    if dynamic is not None and PairingCodeFormat.DIGITS.value not in dynamic.formats:
+        methods.pop(PairMethod.DYNAMIC_PAIRING_CODE, None)
     return methods
-
-
-def negotiated_pin_length(descriptor: PairMethodDescriptor | None, server_min: int) -> int:
-    """
-    Return the dynamic PIN length this session will use.
-
-    Mirrors the server's own negotiation so the operator prompt can name the digit count
-    before the device reports it.
-    """
-    client_min = descriptor.min_pin_length if descriptor is not None else None
-    return max(client_min or 0, server_min)
 
 
 def pin_code_format(length: int) -> str:
@@ -123,13 +128,6 @@ def pin_code_format(length: int) -> str:
         half = length // 2
         return f"{'#' * half}-{'#' * half}"
     return "#" * length
-
-
-def pair_method_descriptor(
-    methods: Iterable[PairMethodDescriptor], method: PairMethod
-) -> PairMethodDescriptor | None:
-    """Return the descriptor for ``method``, or None when the device does not offer it."""
-    return next((d for d in methods if d.method is method), None)
 
 
 def effective_unpaired_access(
@@ -146,6 +144,23 @@ def effective_unpaired_access(
     return info is not None and info.unpaired_access.enabled
 
 
+# DEPRECATED(spec-pr-183): drop with the management activity itself.
+def speaks_legacy_wire(info: ClientHelloPayload | None) -> bool:
+    """
+    Whether the device's hello arrived on the pre-1.0 wire.
+
+    The management activity is deprecated and no 1.0 device implements it. Asking one
+    anyway costs the operator a request that never answers, and aiosendspin drops the
+    connection to resync the reply channel; a device that does answer is flagged
+    non-compliant, which a strict server turns into a rejection. Both hello shapes below
+    are themselves flagged, so a device that carries one only connects at all while
+    legacy clients are allowed.
+    """
+    if info is None:
+        return False
+    return bool(info.legacy_support_keys_used) or bool(info.legacy_pair_methods_list_used)
+
+
 def bridge_client_id_from_mac(mac: str) -> str:
     """Generate a Sendspin bridge client ID from a MAC address."""
     return f"{BRIDGE_PREFIX}{mac.replace(':', '').lower()}"
@@ -154,6 +169,44 @@ def bridge_client_id_from_mac(mac: str) -> str:
 def bridge_client_id_from_uuid(uuid: str) -> str:
     """Generate a Sendspin bridge client ID from a UUID."""
     return f"{BRIDGE_PREFIX}{uuid.replace('-', '').lower()}"
+
+
+def bridge_client_id_variants(client_id: str) -> list[str]:
+    """
+    Return the Sendspin bridge client ids the bridges of one device can register under.
+
+    The protocols of a device do not all report the same form of its MAC address, so a
+    MAC based id comes with the id of that MAC with the locally administered bit toggled.
+
+    :param client_id: A Sendspin bridge client id.
+    :return: The client id itself, followed by its variant when it has one.
+    """
+    mac_hex = client_id[len(BRIDGE_PREFIX) :]
+    if len(mac_hex) != 12:
+        return [client_id]
+    try:
+        toggled = int(mac_hex[:2], 16) ^ 0x02
+    except ValueError:
+        return [client_id]
+    return [client_id, f"{BRIDGE_PREFIX}{toggled:02x}{mac_hex[2:]}"]
+
+
+def holds_bridge_client(mass: MusicAssistant, client_id: str, protocol_id: str) -> bool:
+    """
+    Return whether the bridge of a protocol holds a bridge client: it registered it last.
+
+    Another bridge of the device can register the same client id while it is registered, and
+    holds it from then on. A bridge that stops only removes a client it holds.
+
+    :param mass: The Music Assistant instance.
+    :param client_id: The bridge client id.
+    :param protocol_id: The id of the protocol the bridge rides on.
+    """
+    sendspin_provider = cast("SendspinProvider | None", mass.get_provider("sendspin"))
+    return (
+        sendspin_provider is not None
+        and sendspin_provider.get_bridge_holder(client_id) == protocol_id
+    )
 
 
 def mac_from_bridge_client_id(client_id: str) -> str | None:

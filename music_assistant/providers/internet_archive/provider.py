@@ -23,10 +23,10 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT, MusicProvider
 
 from .helpers import InternetArchiveClient, clean_text, extract_year, parse_duration
 from .parsers import (
@@ -103,7 +103,7 @@ class InternetArchiveProvider(MusicProvider):
         return await self.client._get_json(url, params)
 
     @throttle_with_retries
-    async def _search(self, **kwargs: Any) -> dict[str, Any]:
+    async def _search(self, /, **kwargs: Any) -> dict[str, Any]:
         """Throttled search wrapper."""
         return await self.client.search(**kwargs)
 
@@ -159,12 +159,22 @@ class InternetArchiveProvider(MusicProvider):
         search_strategies = []
 
         # For music searches: focus on title and creator
+        # Include both mediatype:audio and mediatype:etree (Live Music Archive)
         if any(mt in media_types for mt in [MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST]):
             search_strategies.extend(
                 [
-                    (f"creator:({search_query}) AND mediatype:audio", "downloads desc"),
-                    (f"title:({search_query}) AND mediatype:audio", "downloads desc"),
-                    (f"subject:({search_query}) AND mediatype:audio", "downloads desc"),
+                    (
+                        f"creator:({search_query}) AND (mediatype:audio OR mediatype:etree)",
+                        "downloads desc",
+                    ),
+                    (
+                        f"title:({search_query}) AND (mediatype:audio OR mediatype:etree)",
+                        "downloads desc",
+                    ),
+                    (
+                        f"subject:({search_query}) AND (mediatype:audio OR mediatype:etree)",
+                        "downloads desc",
+                    ),
                 ]
             )
 
@@ -662,7 +672,7 @@ class InternetArchiveProvider(MusicProvider):
         page = 0
         page_size = 200  # IA's maximum
 
-        while len(albums) < 1000:  # Reasonable upper limit
+        while len(albums) < ARTIST_ALBUMS_LIMIT:
             search_response = await self._search(
                 query=f'creator:"{prov_artist_id}" AND (format:"VBR MP3" OR format:"FLAC" \
         OR format:"Ogg Vorbis")',
@@ -701,7 +711,7 @@ class InternetArchiveProvider(MusicProvider):
                     )
                     continue
             page += 1
-        return albums
+        return albums[:ARTIST_ALBUMS_LIMIT]
 
     @use_cache(expiration=86400 * 7, allow_expired_cache=True)  # Cache for 1 week
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
@@ -891,6 +901,7 @@ class InternetArchiveProvider(MusicProvider):
         # Add metadata
         if description := clean_text(item_metadata.get("description")):
             podcast.metadata.description = description
+        podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
         # Add thumbnail
         add_item_image(podcast, prov_podcast_id, self.instance_id)

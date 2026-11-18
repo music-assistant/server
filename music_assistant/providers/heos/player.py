@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
+    IdentifierType,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -21,7 +22,8 @@ from pyheos import Heos, HeosError, const
 from pyheos import PlayState as HeosPlayState
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT, VERBOSE_LOG_LEVEL
-from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
 
 from .constants import (
@@ -30,10 +32,13 @@ from .constants import (
     HEOS_MEDIA_TYPE_TO_MEDIA_TYPE,
     HEOS_PLAY_STATE_TO_PLAYBACK_STATE,
     NON_HIRES_HEOS_MODELS,
+    PLAYBACK_TRANSITION_STOP_GRACE,
 )
 
 if TYPE_CHECKING:
     from pyheos import HeosPlayer as PyHeosPlayer
+
+    from music_assistant.models.player import Player
 
     from .provider import HeosPlayerProvider
 
@@ -49,7 +54,7 @@ PLAYER_FEATURES = {
 }
 
 
-class HeosPlayer(Player):
+class HeosPlayer(PlayerProtocol):
     """HeosPlayer in Music Assistant."""
 
     # HEOS keeps a source it loaded itself reported as paused once the app walked away,
@@ -65,6 +70,11 @@ class HeosPlayer(Player):
         """Return if the player requires flow mode."""
         return True
 
+    @property
+    def native_grouping_requires_own_stream(self) -> bool:
+        """Return True: HEOS can not pass an AirPlay input on to its group members."""
+        return True
+
     def __init__(self, provider: HeosPlayerProvider, device: PyHeosPlayer) -> None:
         """Initialize the Player."""
         super().__init__(provider, str(device.player_id))
@@ -72,8 +82,9 @@ class HeosPlayer(Player):
         self._device: PyHeosPlayer = device
         self._ma_controls_playback = False
         self._ma_playback_starting = False
-        self._ma_playback_transition_timer_id = f"heos_playback_transition_{self.player_id}"
-        self._on_unload_callbacks.append(self._cancel_ma_playback_transition)
+        self._ma_awaiting_restart_stop = False
+        self._ma_stream_started = False
+        self._ma_playback_transition_timer_id = f"heos_playback_transition_{self.protocol_id}"
         self._queue_cleanup_lock = asyncio.Lock()
         self._queue_cleanup_pending = False
 
@@ -96,14 +107,21 @@ class HeosPlayer(Player):
         self.set_device_info()
         self.set_dynamic_attributes(update_media=True)
 
-        await self.mass.players.register_or_update(self)
-
-        self._on_unload_callbacks.append(
-            self._device.add_on_player_event(self._player_event_received)
-        )
+        await self.mass.players.register(self)
+        if self.player is None:
+            # not attached: the user disabled the player
+            return
 
         await self.build_group_list()
         await self.build_source_list()
+
+    async def on_attach(self, player: Player) -> None:
+        """Subscribe to the events of the device while the protocol is attached."""
+        self._on_detach_callbacks.append(self._cancel_ma_playback_transition)
+        self._on_detach_callbacks.append(self._end_queue_cleanup)
+        self._on_detach_callbacks.append(
+            self._device.add_on_player_event(self._player_event_received)
+        )
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return HEOS-specific player configuration entries."""
@@ -131,13 +149,16 @@ class HeosPlayer(Player):
             manufacturer=manufacturer,
         )
         _device_info.ip_address = self._device.ip_address
+        # several HEOS players can share a host (the zones of an AVR): the HEOS player id
+        # tells them apart
+        _device_info.add_identifier(IdentifierType.UUID, self.protocol_id)
         self._attr_device_info = _device_info
         self._attr_available = self._device.available
         self._attr_name = self._device.name
 
         # Gen 1 HEOS hardware is capped at 48kHz/16-bit; HS2 and newer models
         # are hi-res capable up to 192kHz/24-bit
-        if model in NON_HIRES_HEOS_MODELS:
+        if self._device.model in NON_HIRES_HEOS_MODELS:
             self._attr_supported_sample_rates = [(44100, 16), (48000, 16)]
         else:
             self._attr_supported_sample_rates = [
@@ -147,7 +168,7 @@ class HeosPlayer(Player):
     async def build_group_list(self) -> None:
         """Build group list based on group info from controller."""
         # Group IDs are the player ID of the leader
-        if self._device.group_id is not None and str(self._device.group_id) == self.player_id:
+        if self._device.group_id is not None and str(self._device.group_id) == self.protocol_id:
             group_info = await self._heos.get_group_info(self._device.group_id)
             self._attr_group_members = [
                 str(group_info.lead_player_id),
@@ -165,7 +186,7 @@ class HeosPlayer(Player):
 
         for input_source in prov.input_source_list:
             # Only add input sources that belong to this player
-            if str(input_source.source_id) != self.player_id or input_source.media_id is None:
+            if str(input_source.source_id) != self.protocol_id or input_source.media_id is None:
                 continue
 
             self._attr_source_list.append(
@@ -215,6 +236,7 @@ class HeosPlayer(Player):
                     "[%s] Playback error: %s", self._device.name, self._device.playback_error
                 )
                 self._queue_cleanup_pending = False
+                self._cancel_ma_playback_transition()
                 self.set_dynamic_attributes()
 
             case _:
@@ -230,9 +252,19 @@ class HeosPlayer(Player):
 
     def _update_player_state(self) -> None:
         """Update playback state."""
-        self._attr_playback_state = HEOS_PLAY_STATE_TO_PLAYBACK_STATE.get(
+        playback_state = HEOS_PLAY_STATE_TO_PLAYBACK_STATE.get(
             self._device.state, PlaybackState.UNKNOWN
         )
+        if self._ma_playback_starting and not self._ma_stream_started:
+            # A play reported before the restart stop is still the previous stream
+            if self._device.state == HeosPlayState.STOP:
+                self._ma_awaiting_restart_stop = False
+            elif self._device.state == HeosPlayState.PLAY and not self._ma_awaiting_restart_stop:
+                self._ma_stream_started = True
+        if self._ma_playback_starting and playback_state == PlaybackState.IDLE:
+            # HEOS reports a transient stop while it switches to the new MA stream
+            return
+        self._attr_playback_state = playback_state
 
     def _update_player_current_media(self) -> None:
         """Update current media properties."""
@@ -262,7 +294,7 @@ class HeosPlayer(Player):
         # when active_source is momentarily stale (e.g. the play_url race before play_media
         # sets it) so MA's own, correct current_media is preserved. See support #5614.
         if (now_playing.source_id != const.MUSIC_SOURCE_LOCAL_MUSIC) or (
-            self._attr_active_source != self.player_id and not self._ma_controls_playback
+            self._attr_active_source != self.protocol_id and not self._ma_controls_playback
         ):
             self._ma_controls_playback = False
             self._queue_cleanup_pending = False
@@ -303,6 +335,11 @@ class HeosPlayer(Player):
 
     def _update_player_playing_progress(self) -> None:
         """Update current media progress properties."""
+        if self._ma_playback_starting and not self._ma_stream_started:
+            # Progress before the new MA stream plays belongs to the previous stream
+            self._attr_elapsed_time = None
+            self._attr_elapsed_time_last_updated = None
+            return
         now_playing = self._device.now_playing_media
 
         self._attr_elapsed_time = (
@@ -343,6 +380,7 @@ class HeosPlayer(Player):
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
+        self._cancel_ma_playback_transition()
         await self._device.stop()
 
     async def pause(self) -> None:
@@ -366,9 +404,13 @@ class HeosPlayer(Player):
             media.uri,
         )
 
-        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         self._cancel_ma_playback_transition()
         self._ma_playback_starting = True
+        self._ma_stream_started = False
+        # Only a playing player stops while it restarts on the new stream
+        self._ma_awaiting_restart_stop = self._device.state == HeosPlayState.PLAY
+        self._update_player_playing_progress()
         self._ma_controls_playback = True
         try:
             await self._device.play_url(url)
@@ -379,7 +421,7 @@ class HeosPlayer(Player):
             raise PlayerCommandFailed("Failed to start playback.") from err
 
         self._attr_current_media = media
-        self._attr_active_source = self.player_id
+        self._attr_active_source = self.protocol_id
         self._queue_cleanup_pending = True
 
         self.mass.call_later(
@@ -399,14 +441,14 @@ class HeosPlayer(Player):
         if (
             not self._ma_controls_playback
             or not self._queue_cleanup_pending
-            or self._attr_playback_state != PlaybackState.PLAYING
+            or self._device.state != HeosPlayState.PLAY
         ):
             return
 
         self.mass.call_later(
             1,
             self._start_queue_cleanup_task,
-            task_id=f"heos_queue_cleanup_timer_{self.player_id}",
+            task_id=f"heos_queue_cleanup_timer_{self.protocol_id}",
         )
 
     def _start_queue_cleanup_task(self) -> None:
@@ -420,7 +462,7 @@ class HeosPlayer(Player):
 
         self.mass.create_task(
             self._cleanup_heos_queue(),
-            task_id=f"heos_queue_cleanup_task_{self.player_id}",
+            task_id=f"heos_queue_cleanup_task_{self.protocol_id}",
         )
 
     async def _cleanup_heos_queue(self) -> None:
@@ -430,11 +472,11 @@ class HeosPlayer(Player):
                 return
             if not self._queue_cleanup_pending:
                 return
-            if self._attr_playback_state != PlaybackState.PLAYING:
+            if self._device.state != HeosPlayState.PLAY:
                 self.logger.debug(
                     "[%s] Queue cleanup postponed (state=%s)",
                     self._device.name,
-                    self._attr_playback_state,
+                    self._device.state,
                 )
                 return
             try:
@@ -484,8 +526,8 @@ class HeosPlayer(Player):
         members: list[str] = copy(self._attr_group_members)
 
         #  Make sure we are always in the group
-        if self.player_id not in members:
-            members = [self.player_id, *members]
+        if self.protocol_id not in members:
+            members = [self.protocol_id, *members]
 
         for added_player_id in player_ids_to_add or []:
             members.append(added_player_id)
@@ -507,13 +549,29 @@ class HeosPlayer(Player):
         self._queue_cleanup_pending = False
         await self._device.play_input_source(source)
 
+    def _end_queue_cleanup(self) -> None:
+        """Stop cleaning up the device's queue: the MA playback of a detached protocol ended."""
+        self._ma_controls_playback = False
+        self._queue_cleanup_pending = False
+        self.mass.cancel_timer(f"heos_queue_cleanup_timer_{self.protocol_id}")
+        self.mass.cancel_task(f"heos_queue_cleanup_task_{self.protocol_id}")
+
     def _cancel_ma_playback_transition(self) -> None:
         """Cancel the transition to MA-controlled playback."""
         self.mass.cancel_timer(self._ma_playback_transition_timer_id)
         self._ma_playback_starting = False
 
-    def _finish_ma_playback_transition(self) -> None:
+    def _finish_ma_playback_transition(self, wait_for_play: bool = True) -> None:
         """Apply the latest HEOS state after MA playback starts."""
+        if wait_for_play and self._device.state == HeosPlayState.STOP:
+            self.mass.call_later(
+                PLAYBACK_TRANSITION_STOP_GRACE,
+                self._finish_ma_playback_transition,
+                wait_for_play=False,
+                task_id=self._ma_playback_transition_timer_id,
+            )
+            return
         self._ma_playback_starting = False
+        self._update_player_state()
         self._update_player_current_media()
         self.update_state()

@@ -1,0 +1,55 @@
+{
+  "items": [
+    {
+      "hasVideoOnDemand": false,
+      "audioFormatTypes": [
+        "mp3",
+        "lossless",
+        "hd"
+      ],
+      "videoFormatTypes": [
+        "liveHdVideo"
+      ],
+      "groups": [],
+      "catalogIds": [
+        "nugs"
+      ],
+      "id": "50105",
+      "status": "available",
+      "type": "show",
+      "title": "10-2-2026 Oakland Arena Oakland, CA",
+      "performanceDate": "2026-10-02T00:00:00",
+      "albumTitle": null,
+      "albumAbbreviation": null,
+      "albumReleaseDate": null,
+      "coverImage": null,
+      "image": {
+        "url": "https://assets-01.nugscdn.net/livedownloads/images/shows/bstr261002_03.jpg",
+        "width": 290,
+        "height": 160,
+        "caption": ""
+      },
+      "venue": {
+        "id": "9361",
+        "title": "Oakland Arena Oakland, CA",
+        "name": "Oakland Arena",
+        "city": "Oakland",
+        "state": "CA",
+        "country": ""
+      },
+      "artist": {
+        "id": "1125",
+        "name": "Billy Strings",
+        "abbreviation": "bstr",
+        "avatarImage": {
+          "id": null,
+          "url": "https://catalog.nugs.net/api/v1/artists/1125/images/avatar/e7367b2849fd4393928c962269d9aa37"
+        }
+      },
+      "isInSubscriptionCatalog": true
+    }
+  ],
+  "offset": 0,
+  "limit": 1,
+  "total": 587
+}

@@ -27,6 +27,30 @@ Requirements: the `test` extras (`uv pip install -e '.[test]'` — provides
 `psutil` and `yappi`), plus `ffmpeg` and `curl` on `PATH`. The suite fails
 early with a clear message when anything is missing.
 
+## Statistics query benchmark
+
+Measure statistics endpoint latency against synthetic play-history sizes in an
+isolated temporary server:
+
+```shell
+.venv/bin/python scripts/perf/statistics_query_benchmark.py \
+  --play-counts 10000 100000 --iterations 20
+```
+
+The default test library has 1,000 tracks; pass `--full-library` for 10,000.
+Each data size is inserted for its own user, and every repeated result is
+checked against the first result before timings are reported. Output includes
+first-request latency and steady-state median/p95 latency for track/album
+rankings, time series, activity, listening time, history and per-item counts.
+Statistics results are not cached; SQLite's normal page cache remains enabled.
+The data directory is temporary and removed at exit; it never opens or modifies
+the user's Music Assistant database.
+
+`--play-counts` accepts up to six sizes, each between 1 and 1,000,000, with a
+combined maximum of 2,000,000 rows. `--iterations` accepts 3–100 samples per
+mode. Use a few sizes first, then increase them to approximate the target
+installation; absolute timings are machine-specific.
+
 ## What it measures
 
 The suite runs two passes: pass 1 executes every scenario **unprofiled** for

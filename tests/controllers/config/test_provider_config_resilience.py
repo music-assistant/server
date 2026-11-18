@@ -10,8 +10,9 @@ therefore startup, via ``create_builtin_provider_config``) with
 ``KeyError: 'domain'``.
 
 Two complementary fixes are covered here:
-- ``update_provider_last_error`` only writes when the config still exists, so a
-  removed provider is never resurrected as a domain-less stub (root cause).
+- ``update_provider_last_error`` and ``set_provider_default_name`` only write when the
+  config still exists, so a removed provider is never resurrected as a domain-less stub
+  (root cause).
 - the ``migrate`` settings migration drops any pre-existing orphaned stubs left
   on disk by older versions, before they can reach the read path.
 """
@@ -23,7 +24,13 @@ from typing import Any
 from music_assistant_models.config_entries import ProviderError
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import CONF_PROVIDERS
+from music_assistant.constants import (
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
+    CONF_PLAYER_SPLIT_SESSION_ONLY,
+    CONF_PLAYER_SPLIT_TREE,
+    CONF_PROVIDERS,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED,
+)
 from music_assistant.controllers.config.migrations import migrate
 from music_assistant.mass import MusicAssistant
 
@@ -55,7 +62,12 @@ async def test_migrate_leaves_valid_provider_configs_alone() -> None:
                 "type": "music",
                 "instance_id": "filesystem_local--1",
             },
-        }
+        },
+        # the player configs are split already
+        CONF_PLAYER_SPLIT_SESSION_ONLY: True,
+        CONF_PLAYER_SPLIT_TREE: True,
+        CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: True,
+        CONF_SENDSPIN_ONE_OUTPUT_MIGRATED: True,
     }
     assert await migrate(data) is False
     assert "filesystem_local--1" in data[CONF_PROVIDERS]
@@ -88,3 +100,28 @@ async def test_update_provider_last_error_writes_when_entry_exists(
     stored = config.get(f"{CONF_PROVIDERS}/{instance}/last_error")
     assert stored is not None
     assert stored["message"] == "boom"
+
+
+async def test_set_provider_default_name_ignores_removed_entry(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Writing the default name must not resurrect a removed config as a domain-less stub."""
+    config = mass_minimal.config
+    instance = "filesystem_local--xyz"
+    # No config entry exists (it was removed).
+    config.set_provider_default_name(instance, "Local files [Music]")
+    assert config.get(f"{CONF_PROVIDERS}/{instance}") is None
+
+
+async def test_set_provider_default_name_writes_when_entry_exists(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """When the config entry still exists, the default name is persisted as usual."""
+    config = mass_minimal.config
+    instance = "filesystem_local--1"
+    config.set(
+        f"{CONF_PROVIDERS}/{instance}",
+        {"domain": "filesystem_local", "type": "music", "instance_id": instance},
+    )
+    config.set_provider_default_name(instance, "Local files [Music]")
+    assert config.get(f"{CONF_PROVIDERS}/{instance}/default_name") == "Local files [Music]"

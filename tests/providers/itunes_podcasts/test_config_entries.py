@@ -5,10 +5,12 @@ from unittest.mock import Mock
 import pytest
 
 from music_assistant.providers.itunes_podcasts import (
-    CONF_LOCALE,
-    DEFAULT_LOCALE,
     SUPPORTED_FEATURES,
     ITunesPodcastsProvider,
+)
+from music_assistant.providers.itunes_podcasts.constants import (
+    CONF_LOCALE,
+    DEFAULT_LOCALE,
 )
 
 
@@ -16,7 +18,7 @@ def _provider(server_locale: str) -> ITunesPodcastsProvider:
     """Return a provider whose server is configured with the given metadata locale."""
     mass = Mock()
     mass.metadata.locale = server_locale
-    manifest = Mock(domain="itunes_podcasts")
+    manifest = Mock(domain="itunes_podcasts", features=set())
     config = Mock(instance_id="itunes_podcasts", enabled=True)
     config.get_value.side_effect = lambda key, default=None: (
         "INFO" if key == "log_level" else default

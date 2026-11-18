@@ -131,7 +131,7 @@ def _with_vocal_activity(
     for start, end in windows:
         for index in range(int(start / frame_duration), int(end / frame_duration)):
             probabilities[index] = 0.9
-    analysis.extra_data = {"vocal_activity": probabilities}
+    analysis.vocal_activity = probabilities
     return analysis
 
 
@@ -716,12 +716,10 @@ class TestMixerBuild:
         monkeypatch.setattr(SmartCrossFade, "build", fail_smart_build)
         missing = _analysis(120.0, duration=240.0, rms_energy=_rms_with_silent_tail(240.0, 5.0))
         stale = _analysis(120.0, duration=240.0, rms_energy=_rms_with_silent_tail(240.0, 5.0))
-        stale.extra_data = {
-            "vocal_activity": {
-                "model": "firered_aed",
-                "frame_duration": 0.1,
-                "probabilities": [0.9] * 2400,
-            }
+        stale.vocal_activity = {  # type: ignore[assignment]
+            "model": "firered_aed",
+            "frame_duration": 0.1,
+            "probabilities": [0.9] * 2400,
         }
 
         trims: list[int] = []
@@ -966,7 +964,7 @@ class TestSilenceAwareAnchoring:
         buffer_duration = partial_bytes / PCM.pcm_sample_size
         # beats are on a strict 0.5s grid from t=0 in the analysis fixture;
         # in real buffer coordinates each beat must satisfy
-        # (beat + duration - buffer_duration) % 0.5 == 0
+        # (beat + duration - buffer_duration) % 0.5 == 0  # noqa: ERA001
         offset = duration - buffer_duration
         for beat in fade.fade_out_beats[:8]:
             track_pos = beat + offset
@@ -1049,19 +1047,19 @@ class TestQuickFadeMasteredFadeDeadZone:
             fade.build(_seconds(45), _seconds(45), PCM)
         return fade
 
-    def test_main_pass_rejects_every_candidate_on_the_trim_guard_alone(
+    def test_main_pass_rejects_every_cut_on_the_trim_guard_alone(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Every main-pass candidate dies on the one guard; the rescue pass ships the fade."""
+        """Every main-pass cut dies on the one guard; the rescue pass ships the fade."""
         self._build_fade(caplog)
+        # both cuts and two dressed transitions die on the trim guard; the surviving
+        # dressed transitions never win the main pass on their own
         assert (
-            "all 2 candidates rejected (audible trim exceeds a short fade's own duration x2)"
+            "no blend or cut survives (segues=0 dressed=6 of 10 candidates; rejected: "
+            "audible trim exceeds a short fade's own duration x4); none wins on its own"
             in caplog.text
         )
-        assert (
-            "shipping a rescue-pass candidate (source=rescue-anchor) instead of the "
-            "emergency handoff" in caplog.text
-        )
+        assert "source=rescue-anchor (rescue pass)" in caplog.text
 
     def test_rescue_ships_a_late_anchored_chain_within_the_trim_bound(
         self, caplog: pytest.LogCaptureFixture
@@ -1103,7 +1101,7 @@ class TestQuickFadeMasteredFadeDeadZone:
         )
         with caplog.at_level(logging.DEBUG):
             fade.build(_seconds(45), _seconds(45), PCM)
-        assert "shipping a rescue-pass candidate (source=trim-closing-anchor)" in caplog.text
+        assert "source=trim-closing-anchor (rescue pass)" in caplog.text
         # the audible-end anchor keeps the full 4-bar overlap and trims nothing audible
         assert fade.effective_end == pytest.approx(43.40, abs=0.05)
         assert fade.timing_info.crossfade_duration == pytest.approx(7.78, abs=0.05)

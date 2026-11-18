@@ -7,12 +7,14 @@ import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.enums import ConfigEntryType, FlowStepType
 from music_assistant_models.errors import PlayerCommandFailed
+from pyatv.const import Protocol
 
+from music_assistant.constants import CONF_PASSWORD
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowContext, SetupSession
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_DISCOVERY_TYPE,
@@ -20,10 +22,11 @@ from music_assistant.providers.airplay.constants import (
     CONF_AIRPLAY_CREDENTIALS,
     CONF_COMPANION_CREDENTIALS,
     CONF_COMPANION_PAIRING_PIN,
+    CONF_MRP_CREDENTIALS,
+    CONF_MRP_PAIRING_PIN,
     CONF_PAIR_NOW,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
-    CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
 )
 from music_assistant.providers.airplay.control_player import AirPlayControlPlayer
@@ -128,32 +131,33 @@ def _service_info(
     return info
 
 
-def _stub_setup_data(provider: MagicMock, player_id: str, setup_data: dict[str, Any]) -> None:
-    """Route the player's setup_data through the mocked mass.config get surface."""
+def _stub_setup_data(provider: MagicMock, protocol_id: str, setup_data: dict[str, Any]) -> None:
+    """Route the protocol's setup_data through its config and the mocked mass.config setter."""
 
-    def _config_get(key: str, default: Any = None) -> Any:
-        if key == f"players/{player_id}/setup_data":
-            return setup_data
-        if key == f"players/{player_id}":
-            return {"player_id": player_id}
-        return default
+    def _set_setup_value(stored_protocol_id: str, key: str, value: Any, **_kwargs: object) -> None:
+        assert stored_protocol_id == protocol_id
+        setup_data[key] = value
 
-    provider.mass.config.get.side_effect = _config_get
+    provider.mass.config.set_protocol_setup_value.side_effect = _set_setup_value
     provider.mass.config.decrypt_string.side_effect = lambda value: value
     provider.mass.config.encrypt_string.side_effect = lambda value: value
     # Raw player config values (device password, password-invalid marker) come from
     # their own store; without this they would read back as (truthy) mocks. The
     # player's config reads from the same store so a stored password is observed.
     raw_values: dict[str, Any] = {}
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: raw_values.get(key, default)
+    provider.mass.config.get_player_value.side_effect = lambda _player_id, key, default=None: (
+        raw_values.get(key, default)
     )
-    provider.mass.config.set_raw_player_config_value.side_effect = lambda _player_id, key, value: (
+    provider.mass.config.get_protocol_value.side_effect = lambda _player_id, key, default=None: (
+        raw_values.get(key, default)
+    )
+    provider.mass.config.set_protocol_value.side_effect = lambda _player_id, key, value: (
         raw_values.__setitem__(key, value)
     )
     config = MagicMock()
     config.get_value.side_effect = lambda key, default=None: raw_values.get(key, default)
-    provider.mass.config.get_base_player_config.return_value = config
+    config.setup_data = setup_data
+    provider.mass.config.get_base_protocol_config.return_value = config
 
 
 def _streaming_player(
@@ -177,7 +181,7 @@ def _streaming_player(
         )
     return AirPlayPlayer(
         provider=provider,
-        player_id=player_id,
+        protocol_id=player_id,
         display_name="Test Player",
         address="127.0.0.1",
         manufacturer="Apple" if not raop else "Denon",
@@ -190,14 +194,11 @@ def _streaming_player(
 def _control_player(
     *, player_id: str = "apctl", setup_data: dict[str, Any] | None = None
 ) -> AirPlayControlPlayer:
-    """Create a control-capable Apple player requiring streaming PIN + Companion pairing."""
+    """Create a control-capable Apple TV requiring streaming PIN + Companion/MRP pairing."""
     provider = MagicMock()
     provider.instance_id = "airplay"
     provider.dacp_id = "0123456789ABCDEF"
     provider.logger = logging.getLogger("test.airplay.flow")
-    config = MagicMock()
-    config.get_value.side_effect = lambda _key, default=None: default
-    provider.mass.config.get_base_player_config.return_value = config
     _stub_setup_data(provider, player_id, setup_data or {})
     airplay_info = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
@@ -212,7 +213,7 @@ def _control_player(
     companion_info = _service_info(COMPANION_DISCOVERY_TYPE, {"rpFl": "0x367A2"}, port=49152)
     return AirPlayControlPlayer(
         provider=provider,
-        player_id=player_id,
+        protocol_id=player_id,
         raop_discovery_info=None,
         airplay_discovery_info=airplay_info,
         companion_discovery_info=companion_info,
@@ -448,12 +449,12 @@ async def test_pairing_start_failure_aborts_with_reason() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Control player: streaming + optional Companion/MRP ("two codes")
+# Control player: streaming + optional Companion/MRP
 # --------------------------------------------------------------------------------------
 
 
-async def test_two_code_sequence_streaming_then_companion() -> None:
-    """A controlled device pairs the streaming PIN, then the optional Companion PIN."""
+async def test_single_offer_pairs_companion_and_mrp_after_streaming() -> None:
+    """A controlled device pairs the streaming PIN, then Companion and MRP behind one offer."""
     collected: dict[str, Any] = {}
 
     async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
@@ -465,40 +466,72 @@ async def test_two_code_sequence_streaming_then_companion() -> None:
     streaming = AsyncMock()
     streaming.finish_pairing = AsyncMock(return_value=FAKE_AP2_CREDS)
     companion = _pyatv_pairing("companion-creds")
+    mrp = _pyatv_pairing("mrp-creds")
     responses: dict[str, dict[str, Any]] = {
         "pair_pin": {CONF_PAIRING_PIN: "1234"},
-        "companion_offer": {CONF_PAIR_NOW: True},
+        "control_offer": {CONF_PAIR_NOW: True},
         "pair_companion": {CONF_COMPANION_PAIRING_PIN: "5678"},
-        # MRP is offered for an Apple TV; decline it to keep this a two-code run
-        "mrp_offer": {CONF_PAIR_NOW: False},
+        "pair_mrp": {CONF_MRP_PAIRING_PIN: "9012"},
     }
 
     with (
         patch(_PAIRING_TARGET, return_value=streaming),
-        patch(_PYATV_PAIR_TARGET, return_value=companion) as pyatv_pair,
+        patch(_PYATV_PAIR_TARGET, side_effect=[companion, mrp]) as pyatv_pair,
     ):
         task = asyncio.create_task(player.run_setup_flow(session))
         await _pump(session, task, lambda step: responses[step.step_id])
 
     assert collected[CONF_AIRPLAY_CREDENTIALS] == FAKE_AP2_CREDS
     assert collected[CONF_COMPANION_CREDENTIALS] == "companion-creds"
+    assert collected[CONF_MRP_CREDENTIALS] == "mrp-creds"
     companion.pin.assert_called_once_with(5678)
-    pyatv_pair.assert_called_once()
+    mrp.pin.assert_called_once_with(9012)
+    assert [call.args[1] for call in pyatv_pair.call_args_list] == [
+        Protocol.Companion,
+        Protocol.AirPlay,
+    ]
     step_ids = [step.step_id for step in _published_steps(mass) if step.type == FlowStepType.FORM]
-    # streaming PIN comes before the optional control offers
-    assert step_ids.index("pair_pin") < step_ids.index("companion_offer")
-    assert "pair_companion" in step_ids
-    # both PINs render as 4-digit code inputs
+    assert step_ids == ["pair_pin", "control_offer", "pair_companion", "pair_mrp"]
+    # every PIN renders as a 4-digit code input
     pin_entries = [
         entry
         for step in _published_steps(mass)
         if step.type == FlowStepType.FORM
         for entry in step.entries
-        if entry.key in (CONF_PAIRING_PIN, CONF_COMPANION_PAIRING_PIN)
+        if entry.key in (CONF_PAIRING_PIN, CONF_COMPANION_PAIRING_PIN, CONF_MRP_PAIRING_PIN)
     ]
-    assert len(pin_entries) == 2
+    assert len(pin_entries) == 3
     assert all(entry.type is ConfigEntryType.PAIRING_CODE for entry in pin_entries)
     assert all(entry.format == "####" for entry in pin_entries)
+
+
+async def test_control_offer_skipped_without_control_pairing() -> None:
+    """A controlled device without Companion or MRP pairing gets no remote control offer."""
+
+    async def finish(_session: SetupSession, _values: dict[str, Any]) -> dict[str, str]:
+        return {"player_id": "apctl"}
+
+    session, mass = _make_session(finish, player_id="apctl")
+    player = _control_player()
+    streaming = AsyncMock()
+    streaming.finish_pairing = AsyncMock(return_value=FAKE_AP2_CREDS)
+
+    with (
+        patch(_PAIRING_TARGET, return_value=streaming),
+        patch.object(
+            AirPlayControlPlayer, "companion_pairing_supported", new_callable=PropertyMock
+        ) as companion_supported,
+        patch.object(
+            AirPlayControlPlayer, "mrp_pairing_supported", new_callable=PropertyMock
+        ) as mrp_supported,
+    ):
+        companion_supported.return_value = False
+        mrp_supported.return_value = False
+        task = asyncio.create_task(player.run_setup_flow(session))
+        await _pump(session, task, lambda _step: {CONF_PAIRING_PIN: "1234"})
+
+    step_ids = [step.step_id for step in _published_steps(mass) if step.type == FlowStepType.FORM]
+    assert step_ids == ["pair_pin"]
 
 
 async def test_all_pairings_reoffered_and_skippable_when_already_paired() -> None:
@@ -523,8 +556,7 @@ async def test_all_pairings_reoffered_and_skippable_when_already_paired() -> Non
     )
     responses: dict[str, dict[str, Any]] = {
         "streaming_repair_offer": {CONF_PAIR_NOW: False},
-        "companion_offer": {CONF_PAIR_NOW: False},
-        "mrp_offer": {CONF_PAIR_NOW: False},
+        "control_offer": {CONF_PAIR_NOW: False},
     }
 
     with (
@@ -538,7 +570,38 @@ async def test_all_pairings_reoffered_and_skippable_when_already_paired() -> Non
     pairing_cls.assert_not_called()
     pyatv_pair.assert_not_called()
     step_ids = [step.step_id for step in _published_steps(mass) if step.type == FlowStepType.FORM]
-    assert step_ids == ["streaming_repair_offer", "companion_offer", "mrp_offer"]
+    assert step_ids == ["streaming_repair_offer", "control_offer"]
+
+
+async def test_cancelled_pairing_closes_the_session_it_starts() -> None:
+    """A cancelled pairing start still closes the session it ends up with."""
+    player = _control_player()
+    pairing = _pyatv_pairing("companion-creds")
+    started = asyncio.Event()
+    paired = asyncio.Event()
+
+    async def _pair(*_args: Any, **_kwargs: Any) -> MagicMock:
+        started.set()
+        await paired.wait()
+        return pairing
+
+    player.mass.create_task = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda coro, *_args, **_kwargs: asyncio.get_running_loop().create_task(coro)
+    )
+
+    with patch(_PYATV_PAIR_TARGET, side_effect=_pair):
+        task = asyncio.create_task(
+            player._begin_pyatv_pairing(player.companion_discovery_info, Protocol.Companion)
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        paired.set()
+        await asyncio.sleep(0.01)
+
+    pairing.begin.assert_not_awaited()
+    pairing.close.assert_awaited_once()
 
 
 def _password_player(
@@ -550,7 +613,7 @@ def _password_player(
     _stub_setup_data(provider, player_id, setup_data or {})
     return AirPlayPlayer(
         provider=provider,
-        player_id=player_id,
+        protocol_id=player_id,
         display_name="Test HomePod",
         address="127.0.0.1",
         manufacturer="Apple",
@@ -569,7 +632,7 @@ def _raop_password_player(*, player_id: str = "test_player") -> AirPlayPlayer:
     _stub_setup_data(provider, player_id, {})
     return AirPlayPlayer(
         provider=provider,
-        player_id=player_id,
+        protocol_id=player_id,
         display_name="Test Speaker",
         address="127.0.0.1",
         manufacturer="Denon",
@@ -599,7 +662,7 @@ async def test_streaming_password_pairing_persists_the_device_password() -> None
     # the pairing credentials still go to setup_data...
     assert collected == {CONF_AIRPLAY_CREDENTIALS: FAKE_AP2_CREDS}
     # ...and the password itself is persisted so every stream can present it
-    player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+    player.mass.config.set_protocol_value.assert_called_once_with(  # type: ignore[attr-defined]
         "test_player", CONF_PASSWORD, "hunter2"
     )
 
@@ -647,7 +710,7 @@ async def test_raop_password_device_is_asked_for_its_password_without_pairing() 
     # no pairing session is ever built for a device that has nothing to pair
     pairing_cls.assert_not_called()
     assert collected == {}
-    player.mass.config.set_raw_player_config_value.assert_any_call(  # type: ignore[attr-defined]
+    player.mass.config.set_protocol_value.assert_any_call(  # type: ignore[attr-defined]
         "test_player", CONF_PASSWORD, "hunter2"
     )
     assert player.needs_setup is False

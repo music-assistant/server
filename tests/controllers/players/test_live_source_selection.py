@@ -8,20 +8,23 @@ plugin so an upstream session stops pointing at Music Assistant.
 
 import asyncio
 from contextlib import suppress
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState, ProviderFeature
+from music_assistant_models.enums import MediaType, PlaybackState, ProtocolRole, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
 from music_assistant_models.media_items import AudioSource, Track
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.audio_sources import AUDIO_SOURCE_CLAIM_TIMEOUT
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.player_state import derive_player_state
 from music_assistant.models.plugin import PluginProvider
+from tests.common import MockProvider, attach_mock, make_state_inputs, virtual_loop_clock
 
 PLAYER_ID = "player_1"
 PROVIDER_INSTANCE = "spotify_connect--abc"
@@ -59,18 +62,44 @@ def _controller(resolved: Any = None) -> tuple[Any, MagicMock, MagicMock]:
         mass.music.get_item_by_uri = AsyncMock(return_value=resolved)
     player = MagicMock()
     player.player_id = PLAYER_ID
-    player.display_name = "Player 1"
-    player.available = True
-    player.state.active_source = None
-    player.state.active_group = None
-    player.state.synced_to = None
-    player.protocol_parent_id = None
+    player.name = "Player 1"
+    player.available_for_playback = True
+    player.offline_by_power_control = False
+    player.active_source = None
+    player.active_group = None
+    player.synced_to = None
+    # the code reads both player.<field> and the snapshot player.state: the mock is its own
+    # state, so a value a test changes is the same for both
+    player.state = player
     controller._players[PLAYER_ID] = player
     controller.get_player = MagicMock(return_value=player)  # type: ignore[method-assign]
     controller._handle_play_media = AsyncMock()  # type: ignore[method-assign]
     controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
     controller.trigger_player_update = MagicMock()  # type: ignore[method-assign]
     return controller, provider, player
+
+
+def _device(controller: PlayerController, *, audio_protocol: bool = False) -> Player:
+    """
+    Give a controller of ``_controller`` a real player, with the protocols of its device.
+
+    :param controller: The controller, whose player lookup goes back to the real one.
+    :param audio_protocol: Also attach an audio protocol next to the device's own one.
+    """
+    mass = cast("MagicMock", controller.mass)
+    mass.players = controller
+    del controller.get_player
+    player, _ = attach_mock(MockProvider("test", mass=mass), "speaker_1", "Player 1")
+    if audio_protocol:
+        attach_mock(
+            MockProvider("other", instance_id="other", mass=mass),
+            "speaker_1_audio",
+            role=ProtocolRole.AUDIO,
+            player=player,
+        )
+    mass.config.get_player_object_config = AsyncMock(return_value=player.config)
+    player.update_state(signal_event=False)
+    return player
 
 
 async def test_selecting_a_source_starts_it_and_names_it_on_the_player() -> None:
@@ -97,13 +126,16 @@ async def test_selecting_a_source_starts_it_and_names_it_on_the_player() -> None
 async def test_selecting_a_source_on_an_idle_player_is_not_held_up_by_a_stop() -> None:
     """An idle player has no teardown to settle, so the selection starts straight away."""
     controller, _provider, player = _controller(_source())
-    player.state.active_source = "some_other_source"
-    player.state.playback_state = PlaybackState.IDLE
+    player.active_source = "some_other_source"
+    player.playback_state = PlaybackState.IDLE
 
-    # waiting on a state change that a no-op stop never reports would burn the
-    # full 5s timeout; this bound sits well below that and well above a prompt return
-    async with asyncio.timeout(2):
+    # waiting on a state change that a no-op stop never reports would burn the full 5s
+    # timeout; the clock only moves while the loop waits, so a prompt start takes no time
+    loop = asyncio.get_running_loop()
+    with virtual_loop_clock():
+        started = loop.time()
         await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+        assert loop.time() == started
 
     controller._handle_cmd_stop.assert_awaited_once_with(PLAYER_ID)
     controller._handle_play_media.assert_awaited_once()
@@ -112,8 +144,8 @@ async def test_selecting_a_source_on_an_idle_player_is_not_held_up_by_a_stop() -
 async def test_selecting_a_source_waits_for_a_playing_player_to_stop() -> None:
     """A player that was playing is settled before the new source is started on it."""
     controller, _provider, player = _controller(_source())
-    player.state.active_source = "some_other_source"
-    player.state.playback_state = PlaybackState.PLAYING
+    player.active_source = "some_other_source"
+    player.playback_state = PlaybackState.PLAYING
     state_at_start: list[PlaybackState] = []
     settle_task: asyncio.Task[None] | None = None
 
@@ -121,7 +153,7 @@ async def test_selecting_a_source_waits_for_a_playing_player_to_stop() -> None:
         # a real device reports back a moment after the stop command returns
         async def _settle() -> None:
             await asyncio.sleep(0.1)
-            player.state.playback_state = PlaybackState.IDLE
+            player.playback_state = PlaybackState.IDLE
             controller._dispatch_state_update_subscribers(
                 player, {"playback_state": (PlaybackState.PLAYING, PlaybackState.IDLE)}
             )
@@ -130,7 +162,7 @@ async def test_selecting_a_source_waits_for_a_playing_player_to_stop() -> None:
         settle_task = asyncio.create_task(_settle())
 
     async def _play_media(*_args: Any, **_kwargs: Any) -> None:
-        state_at_start.append(player.state.playback_state)
+        state_at_start.append(player.playback_state)
 
     controller._handle_cmd_stop = AsyncMock(side_effect=_stop)
     controller._handle_play_media = AsyncMock(side_effect=_play_media)
@@ -353,7 +385,7 @@ async def test_deselecting_finishes_before_new_playback_starts() -> None:
     controller._handle_select_source = AsyncMock(side_effect=select_source)
     controller._handle_cmd_play = AsyncMock(side_effect=play)
     controller._handle_cmd_resume = AsyncMock(side_effect=resume)
-    player.state.playback_state = PlaybackState.IDLE
+    player.playback_state = PlaybackState.IDLE
     controller.mass.player_queues.get.return_value = None
 
     release_task = asyncio.create_task(
@@ -441,14 +473,14 @@ async def test_cmd_play_checks_playing_state_after_cleanup_finishes() -> None:
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
     session = controller.get_audio_source_session(PLAYER_ID)
     assert session is not None
-    player.state.playback_state = PlaybackState.PLAYING
+    player.playback_state = PlaybackState.PLAYING
     stop_started = asyncio.Event()
     finish_stop = asyncio.Event()
 
     async def stop_player(_player_id: str) -> None:
         stop_started.set()
         await finish_stop.wait()
-        player.state.playback_state = PlaybackState.IDLE
+        player.playback_state = PlaybackState.IDLE
 
     controller._handle_cmd_stop.side_effect = stop_player
     controller._handle_cmd_play = AsyncMock()
@@ -479,14 +511,13 @@ async def test_cmd_stop_locks_the_redirected_playback_owner() -> None:
     group_id = "group_1"
     group = MagicMock()
     group.player_id = group_id
-    group.available = True
-    group.protocol_parent_id = None
-    group.state.active_group = None
-    group.state.synced_to = None
+    group.available_for_playback = True
+    group.active_group = None
+    group.synced_to = None
     controller._players[group_id] = group
     players = {PLAYER_ID: player, group_id: group}
     controller.get_player.side_effect = lambda player_id, *_args, **_kwargs: players.get(player_id)
-    player.state.active_group = group_id
+    player.active_group = group_id
     controller.mass.player_queues.get.return_value = None
 
     await controller.cmd_stop(PLAYER_ID)
@@ -556,7 +587,7 @@ async def test_a_source_whose_provider_dropped_the_feature_is_not_started() -> N
     assert await controller._resolve_audio_source_uri(SOURCE_URI) is None
 
 
-async def test_unregistering_a_player_releases_its_source() -> None:
+async def test_removing_a_player_releases_its_source() -> None:
     """
     A player going away hands its source back.
 
@@ -567,10 +598,42 @@ async def test_unregistering_a_player_releases_its_source() -> None:
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
     assert controller.get_audio_source_session(PLAYER_ID) is not None
 
-    await controller.unregister(PLAYER_ID)
+    await controller.remove(PLAYER_ID)
 
+    assert PLAYER_ID not in controller._players
     assert controller.get_audio_source_session(PLAYER_ID) is None
     provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+
+
+async def test_detaching_the_protocol_that_plays_releases_the_source() -> None:
+    """
+    A player that loses the protocol its audio went through hands its source back.
+
+    The player stays, but nothing plays the source anymore: the plugin is told, so
+    an upstream session does not stay pointed at a player that went silent.
+    """
+    controller, provider, _player = _controller(_source())
+    player = _device(controller)
+    await controller._handle_select_source(player.player_id, SOURCE_URI)
+    assert controller.get_audio_source_session(player.player_id) is not None
+
+    await controller.unregister("speaker_1")
+
+    assert controller._players[player.player_id] is player
+    assert controller.get_audio_source_session(player.player_id) is None
+    provider.on_source_released.assert_awaited_once_with("main", player.player_id)
+
+
+async def test_detaching_a_protocol_that_does_not_play_keeps_the_source() -> None:
+    """A protocol the audio does not go through leaves the source playing when it detaches."""
+    controller, provider, _player = _controller(_source())
+    player = _device(controller, audio_protocol=True)
+    await controller._handle_select_source(player.player_id, SOURCE_URI)
+
+    await controller.unregister("speaker_1_audio")
+
+    assert controller.get_audio_source_session(player.player_id) is not None
+    provider.on_source_released.assert_not_awaited()
 
 
 async def test_refreshing_a_rebuilt_source_reaches_the_session() -> None:
@@ -714,6 +777,121 @@ async def test_a_source_that_fails_to_start_is_not_left_on_the_player() -> None:
     provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
 
 
+async def test_a_failed_handover_leaves_the_source_on_the_old_player() -> None:
+    """
+    A move that never starts leaves the source where it was.
+
+    Evicting the displaced player before the new one has started would leave the
+    source on neither player when the start fails.
+    """
+    controller, provider, _player = _controller(_source())
+    old_session = controller._start_audio_source_session("player_2", _source(), PROVIDER_INSTANCE)
+    controller._handle_play_media = AsyncMock(side_effect=PlayerCommandFailed("no route"))
+
+    with pytest.raises(PlayerCommandFailed):
+        await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+
+    assert controller.get_audio_source_session("player_2") is old_session
+    assert controller.get_audio_source_session(PLAYER_ID) is None
+    # the rollback releases the new player only, which plugins ignore per contract:
+    # they still hold the old player
+    provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+
+
+async def test_a_successful_handover_evicts_the_old_player_on_the_stream_claim() -> None:
+    """
+    The displaced player keeps the source until a stream request claims the new session.
+
+    That claim is the plugin's commit to the new player (on_source_selected), so the
+    eviction is deliberately silent: no release reaches the plugin for it.
+    """
+    controller, provider, _player = _controller(_source())
+    old_session = controller._start_audio_source_session("player_2", _source(), PROVIDER_INSTANCE)
+
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+
+    new_session = controller.get_audio_source_session(PLAYER_ID)
+    assert new_session is not None
+    assert controller.get_audio_source_session("player_2") is old_session
+    provider.on_source_released.assert_not_awaited()
+
+    assert (
+        controller.claim_audio_source_session(new_session, new_session.playback_session_id, "tok-1")
+        is True
+    )
+
+    assert controller.get_audio_source_session("player_2") is None
+    assert controller.get_audio_source_session(PLAYER_ID) is new_session
+    provider.on_source_released.assert_not_awaited()
+
+
+async def test_starting_a_source_arms_the_never_claimed_release() -> None:
+    """A started source schedules the check that releases it if no stream ever claims it."""
+    controller, _provider, _player = _controller(_source())
+
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    controller.mass.call_later.assert_called_once_with(
+        AUDIO_SOURCE_CLAIM_TIMEOUT,
+        controller._release_unclaimed_audio_source,
+        PLAYER_ID,
+        session,
+        session.playback_session_id,
+        task_id=f"release_unclaimed_audio_source_{PLAYER_ID}",
+    )
+
+
+async def test_a_source_never_claimed_is_released_after_the_grace_period() -> None:
+    """A renderer that never fetched the stream does not hold the source forever."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+
+    await controller._release_unclaimed_audio_source(
+        PLAYER_ID, session, session.playback_session_id
+    )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is None
+    provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+    controller._handle_cmd_stop.assert_awaited_once()
+
+
+async def test_a_claimed_source_survives_the_grace_period_check() -> None:
+    """A source whose stream was claimed in time is left playing."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    # what a stream request claiming the session stamps
+    session.stream_session_id = "tok-1"
+
+    await controller._release_unclaimed_audio_source(
+        PLAYER_ID, session, session.playback_session_id
+    )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is session
+    provider.on_source_released.assert_not_awaited()
+
+
+async def test_a_reselected_source_is_not_released_by_a_stale_grace_period_check() -> None:
+    """A check armed for an earlier selection cannot release a newer one."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    stale_playback_session_id = session.playback_session_id
+
+    # the re-select re-stamps the playback token, making the armed check stale
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    await controller._release_unclaimed_audio_source(PLAYER_ID, session, stale_playback_session_id)
+
+    assert controller.get_audio_source_session(PLAYER_ID) is session
+    provider.on_source_released.assert_not_awaited()
+
+
 async def test_an_announcement_does_not_take_the_source_off_the_player() -> None:
     """
     An announcement interrupts the player without ending the source session.
@@ -798,9 +976,9 @@ async def test_the_reported_media_can_be_handed_back_to_the_player() -> None:
     assert session is not None
 
     media = controller._handle_play_media.await_args.args[1]
-    # the reported position is taken from the player's final playback state
-    _player._Player__final_playback_state = (PlaybackState.PLAYING, None, None)
-    reported = Player._Player__audio_source_media(_player, session)  # type: ignore[attr-defined]
+    state, _ = derive_player_state(make_state_inputs(player_id=PLAYER_ID, session=session))
+    reported = state.current_media
 
+    assert reported is not None
     assert reported.queue_session_id == session.playback_session_id
     assert reported.source_id == media.source_id

@@ -17,7 +17,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Artist, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.mass import MusicAssistant
 
 
@@ -59,7 +59,7 @@ async def _add_track(mass: MusicAssistant, name: str) -> Track:
 async def _playlog_row(mass: MusicAssistant, track: Track, userid: str) -> dict[str, Any]:
     """Read the track's playlog row for the given user."""
     row = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": track.item_id,
             "provider": "library",

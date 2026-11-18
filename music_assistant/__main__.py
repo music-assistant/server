@@ -24,7 +24,7 @@ from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.logging import activate_log_queue_handler
-from music_assistant.helpers.util import cap_native_thread_pools
+from music_assistant.helpers.util import cap_native_thread_pools, set_model_cache_dirs
 from music_assistant.mass import MusicAssistant
 
 FORMAT_DATE: Final = "%Y-%m-%d"
@@ -76,6 +76,11 @@ def get_arguments() -> argparse.Namespace:
         "--safe-mode",
         action=argparse.BooleanOptionalAction,
         help="Start in safe mode (core controllers only, no providers)",
+    )
+    parser.add_argument(
+        "--dev-providers-dir",
+        metavar="path_to_providers_dir",
+        help="Directory with provider folders to load, only used in dev mode [optional]",
     )
 
     return parser.parse_args()
@@ -237,7 +242,6 @@ def main() -> None:
 
     # prefer value in hass_options
     log_level = hass_options.get("log_level", args.log_level).upper()
-    dev_mode = os.environ.get("PYTHONDEVMODE", "0") == "1"
     safe_mode = bool(
         args.safe_mode or hass_options.get("safe_mode") or os.environ.get("MASS_SAFE_MODE")
     )
@@ -249,6 +253,7 @@ def main() -> None:
     # because those pools read the environment once at load time.
     blas_budget = cap_native_thread_pools()
     LOGGER.debug("Native BLAS/OpenMP thread pools capped to %d thread(s)", blas_budget)
+    set_model_cache_dirs(cache_dir)
 
     # Raise the open-file soft limit to the hard limit so the concurrent provider
     # imports at startup can't exhaust it (default soft=1024 in HAOS add-on containers).
@@ -260,7 +265,8 @@ def main() -> None:
         except (ValueError, OSError) as err:
             LOGGER.warning("Could not raise open-file limit: %s", err)
 
-    mass = MusicAssistant(data_dir, cache_dir, safe_mode)
+    dev_providers_dir = args.dev_providers_dir and str(Path(args.dev_providers_dir).resolve())
+    mass = MusicAssistant(data_dir, cache_dir, safe_mode, dev_providers_dir)
 
     # enable alpine subprocess workaround
     _enable_posix_spawn()
@@ -269,9 +275,6 @@ def main() -> None:
         loop = asyncio.get_running_loop()
         loop.set_default_executor(ThreadPoolExecutor(max_workers=32))
         activate_log_queue_handler()
-        if dev_mode or log_level == "DEBUG":
-            loop.set_debug(True)
-            loop.slow_callback_duration = 0.2
         loop.set_exception_handler(_global_loop_exception_handler)
 
         stop_event = asyncio.Event()

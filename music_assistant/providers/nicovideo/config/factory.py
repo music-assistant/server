@@ -119,6 +119,22 @@ class ConfigFactory:
             ),
         )
 
+    def pairing_code_config(
+        self, key: str, label: str, code_format: str, description: str = ""
+    ) -> ConfigDescriptor[str | None]:
+        """Create a pairing-code config option rendered as per-character boxes."""
+        return ConfigDescriptor(
+            cast=ConfigFactory.as_str(None),
+            config_entry=self._create_entry(
+                key=key,
+                entry_type=ConfigEntryType.PAIRING_CODE,
+                label=label,
+                default_value=None,
+                description=description,
+                entry_format=code_format,
+            ),
+        )
+
     def _create_entry(
         self,
         key: str,
@@ -127,6 +143,7 @@ class ConfigFactory:
         default_value: ConfigValueType,
         description: str,
         value_range: tuple[int, int] | None = None,
+        entry_format: str | None = None,
     ) -> ConfigEntry:
         """Create and register a ConfigEntry."""
         entry = ConfigEntry(
@@ -138,6 +155,7 @@ class ConfigFactory:
             description=description,
             category=self.category,
             range=value_range,
+            format=entry_format,
         )
         _registry.append(entry)
         return entry

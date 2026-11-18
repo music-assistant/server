@@ -9,28 +9,13 @@ This adaptor maps those objects to the most sensible type for MA.
 """
 
 from abc import ABC, abstractmethod
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
-from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import (
-    AudioFormat,
-    BrowseFolder,
-    MediaItemChapter,
-    MediaItemImage,
-    MediaItemMetadata,
-    ProviderMapping,
-    Radio,
-    RecommendationFolder,
-    Track,
-)
-from music_assistant_models.media_items import Podcast as MAPodcast
-from music_assistant_models.media_items import PodcastEpisode as MAPodcastEpisode
-from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
-from music_assistant_models.unique_list import UniqueList
-from sounds.models import (
+from auntie_sounds import SCHEDULE_TIMEZONE
+from auntie_sounds.models import (
     Category,
     Collection,
     LiveStation,
@@ -43,24 +28,49 @@ from sounds.models import (
     RadioShow,
     RecommendedMenuItem,
     Schedule,
+    ScheduleItem,
     SoundsTypes,
     Station,
     StationSearchResult,
 )
+from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
+from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.media_items import (
+    AudioFormat,
+    BrowseFolder,
+    ItemMapping,
+    MediaItemChapter,
+    MediaItemImage,
+    MediaItemMetadata,
+    ProviderMapping,
+    Radio,
+    RecommendationFolder,
+    Track,
+)
+from music_assistant_models.media_items import Podcast as MAPodcast
+from music_assistant_models.media_items import PodcastEpisode as MAPodcastEpisode
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
+from music_assistant_models.unique_list import UniqueList
 
 import music_assistant.helpers.datetime as dt
-from music_assistant.helpers.datetime import LOCAL_TIMEZONE
-from music_assistant.providers.bbc_sounds.constants import _Constants
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, VERBOSE_LOG_LEVEL
+from music_assistant.providers.bbc_sounds.constants import Constants, ValidMenuIDs
+from music_assistant.providers.bbc_sounds.live_rewind import LiveProgrammeId
 
 if TYPE_CHECKING:
     from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 
 
 def _date_convertor(
-    timestamp: str | datetime,
-    date_format: str,
-    timezone: tzinfo | None = LOCAL_TIMEZONE,
+    timestamp: str | datetime, date_format: str, timezone: tzinfo | None = SCHEDULE_TIMEZONE
 ) -> str:
+    """
+    Convert a timestamp string or datetime to its date component as string.
+
+    :arg timestamp string or datetime version of the timestamp, e.g. "2020-02-02 18:00:00"
+    :arg date_format strfttime format to read the timestamp, e.g. "%d/%m/%Y, %H:%M:%S"
+
+    """
     if isinstance(timestamp, str):
         timestamp = dt.from_iso_string(timestamp)
     else:
@@ -72,12 +82,21 @@ def _to_time(timestamp: str | datetime) -> str:
     return _date_convertor(timestamp, "%H:%M")
 
 
-def _to_date_and_time(timestamp: str | datetime) -> str:
-    return _date_convertor(timestamp, "%a %d %B %H:%M")
-
-
 def _to_date(timestamp: str | datetime) -> str:
     return _date_convertor(timestamp, "%d/%m/%y")
+
+
+def _audio_format(stream: str) -> AudioFormat:
+    return AudioFormat(content_type=ContentType.try_parse(stream))
+
+
+def _release_date(item: PodcastEpisode | RadioShow | RadioClip) -> datetime | None:
+    """Return the release date of an item, or when it became available if it has none."""
+    for details, key in ((item.release, "date"), (item.availability, "from")):
+        if details and (value := details.get(key)):
+            with suppress(TypeError, ValueError):
+                return dt.from_iso_string(value)
+    return None
 
 
 class ConversionError(MusicAssistantError):
@@ -87,27 +106,27 @@ class ConversionError(MusicAssistantError):
 class ImageProvider:
     """Handles image URL resolution and MediaItemImage creation."""
 
-    # TODO: keeping this in for demo purposes
-    ICON_BASE_URL = (
-        "https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid"
-    )
+    ICON_BASE_URL = "https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@3.0.0/assets/icons/solid"
 
     ICON_MAPPING: ClassVar[dict[str, str]] = {
-        "listen_live": "listen_live",
-        "continue_listening": "continue",
-        "editorial_collection": "editorial",
-        "local_rail": "my_location",
-        "single_item_promo": "featured",
-        "collections": "collections",
-        "categories": "categories",
-        "recommendations": "my_sounds",
-        "unmissable_speech": "speech",
-        "podcasts": "speech",
-        "unmissable_music": "music",
-        "music": "music",
-        "explore": "categories",
-        "stations": "latest",
-        "news": "news",
+        ValidMenuIDs.LIVE: "listen_live",
+        ValidMenuIDs.CATCH_UP: "latest",
+        ValidMenuIDs.SCHEDULES: "episodes",
+        ValidMenuIDs.MY_SOUNDS: "my_sounds",
+        ValidMenuIDs.CONTINUE_LISTENING: "continue",
+        ValidMenuIDs.EDITORIAL_COLLECTION: "editorial",
+        ValidMenuIDs.LOCAL_RAIL: "my_location",
+        ValidMenuIDs.SINGLE_ITEM_PROMO: "featured",
+        ValidMenuIDs.COLLECTIONS: "collections",
+        ValidMenuIDs.CATEGORIES: "categories",
+        ValidMenuIDs.RECOMMENDATIONS: "my_sounds",
+        ValidMenuIDs.UNMISSABLE_SPEECH: "speech",
+        ValidMenuIDs.PODCASTS: "speech",
+        ValidMenuIDs.UNMISSABLE_MUSIC: "music",
+        ValidMenuIDs.MUSIC: "music",
+        ValidMenuIDs.EXPLORE: "categories",
+        ValidMenuIDs.STATIONS: "latest",
+        ValidMenuIDs.NEWS: "news",
     }
 
     @classmethod
@@ -156,12 +175,10 @@ class Context:
     """Context information for object conversion."""
 
     provider: BBCSoundsProvider
-    provider_domain: str
     path_parts: list[str] | None = None
     force_type: (
         type[
             Track
-            | LiveStation
             | Radio
             | MAPodcast
             | MAPodcastEpisode
@@ -194,7 +211,6 @@ class BaseConverter(ABC):
         self, source_obj: Any
     ) -> (
         Track
-        | LiveStation
         | Radio
         | MAPodcast
         | MAPodcastEpisode
@@ -206,7 +222,7 @@ class BaseConverter(ABC):
 
     def _create_provider_mapping(self, item_id: str) -> ProviderMapping:
         """Create provider mapping for the item."""
-        return self.context.provider._get_provider_mapping(item_id)
+        return self.context.provider.adaptor._get_provider_mapping(item_id)
 
     def _get_attr(self, obj: Any, attr_path: str, default: Any = None) -> Any:
         """
@@ -214,19 +230,21 @@ class BaseConverter(ABC):
 
         Supports e.g. _get_attr(object, "thing.other_thing")
         """
-        # TODO: I'm fairly sure there is existing code/libs for this?
-        try:
-            current = obj
-            for part in attr_path.split("."):
-                if hasattr(current, part):
-                    current = getattr(current, part)
-                elif isinstance(current, dict) and part in current:
-                    current = current[part]
-                else:
-                    return default
-            return current
-        except AttributeError, KeyError, TypeError:
-            return default
+        current = obj
+        for part in attr_path.split("."):
+            if hasattr(current, part):
+                current = getattr(current, part)
+            elif isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return default
+        return default if current is None else current
+
+    def _require_id(self, item_id: str | None, obj: Any) -> str:
+        """Return an id of an auntie-sounds object, raising ConversionError if None."""
+        if not item_id:
+            raise ConversionError(f"No id for {obj}")
+        return item_id
 
     def _get_synopsis(self, obj: Any) -> str | None:
         """Return the fullest synopsis the given object carries, if any."""
@@ -247,42 +265,43 @@ class StationConverter(BaseConverter):
 
     async def get_stream_details(self, source_obj: Any) -> StreamDetails | None:
         """Convert the source object to a stream."""
-        if not isinstance(source_obj, self.ConvertableTypes):
+        if not isinstance(source_obj, (Station, LiveStation)):
             return None
-        # TODO: can't seek this stream
         station = await self.convert(source_obj)
         if not station or not source_obj.stream:
             return None
+        if type(source_obj) is Station and source_obj.international:
+            # This is a bare-bones international stream
+            sd = StreamDetails(
+                media_type=MediaType.RADIO,
+                stream_type=StreamType.HLS,
+                path=source_obj.stream,
+                item_id=station.item_id,
+                provider=station.provider,
+                audio_format=_audio_format(source_obj.stream),
+            )
+            self.logger.debug(sd)
+            return sd
+
         show_time = self._get_attr(source_obj, "titles.secondary")
         show_title = self._get_attr(source_obj, "titles.primary")
         programme_name = f"{show_time} • {show_title}"
-        stream_details = None
-        if station and source_obj.stream:
-            stream_metadata = StreamMetadata(
-                title=programme_name,
-            )
 
-            if station.image is not None:
-                stream_metadata.image_url = station.image.path
-
-            stream_details = StreamDetails(
-                stream_metadata=stream_metadata,
-                media_type=MediaType.RADIO,
-                stream_type=StreamType.HLS
-                if self.context.provider.stream_format == _Constants.HLS
-                else StreamType.HTTP,
-                path=str(source_obj.stream),
-                item_id=station.item_id,
-                provider=station.provider,
-                audio_format=AudioFormat(
-                    content_type=ContentType.try_parse(str(source_obj.stream))
-                ),
-                data={
-                    "provider": self.context.provider_domain,
-                    "station": station.item_id,
-                },
-            )
-        return stream_details
+        return StreamDetails(
+            stream_metadata=StreamMetadata(
+                image_url=station.image.path if station.image else None, title=programme_name
+            ),
+            media_type=MediaType.RADIO,
+            stream_type=StreamType.HLS,
+            path=str(source_obj.stream),
+            item_id=station.item_id,
+            provider=station.provider,
+            audio_format=_audio_format(source_obj.stream),
+            data={
+                "provider": self.context.provider.instance_id,
+                "station": station.item_id,
+            },
+        )
 
     async def convert(self, source_obj: Any) -> Radio:
         """Convert the source object to target type."""
@@ -292,26 +311,29 @@ class StationConverter(BaseConverter):
             return self._convert_live_station(source_obj)
         if isinstance(source_obj, StationSearchResult):
             return self._convert_station_search_result(source_obj)
-        self.logger.error(f"Failed to convert station {type(source_obj)}: {source_obj}")
+        self.logger.error(
+            "Failed to convert station with type: %s.\n%s", type(source_obj), source_obj
+        )
         raise ConversionError(f"Failed to convert station {type(source_obj)}: {source_obj}")
 
     def _convert_station(self, station: Station) -> Radio:
         """Convert Station object."""
         image_url = self._get_attr(station, "image_url")
 
-        radio = Radio(
+        # Check if we need to add BBC prefix back to station to help identify station within MA
+        title = self._get_attr(station, "title", "Unknown")
+        if title[0:3] != "BBC":
+            title = f"BBC {title}"
+
+        return Radio(
             item_id=station.id,
-            # Add BBC prefix back to station to help identify station within MA
-            name=f"BBC {self._get_attr(station, 'title', 'Unknown')}",
-            provider=self.context.provider_domain,
+            name=title,
+            provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
-                image_url, self.context.provider_domain
+                image_url, self.context.provider.instance_id
             ),
             provider_mappings={self._create_provider_mapping(station.id)},
         )
-        if station.stream:
-            radio.uri = station.stream.uri
-        return radio
 
     def _convert_live_station(self, station: LiveStation) -> Radio:
         """Convert LiveStation object."""
@@ -321,9 +343,9 @@ class StationConverter(BaseConverter):
         return Radio(
             item_id=station.id,
             name=f"BBC {name}",
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
-                image_url, self.context.provider_domain
+                image_url, self.context.provider.instance_id
             ),
             provider_mappings={self._create_provider_mapping(station.id)},
         )
@@ -333,9 +355,9 @@ class StationConverter(BaseConverter):
         return Radio(
             item_id=station.service_id,
             name=f"BBC {station.station_name}",
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
-                station.station_image_url, self.context.provider_domain
+                station.station_image_url, self.context.provider.instance_id
             ),
             provider_mappings={self._create_provider_mapping(station.service_id)},
         )
@@ -352,21 +374,20 @@ class PodcastConverter(BaseConverter):
     PODCAST_EPISODE_DETAILED_FORMAT = "{episode_title} • {detail} ({date})"
 
     def _format_show_title(self, show: RadioShow) -> str:
-        if show is None:
-            return "Unknown show"
-        if show.start and show.titles:
+        has_titles = bool(show.titles and (show.titles.primary or show.titles.secondary))
+        if show.start and has_titles:
             return self.SCHEDULE_ITEM_FORMAT.format(
                 start=_to_time(show.start),
-                show_name=show.titles["primary"],
-                show_title=show.titles["secondary"],
+                show_name=self._get_attr(show.titles, "primary"),
+                show_title=self._get_attr(show.titles, "secondary"),
                 date=_to_date(show.start),
             )
-        if show.titles:
+        if has_titles:
             # TODO: when getting a schedule listing, we have a broadcast time
             # when we fetch the streaming details later we lose that from the new API call
             title = self.SCHEDULE_ITEM_DEFAULT_FORMAT.format(
-                show_name=show.titles["primary"],
-                show_title=show.titles["secondary"],
+                show_name=self._get_attr(show.titles, "primary"),
+                show_title=self._get_attr(show.titles, "secondary"),
             )
             date = show.release.get("date") if show.release else None
             if date and isinstance(date, (str, datetime)):
@@ -377,23 +398,21 @@ class PodcastConverter(BaseConverter):
     def _format_podcast_episode_title(self, episode: PodcastEpisode) -> str:
         # Similar to show, but not quite: we expect to see this in the context of a podcast detail
         # page
-        if episode is None:
-            return "Unknown episode"
-
         if episode.release:
             date = episode.release.get("date")
         elif episode.availability:
             date = episode.availability.get("from")
         else:
             date = None
-        if isinstance(date, (str, datetime)) and episode.titles:
+        episode_title = episode.titles.secondary if episode.titles else None
+        if isinstance(date, (str, datetime)) and episode_title:
             datestamp = _to_date(date)
             title = self.PODCAST_EPISODE_DEFAULT_FORMAT.format(
-                episode_title=episode.titles.get("secondary"),
+                episode_title=episode_title,
                 date=datestamp,
             )
         else:
-            title = str(episode.titles.get("secondary")) if episode.titles else "Unknown episode"
+            title = episode_title or "Unknown episode"
         return title
 
     def can_convert(self, source_obj: Any) -> bool:
@@ -415,13 +434,11 @@ class PodcastConverter(BaseConverter):
                     uri=source_obj.stream,
                 ),
                 media_type=MediaType.PODCAST_EPISODE,
-                stream_type=StreamType.HLS
-                if self.context.provider.stream_format == _Constants.HLS
-                else StreamType.HTTP,
+                stream_type=StreamType.HLS,
                 path=source_obj.stream,
-                item_id=source_obj.id,
-                provider=self.context.provider_domain,
-                audio_format=AudioFormat(content_type=ContentType.try_parse(source_obj.stream)),
+                item_id=source_obj.pid,
+                provider=self.context.provider.instance_id,
+                audio_format=_audio_format(source_obj.stream),
                 allow_seek=True,
                 can_seek=True,
                 duration=(episode.duration or None),
@@ -430,6 +447,7 @@ class PodcastConverter(BaseConverter):
             )
         elif episode and isinstance(episode, Track) and source_obj.stream:
             # Try to work out the best network/series name to display
+            title = ""
             if source_obj.network and source_obj.network.id == "bbc_webonly":
                 title = "BBC News"
             elif source_obj.network:
@@ -437,12 +455,9 @@ class PodcastConverter(BaseConverter):
             elif source_obj.container:
                 title = source_obj.container.title
             elif source_obj.titles:
-                title = self._get_attr(source_obj, "titles.primary")
+                title = self._get_attr(source_obj, "titles.primary", "")
             elif episode.metadata and episode.metadata.description:
                 title = episode.metadata.description
-
-            if not title:
-                title = ""
 
             metadata = StreamMetadata(title=title, uri=source_obj.stream)
             if episode.metadata.images:
@@ -451,13 +466,11 @@ class PodcastConverter(BaseConverter):
             stream_details = StreamDetails(
                 stream_metadata=metadata,
                 media_type=MediaType.TRACK,
-                stream_type=StreamType.HLS
-                if self.context.provider.stream_format == _Constants.HLS
-                else StreamType.HTTP,
+                stream_type=StreamType.HLS,
                 path=source_obj.stream,
                 item_id=episode.item_id,
-                provider=self.context.provider_domain,
-                audio_format=AudioFormat(content_type=ContentType.try_parse(source_obj.stream)),
+                provider=self.context.provider.instance_id,
+                audio_format=_audio_format(source_obj.stream),
                 can_seek=True,
                 duration=episode.duration,
             )
@@ -465,7 +478,7 @@ class PodcastConverter(BaseConverter):
 
     async def convert(self, source_obj: Any) -> OutputTypes:
         """Convert podcast objects."""
-        if isinstance(source_obj, (Podcast, RadioSeries)) or self.context.force_type is Podcast:
+        if isinstance(source_obj, (Podcast, RadioSeries)) or self.context.force_type is MAPodcast:
             return await self._convert_podcast(source_obj)
         if isinstance(source_obj, PodcastEpisode):
             return await self._convert_podcast_episode(source_obj)
@@ -473,7 +486,9 @@ class PodcastConverter(BaseConverter):
             return await self._convert_radio_show(source_obj)
         if isinstance(source_obj, RadioClip) or self.context.force_type is Track:
             return await self._convert_radio_clip(source_obj)
-        self.logger.error(f"Failed to convert podcast object {type(source_obj)}: {source_obj}")
+        self.logger.error(
+            "Failed to convert podcast object with type: %s.\n%s", type(source_obj), source_obj
+        )
         raise ConversionError(f"Browse conversion failed: {source_obj}")
 
     async def _convert_podcast(self, podcast: Podcast | RadioSeries) -> MAPodcast:
@@ -483,83 +498,93 @@ class PodcastConverter(BaseConverter):
             podcast, "sub_items.image_url"
         )
 
+        metadata = ImageProvider.create_metadata_with_image(
+            image_url, self.context.provider.instance_id, description
+        )
+        if isinstance(podcast, Podcast):
+            metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
+        item_id = self._require_id(podcast.item_id, podcast)
         return MAPodcast(
-            item_id=podcast.id,
+            item_id=item_id,
             name=name,
-            provider=self.context.provider_domain,
-            metadata=ImageProvider.create_metadata_with_image(
-                image_url, self.context.provider_domain, description
-            ),
-            provider_mappings={self._create_provider_mapping(podcast.item_id)},
+            provider=self.context.provider.instance_id,
+            metadata=metadata,
+            provider_mappings={self._create_provider_mapping(item_id)},
         )
 
     async def _convert_podcast_episode(self, episode: PodcastEpisode) -> MAPodcastEpisode:
         duration = self._get_attr(episode, "duration.value")
-        progress_ms = self._get_attr(episode, "progress.value")
-        resume_position = (progress_ms * 1000) if progress_ms else None
+        resume_position_ms = (
+            self._get_attr(episode, "progress.value") * 1000 if episode.progress else None
+        )
         description = self._get_synopsis(episode)
 
         # Handle parent podcast
         podcast = None
         if hasattr(episode, "container") and episode.container:
-            podcast = await PodcastConverter(self.context).convert(
-                cast("Podcast", episode.container)
-            )
+            podcast = await PodcastConverter(self.context).convert(episode.container)
 
         if not podcast or not isinstance(podcast, MAPodcast):
             raise ConversionError(f"No podcast for episode {episode}")
         if not episode or not episode.pid:
             raise ConversionError(f"No podcast episode for {episode}")
 
-        return MAPodcastEpisode(
+        ma_episode = MAPodcastEpisode(
             item_id=episode.pid,
             name=self._format_podcast_episode_title(episode),
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             duration=duration,
             position=0,
-            resume_position_ms=resume_position,
+            resume_position_ms=resume_position_ms,
             metadata=ImageProvider.create_metadata_with_image(
-                episode.image_url,
-                self.context.provider_domain,
-                description,
+                url=episode.image_url,
+                provider=self.context.provider.instance_id,
+                description=description,
             ),
             podcast=podcast,
             provider_mappings={self._create_provider_mapping(episode.pid)},
             uri=episode.stream,
         )
+        ma_episode.metadata.release_date = _release_date(episode)
+        return ma_episode
+
+    def _show_is_a_track(self, show: RadioShow) -> bool:
+        """
+        Determine if this should be a track instead of a podcast episode based on duration/context.
+
+        A sensible, but arbitrary duration was picked for this.
+        Track example: latest BBC News, PodcastEpisode: latest episode of a radio show.
+        """
+        duration = self._get_attr(show, "duration.value", 0)
+        container = self._get_attr(show, "container")
+        if self.context.force_type:
+            return self.context.force_type is Track
+        if duration and duration < Constants.TRACK_DURATION_THRESHOLD:
+            return True
+        return not container
 
     async def _convert_radio_show(self, show: RadioShow) -> MAPodcastEpisode | Track:
         duration = self._get_attr(show, "duration.value")
-        progress_ms = self._get_attr(show, "progress.value")
-        resume_position = (progress_ms * 1000) if progress_ms else None
-
+        resume_position_ms = (
+            self._get_attr(show, "progress.value") * 1000 if show.progress else None
+        )
         if not show or not show.pid:
             raise ConversionError(f"No radio show for {show}")
 
-        # Determine if this should be an episode or track based on duration/context
-        # TODO: picked a sensible default but need to investigate if this makes sense
-        # Track example: latest BBC News, PodcastEpisode: latest episode of a radio show
-        if (
-            self.context.force_type == Track
-            or (
-                not self.context.force_type
-                and duration
-                and duration < _Constants.TRACK_DURATION_THRESHOLD
-            )
-            or (not hasattr(show, "container") or not show.container)
-        ):
+        if self._show_is_a_track(show):
             return Track(
                 item_id=show.pid,
                 name=self._format_show_title(show),
-                provider=self.context.provider_domain,
+                provider=self.context.provider.instance_id,
                 duration=duration,
                 metadata=ImageProvider.create_metadata_with_image(
                     url=show.image_url,
-                    provider=self.context.provider_domain,
+                    provider=self.context.provider.instance_id,
                     description=self._get_synopsis(show),
                 ),
                 provider_mappings={self._create_provider_mapping(show.pid)},
             )
+
         # Handle as episode
         podcast = None
         if hasattr(show, "container") and show.container:
@@ -568,24 +593,26 @@ class PodcastConverter(BaseConverter):
         if not podcast or not isinstance(podcast, MAPodcast):
             raise ConversionError(f"No podcast for episode for {show}")
 
-        return MAPodcastEpisode(
+        episode = MAPodcastEpisode(
             item_id=show.pid,
             name=self._format_show_title(show),
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             duration=duration,
-            resume_position_ms=resume_position,
+            resume_position_ms=resume_position_ms,
             metadata=ImageProvider.create_metadata_with_image(
                 url=show.image_url,
-                provider=self.context.provider_domain,
+                provider=self.context.provider.instance_id,
                 description=self._get_synopsis(show),
             ),
             podcast=podcast,
             provider_mappings={self._create_provider_mapping(show.pid)},
             position=1,
         )
+        episode.metadata.release_date = _release_date(show)
+        return episode
 
     async def _convert_radio_clip(self, clip: RadioClip) -> Track | MAPodcastEpisode:
-        duration = self._get_attr(clip, "duration.value")
+        duration = self._get_attr(clip, "duration.value", 0)
         description = self._get_synopsis(clip)
 
         if not clip or not clip.pid:
@@ -600,27 +627,100 @@ class PodcastConverter(BaseConverter):
 
             if not podcast or not isinstance(podcast, MAPodcast):
                 raise ConversionError(f"No podcast for episode for {clip}")
-            return MAPodcastEpisode(
+            episode = MAPodcastEpisode(
                 item_id=clip.pid,
                 name=self._get_attr(clip, "titles.entity_title", "Unknown title"),
-                provider=self.context.provider_domain,
+                provider=self.context.provider.instance_id,
                 duration=duration,
                 metadata=ImageProvider.create_metadata_with_image(
-                    clip.image_url, self.context.provider_domain, description
+                    clip.image_url, self.context.provider.instance_id, description
                 ),
                 provider_mappings={self._create_provider_mapping(clip.pid)},
                 podcast=podcast,
                 position=0,
             )
+            episode.metadata.release_date = _release_date(clip)
+            return episode
         return Track(
             item_id=clip.pid,
             name=self._get_attr(clip, "titles.entity_title", "Unknown Track"),
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             duration=duration,
             metadata=ImageProvider.create_metadata_with_image(
-                clip.image_url, self.context.provider_domain, description
+                clip.image_url, self.context.provider.instance_id, description
             ),
             provider_mappings={self._create_provider_mapping(clip.pid)},
+        )
+
+
+class LiveProgrammeConverter(BaseConverter):
+    """Converts a programme that is on air now into an episode played from the live stream."""
+
+    LIVE_PROGRAMME_FORMAT = "{start} - {end} {show_name} • {show_title}"
+
+    def can_convert(self, source_obj: Any) -> bool:
+        """Check if this is a scheduled programme that is on air now."""
+        if self.context.force_type not in (None, MAPodcastEpisode):
+            return False
+        return (
+            isinstance(source_obj, ScheduleItem)
+            and self._programme_id(source_obj) is not None
+            and source_obj.is_live
+        )
+
+    async def get_stream_details(self, source_obj: Any) -> StreamDetails | None:
+        """Live programmes are streamed by the provider from the station's rewind window."""
+        return None
+
+    async def convert(self, source_obj: Any) -> MAPodcastEpisode:
+        """Convert a scheduled programme to an episode played from the station's live stream."""
+        programme_id = self._programme_id(source_obj)
+        if programme_id is None:
+            raise ConversionError(f"Not a live programme: {source_obj}")
+        podcast: MAPodcast | ItemMapping
+        if source_obj.container:
+            podcast = cast(
+                "MAPodcast",
+                await PodcastConverter(self.context).convert(cast("Podcast", source_obj.container)),
+            )
+        else:
+            podcast = ItemMapping(
+                media_type=MediaType.PODCAST,
+                item_id=programme_id.station_id,
+                provider=self.context.provider.instance_id,
+                name=self._get_attr(source_obj, "network.short_title", programme_id.station_id),
+            )
+        return MAPodcastEpisode(
+            item_id=programme_id.item_id,
+            name=self.LIVE_PROGRAMME_FORMAT.format(
+                start=_to_time(source_obj.start),
+                end=_to_time(source_obj.end),
+                show_name=self._get_attr(source_obj, "titles.primary", ""),
+                show_title=self._get_attr(source_obj, "titles.secondary", ""),
+            ),
+            provider=self.context.provider.instance_id,
+            duration=programme_id.duration,
+            metadata=ImageProvider.create_metadata_with_image(
+                url=source_obj.image_url,
+                provider=self.context.provider.instance_id,
+                description=self._get_synopsis(source_obj),
+            ),
+            podcast=podcast,
+            provider_mappings={self._create_provider_mapping(programme_id.item_id)},
+            position=0,
+        )
+
+    def _programme_id(self, item: ScheduleItem | RadioShow) -> LiveProgrammeId | None:
+        """Return the id of a scheduled programme, if it has everything needed to play it."""
+        station_id = self._get_attr(item, "network.id")
+        if not (station_id and item.item_id and item.start and item.end):
+            return None
+        item_id = self._require_id(item.item_id, item)
+        return LiveProgrammeId(
+            station_id=station_id,
+            pid=item_id,
+            start=int(item.start.timestamp()),
+            end=int(item.end.timestamp()),
         )
 
 
@@ -653,34 +753,36 @@ class BrowseConverter(BaseConverter):
             return self._convert_schedule(source_obj)
         if isinstance(source_obj, RecommendedMenuItem):
             return await self._convert_recommended_item(source_obj)
-        self.logger.error(f"Failed to convert browse object {type(source_obj)}: {source_obj}")
+        self.logger.error(
+            "Failed to convert browse object with type: %s.\n%s", type(source_obj), source_obj
+        )
         raise ConversionError(f"Browse conversion failed: {source_obj}")
 
     def _convert_menu_item(self, item: MenuItem) -> BrowseFolder | RecommendationFolder:
         """Convert MenuItem to BrowseFolder or RecommendationFolder."""
         if not item or not item.title:
             raise ConversionError(f"No menu item {item}")
+        item_id = self._require_id(item.item_id, item)
         if not item.image_url:
-            image_url = ImageProvider.get_icon_url(item.item_id)
+            image_url = ImageProvider.get_icon_url(item_id)
             image = (
-                ImageProvider.create_image(image_url, self.context.provider_domain)
+                ImageProvider.create_image(image_url, self.context.provider.instance_id)
                 if image_url
                 else None
             )
-        elif item.image_url:
-            image = ImageProvider.create_image(item.image_url, self.context.provider_domain)
+        else:
+            image = ImageProvider.create_image(item.image_url, self.context.provider.instance_id)
 
-        path = self._build_path(item.item_id)
+        path = self._build_path(item_id)
 
         return_type = BrowseFolder
 
         if self.context.force_type is RecommendationFolder:
             return_type = RecommendationFolder
-
         return return_type(
-            item_id=item.item_id,
+            item_id=self._require_id(item.item_id, item),
             name=item.title,
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             path=path,
             image=image,
         )
@@ -689,21 +791,23 @@ class BrowseConverter(BaseConverter):
         self, item: Category | Collection | Playlist
     ) -> BrowseFolder:
         """Convert Category, Collection or Playlist to BrowseFolder."""
+        item_id = self._require_id(item.item_id, item)
         if isinstance(item, Playlist):
             if not isinstance(self.context.path_parts, list):
-                raise ConversionError("Path not provided for Playlist item")
-            path = "/".join([*self.context.path_parts, item.item_id])
+                path = f"{self.context.provider.instance_id}://playlists/{item_id}"
+            else:
+                path = "/".join([*self.context.path_parts, item_id])
         else:
             path_prefix = "categories" if isinstance(item, Category) else "collections"
-            path = f"{self.context.provider_domain}://{path_prefix}/{item.item_id}"
+            path = f"{self.context.provider.instance_id}://{path_prefix}/{item_id}"
 
         return BrowseFolder(
-            item_id=item.item_id,
+            item_id=item_id,
             name=self._get_attr(item, "titles.primary", "Untitled folder"),
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             path=path,
             image=(
-                ImageProvider.create_image(item.image_url, self.context.provider_domain)
+                ImageProvider.create_image(item.image_url, self.context.provider.instance_id)
                 if item.image_url
                 else None
             ),
@@ -715,7 +819,7 @@ class BrowseConverter(BaseConverter):
             item_id="schedule",
             name="Schedule",
             translation_key="schedule",
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             path=self._build_path("schedule"),
         )
 
@@ -724,11 +828,9 @@ class BrowseConverter(BaseConverter):
         if not item or not item.sub_items or not item.title:
             raise ConversionError(f"Incorrect format for item {item}")
 
-        # TODO this is messy
-        new_adaptor = Adaptor(provider=self.context.provider)
         items: list[Track | Radio | MAPodcast | MAPodcastEpisode | BrowseFolder] = []
         for sub_item in item.sub_items:
-            new_item = await new_adaptor.new_object(sub_item)
+            new_item = await self.context.provider.adaptor.new_object(sub_item)
             if (
                 new_item is not None
                 and not isinstance(new_item, RecommendationFolder)
@@ -737,9 +839,9 @@ class BrowseConverter(BaseConverter):
                 items.append(new_item)
 
         return RecommendationFolder(
-            item_id=item.item_id,
+            item_id=self._require_id(item.item_id, item),
             name=item.title,
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             items=UniqueList(items),
         )
 
@@ -747,7 +849,7 @@ class BrowseConverter(BaseConverter):
         """Build path for browse items."""
         if self.context.path_parts:
             return "/".join([*self.context.path_parts, item_id])
-        return f"{self.context.provider_domain}://{item_id}"
+        return f"{self.context.provider.instance_id}://{item_id}"
 
 
 class Adaptor:
@@ -757,7 +859,22 @@ class Adaptor:
         """Create new adaptor."""
         self.provider = provider
         self.logger = self.provider.logger
-        self._converters: list[BaseConverter] = []
+
+    async def new_live_programme(self, programme: ScheduleItem | RadioShow) -> MAPodcastEpisode:
+        """
+        Convert a scheduled programme to an episode played from the station's live stream.
+
+        :param programme: The programme from a station schedule.
+        """
+        context = self._create_context(force_type=MAPodcastEpisode)
+        return await LiveProgrammeConverter(context).convert(programme)
+
+    def _get_provider_mapping(self, item_id: str) -> ProviderMapping:
+        return ProviderMapping(
+            item_id=item_id,
+            provider_domain=self.provider.domain,
+            provider_instance=self.provider.instance_id,
+        )
 
     def _create_context(
         self,
@@ -777,14 +894,13 @@ class Adaptor:
     ) -> Context:
         return Context(
             provider=self.provider,
-            provider_domain=self.provider.domain,
             path_parts=path_parts,
             force_type=force_type,
         )
 
     async def new_streamable_object(
         self,
-        source_obj: SoundsTypes,
+        source_obj: SoundsTypes | None,
         force_type: type[Track | Radio | MAPodcastEpisode] | None = None,
         path_parts: list[str] | None = None,
     ) -> StreamDetails | None:
@@ -801,10 +917,9 @@ class Adaptor:
         """
         if source_obj is None:
             return None
-
         context = self._create_context(path_parts, force_type)
 
-        converters = [
+        converters: list[BaseConverter] = [
             StationConverter(context),
             PodcastConverter(context),
             BrowseConverter(context),
@@ -814,22 +929,23 @@ class Adaptor:
             if converter.can_convert(source_obj):
                 try:
                     stream_details = await converter.get_stream_details(source_obj)
-                except AttributeError as e:
-                    self.logger.error(f"Error converting object: {e!s}")
+                except AttributeError:
+                    self.logger.exception("Error converting object %s", source_obj)
                     return None
                 self.provider.logger.debug(
-                    f"Successfully converted {type(source_obj).__name__}"
-                    f" to {type(stream_details).__name__}"
+                    "Successfully converted %s to %s",
+                    type(source_obj).__name__,
+                    type(stream_details).__name__,
                 )
                 return stream_details
         self.provider.logger.warning(
-            f"No stream converter found for type {type(source_obj).__name__}"
+            "No stream converter found for type %s", type(source_obj).__name__
         )
         return None
 
     async def new_object(
         self,
-        source_obj: SoundsTypes,
+        source_obj: SoundsTypes | None,
         force_type: (
             type[
                 Track
@@ -866,34 +982,48 @@ class Adaptor:
         """
         if source_obj is None:
             return None
-
         context = self._create_context(path_parts, force_type)
 
-        converters = [
+        converters: list[BaseConverter] = [
             StationConverter(context),
+            LiveProgrammeConverter(context),
             PodcastConverter(context),
             BrowseConverter(context),
         ]
         for converter in converters:
-            self.logger.debug(f"Checking if converter {converter} can convert {type(source_obj)}")
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Checking if converter %s can convert %s",
+                converter,
+                type(source_obj),
+            )
             if converter.can_convert(source_obj):
                 try:
                     result = await converter.convert(source_obj)
-                except AttributeError as e:
-                    self.logger.error(f"Error converting object: {e!s}")
+                except AttributeError:
+                    self.logger.exception("Error converting object %s", source_obj)
                     return None
-                if context.force_type:
-                    assert type(result) is context.force_type, (
-                        f"Forced type to {context.force_type} but received {type(result)} "
-                        f"using {type(converter)}"
+                if context.force_type and type(result) is not context.force_type:
+                    msg = (
+                        f"Expected forced type of {context.force_type} but received "
+                        f"{type(result)} using {type(converter)}"
                     )
-                self.provider.logger.debug(
-                    f"Successfully converted {type(source_obj).__name__}"
-                    f" to {type(result).__name__} {result}"
-                )
+                    raise ConversionError(msg)
+                msg = "Successfully converted %s to %s"
+                args: list[Any] = [type(source_obj).__name__, type(result).__name__]
+                if hasattr(result, "item_id") and result.item_id is not None:
+                    msg += " item_id: %s"
+                    args.append(result.item_id)
+                if hasattr(result, "urn") and result.urn is not None:
+                    msg += " urn: %s"
+                    args.append(result.urn)
+                self.logger.debug(msg, *args)
+                self.provider.logger.log(VERBOSE_LOG_LEVEL, result)
                 return result
-            self.logger.debug(f"Converter {converter} could not convert {type(source_obj)}")
+            self.logger.log(
+                VERBOSE_LOG_LEVEL, "Converter %s could not convert %s", converter, type(source_obj)
+            )
 
-        self.logger.warning(f"No converter found for type {type(source_obj).__name__}")
-        self.logger.debug(str(source_obj))
+        self.logger.warning("No converter found for type %s", type(source_obj).__name__)
+        self.logger.debug(source_obj)
         return None

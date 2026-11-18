@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
@@ -63,7 +63,7 @@ def _controller(*, player_available: bool = True) -> tuple[PlayerQueuesControlle
     ctrl.mass.players.play_media = AsyncMock()
     ctrl.mass.music.get_playback_speed = AsyncMock(return_value=1.0)
     ctrl.mass.players.get_player = Mock(
-        return_value=MagicMock(state=MagicMock(playback_state=PlaybackState.IDLE))
+        return_value=MagicMock(playback_state=PlaybackState.IDLE, offline_by_power_control=False)
         if player_available
         else None
     )
@@ -108,6 +108,7 @@ def test_mark_ended_on_an_itemless_queue_clears_it() -> None:
 def test_clear_still_empties_the_queue() -> None:
     """An explicit clear keeps emptying the queue, and an emptied queue is not "ended"."""
     ctrl, queue = _controller()
+    queue.next_item = ctrl._queue_data[QUEUE_ID].items[0]
 
     ctrl.clear(QUEUE_ID)
 
@@ -116,6 +117,7 @@ def test_clear_still_empties_the_queue() -> None:
     assert queue.current_index is None
     assert queue.current_item is None
     assert queue.ended is False
+    assert queue.next_item is None
 
 
 async def test_play_on_an_ended_queue_restarts_from_the_beginning() -> None:
@@ -303,7 +305,19 @@ async def test_adding_a_batch_to_a_finished_queue_reports_what_follows() -> None
 def _tracker(*items: Any) -> Any:
     """Build a playback tracker stand-in owning a queue holding the given items."""
     tracker = MagicMock()
-    tracker._queue_data = {QUEUE_ID: SimpleNamespace(items=list(items), flow_mode_stream_log=[])}
+    # the item the player stopped on ("i1" in the stop states) had its audio served
+    tracker._queue_data = {
+        QUEUE_ID: SimpleNamespace(
+            items=list(items),
+            flow_mode_stream_log=[],
+            served_item_ids={"i1": None},
+            sleep_timer_stopped_target=None,
+            halted_by_command=False,
+            started_session_id=None,
+            played_session_id=None,
+        )
+    }
+    tracker.mass.players.get_player.return_value.offline_by_power_control = False
     return tracker
 
 
@@ -346,8 +360,8 @@ def test_a_finished_audiobook_or_episode_is_marked_ended_too() -> None:
 
 
 def test_a_live_source_is_left_alone_even_without_a_previous_item() -> None:
-    """A radio that stopped did not run out; leave the queue for a later resume."""
-    for media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
+    """A radio or audio source that stopped did not run out; leave the queue for a later resume."""
+    for media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
         tracker = _tracker(_item(media_type))
 
         # prev_item is None here: the media type is recovered from the queue's last item
@@ -382,8 +396,8 @@ def _stop_states(prev_item: Any) -> tuple[CompareState, CompareState]:
 
 
 def test_a_live_source_never_reaches_the_end_of_queue_handling() -> None:
-    """Radio, audio sources and sound effects short-circuit before the settle is scheduled."""
-    for media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
+    """Radio and audio sources short-circuit before the settle is scheduled."""
+    for media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
         tracker = _tracker()
         prev_state, new_state = _stop_states(_item(media_type))
 
@@ -419,6 +433,59 @@ def test_playing_a_track_to_its_end_settles_the_queue() -> None:
     """Running out of music schedules the settle (debounced, so late arrivals still win)."""
     tracker = _tracker()
     prev_state, new_state = _stop_states(_item(MediaType.TRACK))
+
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, _queue_stub(), prev_state, new_state)
+
+    tracker.mass.create_task.assert_called_once()
+
+
+def test_a_queue_that_a_command_halted_does_not_settle() -> None:
+    """A pause or a stop on the last track is not the end of the queue, however far it played."""
+    tracker = _tracker()
+    tracker._queue_data[QUEUE_ID].halted_by_command = True
+    prev_state, new_state = _stop_states(_item(MediaType.TRACK))
+
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, _queue_stub(), prev_state, new_state)
+
+    tracker.mass.create_task.assert_not_called()
+
+
+def test_a_player_switched_off_at_the_last_track_does_not_settle_the_queue() -> None:
+    """A player that went idle because it was switched off did not run out of music."""
+    tracker = _tracker()
+    tracker.mass.players.get_player.return_value.offline_by_power_control = True
+    prev_state, new_state = _stop_states(_item(MediaType.TRACK))
+
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, _queue_stub(), prev_state, new_state)
+
+    tracker.mass.create_task.assert_not_called()
+
+
+@pytest.mark.parametrize("switched_off", [False, True])
+async def test_a_player_switched_off_while_settling_is_not_played_on(switched_off: bool) -> None:
+    """Items added while the queue settles play on, unless the player was switched off meanwhile."""
+    tracker = _tracker()
+    tracker.play_index = AsyncMock()
+    queue = _queue_stub()
+    prev_state, new_state = _stop_states(_item(MediaType.TRACK))
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, queue, prev_state, new_state)
+    settle = tracker.mass.create_task.call_args.args[0]
+    # an item got added while it settles; the player may get switched off in the meantime
+    queue_stub: Any = queue
+    queue_stub.state = PlaybackState.IDLE
+    queue_stub.current_index = 0
+    tracker.mass.players.get_player.return_value.offline_by_power_control = switched_off
+
+    with patch("asyncio.sleep", new=AsyncMock()):
+        await settle
+
+    assert tracker.play_index.await_count == (0 if switched_off else 1)
+
+
+def test_a_completed_sound_effect_settles_the_queue() -> None:
+    """A sound effect that played to its end reaches the settle handling like any other item."""
+    tracker = _tracker()
+    prev_state, new_state = _stop_states(_item(MediaType.SOUND_EFFECT))
 
     PlaybackTrackerMixin._handle_end_of_queue(tracker, _queue_stub(), prev_state, new_state)
 

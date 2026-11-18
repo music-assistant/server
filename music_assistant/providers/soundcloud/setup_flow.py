@@ -8,7 +8,11 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.models.setup_flow import SetupFlowError
-from music_assistant.providers.soundcloud import CONF_AUTHORIZATION, CONF_CLIENT_ID
+from music_assistant.providers.soundcloud import (
+    CONF_AUTHORIZATION,
+    CONF_CLIENT_ID,
+    CONF_REFRESH_TOKEN,
+)
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
@@ -16,12 +20,13 @@ if TYPE_CHECKING:
 _ENTRIES = (
     ConfigEntry(key=CONF_CLIENT_ID, type=ConfigEntryType.SECURE_STRING, required=True),
     ConfigEntry(key=CONF_AUTHORIZATION, type=ConfigEntryType.SECURE_STRING, required=True),
+    ConfigEntry(key=CONF_REFRESH_TOKEN, type=ConfigEntryType.SECURE_STRING, required=False),
 )
 
 
 async def run_setup(session: SetupSession) -> None:
     """Run the setup flow: collect the credentials and create the provider."""
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     setup_data = dict(session.context.setup_data)
     while True:
         submitted = await session.form(
@@ -32,4 +37,4 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}

@@ -28,11 +28,21 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import format_ip_for_url
 
-from .constants import StreamingProtocol
+from .constants import AIRPLAY_DEFAULT_PORT, RAOP_DEFAULT_PORT, StreamingProtocol
 from .helpers import get_cli_binary
 
 # Timeout for the binary to complete the SRP exchange after the PIN is entered
 PAIR_SETUP_TIMEOUT = 60
+
+# Headers the receiver needs to show its PIN on /pair-pin-start: OS 27 receivers
+# refuse the request without HAP headers and only display the code when the
+# client names itself. Same values as the cliairplay binary sends.
+PAIR_PIN_START_HEADERS = {
+    "User-Agent": "AirPlay/670.6.2",
+    "X-Apple-HKP": "3",
+    "Content-Type": "application/octet-stream",
+    "X-Apple-Client-Name": "Music Assistant",
+}
 
 # HAP error tag in the binary's pair-setup stderr lines ("... error tag: 3 (backoff ...)")
 HAP_ERROR_TAG_RE = re.compile(r"error tag: (\d+)")
@@ -89,7 +99,9 @@ class AirPlayPairing:
         self.name = name
         self.protocol = protocol
         self.logger = logger
-        self.port = port or (7000 if protocol == StreamingProtocol.AIRPLAY2 else 5000)
+        self.port = port or (
+            AIRPLAY_DEFAULT_PORT if protocol == StreamingProtocol.AIRPLAY2 else RAOP_DEFAULT_PORT
+        )
         self.device_id = device_id
 
         # cliairplay --pair-setup subprocess state (AirPlay 2)
@@ -145,6 +157,7 @@ class AirPlayPairing:
             # Request PIN to be shown on device
             async with self._session.post(
                 f"{self._base_url}/pair-pin-start",
+                headers=PAIR_PIN_START_HEADERS,
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status != 200:
@@ -169,7 +182,7 @@ class AirPlayPairing:
             if self.protocol == StreamingProtocol.AIRPLAY2:
                 return await self._finish_cli_pair_setup(pin)
             if not self._session:
-                raise PlayerCommandFailed("Pairing not started")
+                raise PlayerCommandFailed("Pairing not started")  # noqa: TRY301 - handled by except below
             return await self._finish_raop_pairing(pin)
         except PlayerCommandFailed:
             raise
@@ -345,11 +358,11 @@ class AirPlayPairing:
         inner_hash = hashlib.sha1(f"{user_id}:{password}".encode()).digest()
         x = int.from_bytes(hashlib.sha1(salt + inner_hash).digest(), "big")
 
-        # k = H(N | PAD(g))
+        # k = H(N | PAD(g))  # noqa: ERA001
         g_padded = bytes.fromhex(RAOP_SRP_GENERATOR).rjust(n_len, b"\x00")
         k = int.from_bytes(hashlib.sha1(n_bytes + g_padded).digest(), "big")
 
-        # u = H(PAD(A) | PAD(B))
+        # u = H(PAD(A) | PAD(B))  # noqa: ERA001
         a_padded = client_public.rjust(n_len, b"\x00")
         b_padded = server_public.rjust(n_len, b"\x00")
         u = int.from_bytes(hashlib.sha1(a_padded + b_padded).digest(), "big")

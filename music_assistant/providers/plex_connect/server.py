@@ -5,15 +5,17 @@ from __future__ import annotations
 import logging
 import platform
 import time
-import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from aiohttp import web
 from music_assistant_models.enums import EventType
 
+from music_assistant.providers.plex.helpers import compute_client_id
+
 from .gdm import PlexGDMAdvertiser
 from .playback import PlaybackMixin
+from .plextv import build_version
 from .queue_commands import QueueCommandsMixin
 from .queue_sync import QueueSyncMixin
 from .timeline import TimelineMixin
@@ -54,12 +56,7 @@ class PlayerRemoteInstance:
         self.device_class = device_class
         self.remote_control = remote_control
 
-        self.client_id = str(
-            uuid.uuid5(
-                uuid.NAMESPACE_DNS,
-                f"music-assistant-plex-{plex_provider.instance_id}-{ma_player_id}",
-            )
-        )
+        self.client_id = compute_client_id(plex_provider.instance_id, ma_player_id)
 
         if self.remote_control:
             self.server: PlexRemoteControlServer | None = None
@@ -92,9 +89,7 @@ class PlayerRemoteInstance:
                 publish_ip=str(self.plex_provider.mass.streams.publish_ip),
                 name=self.player_name,
                 product="Music Assistant",
-                version=self.plex_provider.mass.version
-                if self.plex_provider.mass.version != "0.0.0"
-                else "1.0.0",
+                version=build_version(self.plex_provider.mass.version),
                 device_class=self.device_class,
             )
             self.gdm.start()
@@ -159,19 +154,6 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
         # Flag to prevent circular updates when we modify the queue ourselves
         self._updating_from_plex = False
 
-        self.player = self.provider.mass.players.get_player(self._ma_player_id)  # type: ignore[arg-type]
-
-        self.device_name = f"{self.player.display_name}" if self.player else "Music Assistant"
-
-        self.headers = {
-            "X-Plex-Device-Name": self.device_name,
-            "X-Plex-Session-Identifier": self.client_id,
-            "X-Plex-Client-Identifier": self.client_id,
-            "X-Plex-Product": "Music Assistant",
-            "X-Plex-Platform": "Music Assistant",
-            "X-Plex-Platform-Version": platform.release(),
-        }
-
         self._setup_routes()
 
     def _setup_routes(self) -> None:
@@ -205,11 +187,17 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
 
-        self.http_site = web.TCPSite(self.runner, "0.0.0.0", self.port)
+        self.http_site = web.TCPSite(self.runner, "0.0.0.0", self.port)  # noqa: S104 - serves Plex clients on the LAN
         await self.http_site.start()
         LOGGER.info(f"Plex remote control server started on HTTP port {self.port}")
 
         if self._ma_player_id:
+            # the Plex provider reports the player's playback to Plex, within this play queue
+            self._unsub_callbacks.append(
+                self.provider.playback_reporter.add_play_queue(
+                    self._ma_player_id, self._play_queue_params
+                )
+            )
             self._unsub_callbacks.append(
                 self.provider.mass.subscribe(
                     self._handle_state_event,
@@ -251,7 +239,7 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
         if self._ma_player_id:
             player = self.provider.mass.players.get_player(self._ma_player_id)
             if player:
-                player_name = player.display_name
+                player_name = player.name
 
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <MediaContainer machineIdentifier="{self.client_id}" version="1.0">
@@ -332,12 +320,12 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
             else None
         )
         if player:
-            player_name = player.display_name
+            player_name = player.name
             queue = self.provider.mass.players.get_active_queue(player)
             state = self._resolve_plex_state(player, queue)
 
         local_ip = self.provider.mass.streams.publish_ip
-        version = self.provider.mass.version if self.provider.mass.version != "0.0.0" else "1.0.0"
+        version = build_version(self.provider.mass.version)
 
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <MediaContainer>

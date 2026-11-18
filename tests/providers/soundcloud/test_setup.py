@@ -24,7 +24,7 @@ def _setup_values(provider: SoundcloudMusicProvider, **values: str) -> None:
 
 async def test_setup_returns_provider() -> None:
     """Setting up returns a provider instance."""
-    manifest = Mock()
+    manifest = Mock(features=set())
     manifest.domain = "soundcloud"
     config = Mock()
     config.get_value.return_value = "GLOBAL"
@@ -54,9 +54,7 @@ async def test_async_init_stores_user_id(provider: SoundcloudMusicProvider) -> N
     api = AsyncMock()
     api.get_account_details.return_value = {"id": 42}
 
-    with patch(
-        "music_assistant.providers.soundcloud.SoundcloudAsyncAPI", return_value=api
-    ) as api_cls:
+    with patch("music_assistant.providers.soundcloud._SoundcloudAPI", return_value=api) as api_cls:
         await provider.handle_async_init()
 
     api_cls.assert_called_once()

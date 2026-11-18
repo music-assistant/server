@@ -1,4 +1,19 @@
 {
+  "config_entries": {
+    "state": {
+      "label": "Your state",
+      "description": "Picks the local stream of triple j, Double J, ABC Classic and ABC Kids listen, and the matching now-playing info. Other stations have one national stream.",
+      "options": {
+        "nsw": "New South Wales / ACT",
+        "vic": "Victoria",
+        "qld": "Queensland",
+        "sa": "South Australia",
+        "nt": "Northern Territory",
+        "wa": "Western Australia",
+        "tas": "Tasmania"
+      }
+    }
+  },
   "manifest": {
     "description": "Stream the live music stations of the Australian ABC Radio network — including triple j, Double J, ABC Classic and ABC Jazz — with live now-playing information."
   }

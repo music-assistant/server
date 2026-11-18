@@ -17,7 +17,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     PlayerFeature,
-    PlayerType,
+    ProtocolRole,
 )
 from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
 from music_assistant_models.media_items import MediaItemImage
@@ -75,11 +75,13 @@ from .player import AirPlayPlayer
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
+    from music_assistant.models.player import Player
     from music_assistant.models.setup_flow import SetupSession
 
     from .provider import AirPlayProvider
 
-_CONTROL_RECONNECT_DELAY: Final[float] = 30.0
+_CONTROL_RECONNECT_INITIAL_DELAY: Final[float] = 30.0
+_CONTROL_RECONNECT_MAX_DELAY: Final[float] = 600.0
 _WAKE_TIMEOUT: Final[float] = 10.0
 
 # mDNS TXT keys whose values change with transient playback, session or group
@@ -123,12 +125,12 @@ _COMMAND_ERRORS = (
 class AirPlayControlPlayer(AirPlayPlayer):
     """AirPlay player with independent device monitoring and control."""
 
-    _attr_type = PlayerType.PLAYER
+    _attr_role = ProtocolRole.NATIVE
 
     def __init__(  # noqa: PLR0913
         self,
         provider: AirPlayProvider,
-        player_id: str,
+        protocol_id: str,
         raop_discovery_info: AsyncServiceInfo | None,
         airplay_discovery_info: AsyncServiceInfo | None,
         companion_discovery_info: AsyncServiceInfo | None,
@@ -146,7 +148,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._mrp_device: AppleTV | None = None
         super().__init__(
             provider=provider,
-            player_id=player_id,
+            protocol_id=protocol_id,
             raop_discovery_info=raop_discovery_info,
             airplay_discovery_info=airplay_discovery_info,
             address=address,
@@ -160,6 +162,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._mrp_push_listener: _AirPlayPushListener | None = None
         self._connection_task: asyncio.Task[None] | None = None
         self._connection_lock = asyncio.Lock()
+        self._reconnect_delay = _CONTROL_RECONNECT_INITIAL_DELAY
+        self._reconnect_wakeup = asyncio.Event()
         self._power_on_event = asyncio.Event()
         self._volume_before_mute: int | None = None
         self._disconnecting = False
@@ -229,7 +233,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
         The streaming pairing (if any) is the required "device code" that gates
         ``needs_setup``; the optional Companion (remote control) and MRP (playback
-        monitoring) pairings are offered afterwards as sequential, skippable steps.
+        monitoring) pairings are offered afterwards behind a single skippable choice.
         Re-launching from the player settings re-offers every pairing, so a stored
         pairing can be redone (replaced) when it went stale.
 
@@ -237,8 +241,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """
         collected: dict[str, ConfigValueType] = {}
         await self._run_streaming_pairing(session, collected)
-        await self._run_companion_pairing(session, collected)
-        await self._run_mrp_pairing(session, collected)
+        if (
+            self.companion_pairing_supported or self.mrp_pairing_supported
+        ) and await self._offer_optional_pairing(session, "control_offer"):
+            await self._run_companion_pairing(session, collected)
+            await self._run_mrp_pairing(session, collected)
         await session.finish(collected)
         if collected.keys() & {
             CONF_COMPANION_CREDENTIALS,
@@ -463,7 +470,18 @@ class AirPlayControlPlayer(AirPlayPlayer):
         await super().on_config_updated()
         self._schedule_connection(force=True)
 
-    async def on_unload(self) -> None:
+    async def on_attach(self, player: Player) -> None:
+        """
+        Connect the control services again when the object attaches after a detach.
+
+        :param player: The player the protocol is attached to.
+        """
+        await super().on_attach(player)
+        if self._unloading:
+            self._unloading = False
+            self._schedule_connection(force=True)
+
+    async def on_detach(self) -> None:
         """Close control connections and pairing resources."""
         self._unloading = True
         if self._connection_task and not self._connection_task.done():
@@ -471,7 +489,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._connection_task
         await self._disconnect_control_services()
-        await super().on_unload()
+        await super().on_detach()
 
     def _schedule_connection(self, *, force: bool = False) -> None:
         """Start or restart the Apple service connection loop."""
@@ -479,22 +497,32 @@ class AirPlayControlPlayer(AirPlayPlayer):
             return
         if self._connection_task and not self._connection_task.done():
             if not force:
+                # a dropped channel must not wait out another channel's backoff
+                self._reconnect_wakeup.set()
                 return
             self._connection_task.cancel()
+        self._reconnect_delay = _CONTROL_RECONNECT_INITIAL_DELAY
         self._restart_connections = self._restart_connections or force
         self._connection_task = self.mass.create_task(
-            self._connection_loop,
-            task_id=f"airplay_apple_control_{self.player_id}",
+            self._connection_loop(),
+            task_id=f"airplay_apple_control_{self.protocol_id}",
             abort_existing=force,
         )
 
     async def _connection_loop(self) -> None:
         """Connect control services and retry transient failures."""
-        retry = True
-        while retry and not self._unloading:
+        while not self._unloading:
+            self._reconnect_wakeup.clear()
             retry = await self._connect_control_services()
-            if retry:
-                await asyncio.sleep(_CONTROL_RECONNECT_DELAY)
+            if self._reconnect_wakeup.is_set():
+                # a channel dropped during this pass
+                continue
+            if not retry:
+                return
+            delay = self._reconnect_delay
+            self._reconnect_delay = min(delay * 2, _CONTROL_RECONNECT_MAX_DELAY)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._reconnect_wakeup.wait(), delay)
 
     async def _connect_control_services(self) -> bool:
         """Connect Companion and MRP independently."""
@@ -524,7 +552,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if config is None:
             return False
         try:
-            device = await pyatv.connect(config, self.mass.loop)
+            device = await self._pyatv_connect(config)
         except pyatv_exceptions.AuthenticationError, pyatv_exceptions.InvalidCredentialsError:
             self.logger.warning(
                 "Stored Companion credentials are no longer valid for %s",
@@ -573,7 +601,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             settings = await storage.get_settings(config)
             settings.protocols.airplay.mrp_tunnel = MrpTunnel.Force
         try:
-            device = await pyatv.connect(config, self.mass.loop, storage=storage)
+            device = await self._pyatv_connect(config, storage)
         except (
             pyatv_exceptions.AuthenticationError,
             pyatv_exceptions.InvalidCredentialsError,
@@ -611,6 +639,24 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self.logger.debug("Connected MRP playback monitoring for %s", self.display_name)
         self.update_state()
         return False
+
+    async def _pyatv_connect(
+        self, config: AppleTVConfig, storage: MemoryStorage | None = None
+    ) -> AppleTV:
+        """
+        Connect to a device with pyatv, without leaking resources on cancellation.
+
+        :param config: pyatv configuration of the device to connect to.
+        :param storage: Optional pyatv settings storage for this connection.
+        """
+        task = asyncio.ensure_future(
+            pyatv.connect(config, self.mass.loop, session=self.mass.http_session, storage=storage)
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.add_done_callback(_close_abandoned_device)
+            raise
 
     async def _disconnect_control_services(self) -> None:
         """Close all active pyatv connections."""
@@ -658,7 +704,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         config = AppleTVConfig(address, self.display_name)
         config.add_service(
             ManualService(
-                self.player_id,
+                self.protocol_id,
                 protocol,
                 info.port,
                 properties,
@@ -837,17 +883,15 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self, session: SetupSession, collected: dict[str, ConfigValueType]
     ) -> None:
         """
-        Offer optional Companion (remote control) pairing, when supported.
+        Pair Companion (remote control), when supported.
 
-        Shows a skippable choice; on "set up now" it drives the PIN pairing and adds
-        the resulting credentials to ``collected`` (replacing any stored ones).
+        Drives the PIN pairing and adds the resulting credentials to ``collected``
+        (replacing any stored ones).
 
         :param session: The setup flow session used to interact with the user.
         :param collected: The values collected so far; updated in place.
         """
         if not self.companion_pairing_supported:
-            return
-        if not await self._offer_optional_pairing(session, "companion_offer"):
             return
         errors: dict[str, str] | None = None
         while True:
@@ -883,7 +927,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self, session: SetupSession, collected: dict[str, ConfigValueType]
     ) -> None:
         """
-        Offer optional MRP (playback monitoring) pairing, when supported.
+        Pair MRP (playback monitoring), when supported.
 
         :param session: The setup flow session used to interact with the user.
         :param collected: The values collected so far; updated in place.
@@ -895,8 +939,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
             return
         discovery_info, protocol = endpoint
         cred_key = self._mrp_credentials_key
-        if not await self._offer_optional_pairing(session, "mrp_offer"):
-            return
         errors: dict[str, str] | None = None
         while True:
             pairing = await self._begin_pyatv_pairing(discovery_info, protocol)
@@ -952,7 +994,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         pairing: PairingHandler | None = None
         started = False
         try:
-            pairing = await pyatv.pair(config, protocol, self.mass.loop, name="Music Assistant")
+            pairing = await self._pyatv_pair(config, protocol)
             await pairing.begin()
             started = True
         except Exception as err:
@@ -966,6 +1008,28 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 await pairing.close()
         assert pairing is not None  # reached only when started, i.e. a live session
         return pairing
+
+    async def _pyatv_pair(self, config: AppleTVConfig, protocol: Protocol) -> PairingHandler:
+        """
+        Start a pyatv pairing session, without leaking resources on cancellation.
+
+        :param config: pyatv configuration of the device to pair.
+        :param protocol: The pyatv protocol to pair.
+        """
+        task = asyncio.ensure_future(
+            pyatv.pair(
+                config,
+                protocol,
+                self.mass.loop,
+                session=self.mass.http_session,
+                name="Music Assistant",
+            )
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            self.mass.create_task(_close_abandoned_pairing(task))
+            raise
 
     async def _finish_pyatv_pairing(self, pairing: PairingHandler, pin: str) -> str:
         """
@@ -1050,11 +1114,13 @@ class AirPlayControlPlayer(AirPlayPlayer):
             self._attr_volume_muted = True
             if mute_changed:
                 self.update_state()
+                self._sync_bridge_volume()
             return
         mute_changed = self._attr_volume_muted is not False
         self._attr_volume_muted = False
         self._volume_before_mute = None
         self._update_native_volume(volume_level, state_changed=mute_changed)
+        self._sync_bridge_volume()
 
     def _update_native_volume(self, volume: int, *, state_changed: bool = False) -> None:
         """Update and persist a volume reported by device control."""
@@ -1064,8 +1130,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 self.update_state()
             return
         self._attr_volume_level = volume
-        self.mass.config.set_raw_player_config_value(
-            self.player_id,
+        self.mass.config.set_protocol_value(
+            self.protocol_id,
             CONF_STORED_VOLUME,
             volume,
         )
@@ -1131,7 +1197,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             MediaType.TRACK if playing.media_type == PyatvMediaType.Music else MediaType.UNKNOWN
         )
         self._attr_current_media = PlayerMedia(
-            uri=playing.content_identifier or f"apple-device://{self.player_id}/{playing.hash}",
+            uri=playing.content_identifier or f"apple-device://{self.protocol_id}/{playing.hash}",
             media_type=media_type,
             title=playing.title or source_name,
             artist=playing.artist,
@@ -1181,7 +1247,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Return the image-proxy URL for external MRP artwork."""
         image = MediaItemImage(
             type=ImageType.THUMB,
-            path=f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{self.player_id}/{artwork_id}",
+            path=f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{self.protocol_id}/{artwork_id}",
             provider=self.provider_id,
             remotely_accessible=False,
         )
@@ -1194,18 +1260,21 @@ class AirPlayControlPlayer(AirPlayPlayer):
         exception: Exception | None = None,
     ) -> None:
         """Handle a pyatv connection closing."""
-        companion_closed = False
-        if source == "companion" and self._companion_device is device:
+        companion_closed = source == "companion" and self._companion_device is device
+        mrp_closed = source == "mrp" and self._mrp_device is device
+        if companion_closed:
             self._companion_device = None
             self._companion_listener = None
-            companion_closed = True
-        elif source == "mrp" and self._mrp_device is device:
+        elif mrp_closed:
             self._mrp_device = None
             self._mrp_state_listener = None
             self._mrp_push_listener = None
-            self._clear_external_state()
         else:
             return
+        # pyatv leaves the facade and the aiohttp session it created open on a drop.
+        device.close()
+        if mrp_closed:
+            self._clear_external_state()
         if exception:
             self.logger.debug("Apple %s connection lost for %s: %s", source, self.name, exception)
         if companion_closed:
@@ -1233,7 +1302,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
         # Without a live connection the snapshot can no longer be updated, and the
         # last one is typically an app held at paused: leaving it in place keeps
         # transport commands aimed at that app instead of the Music Assistant queue.
-        self.mark_external_source_ended()
+        if self.player is not None:
+            self.player.mark_external_source_ended()
+        else:
+            self.on_external_source_ended()
         self.update_state()
 
     def _notify_companion_state_change(self) -> None:
@@ -1319,3 +1391,19 @@ class _AirPlayPushListener(PushListener):
     def playstatus_error(self, updater: object, exception: Exception) -> None:
         """Handle an MRP push update failure."""
         self._player._handle_push_error(self._device, exception)
+
+
+def _close_abandoned_device(task: asyncio.Task[AppleTV]) -> None:
+    """Close a device that finished connecting after its caller was cancelled."""
+    if task.cancelled() or task.exception() is not None:
+        return
+    task.result().close()
+
+
+async def _close_abandoned_pairing(task: asyncio.Task[PairingHandler]) -> None:
+    """Close a pairing session that started after its caller was cancelled."""
+    try:
+        pairing = await task
+    except Exception:
+        return
+    await pairing.close()

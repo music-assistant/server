@@ -47,9 +47,10 @@ and quoting pitfalls:
   credentials persisted per daemon.
 - The local HTTP/WS API binds to `127.0.0.1` on a free port per daemon.
 
-The daemon is supervised: restarts on exit, a fatal event (→ `unload_with_error`) after
-repeated failures. A self-healing WebSocket listener reconnects across daemon restarts and
-translates `/events` messages into normalized `BackendEvent`s.
+The daemon is supervised: restarts on exit, a fatal event after repeated failures — on which
+the provider gives up this one daemon (stopping it and keeping the other players' daemons
+running). A self-healing WebSocket listener reconnects across daemon restarts and translates
+`/events` messages into normalized `BackendEvent`s.
 
 ## Audio transport
 
@@ -70,7 +71,9 @@ playing state and the next `playing` event re-streams (`stream_ends_on_pause` is
 With `external_volume` set the daemon starts its Connect device state at 100% and ignores
 `initial_volume`; the provider pushes the target player's live volume when a session
 becomes active and when the source is claimed, so the Spotify app's slider adopts the
-player's actual volume instead of snapping it to a value computed from 100%.
+player's actual volume instead of snapping it to a value computed from 100%. A group holds
+no level of its own, so its group volume is pushed instead. That is the level its own volume
+commands interpolate the members from.
 
 ## Taking playback back
 

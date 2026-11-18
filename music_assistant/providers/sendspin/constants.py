@@ -5,8 +5,11 @@ from __future__ import annotations
 BRIDGE_PREFIX = "spb_"
 VIRTUAL_PLAYER_ID_PREFIX = "sendspin_virtual_"
 
-CONF_CAST_AUDIO_UNSUPPORTED = "cast_audio_unsupported"
 CONF_SENDSPIN_STATIC_DELAY = "sendspin_static_delay"
+# the static delays the user set for the protocols that do not carry the output now, by their id
+CONF_SENDSPIN_BRIDGE_STATIC_DELAYS = "sendspin_bridge_static_delays"
+# the user switched the output on while a Cast protocol carried it
+CONF_SENDSPIN_CAST_OPT_IN = "sendspin_cast_opt_in"
 CONF_VIRTUAL_PLAYER_OWNER = "virtual_player_owner"
 DEFAULT_SENDSPIN_STATIC_DELAY = 0
 # The protocol carries a static delay as an unsigned millisecond offset, so it can only
@@ -15,38 +18,36 @@ MIN_SENDSPIN_STATIC_DELAY = 0
 MAX_SENDSPIN_STATIC_DELAY = 5000
 
 CONF_ALLOW_LEGACY_CLIENTS = "allow_legacy_clients"
-CONF_MIN_PIN_LENGTH = "min_pin_length"
-DEFAULT_MIN_PIN_LENGTH = 4
 
 # Pairing method the setup flow lets the user pick between.
 CONF_PAIRING_METHOD = "pairing_method"
+CONF_PAIRING_TOKEN = "pairing_token"  # noqa: S105 - config key
 PAIR_METHOD_PIN = "pin"
 PAIR_METHOD_DYNAMIC_PIN = "dynamic_pin"
 PAIR_METHOD_STATIC_PIN = "static_pin"
-PAIR_METHOD_TOKEN = "token"
-# The consent step's opt-in checkbox for pairing a device that allows unpaired use.
-CONF_PAIR_DEVICE = "pair_device"
-
-# Consent-page note that pairing is what enables the device's audio input.
-CONF_SOURCE_INPUT_NOTE = "source_input_note"
+PAIR_METHOD_TOKEN = "token"  # noqa: S105 - auth method name
+# The consent step's choice between connecting straight away and pairing first.
+CONF_CONNECT_METHOD = "connect_method"
+CONNECT_METHOD_UNPAIRED = "unpaired"
+CONNECT_METHOD_UNPAIRED_WITH_INPUT = "unpaired_with_input"
+CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT = "unpaired_without_input"
+CONNECT_METHOD_PAIR = "pair"
 
 # The setup flow step for a device whose audio input awaits a decision.
 CONF_SOURCE_INPUT_ACTION = "source_input_action"
 SOURCE_INPUT_PAIR = "pair"
 SOURCE_INPUT_DISMISS = "dismiss"
 # Persisted (raw player config) marker that the user declined the audio input.
-CONF_SOURCE_APPROVAL_DISMISSED = "source_approval_dismissed"
+CONF_SOURCE_INPUT_DECLINED = "source_input_declined"
 
-CONF_PAIRING_TOKEN = "pairing_token"
 CONF_PAIRING_PIN = "pairing_pin"
 
 CONF_ACTION_UNPAIR = "unpair"
-CONF_ACTION_REVOKE_UNPAIRED = "revoke_unpaired"
+CONF_ACTION_SOURCE_INPUT_ENABLE = "source_input_enable"
+CONF_ACTION_SOURCE_INPUT_DISABLE = "source_input_disable"
 
 CONF_ACTION_MANAGEMENT_ENTER = "management_enter"
 CONF_ACTION_MANAGEMENT_EXIT = "management_exit"
-CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE = "management_unpaired_enable"
-CONF_ACTION_MANAGEMENT_UNPAIRED_DISABLE = "management_unpaired_disable"
 CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE = "management_static_pin_enable"
 CONF_ACTION_MANAGEMENT_STATIC_PIN_DISABLE = "management_static_pin_disable"
 CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_ENABLE = "management_dynamic_pin_enable"

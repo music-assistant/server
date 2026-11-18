@@ -27,7 +27,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     is_request_from_ingress,
 )
 
-from .tap import CONF_COLOR_TINT, TapManager, ViewerQueue, server_now_us
+from .tap import TapManager, ViewerQueue, server_now_us
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -96,7 +96,7 @@ class MilkdropRelay:
             )
             await ws.close()
             return ws
-        self.logger.debug("Viewer session: query=%r -> target %s", query, target.display_name)
+        self.logger.debug("Viewer session: query=%r -> target %s", query, target.name)
 
         queue = ViewerQueue()
         tap = await self.taps.acquire(target)
@@ -104,10 +104,7 @@ class MilkdropRelay:
         self._sessions.add(ws)
 
         try:
-            # Don't advertise a message type that will never arrive.
-            types = ["waveform", "beat"]
-            if self.provider.config.get_value(CONF_COLOR_TINT):
-                types.append("color")
+            types = ["waveform", "beat", "color"]
             await ws.send_str(
                 dumps(
                     {
@@ -116,15 +113,7 @@ class MilkdropRelay:
                     }
                 ).decode()
             )
-            if tap.has_only_future_frames():
-                # Production is pinned at the buffer's eviction edge, ahead of
-                # what is audible; nothing buffered is drawable yet. Ask the tap
-                # to re-anchor at the playhead instead of replaying frames the
-                # viewer could only sit on.
-                tap.realign_requested = True
-                replayed_waves = []
-            else:
-                replayed_waves = list(tap.ring)
+            replayed_waves = list(tap.ring)
             replayed_beats = self.taps.pending_beat_frames(tap)
             for frame in replayed_waves + replayed_beats:
                 await ws.send_bytes(frame)

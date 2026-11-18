@@ -9,7 +9,10 @@ from aiohttp import client_exceptions
 from music_assistant_models.enums import ContentType, ExternalID, ImageType, MediaType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
+    Album,
+    Audiobook,
     AudioFormat,
+    AudioMetadata,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
@@ -22,6 +25,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.music.media.playlists import PlaylistController
 from music_assistant.helpers import playlists
+from music_assistant.helpers.compare import TrackMatchConfidence, compare_track_evidence
 from music_assistant.helpers.playlists import (
     AlbumInfo,
     ArtistInfo,
@@ -30,6 +34,7 @@ from music_assistant.helpers.playlists import (
     PlaylistItem,
     ProviderMappingInfo,
     construct_media_item_from_playlist_item,
+    escape_markdown,
     fetch_playlist,
     generate_m3u,
     media_item_to_playlist_item,
@@ -39,6 +44,7 @@ from music_assistant.helpers.playlists import (
     parse_m3u_playlist_name,
     sanitize_m3u_value,
 )
+from music_assistant.models.media_capabilities import MediaCatalogMixin
 
 # --------------------------------------------------------------------------- #
 #  Existing tests (EXTINF parsing)                                             #
@@ -396,6 +402,22 @@ def test_generate_m3u_leaves_values_without_line_breaks_alone() -> None:
     assert f"#EXTINF:240,{title}\n" in generate_m3u("My Playlist", items)
 
 
+@pytest.mark.parametrize("line_break", ["\n", "\r", "\r\n"])
+def test_escape_markdown_normalizes_all_line_breaks(line_break: str) -> None:
+    """A lone CR must be neutralized the same as a LF, or it can escape a report row."""
+    escaped = escape_markdown(f"Artist{line_break}Name", table=True)
+    assert "\n" not in escaped
+    assert "\r" not in escaped
+    assert escaped == "Artist Name"
+
+
+def test_escape_markdown_escapes_markdown_and_table_syntax() -> None:
+    """Provider text must not be able to inject Markdown formatting or break a table cell."""
+    assert escape_markdown("a|b") == "a|b"
+    assert escape_markdown("a|b", table=True) == "a\\|b"
+    assert escape_markdown("*bold* `code` [link](url)") == "\\*bold\\* \\`code\\` \\[link\\](url)"
+
+
 def test_generate_m3u_no_extinf_without_title() -> None:
     """Test that entries without title/length skip the EXTINF line."""
     items = [PlaylistItem(path="spotify://track/abc123")]
@@ -678,6 +700,571 @@ def test_media_item_to_playlist_item_sound_effect_round_trip() -> None:
     assert reconstructed.metadata.images[0].path == "https://example.com/chime.jpg"
 
 
+def test_media_item_to_playlist_item_track_round_trip_preserves_mb_track() -> None:
+    """A track's release-track (MB_TRACK) evidence survives export, generate and re-parse."""
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    mass = MagicMock()
+    spotify_provider = DummyProvider("spotify", "spotify_1")
+    mass.get_provider.side_effect = lambda ref: {
+        "spotify": spotify_provider,
+        "spotify_1": spotify_provider,
+    }.get(ref)
+    track = Track(
+        item_id="abc123",
+        provider="spotify",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        external_ids={
+            (ExternalID.ISRC, "USRC17607839"),
+            (ExternalID.MB_RECORDING, "recording-mbid"),
+            (ExternalID.MB_TRACK, "release-track-mbid"),
+        },
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+    parsed = parse_m3u(generate_m3u("Kid A", [playlist_item]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], mass)
+
+    assert playlist_item.metadata is not None
+    assert playlist_item.metadata["mb_track"] == "release-track-mbid"
+    assert isinstance(reconstructed, Track)
+    assert reconstructed.get_external_id(ExternalID.MB_TRACK) == "release-track-mbid"
+    assert reconstructed.get_external_id(ExternalID.MB_RECORDING) == "recording-mbid"
+    assert reconstructed.get_external_id(ExternalID.ISRC) == "USRC17607839"
+
+
+def test_media_item_to_playlist_item_track_round_trip_preserves_album_instance() -> None:
+    """A round-tripped album keeps its captured provider instance."""
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    mass = MagicMock()
+    spotify_1 = DummyProvider("spotify", "spotify--1")
+    spotify_2 = DummyProvider("spotify", "spotify--2")
+    mass.get_provider.side_effect = lambda ref, **_kwargs: {
+        "spotify": spotify_1,
+        "spotify--1": spotify_1,
+        "spotify--2": spotify_2,
+    }.get(ref)
+    album = Album(
+        item_id="alb1",
+        provider="spotify--2",
+        name="Kid A",
+        provider_mappings={
+            ProviderMapping(
+                item_id="alb1", provider_domain="spotify", provider_instance="spotify--2"
+            )
+        },
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify--1",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify--1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        album=album,
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+    parsed = parse_m3u(generate_m3u("Kid A", [playlist_item]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], mass)
+
+    assert isinstance(reconstructed, Track)
+    assert reconstructed.album is not None
+    # The album stays pinned to the captured sibling instance.
+    assert reconstructed.album.provider == "spotify--2"
+
+
+def test_media_item_to_playlist_item_track_round_trip_falls_back_to_album_domain() -> None:
+    """An unknown album instance falls back to its domain on round-trip."""
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    mass = MagicMock()
+    # The captured instance does not exist here; only a same-domain sibling does.
+    spotify_9 = DummyProvider("spotify", "spotify--9")
+    mass.get_provider.side_effect = lambda ref, **_kwargs: {"spotify--9": spotify_9}.get(ref)
+    album = Album(
+        item_id="alb1",
+        provider="spotify--2",
+        name="Kid A",
+        provider_mappings={
+            ProviderMapping(
+                item_id="alb1", provider_domain="spotify", provider_instance="spotify--2"
+            )
+        },
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify--2",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify--2",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        album=album,
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+    parsed = parse_m3u(generate_m3u("Kid A", [playlist_item]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], mass)
+
+    assert isinstance(reconstructed, Track)
+    assert reconstructed.album is not None
+    # The unresolvable foreign instance falls back to the bare domain.
+    assert reconstructed.album.provider == "spotify"
+
+
+def test_media_item_to_playlist_item_album_prefers_track_instance_when_multiple() -> None:
+    """Album mapping selection prefers the track's own provider instance."""
+    album = Album(
+        item_id="alb1",
+        provider="spotify--2",
+        name="Kid A",
+        provider_mappings={
+            ProviderMapping(
+                item_id="alb1a", provider_domain="spotify", provider_instance="spotify--2"
+            ),
+            ProviderMapping(
+                item_id="alb1b", provider_domain="spotify", provider_instance="spotify--1"
+            ),
+            ProviderMapping(
+                item_id="alb1c", provider_domain="spotify", provider_instance="spotify--3"
+            ),
+        },
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify--1",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify--1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        album=album,
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.album is not None
+    assert playlist_item.album.provider_instance == "spotify--1"
+    assert playlist_item.album.item_id == "alb1b"
+
+
+def test_media_item_to_playlist_item_album_deterministic_among_same_instance_mappings() -> None:
+    """Same-instance album mappings still resolve deterministically."""
+    album = Album(
+        item_id="alb1",
+        provider="spotify--1",
+        name="Kid A",
+        provider_mappings={
+            ProviderMapping(
+                item_id="alb1-alt",
+                provider_domain="spotify",
+                provider_instance="spotify--1",
+                available=False,
+            ),
+            ProviderMapping(
+                item_id="alb1-main",
+                provider_domain="spotify",
+                provider_instance="spotify--1",
+                available=True,
+            ),
+        },
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify--1",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify--1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        album=album,
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.album is not None
+    assert playlist_item.album.provider_instance == "spotify--1"
+    assert playlist_item.album.item_id == "alb1-main"
+
+
+def test_media_item_to_playlist_item_album_mapping_selection_is_deterministic_without_match() -> (
+    None
+):
+    """Album mapping selection stays deterministic without an instance match."""
+    album = Album(
+        item_id="alb1",
+        provider="tidal--1",
+        name="Kid A",
+        provider_mappings={
+            ProviderMapping(item_id="alb1z", provider_domain="tidal", provider_instance="tidal--2"),
+            ProviderMapping(item_id="alb1a", provider_domain="tidal", provider_instance="tidal--1"),
+        },
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify--1",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify--1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        album=album,
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.album is not None
+    assert playlist_item.album.provider_instance == "tidal--1"
+    assert playlist_item.album.item_id == "alb1a"
+
+
+def test_media_item_to_playlist_item_album_prefers_available_mapping() -> None:
+    """Available album mappings outrank unavailable ones."""
+    album = Album(
+        item_id="alb1",
+        provider="tidal--2",
+        name="Kid A",
+        provider_mappings={
+            ProviderMapping(
+                item_id="alb1a",
+                provider_domain="tidal",
+                provider_instance="tidal--1",
+                available=False,
+            ),
+            ProviderMapping(
+                item_id="alb1b",
+                provider_domain="tidal",
+                provider_instance="tidal--2",
+                available=True,
+            ),
+        },
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify--1",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify--1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        album=album,
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.album is not None
+    assert playlist_item.album.provider_instance == "tidal--2"
+    assert playlist_item.album.item_id == "alb1b"
+
+
+def test_media_item_to_playlist_item_track_round_trip_preserves_exact_capable_album() -> None:
+    """Round-tripping keeps the album mapping that preserves exact evidence."""
+    mass = MagicMock()
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    tidal_1 = DummyProvider("tidal", "tidal--1")
+    mass.get_provider.side_effect = lambda ref, **_kwargs: {
+        "tidal": tidal_1,
+        "tidal--1": tidal_1,
+    }.get(ref)
+    album = Album(
+        item_id="alb1",
+        provider="tidal--1",
+        name="Kid A",
+        provider_mappings={
+            ProviderMapping(item_id="alb1a", provider_domain="tidal", provider_instance="tidal--1"),
+            ProviderMapping(item_id="alb1b", provider_domain="tidal", provider_instance="tidal--2"),
+            ProviderMapping(item_id="alb1c", provider_domain="tidal", provider_instance="tidal--3"),
+        },
+    )
+    track = Track(
+        item_id="abc123",
+        provider="tidal--1",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="tidal",
+                provider_instance="tidal--1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        album=album,
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+    parsed = parse_m3u(generate_m3u("Kid A", [playlist_item]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], mass)
+
+    assert isinstance(reconstructed, Track)
+    assert reconstructed.album is not None
+    # The round trip must keep the album mapping from the track's own account.
+    assert reconstructed.album.provider == "tidal--1"
+    assert reconstructed.album.item_id == "alb1a"
+
+
+def test_media_item_to_playlist_item_omits_conflicting_merged_external_ids() -> None:
+    """Conflicting merged external IDs from different providers are not exported arbitrarily."""
+    track = Track(
+        item_id="abc123",
+        provider="library",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123", provider_domain="spotify", provider_instance="spotify_1"
+            ),
+            ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_1"),
+        },
+        # Conflicting MB_TRACK values from different providers are not reliable.
+        external_ids={
+            (ExternalID.ISRC, "USRC17607839"),
+            (ExternalID.MB_TRACK, "spotify-release-track-mbid"),
+            (ExternalID.MB_TRACK, "qobuz-release-track-mbid"),
+        },
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.metadata is not None
+    assert "mb_track" not in playlist_item.metadata
+    # unambiguous external IDs are unaffected
+    assert playlist_item.metadata["isrc"] == "USRC17607839"
+
+
+def test_media_item_to_playlist_item_merges_equivalent_external_ids() -> None:
+    """Providers formatting the same MBID differently is not treated as a conflict."""
+    track = Track(
+        item_id="abc123",
+        provider="library",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123", provider_domain="spotify", provider_instance="spotify_1"
+            ),
+            ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_1"),
+        },
+        # Equivalent MB_RECORDING values with different formatting still agree.
+        external_ids={
+            (ExternalID.MB_RECORDING, "a1b2c3d4-e5f6-7890-abcd-ef1234567890"),
+            (ExternalID.MB_RECORDING, "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"),
+        },
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.metadata is not None
+    assert playlist_item.metadata["mbid"] == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+
+def test_media_item_to_playlist_item_omits_multi_domain_mb_track() -> None:
+    """A multi-domain item's merged MB_TRACK is never exported as release evidence."""
+    track = Track(
+        item_id="abc123",
+        provider="library",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123", provider_domain="spotify", provider_instance="spotify_1"
+            ),
+            ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_1"),
+        },
+        # A merged MB_TRACK cannot be tied back to the chosen primary URI.
+        external_ids={
+            (ExternalID.MB_TRACK, "release-track-mbid"),
+        },
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.metadata is not None
+    assert "mb_track" not in playlist_item.metadata
+
+
+def test_media_item_to_playlist_item_audiobook_with_item_mapping_authors() -> None:
+    """Library audiobooks carry authors/narrators as ItemMapping, exported by name."""
+    audiobook = Audiobook(
+        item_id="1",
+        provider="library",
+        name="Book 1",
+        provider_mappings={
+            ProviderMapping(
+                item_id="book_1", provider_domain="audible", provider_instance="audible_1"
+            )
+        },
+        authors=UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST, item_id="1", provider="library", name="Author 1"
+                ),
+                "Author 2",
+            ]
+        ),
+        narrators=UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST, item_id="2", provider="library", name="Narrator 1"
+                )
+            ]
+        ),
+    )
+
+    playlist_item = media_item_to_playlist_item(audiobook)
+
+    assert playlist_item.metadata is not None
+    assert playlist_item.metadata["authors"] == "Author 1; Author 2"
+    assert playlist_item.metadata["narrators"] == "Narrator 1"
+
+
+def test_media_item_to_playlist_item_omits_multi_instance_same_domain_mb_track() -> None:
+    """Two instances of the same domain can still disagree on release, so MB_TRACK is omitted."""
+    track = Track(
+        item_id="abc123",
+        provider="library",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            # Same-domain sibling accounts are still separate sources.
+            ProviderMapping(item_id="abc123", provider_domain="qobuz", provider_instance="qobuz_1"),
+            ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_2"),
+        },
+        external_ids={
+            (ExternalID.MB_TRACK, "release-track-mbid"),
+        },
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.metadata is not None
+    assert "mb_track" not in playlist_item.metadata
+
+
+def test_import_match_policy_reachability_new_vs_legacy_m3u() -> None:
+    """Only M3U entries with MB_TRACK can reach EXACT match confidence."""
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    mass = MagicMock()
+    spotify_provider = DummyProvider("spotify", "spotify_1")
+    mass.get_provider.side_effect = lambda ref: {
+        "spotify": spotify_provider,
+        "spotify_1": spotify_provider,
+    }.get(ref)
+
+    new_m3u_item = PlaylistItem(
+        path="spotify://track/abc123",
+        title="Everything In Its Right Place",
+        length="240",
+        metadata={
+            "media_type": "track",
+            "name": "Everything In Its Right Place",
+            "isrc": "USRC17607839",
+            "mb_track": "release-track-mbid",
+        },
+    )
+    legacy_m3u_item = PlaylistItem(
+        path="spotify://track/abc123",
+        title="Everything In Its Right Place",
+        length="240",
+        metadata={
+            "media_type": "track",
+            "name": "Everything In Its Right Place",
+            "isrc": "USRC17607839",
+        },
+    )
+    candidate = Track(
+        item_id="def456",
+        provider="qobuz",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(item_id="def456", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+        external_ids={
+            (ExternalID.ISRC, "USRC17607839"),
+            (ExternalID.MB_TRACK, "release-track-mbid"),
+        },
+    )
+
+    new_track = construct_media_item_from_playlist_item(new_m3u_item, mass)
+    legacy_track = construct_media_item_from_playlist_item(legacy_m3u_item, mass)
+    assert isinstance(new_track, Track)
+    assert isinstance(legacy_track, Track)
+
+    assert (
+        compare_track_evidence(new_track, candidate, allow_item_id_match=False)
+        is TrackMatchConfidence.EXACT
+    )
+    assert (
+        compare_track_evidence(legacy_track, candidate, allow_item_id_match=False)
+        is TrackMatchConfidence.LIKELY
+    )
+
+
 # --------------------------------------------------------------------------- #
 #  media_item_to_playlist_item tests                                           #
 # --------------------------------------------------------------------------- #
@@ -732,6 +1319,7 @@ def test_media_item_to_playlist_item_track() -> None:
     assert result.metadata["name"] == "Everything In Its Right Place"
     assert result.metadata["isrc"] == "USRC17607839"
     assert result.metadata["version"] == "Deluxe"
+    assert "mb_track" not in result.metadata
     assert len(result.providers) == 1
     assert result.providers[0].domain == "spotify"
     assert result.providers[0].item_id == "abc123"
@@ -834,6 +1422,109 @@ def test_media_item_to_playlist_item_multiple_providers() -> None:
     assert domains == {"spotify", "tidal"}
     # primary URI uses the highest quality provider
     assert result.path == "tidal://track/t2"
+
+
+def test_media_item_to_playlist_item_prefers_available_provider_as_primary() -> None:
+    """A higher-quality but unavailable mapping must not be chosen as the primary URI."""
+    track = Track(
+        item_id="t1",
+        provider="spotify",
+        name="Track With An Unavailable Best Match",
+        duration=200,
+        provider_mappings={
+            ProviderMapping(
+                item_id="unavailable-best",
+                provider_domain="tidal",
+                provider_instance="tidal_1",
+                available=False,
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC, sample_rate=96000, bit_depth=24, bit_rate=0
+                ),
+            ),
+            ProviderMapping(
+                item_id="s1",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+                audio_format=AudioFormat(
+                    content_type=ContentType.OGG, sample_rate=44100, bit_depth=0, bit_rate=320
+                ),
+            ),
+        },
+    )
+
+    result = media_item_to_playlist_item(track)
+
+    # the tidal mapping has the higher quality, but it is unavailable - the primary
+    # URI must fall back to the playable spotify mapping instead
+    assert result.path == "spotify://track/s1"
+
+
+def test_media_item_to_playlist_item_ties_are_broken_deterministically() -> None:
+    """Equal-quality provider mappings resolve to the same primary URI every time."""
+    tied_format = AudioFormat(
+        content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16, bit_rate=1000
+    )
+    track = Track(
+        item_id="t1",
+        provider="zulu",
+        name="Tied Quality Track",
+        duration=200,
+        provider_mappings={
+            ProviderMapping(
+                item_id="z1",
+                provider_domain="zulu",
+                provider_instance="zulu_1",
+                audio_format=tied_format,
+            ),
+            ProviderMapping(
+                item_id="a1",
+                provider_domain="alpha",
+                provider_instance="alpha_1",
+                audio_format=tied_format,
+            ),
+            ProviderMapping(
+                item_id="m1",
+                provider_domain="mid",
+                provider_instance="mid_1",
+                audio_format=tied_format,
+            ),
+        },
+    )
+
+    result = media_item_to_playlist_item(track)
+
+    # provider_mappings is a set: without a tie-break, equal-quality mappings would
+    # resolve to whichever the set happens to iterate first
+    assert result.path == "alpha://track/a1"
+
+
+def test_media_item_to_playlist_item_keeps_the_album_image_of_a_track() -> None:
+    """A track's entry holds the image of its album first, as that is the image it shows."""
+    album_thumb = MediaItemImage(type=ImageType.THUMB, path="Album/folder.jpg", provider="fs_1")
+    track_thumb = MediaItemImage(type=ImageType.THUMB, path="Album/track.mp3", provider="fs_1")
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="Track",
+        duration=200,
+        provider_mappings={
+            ProviderMapping(
+                item_id="Album/track.mp3", provider_domain="filesystem", provider_instance="fs_1"
+            )
+        },
+        album=ItemMapping(
+            media_type=MediaType.ALBUM,
+            item_id="2",
+            provider="library",
+            name="Album",
+            image=album_thumb,
+        ),
+        metadata=MediaItemMetadata(images=UniqueList([track_thumb, album_thumb])),
+    )
+
+    result = media_item_to_playlist_item(track)
+
+    assert [image.path for image in result.images] == [album_thumb.path, track_thumb.path]
 
 
 def test_radio_entries_round_trip() -> None:
@@ -990,46 +1681,110 @@ def test_construct_keeps_the_provider_instance() -> None:
     assert media_item.provider == "radiobrowser--BBB"
 
 
+def test_construct_unloaded_instance_does_not_borrow_a_mapped_instance() -> None:
+    """An unloaded instance's mapping is not moved onto an instance the entry already maps."""
+
+    class DummyProvider:
+        domain = "opensubsonic"
+        instance_id = "opensubsonic--userA"
+
+    mass = MagicMock()
+    mass.get_provider.side_effect = lambda ref: (
+        DummyProvider() if ref in ("opensubsonic", "opensubsonic--userA") else None
+    )
+    item = PlaylistItem(
+        path="opensubsonic://track/20",
+        metadata={"media_type": MediaType.TRACK.value, "name": "Song"},
+        providers=[
+            ProviderMappingInfo("opensubsonic", "20", "opensubsonic--userA"),
+            ProviderMappingInfo("opensubsonic", "10", "opensubsonic--userB"),
+        ],
+    )
+
+    media_item = construct_media_item_from_playlist_item(item, cast("Any", mass))
+
+    assert media_item is not None
+    assert {
+        (m.provider_instance, m.item_id, m.available) for m in media_item.provider_mappings
+    } == {("opensubsonic--userA", "20", True), ("opensubsonic--userB", "10", False)}
+
+
 # --------------------------------------------------------------------------- #
-#  PlaylistController.tracks() — provider-driven pagination                    #
+#  PlaylistController.iter_tracks() — provider-driven pagination               #
 # --------------------------------------------------------------------------- #
 
 
-def _make_controller() -> PlaylistController:
-    """Return a PlaylistController with a minimal mock mass."""
+def _make_controller(pages: list[list[Any]]) -> tuple[PlaylistController, AsyncMock]:
+    """Return a PlaylistController whose single resolved provider serves the given pages."""
     controller = PlaylistController.__new__(PlaylistController)
     controller.mass = MagicMock()
-    return controller
+    provider = MagicMock(spec=MediaCatalogMixin)
+    provider.get_playlist_tracks = AsyncMock(side_effect=pages)
+    controller.mass.music.resolve_visible_provider.return_value = provider
+    return controller, provider.get_playlist_tracks
 
 
 @pytest.mark.asyncio
 async def test_tracks_relays_all_provider_pages() -> None:
-    """tracks() relays every non-empty provider page until exhausted (provider decides size)."""
-    controller = _make_controller()
+    """iter_tracks() relays every non-empty provider page until exhausted (provider decides size)."""
     page0 = [MagicMock(spec=Track) for _ in range(20)]
     page1 = [MagicMock(spec=Track) for _ in range(15)]
-    get_tracks = AsyncMock(side_effect=[page0, page1, []])
-    cast("Any", controller)._get_provider_playlist_tracks = get_tracks
+    controller, get_tracks = _make_controller([page0, page1, []])
 
-    result = [t async for t in controller.tracks("abc", "some_provider")]
+    result = [t async for t in controller.iter_tracks("abc", "some_provider")]
 
     # No controller-side cap: a multi-page (e.g. dynamic) list is relayed in full.
     assert len(result) == 35
     assert get_tracks.await_count == 3
+    # the provider is resolved once for the whole listing, not again per page
+    cast("Any", controller.mass).music.resolve_visible_provider.assert_called_once_with(
+        "some_provider", strict=False
+    )
 
 
 @pytest.mark.asyncio
 async def test_tracks_stops_on_empty_page() -> None:
-    """tracks() stops fetching once the provider yields an empty page."""
-    controller = _make_controller()
+    """iter_tracks() stops fetching once the provider yields an empty page."""
     page0 = [MagicMock(spec=Track) for _ in range(7)]
-    get_tracks = AsyncMock(side_effect=[page0, []])
-    cast("Any", controller)._get_provider_playlist_tracks = get_tracks
+    controller, get_tracks = _make_controller([page0, []])
 
-    result = [t async for t in controller.tracks("abc", "some_provider")]
+    result = [t async for t in controller.iter_tracks("abc", "some_provider")]
 
     assert len(result) == 7
     assert get_tracks.await_count == 2
+
+
+def _playlist_track(item_id: str, audio_metadata: AudioMetadata | None = None) -> Track:
+    return Track(
+        item_id=item_id,
+        provider="some_provider",
+        name=item_id,
+        provider_mappings=set(),
+        audio_metadata=audio_metadata,
+    )
+
+
+@pytest.mark.asyncio
+async def test_tracks_add_audio_metadata_per_page() -> None:
+    """Tracks without audio metadata get it from stored analysis, one lookup per page."""
+    from_provider = AudioMetadata(bpm=99.0)
+    page0 = [_playlist_track("a"), _playlist_track("b", from_provider)]
+    page1 = [
+        _playlist_track("c"),
+        Radio(item_id="r", provider="some_provider", name="r", provider_mappings=set()),
+    ]
+    controller, _ = _make_controller([page0, page1, []])
+    lookup = AsyncMock(side_effect=[[AudioMetadata(bpm=120.0)], [None]])
+    cast("Any", controller.mass).streams.audio_analysis.get_tracks_audio_metadata = lookup
+
+    result = [t async for t in controller.iter_tracks("abc", "some_provider")]
+
+    assert [cast("Track", t).audio_metadata for t in result[:3]] == [
+        AudioMetadata(bpm=120.0),
+        from_provider,
+        None,
+    ]
+    assert [call.args[0] for call in lookup.await_args_list] == [[page0[0]], [page1[0]]]
 
 
 # --------------------------------------------------------------------------- #
@@ -1187,11 +1942,7 @@ async def test_fetch_playlist_client_error() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_playlist_error_status() -> None:
-    """
-    An error response is rejected instead of parsed.
-
-    Without the status check every markup line of the error page becomes an entry.
-    """
+    """An error response is rejected instead of being parsed as a playlist."""
     error_page = (
         b"<html>\n<head><title>404 Not Found</title></head>\n"
         b"<body>\n<center><h1>404 Not Found</h1></center>\n</body>\n</html>\n"
@@ -1255,8 +2006,7 @@ async def test_fetch_playlist_hls_master_playlist_always_raises() -> None:
 @pytest.mark.asyncio
 async def test_fetch_playlist_pls_by_extension(monkeypatch: pytest.MonkeyPatch) -> None:
     """A .pls url picks the PLS parser on the extension alone."""
-    # every real PLS body carries the marker too, so only a marker-free body can
-    # show which of the two conditions selected the parser
+    # Use marker-free content so the extension alone selects the parser.
     parsed = [PlaylistItem(path="http://stream.example.com/aac")]
     parse_pls_mock = MagicMock(return_value=parsed)
     monkeypatch.setattr(playlists, "parse_pls", parse_pls_mock)
@@ -1304,12 +2054,7 @@ async def test_fetch_playlist_empty() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_playlist_unknown_charset_falls_back_to_detection() -> None:
-    """
-    A charset the remote server made up must not break the fetch.
-
-    Stations do send names Python has no codec for, which decode() answers with a
-    LookupError that no caller on this path catches.
-    """
+    """An unknown declared charset falls back to content detection."""
     mass = _mass_serving(M3U_PLAYLIST.encode(), charset="utf8mb4")
 
     result = await fetch_playlist(mass, "http://example.com/station.m3u")
@@ -1364,3 +2109,276 @@ async def test_fetch_playlist_reads_only_the_head_of_the_body() -> None:
     # the entry sits past the read limit, so nothing is left to parse
     with pytest.raises(InvalidDataError, match="Empty playlist"):
         await fetch_playlist(mass, "http://example.com/station.m3u")
+
+
+# --------------------------------------------------------------------------- #
+#  EXTIMG provider trust on import                                             #
+# --------------------------------------------------------------------------- #
+
+
+def _spotify_mass() -> MagicMock:
+    """Return a mass mock with one loaded Spotify instance."""
+    spotify = MagicMock(domain="spotify", instance_id="spotify_1")
+    spotify.accepts_stored_image_path.return_value = False
+    mass = MagicMock()
+    mass.get_provider.side_effect = lambda ref: {
+        "spotify": spotify,
+        "spotify_1": spotify,
+    }.get(ref)
+    return mass
+
+
+def _spotify_item(images: list[ImageInfo]) -> PlaylistItem:
+    """Return a playlist item mapped to the Spotify instance with the given images."""
+    return PlaylistItem(
+        path="spotify://track/abc123",
+        title="Song",
+        metadata={"media_type": MediaType.TRACK.value, "name": "Song"},
+        providers=[
+            ProviderMappingInfo(domain="spotify", item_id="abc123", instance_id="spotify_1")
+        ],
+        images=images,
+    )
+
+
+def test_construct_media_item_drops_local_image_paths_from_a_file() -> None:
+    """A local image path from a playlist file is never imported, whatever provider it names."""
+    item = _spotify_item([ImageInfo(type="thumb", path="/data/cover.jpg", provider="spotify_1")])
+
+    result = construct_media_item_from_playlist_item(item, _spotify_mass())
+
+    assert result is not None
+    assert not result.metadata.images
+
+
+def test_construct_media_item_keeps_own_provider_and_builtin_remote_images() -> None:
+    """Images of the item's own provider (instance or domain) and builtin URLs are imported."""
+    item = _spotify_item(
+        [
+            ImageInfo(type="thumb", path="https://i.scdn.co/thumb.jpg", provider="spotify_1"),
+            ImageInfo(type="fanart", path="https://i.scdn.co/fanart.jpg", provider="spotify"),
+            ImageInfo(type="logo", path="https://example.com/logo.png", provider="builtin"),
+        ]
+    )
+
+    result = construct_media_item_from_playlist_item(item, _spotify_mass())
+
+    assert result is not None
+    assert result.metadata.images is not None
+    assert [(img.path, img.provider) for img in result.metadata.images] == [
+        ("https://i.scdn.co/thumb.jpg", "spotify_1"),
+        ("https://i.scdn.co/fanart.jpg", "spotify"),
+        ("https://example.com/logo.png", "builtin"),
+    ]
+
+
+@pytest.mark.parametrize("loaded", [True, False], ids=["loaded", "unloaded"])
+def test_construct_media_item_remote_image_of_another_provider(loaded: bool) -> None:
+    """A remote image of another provider is imported only when that provider is loaded."""
+    mass = _spotify_mass()
+    fanarttv = MagicMock(domain="fanarttv", instance_id="fanarttv") if loaded else None
+    spotify_lookup = mass.get_provider.side_effect
+    mass.get_provider.side_effect = lambda ref: (
+        fanarttv if ref == "fanarttv" else spotify_lookup(ref)
+    )
+    item = _spotify_item(
+        [ImageInfo(type="fanart", path="https://fanart.tv/x.jpg", provider="fanarttv")]
+    )
+
+    result = construct_media_item_from_playlist_item(item, mass)
+
+    assert result is not None
+    if loaded:
+        assert result.metadata.images is not None
+        assert [img.provider for img in result.metadata.images] == ["fanarttv"]
+    else:
+        assert not result.metadata.images
+
+
+@pytest.mark.parametrize(
+    ("path", "provider", "kept"),
+    [
+        ("al-0a1b2c_5f3e", "coverprov--abc", True),
+        ("https://example.com/cover.jpg", "coverprov--abc", True),
+        ("/data/x.png", "coverprov--abc", False),
+        ("al-0a1b2c_5f3e", "spotify_1", False),
+        ("al-0a1b2c_5f3e", "coverprov--gone", False),
+    ],
+    ids=["accepted-id", "remote", "refused-path", "not-opted-in", "unloaded"],
+)
+def test_construct_media_item_stored_image_path_needs_provider_opt_in(
+    path: str, provider: str, kept: bool
+) -> None:
+    """A non-URL image path is imported only when its loaded provider accepts it."""
+    mass = _spotify_mass()
+    cover_provider = MagicMock(domain="coverprov", instance_id="coverprov--abc")
+    cover_provider.accepts_stored_image_path.side_effect = lambda p: "/" not in p
+    spotify_lookup = mass.get_provider.side_effect
+    mass.get_provider.side_effect = lambda ref: (
+        cover_provider if ref == "coverprov--abc" else spotify_lookup(ref)
+    )
+    item = _spotify_item(
+        [ImageInfo(type="thumb", path=path, provider=provider, remotely_accessible=True)]
+    )
+
+    result = construct_media_item_from_playlist_item(item, mass)
+
+    assert result is not None
+    images = list(result.metadata.images or [])
+    assert [img.path for img in images] == ([path] if kept else [])
+    # only a URL may be handed to a client as is
+    assert all(img.remotely_accessible == img.path.startswith("https://") for img in images)
+
+
+def test_track_round_trip_preserves_image_id_its_provider_accepts() -> None:
+    """A cover id of a provider that accepts it survives export, generate and re-parse."""
+    image = MediaItemImage(
+        type=ImageType.THUMB,
+        path="al-0a1b2c_5f3e",
+        provider="opensubsonic--abc",
+        remotely_accessible=False,
+    )
+    track = Track(
+        item_id="tr-1",
+        provider="opensubsonic--abc",
+        name="Song",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="tr-1",
+                provider_domain="opensubsonic",
+                provider_instance="opensubsonic--abc",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        metadata=MediaItemMetadata(images=UniqueList([image])),
+    )
+    subsonic = MagicMock(domain="opensubsonic", instance_id="opensubsonic--abc")
+    subsonic.accepts_stored_image_path.return_value = True
+    mass = MagicMock()
+    mass.get_provider.return_value = subsonic
+
+    parsed = parse_m3u(generate_m3u("Mix", [media_item_to_playlist_item(track)]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], mass)
+
+    assert reconstructed is not None
+    assert reconstructed.metadata.images == [image]
+
+
+def test_media_item_to_playlist_item_track_round_trip_preserves_own_image() -> None:
+    """A track's own image survives export, generate and re-parse."""
+    image = MediaItemImage(
+        type=ImageType.THUMB,
+        path="https://i.scdn.co/abc.jpg",
+        provider="spotify_1",
+        remotely_accessible=True,
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify_1",
+        name="Song",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+                audio_format=AudioFormat(content_type=ContentType.OGG),
+            ),
+        },
+        metadata=MediaItemMetadata(images=UniqueList([image])),
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+    parsed = parse_m3u(generate_m3u("Mix", [playlist_item]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], _spotify_mass())
+
+    assert reconstructed is not None
+    assert reconstructed.metadata.images == UniqueList([image])
+
+
+def _apply_single_moves(items: list[int], steps: list[tuple[int, int]]) -> list[int]:
+    """Apply single-track moves, where each to_position is the track's final position."""
+    result = list(items)
+    for from_position, to_position in steps:
+        result.insert(to_position - 1, result.pop(from_position - 1))
+    return result
+
+
+@pytest.mark.parametrize(
+    ("positions", "to_position", "expected"),
+    [
+        pytest.param([2, 3], 4, [1, 4, 5, 2, 3], id="block-down"),
+        pytest.param([4, 5], 1, [4, 5, 1, 2, 3], id="block-to-top"),
+        pytest.param([1, 3], 4, [2, 4, 5, 1, 3], id="scattered-to-bottom"),
+        pytest.param([5, 2], 2, [1, 2, 5, 3, 4], id="unsorted-keeps-playlist-order"),
+        pytest.param([3], 1, [3, 1, 2, 4, 5], id="single"),
+    ],
+)
+def test_move_playlist_block(positions: list[int], to_position: int, expected: list[int]) -> None:
+    """The moved items keep their order and the block starts at to_position."""
+    assert playlists.move_playlist_block([1, 2, 3, 4, 5], positions, to_position) == expected
+
+
+@pytest.mark.parametrize(
+    ("positions", "to_position"),
+    [
+        pytest.param([], 1, id="nothing-to-move"),
+        pytest.param([2, 2], 1, id="duplicate"),
+        pytest.param([0], 1, id="below-the-first"),
+        pytest.param([6], 1, id="past-the-last"),
+        pytest.param([1, 2], 5, id="block-does-not-fit"),
+        pytest.param([1], 0, id="target-below-the-first"),
+    ],
+)
+def test_move_playlist_block_refuses_invalid_moves(positions: list[int], to_position: int) -> None:
+    """Positions outside the playlist, duplicates and a block that does not fit raise."""
+    with pytest.raises(InvalidDataError):
+        playlists.move_playlist_block([1, 2, 3, 4, 5], positions, to_position)
+    with pytest.raises(InvalidDataError):
+        playlists.playlist_block_move_steps(5, positions, to_position)
+
+
+def test_playlist_block_move_steps_match_the_block_move() -> None:
+    """For every block move in a short playlist, the single moves end in the same order."""
+    length = 6
+    items = list(range(1, length + 1))
+    for mask in range(1, 1 << length):
+        positions = [position for position in items if mask & (1 << (position - 1))]
+        for to_position in range(1, length - len(positions) + 2):
+            steps = playlists.playlist_block_move_steps(length, positions, to_position)
+            expected = playlists.move_playlist_block(items, positions, to_position)
+            assert _apply_single_moves(items, steps) == expected
+            assert len(steps) <= len(positions)
+            assert all(1 <= pos <= length for step in steps for pos in step)
+
+
+def test_playlist_block_move_steps_skip_a_block_already_in_place() -> None:
+    """Moving a block onto its own place needs no moves."""
+    assert playlists.playlist_block_move_steps(5, [2, 3], 2) == []
+
+
+def test_media_item_to_playlist_item_keeps_every_instance_of_a_domain() -> None:
+    """Each provider instance keeps its mapping, so every account that saved the track can play it."""
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="Shared Library Track",
+        duration=200,
+        provider_mappings={
+            ProviderMapping(
+                item_id="song-1",
+                provider_domain="opensubsonic",
+                provider_instance=instance,
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            )
+            for instance in ("opensubsonic--userA", "opensubsonic--userB")
+        },
+    )
+
+    result = media_item_to_playlist_item(track)
+
+    assert {p.instance_id for p in result.providers} == {
+        "opensubsonic--userA",
+        "opensubsonic--userB",
+    }

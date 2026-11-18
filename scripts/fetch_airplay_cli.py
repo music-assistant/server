@@ -200,7 +200,8 @@ def _download(url: str) -> bytes:
     )
     try:
         with urlopen(request, timeout=60) as response:  # noqa: S310
-            return response.read()
+            content: bytes = response.read()
+            return content
     except URLError as err:
         msg = f"Unable to download {url}: {err}"
         raise RuntimeError(msg) from err

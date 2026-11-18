@@ -8,15 +8,13 @@ from aiomusiccast.capabilities import OptionSetter as MCOptionSetter
 from aiomusiccast.capabilities import TextSensor as MCTextSensor
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED,
     create_sample_rates_config_entry,
 )
 
 # Constants for players
-# both the http profile and icy didn't matter for me testing it.
+# icy didn't matter for me testing it.
 PLAYER_CONFIG_ENTRIES = [
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED,
     create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
 ]
@@ -44,6 +42,8 @@ MC_DEVICE_UPNP_ENDPOINT = "MediaRenderer/desc.xml"
 # if this is not a constant, we'll have to do some xml parsing
 MC_DEVICE_UPNP_CTRL_ENDPOINT = "AVTransport/ctrl"
 MC_DEVICE_UPNP_PORT = 49154
+# mimics the official MusicCast app on UPnP requests to the device (#2142)
+MC_DEVICE_UPNP_USER_AGENT = "MusicCast/6.00 (Android)"
 MC_NULL_GROUP = "00000000000000000000000000000000"
 MC_DEFAULT_ZONE = "main"
 

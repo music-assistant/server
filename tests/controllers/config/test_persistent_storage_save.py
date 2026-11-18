@@ -24,8 +24,23 @@ from unittest.mock import MagicMock, patch
 import pytest
 from music_assistant_models.enums import PlayerType
 
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import (
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
+    CONF_PLAYER_SPLIT_SESSION_ONLY,
+    CONF_PLAYER_SPLIT_TREE,
+    CONF_PLAYERS,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED,
+)
 from music_assistant.controllers.config.controller import ConfigController
+
+# settings that no migration has anything left to do on
+RECOVERED = {
+    "recovered": True,
+    CONF_PLAYER_SPLIT_SESSION_ONLY: True,
+    CONF_PLAYER_SPLIT_TREE: True,
+    CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: True,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED: True,
+}
 
 
 def _make_controller(tmp_path: Path) -> ConfigController:
@@ -37,22 +52,34 @@ async def test_save_rotates_previous_file_to_backup(tmp_path: Path) -> None:
     """A successful save keeps the previous generation as a valid backup."""
     controller = _make_controller(tmp_path)
     controller._data = {"generation": 1}
-    await controller._async_save()
+    await controller.async_save()
     controller._data = {"generation": 2}
-    await controller._async_save()
+    await controller.async_save()
 
     assert json.loads(Path(controller.filename).read_text()) == {"generation": 2}
     assert json.loads(Path(f"{controller.filename}.backup").read_text()) == {"generation": 1}
     assert not Path(f"{controller.filename}.tmp").is_file()
 
 
+async def test_a_save_of_an_already_written_generation_is_skipped(tmp_path: Path) -> None:
+    """A queued or timer-started save does not rewrite what is already on disk."""
+    controller = _make_controller(tmp_path)
+    controller._data = {"generation": 1}
+    controller._save_requested = 1
+    await controller.async_save()
+    await controller.async_save()
+
+    assert json.loads(Path(controller.filename).read_text()) == {"generation": 1}
+    assert not Path(f"{controller.filename}.backup").is_file()
+
+
 async def test_failed_save_leaves_existing_files_untouched(tmp_path: Path) -> None:
     """A save that fails mid-write may not corrupt the files already on disk."""
     controller = _make_controller(tmp_path)
     controller._data = {"generation": 1}
-    await controller._async_save()
+    await controller.async_save()
     controller._data = {"generation": 2}
-    await controller._async_save()
+    await controller.async_save()
 
     controller._data = {"generation": 3}
     with (
@@ -62,7 +89,7 @@ async def test_failed_save_leaves_existing_files_untouched(tmp_path: Path) -> No
         ),
         pytest.raises(RuntimeError),
     ):
-        await controller._async_save()
+        await controller.async_save()
 
     assert json.loads(Path(controller.filename).read_text()) == {"generation": 2}
     assert json.loads(Path(f"{controller.filename}.backup").read_text()) == {"generation": 1}
@@ -78,30 +105,30 @@ async def test_empty_settings_file_does_not_clobber_backup(tmp_path: Path) -> No
     """
     controller = _make_controller(tmp_path)
     Path(controller.filename).write_text("")
-    Path(f"{controller.filename}.backup").write_text(json.dumps({"recovered": True}))
+    Path(f"{controller.filename}.backup").write_text(json.dumps(RECOVERED))
 
     await controller._load()
-    assert controller._data == {"recovered": True}
+    assert controller._data == RECOVERED
 
-    await controller._async_save()
+    await controller.async_save()
 
-    assert json.loads(Path(controller.filename).read_text()) == {"recovered": True}
-    assert json.loads(Path(f"{controller.filename}.backup").read_text()) == {"recovered": True}
+    assert json.loads(Path(controller.filename).read_text()) == RECOVERED
+    assert json.loads(Path(f"{controller.filename}.backup").read_text()) == RECOVERED
 
 
 async def test_corrupt_settings_file_does_not_clobber_backup(tmp_path: Path) -> None:
     """A non-empty but corrupt settings file (torn write) must never replace a good backup."""
     controller = _make_controller(tmp_path)
     Path(controller.filename).write_text('{"truncated": tr')
-    Path(f"{controller.filename}.backup").write_text(json.dumps({"recovered": True}))
+    Path(f"{controller.filename}.backup").write_text(json.dumps(RECOVERED))
 
     await controller._load()
-    assert controller._data == {"recovered": True}
+    assert controller._data == RECOVERED
 
-    await controller._async_save()
+    await controller.async_save()
 
-    assert json.loads(Path(controller.filename).read_text()) == {"recovered": True}
-    assert json.loads(Path(f"{controller.filename}.backup").read_text()) == {"recovered": True}
+    assert json.loads(Path(controller.filename).read_text()) == RECOVERED
+    assert json.loads(Path(f"{controller.filename}.backup").read_text()) == RECOVERED
 
 
 async def test_save_succeeds_when_directory_fsync_unsupported(tmp_path: Path) -> None:
@@ -112,7 +139,7 @@ async def test_save_succeeds_when_directory_fsync_unsupported(tmp_path: Path) ->
         "music_assistant.controllers.config.controller.os.open",
         side_effect=OSError("fsync on directory not supported"),
     ):
-        await controller._async_save()
+        await controller.async_save()
 
     assert json.loads(Path(controller.filename).read_text()) == {"generation": 1}
 
@@ -142,16 +169,15 @@ async def test_player_config_summary_read_does_not_rewrite_settings(
     }
     controller._data = {CONF_PLAYERS: {player_id: deepcopy(raw_config)}}
     live_player = SimpleNamespace(
-        state=SimpleNamespace(
-            name="solarium-bath-sl",
-            available=False,
-            type=PlayerType.PLAYER,
-        )
+        provider_id=raw_config["provider"],
+        name="solarium-bath-sl",
+        available=False,
+        type=PlayerType.PLAYER,
     )
     mass.players.get_player.return_value = live_player
 
     configs = await controller.get_player_configs(include_values=False)
-    await controller._async_save()
+    await controller.async_save()
 
     assert configs[0].default_name == "solarium-bath-sl"
     assert controller._data[CONF_PLAYERS][player_id] == raw_config

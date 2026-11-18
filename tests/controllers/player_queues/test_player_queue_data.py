@@ -12,8 +12,9 @@ from music_assistant_models.media_items import (
     Track,
 )
 from music_assistant_models.player_queue import PlayerQueue
-from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
+from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.constants import CACHE_FORMAT_VERSION
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
@@ -83,7 +84,7 @@ def _data_with_dynamic_source() -> PlayerQueueData:
         items=[QueueItem.from_media_item("q1", _track("t1"))],
         source_items=[playlist],
         enqueued_media_items=[playlist, album],
-        credited_albums={album},
+        credited_albums={"library://album/a1"},
         userid="user-1",
         # runtime-only fields set to non-defaults to prove they do not survive the round-trip
         transitioning=True,
@@ -110,10 +111,8 @@ def test_cache_round_trip_restores_queue_items_and_sources() -> None:
         item.uri for item in data.enqueued_media_items
     ]
     assert restored.userid == "user-1"
-    # a credited album survives, so a restart does not re-credit the same enqueue
-    assert {item.uri for item in restored.credited_albums} == {
-        item.uri for item in data.credited_albums
-    }
+    # a credited album survives, so a restart does not re-credit the same album play
+    assert restored.credited_albums == {"library://album/a1"}
     # is_dynamic is recomputed from the restored source items (a dynamic playlist is present)
     assert restored.queue.is_dynamic is True
     # runtime-only fields are reset to their defaults, never persisted
@@ -121,6 +120,19 @@ def test_cache_round_trip_restores_queue_items_and_sources() -> None:
     assert restored.play_action_refcount == 0
     assert restored.last_counted_play is None
     assert restored.flow_buffer_completed is None
+
+
+def test_album_play_credited_before_a_restart_is_not_credited_again() -> None:
+    """A credited album play stays credited after a restart, though the album was not enqueued."""
+    item = QueueItem.from_media_item("q1", _track("t1"))
+    # played from the album's folder, so the album is not among the enqueued items
+    item.origin = QueueItemOrigin(container=ItemMapping.from_item(_album("a1")))
+    data = PlayerQueueData(queue=_queue(), items=[item], credited_albums={"library://album/a1"})
+
+    restored = PlayerQueueData.from_cache(data.to_cache(), data.items_to_cache())
+
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
+    assert tracker._claim_album_credit(restored, restored.items[0]) is None
 
 
 def test_cache_round_trip_non_dynamic_has_no_sources() -> None:
@@ -169,6 +181,31 @@ def test_cache_round_trip_restores_settings() -> None:
     assert restored.queue.repeat_mode == RepeatMode.ALL
     assert restored.queue.crossfade_enabled is True
     assert restored.queue.autoplay_enabled is True
+
+
+def test_cache_round_trip_restores_toggle_overrides() -> None:
+    """A pinned autoplay/crossfade override survives a cache round-trip."""
+    queue = _queue()
+    data = PlayerQueueData(queue=queue, autoplay_override=False, crossfade_override=True)
+
+    restored = PlayerQueueData.from_cache(data.to_cache(), data.items_to_cache())
+
+    assert restored.autoplay_override is False
+    assert restored.crossfade_override is True
+
+
+def test_from_cache_legacy_without_toggle_overrides_yields_none() -> None:
+    """A legacy cache with no override keys restores as None, i.e. follow the global default."""
+    queue = _queue()
+    data = PlayerQueueData(queue=queue)
+    state = data.to_cache()
+    del state["autoplay_override"]
+    del state["crossfade_override"]
+
+    restored = PlayerQueueData.from_cache(state, data.items_to_cache())
+
+    assert restored.autoplay_override is None
+    assert restored.crossfade_override is None
 
 
 def test_from_cache_keeps_settings_when_item_unreadable() -> None:

@@ -49,22 +49,22 @@ async def test_malformed_preset_entry_is_reported(provider: TuneInProvider) -> N
     assert isinstance(args[2], InvalidDataError)
 
 
-@pytest.mark.parametrize("preset_id", [None, "", {}])
-async def test_audio_preset_without_id_is_reported(
-    provider: TuneInProvider, preset_id: Any
+@pytest.mark.parametrize(
+    "item",
+    [{"type": "audio"}, {"type": "audio", "preset_id": ""}, {"type": "audio", "preset_id": {}}],
+)
+async def test_audio_entry_without_preset_id_is_skipped(
+    provider: TuneInProvider, item: dict[str, Any]
 ) -> None:
-    """An audio preset without an id must hold back radio deletions."""
+    """An audio entry without a preset id is not a favourite and must not block deletions."""
     provider._TuneInProvider__get_data = AsyncMock(  # type: ignore[attr-defined]
-        return_value={"body": [{"type": "audio", "preset_id": preset_id}]}
+        return_value={"body": [item]}
     )
     provider.report_skipped_sync_item = Mock()  # type: ignore[method-assign]
 
     assert [radio async for radio in provider.get_library_radios()] == []
 
-    provider.report_skipped_sync_item.assert_called_once()
-    args = provider.report_skipped_sync_item.call_args.args
-    assert args[:2] == (MediaType.RADIO, None)
-    assert isinstance(args[2], InvalidDataError)
+    provider.report_skipped_sync_item.assert_not_called()
 
 
 async def test_audio_preset_without_name_is_reported(provider: TuneInProvider) -> None:

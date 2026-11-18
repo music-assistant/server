@@ -286,6 +286,7 @@ class GuessTheSongQuizType(QuizType):
                 top_tracks = await self.mass.music.artists.top_tracks(
                     item_id=similar_artist.item_id,
                     provider_instance_id_or_domain=similar_artist.provider,
+                    limit=None,
                 )
             except Exception as err:
                 LOGGER.debug("Could not fetch top tracks for %s: %s", similar_artist.name, err)

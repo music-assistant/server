@@ -9,17 +9,22 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams.smart_fades.filters import (
+    MIX_CEILING_DB,
+    EchoOutFilter,
     FadeInTrimFilter,
     FadeOutTrimFilter,
     GradualTimeStretchFilter,
+    HighPassSweepFilter,
     PeakFilter,
     ShelfFilter,
     ShelfType,
     StreamingCrossfadeFilter,
 )
 from music_assistant.controllers.streams.smart_fades.models import (
+    EchoOut,
     EqPlan,
     FadeOutTrim,
+    HighPassSweep,
     ShelfSchedule,
     TempoPlan,
     TransitionPlan,
@@ -164,6 +169,17 @@ class TestTransitionRenderer:
         assert isinstance(crossfade, StreamingCrossfadeFilter)
         assert "curve=nofade" in crossfade.apply("[fadein]", "[fadeout]")[0]
 
+    def test_fadein_curve_flows_into_the_crossfade_filter(self) -> None:
+        """The plan's fadein_curve becomes the incoming stream's fade curve."""
+        plan = _plan(fadein_curve="nofade")
+        filters, _ = TransitionRenderer(LOGGER).render(plan, PCM, _seconds(45))
+        crossfade = filters[-1]
+        assert isinstance(crossfade, StreamingCrossfadeFilter)
+        fadeout_chain, fadein_chain, _ = crossfade.apply("[fadein]", "[fadeout]")
+        assert "curve=qsin" in fadeout_chain
+        assert "afade=t=in:start_sample=0:" in fadein_chain
+        assert "curve=nofade" in fadein_chain
+
     def test_stretch_savings_shorten_fadeout_accounting(self) -> None:
         """A speed-up ramp removes time from the rendered fade-out total."""
         plan = _plan(tempo_plan=TempoPlan(steps=[(30.0, 1.0), (35.0, 1.02)]))
@@ -172,6 +188,61 @@ class TestTransitionRenderer:
         assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(
             expected_fade_out
         )
+
+
+class TestDressedRendering:
+    """A dressed plan's outgoing effect renders between the tail trim and the blend."""
+
+    def test_highpass_sweep_renders_on_the_outgoing_side(self) -> None:
+        """The sweep follows the tail trim and runs before the incoming trim and the blend."""
+        plan = _plan(
+            tier=TransitionTier.QUICK_FADE,
+            eq_plan=EqPlan.neutral(),
+            crossfade_duration=8.0,
+            fadeout_trim=FadeOutTrim(end_pos=40.0, trimmed_seconds=5.0),
+            fadein_trim_start=0.5,
+            highpass=HighPassSweep(start_s=32.0, end_s=40.0, start_hz=20.0, end_hz=600.0),
+        )
+        filters, timing = TransitionRenderer(LOGGER).render(plan, PCM, _seconds(45))
+        assert [type(f) for f in filters] == [
+            FadeOutTrimFilter,
+            HighPassSweepFilter,
+            FadeInTrimFilter,
+            StreamingCrossfadeFilter,
+        ]
+        sweep = filters[1]
+        assert isinstance(sweep, HighPassSweepFilter)
+        assert (sweep.start_s, sweep.end_s, sweep.start_hz, sweep.end_hz) == (
+            32.0,
+            40.0,
+            20.0,
+            600.0,
+        )
+        # the sweep spans the overlap
+        assert timing.pre_crossfade_duration == pytest.approx(32.0)
+        blend = filters[-1]
+        assert isinstance(blend, StreamingCrossfadeFilter)
+        assert blend.limit_db is None
+
+    def test_echo_out_renders_on_the_outgoing_side(self) -> None:
+        """The echo cuts the outgoing stream at its cut, ahead of the blend that starts there."""
+        plan = _plan(
+            tier=TransitionTier.QUICK_FADE,
+            eq_plan=EqPlan.neutral(),
+            fade_out_window=40.0,
+            crossfade_duration=2.0,
+            echo=EchoOut(cut_s=38.0, beat_s=0.5),
+        )
+        filters, timing = TransitionRenderer(LOGGER).render(plan, PCM, _seconds(45))
+        assert [type(f) for f in filters] == [EchoOutFilter, StreamingCrossfadeFilter]
+        echo = filters[0]
+        assert isinstance(echo, EchoOutFilter)
+        assert (echo.cut_s, echo.beat_s) == (38.0, 0.5)
+        assert timing.pre_crossfade_duration == pytest.approx(38.0)
+        # the taps sum with the next track at full level, so the mix is limited
+        blend = filters[-1]
+        assert isinstance(blend, StreamingCrossfadeFilter)
+        assert blend.limit_db == MIX_CEILING_DB
 
 
 class TestMidSwapRendering:

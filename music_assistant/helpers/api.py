@@ -6,21 +6,27 @@ import importlib
 import inspect
 import logging
 import pkgutil
-from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Sequence
+import re
+from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import MISSING, dataclass
 from datetime import datetime
 from enum import Enum
 from functools import cache
 from types import NoneType, UnionType
-from typing import TYPE_CHECKING, Any, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, Final, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from mashumaro.exceptions import MissingField
+from music_assistant_models.api import ErrorResultMessage
 from music_assistant_models.media_items.media_item import MediaItem
 
+from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
 from music_assistant.helpers.util import try_parse_bool
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import Scope
+    from music_assistant_models.errors import MusicAssistantError
+
+    from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +36,57 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 _TYPE_ALIAS_CACHE: dict[str, Any] = {}
 _MODEL_TYPE_CACHE: dict[str, Any] = {}
 _MAX_TYPE_HINT_RESOLVE_ATTEMPTS = 32
+
+# the arguments, by name, that hold the id of a player (or of several) in the commands
+# that have them; a queue shares the id of its player
+PLAYER_ID_ARGUMENTS: Final[frozenset[str]] = frozenset(
+    {
+        "player_id",
+        "queue_id",
+        "target_player",
+        "source_queue_id",
+        "target_queue_id",
+        "venue_player_id",
+        "web_player_id",
+        "player_ids",
+        "child_player_ids",
+        "player_ids_to_add",
+        "player_ids_to_remove",
+        "members",
+        "player_filter",
+    }
+)
+
+_REDACTED = "<redacted>"
+_SECRET_KEY_SUFFIXES = (
+    "password",
+    "passwd",
+    "pwd",
+    "secret",
+    "token",
+    "auth",
+    "authorization",
+    "credential",
+    "credentials",
+    "cookie",
+    "apikey",
+    "api_key",
+    "app_key",
+    "client_key",
+    "access_key",
+    "private_key",
+)
+# a config values map (its secure entries can have any key), a guest join code or sign-in
+# code, and a PKCE code verifier
+_SECRET_KEYS = ("values", "code", "code_verifier")
+_RE_JWT = re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]*")
+# without \u escapes, every redaction needs one of these in the (lowercased) message text:
+# the end of a secret key, a whole secret key or a JWT
+_SECRET_HINTS = (
+    *(f'{suffix}"' for suffix in _SECRET_KEY_SUFFIXES),
+    *(f'"{key}"' for key in _SECRET_KEYS),
+    "eyj",
+)
 
 
 @dataclass
@@ -41,9 +98,19 @@ class APICommandHandler:
     type_hints: dict[str, Any]
     target: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]]
     authenticated: bool = True
-    required_scope: Scope | None = None  # None means any authenticated user
+    # a tuple lists scopes of which one suffices, None means any authenticated user
+    required_scope: Scope | tuple[Scope, ...] | None = None
     allow_impersonation: bool = False  # If True, the command accepts a 'user' argument
     alias: bool = False  # If True, this is an alias for backward compatibility
+
+    @property
+    def required_scope_label(self) -> str | None:
+        """Return the required scope(s) as text, None when any authenticated user may call."""
+        if self.required_scope is None:
+            return None
+        if isinstance(self.required_scope, tuple):
+            return " or ".join(str(scope) for scope in self.required_scope)
+        return str(self.required_scope)
 
     @classmethod
     def parse(
@@ -51,7 +118,7 @@ class APICommandHandler:
         command: str,
         func: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
         authenticated: bool = True,
-        required_scope: Scope | None = None,
+        required_scope: Scope | tuple[Scope, ...] | None = None,
         allow_impersonation: bool = False,
         alias: bool = False,
     ) -> APICommandHandler:
@@ -61,8 +128,9 @@ class APICommandHandler:
         :param command: The command name/path.
         :param func: The function to handle the command.
         :param authenticated: Whether authentication is required (default: True).
-        :param required_scope: Scope required to execute the command,
-            None for any authenticated user.
+        :param required_scope: Scope required to execute the command, a tuple of scopes
+            of which the caller needs one, None for any authenticated user.
+            ``Scope.ALL`` (``*``) means administrators only.
         :param allow_impersonation: Whether the command accepts a 'user' argument
             to execute the command on behalf of another user (default: False).
         :param alias: Whether this is an alias for backward compatibility (default: False).
@@ -141,7 +209,7 @@ class APICommandHandler:
 def api_command(
     command: str,
     authenticated: bool = True,
-    required_scope: Scope | None = None,
+    required_scope: Scope | tuple[Scope, ...] | None = None,
     allow_impersonation: bool = False,
     alias: bool = False,
 ) -> Callable[[_F], _F]:
@@ -150,8 +218,9 @@ def api_command(
 
     :param command: The command name/path.
     :param authenticated: Whether authentication is required (default: True).
-    :param required_scope: Scope required to execute the command,
-        None means any authenticated user.
+    :param required_scope: Scope required to execute the command, a tuple of scopes
+        of which the caller needs one, None means any authenticated user.
+        ``Scope.ALL`` (``*``) means administrators only.
     :param allow_impersonation: Whether the command accepts a 'user' argument
         to execute the command on behalf of another user (default: False).
     :param alias: Whether this is a backward-compatible alias (default: False).
@@ -201,6 +270,61 @@ def parse_arguments(
                 name, value, value_type, default, allow_value_convert=True
             )
     return final_args
+
+
+def run_api_command(
+    mass: MusicAssistant, handler: APICommandHandler, args: Mapping[str, Any]
+) -> Any:
+    """
+    Call the handler of an API command, with the legacy player ids in its arguments resolved.
+
+    :param mass: The MusicAssistant instance.
+    :param handler: The handler of the command.
+    :param args: The arguments of the command, by name.
+    :return: What the handler returns, which may be a coroutine or an async generator.
+    """
+    return handler.target(**resolve_player_ids(mass, args))
+
+
+def api_error_message(message_id: str, error: MusicAssistantError) -> ErrorResultMessage:
+    """
+    Return the message that reports an error of a command to an API client.
+
+    :param message_id: The id of the command the error answers.
+    :param error: The error the command raised.
+    """
+    return ErrorResultMessage(
+        message_id,
+        error.error_code,
+        str(error) or error.__class__.__name__,
+        translation_key=error.translation_key,
+        translation_args=error.translation_args,
+        translation_owner=error.translation_owner,
+        data=error.data,
+    )
+
+
+def resolve_player_ids(mass: MusicAssistant, args: Mapping[str, Any]) -> dict[str, Any]:
+    """
+    Return the arguments of an API command with the legacy player ids in them resolved.
+
+    A player keeps answering to its legacy ids: in the arguments named in
+    PLAYER_ID_ARGUMENTS, each of them is replaced by the id of its player.
+
+    :param mass: The MusicAssistant instance.
+    :param args: The arguments of the command, by name.
+    """
+    resolved = dict(args)
+    for name in PLAYER_ID_ARGUMENTS.intersection(args):
+        value = args[name]
+        if isinstance(value, str):
+            resolved[name] = mass.players.resolve_player_id(value)
+        elif isinstance(value, list):
+            resolved[name] = [
+                mass.players.resolve_player_id(item) if isinstance(item, str) else item
+                for item in value
+            ]
+    return resolved
 
 
 def parse_utc_timestamp(datetime_string: str) -> datetime:
@@ -277,11 +401,42 @@ def parse_value(
     if not isinstance(value, value_type):
         # all options failed, raise exception
         msg = (
-            f"Value {value} of type {type(value)} is invalid for {name}, "
+            f"Value of type {type(value)} is invalid for {name}, "
             f"expected value of type {value_type}"
         )
         raise TypeError(msg)
     return value
+
+
+def redact_secrets(data: Any) -> Any:
+    """
+    Return a copy of API message data with its secrets replaced by a placeholder, for logging.
+
+    Hides every string under a secret-looking key (passwords, tokens, keys, join codes) or a
+    config ``values`` map, and every JWT. The keys and all other values stay readable.
+
+    :param data: Decoded API message data (dicts, lists and scalars).
+    """
+    return _redact_secrets(data, secret=False)
+
+
+def redact_json_secrets(message: str | bytes) -> str:
+    """
+    Return a JSON API message with its secrets replaced by a placeholder, for logging.
+
+    Hides the same values as redact_secrets; a message that is not valid JSON but could hold
+    a secret is replaced as a whole.
+
+    :param message: The message in JSON, as sent over the API.
+    """
+    text = message.decode(errors="replace") if isinstance(message, bytes) else message
+    lowered = text.lower()
+    if "\\u" not in text and not any(hint in lowered for hint in _SECRET_HINTS):
+        return text
+    try:
+        return json_dumps(_redact_secrets(json_loads(text), secret=False))
+    except JSON_DECODE_EXCEPTIONS:
+        return _REDACTED
 
 
 def _resolve_string_type(type_str: str) -> Any:
@@ -559,7 +714,7 @@ def _parse_fixed_length_tuple(
     # parsed against its own type and kept, including the members that are None
     if len(value) != len(subtypes):
         msg = (
-            f"Value {value} of type {type(value)} is invalid for {name}, "
+            f"Value of type {type(value)} is invalid for {name}, "
             f"expected value of type {value_type}"
         )
         raise TypeError(msg)
@@ -643,18 +798,18 @@ def _parse_union(
     if value is None and NoneType in sub_value_types:
         # an optional annotation with no value needs no further parsing
         return None
-    for sub_arg_type in sub_value_types:
-        # try them all until one succeeds
-        try:
-            return parse_value(name, value, sub_arg_type, allow_value_convert=allow_value_convert)
-        except KeyError, TypeError, ValueError, MissingField:
-            pass
+    # try them all strictly first, so an int matches `int` before `float` in a union,
+    # then retry with conversion so a JSON whole number is accepted for `float | None`
+    convert_passes = (False, True) if not allow_value_convert else (True,)
+    for convert in convert_passes:
+        for sub_arg_type in sub_value_types:
+            try:
+                return parse_value(name, value, sub_arg_type, allow_value_convert=convert)
+            except KeyError, TypeError, ValueError, MissingField:
+                pass
     # if we get to this point, all possibilities failed
     # find out if we should raise or log this
-    err = (
-        f"Value {value} of type {type(value)} is invalid for {name}, "
-        f"expected value of type {value_type}"
-    )
+    err = f"Value of type {type(value)} is invalid for {name}, expected value of type {value_type}"
     if NoneType not in sub_value_types:
         # raise exception, we have no idea how to handle this value
         raise TypeError(err)
@@ -681,3 +836,34 @@ def _convert_common_value(value: Any, value_type: Any) -> Any:
     if value_type is bool and isinstance(value, str | int):
         return try_parse_bool(value)
     return value
+
+
+def _redact_secrets(data: Any, secret: bool) -> Any:
+    """
+    Return decoded API message data with its secrets replaced by the placeholder.
+
+    :param data: Decoded API message data (dicts, lists and scalars).
+    :param secret: Whether every string in the data is a secret.
+    """
+    if isinstance(data, str):
+        if secret and data:
+            return _REDACTED
+        return _RE_JWT.sub(_REDACTED, data) if "eyJ" in data else data
+    if isinstance(data, list):
+        return [_redact_secrets(item, secret) for item in data]
+    if isinstance(data, dict):
+        return {
+            key: _redact_secrets(value, secret or _is_secret_key(key))
+            for key, value in data.items()
+        }
+    return data
+
+
+def _is_secret_key(key: str) -> bool:
+    """
+    Return whether every string under the given key of API message data is a secret.
+
+    :param key: A key of decoded API message data.
+    """
+    lowered = key.lower()
+    return lowered in _SECRET_KEYS or lowered.endswith(_SECRET_KEY_SUFFIXES)

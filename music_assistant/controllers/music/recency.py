@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import MediaType
 from music_assistant_models.helpers import create_safe_string
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.util import parse_title_and_version
@@ -155,7 +155,7 @@ class RecencyEngine:
         # MAX(timestamp) group keeps the most recent play when no user scope is applied.
         query = (
             f"SELECT item_id, provider, media_type, name, artists, MAX(timestamp) AS ts "
-            f"FROM {DB_TABLE_PLAYLOG} WHERE {where} "
+            f"FROM {DB_TABLE_MEDIA_PROGRESS} WHERE {where} "
             f"GROUP BY item_id, provider, media_type"
         )
         for row in await self.mass.music.database.get_rows_from_query(

@@ -15,7 +15,7 @@ from pychromecast.const import CAST_TYPE_CHROMECAST
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_LOST
 
 from .constants import MASS_APP_ID
-from .helpers import send_hide_dashboard, send_show_dashboard
+from .helpers import disconnect_cast, send_hide_dashboard, send_show_dashboard
 from .player import ChromecastPlayer
 
 if TYPE_CHECKING:
@@ -95,7 +95,7 @@ class ChromecastDashboards:
             unregister_callback()
         if chromecast := self._dashboard_connections.pop(device_id, None):
             # non-blocking: close the socket, the daemon thread exits on its own
-            chromecast.disconnect(0)
+            disconnect_cast(chromecast, 0)
         self._drop_active_cast(device_id)
 
     async def unload(self) -> None:
@@ -114,9 +114,9 @@ class ChromecastDashboards:
             if self.mass.closing:
                 # Non-blocking disconnect: close socket, don't wait for thread.
                 # Socket threads are daemon threads and die on process exit.
-                chromecast.disconnect(0)
+                disconnect_cast(chromecast, 0)
             else:
-                await self.mass.loop.run_in_executor(None, chromecast.disconnect, 10)
+                await self.mass.loop.run_in_executor(None, disconnect_cast, chromecast, 10)
 
     def _register_device(self, device_id: str, cast_info: CastInfo) -> None:
         """Build a DashboardDevice for device_id and (re-)register it with the controller."""
@@ -142,7 +142,7 @@ class ChromecastDashboards:
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, when dashboard is NOW_PLAYING.
         """
-        player = self.mass.players.get_player(device_id)
+        player = self.provider.get_protocol(device_id)
         castplayer = player if isinstance(player, ChromecastPlayer) else None
         force_launch = False
         if castplayer is not None:
@@ -201,11 +201,11 @@ class ChromecastDashboards:
         # only tear down a connection we opened on-demand; never an active player's own cc
         on_demand = self._dashboard_connections.pop(device_id, None)
         if on_demand is not None:
-            await self.mass.loop.run_in_executor(None, on_demand.disconnect, 10)
+            await self.mass.loop.run_in_executor(None, disconnect_cast, on_demand, 10)
 
     async def _get_or_create_chromecast(self, device_id: str) -> pychromecast.Chromecast:
         """Resolve a device_id to a connected Chromecast, reusing an existing connection."""
-        castplayer = self.mass.players.get_player(device_id)
+        castplayer = self.provider.get_protocol(device_id)
         if isinstance(castplayer, ChromecastPlayer) and castplayer.cc.socket_client.is_connected:
             return castplayer.cc
 
@@ -228,7 +228,7 @@ class ChromecastDashboards:
             )
             chromecast.wait(timeout=DASHBOARD_CONNECT_TIMEOUT)
             if not chromecast.socket_client.is_connected:
-                chromecast.disconnect(0)
+                disconnect_cast(chromecast, 0)
                 msg = f"Timed out connecting to Cast device: {disc_info.friendly_name}"
                 raise PlayerUnavailableError(msg)
             return chromecast
@@ -239,7 +239,7 @@ class ChromecastDashboards:
 
     def _get_existing_chromecast(self, device_id: str) -> pychromecast.Chromecast | None:
         """Return an already-connected Chromecast for device_id, without opening a new one."""
-        castplayer = self.mass.players.get_player(device_id)
+        castplayer = self.provider.get_protocol(device_id)
         if isinstance(castplayer, ChromecastPlayer) and castplayer.cc.socket_client.is_connected:
             return castplayer.cc
 
@@ -285,7 +285,7 @@ class ChromecastDashboards:
 
         if chromecast := self._dashboard_connections.pop(device_id, None):
             # non-blocking: close the socket, the daemon thread exits on its own
-            chromecast.disconnect(0)
+            disconnect_cast(chromecast, 0)
 
     def _cancel_loss_timer(self, device_id: str) -> None:
         """Cancel the pending connection-loss timer for device_id, if any."""

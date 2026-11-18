@@ -1,0 +1,14 @@
+{
+  "type": "metadata",
+  "domain": "local_metadata",
+  "stage": "beta",
+  "name": "Local metadata",
+  "description": "Reads artist biographies, genres and artwork from a Kodi style artist information folder.",
+  "codeowners": ["@OzGav"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/metadata-providers/local-metadata/",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "folder-account",
+  "self_service": false
+}

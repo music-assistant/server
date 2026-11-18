@@ -8,11 +8,8 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.models.setup_flow import SetupFlowError
-from music_assistant.providers.storytel.constants import (
-    CONF_PASSWORD,
-    CONF_USERNAME,
-)
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
@@ -26,7 +23,7 @@ _ENTRIES = (
 
 async def run_setup(session: SetupSession) -> None:
     """Run the setup flow: collect credentials and create the provider."""
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     setup_data = dict(session.context.setup_data)
     while True:
         entries = [
@@ -38,4 +35,4 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}

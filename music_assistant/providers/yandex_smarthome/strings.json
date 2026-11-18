@@ -15,7 +15,7 @@
     },
     "ym_instance": {
       "label": "Yandex account source",
-      "description": "Borrow the Yandex account of a configured Yandex Music provider for skill auto-create (single sign-in, no Device Flow popup) or use this provider's own sign-in. When borrowing, nothing is stored or rotated by this provider."
+      "description": "Borrow the Yandex account of a configured Yandex Music provider for skill auto-create (single sign-in, no extra login) or use this provider's own sign-in. When borrowing, nothing is stored or rotated by this provider."
     },
     "external_base_url": {
       "label": "External Base URL (HTTPS)",
@@ -85,7 +85,7 @@
     },
     "cloud_confirm": {
       "title": "Confirm in the Yandex app",
-      "description": "Enter the one-time code shown in the Yandex app, then continue once your account is linked."
+      "description": "Enter the one-time code shown by Music Assistant in the Yandex app, then continue once your account is linked."
     },
     "abort": {
       "device_login_denied": "Sign-in was denied in the Yandex app."

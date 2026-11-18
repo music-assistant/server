@@ -183,6 +183,37 @@ async def test_dependent_is_loaded_with_resolved_config_values(
     assert loaded.get_value(CONF_LOG_LEVEL) == "GLOBAL"
 
 
+@pytest.mark.parametrize("safe_mode", [False, True])
+async def test_non_builtin_dependent_is_skipped_in_safe_mode(
+    mass_minimal: MusicAssistant, safe_mode: bool
+) -> None:
+    """A regular (non-builtin) dependent of a loaded provider does not load in safe mode."""
+    mass_minimal.safe_mode = safe_mode
+    config = mass_minimal.config
+    instance = "dependent--test"
+    raw = {"domain": "dependent", "type": "plugin", "instance_id": instance, "enabled": True}
+    config.set(f"{CONF_PROVIDERS}/{instance}", raw)
+    mass_minimal._provider_manifests["dependent"] = ProviderManifest(
+        type=ProviderType.PLUGIN,
+        domain="dependent",
+        name="Dependent",
+        description="",
+        codeowners=[],
+        depends_on="spotify",
+        builtin=False,
+    )
+    scanned = cast("ProviderConfig", ProviderConfig.parse([], raw))
+
+    with (
+        patch.object(mass_minimal, "_load_provider", AsyncMock()) as mock_load,
+        patch.object(config, "get_provider_configs", AsyncMock(return_value=[scanned])),
+    ):
+        await mass_minimal.load_provider_config(_prov_conf("spotify--test"))
+
+    loaded = [call.args[0].instance_id for call in mock_load.await_args_list]
+    assert (instance in loaded) is not safe_mode
+
+
 async def test_dependent_scan_failure_is_not_blamed_on_loaded_provider(
     mass_minimal: MusicAssistant,
 ) -> None:

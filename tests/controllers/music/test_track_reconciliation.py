@@ -56,6 +56,12 @@ class _TrackSpec(NamedTuple):
     mbid: str | None = None
 
 
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: reconciliation only touches the library database."""
+    return music_mass
+
+
 def _mapping(provider_instance: str, item_id: str) -> ProviderMapping:
     """Create a provider mapping for a library fixture item."""
     return ProviderMapping(
@@ -434,6 +440,47 @@ async def test_ignores_tracks_from_the_same_provider(mass: MusicAssistant) -> No
     assert await mass.music.tracks.get_library_item(track_2.item_id)
 
 
+async def test_ignores_titles_that_normalize_to_nothing(mass: MusicAssistant) -> None:
+    """Tracks with an empty stored normalized title are excluded from candidate pairing."""
+    track_1, track_2 = await _build_duplicate_pair(mass)
+    for track in (track_1, track_2):
+        await mass.music.database.update(
+            DB_TABLE_TRACKS,
+            {"item_id": int(track.item_id)},
+            {"name": "காதல்", "sort_name": "காதல்", "search_name": "", "search_sort_name": ""},
+        )
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    assert await mass.music.tracks.get_library_item(track_1.item_id)
+    assert await mass.music.tracks.get_library_item(track_2.item_id)
+
+
+async def test_skips_a_title_shared_by_too_many_rows(mass: MusicAssistant) -> None:
+    """A title held by more rows than the cap allows is a generic one, not a duplicate signal."""
+    track_1, track_2 = await _build_duplicate_pair(mass)
+    artist = await mass.music.artists.get_library_item(track_1.artists[0].item_id)
+    assert track_1.album is not None
+    album = await mass.music.albums.get_library_item(track_1.album.item_id)
+    third = await _add_track(mass, "spotify_instance", artist, album, name="Fixture Title 2")
+    await _make_titles_look_alike(mass, third, _DUPLICATE_NAME)
+    cap = "music_assistant.controllers.music.controller.TRACK_RECONCILIATION_MAX_TITLE_ROWS"
+
+    with patch(cap, 2):
+        await mass.music._reconcile_duplicate_tracks()
+
+    assert await mass.music.tracks.get_library_item(track_1.item_id)
+    assert await mass.music.tracks.get_library_item(track_2.item_id)
+
+    # the same pair merges once the title fits under the cap
+    mass.music._set_track_reconciliation_state((0, 0), False)
+    with patch(cap, 3):
+        await mass.music._reconcile_duplicate_tracks()
+
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.tracks.get_library_item(track_2.item_id)
+
+
 async def test_requires_agreement_on_the_album(mass: MusicAssistant) -> None:
     """Tracks that sit on differently titled albums are not treated as duplicates."""
     track_1, track_2 = await _build_duplicate_pair(
@@ -730,7 +777,10 @@ async def test_a_completed_sync_does_not_restart_a_walk_in_progress() -> None:
     )
     ctrl.mass = Mock(tasks=Mock(get_tasks_by_metadata=Mock(return_value=[])))
 
-    with patch.object(ctrl, "_queue_database_cleanup_task", Mock()):
+    with (
+        patch.object(ctrl, "_queue_database_cleanup_task", Mock()),
+        patch.object(ctrl, "cleanup_library_shortcuts", Mock()),
+    ):
         ctrl._handle_sync_completion_check()
     assert ctrl._track_reconciliation_cursor == (0, 0)
 
@@ -890,6 +940,7 @@ async def test_no_candidate_survives_a_sync_driven_rewind() -> None:
     with (
         patch.object(ctrl, "_merge_duplicate_track_pair", AsyncMock(side_effect=_refuse)),
         patch.object(ctrl, "_queue_database_cleanup_task", Mock()),
+        patch.object(ctrl, "cleanup_library_shortcuts", Mock()),
     ):
         for _ in range(4):
             # a sync completes before every run, as a busy library would do

@@ -8,9 +8,14 @@ import numpy as np
 import pytest
 
 from music_assistant.controllers.streams.smart_fades.helpers import (
+    SEGUE_ENERGY_FRACTION,
+    camelot_affinity,
     db_ramp,
     detect_effective_audio_end,
     detect_groove_entry,
+    detect_mix_out_point,
+    detect_rise_point,
+    local_bpm,
 )
 
 
@@ -81,6 +86,33 @@ def test_all_nan_rms_returns_buffer_duration() -> None:
     assert detect_effective_audio_end(bins, 240.0, 45.0) == 45.0
 
 
+@pytest.mark.parametrize(
+    ("key_a", "mode_a", "key_b", "mode_b", "expected"),
+    [
+        ("C", "major", "C", "major", 1.0),
+        ("C", "major", "G", "major", 0.9),
+        ("C", "major", "D", "major", 0.55),
+        ("C", "major", "A", "minor", 0.9),
+        ("C", "major", "E", "minor", 0.45),
+        ("C", "major", "F#", "major", 0.1),
+    ],
+)
+def test_camelot_affinity(
+    key_a: str,
+    mode_a: str,
+    key_b: str,
+    mode_b: str,
+    expected: float,
+) -> None:
+    """Camelot affinity distinguishes close harmonic moves from clashes."""
+    assert camelot_affinity(key_a, mode_a, key_b, mode_b) == pytest.approx(expected)
+
+
+def test_camelot_affinity_unknown_key_is_neutral() -> None:
+    """Unknown harmonic data is left for the caller to treat neutrally."""
+    assert camelot_affinity(None, None, "C", "major") is None
+
+
 class TestGrooveEntry:
     """Groove entry = first sustained per-bar energy step (the drums coming in)."""
 
@@ -108,6 +140,69 @@ class TestGrooveEntry:
         assert detect_groove_entry(bins, 240.0, downbeats[:4]) == 0.0
 
 
+def _head(quiet_until: float, duration: float = 240.0) -> np.ndarray:
+    """Build a 1800-bin rms array that is quiet before ``quiet_until`` and loud after."""
+    bins = np.full(1800, 0.5, dtype=np.float32)
+    t = np.arange(1800) * (duration / 1800)
+    bins[t < quiet_until] = 0.05
+    return bins
+
+
+class TestMixOutPoint:
+    """The mix-out point is the end of the last bar-smoothed bin at the energy floor."""
+
+    def test_step_down_marks_the_last_loud_bin(self) -> None:
+        """A tail that drops below the floor at media 230s mixes out at buffer-local 35s."""
+        bins = np.full(1800, 0.5, dtype=np.float32)
+        bins[np.arange(1800) * (240.0 / 1800) >= 230.0] = 0.1
+
+        point = detect_mix_out_point(bins, 240.0, 45.0, 120.0, fraction=SEGUE_ENERGY_FRACTION)
+
+        assert point == pytest.approx(35.0, abs=0.15)
+
+    def test_isolated_loud_bin_in_the_tail_does_not_move_the_point(self) -> None:
+        """One loud bin inside the quiet tail is smoothed away by the one-bar median."""
+        bins = np.full(1800, 0.5, dtype=np.float32)
+        t = np.arange(1800) * (240.0 / 1800)
+        bins[t >= 230.0] = 0.1
+        bins[np.argmax(t >= 236.0)] = 0.9
+
+        point = detect_mix_out_point(bins, 240.0, 45.0, 120.0, fraction=SEGUE_ENERGY_FRACTION)
+
+        assert point == pytest.approx(35.0, abs=0.15)
+
+
+class TestRisePoint:
+    """The rise point is where the head first reaches a share of the sustained energy."""
+
+    def test_quiet_intro_rises_where_it_gets_loud(self) -> None:
+        """A 6s quiet intro rises at 6s."""
+        rise = detect_rise_point(_head(6.0), 240.0, 120.0, SEGUE_ENERGY_FRACTION)
+        assert rise == pytest.approx(6.0, abs=0.15)
+
+    def test_isolated_loud_bin_in_the_intro_does_not_count(self) -> None:
+        """A click inside the quiet intro is smoothed away by the one-bar median."""
+        bins = _head(6.0)
+        bins[15] = 0.9
+
+        assert detect_rise_point(bins, 240.0, 120.0, SEGUE_ENERGY_FRACTION) == pytest.approx(
+            6.0, abs=0.15
+        )
+
+    def test_loud_head_rises_at_zero(self) -> None:
+        """A track that opens loud has no quiet head."""
+        assert detect_rise_point(_head(0.0), 240.0, 120.0, SEGUE_ENERGY_FRACTION) == 0.0
+
+    def test_head_quiet_throughout_rises_at_the_window_end(self) -> None:
+        """A head that stays quiet over the whole window rises at the window end."""
+        rise = detect_rise_point(_head(60.0), 240.0, 120.0, SEGUE_ENERGY_FRACTION, window=45.0)
+        assert rise == 45.0
+
+    def test_missing_data_rises_at_zero(self) -> None:
+        """Without energy data there is no quiet head to claim."""
+        assert detect_rise_point(None, 240.0, 120.0, SEGUE_ENERGY_FRACTION) == 0.0
+
+
 class TestDbRamp:
     """db_ramp builds linear-in-dB asendcmd schedules."""
 
@@ -126,3 +221,45 @@ class TestDbRamp:
         steps = db_ramp(0.0, 0.05, -26.0, 0.0)
         assert len(steps) >= 2
         assert steps[-1][1] == pytest.approx(0.0)
+
+
+class TestLocalBpm:
+    """local_bpm reads the tempo of a window from its beat grid."""
+
+    @staticmethod
+    def _grid(bpm: float, count: int, start: float = 195.0) -> np.ndarray:
+        """Build a beat grid quantized to the 20 ms frames of the beat tracker."""
+        return np.round((start + np.arange(count) * 60.0 / bpm) / 0.02) * 0.02
+
+    def test_a_quantized_grid_reads_its_own_tempo(self) -> None:
+        """A 45 s grid at 125 BPM reads 125, not the whole-track figure."""
+        assert local_bpm(self._grid(125.0, 94), 124.956) == pytest.approx(125.0, rel=2e-4)
+
+    def test_mistracked_beats_do_not_move_the_tempo(self) -> None:
+        """A dropped beat, a doubled beat and a ragged tail leave the tempo intact."""
+        grid = self._grid(124.0, 93, start=0.0)
+        beats = np.concatenate(
+            (grid[:20], grid[21:40], [grid[39] + 0.24], grid[40:85], grid[85:] + [0.12, -0.1] * 4)
+        )
+
+        assert local_bpm(beats, 124.182) == pytest.approx(124.0, rel=2e-4)
+
+    def test_double_time_bars_do_not_move_the_tempo(self) -> None:
+        """Three closing bars tracked at double time leave the tempo of the grid intact."""
+        grid = self._grid(124.0, 93, start=0.0)
+        offbeats = grid[-12:] + 30.0 / 124.0
+        beats = np.sort(np.concatenate((grid, offbeats)))
+
+        assert local_bpm(beats, 124.182) == pytest.approx(124.0, rel=2e-4)
+
+    def test_a_grid_most_beats_disagree_with_returns_the_fallback(self) -> None:
+        """Six steady bars before a wandering outro hold no tempo for the whole window."""
+        steady = np.arange(24) * 60.0 / 130.0
+        wandering = steady[-1] + np.cumsum(0.48 + 0.06 * np.sin(np.arange(1, 61) * 0.9))
+        beats = np.round(np.concatenate((steady, wandering)) / 0.02) * 0.02
+
+        assert local_bpm(beats, 126.3) == 126.3
+
+    def test_too_few_beats_return_the_fallback(self) -> None:
+        """Three bars of beats are too few to read a tempo from."""
+        assert local_bpm(self._grid(125.0, 12), 124.956) == 124.956

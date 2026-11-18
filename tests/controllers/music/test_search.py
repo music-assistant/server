@@ -6,14 +6,21 @@ import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
-from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import MusicAssistantError
+import pytest
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderSharing, ProviderType
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import (
     Artist,
     Genre,
     ProviderMapping,
+    Radio,
     SearchResults,
     Track,
 )
@@ -24,11 +31,10 @@ from music_assistant.controllers.music.constants import (
     SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER,
 )
 from music_assistant.models.music_provider import MusicProvider
+from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    import pytest
 
 
 def _make_track(item_id: str, provider: str, name: str) -> Track:
@@ -69,6 +75,7 @@ def _make_search_provider(instance_id: str, domain: str | None = None) -> Mock:
     prov.instance_id = instance_id
     prov.domain = domain or instance_id
     prov.name = instance_id
+    prov.available = True
     prov.supported_features = {ProviderFeature.SEARCH}
     prov.is_streaming_provider = True
     prov.search = AsyncMock(return_value=SearchResults())
@@ -133,6 +140,175 @@ async def _wait_for(condition: Callable[[], bool], timeout: float = 1.0) -> None
             await asyncio.sleep(0.01)
 
 
+async def test_search_provider_uses_centralized_provider_search() -> None:
+    """A single-provider lookup uses the cached and timeout-bounded search path."""
+    provider = _make_search_provider("prov_a")
+    controller = _make_controller([provider])
+    expected = SearchResults(tracks=[_make_track("track1", "prov_a", "My Song")])
+    controller._apply_user_provider_filter = Mock(return_value=[])  # type: ignore[method-assign]
+    controller._search_provider = AsyncMock(return_value=expected)  # type: ignore[method-assign]
+
+    result = await controller.search_provider(
+        "My Song",
+        provider.instance_id,
+        [MediaType.TRACK],
+        limit=5,
+        allowed_provider_instances={"prov_a"},
+    )
+
+    assert result == expected
+    controller._search_provider.assert_awaited_once_with(
+        "My Song",
+        provider.instance_id,
+        [MediaType.TRACK],
+        limit=5,
+        strict_provider_instance=True,
+    )
+
+
+async def test_search_provider_resolves_domain_within_explicit_scope() -> None:
+    """A domain lookup selects an allowed instance rather than a filtered global instance."""
+    filtered_provider = _make_search_provider("qobuz_1", domain="qobuz")
+    allowed_provider = _make_search_provider("qobuz_2", domain="qobuz")
+    controller = _make_controller([filtered_provider, allowed_provider])
+    expected = SearchResults(tracks=[_make_track("track1", "qobuz_2", "My Song")])
+    controller._search_provider = AsyncMock(return_value=expected)  # type: ignore[method-assign]
+
+    result = await controller.search_provider(
+        "My Song",
+        "qobuz",
+        [MediaType.TRACK],
+        limit=5,
+        allowed_provider_instances={"qobuz_2"},
+    )
+
+    assert result == expected
+    controller._search_provider.assert_awaited_once_with(
+        "My Song",
+        "qobuz_2",
+        [MediaType.TRACK],
+        limit=5,
+        strict_provider_instance=True,
+    )
+
+
+async def test_search_provider_does_not_substitute_unavailable_scoped_instance() -> None:
+    """An unavailable scoped account can not fall back to another account."""
+    unavailable_provider = _make_search_provider("qobuz_1", domain="qobuz")
+    unavailable_provider.available = False
+    outside_scope_provider = _make_search_provider("qobuz_2", domain="qobuz")
+    controller = _make_controller([unavailable_provider, outside_scope_provider])
+    controller.mass.get_provider = Mock(  # type: ignore[method-assign]
+        side_effect=lambda _instance_id, return_unavailable=False: (
+            unavailable_provider if return_unavailable else outside_scope_provider
+        )
+    )
+    controller._search_provider = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(ResourceTemporarilyUnavailable, match="qobuz_1"):
+        await controller.search_provider(
+            "My Song",
+            "qobuz_1",
+            [MediaType.TRACK],
+            allowed_provider_instances={"qobuz_1"},
+        )
+
+    controller._search_provider.assert_not_awaited()
+    controller.mass.get_provider.assert_called_once_with(
+        "qobuz_1",
+        return_unavailable=True,
+    )
+
+
+async def test_search_provider_scoped_domain_all_unavailable_raises() -> None:
+    """A domain lookup within scope raises rather than looking like an empty result."""
+    unavailable_a = _make_search_provider("qobuz_1", domain="qobuz")
+    unavailable_a.available = False
+    unavailable_b = _make_search_provider("qobuz_2", domain="qobuz")
+    unavailable_b.available = False
+    controller = _make_controller([unavailable_a, unavailable_b])
+    controller.mass.get_provider = Mock(  # type: ignore[method-assign]
+        side_effect=lambda instance_id, **_kwargs: next(
+            (p for p in (unavailable_a, unavailable_b) if p.instance_id == instance_id), None
+        )
+    )
+    controller._search_provider = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(ResourceTemporarilyUnavailable, match="qobuz"):
+        await controller.search_provider(
+            "My Song",
+            "qobuz",
+            [MediaType.TRACK],
+            allowed_provider_instances={"qobuz_1", "qobuz_2"},
+        )
+
+    controller._search_provider.assert_not_awaited()
+
+
+async def test_search_provider_unscoped_domain_skips_unavailable_sibling() -> None:
+    """An unscoped domain lookup does not let an unavailable instance mask a sibling."""
+    unavailable_first = _make_search_provider("qobuz_1", domain="qobuz")
+    unavailable_first.available = False
+    available_second = _make_search_provider("qobuz_2", domain="qobuz")
+    for provider in (unavailable_first, available_second):
+        provider.type = ProviderType.MUSIC
+    controller = _make_controller([unavailable_first, available_second])
+    controller._apply_user_provider_filter = Mock(  # type: ignore[method-assign]
+        return_value=[unavailable_first, available_second]
+    )
+    expected = SearchResults(tracks=[_make_track("track1", "qobuz_2", "My Song")])
+    controller._search_provider = AsyncMock(return_value=expected)  # type: ignore[method-assign]
+
+    result = await controller.search_provider("My Song", "qobuz", [MediaType.TRACK])
+
+    assert result == expected
+    controller._search_provider.assert_awaited_once_with(
+        "My Song",
+        "qobuz_2",
+        [MediaType.TRACK],
+        limit=10,
+        strict_provider_instance=True,
+    )
+
+
+async def test_internal_search_rejects_strict_instance_fallback() -> None:
+    """The cached provider search keeps an exact captured account."""
+    unavailable_provider = _make_search_provider("qobuz_1", domain="qobuz")
+    unavailable_provider.available = False
+    outside_scope_provider = _make_search_provider("qobuz_2", domain="qobuz")
+    controller = _make_controller([unavailable_provider, outside_scope_provider])
+    controller.mass.get_provider = Mock(  # type: ignore[method-assign]
+        side_effect=lambda _instance_id, return_unavailable=False, **_kwargs: (
+            unavailable_provider if return_unavailable else outside_scope_provider
+        )
+    )
+
+    result = await controller._search_provider(
+        "My Song",
+        "qobuz_1",
+        [MediaType.TRACK],
+        strict_provider_instance=True,
+    )
+
+    assert result is None
+    outside_scope_provider.search.assert_not_awaited()
+
+
+async def test_search_provider_reports_timeout_as_failure() -> None:
+    """A provider timeout remains distinguishable from a genuine empty result."""
+    provider = _make_search_provider("prov_a")
+    controller = _make_controller([provider])
+    controller._search_provider = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    with pytest.raises(ResourceTemporarilyUnavailable, match="prov_a"):
+        await controller.search_provider(
+            "My Song",
+            provider.instance_id,
+            [MediaType.TRACK],
+            allowed_provider_instances={provider.instance_id},
+        )
+
+
 async def test_search_provider_returns_none_on_provider_error() -> None:
     """A provider error during search yields None instead of raising."""
     prov = _make_search_provider("prov_a")
@@ -195,6 +371,34 @@ async def test_global_search_soft_timeout_returns_partial_and_caches_late(
     late_writes = _cache_writes(controller, "prov_slow")
     assert len(late_writes) == 1
     assert late_writes[0].kwargs["data"] == slow_results.to_dict()
+
+
+async def test_search_provider_waits_for_slow_provider_beyond_soft_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single-provider lookup waits for a slow (throttled) provider instead of failing."""
+    monkeypatch.setattr(
+        "music_assistant.controllers.music.controller.SEARCH_PROVIDER_SOFT_TIMEOUT", 0.05
+    )
+    provider = _make_search_provider("prov_slow")
+    expected = SearchResults(tracks=[_make_track("track1", "prov_slow", "My Song")])
+
+    async def _slow_search(*_args: Any, **_kwargs: Any) -> SearchResults:
+        await asyncio.sleep(0.2)
+        return expected
+
+    provider.search.side_effect = _slow_search
+    controller = _make_controller([provider])
+
+    result = await controller.search_provider(
+        "My Song",
+        provider.instance_id,
+        [MediaType.TRACK],
+        allowed_provider_instances={provider.instance_id},
+    )
+
+    assert [track.item_id for track in result.tracks] == ["track1"]
+    provider.search.assert_awaited_once()
 
 
 async def test_global_search_hard_timeout_aborts_provider_search(
@@ -355,6 +559,80 @@ async def test_search_dedup_filters_provider_items_already_in_library() -> None:
     assert [track.item_id for track in result.tracks] == ["lib1", "track2"]
 
 
+async def test_search_dedup_filters_provider_radio_already_in_library() -> None:
+    """Provider radio stations that map to a library radio station are filtered."""
+    library_radio = Radio(
+        item_id="lib1",
+        provider="library",
+        name="My Station",
+        provider_mappings={
+            ProviderMapping(
+                item_id="radio1",
+                provider_domain="prov_a",
+                provider_instance="prov_a",
+            )
+        },
+    )
+    prov = _make_search_provider("prov_a")
+    prov.search.return_value = SearchResults(
+        radio=[
+            Radio(
+                item_id=item_id,
+                provider="prov_a",
+                name=name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=item_id, provider_domain="prov_a", provider_instance="prov_a"
+                    )
+                },
+            )
+            for item_id, name in (("radio1", "My Station"), ("radio2", "My Station 2"))
+        ]
+    )
+    controller = _make_controller([prov])
+    controller.search_library = AsyncMock(  # type: ignore[method-assign]
+        return_value=SearchResults(radio=[library_radio])
+    )
+
+    result = await controller.search(
+        "My Station", media_types=[MediaType.RADIO], limit=5, providers=["library", "prov_a"]
+    )
+
+    assert [radio.item_id for radio in result.radio] == ["lib1", "radio2"]
+
+
+async def test_search_keeps_provider_items_in_library_when_library_excluded() -> None:
+    """Without the library in the selection, provider items that are in the library are kept."""
+    prov = _make_search_provider("prov_a")
+    prov.search.return_value = SearchResults(tracks=[_make_track("track1", "prov_a", "My Song")])
+    controller = _make_controller([prov])
+    controller.search_library = AsyncMock(  # type: ignore[method-assign]
+        return_value=SearchResults(
+            tracks=[
+                Track(
+                    item_id="lib1",
+                    provider="library",
+                    name="My Song",
+                    provider_mappings={
+                        ProviderMapping(
+                            item_id="track1",
+                            provider_domain="prov_a",
+                            provider_instance="prov_a",
+                        )
+                    },
+                )
+            ]
+        )
+    )
+
+    result = await controller.search(
+        "My Song", media_types=[MediaType.TRACK], limit=5, providers=["prov_a"]
+    )
+
+    assert [track.item_id for track in result.tracks] == ["track1"]
+    controller.search_library.assert_not_awaited()
+
+
 async def test_search_includes_genre_results_from_library() -> None:
     """Genre results from the library search end up in the combined search result."""
     library_genre = Genre(
@@ -445,7 +723,125 @@ async def test_search_exact_match_shortcut_skipped_for_explicit_providers() -> N
     )
 
     await controller.search(
-        "Nirvana", media_types=[MediaType.ARTIST], limit=5, providers=["prov_a"]
+        "Nirvana", media_types=[MediaType.ARTIST], limit=5, providers=["library", "prov_a"]
     )
 
     prov.search.assert_awaited_once()
+
+
+async def test_search_station_share_url_returns_radio() -> None:
+    """A pasted Apple Music station share link returns the station as a radio result."""
+    controller = _make_controller([])
+    station = Radio(
+        item_id="ra.123",
+        provider="apple_music",
+        name="Chill",
+        is_dynamic=True,
+        provider_mappings={
+            ProviderMapping(
+                item_id="ra.123", provider_domain="apple_music", provider_instance="apple_music"
+            )
+        },
+    )
+    controller.get_item = AsyncMock(return_value=station)  # type: ignore[method-assign]
+
+    result = await controller._search_shareable_url(
+        "https://music.apple.com/us/station/chill/ra.123"
+    )
+
+    assert result is not None
+    assert result.radio == [station]
+    controller.get_item.assert_awaited_once_with(
+        media_type=MediaType.RADIO,
+        item_id="ra.123",
+        provider_instance_id_or_domain="apple_music",
+    )
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_plugin_search_leaves_out_tracks_on_hidden_sources(mock_get_user: Mock) -> None:
+    """A plugin's search results on a source the user may not see are left out, cached or not."""
+    plugin = _make_search_provider("plugin_a")
+    plugin.type = ProviderType.PLUGIN
+    results = SearchResults(
+        tracks=[_make_track("t1", "open_1", "My Song"), _make_track("t2", "hidden_1", "My Song")]
+    )
+    plugin.search.return_value = results
+    sources = [
+        Mock(instance_id=source, type=ProviderType.MUSIC, is_streaming_provider=False)
+        for source in ("open_1", "hidden_1")
+    ]
+    controller = _make_controller([plugin, *sources])
+    controller.get_unique_providers = Mock(return_value=[])  # type: ignore[method-assign]
+    cast("Mock", controller.mass.get_providers_supporting_feature).return_value = [plugin]
+    set_music_source_access(
+        controller.mass,
+        {
+            "open_1": None,
+            "hidden_1": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    mock_get_user.return_value = User(user_id="user-a", username="user-a", role=UserRole.USER)
+
+    fresh = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
+    assert [track.item_id for track in fresh.tracks] == ["t1"]
+
+    # the per-provider cache is shared by all users and holds the full result
+    cast("AsyncMock", controller.mass.cache.get).side_effect = lambda *_a, provider, **_k: (
+        results if provider == "plugin_a" else None
+    )
+    cached = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
+    assert [track.item_id for track in cached.tracks] == ["t1"]
+    plugin.search.assert_awaited_once()
+
+
+@patch("music_assistant.controllers.music.controller.parse_uri", new_callable=AsyncMock)
+async def test_search_shareable_url_resolves_once_across_scoped_searches(
+    mock_parse: AsyncMock,
+) -> None:
+    """A pasted URL resolves only on the scoped search that targets its service."""
+    mock_parse.return_value = (MediaType.TRACK, "spotify", "t1")
+    spotify = _make_search_provider("spotify--abc", domain="spotify")
+    prov_a = _make_search_provider("prov_a")
+    controller = _make_controller([spotify, prov_a])
+    track = _make_track("t1", "spotify--abc", "My Song")
+    controller.get_item = AsyncMock(return_value=track)  # type: ignore[method-assign]
+    url = "https://open.spotify.com/track/t1"
+
+    # one search per target, like the frontend's progressive search
+    results = {
+        target: await controller.search(url, media_types=[MediaType.TRACK], providers=[target])
+        for target in ("library", "prov_a", "spotify")
+    }
+
+    assert results["spotify"].tracks == [track]
+    assert results["library"] == SearchResults()
+    assert results["prov_a"] == SearchResults()
+    controller.get_item.assert_awaited_once_with(
+        media_type=MediaType.TRACK,
+        item_id="t1",
+        provider_instance_id_or_domain="spotify--abc",
+    )
+    spotify.search.assert_not_awaited()
+    prov_a.search.assert_not_awaited()
+
+    # an unscoped search resolves the URL as well
+    result = await controller.search(url, media_types=[MediaType.TRACK])
+    assert result.tracks == [track]
+
+
+@patch("music_assistant.controllers.music.controller.parse_uri", new_callable=AsyncMock)
+async def test_search_shareable_url_skipped_when_media_type_excluded(
+    mock_parse: AsyncMock,
+) -> None:
+    """A URL resolving to a type not in media_types returns empty without a lookup."""
+    mock_parse.return_value = (MediaType.PLAYLIST, "spotify", "pl1")
+    controller = _make_controller([])
+    controller.get_item = AsyncMock()  # type: ignore[method-assign]
+
+    result = await controller._search_shareable_url(
+        "https://open.spotify.com/playlist/pl1", media_types=[MediaType.TRACK]
+    )
+
+    assert result == SearchResults()
+    controller.get_item.assert_not_awaited()

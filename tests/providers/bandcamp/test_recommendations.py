@@ -81,7 +81,8 @@ async def test_get_recommendations_static_rows_without_backend_calls(
     assert wishlist.translation_key == "wishlist"
     assert wishlist.icon == "mdi-heart"
     assert all(f.provider == "bandcamp_test" for f in rows)
-    assert all(f.is_playable for f in rows)
+    assert feed.is_playable is True
+    assert wishlist.is_playable is False
     assert all(not f.items for f in rows)
 
 

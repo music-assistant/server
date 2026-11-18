@@ -5,15 +5,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.controllers.streams.constants import VOICE_OVER_RAMP
 from music_assistant.controllers.streams.smart_fades.filters import (
     Filter,
     StreamingCrossfadeFilter,
+    VoiceOverMixFilter,
 )
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.smart_fades.models import (
@@ -38,6 +41,7 @@ __all__ = [
     "SmartFade",
     "SmartFadeNotApplicable",
     "StandardCrossFade",
+    "VoiceOverFade",
 ]
 
 
@@ -75,7 +79,7 @@ async def _feed_ffmpeg_stdin(
     proc: AsyncProcess, fade_in_part: bytes | AsyncGenerator[bytes]
 ) -> None:
     """
-    Write the incoming track's head to the mixer, always ending with an EOF.
+    Write the incoming track's head to the mixer, ending with an EOF unless torn down.
 
     :param proc: The mixer process to feed.
     :param fade_in_part: Raw PCM bytes, or a stream delivering them.
@@ -87,9 +91,14 @@ async def _feed_ffmpeg_stdin(
             async for fade_chunk in fade_in_part:
                 await proc.write(fade_chunk)
     finally:
-        # a feed that stops without an EOF leaves ffmpeg waiting for input
-        # while its consumer waits for output
-        await proc.write_eof()
+        # a feed that stops without an EOF leaves ffmpeg waiting for input while
+        # its consumer waits for output. Only cancelling this task skips it: that
+        # is a teardown, where closing the mixer closes stdin and the EOF would
+        # wait forever on a full pipe nobody drains anymore.
+        task = asyncio.current_task()
+        assert task is not None
+        if not task.cancelling():
+            await proc.write_eof()
 
 
 class SmartFade(ABC):
@@ -173,29 +182,35 @@ class SmartFade(ABC):
                 fadeout_write_fd = -1  # the feeder owns and closes it now
                 feed_task = asyncio.create_task(_feed_ffmpeg_stdin(proc, fade_in_part))
                 stderr_task = asyncio.create_task(_drain_stderr())
+                # hand stderr to the process so its close() drains the reader into
+                # stderr_lines, keeping the error messages below intact
+                proc.attach_stderr_reader(stderr_task)
                 try:
                     async for chunk in proc.iter_any():
                         got_output = True
                         yield chunk
                 finally:
+                    # A teardown (consumer aborted mid-mix) enters this finally with a
+                    # GeneratorExit or CancelledError in flight; a normal finish or an
+                    # ffmpeg error enters it with none.
+                    aborting = isinstance(sys.exception(), (asyncio.CancelledError, GeneratorExit))
                     if not feed_task.done():
                         feed_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await feed_task
-                    # Bounded wait: on consumer abort a paused-but-alive ffmpeg can
-                    # leave the writer blocked on a full pipe until proc.close()
-                    # (in __aexit__, after this finally) breaks it — the orphaned
-                    # thread then ends on its own, a completed write closed already.
+                    if aborting:
+                        # ffmpeg is still alive and holds an unfinished mix, so a
+                        # graceful close would drag on until its shutdown timeout and
+                        # the fade-out feeder stays blocked on a full pipe until then.
+                        # Kill it outright: nothing past this teardown reads stderr.
+                        await proc.kill()
+                    else:
+                        # ffmpeg has already exited, so close() reaps at once and
+                        # drains the attached stderr into stderr_lines for the checks
+                        # below. Idempotent with the async-with __aexit__ that follows.
+                        await proc.close()
                     with suppress(TimeoutError, asyncio.CancelledError):
                         await asyncio.wait_for(fadeout_task, timeout=2)
-                    # Bounded wait on stderr_task so its output is still captured
-                    # for error reporting on the happy/error paths, but we don't
-                    # hang on consumer abort — ffmpeg is still alive then and
-                    # stderr won't EOF until proc.close() closes stdin, which
-                    # only runs via the async-with __aexit__ *after* this finally.
-                    # wait_for cancels stderr_task on timeout so cleanup proceeds.
-                    with suppress(TimeoutError, asyncio.CancelledError):
-                        await asyncio.wait_for(stderr_task, timeout=2)
 
             if proc.returncode != 0:
                 stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
@@ -437,10 +452,13 @@ class StandardCrossFade(SmartFade):
             yield pcm_slice
 
         if isinstance(fade_in_part, bytes):
-            async for chunk in super().apply(
-                adjusted_fade_out_part, fade_in_part[:crossfade_size], pcm_format
-            ):
-                yield chunk
+            # aclosing so the mixer ffmpeg tears down here, not from a GC finalizer,
+            # when the consumer aborts (closing this generator)
+            async with aclosing(
+                super().apply(adjusted_fade_out_part, fade_in_part[:crossfade_size], pcm_format)
+            ) as blend:
+                async for chunk in blend:
+                    yield chunk
             for pcm_slice in iter_pcm_slices(fade_in_part[crossfade_size:], pcm_format, 1000):
                 yield pcm_slice
             return
@@ -461,8 +479,124 @@ class StandardCrossFade(SmartFade):
                 taken += len(chunk)
                 yield chunk
 
-        async for chunk in super().apply(adjusted_fade_out_part, _overlap_stream(), pcm_format):
-            yield chunk
+        # aclosing so the mixer ffmpeg tears down here, not from a GC finalizer, when
+        # the consumer aborts mid-overlap (closing this generator while _overlap_stream
+        # is still being read by the mixer's stdin feeder)
+        async with aclosing(
+            super().apply(adjusted_fade_out_part, _overlap_stream(), pcm_format)
+        ) as blend:
+            async for chunk in blend:
+                yield chunk
+        if overshoot:
+            for pcm_slice in iter_pcm_slices(bytes(overshoot), pcm_format, 1000):
+                yield pcm_slice
+        async for remaining_chunk in fade_in_part:
+            for pcm_slice in iter_pcm_slices(remaining_chunk, pcm_format, 1000):
+                yield pcm_slice
+
+
+class VoiceOverFade(SmartFade):
+    """
+    Play the outgoing item's tail over the start of the incoming track, ducking the track.
+
+    Used for a tail overlap an item declares (a DJ talking over a song's intro): the tail
+    plays as it is, with the track starting under its last ``overlap`` seconds and
+    returning to full level over ``VOICE_OVER_RAMP`` seconds once it has ended.
+    """
+
+    def __init__(self, logger: logging.Logger) -> None:
+        """Initialize VoiceOverFade."""
+        super().__init__(logger)
+        self.overlap_size: int = 0
+        self.blend_in_size: int = 0
+
+    def build(
+        self,
+        fade_out_bytes_len: int,
+        fade_in_bytes_len: int,
+        pcm_format: AudioFormat,
+    ) -> None:
+        """Build the voice over filter chain and assign ``self.timing_info``."""
+        fade_out_seconds = fade_out_bytes_len / pcm_format.pcm_sample_size
+        fade_in_seconds = fade_in_bytes_len / pcm_format.pcm_sample_size
+        overlap = max(0.0, min(fade_out_seconds, fade_in_seconds - VOICE_OVER_RAMP))
+        # whole frames only, so the byte slices in apply match the filter's timing exactly
+        frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
+        self.overlap_size = int(pcm_format.pcm_sample_size * overlap) // frame_size * frame_size
+        ramp_size = int(pcm_format.pcm_sample_size * VOICE_OVER_RAMP) // frame_size * frame_size
+        self.blend_in_size = self.overlap_size + ramp_size
+        overlap = self.overlap_size / pcm_format.pcm_sample_size
+        self.timing_info = CrossfadeTimingInfo(
+            pre_crossfade_duration=max(0.0, fade_out_seconds - overlap),
+            crossfade_duration=overlap,
+            fadein_trimmed_duration=0.0,
+            post_crossfade_duration=max(0.0, fade_in_seconds - overlap),
+        )
+        self.filters = [
+            VoiceOverMixFilter(
+                logger=self.logger,
+                overlap_seconds=overlap,
+                ramp_seconds=ramp_size / pcm_format.pcm_sample_size,
+            ),
+        ]
+
+    async def apply(
+        self,
+        fade_out_part: bytes,
+        fade_in_part: bytes | AsyncGenerator[bytes],
+        pcm_format: AudioFormat,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Apply the voice over, yielding PCM audio chunks.
+
+        The tail before the overlap plays alone; the incoming track joins for the overlap
+        and the ramp after it, and the rest of the incoming part plays on untouched.
+        """
+        if not self.filters:
+            raise RuntimeError("SmartFade not built — call Mixer.build() first")
+        # the part of the tail before the overlap plays alone, while the incoming
+        # track's audio may still be arriving
+        split = len(fade_out_part) - self.overlap_size
+        for pcm_slice in iter_pcm_slices(fade_out_part[:split], pcm_format, 1000):
+            yield pcm_slice
+        blend_in_size = self.blend_in_size
+
+        if isinstance(fade_in_part, bytes):
+            # aclosing so the mixer ffmpeg tears down here, not from a GC finalizer,
+            # when the consumer aborts mid-blend
+            async with aclosing(
+                super().apply(fade_out_part[split:], fade_in_part[:blend_in_size], pcm_format)
+            ) as blend:
+                async for chunk in blend:
+                    yield chunk
+            for pcm_slice in iter_pcm_slices(fade_in_part[blend_in_size:], pcm_format, 1000):
+                yield pcm_slice
+            return
+
+        # Generator fade-in: hand exactly the blend's share to the mixer as it arrives;
+        # whatever the last chunk carried beyond it opens the plain part
+        overshoot = bytearray()
+
+        async def _blend_in_stream() -> AsyncGenerator[bytes]:
+            taken = 0
+            async for chunk in fade_in_part:
+                remaining = blend_in_size - taken
+                if len(chunk) >= remaining:
+                    taken += remaining
+                    overshoot.extend(chunk[remaining:])
+                    yield chunk[:remaining]
+                    return
+                taken += len(chunk)
+                yield chunk
+
+        # aclosing so the mixer ffmpeg tears down here, not from a GC finalizer, when
+        # the consumer aborts mid-blend (closing this generator while _blend_in_stream
+        # is still being read by the mixer's stdin feeder)
+        async with aclosing(
+            super().apply(fade_out_part[split:], _blend_in_stream(), pcm_format)
+        ) as blend:
+            async for chunk in blend:
+                yield chunk
         if overshoot:
             for pcm_slice in iter_pcm_slices(bytes(overshoot), pcm_format, 1000):
                 yield pcm_slice

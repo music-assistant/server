@@ -15,7 +15,7 @@ from uuid import uuid4
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Audiobook, ProviderMapping
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.mass import MusicAssistant
 
 
@@ -92,7 +92,7 @@ async def test_progress_sync_preserves_stored_speed(mass: MusicAssistant) -> Non
     # speed preserved, while the resume position still advanced
     assert await mass.music.get_playback_speed(book, userid=user.user_id) == 1.5
     row = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": book.item_id,
             "provider": "library",

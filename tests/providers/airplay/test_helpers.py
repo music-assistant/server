@@ -1,17 +1,22 @@
 """Unit tests for AirPlay provider helpers."""
 
 import plistlib
+import time
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientError
 
 from music_assistant.providers.airplay.helpers import (
     _CLI_BINARY_CHECK_TIMEOUT,
+    cli_clock_time,
     default_buffer_depth,
     get_cli_binary,
     get_decoded_property,
+    get_model_info,
+    is_apple_device,
+    is_apple_tv,
     probe_audio_formats,
     serialize_txt_records,
     supports_airplay2,
@@ -20,6 +25,18 @@ from music_assistant.providers.airplay.helpers import (
 
 ALAC_44100_24 = 1 << 19
 ALAC_48000_24 = 1 << 21
+
+
+def test_cli_clock_time_ignores_wall_clock_steps() -> None:
+    """A wall clock step does not move the cliairplay timeline."""
+    before = cli_clock_time()
+    with (
+        patch("time.time", return_value=time.time() + 3600),
+        patch("time.time_ns", return_value=time.time_ns() + 3600 * 10**9),
+    ):
+        during = cli_clock_time()
+
+    assert 0 <= during - before < 1
 
 
 def test_get_decoded_property_matches_case_insensitively() -> None:
@@ -257,3 +274,13 @@ def test_default_buffer_depth_family_table() -> None:
     assert default_buffer_depth("Edifier Inc", "Edifier MS50A", "p20.Linkplay.4.6.430230") == 0
     assert default_buffer_depth("Sonos", "Era 100", "p20.96.0-79160") == 0
     assert default_buffer_depth("Apple Inc.", "AppleTV11,1", None) == 0
+
+
+def test_home_accessory_is_recognised_as_apple_receiver() -> None:
+    """HomeAccessory models (Apple HomeView) are Apple receivers but not Apple TVs."""
+    info = MagicMock()
+    info.decoded_properties = {"model": "HomeAccessory17,1"}
+    manufacturer, model = get_model_info(info)
+    assert (manufacturer, model) == ("Apple", "HomeView")
+    assert is_apple_device(manufacturer, model)
+    assert not is_apple_tv(manufacturer, model)

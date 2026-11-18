@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "iheartradio",
+  "name": "iHeartRadio",
+  "description": "Listen to thousands of live radio stations and podcasts, or start a personalised station around any artist.",
+  "codeowners": ["@OzGav"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/iheartradio/",
+  "multi_instance": true,
+  "stage": "beta"
+}

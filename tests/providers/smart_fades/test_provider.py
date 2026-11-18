@@ -17,7 +17,7 @@ import pytest
 import torch
 from beat_this.inference import Spect2Frames
 from music_assistant_models.enums import ContentType, MediaType
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import SetupFailedError, UnsupportedSystemError
 from music_assistant_models.media_items import AudioFormat
 from torchaudio.transforms import SpectralCentroid
 
@@ -88,6 +88,11 @@ EXPECTED_DOWNBEATS = [
 ]
 
 
+def test_offered_tracks_only() -> None:
+    """Smart fades only analyzes music tracks."""
+    assert SmartFadesProvider.media_types == frozenset({MediaType.TRACK})
+
+
 @pytest.fixture
 def mass_mock() -> Mock:
     """Return a mock MusicAssistant instance."""
@@ -109,7 +114,7 @@ def mass_mock() -> Mock:
 @pytest.fixture
 def manifest_mock() -> Mock:
     """Return a mock provider manifest."""
-    manifest = Mock()
+    manifest = Mock(features=set())
     manifest.domain = "smart_fades"
     manifest.name = "Smart Fades"
     return manifest
@@ -330,18 +335,24 @@ async def test_extended_analysis_fields(
     assert analysis.bpm is not None
     assert 115 < analysis.bpm < 125
 
-    # v2: per-band RMS envelopes in extra_data, normalized by the full-band peak
-    assert analysis.extra_data is not None
-    band_rms = analysis.extra_data["band_rms"]
-    assert set(band_rms) == {"low", "low_mid", "mid", "high"}
+    # v2: per-band RMS envelopes in typed fields, normalized by the full-band peak
+    assert analysis.extra_data is None
+    band_rms = {
+        "low": analysis.band_rms_low,
+        "low_mid": analysis.band_rms_low_mid,
+        "mid": analysis.band_rms_mid,
+        "high": analysis.band_rms_high,
+    }
     for band in band_rms.values():
+        assert band is not None
         assert len(band) == 1800
         assert all(v >= 0.0 for v in band)
     # music with drums has real low-band content; bands are lists (JSON-safe)
     assert isinstance(band_rms["low"], list)
     assert max(band_rms["low"]) > 0.05
 
-    vocal_probabilities = analysis.extra_data["vocal_activity"]
+    vocal_probabilities = analysis.vocal_activity
+    assert vocal_probabilities is not None
     assert len(vocal_probabilities) == 1800
     assert all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in vocal_probabilities)
 
@@ -455,6 +466,23 @@ async def test_setup_raises_when_requirements_not_met(
         pytest.raises(SetupFailedError),
     ):
         await smart_fades.setup(mass_mock, manifest_mock, config_mock)
+
+
+def test_initialize_models_raises_setup_failed_on_checkpoint_download_error(
+    provider: SmartFadesProvider,
+) -> None:
+    """A failed Beat This checkpoint download raises a retryable error naming the cause."""
+    beat_this_error = ValueError("Could not load the checkpoint given the provided name", "small0")
+    beat_this_error.__context__ = OSError("HTTP Error 503: Service Unavailable")
+
+    with (
+        patch(
+            "music_assistant.providers.smart_fades.provider.Spect2Frames",
+            side_effect=beat_this_error,
+        ),
+        pytest.raises(SetupFailedError, match="HTTP Error 503: Service Unavailable"),
+    ):
+        provider._initialize_models()
 
 
 def test_initialize_models_uses_expected_components(provider: SmartFadesProvider) -> None:
@@ -958,3 +986,25 @@ async def test_beat_windows_are_paced_only_while_a_player_streams(
     assert bool(delays) is expect_paced
     if expect_paced:
         assert delays == [0.4 * BEAT_WINDOW_PACE_RATIO]
+
+
+@pytest.mark.parametrize("auto_setup", [True, False], ids=["auto_refused", "manual_allowed"])
+async def test_auto_setup_refused_below_recommended_hardware(
+    mass_mock: Mock, manifest_mock: Mock, config_mock: Mock, auto_setup: bool
+) -> None:
+    """Below the recommended tier only an automatic default setup is refused."""
+    from music_assistant.providers import smart_fades  # noqa: PLC0415
+
+    with (
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=3.8),
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=4),
+        patch("music_assistant.providers.smart_fades.verify_system_meets_requirements"),
+        patch("music_assistant.providers.smart_fades.import_module_in_thread") as import_module,
+    ):
+        if auto_setup:
+            with pytest.raises(UnsupportedSystemError):
+                await smart_fades.setup(mass_mock, manifest_mock, config_mock, auto_setup=True)
+            import_module.assert_not_awaited()
+        else:
+            await smart_fades.setup(mass_mock, manifest_mock, config_mock)
+            import_module.assert_awaited_once()

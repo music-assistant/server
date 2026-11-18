@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 
 from music_assistant.providers.soundcloud import SoundcloudMusicProvider
 
@@ -31,6 +31,18 @@ async def test_parse_artist_requires_id(provider: SoundcloudMusicProvider) -> No
     """A user without an id cannot be turned into an artist."""
     with pytest.raises(InvalidDataError):
         await provider._parse_artist(_artist_obj(id=None))
+
+
+@pytest.mark.parametrize("artist_obj", [{}, _artist_obj(id=None)])
+async def test_get_artist_not_found(
+    provider: SoundcloudMusicProvider, artist_obj: dict[str, Any]
+) -> None:
+    """An unknown or unparsable user is reported as not found."""
+    get_artist: Any = SoundcloudMusicProvider.get_artist.__wrapped__  # type: ignore[attr-defined]
+    provider._soundcloud.get_user_details.return_value = artist_obj
+
+    with pytest.raises(MediaNotFoundError):
+        await get_artist(provider, "5")
 
 
 async def test_parse_artist_metadata(provider: SoundcloudMusicProvider) -> None:
@@ -61,8 +73,6 @@ async def test_parse_artist_skips_default_avatar(provider: SoundcloudMusicProvid
 
 async def test_parse_track_metadata(provider: SoundcloudMusicProvider) -> None:
     """Version, artwork, description, genre and tags end up on the track."""
-    provider._soundcloud.get_user_details.return_value = _artist_obj()
-
     track = await provider._parse_track(
         _track_obj(
             artwork_url="https://i1.sndcdn.com/artworks-abc-large.jpg",
@@ -83,10 +93,18 @@ async def test_parse_track_metadata(provider: SoundcloudMusicProvider) -> None:
     assert [artist.item_id for artist in track.artists] == ["5"]
 
 
+async def test_parse_track_uses_embedded_user(provider: SoundcloudMusicProvider) -> None:
+    """The artist comes from the user object embedded in the track, without a request."""
+    track = await provider._parse_track(
+        _track_obj(user={"id": 7, "username": "Embedded Artist", "permalink": "embedded"})
+    )
+
+    provider._soundcloud.get_user_details.assert_not_awaited()
+    assert [(artist.item_id, artist.name) for artist in track.artists] == [("7", "Embedded Artist")]
+
+
 async def test_parse_track_position(provider: SoundcloudMusicProvider) -> None:
     """The playlist position is stored on the track."""
-    provider._soundcloud.get_user_details.return_value = _artist_obj()
-
     track = await provider._parse_track(_track_obj(), 4)
 
     assert track.position == 4

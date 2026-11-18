@@ -5,9 +5,9 @@ from __future__ import annotations
 DOMAIN = "yandex_station"
 
 # Config entry keys
-CONF_X_TOKEN = "x_token"
-CONF_MUSIC_TOKEN = "music_token"
-CONF_REFRESH_TOKEN = "refresh_token"
+CONF_X_TOKEN = "x_token"  # noqa: S105 - config key
+CONF_MUSIC_TOKEN = "music_token"  # noqa: S105 - config key
+CONF_REFRESH_TOKEN = "refresh_token"  # noqa: S105 - config key
 CONF_REMEMBER_SESSION = "remember_session"
 CONF_COOKIES = "cookies"
 
@@ -29,9 +29,13 @@ CONF_YM_INSTANCE = "ym_instance"
 # Intercept feature: provider-level kill switch (off by default)
 CONF_INTERCEPT_FEATURE_ENABLED = "intercept_feature_enabled"
 
+# API command yandex_station/command: provider-level opt-in (off by default)
+CONF_ALICE_TEXT_COMMANDS = "alice_text_commands"
+
 # Intercept feature: per-player toggles
 CONF_INTERCEPT_ENABLED = "intercept_enabled"
 CONF_INTERCEPT_TARGET = "intercept_target_player_id"
+CONF_INTERCEPT_MIRROR_VOLUME = "intercept_mirror_volume"
 
 # Yandex API endpoints
 QUASAR_DEVICES_URL = "https://iot.quasar.yandex.ru/m/v3/user/devices"

@@ -4,7 +4,7 @@
   "stage": "beta",
   "name": "Plex Media Server Library",
   "description": "Stream your personal music, podcasts, and radio via your Plex media server.",
-  "codeowners": ["@micha91", "@anatosun"],
+  "codeowners": ["@anatosun"],
   "credits": ["[python-plexapi](https://github.com/pkkid/python-plexapi)"],
   "requirements": ["plexapi==4.18.2"],
   "documentation": "https://music-assistant.io/music-providers/plex/",

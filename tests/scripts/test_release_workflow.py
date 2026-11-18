@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import subprocess
+import tarfile
+import zipfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,9 +17,13 @@ from typing import Any, cast
 import pytest
 import yaml
 
+from music_assistant.helpers.build_info import BUILD_INFO_FILE
+from music_assistant.helpers.catalog import CATALOG_NEW_FILE, read_new_domains
 from scripts.release_workflow import (
+    APP_SECRETS_PATH,
     OCI_REVISION_ANNOTATION,
     OCI_WHEEL_ANNOTATION,
+    PROVIDERS_PATH,
     GitRepository,
     ReleaseWorkflowError,
     channel_branch,
@@ -25,13 +32,18 @@ from scripts.release_workflow import (
     determine_auto_release,
     inspect_assets,
     is_current_release,
+    main,
+    new_providers,
     select_release,
     set_addon_version,
     update_addon_release,
+    verify_app_secrets,
+    verify_build_info,
     verify_oci_manifest,
 )
 
 ROOT = Path(__file__).parents[2]
+SECRETS_BUNDLE = '{"salt": "c2FsdA==", "secrets": {"spotify_client_id": "dG9rZW4="}}'
 DEPENDENCY_AUTO_MERGE_WORKFLOW = (
     ROOT / ".github" / "workflows" / "auto-merge-dependency-updates.yml"
 )
@@ -39,6 +51,7 @@ PINNED_ACTION_FILES = (
     ROOT / ".github" / "workflows" / "release.yml",
     ROOT / ".github" / "workflows" / "auto-release.yml",
     ROOT / ".github" / "workflows" / "build-base-image.yml",
+    ROOT / ".github" / "workflows" / "dev-image.yml",
     ROOT / ".github" / "workflows" / "dependabot-sync-manifests.yml",
     ROOT / ".github" / "workflows" / "pr-labels.yaml",
     ROOT / ".github" / "actions" / "generate-release-notes" / "action.yml",
@@ -154,6 +167,65 @@ def test_stable_preserves_patch_versioning_across_diverged_branches(
     assert decision.should_release is True
 
 
+@pytest.mark.parametrize(("channel", "tag"), [("stable", "2.9.9"), ("beta", "2.10.0b1")])
+def test_auto_release_skips_without_new_commits(
+    repository: tuple[Path, GitRepository], channel: str, tag: str
+) -> None:
+    """No channel releases when nothing was committed since its latest tag."""
+    path, git_repository = repository
+    _git(path, "tag", tag)
+
+    decision = determine_auto_release(git_repository, channel, "HEAD")
+
+    assert decision.commits_since == 0
+    assert decision.should_release is False
+
+
+def test_stable_auto_release_fails_when_unreleased_rc_exists(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """An RC ahead of the latest stable tag blocks the automatic patch release."""
+    path, git_repository = repository
+    _git(path, "tag", "2.9.9")
+    _commit(path, "rc work")
+    _git(path, "tag", "2.10.0rc2")
+
+    with pytest.raises(ReleaseWorkflowError, match="Create Release"):
+        determine_auto_release(git_repository, "stable", "HEAD")
+
+
+def test_stable_auto_release_continues_after_rc_base_released(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """Patch releases resume once the RC's base version has shipped as stable."""
+    path, git_repository = repository
+    _git(path, "tag", "2.10.0rc2")
+    _commit(path, "release work")
+    _git(path, "tag", "2.10.0")
+    _commit(path, "patch work")
+
+    decision = determine_auto_release(git_repository, "stable", "HEAD")
+
+    assert decision.version == "2.10.1"
+    assert decision.previous_tag == "2.10.0"
+
+
+def test_rc_auto_release_ignores_the_stable_only_guard(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """The RC-window guard only blocks the stable channel, not the RC channel itself."""
+    path, git_repository = repository
+    _git(path, "tag", "2.9.9")
+    _commit(path, "beta work")
+    _git(path, "tag", "2.10.0b1")
+    _commit(path, "rc work")
+    _git(path, "tag", "2.10.0rc1")
+
+    decision = determine_auto_release(git_repository, "rc", "HEAD")
+
+    assert decision.version == "2.10.0rc2"
+
+
 def test_current_release_combines_beta_and_rc_channels(
     repository: tuple[Path, GitRepository],
 ) -> None:
@@ -170,6 +242,71 @@ def test_current_release_combines_beta_and_rc_channels(
         False,
         "2.10.0rc1",
     )
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["2.11.0.dev2026111503", "2.11.0b2", "2.11.0rc1", "2.11.0", "2.11.4"],
+)
+def test_new_providers_are_those_the_previous_release_line_lacks(
+    repository: tuple[Path, GitRepository], version: str
+) -> None:
+    """A provider stays new for its whole release line, on every channel."""
+    path, git_repository = repository
+    _add_file(path, _manifest("universal_player"))
+    _git(path, "tag", "2.10.0")
+    _add_file(path, _manifest("backported"))
+    _git(path, "tag", "2.10.1")
+    # a provider that takes the place of a removed one is new as well
+    _git(path, "rm", "--quiet", _manifest("universal_player"))
+    _add_file(path, _manifest("yoto"))
+    _git(path, "tag", "2.11.0")
+    source_sha = _add_file(path, _manifest("fip"))
+    _add_file(path, _manifest("after_the_release"))
+
+    assert new_providers(git_repository, version, source_sha) == ["fip", "yoto"]
+
+
+def test_new_providers_need_a_stable_release_of_an_earlier_line(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """Without a stable release of an earlier line there is nothing to compare with."""
+    path, git_repository = repository
+    _git(path, "tag", "2.10.0b3")
+    _git(path, "tag", "2.11.0")
+    source_sha = _add_file(path, _manifest("fip"))
+
+    assert new_providers(git_repository, "2.11.1", source_sha) == []
+
+
+def test_new_providers_are_provider_folders_only(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """Only the manifest of a provider folder counts, not a template or a file next to it."""
+    path, git_repository = repository
+    _add_file(path, _manifest("snapcast"))
+    _git(path, "tag", "2.10.0")
+    _add_file(path, _manifest("_demo_music_provider"))
+    _add_file(path, f"{PROVIDERS_PATH}/snapcast/snapweb/manifest.json")
+    _add_file(path, f"{PROVIDERS_PATH}/snapcast/icon.svg")
+    source_sha = _add_file(path, _manifest("fip"))
+
+    assert new_providers(git_repository, "2.11.0b1", source_sha) == ["fip"]
+
+
+def test_new_providers_file_is_what_the_server_reads(
+    repository: tuple[Path, GitRepository], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release build writes the list in the form the server reads at start."""
+    path, _ = repository
+    _git(path, "tag", "2.10.0")
+    source_sha = _add_file(path, _manifest("fip"))
+    monkeypatch.chdir(path)
+    command = f"new-providers --version 2.11.0b1 --source-sha {source_sha} --output new.json"
+    monkeypatch.setattr("sys.argv", ["release_workflow.py", *command.split()])
+
+    assert main() == 0
+    assert read_new_domains(path / "new.json") == {"fip"}
 
 
 @pytest.mark.parametrize(
@@ -312,6 +449,75 @@ def test_release_assets_reject_duplicate_api_entries(tmp_path: Path) -> None:
         inspect_assets(version, release_json=release_json)
 
 
+@pytest.mark.parametrize(
+    ("wheel_secrets", "sdist_secrets", "error"),
+    [
+        (SECRETS_BUNDLE, False, None),
+        (None, False, "does not contain"),
+        (SECRETS_BUNDLE, True, "must not contain"),
+        # the JSON metadata envelope GitHub returns when it declines a raw download
+        ('{"name": "app_secrets.json", "content": ""}', False, "not a secrets bundle"),
+        ("", False, "not a secrets bundle"),
+        ('{"salt": "", "secrets": {}}', False, "not a secrets bundle"),
+    ],
+)
+def test_app_secrets_ship_in_the_wheel_only(
+    tmp_path: Path, wheel_secrets: str | None, sdist_secrets: bool, error: str | None
+) -> None:
+    """The app secrets must reach the wheel (and the image), never the source distribution."""
+    version = "2.10.0b8"
+    _write_dists(tmp_path, version, wheel_secrets=wheel_secrets, sdist_secrets=sdist_secrets)
+
+    if error is None:
+        verify_app_secrets(version, tmp_path)
+    else:
+        with pytest.raises(ReleaseWorkflowError, match=error):
+            verify_app_secrets(version, tmp_path)
+
+
+def test_release_workflow_builds_the_source_distribution_without_app_secrets() -> None:
+    """Only the wheel is built after the app secrets are provisioned, and both are verified."""
+    workflow_text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    workflow = cast("dict[str, Any]", yaml.safe_load(workflow_text))
+    step_names = [step.get("name") for step in workflow["jobs"]["build_artifacts"]["steps"]]
+
+    assert (
+        step_names.index("Build source distribution")
+        < step_names.index("Provision app secrets")
+        < step_names.index("Build wheel")
+        < step_names.index("Verify bundled app secrets")
+    )
+    sdist_step = _workflow_step(workflow, "build_artifacts", "Build source distribution")
+    assert sdist_step["run"] == "python3 -m build --sdist"
+    wheel_step = _workflow_step(workflow, "build_artifacts", "Build wheel")
+    assert wheel_step["run"] == "python3 -m build --wheel"
+    # reused draft assets are verified too
+    assert "if" not in _workflow_step(workflow, "build_artifacts", "Verify bundled app secrets")
+
+
+def test_release_workflow_records_the_new_providers_before_it_builds() -> None:
+    """The list of new providers is worked out from the release tags, for both distributions."""
+    workflow_text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    workflow = cast("dict[str, Any]", yaml.safe_load(workflow_text))
+    step_names = [step.get("name") for step in workflow["jobs"]["build_artifacts"]["steps"]]
+    name = "Record the providers that are new in this release line"
+
+    assert step_names.index(name) < step_names.index("Build source distribution")
+    # the release tags only come with the full history
+    checkout = _workflow_step(workflow, "build_artifacts", "Check out release source")
+    assert checkout["with"]["fetch-depth"] == 0
+    step = _workflow_step(workflow, "build_artifacts", name)
+    # recorded whenever the distributions are built
+    sdist_step = _workflow_step(workflow, "build_artifacts", "Build source distribution")
+    assert step["if"] == sdist_step["if"]
+    assert step["env"]["SOURCE_SHA"] == "${{ needs.resolve.outputs.source_sha }}"
+    run = str(step["run"])
+    assert "release_workflow.py new-providers" in run
+    assert f"--output source/{CATALOG_NEW_FILE.relative_to(ROOT).as_posix()}" in run
+    # a release without the file only marks nothing as new
+    assert step["continue-on-error"] is True
+
+
 def test_oci_manifest_requires_exact_platforms_and_provenance() -> None:
     """The exact image identifies its source and wheel on both target platforms."""
     source_sha = "a" * 40
@@ -342,6 +548,70 @@ def test_oci_manifest_requires_exact_platforms_and_provenance() -> None:
 
     assert digest == f"sha256:{'c' * 64}"
     assert runtime_digests == [f"sha256:{'d' * 64}", f"sha256:{'e' * 64}"]
+
+
+@pytest.mark.parametrize(
+    ("changes", "error"),
+    [
+        ({}, None),
+        (None, "unsupported installation"),
+        ({"version": "2.10.0b7"}, "version"),
+        # a build arg that no longer reaches the Dockerfile leaves an empty value behind
+        ({"revision": ""}, "revision"),
+        ({"wheel_sha256": None}, "wheel_sha256"),
+    ],
+)
+def test_build_info_identifies_the_release(
+    changes: dict[str, str | None] | None, error: str | None
+) -> None:
+    """The exact image must report the official build of this exact release."""
+    version, source_sha, wheel_sha = "2.10.0b8", "a" * 40, "b" * 64
+    release: dict[str, str | None] = {
+        "version": version,
+        "revision": source_sha,
+        "wheel_sha256": wheel_sha,
+    }
+    build_info = None if changes is None else release | changes
+
+    if error is None:
+        verify_build_info(build_info, version, source_sha, wheel_sha)
+    else:
+        with pytest.raises(ReleaseWorkflowError, match=error):
+            verify_build_info(build_info, version, source_sha, wheel_sha)
+
+
+def test_release_workflow_verifies_the_build_info_of_the_exact_image() -> None:
+    """The verified exact image must report an official build before anything is published."""
+    workflow_text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    workflow = cast("dict[str, Any]", yaml.safe_load(workflow_text))
+    step_names = [step.get("name") for step in workflow["jobs"]["exact_image"]["steps"]]
+
+    assert step_names.index("Verify exact image") < step_names.index("Verify official build info")
+    step = _workflow_step(workflow, "exact_image", "Verify official build info")
+    # only skipped for a release source without the check, never for an existing image
+    guarded_path = "music_assistant/helpers/build_info.py"
+    assert step["if"] == f"hashFiles('source/{guarded_path}') != ''"
+    assert (ROOT / guarded_path).is_file()
+    assert step["env"]["DIGEST"] == "${{ steps.verify.outputs.digest }}"
+    run = str(step["run"])
+    assert '--entrypoint python "$IMAGE_REPOSITORY@$DIGEST"' in run
+    assert "get_official_build_info" in run
+    assert "release_workflow.py verify-build-info" in run
+    assert "exact_image" in workflow["jobs"]["publish_release"]["needs"]
+
+
+def test_release_image_build_args_reach_the_build_info_file() -> None:
+    """The release passes the build info args to the Dockerfile, which writes the file it reads."""
+    workflow_text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    workflow = cast("dict[str, Any]", yaml.safe_load(workflow_text))
+    build_step = _workflow_step(workflow, "exact_image", "Build and push exact image")
+    passed = set(re.findall(r"^(\w+)=", build_step["with"]["build-args"], re.MULTILINE))
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    # a build arg the Dockerfile does not declare is silently ignored
+    assert passed <= set(re.findall(r"^ARG (\w+)", dockerfile, re.MULTILINE))
+    assert {"MASS_VERSION", "MASS_REVISION", "MASS_WHEEL_SHA256"} <= passed
+    assert f"> {BUILD_INFO_FILE}" in dockerfile
 
 
 def test_addon_update_replaces_duplicate_version_and_retains_three(tmp_path: Path) -> None:
@@ -387,7 +657,7 @@ def test_addon_version_update_leaves_the_rest_of_the_config_alone(tmp_path: Path
     config = tmp_path / "config.yaml"
     original = (
         "name: Music Assistant DEV SERVER\n"
-        "# tracks the nightly base image; bumped by the server release workflow\n"
+        "# the nightly the development image sits on; bumped once that image is published\n"
         "version: 1.6.0\n"
         "slug: music_assistant_dev\n"
     )
@@ -423,33 +693,12 @@ def test_addon_version_update_requires_exactly_one_version_field(
     assert config.read_text(encoding="utf-8") == config_text
 
 
-def test_release_workflow_bumps_the_dev_addon_on_nightly_only() -> None:
-    """Nightly carries the locally built dev add-on along with the nightly add-on."""
+def test_release_workflow_leaves_the_dev_addon_alone() -> None:
+    """The dev add-on follows the development image, which a release run does not publish."""
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-    parsed_workflow = cast("dict[str, Any]", yaml.safe_load(workflow))
-    channel_run = str(
-        _workflow_step(parsed_workflow, "update_addon", "Resolve add-on channel")["run"]
-    )
 
-    assert channel_run.index('dev_folder=""') < channel_run.index('case "$CHANNEL" in')
-    assert channel_run.count('dev_folder="music_assistant_dev"') == 1
-    nightly_arm = channel_run.split("nightly)")[1].split(";;", maxsplit=1)[0]
-    assert 'dev_folder="music_assistant_dev"' in nightly_arm
-    assert 'echo "dev_folder=$dev_folder" >> "$GITHUB_OUTPUT"' in channel_run
-
-    dev_step = _workflow_step(parsed_workflow, "update_addon", "Update dev add-on version")
-    assert dev_step["if"] == "steps.channel.outputs.dev_folder != ''"
-    dev_run = str(dev_step["run"])
-    assert "release_workflow.py set-addon-version" in dev_run
-    assert '--config "addon-repo/$DEV_FOLDER/config.yaml"' in dev_run
-
-    commit_step = _workflow_step(parsed_workflow, "update_addon", "Commit add-on update")
-    assert commit_step["env"]["DEV_FOLDER"] == "${{ steps.channel.outputs.dev_folder }}"
-    assert 'git add "$DEV_FOLDER/config.yaml"' in str(commit_step["run"])
-
-    # the bump is only committed if it happens first
-    step_names = [step.get("name") for step in parsed_workflow["jobs"]["update_addon"]["steps"]]
-    assert step_names.index("Update dev add-on version") < step_names.index("Commit add-on update")
+    assert "music_assistant_dev" not in workflow
+    assert "set-addon-version" not in workflow
 
 
 def test_automation_drops_legacy_credentials() -> None:
@@ -560,12 +809,59 @@ def test_dependency_auto_merge_commit_author_contract(
     assert is_trusted_author is trusted
 
 
+_FRONTEND_WHEEL = (
+    "music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/"
+    "2.17.361/music_assistant_frontend-2.17.361-py3-none-any.whl#sha256=" + "a" * 64
+)
+
+
+@pytest.mark.parametrize(
+    ("line", "allowed"),
+    [
+        (f'+  "{_FRONTEND_WHEEL}",', True),
+        (f"-{_FRONTEND_WHEEL}", True),
+        ('+  "music-assistant-models==1.1.237",', True),
+        ("-music-assistant-models==1.1.236", True),
+        ("+music-assistant-frontend==2.17.361", False),
+        (f"+{_FRONTEND_WHEEL.replace('github.com', 'example.com')}", False),
+        (f"+{_FRONTEND_WHEEL.removesuffix('a')}", False),
+        (f"+{_FRONTEND_WHEEL.split('#', maxsplit=1)[0]}", False),
+        (f"+{_FRONTEND_WHEEL}; python_version >= '3.14'", False),
+        ("+music-assistant-models @ https://github.com/music-assistant/models/x.whl", False),
+    ],
+)
+def test_dependency_auto_merge_pin_line(line: str, allowed: bool) -> None:
+    """Allow only a models version pin or a frontend release wheel pinned by sha256."""
+    workflow = yaml.safe_load(DEPENDENCY_AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8"))
+    result = subprocess.run(  # noqa: S603
+        ["grep", "-qE", workflow["env"]["PIN_LINE"]],  # noqa: S607
+        input=line,
+        text=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is allowed
+
+
+def test_dependency_auto_merge_verifies_each_package_at_its_source() -> None:
+    """Check the models pin on PyPI and the frontend pin against its release asset digest."""
+    workflow = yaml.safe_load(DEPENDENCY_AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8"))
+    steps = {step["name"]: step for step in workflow["jobs"]["auto-merge"]["steps"]}
+
+    pypi_step = steps["Wait for package availability on PyPI"]
+    assert pypi_step["if"] == "steps.package.outputs.package == 'music-assistant-models'"
+    asset_step = steps["Verify frontend release asset"]
+    assert asset_step["if"] == "steps.package.outputs.package == 'music-assistant-frontend'"
+    assert ".immutable // false" in asset_step["run"]
+    assert '"sha256:$SHA256"' in asset_step["run"]
+
+
 def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
     """Ensure the workflow enforces the tested App bot identity contract."""
     workflow_text = DEPENDENCY_AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(workflow_text)
     assert workflow_text.count("musicassistant-bot[bot]") == 1
-    assert workflow["env"] == {
+    assert {name: value for name, value in workflow["env"].items() if name != "PIN_LINE"} == {
         "EXPECTED_APP_BOT_LOGIN": "musicassistant-bot[bot]",
         "EXPECTED_APP_BOT_LOGIN_ENCODED": "musicassistant-bot%5Bbot%5D",
         "EXPECTED_APP_BOT_ID": "304008617",
@@ -620,8 +916,17 @@ def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
     assert "No added version pin found" in diff_check
     availability_check = steps["Wait for package availability on PyPI"]["run"]
     assert "python3 -m pip download --no-deps" in availability_check
+    assert "--ignore-requires-python" in availability_check
     assert "--approve" in steps["Auto-approve PR"]["run"]
-    assert "--auto --squash" in steps["Enable auto-merge"]["run"]
+    enqueue = steps["Add to merge queue"]["run"]
+    assert "--auto" in enqueue
+    assert "--squash" not in enqueue
+
+    discover = workflow["jobs"]["discover-stale"]["steps"][0]["run"]
+    assert "--json mergeable" in discover
+    assert '[ "$MERGEABLE" != "UNKNOWN" ] && break' in discover
+    assert 'if [ "$MERGEABLE" != "CONFLICTING" ]; then' in discover
+    assert "behind_by" not in discover
 
     refresh_steps = {step["name"]: step for step in workflow["jobs"]["refresh-stale"]["steps"]}
     identity_check = refresh_steps["Verify GitHub App identity"]["run"]
@@ -655,6 +960,31 @@ def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() 
     assert "idempotency_key" in workflow
     assert "repos/music-assistant/home-assistant-addon" in workflow
     assert "'.default_branch'" in workflow
+
+
+@pytest.mark.parametrize(
+    ("workflow_name", "guarded_job"),
+    [("release.yml", "resolve"), ("auto-release.yml", "resolve-release")],
+)
+def test_release_workflows_require_dispatch_from_dev(workflow_name: str, guarded_job: str) -> None:
+    """Release workflows fail before any other step or job unless they run from dev."""
+    workflow = cast(
+        "dict[str, Any]",
+        yaml.safe_load(
+            (ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
+        ),
+    )
+    jobs = workflow["jobs"]
+    guard = jobs[guarded_job]["steps"][0]
+
+    assert guard["name"] == "Require dispatch from dev"
+    assert guard["env"] == {"DISPATCH_REF": "${{ github.ref }}"}
+    assert 'if [ "$DISPATCH_REF" != "refs/heads/dev" ]; then' in guard["run"]
+    assert "exit 1" in guard["run"]
+    for job_name, job in jobs.items():
+        if job_name != guarded_job:
+            needs = job["needs"]
+            assert guarded_job in ([needs] if isinstance(needs, str) else needs), job_name
 
 
 def test_release_workflow_dispatch_source_sha_is_optional_for_recovery() -> None:
@@ -829,6 +1159,32 @@ def _api_asset(path: Path) -> dict[str, str | int]:
         "state": "uploaded",
         "digest": f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}",
     }
+
+
+def _write_dists(
+    directory: Path, version: str, *, wheel_secrets: str | None, sdist_secrets: bool
+) -> None:
+    with zipfile.ZipFile(directory / f"music_assistant-{version}-py3-none-any.whl", "w") as wheel:
+        wheel.writestr("music_assistant/__init__.py", "")
+        if wheel_secrets is not None:
+            wheel.writestr(APP_SECRETS_PATH, wheel_secrets)
+    with tarfile.open(directory / f"music_assistant-{version}.tar.gz", "w:gz") as sdist:
+        names = ["music_assistant/__init__.py"] + ([APP_SECRETS_PATH] if sdist_secrets else [])
+        for name in names:
+            sdist.addfile(tarfile.TarInfo(f"music_assistant-{version}/{name}"), io.BytesIO())
+
+
+def _manifest(domain: str) -> str:
+    return f"{PROVIDERS_PATH}/{domain}/manifest.json"
+
+
+def _add_file(path: Path, name: str) -> str:
+    file = path / name
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text("{}\n", encoding="utf-8")
+    _git(path, "add", name)
+    _git(path, "commit", "-m", f"add {name}")
+    return _git(path, "rev-parse", "HEAD")
 
 
 def _commit(path: Path, message: str) -> str:

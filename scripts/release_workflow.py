@@ -15,7 +15,9 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Mapping
+import tarfile
+import zipfile
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +38,11 @@ CHANNEL_BRANCHES = {
 SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 OCI_REVISION_ANNOTATION = "org.opencontainers.image.revision"
 OCI_WHEEL_ANNOTATION = "io.music-assistant.wheel.sha256"
+APP_SECRETS_PATH = "music_assistant/helpers/app_secrets.json"
+PROVIDERS_PATH = "music_assistant/providers"
+# the manifest of a provider; a folder that starts with an underscore is a template,
+# which a server only loads in dev mode
+PROVIDER_MANIFEST_PATTERN = re.compile(rf"^{PROVIDERS_PATH}/(?P<domain>[^/_][^/]*)/manifest\.json$")
 FRONTEND_VERSION_PATTERN = re.compile(r"^(?P<base>\d+(?:\.\d+)+)(?:\.post(?P<post>\d+))?$")
 
 
@@ -117,6 +124,19 @@ class GitRepository:
             raise ReleaseWorkflowError(result.stderr.strip() or f"Unable to compare {tag}")
         return int(self._run("rev-list", "--count", f"{base}..{source_sha}"))
 
+    def added_files(self, since: str, source_sha: str, path: str) -> list[str]:
+        """
+        Return the files under a path that the source commit has and an earlier one lacks.
+
+        :param since: Tag or commit to compare with.
+        :param source_sha: Exact release source commit.
+        :param path: Folder to look in.
+        """
+        output = self._run(
+            "diff", "--name-only", "--diff-filter=A", "--no-renames", since, source_sha, "--", path
+        )
+        return output.splitlines()
+
     def _run(self, *args: str) -> str:
         result = self._run_result(*args)
         if result.returncode:
@@ -187,6 +207,13 @@ def determine_auto_release(
     latest_nightly = _first(nightly_tags)
 
     if channel == "stable":
+        # during an RC window the stable branch already carries next-minor content
+        if _in_rc_window(latest_rc, latest_stable):
+            msg = (
+                f"An RC newer than the latest stable release exists ({latest_rc}); "
+                "create the next stable release manually via the Create Release workflow"
+            )
+            raise ReleaseWorkflowError(msg)
         previous_tag = latest_stable
         commits_since = repository.commits_since(previous_tag, source_sha, allow_diverged=True)
         version = _next_stable(latest_stable)
@@ -219,10 +246,43 @@ def determine_auto_release(
     version = _ensure_unique(version, channel, all_tags)
     return AutoRelease(
         version=version,
-        should_release=channel != "nightly" or commits_since >= 2,
+        should_release=commits_since >= (2 if channel == "nightly" else 1),
         previous_tag=previous_tag,
         commits_since=commits_since,
     )
+
+
+def next_release_line(branch: str, tags: Iterable[str]) -> str:
+    """
+    Return the ``<major>.<minor>`` line of the next release from a branch, as auto-release names it.
+
+    For ``dev`` that is the line of the next beta; for ``stable`` the line of the next stable
+    release, which in an RC window is the line of the release candidate.
+
+    :param branch: ``dev`` or ``stable``.
+    :param tags: The tags of the repository.
+    """
+    tags = list(tags)
+    latest = {
+        channel: max(
+            (tag for tag in tags if pattern.fullmatch(tag)), key=_release_version_key, default=None
+        )
+        for channel, pattern in CHANNEL_PATTERNS.items()
+    }
+    if branch == channel_branch("stable"):
+        if _in_rc_window(latest["rc"], latest["stable"]):
+            version = _next_rc(latest["rc"], latest["beta"])
+        else:
+            version = _next_stable(latest["stable"])
+    else:
+        version = _next_beta(latest["beta"], latest["stable"])
+    base = next(
+        match.group("base")
+        for pattern in CHANNEL_PATTERNS.values()
+        if (match := pattern.fullmatch(version))
+    )
+    major, minor, _patch = _version_tuple(base)
+    return f"{major}.{minor}"
 
 
 def previous_release_tag(
@@ -281,6 +341,31 @@ def is_current_release(
     return latest_tag is None or _release_version_key(version) >= _release_version_key(
         latest_tag
     ), latest_tag
+
+
+def new_providers(repository: GitRepository, version: str, source_sha: str) -> list[str]:
+    """
+    Return the domains of the providers that are new in the release line of a version.
+
+    A provider is new when the newest stable release of an earlier release line lacks it.
+    Without such a release, no provider is new.
+
+    :param repository: Source Git repository, with the release tags.
+    :param version: Release version, of any channel.
+    :param source_sha: Exact release source commit.
+    """
+    line = _release_version_key(version)[:2]
+    earlier = [
+        tag for tag in repository.tags(CHANNEL_PATTERNS["stable"]) if _version_tuple(tag)[:2] < line
+    ]
+    if not earlier:
+        return []
+    files = repository.added_files(earlier[0], source_sha, PROVIDERS_PATH)
+    return [
+        match.group("domain")
+        for file in files
+        if (match := PROVIDER_MANIFEST_PATTERN.fullmatch(file))
+    ]
 
 
 def compare_release_versions(current: str, requested: str) -> str:
@@ -415,6 +500,29 @@ def inspect_assets(
     return assets[expected_names[0]], assets[expected_names[1]]
 
 
+def verify_app_secrets(version: str, directory: Path) -> None:
+    """
+    Verify that the app secrets bundle ships in the wheel, but not in the source distribution.
+
+    :param version: Release version.
+    :param directory: Directory containing the built assets.
+    """
+    wheel_name, sdist_name = _expected_asset_names(version)
+    with zipfile.ZipFile(directory / wheel_name) as wheel:
+        if APP_SECRETS_PATH not in wheel.namelist():
+            raise ReleaseWorkflowError(f"{wheel_name} does not contain {APP_SECRETS_PATH}")
+        try:
+            bundle = json.loads(wheel.read(APP_SECRETS_PATH))
+        except ValueError:
+            bundle = None
+    # a download GitHub declines to serve raw comes back as its JSON metadata envelope instead
+    if not isinstance(bundle, dict) or not bundle.get("salt") or not bundle.get("secrets"):
+        raise ReleaseWorkflowError(f"{APP_SECRETS_PATH} in {wheel_name} is not a secrets bundle")
+    with tarfile.open(directory / sdist_name) as sdist:
+        if any(name.endswith(f"/{APP_SECRETS_PATH}") for name in sdist.getnames()):
+            raise ReleaseWorkflowError(f"{sdist_name} must not contain {APP_SECRETS_PATH}")
+
+
 def verify_oci_manifest(
     manifest: dict[str, Any],
     source_sha: str,
@@ -463,6 +571,33 @@ def verify_oci_manifest(
     if set(runtime_manifests) != expected_platforms:
         raise ReleaseWorkflowError("OCI image must contain linux/amd64 and linux/arm64")
     return digest, [runtime_manifests[platform] for platform in sorted(expected_platforms)]
+
+
+def verify_build_info(
+    build_info: object,
+    version: str,
+    source_sha: str,
+    wheel_sha256: str,
+) -> None:
+    """
+    Verify that the image identifies itself as the official build of this release.
+
+    :param build_info: Official build info the image reports, None for an unsupported install.
+    :param version: Release version.
+    :param source_sha: Exact source commit of the release.
+    :param wheel_sha256: SHA-256 digest of the release wheel.
+    """
+    if not isinstance(build_info, dict):
+        raise ReleaseWorkflowError(
+            "The image would report an unsupported installation: "
+            "it lacks the bundled app secrets or its build info"
+        )
+    expected = {"version": version, "revision": source_sha, "wheel_sha256": wheel_sha256}
+    for key, value in expected.items():
+        if build_info.get(key) != value:
+            raise ReleaseWorkflowError(
+                f"The image build info has {key} {build_info.get(key)!r} instead of {value!r}"
+            )
 
 
 def update_addon_release(
@@ -520,6 +655,12 @@ def set_addon_version(config_path: Path, version: str) -> None:
     if replacements != 1:
         raise ReleaseWorkflowError(f"Expected one version field in {config_path}")
     config_path.write_text(config, encoding="utf-8")
+
+
+def _in_rc_window(latest_rc: str | None, latest_stable: str | None) -> bool:
+    return latest_rc is not None and (
+        latest_stable is None or compare_release_versions(latest_rc, latest_stable) == "newer"
+    )
 
 
 def _next_stable(latest_stable: str | None) -> str:
@@ -698,6 +839,26 @@ def _configure_release_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--github-output", type=Path)
 
 
+def _configure_new_providers_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--repository", type=Path, default=Path.cwd())
+    parser.add_argument("--output", type=Path, required=True)
+
+
+def _configure_compare_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--current", required=True)
+    parser.add_argument("--requested", required=True)
+    parser.add_argument("--github-output", type=Path)
+
+
+def _configure_build_info_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--build-info-json", type=Path, required=True)
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--wheel-sha256", required=True)
+
+
 def _configure_addon_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--version", required=True)
@@ -734,15 +895,10 @@ def _build_parser() -> argparse.ArgumentParser:
     current_parser.add_argument("--repository", type=Path, default=Path.cwd())
     current_parser.add_argument("--github-output", type=Path)
 
-    release_order_parser = subparsers.add_parser("compare-release-versions")
-    release_order_parser.add_argument("--current", required=True)
-    release_order_parser.add_argument("--requested", required=True)
-    release_order_parser.add_argument("--github-output", type=Path)
+    _configure_new_providers_parser(subparsers.add_parser("new-providers"))
 
-    frontend_order_parser = subparsers.add_parser("compare-frontend-versions")
-    frontend_order_parser.add_argument("--current", required=True)
-    frontend_order_parser.add_argument("--requested", required=True)
-    frontend_order_parser.add_argument("--github-output", type=Path)
+    _configure_compare_parser(subparsers.add_parser("compare-release-versions"))
+    _configure_compare_parser(subparsers.add_parser("compare-frontend-versions"))
 
     _configure_release_parser(subparsers.add_parser("select-release"))
 
@@ -752,11 +908,17 @@ def _build_parser() -> argparse.ArgumentParser:
     assets_parser.add_argument("--release-json", type=Path)
     assets_parser.add_argument("--github-output", type=Path)
 
+    secrets_parser = subparsers.add_parser("verify-app-secrets")
+    secrets_parser.add_argument("--version", required=True)
+    secrets_parser.add_argument("--directory", type=Path, required=True)
+
     manifest_parser = subparsers.add_parser("verify-manifest")
     manifest_parser.add_argument("--manifest-json", type=Path, required=True)
     manifest_parser.add_argument("--source-sha", required=True)
     manifest_parser.add_argument("--wheel-sha256", required=True)
     manifest_parser.add_argument("--github-output", type=Path)
+
+    _configure_build_info_parser(subparsers.add_parser("verify-build-info"))
 
     addon_parser = subparsers.add_parser("update-addon")
     _configure_addon_parser(addon_parser)
@@ -814,6 +976,13 @@ def main() -> int:
                 },
                 args.github_output,
             )
+        elif args.command == "new-providers":
+            domains = new_providers(
+                GitRepository(args.repository),
+                args.version,
+                args.source_sha,
+            )
+            args.output.write_text(json.dumps(domains) + "\n", encoding="utf-8")
         elif args.command == "compare-release-versions":
             _write_outputs(
                 {
@@ -859,6 +1028,8 @@ def main() -> int:
                 release_json=args.release_json,
             )
             _write_outputs(_asset_outputs(assets), args.github_output)
+        elif args.command == "verify-app-secrets":
+            verify_app_secrets(args.version, args.directory)
         elif args.command == "verify-manifest":
             manifest = json.loads(args.manifest_json.read_text(encoding="utf-8"))
             digest, runtime_digests = verify_oci_manifest(
@@ -872,6 +1043,13 @@ def main() -> int:
                     "runtime_digests": " ".join(runtime_digests),
                 },
                 args.github_output,
+            )
+        elif args.command == "verify-build-info":
+            verify_build_info(
+                json.loads(args.build_info_json.read_text(encoding="utf-8")),
+                args.version,
+                args.source_sha,
+                args.wheel_sha256,
             )
         elif args.command == "update-addon":
             update_addon_release(

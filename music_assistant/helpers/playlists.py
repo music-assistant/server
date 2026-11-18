@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import configparser
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
@@ -30,6 +31,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.helpers.aiohttp_client import encoded_request_url
+from music_assistant.helpers.external_ids import normalize_external_id
 from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES
 from music_assistant.helpers.util import detect_charset, try_parse_int
 
@@ -52,6 +54,8 @@ _LINE_BREAK_TABLE: Final = str.maketrans(dict.fromkeys(_LINE_BREAK_CHARS, " "))
 # playlist content-type does not pull an endless body into memory
 MAX_PLAYLIST_SIZE = 64 * 1024
 PLAYLIST_READ_TIMEOUT = 5
+# the only image references a playlist file may contribute: fetched over http(s) or inline
+_REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = ("http://", "https://", "data:image")
 
 
 class IsHLSPlaylist(InvalidDataError):
@@ -391,6 +395,26 @@ def sanitize_m3u_value(value: str) -> str:
     return value.translate(_LINE_BREAK_TABLE)
 
 
+def sanitize_playlist_filename(name: str) -> str:
+    """Return the playlist name made safe to use as a file name."""
+    sanitized = re.sub(r'[<>:"/\\|?*]', "_", name)
+    sanitized = sanitized.strip(" .")
+    return sanitized or "untitled"
+
+
+def escape_markdown(value: str, table: bool = False) -> str:
+    """
+    Escape provider text before adding it to a Markdown import/migration report.
+
+    :param value: Raw provider text (name, title or error message) to escape.
+    :param table: Whether the value is placed inside a Markdown table cell.
+    """
+    value = value.replace("\r\n", "\n").translate(_LINE_BREAK_TABLE).replace("\\", "\\\\")
+    for character in ("`", "*", "_", "[", "]", "<", ">"):
+        value = value.replace(character, f"\\{character}")
+    return value.replace("|", "\\|") if table else value
+
+
 def generate_m3u(
     playlist_name: str,
     items: Sequence[PlaylistItem],
@@ -584,6 +608,7 @@ def construct_media_item_from_playlist_item(
             duration,
             provider_mappings,
             external_ids,
+            mass,
         )
 
     for img in item.images:
@@ -591,26 +616,124 @@ def construct_media_item_from_playlist_item(
             image_type = ImageType(img.type)
         except ValueError:
             continue
+        # nothing in the file proves who owns a path, so only remote references from builtin
+        # or a loaded provider are imported, plus paths a loaded provider explicitly accepts
+        prov = mass.get_provider(img.provider)
+        is_remote = img.path.startswith(_REMOTE_IMAGE_PREFIXES)
+        if not (
+            (img.provider == "builtin" or prov is not None)
+            if is_remote
+            else (prov is not None and prov.accepts_stored_image_path(img.path))
+        ):
+            LOGGER.debug("Skipping playlist image %s of provider %s", img.path, img.provider)
+            continue
         media_item.metadata.add_image(
             MediaItemImage(
                 type=image_type,
                 path=img.path,
                 provider=img.provider,
-                remotely_accessible=img.remotely_accessible,
+                # a path only its provider can resolve is never reachable by a client itself
+                remotely_accessible=is_remote and img.remotely_accessible,
             )
         )
     return media_item
 
 
+def validate_playlist_block_move(
+    length: int, positions: Sequence[int], to_position: int
+) -> list[int]:
+    """
+    Return the positions of a block move in playlist order, after checking they fit.
+
+    :param length: The number of items in the playlist.
+    :param positions: The current positions of the items to move, 1-based.
+    :param to_position: The position of the block's first item after the move, 1-based.
+    :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+    """
+    selected = sorted(set(positions))
+    if not selected:
+        raise InvalidDataError("No playlist positions to move")
+    if len(selected) != len(positions):
+        raise InvalidDataError("Each playlist position can only be moved once")
+    if selected[0] < 1 or selected[-1] > length:
+        msg = f"Position out of range for a playlist of {length} item(s)"
+        raise InvalidDataError(msg)
+    if not 1 <= to_position <= length - len(selected) + 1:
+        msg = f"{len(selected)} item(s) do not fit at position {to_position} of {length}"
+        raise InvalidDataError(msg)
+    return selected
+
+
+def move_playlist_block[ItemT](
+    items: Sequence[ItemT], positions: Sequence[int], to_position: int
+) -> list[ItemT]:
+    """
+    Return the items of a playlist after moving some of them as one block.
+
+    The moved items keep their order and the block starts at to_position.
+
+    :param items: The playlist items, in order.
+    :param positions: The current positions of the items to move, 1-based.
+    :param to_position: The position of the block's first item after the move, 1-based.
+    :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+    """
+    selected = validate_playlist_block_move(len(items), positions, to_position)
+    chosen = set(selected)
+    moved = [items[position - 1] for position in selected]
+    rest = [item for position, item in enumerate(items, start=1) if position not in chosen]
+    return rest[: to_position - 1] + moved + rest[to_position - 1 :]
+
+
+def playlist_block_move_steps(
+    length: int, positions: Sequence[int], to_position: int
+) -> list[tuple[int, int]]:
+    """
+    Return the single-track moves that together move some tracks as one block.
+
+    Each step is a (from_position, to_position) pair, both 1-based, where to_position is
+    the track's final position; the steps apply in order.
+
+    :param length: The number of tracks in the playlist.
+    :param positions: The current positions of the tracks to move, 1-based.
+    :param to_position: The position of the block's first track after the move, 1-based.
+    :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+    """
+    selected = validate_playlist_block_move(length, positions, to_position)
+    chosen = set(selected)
+    # Track every item by its original position. Each selected item is placed right after
+    # the item that precedes it in the result (the item before the block, then the item
+    # moved before it), which only ever moves selected items and keeps the others in order.
+    current = list(range(1, length + 1))
+    rest = [position for position in current if position not in chosen]
+    previous = rest[to_position - 2] if to_position > 1 else None
+    steps: list[tuple[int, int]] = []
+    for original in selected:
+        source = current.index(original)
+        current.pop(source)
+        target = 0 if previous is None else current.index(previous) + 1
+        current.insert(target, original)
+        if target != source:
+            steps.append((source + 1, target + 1))
+        previous = original
+    return steps
+
+
 def _resolve_provider_mappings(item: PlaylistItem, mass: MusicAssistant) -> set[ProviderMapping]:
     """Resolve provider mappings from playlist item, checking loaded providers."""
     provider_mappings: set[ProviderMapping] = set()
+    loaded_instances = {
+        p.instance_id for p in item.providers if p.instance_id and mass.get_provider(p.instance_id)
+    }
     for prov_info in item.providers:
         prov = None
         if prov_info.instance_id:
             prov = mass.get_provider(prov_info.instance_id)
         if not prov:
             prov = mass.get_provider(prov_info.domain)
+            # item ids can differ per instance, so don't move this one onto an
+            # instance that has its own line in this entry
+            if prov and prov.instance_id in loaded_instances:
+                prov = None
         audio_format = AudioFormat(
             content_type=ContentType.try_parse(prov_info.content_type),
             sample_rate=prov_info.sample_rate,
@@ -649,6 +772,9 @@ def _collect_external_ids(metadata: dict[str, str]) -> set[tuple[ExternalID, str
         external_ids.add((ExternalID.ISRC, isrc))
     if mbid := metadata.get("mbid"):
         external_ids.add((ExternalID.MB_RECORDING, mbid))
+    # MB_TRACK pins a specific release, unlike MB_RECORDING.
+    if mb_track := metadata.get("mb_track"):
+        external_ids.add((ExternalID.MB_TRACK, mb_track))
     return external_ids
 
 
@@ -661,6 +787,7 @@ def _construct_track(
     duration: int | None,
     provider_mappings: set[ProviderMapping],
     external_ids: set[tuple[ExternalID, str]],
+    mass: MusicAssistant,
 ) -> Track:
     """Construct a Track from playlist item data, including artists and album."""
     artists: UniqueList[Artist | ItemMapping] = UniqueList()
@@ -677,7 +804,15 @@ def _construct_track(
         )
     album_mapping: ItemMapping | None = None
     if item.album:
-        album_provider = item.album.provider_domain or item_provider
+        # Prefer the captured instance when it exists locally; otherwise fall back to
+        # the domain so sibling instances can be tried later.
+        album_provider = item.album.provider_instance or item.album.provider_domain or item_provider
+        if (
+            item.album.provider_instance
+            and item.album.provider_domain
+            and not mass.get_provider(item.album.provider_instance, return_unavailable=True)
+        ):
+            album_provider = item.album.provider_domain
         album_item_id = item.album.item_id or item.album.name
         album_mapping = ItemMapping(
             item_id=album_item_id,
@@ -706,18 +841,56 @@ def _construct_track(
 # --------------------------------------------------------------------------- #
 
 
-def collect_artist_infos(full_item: MediaItem) -> list[ArtistInfo]:
-    """Extract artist info from a media item for M3U serialization."""
+def _provider_mapping_sort_key(mapping: ProviderMapping) -> tuple[bool, int, str, str, str]:
+    """Sort key ranking available, higher-quality mappings first, tie-broken deterministically."""
+    return (
+        not mapping.available,
+        -mapping.quality,
+        mapping.provider_domain,
+        mapping.provider_instance,
+        mapping.item_id,
+    )
+
+
+def _select_provider_mapping(
+    provider_mappings: set[ProviderMapping] | None, preferred_instance: str | None
+) -> ProviderMapping | None:
+    """
+    Pick the mapping to serialize for a related-item reference (album, artist, podcast).
+
+    Prefers ``preferred_instance`` when present and otherwise picks deterministically.
+
+    :param provider_mappings: The related item's provider mappings, if any.
+    :param preferred_instance: Provider instance to prefer among the mappings.
+    """
+    if not provider_mappings:
+        return None
+    return min(
+        provider_mappings,
+        key=lambda m: (m.provider_instance != preferred_instance, *_provider_mapping_sort_key(m)),
+    )
+
+
+def collect_artist_infos(
+    full_item: MediaItem, preferred_instance: str | None = None
+) -> list[ArtistInfo]:
+    """
+    Extract artist info from a media item for M3U serialization.
+
+    :param full_item: Any MediaItem (Track, Radio, PodcastEpisode, Audiobook, etc.).
+    :param preferred_instance: Provider instance to prefer among each artist's mappings.
+    """
     artist_infos: list[ArtistInfo] = []
     if not hasattr(full_item, "artists") or not full_item.artists:
         return artist_infos
     for artist in full_item.artists:
-        prov_mappings = getattr(artist, "provider_mappings", None)
-        if prov_mappings:
-            first_mapping = next(iter(prov_mappings))
-            a_domain = first_mapping.provider_domain
-            a_item_id = first_mapping.item_id
-            a_instance = first_mapping.provider_instance
+        mapping = _select_provider_mapping(
+            getattr(artist, "provider_mappings", None), preferred_instance
+        )
+        if mapping:
+            a_domain = mapping.provider_domain
+            a_item_id = mapping.item_id
+            a_instance = mapping.provider_instance
         else:
             a_domain = artist.provider
             a_item_id = artist.item_id
@@ -733,17 +906,25 @@ def collect_artist_infos(full_item: MediaItem) -> list[ArtistInfo]:
     return artist_infos
 
 
-def collect_album_info(full_item: MediaItem) -> AlbumInfo | None:
-    """Extract album info from a media item for M3U serialization."""
+def collect_album_info(
+    full_item: MediaItem, preferred_instance: str | None = None
+) -> AlbumInfo | None:
+    """
+    Extract album info from a media item for M3U serialization.
+
+    :param full_item: Any MediaItem (Track, Radio, PodcastEpisode, Audiobook, etc.).
+    :param preferred_instance: Provider instance to prefer among the album's mappings.
+    """
     if not hasattr(full_item, "album") or not full_item.album:
         return None
     album = full_item.album
-    prov_mappings = getattr(album, "provider_mappings", None)
-    if prov_mappings:
-        first_mapping = next(iter(prov_mappings))
-        al_domain = first_mapping.provider_domain
-        al_item_id = first_mapping.item_id
-        al_instance = first_mapping.provider_instance
+    mapping = _select_provider_mapping(
+        getattr(album, "provider_mappings", None), preferred_instance
+    )
+    if mapping:
+        al_domain = mapping.provider_domain
+        al_item_id = mapping.item_id
+        al_instance = mapping.provider_instance
     else:
         al_domain = album.provider
         al_item_id = album.item_id
@@ -757,17 +938,25 @@ def collect_album_info(full_item: MediaItem) -> AlbumInfo | None:
     )
 
 
-def collect_podcast_info(full_item: MediaItem) -> PodcastInfo | None:
-    """Extract podcast info from a media item for M3U serialization."""
+def collect_podcast_info(
+    full_item: MediaItem, preferred_instance: str | None = None
+) -> PodcastInfo | None:
+    """
+    Extract podcast info from a media item for M3U serialization.
+
+    :param full_item: Any MediaItem (Track, Radio, PodcastEpisode, Audiobook, etc.).
+    :param preferred_instance: Provider instance to prefer among the podcast's mappings.
+    """
     if not hasattr(full_item, "podcast") or not full_item.podcast:
         return None
     podcast = full_item.podcast
-    prov_mappings = getattr(podcast, "provider_mappings", None)
-    if prov_mappings:
-        first_mapping = next(iter(prov_mappings))
-        p_domain = first_mapping.provider_domain
-        p_item_id = first_mapping.item_id
-        p_instance = first_mapping.provider_instance
+    mapping = _select_provider_mapping(
+        getattr(podcast, "provider_mappings", None), preferred_instance
+    )
+    if mapping:
+        p_domain = mapping.provider_domain
+        p_item_id = mapping.item_id
+        p_instance = mapping.provider_instance
     else:
         p_domain = podcast.provider
         p_item_id = podcast.item_id
@@ -784,9 +973,6 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     """
     Convert a MediaItem to a PlaylistItem with full M3U metadata.
 
-    Pure conversion — takes an already-fetched MediaItem and produces a
-    PlaylistItem suitable for ``generate_m3u``.
-
     :param full_item: Any MediaItem (Track, Radio, PodcastEpisode, Audiobook, etc.).
     """
     # build M3U-compliant EXTINF title
@@ -800,34 +986,49 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
 
     duration = getattr(full_item, "duration", None)
 
+    # Sort mappings deterministically and prefer available, higher-quality ones.
+    sorted_mappings = sorted(full_item.provider_mappings, key=_provider_mapping_sort_key)
+    mapped_instances = {prov_mapping.provider_instance for prov_mapping in sorted_mappings}
+
     # build EXTMA metadata
     metadata: dict[str, str] = {
         "media_type": full_item.media_type.value,
         "name": full_item.name,
     }
-    if hasattr(full_item, "authors") and full_item.authors:
-        metadata["authors"] = "; ".join(full_item.authors)
-    if hasattr(full_item, "narrators") and full_item.narrators:
-        metadata["narrators"] = "; ".join(full_item.narrators)
+    if isinstance(full_item, Audiobook) and full_item.authors:
+        metadata["authors"] = "; ".join(
+            author.name if isinstance(author, Artist | ItemMapping) else author
+            for author in full_item.authors
+        )
+    if isinstance(full_item, Audiobook) and full_item.narrators:
+        metadata["narrators"] = "; ".join(
+            narrator.name if isinstance(narrator, Artist | ItemMapping) else narrator
+            for narrator in full_item.narrators
+        )
     if full_item.version:
         metadata["version"] = full_item.version
-    if isrc := full_item.get_external_id(ExternalID.ISRC):
+    if isrc := _unambiguous_external_id(full_item, ExternalID.ISRC):
         metadata["isrc"] = isrc
-    if mbid := full_item.get_external_id(ExternalID.MB_RECORDING):
+    if mbid := _unambiguous_external_id(full_item, ExternalID.MB_RECORDING):
         metadata["mbid"] = mbid
+    # Only export MB_TRACK when every mapping comes from one instance; mixed-instance
+    # external IDs cannot prove the primary URI's exact release.
+    if len(mapped_instances) <= 1 and (
+        mb_track := _unambiguous_external_id(full_item, ExternalID.MB_TRACK)
+    ):
+        metadata["mb_track"] = mb_track
 
-    # collect one provider mapping per domain (highest quality)
+    # collect one provider mapping per instance (highest quality): instances of one
+    # domain can belong to different users, who each need their own mapping to play it
     prov_infos: list[ProviderMappingInfo] = []
-    seen_domains: set[str] = set()
-    sorted_mappings = sorted(full_item.provider_mappings, key=lambda x: x.quality, reverse=True)
+    seen_instances: set[str] = set()
     for prov_mapping in sorted_mappings:
-        domain = prov_mapping.provider_domain
-        if domain in seen_domains:
+        if prov_mapping.provider_instance in seen_instances:
             continue
-        seen_domains.add(domain)
+        seen_instances.add(prov_mapping.provider_instance)
         prov_infos.append(
             ProviderMappingInfo(
-                domain=domain,
+                domain=prov_mapping.provider_domain,
                 item_id=prov_mapping.item_id,
                 instance_id=prov_mapping.provider_instance,
                 content_type=prov_mapping.audio_format.content_type.value,
@@ -841,25 +1042,28 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     if prov_infos:
         primary = prov_infos[0]
         primary_uri = create_uri(full_item.media_type, primary.domain, primary.item_id)
+        preferred_instance = primary.instance_id
     else:
         primary_uri = full_item.uri or ""
+        preferred_instance = None
 
-    artist_infos = collect_artist_infos(full_item)
-    album_info = collect_album_info(full_item)
-    podcast_info = collect_podcast_info(full_item)
+    artist_infos = collect_artist_infos(full_item, preferred_instance=preferred_instance)
+    album_info = collect_album_info(full_item, preferred_instance=preferred_instance)
+    podcast_info = collect_podcast_info(full_item, preferred_instance=preferred_instance)
 
-    # collect images
-    images: list[ImageInfo] = []
-    if hasattr(full_item, "metadata") and full_item.metadata and full_item.metadata.images:
-        for img in full_item.metadata.images:
-            images.append(
-                ImageInfo(
-                    type=img.type.value,
-                    path=img.path,
-                    provider=img.provider,
-                    remotely_accessible=img.remotely_accessible,
-                )
-            )
+    # collect images, for a track the image of its album first as that is the image it shows
+    item_images = UniqueList(full_item.metadata.images or [])
+    if isinstance(full_item, Track) and full_item.album and full_item.album.image:
+        item_images = UniqueList([full_item.album.image, *item_images])
+    images = [
+        ImageInfo(
+            type=img.type.value,
+            path=img.path,
+            provider=img.provider,
+            remotely_accessible=img.remotely_accessible,
+        )
+        for img in item_images
+    ]
 
     return PlaylistItem(
         path=primary_uri,
@@ -872,6 +1076,22 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
         album=album_info,
         podcast=podcast_info,
     )
+
+
+def _unambiguous_external_id(full_item: MediaItem, external_id_type: ExternalID) -> str | None:
+    """
+    Return an external ID value only when the item carries exactly one of that type.
+
+    Mixed canonical values are treated as ambiguous and return ``None``.
+    """
+    canonical_values = {
+        normalize_external_id(external_id_type, value)
+        for current_type, value in full_item.external_ids
+        if current_type == external_id_type
+    }
+    if len(canonical_values) == 1:
+        return next(iter(canonical_values))
+    return None
 
 
 # --------------------------------------------------------------------------- #

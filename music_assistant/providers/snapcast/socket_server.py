@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.enums import EventType
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 
+from music_assistant.helpers.api import run_api_command
+
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
@@ -187,7 +189,7 @@ class SnapcastSocketServer:
             raise ValueError(f"Unknown command: {command}")
 
         # Execute the handler
-        result = handler.target(**args)
+        result = run_api_command(self.mass, handler, args)
         if inspect.iscoroutine(result):
             result = await result
         return result

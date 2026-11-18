@@ -2,28 +2,99 @@
 
 from __future__ import annotations
 
-from dataclasses import fields
-from typing import TYPE_CHECKING, Any, Final
+from dataclasses import fields, replace
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
-from music_assistant_models.helpers import create_safe_string
+from music_assistant_models.enums import ExternalID, ImageType
+from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
+from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
     Artist,
+    Audiobook,
     ItemMapping,
     MediaItemMetadata,
     MediaItemType,
+    PodcastEpisode,
     ProviderMapping,
     SearchResults,
+    Track,
 )
+from music_assistant_models.media_items.metadata import LifeSpan
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.helpers.datetime import from_utc_timestamp
+from music_assistant.helpers.external_ids import is_valid_isrc
+from music_assistant.helpers.uri import canonical_provider_url, discogs_id_from_url, parse_uri
+from music_assistant.helpers.util import parse_optional_bool
+
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Set as AbstractSet
 
     from music_assistant_models.enums import MediaType
+
+    from music_assistant.controllers.music.media.base import AudiobookSyncDetails
+    from music_assistant.mass import MusicAssistant
+    from music_assistant.models.music_provider import MusicProvider
+    from music_assistant.providers.musicbrainz.models import MusicBrainzRecording
 
 # the trigram tokenizer of the FTS5 search index cannot match
 # search terms shorter than 3 characters
 MIN_FTS_TERM_LENGTH: Final[int] = 3
+
+
+class ResumePoint(NamedTuple):
+    """Played state and resume position of an audiobook or episode, and when it was set."""
+
+    fully_played: bool
+    position_ms: int
+    timestamp: datetime | None
+
+    @classmethod
+    def from_item(
+        cls, item: Audiobook | PodcastEpisode | AudiobookSyncDetails
+    ) -> ResumePoint | None:
+        """Return the resume point set on an item, None when it has none."""
+        if item.fully_played is None and item.resume_position_ms is None:
+            return None
+        return cls(
+            bool(item.fully_played), item.resume_position_ms or 0, item.resume_position_timestamp
+        )
+
+    @classmethod
+    def from_playlog_row(cls, row: Mapping[str, Any]) -> ResumePoint:
+        """Return the resume point a media progress row holds."""
+        return cls(
+            parse_optional_bool(row["fully_played"]) or False,
+            int((row["seconds_played"] or 0) * 1000),
+            from_utc_timestamp(row["timestamp"]),
+        )
+
+
+def select_resume_point(
+    provider_point: ResumePoint | None, playlog_point: ResumePoint | None
+) -> ResumePoint | None:
+    """
+    Return the resume point to use out of the provider's and the one Music Assistant recorded.
+
+    The newer one wins when both carry a timestamp, otherwise the furthest, finished first.
+
+    :param provider_point: The resume point the provider reports.
+    :param playlog_point: The resume point Music Assistant recorded for the user.
+    """
+    if provider_point is None or playlog_point is None:
+        return provider_point or playlog_point
+    if (
+        provider_point.timestamp is not None
+        and playlog_point.timestamp is not None
+        and provider_point.timestamp != playlog_point.timestamp
+    ):
+        if provider_point.timestamp > playlog_point.timestamp:
+            return provider_point
+        return playlog_point
+    # on a tie, Music Assistant's own record wins: nothing new to apply, so no redundant write
+    return max(playlog_point, provider_point, key=lambda x: (x.fully_played, x.position_ms))
 
 
 def search_name_match_clause(
@@ -124,21 +195,62 @@ def filter_search_results(
 
 
 def metadata_for_update(
-    stored: MediaItemMetadata, update: MediaItemMetadata, overwrite: bool
+    stored: MediaItemMetadata,
+    update: MediaItemMetadata,
+    overwrite: bool,
+    stored_mappings: Iterable[ProviderMapping] = (),
+    update_mappings: Iterable[ProviderMapping] = (),
 ) -> MediaItemMetadata:
     """
     Return the metadata to store for a library item update.
 
     An overwrite replaces the stored metadata, unless the given item carries none at
     all: providers embed a bare stub of an album or artist in their track payloads.
+    The images of the other music sources the item is linked to are kept, the way
+    provider_mappings_for_update keeps their mappings, so a refresh from one user's
+    source does not drop the artwork of another user's source.
 
     :param stored: Metadata currently stored for the library item.
     :param update: Metadata of the item as delivered by the provider.
     :param overwrite: Whether the given item replaces the stored one.
+    :param stored_mappings: Provider mappings currently stored for the library item.
+    :param update_mappings: Provider mappings of the item as delivered by the provider.
     """
     if overwrite and any(getattr(update, field.name) for field in fields(update)):
+        update_sources = {x.provider_instance for x in update_mappings} | {
+            x.provider_domain for x in update_mappings
+        }
+        kept_sources = {
+            x.provider_instance
+            for x in stored_mappings
+            if x.provider_instance not in update_sources
+        }
+        for image in stored.images or ():
+            if image.provider in kept_sources:
+                update.add_image(image)
         return update
-    return stored.update(update)
+    return merge_metadata(stored, update)
+
+
+def merge_metadata(stored: MediaItemMetadata, update: MediaItemMetadata) -> MediaItemMetadata:
+    """
+    Merge new metadata into the stored metadata (in-place), only filling in what is missing.
+
+    Unlike ``MediaItemMetadata.update`` alone, a partially known life span (e.g. only a birth
+    date from a local NFO file) is completed with the missing dates from the new values.
+
+    :param stored: Metadata to update in-place.
+    :param update: New metadata values.
+    """
+    cur_span, new_span = stored.life_span, update.life_span
+    stored.update(update)
+    if cur_span and new_span:
+        stored.life_span = LifeSpan(
+            begin=cur_span.begin or new_span.begin,
+            end=cur_span.end or new_span.end,
+            ended=cur_span.ended or new_span.ended,
+        )
+    return stored
 
 
 def provider_mappings_for_update(
@@ -162,3 +274,190 @@ def provider_mappings_for_update(
         *update,
         *(mapping for mapping in stored if mapping.provider_instance not in updated_instances),
     }
+
+
+def usable_thumb(
+    images: Iterable[dict[str, Any]] | None, hidden_sources: AbstractSet[str]
+) -> dict[str, Any] | None:
+    """
+    Return the first thumb of a library item's stored (raw) images the viewer can be shown.
+
+    :param images: The stored (raw) images of the item.
+    :param hidden_sources: Music sources hidden from the viewer.
+    """
+    # same semantics as the MediaItem.available property: an empty cache means unknown
+    available_providers: AbstractSet[str] = get_global_cache_value("available_providers") or set()
+    return next(
+        (
+            image
+            for image in images or ()
+            if image["type"] == ImageType.THUMB.value
+            and (
+                image.get("remotely_accessible")
+                or (
+                    image["provider"] not in hidden_sources
+                    and (not available_providers or image["provider"] in available_providers)
+                )
+            )
+        ),
+        None,
+    )
+
+
+def preferred_thumb(
+    images: Iterable[dict[str, Any]] | None, hidden_sources: AbstractSet[str]
+) -> dict[str, Any] | None:
+    """
+    Return the thumb to show of a library item's stored (raw) images.
+
+    A library item can carry the artwork of several music sources, not all of which the
+    viewer can be shown. The first thumb that can be shown is preferred, falling back to
+    the first thumb.
+
+    :param images: The stored (raw) images of the item.
+    :param hidden_sources: Music sources hidden from the viewer.
+    """
+    thumbs = [image for image in images or () if image["type"] == ImageType.THUMB.value]
+    return usable_thumb(thumbs, hidden_sources) or (thumbs[0] if thumbs else None)
+
+
+def sibling_instance_mappings(
+    mass: MusicAssistant, mappings: Iterable[ProviderMapping], mapped: Iterable[ProviderMapping]
+) -> list[ProviderMapping]:
+    """
+    Return copies of the mappings for the other instances of the same streaming provider.
+
+    :param mappings: Provider mappings to copy.
+    :param mapped: Provider mappings the item already has; their instances get no copy.
+    """
+    mappings = list(mappings)
+    mapped_instances = {x.provider_instance for x in (*mapped, *mappings)}
+    copies: list[ProviderMapping] = []
+    for mapping in mappings:
+        if mapping.is_unique:
+            continue
+        # unavailable instances count too: a mapping they hold must not be taken over
+        # once they are back
+        for instance in mass.music.get_provider_instances(
+            mapping.provider_domain, return_unavailable=True
+        ):
+            if instance.instance_id in mapped_instances or not instance.is_streaming_provider:
+                continue
+            # whether the other instance holds the item in its library is unknown
+            copies.append(replace(mapping, provider_instance=instance.instance_id, in_library=None))
+            mapped_instances.add(instance.instance_id)
+    return copies
+
+
+async def provider_mappings_from_urls(
+    mass: MusicAssistant,
+    urls: Iterable[str],
+    media_type: MediaType,
+    exclude_domains: AbstractSet[str],
+) -> list[ProviderMapping]:
+    """
+    Return provider mappings for the streaming service links of a media item.
+
+    A link only becomes a mapping when it names an item on a loaded music provider
+    unambiguously: a provider linked to several different items is left out, as is one
+    that is not loaded.
+
+    :param mass: MusicAssistant instance.
+    :param urls: Public URLs of the item on streaming services (e.g. MusicBrainz URL relations).
+    :param media_type: Media type the URLs must point to.
+    :param exclude_domains: Provider domains to leave out, e.g. those the item is already
+        mapped to.
+    """
+    # the ids a provider is linked with, each with the URL it came from
+    ids_by_domain: dict[str, dict[str, str]] = {}
+    for url in urls:
+        if not url.startswith(("http://", "https://")):
+            continue
+        try:
+            url_media_type, domain, item_id = await parse_uri(url, validate_id=True)
+        except InvalidProviderURI, InvalidProviderID:
+            continue
+        if domain == "builtin" or url_media_type != media_type or domain in exclude_domains:
+            continue
+        ids_by_domain.setdefault(domain, {}).setdefault(item_id, url)
+    mappings: list[ProviderMapping] = []
+    for domain, item_ids in sorted(ids_by_domain.items()):
+        if len(item_ids) != 1:
+            continue
+        instances = mass.music.get_provider_instances(domain, return_unavailable=True)
+        if not instances:
+            continue
+        # an available instance is preferred, an unavailable one still maps the item
+        available = [provider for provider in instances if provider.available]
+        ((item_id, url),) = item_ids.items()
+        mappings.append(
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=domain,
+                provider_instance=min(provider.instance_id for provider in available or instances),
+                available=True,
+                in_library=False,
+                url=canonical_provider_url(domain, media_type, item_id) or url,
+            )
+        )
+    return mappings
+
+
+def mappings_within_sources(
+    candidates: Iterable[ProviderMapping], sources: Sequence[MusicProvider]
+) -> list[ProviderMapping]:
+    """
+    Return the candidates that name one of the given music sources.
+
+    A candidate stays on its own instance when that is an available source; otherwise it
+    moves to the first available instance the sources have of its service, failing that to
+    the first there is. One on a service they do not include is left out.
+    """
+    available = {source.instance_id for source in sources if source.available}
+    first_by_domain: dict[str, str] = {}
+    for source in sorted(sources, key=lambda source: not source.available):
+        first_by_domain.setdefault(source.domain, source.instance_id)
+    within: list[ProviderMapping] = []
+    for candidate in candidates:
+        if candidate.provider_instance in available:
+            within.append(candidate)
+        elif instance := first_by_domain.get(candidate.provider_domain):
+            within.append(replace(candidate, provider_instance=instance))
+    return within
+
+
+def discogs_external_id(
+    urls: Iterable[str], media_type: MediaType
+) -> tuple[ExternalID, str] | None:
+    """
+    Return the Discogs external id among the links of a media item, if any.
+
+    :param urls: Public URLs of the item (e.g. MusicBrainz URL relations).
+    :param media_type: Media type of the item: ARTIST or ALBUM.
+    """
+    discogs_ids = {
+        discogs_id for url in urls if (discogs_id := discogs_id_from_url(url, media_type))
+    }
+    # links to several Discogs entries identify none of them
+    if len(discogs_ids) != 1:
+        return None
+    return (ExternalID.DISCOGS, discogs_ids.pop())
+
+
+def fill_track_from_recording(track: Track, recording: MusicBrainzRecording) -> bool:
+    """
+    Fill a track's MusicBrainz recording id and ISRCs in from its recording.
+
+    A recording id the track already carries is kept.
+
+    :param track: The track to fill in.
+    :param recording: The MusicBrainz recording the track is.
+    :return: Whether the track gained its recording id or an ISRC.
+    """
+    known_ids = set(track.external_ids)
+    if not track.mbid:
+        track.mbid = recording.id
+    for isrc in recording.isrcs or ():
+        if is_valid_isrc(isrc):
+            track.add_external_id(ExternalID.ISRC, isrc)
+    return track.external_ids != known_ids

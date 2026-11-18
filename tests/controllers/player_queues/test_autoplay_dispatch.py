@@ -12,14 +12,19 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import (
     Audiobook,
+    ItemMapping,
     MediaCollection,
+    Playlist,
     Podcast,
     PodcastEpisode,
     Radio,
+    SoundEffect,
     Track,
     UniqueList,
 )
@@ -30,6 +35,11 @@ from music_assistant.controllers.player_queues.autoplay import AutoplayMode
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    set_current_user,
+    set_impersonated_user,
+)
 from music_assistant.helpers.collections import get_collection_item_id
 
 if TYPE_CHECKING:
@@ -131,7 +141,7 @@ async def test_next_podcast_episode_follows_the_played_one() -> None:
     resolver, queues = _resolver()
     podcast = _podcast()
     played = _episode("ep1", 1, podcast)
-    queues.mass.music.podcasts.episodes = MagicMock(
+    queues.mass.music.podcasts.iter_episodes = MagicMock(
         return_value=_aiter(
             [_episode("ep1", 1, podcast), _episode("ep2", 2, podcast), _episode("ep3", 3, podcast)]
         )
@@ -149,7 +159,7 @@ async def test_next_podcast_episode_skips_fully_played() -> None:
     """An episode the user already finished is passed over."""
     resolver, queues = _resolver()
     podcast = _podcast()
-    queues.mass.music.podcasts.episodes = MagicMock(
+    queues.mass.music.podcasts.iter_episodes = MagicMock(
         return_value=_aiter(
             [
                 _episode("ep1", 1, podcast),
@@ -170,7 +180,7 @@ async def test_next_podcast_episode_at_end_of_feed() -> None:
     """The last episode of a podcast has no successor, so playback stops there."""
     resolver, queues = _resolver()
     podcast = _podcast()
-    queues.mass.music.podcasts.episodes = MagicMock(
+    queues.mass.music.podcasts.iter_episodes = MagicMock(
         return_value=_aiter([_episode("ep1", 1, podcast), _episode("ep2", 2, podcast)])
     )
 
@@ -260,7 +270,12 @@ def _loader(*items: Any, seeds: list[Any] | None = None) -> Any:
         return_value=SimpleNamespace(queue_id="q1", display_name="Queue", autoplay_enabled=True)
     )
     loader._queue_data = {
-        "q1": SimpleNamespace(items=list(items), enqueued_media_items=seeds or [], userid=None)
+        "q1": SimpleNamespace(
+            queue=loader.get.return_value,
+            items=list(items),
+            enqueued_media_items=seeds or [],
+            userid=None,
+        )
     }
     loader._fill_autoplay_music_tracks = AsyncMock()
     loader._fill_autoplay_next_in_series = AsyncMock()
@@ -329,6 +344,22 @@ async def test_queue_ending_on_live_source_appends_nothing() -> None:
         loader._fill_autoplay_next_in_series.assert_not_awaited()
 
 
+async def test_queue_ending_on_a_sound_effect_appends_nothing() -> None:
+    """A one-off clip (a notification, a TTS message) is not music to continue from."""
+    effect = SoundEffect(
+        item_id="http://example.com/notification.mp3",
+        provider="builtin",
+        name="notification",
+        provider_mappings=_mappings("http://example.com/notification.mp3", "builtin"),
+    )
+    loader = _loader(_queue_item(effect), seeds=[_track()])
+
+    await QueueLoaderMixin._fill_autoplay_tracks(loader, "q1")
+
+    loader._fill_autoplay_music_tracks.assert_not_awaited()
+    loader._fill_autoplay_next_in_series.assert_not_awaited()
+
+
 async def test_autoplay_disabled_appends_nothing() -> None:
     """With Autoplay off nothing is appended, whatever the queue ends on."""
     loader = _loader(_queue_item(_track()), seeds=[_track()])
@@ -338,6 +369,78 @@ async def test_autoplay_disabled_appends_nothing() -> None:
 
     loader._fill_autoplay_music_tracks.assert_not_awaited()
     loader._fill_autoplay_next_in_series.assert_not_awaited()
+
+
+async def test_autoplay_refill_runs_as_the_queue_owner_not_an_impersonated_user() -> None:
+    """A refill scheduled by a call impersonating another user still runs as the queue's owner."""
+    loader = _loader(_queue_item(_track()), seeds=[_track()])
+    loader._queue_data["q1"].userid = "owner"
+    owner = User(user_id="owner", username="owner", role=UserRole.USER)
+    loader.mass.webserver.auth.get_user = AsyncMock(return_value=owner)
+    acting_users: list[User | None] = []
+    loader._fill_autoplay_music_tracks = AsyncMock(
+        side_effect=lambda _queue_id: acting_users.append(get_current_user())
+    )
+    set_impersonated_user(User(user_id="other", username="other", role=UserRole.USER))
+    try:
+        await QueueLoaderMixin._fill_autoplay_tracks(loader, "q1")
+    finally:
+        set_impersonated_user(None)
+        set_current_user(None)
+
+    assert acting_users == [owner]
+
+
+@pytest.mark.parametrize("reregistered", [False, True])
+async def test_autoplay_dispatch_bails_when_the_queue_is_removed_mid_lookup(
+    reregistered: bool,
+) -> None:
+    """A queue removed (or re-registered fresh) mid-lookup gets no refill."""
+    loader = _loader(_queue_item(_track()), seeds=[_track()])
+    loader._queue_data["q1"].userid = "u1"
+
+    async def _lookup_and_remove_queue(*_args: Any, **_kwargs: Any) -> Any:
+        loader._queue_data.pop("q1")
+        if reregistered:
+            loader._queue_data["q1"] = SimpleNamespace(
+                items=[], enqueued_media_items=[], userid="u1"
+            )
+        return MagicMock()
+
+    loader.mass.webserver.auth.get_user = AsyncMock(side_effect=_lookup_and_remove_queue)
+
+    await QueueLoaderMixin._fill_autoplay_tracks(loader, "q1")
+
+    loader._fill_autoplay_music_tracks.assert_not_awaited()
+    loader._fill_autoplay_next_in_series.assert_not_awaited()
+
+
+@pytest.mark.parametrize("reregistered", [False, True])
+async def test_dynamic_refill_bails_when_the_queue_is_removed(reregistered: bool) -> None:
+    """A dynamic refill firing for a removed (or re-registered) queue loads nothing."""
+    loader = MagicMock()
+    loader.load = AsyncMock()
+    if reregistered:
+        loader._queue_data = {
+            "q1": SimpleNamespace(userid=None, queue=SimpleNamespace(current_index=None))
+        }
+
+        async def _fill_and_replace_queue(*_args: Any, **_kwargs: Any) -> list[Track]:
+            loader._queue_data["q1"] = SimpleNamespace(
+                userid=None, queue=SimpleNamespace(current_index=None), items=[]
+            )
+            return [_track()]
+
+        loader._managed_pool.fill = AsyncMock(side_effect=_fill_and_replace_queue)
+    else:
+        # the delayed refill timer fires after the queue was already removed
+        loader._queue_data = {}
+
+    await QueueLoaderMixin._fill_dynamic_tracks(loader, "q1")
+
+    loader.load.assert_not_called()
+    if not reregistered:
+        loader._managed_pool.fill.assert_not_called()
 
 
 async def test_music_refill_without_seeds_appends_nothing() -> None:
@@ -363,6 +466,35 @@ async def test_auto_music_refill_falls_back_to_library_after_provider_failure() 
         await QueueLoaderMixin._fill_autoplay_music_tracks(loader, "q1")
 
     loader._autoplay.get_library_tracks.assert_awaited_once()
+
+
+@pytest.mark.parametrize("reregistered", [False, True])
+async def test_music_refill_bails_when_the_queue_is_removed_mid_fetch(
+    reregistered: bool,
+) -> None:
+    """A queue removed (or re-registered fresh) mid-fetch must not receive the stale batch."""
+    track = _track()
+    loader = _loader(_queue_item(track), seeds=[track])
+    loader._autoplay.resolve_mode.return_value = AutoplayMode.LIBRARY
+
+    async def _fetch_and_remove_queue(*_args: Any, **_kwargs: Any) -> list[Track]:
+        loader._queue_data.pop("q1")
+        if reregistered:
+            loader._queue_data["q1"] = SimpleNamespace(
+                items=[], enqueued_media_items=[], userid=None
+            )
+        return [track]
+
+    loader._autoplay.get_library_tracks = AsyncMock(side_effect=_fetch_and_remove_queue)
+    loader.mass.music.recency.snapshot = AsyncMock(return_value=MagicMock())
+
+    with patch(
+        "music_assistant.controllers.player_queues.queue_loader.gate_tracks",
+        return_value=[track],
+    ):
+        await QueueLoaderMixin._fill_autoplay_music_tracks(loader, "q1")
+
+    loader.load.assert_not_awaited()
 
 
 # --- appending the resolved successor ---
@@ -425,7 +557,18 @@ def _stop_states(prev_item: Any) -> tuple[CompareState, CompareState]:
 def _tracker() -> Any:
     """Build a playback tracker stand-in for a single non-flow queue."""
     tracker = MagicMock()
-    tracker._queue_data = {"q1": SimpleNamespace(flow_mode_stream_log=[])}
+    # the item the player stopped on ("i1" in the stop states) had its audio served
+    tracker._queue_data = {
+        "q1": SimpleNamespace(
+            flow_mode_stream_log=[],
+            served_item_ids={"i1": None},
+            sleep_timer_stopped_target=None,
+            halted_by_command=False,
+            started_session_id=None,
+            played_session_id=None,
+        )
+    }
+    tracker.mass.players.get_player.return_value.offline_by_power_control = False
     return tracker
 
 
@@ -457,3 +600,177 @@ def test_finished_track_queue_is_settled_on_stop() -> None:
     PlaybackTrackerMixin._handle_end_of_queue(tracker, _stopped_queue(), prev_state, new_state)
 
     tracker.mass.create_task.assert_called_once()
+
+
+@pytest.mark.parametrize("reregistered", [False, True])
+async def test_settle_task_bails_when_the_queue_is_removed_while_waiting(
+    reregistered: bool,
+) -> None:
+    """A queue removed (or re-registered) during the settle delay is left alone entirely."""
+    tracker = _tracker()
+    prev_state, new_state = _stop_states(
+        SimpleNamespace(media_type=MediaType.TRACK, streamdetails=None, duration=3600)
+    )
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, _stopped_queue(), prev_state, new_state)
+    settle_coro = tracker.mass.create_task.call_args.args[0]
+
+    tracker._queue_data.pop("q1")
+    if reregistered:
+        tracker._queue_data["q1"] = SimpleNamespace(flow_mode_stream_log=[])
+    with patch(
+        "music_assistant.controllers.player_queues.playback_tracker.asyncio.sleep",
+        AsyncMock(),
+    ):
+        await settle_coro
+
+    tracker.play_index.assert_not_called()
+    tracker.load.assert_not_called()
+    tracker._finish_queue.assert_not_called()
+
+
+async def test_settle_task_skips_finish_when_the_queue_vanishes_during_fetch() -> None:
+    """A failed dynamic fetch on a removed queue must not mark anything as ended."""
+    tracker = _tracker()
+    tracker._queue_data["q1"].userid = None
+    prev_state, new_state = _stop_states(
+        SimpleNamespace(media_type=MediaType.TRACK, streamdetails=None, duration=3600)
+    )
+    queue = cast(
+        "PlayerQueue",
+        SimpleNamespace(
+            queue_id="q1",
+            next_item=None,
+            flow_mode=False,
+            state=PlaybackState.IDLE,
+            current_index=None,
+            display_name="Q1",
+        ),
+    )
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, queue, prev_state, new_state)
+    settle_coro = tracker.mass.create_task.call_args.args[0]
+
+    async def _fetch_and_remove_queue(*_args: Any, **_kwargs: Any) -> list[Track]:
+        tracker._queue_data.pop("q1")
+        raise ProviderUnavailableError("provider unloaded")
+
+    tracker._media_resolver.get_dynamic_source_tracks = AsyncMock(
+        side_effect=_fetch_and_remove_queue
+    )
+    with (
+        patch(
+            "music_assistant.controllers.player_queues.playback_tracker.asyncio.sleep",
+            AsyncMock(),
+        ),
+        patch(
+            "music_assistant.controllers.player_queues.playback_tracker.find_dynamic_source",
+            return_value=MagicMock(),
+        ),
+    ):
+        await settle_coro
+
+    tracker._finish_queue.assert_not_called()
+
+
+def _prov_track(item_id: str) -> Track:
+    """Build a track of the Spotify instance the dynamic source below lists."""
+    return Track(
+        item_id=item_id,
+        provider="spotify--1",
+        name=item_id,
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id, provider_domain="spotify", provider_instance="spotify--1"
+            )
+        },
+    )
+
+
+def _dynamic_playlist() -> Playlist:
+    """Build the dynamic playlist a queue was started from."""
+    return Playlist(
+        item_id="mix",
+        provider="spotify--1",
+        name="Daily Mix",
+        is_dynamic=True,
+        provider_mappings={
+            ProviderMapping(
+                item_id="mix", provider_domain="spotify", provider_instance="spotify--1"
+            )
+        },
+    )
+
+
+async def _refill_from_dynamic_source(tracker: Any, source: Playlist, tracks: list[Track]) -> Any:
+    """
+    Settle a queue that ran out while started from the given dynamic source.
+
+    :param tracker: The playback tracker stand-in.
+    :param source: The dynamic source the queue was started from.
+    :param tracks: The tracks that source hands back for the refill.
+    :return: The queue items the refill loaded.
+    """
+    tracker.load = AsyncMock()
+    tracker.play_index = AsyncMock()
+    prev_state, new_state = _stop_states(
+        SimpleNamespace(media_type=MediaType.TRACK, streamdetails=None, duration=3600)
+    )
+    queue = cast(
+        "PlayerQueue",
+        SimpleNamespace(
+            queue_id="q1",
+            next_item=None,
+            flow_mode=False,
+            state=PlaybackState.IDLE,
+            current_index=None,
+            display_name="Q1",
+        ),
+    )
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, queue, prev_state, new_state)
+    settle_coro = tracker.mass.create_task.call_args.args[0]
+    tracker._media_resolver.get_dynamic_source_tracks = AsyncMock(return_value=tracks)
+    with (
+        patch(
+            "music_assistant.controllers.player_queues.playback_tracker.asyncio.sleep",
+            AsyncMock(),
+        ),
+        patch(
+            "music_assistant.controllers.player_queues.playback_tracker.find_dynamic_source",
+            return_value=source,
+        ),
+    ):
+        await settle_coro
+    return tracker.load.await_args.args[1]
+
+
+async def test_the_end_of_queue_refill_skips_a_disliked_track() -> None:
+    """The refill of a queue started from a dynamic source drops what its user disliked."""
+    tracker = _tracker()
+    tracker._queue_data["q1"].userid = "user-a"
+    tracker.mass.webserver.auth.get_user = AsyncMock(
+        return_value=User(user_id="user-a", username="a", role=UserRole.USER)
+    )
+    tracker.mass.music.favorites.disliked_track_keys = AsyncMock(
+        return_value=(set(), {(MediaType.TRACK, "spotify--1", "disliked")})
+    )
+    tracker.mass.music.favorites.in_disliked_genres = AsyncMock(return_value=set())
+
+    loaded = await _refill_from_dynamic_source(
+        tracker, _dynamic_playlist(), [_prov_track("disliked"), _prov_track("allowed")]
+    )
+
+    assert [x.media_item.item_id for x in loaded] == ["allowed"]
+
+
+async def test_the_end_of_queue_refill_plays_the_tracks_from_their_source() -> None:
+    """The refilled tracks record the dynamic source as their origin, pinned to its listing."""
+    tracker = _tracker()
+    tracker._queue_data["q1"].userid = None
+    tracker.mass.music.favorites.disliked_track_keys = AsyncMock(return_value=(set(), set()))
+    source = _dynamic_playlist()
+
+    loaded = await _refill_from_dynamic_source(tracker, source, [_prov_track("fresh")])
+
+    origin = loaded[0].origin
+    assert origin is not None
+    assert origin.container == ItemMapping.from_item(source)
+    assert (origin.provider_instance, origin.item_id) == ("spotify--1", "fresh")

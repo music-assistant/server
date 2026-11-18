@@ -6,10 +6,11 @@ import logging
 from collections.abc import AsyncGenerator, Mapping
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, SortDirection, SortField
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
@@ -150,9 +151,10 @@ def _mass(source_items: Mapping[str, object]) -> MagicMock:
         return source_items[uri]
 
     mass.music.get_item = AsyncMock(side_effect=_get_item)
-    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([]))
+    mass.music.playlists.iter_tracks = MagicMock(return_value=_yield_tracks([]))
     mass.music.albums.tracks = AsyncMock(return_value=[])
     mass.music.artists.tracks = AsyncMock(return_value=[])
+    mass.music.artists.top_tracks = AsyncMock(return_value=[])
     mass.music.genres.tracks = AsyncMock(return_value=[])
     mass.music.search = AsyncMock(return_value=SimpleNamespace(tracks=[]))
     mass.music.tracks.get = AsyncMock()
@@ -194,7 +196,7 @@ async def test_track_source_resolves_to_itself() -> None:
     pool = await _guess_quiz(mass, [track_uri])._get_source_track_pool()
 
     assert pool == {track_uri: track}
-    mass.music.playlists.tracks.assert_not_called()
+    mass.music.playlists.iter_tracks.assert_not_called()
     mass.music.albums.tracks.assert_not_awaited()
     mass.music.artists.tracks.assert_not_awaited()
     mass.music.genres.tracks.assert_not_awaited()
@@ -208,12 +210,12 @@ async def test_playlist_source_uses_playlist_tracks() -> None:
     source_uri = _uri(source)
     track_uri = _uri(track)
     mass = _mass({source_uri: source})
-    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([track]))
+    mass.music.playlists.iter_tracks = MagicMock(return_value=_yield_tracks([track]))
 
     pool = await _guess_quiz(mass, [source_uri])._get_source_track_pool()
 
     assert pool == {track_uri: track}
-    mass.music.playlists.tracks.assert_called_once_with(
+    mass.music.playlists.iter_tracks.assert_called_once_with(
         item_id=source.item_id,
         provider_instance_id_or_domain=source.provider,
     )
@@ -234,6 +236,7 @@ async def test_album_source_uses_exact_album_tracks() -> None:
     mass.music.albums.tracks.assert_awaited_once_with(
         item_id=source.item_id,
         provider_instance_id_or_domain=source.provider,
+        limit=None,
     )
 
 
@@ -252,6 +255,26 @@ async def test_artist_source_uses_all_artist_tracks() -> None:
     mass.music.artists.tracks.assert_awaited_once_with(
         item_id=source.item_id,
         provider_instance_id_or_domain=source.provider,
+        limit=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_artist_source_without_a_tracks_listing_uses_the_top_tracks() -> None:
+    """Resolve an artist whose provider has no artist tracks listing through its top tracks."""
+    source = _artist()
+    tracks = [_track("one"), _track("two")]
+    source_uri = _uri(source)
+    mass = _mass({source_uri: source})
+    mass.music.artists.top_tracks.return_value = tracks
+
+    pool = await _guess_quiz(mass, [source_uri])._get_source_track_pool()
+
+    assert list(pool.values()) == tracks
+    mass.music.artists.top_tracks.assert_awaited_once_with(
+        item_id=source.item_id,
+        provider_instance_id_or_domain=source.provider,
+        limit=None,
     )
 
 
@@ -263,7 +286,7 @@ async def test_genre_source_uses_exact_genre_tracks_with_bounded_pages() -> None
     source_uri = _uri(source)
     mass = _mass({source_uri: source})
 
-    async def _genre_tracks(*, item_id: str, limit: int, offset: int) -> list[Track]:
+    async def _genre_tracks(*, item_id: str, limit: int, offset: int, **_sort: Any) -> list[Track]:
         assert item_id == source.item_id
         return tracks[offset : offset + limit]
 
@@ -272,12 +295,15 @@ async def test_genre_source_uses_exact_genre_tracks_with_bounded_pages() -> None
     pool = await _guess_quiz(mass, [source_uri])._get_source_track_pool()
 
     assert list(pool.values()) == tracks
+    # paged in the order the tracks were added, so the pages never overlap
+    sort = {"sort_field": SortField.TIMESTAMP_ADDED, "sort_direction": SortDirection.ASC}
     assert mass.music.genres.tracks.await_args_list == [
-        call(item_id=source.item_id, limit=GENRE_TRACK_PAGE_SIZE, offset=0),
+        call(item_id=source.item_id, limit=GENRE_TRACK_PAGE_SIZE, offset=0, **sort),
         call(
             item_id=source.item_id,
             limit=GENRE_TRACK_PAGE_SIZE,
             offset=GENRE_TRACK_PAGE_SIZE,
+            **sort,
         ),
     ]
 
@@ -290,7 +316,7 @@ async def test_genre_source_stops_at_controller_default_bound() -> None:
     source_uri = _uri(source)
     mass = _mass({source_uri: source})
 
-    async def _genre_tracks(*, item_id: str, limit: int, offset: int) -> list[Track]:
+    async def _genre_tracks(*, item_id: str, limit: int, offset: int, **_sort: Any) -> list[Track]:
         assert item_id == source.item_id
         return tracks[offset : offset + limit]
 
@@ -304,6 +330,8 @@ async def test_genre_source_stops_at_controller_default_bound() -> None:
         item_id=source.item_id,
         limit=GENRE_TRACK_PAGE_SIZE,
         offset=MAX_GENRE_TRACK_COUNT - GENRE_TRACK_PAGE_SIZE,
+        sort_field=SortField.TIMESTAMP_ADDED,
+        sort_direction=SortDirection.ASC,
     )
 
 
@@ -339,7 +367,7 @@ async def test_default_source_pool_does_not_request_similar_music() -> None:
     tracks = [_track("one"), _track("two")]
     source_uri = _uri(source)
     mass = _mass({source_uri: source})
-    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks(tracks))
+    mass.music.playlists.iter_tracks = MagicMock(return_value=_yield_tracks(tracks))
     radio_provider = MagicMock()
     radio_provider.get_dynamic_tracks = AsyncMock(return_value=[_track("similar")])
     mass.get_provider.return_value = radio_provider
@@ -367,7 +395,7 @@ async def test_similar_music_uses_resolved_seeds_and_bounded_target(
     expanded = _track("expanded")
     source_uri = _uri(source)
     mass = _mass({source_uri: source})
-    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([exact]))
+    mass.music.playlists.iter_tracks = MagicMock(return_value=_yield_tracks([exact]))
     radio_provider = MagicMock()
     radio_provider.get_dynamic_tracks = AsyncMock(return_value=[expanded])
     mass.get_provider.return_value = radio_provider
@@ -404,7 +432,7 @@ async def test_similar_music_preserves_exact_tracks_and_filters_expansion() -> N
     unplayable = _track("unplayable", is_playable=False)
     source_uri = _uri(source)
     mass = _mass({source_uri: source})
-    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([exact]))
+    mass.music.playlists.iter_tracks = MagicMock(return_value=_yield_tracks([exact]))
     radio_provider = MagicMock()
     radio_provider.get_dynamic_tracks = AsyncMock(
         return_value=[duplicate, expanded, unavailable, unplayable]
@@ -433,7 +461,7 @@ async def test_similar_music_failure_falls_back_to_exact_pool(
     exact = _track("exact")
     source_uri = _uri(source)
     mass = _mass({source_uri: source})
-    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([exact]))
+    mass.music.playlists.iter_tracks = MagicMock(return_value=_yield_tracks([exact]))
     if radio_mode != "missing":
         radio_provider = MagicMock()
         radio_provider.get_dynamic_tracks = AsyncMock(
@@ -466,7 +494,7 @@ async def test_guess_the_song_can_select_an_expanded_track() -> None:
     distractor = _track("distractor")
     source_uri = _uri(source)
     mass = _mass({source_uri: source})
-    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([exact]))
+    mass.music.playlists.iter_tracks = MagicMock(return_value=_yield_tracks([exact]))
     mass.music.search.return_value = SimpleNamespace(tracks=[distractor])
     radio_provider = MagicMock()
     radio_provider.get_dynamic_tracks = AsyncMock(return_value=[expanded])
@@ -501,7 +529,7 @@ async def test_music_timeline_applies_date_rules_to_expanded_tracks() -> None:
     undated = _track("undated")
     source_uri = _uri(source)
     mass = _mass({source_uri: source})
-    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([exact]))
+    mass.music.playlists.iter_tracks = MagicMock(return_value=_yield_tracks([exact]))
     mass.music.tracks.get.return_value = undated
     radio_provider = MagicMock()
     radio_provider.get_dynamic_tracks = AsyncMock(return_value=[expanded, undated])
@@ -549,7 +577,7 @@ async def test_trivia_applies_grounding_rules_to_expanded_tracks() -> None:
     )
     source_uri = _uri(source)
     mass = _mass({source_uri: source})
-    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([exact]))
+    mass.music.playlists.iter_tracks = MagicMock(return_value=_yield_tracks([exact]))
     radio_provider = MagicMock()
     radio_provider.get_dynamic_tracks = AsyncMock(return_value=[expanded, ungrounded])
     mass.get_provider.return_value = radio_provider
@@ -628,7 +656,7 @@ async def test_empty_or_unsupported_sources_raise_localized_error(source_uris: l
 
     assert err.value.translation_key == "music_quiz_sources_unavailable"
     mass.music.get_item.assert_not_awaited()
-    mass.music.playlists.tracks.assert_not_called()
+    mass.music.playlists.iter_tracks.assert_not_called()
     mass.music.albums.tracks.assert_not_awaited()
     mass.music.artists.tracks.assert_not_awaited()
     mass.music.genres.tracks.assert_not_awaited()

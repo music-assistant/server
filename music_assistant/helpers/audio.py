@@ -21,10 +21,12 @@ from music_assistant_models.enums import (
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import MultiPartPath
 
 from music_assistant.constants import (
     MASS_LOGGER_NAME,
+    MASS_USER_AGENT,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
@@ -33,18 +35,19 @@ from .ffmpeg import DEFAULT_MP3_BIT_RATE, get_ffmpeg_stream
 from .process import AsyncProcess, communicate
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models.player import Player
+    from music_assistant.models.player_protocol import PlayerProtocol
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.audio")
 
-HTTP_HEADERS = {"User-Agent": "Lavf/60.16.100.MusicAssistant"}
+HTTP_HEADERS = {"User-Agent": MASS_USER_AGENT}
 HTTP_HEADERS_ICY = {**HTTP_HEADERS, "Icy-MetaData": "1"}
 
 SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
+
+_CONTROL_CHARS_RE: Final = re.compile(r"[\x00-\x1f\x7f]")
 
 # Mapping of audio format identifiers to their correct IANA MIME types
 # where the format name differs from the MIME subtype.
@@ -52,6 +55,16 @@ SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
 _MIME_TYPE_OVERRIDES: Final[dict[str, str]] = {
     "mp3": "audio/mpeg",
 }
+
+DSD_CONTENT_TYPES: Final[frozenset[ContentType]] = frozenset(
+    {
+        ContentType.DSF,
+        ContentType.DSD_LSBF,
+        ContentType.DSD_MSBF,
+        ContentType.DSD_LSBF_PLANAR,
+        ContentType.DSD_MSBF_PLANAR,
+    }
+)
 
 
 def get_mime_type(format_str: str) -> str:
@@ -221,7 +234,6 @@ def create_wave_header(
         bitspersample,  # 16 bits for two byte samples, etc.
     )
     # Generate data chunk
-    # duration = 3600*6.7
     data_chunk_spec = b"<4sL"
     if duration is None:
         # use max value possible
@@ -252,7 +264,6 @@ def create_wave_header(
     file.write(format_chunk)
     file.write(data_chunk)
 
-    # return file.getvalue(), all_chunks_size + 8
     return file.getvalue()
 
 
@@ -342,7 +353,8 @@ def get_parts_from_position(
         # the previous track. If we're within 2 second of the end, skip the current track
         if position + 2 >= part.duration:
             LOGGER.debug(
-                f"Skipping to the next part due to seek position being at the end: {position}",
+                "Skipping to the next part due to seek position being at the end: %s",
+                position,
             )
             if i + 1 < len(parts):
                 return parts[i + 1 :], 0
@@ -353,18 +365,28 @@ def get_parts_from_position(
     raise IndexError(f"Could not find any candidate part for position {seek_position}")
 
 
-def build_concat_filelist(paths: list[str]) -> str:
+def build_concat_filelist(paths: list[str], verify_ssl: bool = True) -> str:
     """
     Build the file list content for ffmpeg's concat demuxer.
 
     :param paths: The file paths to include, in playback order.
+    :param verify_ssl: Whether the certificate of an https part must be verified.
+    :raises InvalidDataError: If a path contains a control character.
     """
     lines = []
     for path in paths:
+        # A line break would end the file directive early, and no valid part path holds
+        # control characters, so refuse them instead of escaping.
+        if _CONTROL_CHARS_RE.search(path):
+            raise InvalidDataError(f"Invalid character in multi-part path: {path!r}")
         # The concat demuxer uses single quotes as delimiters, so a literal quote in the
         # path must be written as '\'' to prevent the path being truncated at the quote.
         escaped_path = path.replace("'", "'\\''")
         lines.append(f"file '{escaped_path}'\n")
+        if not verify_ssl and path.startswith("http"):
+            # unlike the cli flag, the demuxer ignores this for a part that never uses TLS
+            # and honours it when a part redirects from http to https
+            lines.append("option tls_verify 0\n")
     return "".join(lines)
 
 
@@ -613,13 +635,22 @@ def calculate_content_length(
     return int((320000 / 8) * seconds)
 
 
+# Bump whenever an encoder setting in get_ffmpeg_args moves the encoded size. The
+# content-length cache holds measured bytes, so a stale entry announces a body we no
+# longer produce. Older entries are never read again and expire on their own.
+OUTPUT_ENCODING_REVISION: Final[int] = 2
+
+
 def get_output_format_key(fmt: AudioFormat) -> str:
     """
     Get a stable key representing the output encoding parameters.
 
     :param fmt: The output audio format.
     """
-    return f"{fmt.content_type.value}_{fmt.sample_rate}_{fmt.bit_depth}_{fmt.channels}"
+    return (
+        f"{fmt.content_type.value}_{fmt.sample_rate}_{fmt.bit_depth}"
+        f"_{fmt.channels}_r{OUTPUT_ENCODING_REVISION}"
+    )
 
 
 CONTENT_LENGTH_CACHE_CATEGORY = 50
@@ -755,6 +786,67 @@ def arriving_audio_format(streamdetails: StreamDetails) -> AudioFormat:
     return streamdetails.decoded_audio_format or streamdetails.audio_format
 
 
+def is_dsd_audio_format(audio_format: AudioFormat) -> bool:
+    """Return whether an audio format carries or identifies DSD samples."""
+    return (
+        audio_format.content_type in DSD_CONTENT_TYPES
+        or audio_format.codec_type in DSD_CONTENT_TYPES
+    )
+
+
+def is_dsd_stream(streamdetails: StreamDetails) -> bool:
+    """Return whether a stream contains DSD, including DFF/DST local files."""
+    if streamdetails.decoded_audio_format is not None:
+        return is_dsd_audio_format(streamdetails.decoded_audio_format)
+    if is_dsd_audio_format(streamdetails.audio_format):
+        return True
+    path = streamdetails.path
+    if not path or not isinstance(path, (str, list)):
+        return False
+    paths = [path] if isinstance(path, str) else [part.path for part in path]
+    for file_path in paths:
+        parsed = urllib.parse.urlparse(file_path)
+        comparison_path = parsed.path if parsed.scheme in ("http", "https") else file_path
+        if not comparison_path.lower().endswith(".dff"):
+            return False
+    return True
+
+
+def decoded_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
+    """
+    Return the PCM output format to request from FFmpeg for the arriving audio.
+
+    :param streamdetails: The stream whose decoded PCM format is required.
+    """
+    arriving = arriving_audio_format(streamdetails)
+    if is_dsd_stream(streamdetails):
+        # DSF's probed 8-bit depth maps to S32 output but still sizes chunks as
+        # 8-bit PCM. Request F32 with matching accounting, also preserving the
+        # decoder's precision for DFF/DST sources whose probe depth defaults to 16.
+        return AudioFormat(
+            content_type=ContentType.PCM_F32LE,
+            codec_type=ContentType.PCM_F32LE,
+            sample_rate=arriving.sample_rate,
+            bit_depth=32,
+            channels=min(arriving.channels, 2),
+        )
+    return AudioFormat(
+        content_type=ContentType.from_bit_depth(arriving.bit_depth),
+        sample_rate=arriving.sample_rate,
+        bit_depth=pcm_container_bit_depth(arriving.bit_depth),
+        channels=min(arriving.channels, 2),
+    )
+
+
+def pcm_container_bit_depth(bit_depth: int) -> int:
+    """
+    Return the PCM sample bit depth that matches ``ContentType.from_bit_depth``.
+
+    :param bit_depth: The bit depth of the source, e.g. 8 for probed DSD.
+    """
+    return bit_depth if bit_depth in (16, 24) else 32
+
+
 def get_bit_rate(fmt: AudioFormat) -> int:
     """Get the (estimated) bit rate for a given AudioFormat, if known."""
     if fmt.bit_rate:
@@ -764,42 +856,45 @@ def get_bit_rate(fmt: AudioFormat) -> int:
 
 def resolve_output_player_ids(
     mass: MusicAssistant,
-    player_ids: Iterable[str],
+    protocol_ids: Iterable[str],
 ) -> set[str]:
     """
-    Resolve output destinations to their user-facing player identifiers.
+    Resolve output destinations a device protocol reports to their user-facing player identifiers.
 
     :param mass: Music Assistant instance.
-    :param player_ids: Player or protocol-player identifiers to resolve.
+    :param protocol_ids: Ids as a device protocol reports them (its group members): an id
+        names a protocol first, a player only when no protocol has it.
     :return: Deduplicated user-facing player identifiers.
     """
     resolved_ids: set[str] = set()
-    for player_id in player_ids:
-        player = mass.players.get_player(player_id)
-        resolved_ids.add(
-            player.protocol_parent_id if player and player.protocol_parent_id else player_id
-        )
+    for protocol_id in protocol_ids:
+        player = mass.players.get_player_by_protocol(protocol_id)
+        resolved_ids.add(player.player_id if player else protocol_id)
     return resolved_ids
 
 
-def is_grouping_preventing_dsp(player: Player) -> bool:
+def is_grouping_preventing_dsp(player: PlayerProtocol) -> bool:
     """
     Check if grouping is preventing DSP from being applied to this leader/PlayerGroup.
 
     If this returns True, no DSP should be applied to the player.
     This function will not check if the Player is in a group, the caller should do that first.
+
+    :param player: The protocol that renders the audio of the player.
     """
-    # We require the caller to handle non-leader cases themselves since player.state.synced_to
+    # We require the caller to handle non-leader cases themselves since synced_to
     # can be unreliable in some edge cases
-    multi_device_dsp_supported = PlayerFeature.MULTI_DEVICE_DSP in player.state.supported_features
-    child_count = len(player.state.group_members) if player.state.group_members else 0
+    multi_device_dsp_supported = PlayerFeature.MULTI_DEVICE_DSP in player.supported_features
+    # a protocol that leads no group reports no members, or only itself
+    members = player.group_members
+    child_count = 0 if members == [player.protocol_id] else len(members)
 
     is_multiple_devices: bool
     if player.provider.domain == "player_group":
         # PlayerGroups have no leader, so having a child count of 1 means
         # the group actually contains only a single player.
         is_multiple_devices = child_count > 1
-    elif player.state.type == PlayerType.GROUP:
+    elif player.type == PlayerType.GROUP:
         # This is an group player external to Music Assistant.
         is_multiple_devices = True
     else:

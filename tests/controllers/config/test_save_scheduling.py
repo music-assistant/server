@@ -9,13 +9,14 @@ already up to date, but never skip one that is genuinely still pending.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import threading
 from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 from music_assistant.controllers.config.controller import ConfigController
@@ -31,9 +32,15 @@ class _FakeMass:
         self.loop = SimpleNamespace(call_later=self._loop.call_later, create_task=self._track)
 
     def create_task(
-        self, target: Callable[..., Coroutine[Any, Any, Any]], *args: Any, **kwargs: Any
+        self,
+        target: Coroutine[Any, Any, Any] | Callable[..., Coroutine[Any, Any, Any]],
+        *args: Any,
+        **kwargs: Any,
     ) -> asyncio.Task[Any]:
-        """Create a task from a coroutine function, as the real server does."""
+        """Create a task from a coroutine or coroutine function, as the real server does."""
+        if inspect.iscoroutine(target):
+            return self._track(target)
+        target = cast("Callable[..., Coroutine[Any, Any, Any]]", target)
         return self._track(target(*args, **kwargs))
 
     def _track(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:

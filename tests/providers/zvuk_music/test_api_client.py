@@ -10,7 +10,6 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
-from zvuk_music import StreamQuality
 from zvuk_music.exceptions import (
     BadRequestError,
     BotDetectedError,
@@ -26,6 +25,8 @@ from music_assistant.providers.zvuk_music.api_client import ZvukMusicClient, han
 
 # ---------------------------------------------------------------------------
 # Helpers
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -49,6 +50,8 @@ def _make_connected_client() -> tuple[ZvukMusicClient, MagicMock]:
 
 # ---------------------------------------------------------------------------
 # Tests for handle_zvuk_errors decorator
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -157,6 +160,8 @@ class TestHandleZvukErrors:
 
 # ---------------------------------------------------------------------------
 # Tests for handle_zvuk_errors — rate-limit backoff
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -190,6 +195,8 @@ class TestHandleZvukErrorsRateLimit:
 
 # ---------------------------------------------------------------------------
 # Tests for connect()
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -219,15 +226,13 @@ class TestConnect:
 
     @pytest.mark.asyncio
     async def test_connect_sets_user_id_from_profile(self) -> None:
-        """connect() sets _user_id from profile.result.id."""
+        """connect() sets _user_id from the profile loaded by init()."""
         client = _make_client()
 
         mock_inner = MagicMock()
         mock_inner.init = AsyncMock(return_value=mock_inner)
         mock_inner.is_authorized = AsyncMock(return_value=True)
-        profile = MagicMock()
-        profile.result.id = 777
-        mock_inner.get_profile = AsyncMock(return_value=profile)
+        mock_inner.profile = MagicMock(id=777)
 
         with patch(
             "music_assistant.providers.zvuk_music.api_client.ClientAsync",
@@ -294,6 +299,8 @@ class TestConnect:
 
 # ---------------------------------------------------------------------------
 # Tests for _ensure_connected()
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -317,6 +324,8 @@ class TestEnsureConnected:
 
 # ---------------------------------------------------------------------------
 # Tests for get_collection()
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -347,6 +356,8 @@ class TestGetCollection:
 
 # ---------------------------------------------------------------------------
 # Tests for get_editorial_playlist_ids()
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -376,60 +387,9 @@ class TestGetEditorialPlaylistIds:
 
 
 # ---------------------------------------------------------------------------
-# Tests for get_direct_stream_url()
-# ---------------------------------------------------------------------------
-
-
-class TestGetDirectStreamUrl:
-    """Tests for ZvukMusicClient.get_direct_stream_url()."""
-
-    @pytest.mark.asyncio
-    async def test_returns_stream_url_from_result(self) -> None:
-        """get_direct_stream_url() returns the stream URL from the library result."""
-        client, inner = _make_connected_client()
-        inner.get_direct_stream_url = AsyncMock(
-            return_value=MagicMock(stream="https://cdn.zvuk.com/track.flac")
-        )
-
-        result = await client.get_direct_stream_url("12345", "flac")
-
-        assert result == "https://cdn.zvuk.com/track.flac"
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_stream_is_empty(self) -> None:
-        """get_direct_stream_url() returns None when stream field is empty."""
-        client, inner = _make_connected_client()
-        inner.get_direct_stream_url = AsyncMock(return_value=MagicMock(stream=""))
-
-        result = await client.get_direct_stream_url("12345", "flac")
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_library_returns_none(self) -> None:
-        """get_direct_stream_url() returns None when library returns None."""
-        client, inner = _make_connected_client()
-        inner.get_direct_stream_url = AsyncMock(return_value=None)
-
-        result = await client.get_direct_stream_url("12345", "high")
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_passes_quality_as_stream_quality_enum(self) -> None:
-        """get_direct_stream_url() passes StreamQuality enum to the library."""
-        client, inner = _make_connected_client()
-        inner.get_direct_stream_url = AsyncMock(
-            return_value=MagicMock(stream="https://cdn.zvuk.com/t.mp3")
-        )
-
-        await client.get_direct_stream_url("99999", "mid")
-
-        inner.get_direct_stream_url.assert_awaited_once_with("99999", StreamQuality.MID)
-
-
-# ---------------------------------------------------------------------------
 # Tests for get_lyrics()
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -475,6 +435,8 @@ class TestGetLyrics:
 
 # ---------------------------------------------------------------------------
 # Tests for like_track() / unlike_track()
+
+
 # ---------------------------------------------------------------------------
 
 

@@ -2,34 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.player import PlayerMedia
+
+from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
-
-
-async def test_init_without_sendspin_provider_module(
-    provider: MSXBridgeProvider,
-) -> None:
-    """
-    The provider must load even when the Sendspin provider module is absent.
-
-    In a Music Assistant install that ships no Sendspin provider, importing
-    the bridge manager fails; the MSX provider must degrade to "no bridge"
-    instead of failing to load.
-    """
-    provider.sendspin_bridge_enabled = True
-    with (
-        patch("music_assistant.providers.msx_bridge.provider.MSXHTTPServer") as mock_server_cls,
-        patch.object(
-            MSXBridgeProvider,
-            "_make_bridge_manager",
-            side_effect=ImportError("No module named 'music_assistant.providers.sendspin'"),
-        ),
-    ):
-        mock_server_cls.return_value = AsyncMock()
-        await provider.handle_async_init()
-
-    assert provider.bridge_manager is None
 
 
 async def test_handle_async_init(provider: MSXBridgeProvider) -> None:
@@ -75,7 +57,7 @@ async def test_get_ma_stream_url_uses_streamserver(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """get_ma_stream_url must resolve the URL via the MA streamserver API."""
-    media = Mock()
+    media = PlayerMedia(uri="library://track/1")
     mass_mock.streams.resolve_stream_url = AsyncMock(
         return_value="http://ma:8097/single/s1/q1/i1/msx_test.mp3"
     )
@@ -100,21 +82,62 @@ async def test_get_ma_stream_url_rejects_flow_urls(
         return_value="http://ma:8097/flow/s1/q1/i1/msx_test.mp3"
     )
 
-    url = await provider.get_ma_stream_url("msx_test", Mock())
+    url = await provider.get_ma_stream_url("msx_test", PlayerMedia(uri="library://track/1"))
 
     assert url is None
+
+
+async def test_get_ma_stream_url_accepts_universal_group_flow_media(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """Universal Group flow media must be redirected to its common stream."""
+    stream_url = "http://ma:8097/flow/universal-group.mp3?player_id=msx_test"
+    mass_mock.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
+    media = PlayerMedia(uri=stream_url, media_type=MediaType.FLOW_STREAM)
+
+    url = await provider.get_ma_stream_url("msx_test", media)
+
+    assert url == stream_url
+
+
+@pytest.mark.parametrize("stored", ["redirect", "independent"])
+def test_offered_stream_mode_is_kept(provider: MSXBridgeProvider, stored: str) -> None:
+    """A stored value that is one of the offered modes is used as is."""
+    cast("Any", provider.config).get_value = Mock(return_value=stored)
+
+    assert provider._load_stream_mode() == stored
+
+
+def test_unknown_stream_mode_falls_back_to_redirect(
+    provider: MSXBridgeProvider, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A stored value outside the offered modes plays as redirect and is logged."""
+    cast("Any", provider.config).get_value = Mock(return_value="shared")
+
+    assert provider._load_stream_mode() == "redirect"
+    assert "Unknown stream delivery mode 'shared'" in caplog.text
 
 
 async def test_get_ma_stream_url_returns_none_on_error(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """get_ma_stream_url must degrade to None (proxy fallback) when resolution fails."""
-    mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=RuntimeError("no session"))
+    mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=InvalidDataError("no session"))
 
-    url = await provider.get_ma_stream_url("msx_test", Mock())
+    url = await provider.get_ma_stream_url("msx_test", PlayerMedia(uri="library://track/1"))
 
     assert url is None
     mass_mock.streams.resolve_stream_url.assert_awaited_once()
+
+
+async def test_get_ma_stream_url_does_not_swallow_unexpected_error(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """Programming errors while resolving a stream URL must not look like a missing URL."""
+    mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=ValueError("bug"))
+
+    with pytest.raises(ValueError, match="bug"):
+        await provider.get_ma_stream_url("msx_test", PlayerMedia(uri="library://track/1"))
 
 
 def test_on_player_activity_uses_monotonic_clock(provider: MSXBridgeProvider) -> None:
@@ -132,74 +155,175 @@ def test_on_player_activity_uses_monotonic_clock(provider: MSXBridgeProvider) ->
     assert provider._player_last_activity["msx_x"] == 1234.0
 
 
+def test_on_player_activity_restores_unavailable_player(
+    provider: MSXBridgeProvider, mass_mock: Mock, player: MSXPlayer
+) -> None:
+    """A later HTTP request from the TV must make the player available to MA again."""
+    player._attr_available = False
+    mass_mock.players.get_protocol = Mock(return_value=player)
+
+    provider.on_player_activity(player.protocol_id)
+
+    assert player.available is True
+
+
 async def test_loaded_in_mass_starts_timeout_task(provider: MSXBridgeProvider) -> None:
-    """loaded_in_mass should start idle timeout task and/or register default player."""
+    """loaded_in_mass should start the idle timeout task."""
     mock_task = Mock()
     provider.mass.create_task = Mock(return_value=mock_task)  # type: ignore[method-assign]
 
     await provider.loaded_in_mass()
 
-    # Our impl: starts timeout task. MA-server bundled: may register default player.
-    assert provider.mass.create_task.called or provider.mass.players.register.called  # type: ignore[attr-defined]
-    if provider.mass.create_task.called:
-        assert provider._timeout_task is mock_task
+    assert provider._timeout_task is mock_task
 
 
-async def test_unload_stops_server_first(provider: MSXBridgeProvider) -> None:
-    """Unload should stop the HTTP server and unregister all players."""
+async def test_unload_stops_server_and_leaves_the_players_to_the_controller(
+    provider: MSXBridgeProvider,
+) -> None:
+    """Unload stops the HTTP server; the players controller detaches the TVs itself."""
     mock_server = AsyncMock()
     provider.http_server = mock_server
-
-    mock_player = Mock()
-    mock_player.display_name = "Test TV"
-    mock_player.player_id = "msx_test"
-    provider.mass.players.all.return_value = [mock_player]  # type: ignore[attr-defined]
-    provider.mass.players.iter_players.return_value = [mock_player]  # type: ignore[attr-defined]
 
     await provider.unload()
 
     mock_server.stop.assert_awaited_once()
-    provider.mass.players.unregister.assert_awaited_once_with("msx_test")  # type: ignore[attr-defined]
+    provider.mass.players.unregister.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 async def test_unload_no_server(provider: MSXBridgeProvider) -> None:
     """Unload should not crash when http_server is None."""
     provider.http_server = None
-    provider.mass.players.all.return_value = []  # type: ignore[attr-defined]
-    provider.mass.players.iter_players.return_value = []  # type: ignore[attr-defined]
 
     await provider.unload()  # should not raise
 
 
-async def test_discover_players_noop(provider: MSXBridgeProvider) -> None:
-    """discover_players should complete without error."""
-    await provider.discover_players()
+async def test_a_new_tv_is_attached_with_its_own_id(provider: MSXBridgeProvider) -> None:
+    """A TV seen for the first time attaches; commands address the player it got."""
+    player = await provider.get_or_register_player("msx_tv", display_name="TV")
+
+    provider.mass.players.register.assert_awaited_once_with(player)  # type: ignore[attr-defined]
+    provider.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
+    assert player.protocol_id == "msx_tv"
+    assert provider.get_player_id("msx_tv") == "pl_msx_tv"
 
 
-async def test_on_player_disabled_does_not_unregister(
+def test_a_tv_without_a_player_keeps_its_own_id(provider: MSXBridgeProvider) -> None:
+    """The id of a TV that is not attached is passed on as it is."""
+    assert provider.get_player_id("msx_tv") == "msx_tv"
+
+
+async def test_a_tv_of_a_disabled_player_is_not_attached(provider: MSXBridgeProvider) -> None:
+    """The requests of a TV whose player the user disabled do not attach it."""
+    provider.mass.players.wants_protocol.return_value = False  # type: ignore[attr-defined]
+
+    player = await provider.get_or_register_player("msx_tv")
+
+    provider.mass.players.register.assert_not_awaited()  # type: ignore[attr-defined]
+    assert player.player is None
+    assert await provider.get_or_register_player("msx_tv") is player
+
+
+async def test_discovery_attaches_an_active_tv_whose_player_was_enabled(
     provider: MSXBridgeProvider,
 ) -> None:
-    """on_player_disabled should broadcast stop and cancel streams, but NOT unregister."""
-    mock_server = Mock()
-    mock_server.broadcast_stop = Mock()
-    mock_server.cancel_streams_for_player = Mock()
-    provider.http_server = mock_server
+    """Enabling the player of a TV that kept asking attaches it again."""
+    provider.mass.players.wants_protocol.return_value = False  # type: ignore[attr-defined]
+    player = await provider.get_or_register_player("msx_tv")
+    provider.mass.players.wants_protocol.return_value = True  # type: ignore[attr-defined]
 
-    provider.on_player_disabled("msx_test")
+    await provider.discover_players()
+
+    provider.mass.players.register.assert_awaited_once_with(player)  # type: ignore[attr-defined]
+    assert player.player is not None
+
+
+async def test_discovery_leaves_attached_and_idle_tvs_alone(provider: MSXBridgeProvider) -> None:
+    """An attached TV is not attached again, an idle one waits for its next request."""
+    attached = await provider.get_or_register_player("msx_attached")
+    await provider.get_or_register_player("msx_idle")
+    provider._player_last_activity.pop("msx_idle")
+    provider.mass.players.get_protocol = Mock(  # type: ignore[method-assign]
+        side_effect=lambda protocol_id: attached if protocol_id == "msx_attached" else None
+    )
+    provider.mass.players.register.reset_mock()  # type: ignore[attr-defined]
+
+    await provider.discover_players()
+
+    provider.mass.players.register.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_an_idle_tv_is_detached_and_comes_back_on_its_next_request(
+    provider: MSXBridgeProvider,
+) -> None:
+    """The idle timeout detaches a TV; its next request attaches the same object again."""
+    player = await provider.get_or_register_player("msx_tv")
+
+    await provider._handle_player_unregister("msx_tv")
+
+    provider.mass.players.unregister.assert_awaited_once_with("msx_tv")  # type: ignore[attr-defined]
+    assert "msx_tv" not in provider._player_last_activity
+    assert await provider.get_or_register_player("msx_tv") is player
+    assert provider.mass.players.register.await_count == 2  # type: ignore[attr-defined]
+
+
+async def test_a_disabled_tv_is_stopped_when_it_is_detached(
+    provider: MSXBridgeProvider, player: MSXPlayer
+) -> None:
+    """Disabling a player detaches its TV, which stops playback on the TV."""
+    mock_server = Mock()
+    provider.http_server = mock_server
+    provider.mass.players.wants_protocol.return_value = False  # type: ignore[attr-defined]
+
+    await player.on_detach()
 
     mock_server.broadcast_stop.assert_called_once_with("msx_test")
     mock_server.cancel_streams_for_player.assert_called_once_with("msx_test")
-    provider.mass.players.unregister.assert_not_called()  # type: ignore[attr-defined]
 
 
-async def test_on_player_disabled_noop_when_no_server(
-    provider: MSXBridgeProvider,
+async def test_an_idle_tv_is_not_stopped_when_it_is_detached(
+    provider: MSXBridgeProvider, player: MSXPlayer
 ) -> None:
-    """on_player_disabled should not crash when http_server is None."""
+    """A detach of a TV the server still wants (idle timeout, unload) sends it nothing."""
+    mock_server = Mock()
+    provider.http_server = mock_server
+
+    await player.on_detach()
+
+    mock_server.broadcast_stop.assert_not_called()
+    mock_server.cancel_streams_for_player.assert_not_called()
+
+
+async def test_removed_player_stops_the_tv_and_is_forgotten(
+    provider: MSXBridgeProvider, player: MSXPlayer
+) -> None:
+    """A removed player has its TV stopped, its streams cancelled and its activity dropped."""
+    mock_server = Mock()
+    provider.http_server = mock_server
+    provider.on_player_activity(player.protocol_id)
+    provider._tvs[player.protocol_id] = player
+
+    await player.on_remove()
+
+    mock_server.broadcast_stop.assert_called_once_with("msx_test")
+    mock_server.cancel_streams_for_player.assert_called_once_with("msx_test")
+    assert player.protocol_id not in provider._player_last_activity
+    assert player.protocol_id not in provider._tvs
+
+
+async def test_removed_player_noop_when_no_server(
+    provider: MSXBridgeProvider, player: MSXPlayer
+) -> None:
+    """Removing a player does not crash when http_server is None."""
     provider.http_server = None
-    provider.on_player_disabled("msx_test")  # should not raise
+
+    await player.on_remove()  # should not raise
 
 
-async def test_on_player_enabled_noop(provider: MSXBridgeProvider) -> None:
-    """on_player_enabled should complete without error (player stays registered)."""
-    provider.on_player_enabled("msx_test")  # should not raise
+async def test_disabled_tv_noop_when_no_server(
+    provider: MSXBridgeProvider, player: MSXPlayer
+) -> None:
+    """Detaching a disabled TV does not crash when http_server is None."""
+    provider.http_server = None
+    provider.mass.players.wants_protocol.return_value = False  # type: ignore[attr-defined]
+
+    await player.on_detach()  # should not raise

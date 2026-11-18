@@ -123,34 +123,51 @@ at all, so its delay is logged by value for the user to set by hand.
 
 ### Which player a session holds
 
-Only web and app players are Sendspin players in their own right. Every physical
-speaker — an ESPHome device, a Windows client, a MultiRoom-Audio box — is
-registered **twice**: a hidden `PlayerType.PROTOCOL` Sendspin player that speaks the
-protocol, and the visible player MA presents the device as, which is either a
-Universal Player wrapping it or a native player its identifiers matched.
+A player is the speaker as the user sees it, made up of the protocols that reach its
+device. One of them can be a Sendspin protocol: the client of a Sendspin speaker, web
+or app player, or the bridge of a speaker that plays over Sendspin through AirPlay,
+squeezelite or Chromecast.
 
-A session offers and holds the **visible** player, because that is the level
-everything it does works at:
+A session offers and holds the **player**, because that is the level everything it
+does works at:
 
-- **Grouping.** The anchor's `can_group_with` carries visible ids — protocol ids are
-  translated to their parents — and both `SharedPlaybackSession.can_listen_in` and the
-  player controller gate membership on it. A protocol id would be refused; a visible
-  id is translated back to the Sendspin player, so the group is still one native
-  Sendspin group carrying one uninterrupted stream.
-- **Volume, mute and name.** A visible player's `volume_control` and `mute_control`
-  resolve through its linked protocol player, so isolation drives the Sendspin client
-  either way, and the name a user picked from is the one they know the speaker by.
-- **The static delay** is the exception: it lives on the Sendspin player alone, so an
-  apply resolves each member to it (`resolve_sendspin_player`) before reading or
+- **Grouping, volume, mute and name** are commands and state of the player, so the
+  group is one native Sendspin group carrying one uninterrupted stream, isolation
+  drives whatever control the player has, and the name a user picked from is the one
+  they know the speaker by.
+- **The static delay** is the exception: it lives on the Sendspin protocol alone, so an
+  apply resolves each member to it (`resolve_sendspin_protocol`) before reading or
   writing, while the result stays keyed by the member the client asked about. A member
   whose Sendspin side has gone is refused rather than reported as one to adjust by
   hand — folding its delay in as 0 would move the reference every other speaker in the
   group is corrected against.
 
 Eligibility therefore asks whether a player *renders over Sendspin*, not which
-provider it belongs to. A hidden protocol player is never offered, and neither is a
-session anchor: a Sendspin virtual player is typed `PlayerType.PLAYER` just like a web
-player, so `is_remote_session_host` is what excludes it.
+provider it belongs to. A session anchor is never offered: a Sendspin virtual player is
+typed `PlayerType.PLAYER` just like a web player, so `is_remote_session_host` is what
+excludes it.
+
+### Bridged speakers and their carriers
+
+A bridged speaker has one Sendspin output, carried by one of its protocols at a time,
+and the Sendspin provider keeps one static delay per carrier: each reaches the device
+over a path with a latency of its own. A session measures a member over whatever
+carries it when the session starts, so everything it reads, zeroes and writes is the
+delay of that carrier.
+
+The output can be handed over to another protocol while a session runs, such as when
+the user switches the carrying protocol off. Two things follow:
+
+- A delay the session took off goes back named by the carrier it came off
+  (`set_player_static_delay(..., carrier_id=...)`), so it is put aside for that
+  carrier rather than written over the delay of the new one.
+- `apply_measurements` refuses a member whose carrier is no longer the one it was
+  measured over (`player_output_changed`): the measurement describes the path before,
+  and the session has to be run again.
+
+Only the carrier in use is calibrated. The delay of another carrier of the same
+speaker stays what it was until a session measures the speaker while that one carries
+it.
 
 ## Applying the result
 

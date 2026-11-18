@@ -188,7 +188,7 @@ def test_vocal_timeline_uses_max_speech_singing_and_exact_length() -> None:
 
 
 def test_vocal_timeline_rejects_non_finite_model_output() -> None:
-    """Non-finite FireRed output cannot reach persisted extra_data."""
+    """Non-finite FireRed output cannot reach the persisted vocal_activity field."""
     frame_probabilities = np.zeros((10, 3), dtype=np.float32)
     frame_probabilities[4, 1] = np.nan
 

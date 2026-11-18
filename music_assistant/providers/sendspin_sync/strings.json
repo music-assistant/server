@@ -18,6 +18,7 @@
     "player_not_measured": "{0} was not measured. Measure every speaker in the session before applying the result.",
     "offset_not_finite": "The measurement for {0} is not a usable number. Measure it again.",
     "delay_out_of_range": "The measurements put {0} {1} ms behind the others, more than the {2} ms Sendspin can correct. Check the measurement rather than the speaker.",
-    "sendspin_unavailable": "The Sendspin provider is not available."
+    "sendspin_unavailable": "The Sendspin provider is not available.",
+    "player_output_changed": "{0} switched to another connection during the calibration, so its measurement no longer applies. Start the calibration again."
   }
 }

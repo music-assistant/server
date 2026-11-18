@@ -2,7 +2,7 @@
 Setup flow for the Spotify Connect plugin.
 
 The flow is a single explicit backend choice: Spotify Soloist (Spotify's
-official headless client, guarded by a ToS warning/consent step and a personal
+official headless client, guarded by a download consent step and a personal
 API key) or the community go-librespot daemon. The players this plugin exposes
 Spotify Connect devices for are regular provider options, not setup input.
 Reconfigure preselects the stored backend and re-runs the branch steps;
@@ -48,7 +48,7 @@ async def run_setup(session: SetupSession) -> None:
         setup_data.get(CONF_BACKEND) or session.context.values.get(CONF_BACKEND) or ""
     )
     selected = stored_backend or BACKEND_SOLOIST
-    choice_errors: dict[str, str] | None = None
+    choice_errors: dict[str, str | SetupFlowError] | None = None
     while True:
         selected = await _choose_backend(session, selected, choice_errors)
         choice_errors = None
@@ -71,11 +71,11 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(collected)
             return
         except SetupFlowError as err:
-            choice_errors = {"base": err.translation_key or str(err)}
+            choice_errors = {"base": err}
 
 
 async def _choose_backend(
-    session: SetupSession, preselect: str, errors: dict[str, str] | None
+    session: SetupSession, preselect: str, errors: dict[str, str | SetupFlowError] | None
 ) -> str:
     """
     Show the backend choice step until a usable backend is selected.
@@ -116,7 +116,7 @@ async def _choose_backend(
 
 async def _run_soloist_steps(session: SetupSession, collected: dict[str, Any]) -> bool:
     """
-    Run the soloist branch: the ToS warning/consent step, then the API key step.
+    Run the soloist branch: the download consent step, then the API key step.
 
     :param session: The setup session driving the flow.
     :param collected: The values collected so far; updated in place.

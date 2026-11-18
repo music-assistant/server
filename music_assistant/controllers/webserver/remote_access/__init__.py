@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, cast
+from urllib.parse import urlparse
 
 from awesomeversion import AwesomeVersion
 from mashumaro import DataClassDictMixin
@@ -140,6 +142,26 @@ class RemoteAccessManager:
     def remote_id(self) -> str:
         """Return the current Remote ID."""
         return self._remote_id
+
+    def is_gateway_connection(
+        self, webrtc_session_id: str | None, peer_address: str | None
+    ) -> bool:
+        """
+        Return whether a websocket connection was opened by the gateway for a live session.
+
+        :param webrtc_session_id: The WebRTC session id the connection claims to belong to.
+        :param peer_address: The address the connection came from.
+        """
+        if self.gateway is None or not webrtc_session_id or not peer_address:
+            return False
+        # the gateway dials the address of its local websocket URL, so its connections come
+        # from that address, and it registers a session before it opens its connection
+        connect_address = urlparse(self.gateway.local_ws_url).hostname
+        try:
+            is_connect_address = ip_address(peer_address) == ip_address(connect_address or "")
+        except ValueError:
+            return False
+        return is_connect_address and webrtc_session_id in self.gateway.sessions
 
     def _schedule_start(self) -> None:
         """Schedule a debounced gateway restart."""

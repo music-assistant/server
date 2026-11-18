@@ -56,7 +56,9 @@ def test_normalize_origin(raw: str, expected: str | None) -> None:
 def test_compute_allowlist_ipv6_publish_ip() -> None:
     """An IPv6 publish_ip is bracketed in the allowlist so browsers' Origin matches."""
     mass = SimpleNamespace(
-        webserver=SimpleNamespace(base_url="http://localhost:8095", publish_ip="::1"),
+        webserver=SimpleNamespace(
+            base_url="http://localhost:8095", publish_ip="::1", external_url=None
+        ),
     )
     allow = _compute_origin_allowlist(mass)
     assert "http://[::1]:8095" in allow
@@ -65,8 +67,16 @@ def test_compute_allowlist_ipv6_publish_ip() -> None:
     assert "http://[::1]" in allow
 
 
-def _fake_mass(base_url: str = "http://localhost:8095", publish_ip: str = "127.0.0.1"):
-    return SimpleNamespace(webserver=SimpleNamespace(base_url=base_url, publish_ip=publish_ip))
+def _fake_mass(
+    base_url: str = "http://localhost:8095",
+    publish_ip: str = "127.0.0.1",
+    external_url: str | None = None,
+):
+    return SimpleNamespace(
+        webserver=SimpleNamespace(
+            base_url=base_url, publish_ip=publish_ip, external_url=external_url
+        )
+    )
 
 
 def test_compute_allowlist_default() -> None:
@@ -104,6 +114,14 @@ def test_compute_allowlist_with_https_base_url() -> None:
     # publish_ip with no explicit port (https is scheme-default)
     assert "http://127.0.0.1" in allow
     assert "https://127.0.0.1" in allow
+
+
+def test_compute_allowlist_with_external_url() -> None:
+    """The server's External URL origin is accepted next to the base_url origin."""
+    allow = _compute_origin_allowlist(
+        _fake_mass(base_url="http://192.168.1.10:8095", external_url="https://music.example.com")
+    )
+    assert _is_origin_allowed("https://music.example.com", allow) is True
 
 
 @pytest.mark.parametrize(

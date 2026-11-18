@@ -13,7 +13,6 @@ served by the streams controller (see controllers/streams/announcements.py).
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from math import ceil
 from typing import TYPE_CHECKING, cast
@@ -32,6 +31,7 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    ATTR_IDLE_SINCE,
     CONF_ANNOUNCE_TTS_ENGINE,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
@@ -46,7 +46,7 @@ from music_assistant.helpers.plugin_engines import (
     engine_display_name,
     get_tts_engines,
     resolve_tts_engine,
-    select_core_tts_engine,
+    resolve_tts_engine_setting,
 )
 from music_assistant.helpers.tts import (
     query_tts_engine_with_language_fallback,
@@ -54,14 +54,13 @@ from music_assistant.helpers.tts import (
 )
 from music_assistant.helpers.util import TaskManager, validate_announcement_chime_url
 from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 
-from .constants import PlayerLockPurpose
+from .base import _PlayerControllerBase
+from .constants import PlayerLockPurpose, SwitchedOffAction
 from .helpers import AnnounceData, handle_player_command
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-
-    from music_assistant import MusicAssistant
     from music_assistant.controllers.streams.announcements import AnnouncementRender
 
 # the caller waits for this command and it holds the player's playback lock while it runs,
@@ -69,96 +68,19 @@ if TYPE_CHECKING:
 ANNOUNCEMENT_TTS_TIMEOUT = 30
 
 
-class AnnouncementsMixin:
+class AnnouncementsMixin(_PlayerControllerBase):
     """
     Mixin class providing announcement playback for PlayerController.
 
     Handles:
     - Resolving the pre-announce chime and announcement volume from configuration
-    - Forwarding a group announcement to its individual members
-    - Native announcement support (on the player itself or a linked protocol)
+    - Forwarding a group announcement to its individual members, when they can start it together
+    - Native announcement support (on the own protocol of a player or an audio protocol)
     - The fallback implementation for players without native support
-
-    This mixin expects to be mixed with a class that provides:
-    - mass: MusicAssistant instance
-    - logger: logging.Logger instance
-    - get_player(): method to get a player by ID
-    - iter_group_members(): method to iterate the members of a group player
-    - _get_control_target(): method to resolve the player to send a command to
-    - the _handle_cmd_* / cmd_* playback and grouping commands used below
     """
 
-    # Type hints for attributes provided by the class this mixin is used with
-    if TYPE_CHECKING:
-        mass: MusicAssistant
-        logger: logging.Logger
-        domain: str
-        _players: dict[str, Player]
-
-        def get_player(  # noqa: D102
-            self, player_id: str, raise_unavailable: bool = False
-        ) -> Player | None: ...
-
-        def iter_group_members(  # noqa: D102
-            self,
-            group_player: Player,
-            only_powered: bool = False,
-            only_playing: bool = False,
-            active_only: bool = False,
-            exclude_self: bool = True,
-        ) -> Iterator[Player]: ...
-
-        def _get_control_target(
-            self,
-            player: Player,
-            required_feature: PlayerFeature,
-            require_active: bool = False,
-        ) -> Player | None: ...
-
-        async def _wait_for_playback_state(
-            self,
-            player: Player,
-            wanted_state: PlaybackState,
-            timeout: float,
-            minimal_time: float = 0,
-        ) -> None: ...
-
-        async def _handle_play_media(self, player_id: str, media: PlayerMedia) -> None: ...
-
-        async def _handle_cmd_stop(self, player_id: str) -> None: ...
-
-        async def _handle_cmd_volume_set(
-            self, player_id: str, volume_level: int, *, record_target: bool = True
-        ) -> None: ...
-
-        async def _handle_cmd_volume_mute(
-            self, player: Player, mute_control: str, muted: bool
-        ) -> None: ...
-
-        async def _handle_cmd_power(
-            self, player_id: str, powered: bool, skip_auto_play: bool = False
-        ) -> None: ...
-
-        async def _handle_cmd_resume(
-            self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
-        ) -> None: ...
-
-        async def cmd_play(self, player_id: str) -> None: ...  # noqa: D102
-
-        async def cmd_ungroup(self, player_id: str) -> None: ...  # noqa: D102
-
-        async def cmd_set_members(  # noqa: D102
-            self,
-            target_player: str,
-            player_ids_to_add: list[str] | None = None,
-            player_ids_to_remove: list[str] | None = None,
-        ) -> None: ...
-
-    # handle_player_command is typed against PlayerController, which this mixin only
-    # becomes once mixed in; the attributes it needs are declared in the block above.
-    # mypy reports that on the outermost decorator, hence the ignore below.
-    @api_command("players/cmd/play_announcement", required_scope=Scope.PLAYERS_CONTROL)  # type: ignore[type-var]
-    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
+    @api_command("players/cmd/play_announcement", required_scope=Scope.PLAYERS_CONTROL)
+    @handle_player_command(switched_off=SwitchedOffAction.RUN)
     async def play_announcement(
         self,
         player_id: str,
@@ -204,97 +126,47 @@ class AnnouncementsMixin:
             and not validate_announcement_chime_url(pre_announce_url)
         ):
             raise PlayerCommandFailed("Invalid pre-announce chime URL specified.")
-        # a spoken message is rendered up front so everything below - including each member of
-        # a group - plays the resulting audio instead of speaking the text again
-        is_speech = bool(message)
-        if message:
-            url = await self._render_announcement_message(message, tts_engine, language)
-        assert url is not None  # for type checking
-        # determine pre-announce from (group)player config
-        if pre_announce is None and (is_speech or "tts" in url):
-            conf_pre_announce = self.mass.config.get_raw_player_config_value(
-                player_id,
-                CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
-                CONF_ENTRY_TTS_PRE_ANNOUNCE.default_value,
-            )
-            pre_announce = cast("bool", conf_pre_announce)
-        if pre_announce_url is None:
-            if conf_pre_announce_url := self.mass.config.get_raw_player_config_value(
-                player_id,
-                CONF_PRE_ANNOUNCE_CHIME_URL,
-            ):
-                # player default custom chime url
-                pre_announce_url = cast("str", conf_pre_announce_url)
-            else:
-                # use global default chime url
-                pre_announce_url = ANNOUNCE_ALERT_FILE
-        announce_data = AnnounceData(
-            announcement_url=url,
-            pre_announce=bool(pre_announce),
-            pre_announce_url=pre_announce_url,
-            # filled in below, once we know which player fetches the stream
-            announce_player_id=None,
-        )
-        # Register right away, so the audio is (nearly always fully) rendered by the time
-        # the player is ready for it. The render is shared by everything that consumes
-        # this announcement, including all members of a group.
-        render = self.mass.streams.announcement_renderer.register(player_id, announce_data)
-        try:
-            # mark announcement_in_progress on player
-            player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
-            # if player type is group with all members supporting announcements,
-            # we forward the request to each individual player
-            if player.state.type == PlayerType.GROUP and (
-                all(
-                    PlayerFeature.PLAY_ANNOUNCEMENT in x.state.supported_features
-                    for x in self.iter_group_members(player)
+        # a player switched off at its power control is powered on for the announcement (and
+        # then stays on), before the lock is taken: waiting for it to start up takes far
+        # longer than other commands wait for the lock
+        player = await self._power_on_switched_off_player(player.player_id)
+        # A member's announcement detaches it from its (sync)group and joins it back
+        # afterwards, which takes the group's lock - so that one is taken before the
+        # member's own (see get_group_and_player_lock). A spoken message is rendered under
+        # the lock as well, which keeps announcements to one player in the order requested.
+        async with self.get_group_and_player_lock(player.player_id):
+            # a spoken message is rendered up front so everything below - including each
+            # member of a group - plays the resulting audio instead of speaking the text again
+            is_speech = bool(message)
+            if message:
+                url = await self._render_announcement_message(message, tts_engine, language)
+            assert url is not None  # for type checking
+            # determine pre-announce from (group)player config
+            if pre_announce is None and (is_speech or "tts" in url):
+                conf_pre_announce = self.mass.config.get_player_value(
+                    player_id,
+                    CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
+                    CONF_ENTRY_TTS_PRE_ANNOUNCE.default_value,
                 )
-            ):
-                # forward the request to each individual player
-                async with TaskManager(self.mass) as tg:
-                    for group_member in player.state.group_members:
-                        tg.create_task(
-                            self.play_announcement(
-                                group_member,
-                                url=url,
-                                pre_announce=pre_announce,
-                                volume_level=volume_level,
-                                pre_announce_url=pre_announce_url,
-                            )
-                        )
-                return
-            self.logger.info(
-                "Playback announcement to player %s (with pre-announce: %s): %s",
-                player.state.name,
-                pre_announce,
-                url,
+                pre_announce = cast("bool", conf_pre_announce)
+            if pre_announce_url is None:
+                if conf_pre_announce_url := self.mass.config.get_player_value(
+                    player_id,
+                    CONF_PRE_ANNOUNCE_CHIME_URL,
+                ):
+                    # player default custom chime url
+                    pre_announce_url = cast("str", conf_pre_announce_url)
+                else:
+                    # use global default chime url
+                    pre_announce_url = ANNOUNCE_ALERT_FILE
+            announce_data = AnnounceData(
+                announcement_url=url,
+                pre_announce=bool(pre_announce),
+                pre_announce_url=pre_announce_url,
+                # filled in once the player that fetches the stream is known
+                announce_player_id=None,
             )
-            announce_player = await self._resolve_ready_announce_player(player, render, url)
-            native_announce_support = announce_player is not None
-            if announce_player is None:
-                announce_player = player
-            # create a PlayerMedia object for the announcement so
-            # we can send a regular play-media call downstream
-            announce_data["announce_player_id"] = (
-                announce_player.player_id if native_announce_support else None
-            )
-            announcement = PlayerMedia(
-                uri=self.mass.streams.get_announcement_url(player_id),
-                media_type=MediaType.ANNOUNCEMENT,
-                title="Announcement",
-                custom_data=dict(announce_data),
-            )
-            # handle native announce support (player or linked protocol)
-            if native_announce_support:
-                await self._play_native_announcement(
-                    player, announce_player, announcement, volume_level
-                )
-                return
-            # use fallback/default implementation
-            await self._play_announcement(player, announcement, volume_level)
-        finally:
-            player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
-            await self.mass.streams.announcement_renderer.unregister(player_id, render)
+            await self._run_announcement(player, announce_data, volume_level)
 
     @api_command("players/tts_engines", required_scope=Scope.PLAYERS_CONTROL)
     async def get_announcement_tts_engines(self) -> list[dict[str, str]]:
@@ -311,36 +183,45 @@ class AnnouncementsMixin:
         :param player_id: The player the announcement is played on.
         :param volume_override: Volume level that overrides the configured strategy.
         """
-        volume_strategy = self.mass.config.get_raw_player_config_value(
+        player = self.get_player(player_id)
+        volume_strategy = self.mass.config.get_player_value(
             player_id,
             CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.key,
-            CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.default_value,
+            None,
         )
-        volume_strategy_volume = self.mass.config.get_raw_player_config_value(
+        if volume_strategy is None:
+            # nothing stored: a player whose announcement route ignores the level defaults
+            # to no adjustment, so it never gets an untunable bump; everyone else keeps the
+            # regular strategy. The config entry default stays stable so an explicit choice
+            # is never silently dropped when a device's capability changes.
+            volume_strategy = (
+                CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.default_value
+                if player is None or self.announce_output_supports_volume(player)
+                else "none"
+            )
+        volume_strategy_volume = self.mass.config.get_player_value(
             player_id,
             CONF_ENTRY_ANNOUNCE_VOLUME.key,
             CONF_ENTRY_ANNOUNCE_VOLUME.default_value,
         )
-        if volume_strategy == "none":
-            return None
         volume_level = volume_override
+        if volume_strategy == "none" and volume_override is None:
+            # an explicit override is honoured even under 'none', so a per-announcement
+            # level still applies
+            return None
         if volume_level is None and volume_strategy == "absolute":
             volume_level = int(cast("float", volume_strategy_volume))
         elif volume_level is None and volume_strategy == "relative":
-            if (player := self.get_player(player_id)) and player.state.volume_level is not None:
-                volume_level = int(
-                    player.state.volume_level + cast("float", volume_strategy_volume)
-                )
+            if player and player.volume_level is not None:
+                volume_level = int(player.volume_level + cast("float", volume_strategy_volume))
         elif volume_level is None and volume_strategy == "percentual":
-            if (player := self.get_player(player_id)) and player.state.volume_level is not None:
-                percentual = (player.state.volume_level / 100) * cast(
-                    "float", volume_strategy_volume
-                )
-                volume_level = int(player.state.volume_level + percentual)
+            if player and player.volume_level is not None:
+                percentual = (player.volume_level / 100) * cast("float", volume_strategy_volume)
+                volume_level = int(player.volume_level + percentual)
         if volume_level is not None:
             announce_volume_min = cast(
                 "float",
-                self.mass.config.get_raw_player_config_value(
+                self.mass.config.get_player_value(
                     player_id,
                     CONF_ENTRY_ANNOUNCE_VOLUME_MIN.key,
                     CONF_ENTRY_ANNOUNCE_VOLUME_MIN.default_value,
@@ -349,7 +230,7 @@ class AnnouncementsMixin:
             volume_level = max(int(announce_volume_min), volume_level)
             announce_volume_max = cast(
                 "float",
-                self.mass.config.get_raw_player_config_value(
+                self.mass.config.get_player_value(
                     player_id,
                     CONF_ENTRY_ANNOUNCE_VOLUME_MAX.key,
                     CONF_ENTRY_ANNOUNCE_VOLUME_MAX.default_value,
@@ -358,21 +239,163 @@ class AnnouncementsMixin:
             volume_level = min(int(announce_volume_max), volume_level)
         return None if volume_level is None else int(volume_level)
 
-    def _resolve_announce_player(self, player: Player) -> Player | None:
+    def announce_output_supports_volume(self, player: Player) -> bool:
         """
-        Return the player (or linked protocol) that plays an announcement natively.
+        Return True if the player's announcement route can apply a requested volume.
+
+        Resolves the output that would announce for the player: its own native handler, an
+        active linked output, or the builtin fallback when nothing announces natively. The
+        fallback always applies the level via the device volume.
+
+        :param player: The player an announcement would be played on.
+        """
+        announce_player = self._resolve_announce_player(player)
+        if announce_player is None:
+            return True
+        return AnnouncementFeature.SUPPORTS_VOLUME in announce_player.announcement_features
+
+    async def _run_announcement(
+        self,
+        player: Player,
+        announce_data: AnnounceData,
+        volume_level: int | None,
+        *,
+        native_only: bool = False,
+    ) -> None:
+        """
+        Play an announcement on a player whose playback lock the caller holds.
+
+        :param player: The player the announcement is played on.
+        :param announce_data: The announcement to play.
+        :param volume_level: Optional volume level override for the announcement.
+        :param native_only: Skip the announcement instead of using the default implementation
+            when the player does not announce natively (any more). Set for a group member
+            announcing under the group's lock, which the default implementation would need.
+        """
+        # Register right away, so the audio is (nearly always fully) rendered by the time
+        # the player is ready for it. The render is shared by everything that consumes
+        # this announcement, including all members of a group.
+        render = self.mass.streams.announcement_renderer.register(player.player_id, announce_data)
+        try:
+            # mark announcement_in_progress on player
+            player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
+            if player.type == PlayerType.GROUP:
+                # the output that announces for a member is resolved once the audio is
+                # there, so the decision below is taken on the state the members act on
+                await render.wait_ready()
+                # a group announcement is only handed to the individual members when the output
+                # that would announce for each member can line up its start with the others.
+                # Members that cannot would be heard out of step, so such a group plays the clip
+                # through its own (synchronized) stream instead.
+                if self._members_announce_in_step(player, volume_level):
+                    # forward the request to each individual player
+                    async with TaskManager(self.mass) as tg:
+                        for member in self.iter_group_members(player):
+                            tg.create_task(
+                                self._run_member_announcement(
+                                    member, announce_data.copy(), volume_level
+                                )
+                            )
+                    return
+            url = announce_data["announcement_url"]
+            self.logger.info(
+                "Playback announcement to player %s (with pre-announce: %s): %s",
+                player.name,
+                announce_data["pre_announce"],
+                url,
+            )
+            announce_player = await self._resolve_ready_announce_player(
+                player, render, url, volume_level
+            )
+            if announce_player is None and native_only:
+                # the member was judged on the state it had before its own lock was
+                # taken, so a native route it lost meanwhile is not made up for here
+                self.logger.warning(
+                    "Announcement to player %s - the player no longer announces "
+                    "natively, skipping it",
+                    player.name,
+                )
+                return
+            # create a PlayerMedia object for the announcement so
+            # we can send a regular play-media call downstream
+            announce_data["announce_player_id"] = (
+                announce_player.protocol_id if announce_player else None
+            )
+            announcement = PlayerMedia(
+                uri=self.mass.streams.get_announcement_url(player.player_id),
+                media_type=MediaType.ANNOUNCEMENT,
+                title="Announcement",
+                custom_data=dict(announce_data),
+            )
+            # handle native announce support (the own protocol or an audio protocol)
+            if announce_player is not None:
+                await self._play_native_announcement(
+                    player, announce_player, announcement, volume_level
+                )
+                return
+            # use fallback/default implementation
+            await self._play_announcement(player, announcement, volume_level)
+        finally:
+            # Cleared after restore finishes.
+            # Resume during announce still needs the parked position while this is set.
+            player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
+            # the idle power off counts from here, also after a native announcement that
+            # leaves the playback state as it was
+            player.extra_data.pop(ATTR_IDLE_SINCE, None)
+            await self.mass.streams.announcement_renderer.unregister(player.player_id, render)
+
+    async def _run_member_announcement(
+        self, member: Player, announce_data: AnnounceData, volume_level: int | None
+    ) -> None:
+        """
+        Play a group's announcement on one of its members, under the member's own lock.
+
+        The group's lock is held by the announcement fanning out to its members and is not
+        re-entrant in the task this runs in, so only the member's own lock is taken here.
+
+        :param member: The group member the announcement is played on.
+        :param announce_data: The announcement to play.
+        :param volume_level: Optional volume level override for the announcement.
+        """
+        async with self.get_player_lock(member.player_id, PlayerLockPurpose.PLAYBACK):
+            await self._run_announcement(member, announce_data, volume_level, native_only=True)
+
+    def _native_route_ignores_wanted_volume(
+        self, player: Player, announce_player: PlayerProtocol, volume_level: int | None
+    ) -> bool:
+        """
+        Return True if the builtin path should apply a requested volume the native route drops.
+
+        Only reports True when the builtin path can actually apply the level: leaving the
+        native route (which at least ducks) is pointless when the volume cannot be set and
+        restored anyway.
+
+        :param player: The player the announcement is played on.
+        :param announce_player: The protocol of the player that announces natively.
+        :param volume_level: Optional volume level override for the announcement.
+        """
+        if AnnouncementFeature.SUPPORTS_VOLUME in announce_player.announcement_features:
+            return False
+        if self.get_announcement_volume(player.player_id, volume_level) is None:
+            return False
+        return player.volume_control != PLAYER_CONTROL_NONE and player.volume_level is not None
+
+    def _resolve_announce_player(self, player: Player) -> PlayerProtocol | None:
+        """
+        Return the protocol of a player that plays an announcement natively.
 
         Returns None when nothing in the chain announces natively, so the caller has to
         fall back to the default implementation.
 
         :param player: The player the announcement is played on.
         """
-        if PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features:
+        own = player.own_protocol
+        if own is not None and PlayerFeature.PLAY_ANNOUNCEMENT in own.supported_features:
             # The device's own announcement handler is built for exactly this and
             # overlays the clip on whatever the speaker is playing - including the
-            # stream a linked protocol renders into it (e.g. Sonos audioClip while
-            # the Sonos plays through its AirPlay child), so it always wins.
-            return player
+            # stream an audio protocol renders into it (e.g. Sonos audioClip while
+            # the Sonos plays through its AirPlay protocol), so it always wins.
+            return own
         if announce_player := self._get_control_target(
             player,
             required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
@@ -383,10 +406,10 @@ class AnnouncementsMixin:
             # that live stream, in sync with the rest of the group) instead of a
             # second mechanism firing beside the playback.
             return announce_player
-        if player.state.playback_state != PlaybackState.PLAYING:
-            # An idle player may announce through any linked protocol. A
+        if player.playback_state != PlaybackState.PLAYING:
+            # An idle player may announce through any audio protocol. A
             # PLAYING player deliberately gets no such fallback: routing to
-            # an idle linked protocol (e.g. the AirPlay child of a WiiM
+            # an idle audio protocol (e.g. the AirPlay protocol of a WiiM
             # playing natively) would seize the device from the active
             # output, with nothing restoring that playback afterwards.
             # The pick is deliberately not published as the active output
@@ -401,10 +424,10 @@ class AnnouncementsMixin:
         return None
 
     async def _resolve_ready_announce_player(
-        self, player: Player, render: AnnouncementRender, url: str
-    ) -> Player | None:
+        self, player: Player, render: AnnouncementRender, url: str, volume_level: int | None
+    ) -> PlayerProtocol | None:
         """
-        Return the player that plays the announcement natively, once its audio is ready.
+        Return the protocol that plays the announcement natively, once its audio is ready.
 
         Returns None when nothing in the chain announces natively (any more), so the
         caller has to fall back to the default implementation.
@@ -412,6 +435,7 @@ class AnnouncementsMixin:
         :param player: The player the announcement is played on.
         :param render: The announcement audio being rendered.
         :param url: URL of the announcement, for logging.
+        :param volume_level: Optional volume level override for the announcement.
         """
         if (announce_player := self._resolve_announce_player(player)) is None:
             return None
@@ -420,13 +444,17 @@ class AnnouncementsMixin:
         if not await render.wait_ready():
             self.logger.warning(
                 "Announcement to player %s - no audio available for %s",
-                player.state.name,
+                player.name,
                 url,
             )
         if PlayerFeature.PLAY_ANNOUNCEMENT not in announce_player.supported_features:
             # Rendering the audio can take a while. An output that announces by mixing
             # the clip into what it is already playing stops offering the feature once
             # that playback ended, and the default implementation takes over.
+            return None
+        if self._native_route_ignores_wanted_volume(player, announce_player, volume_level):
+            # the native route ignores a requested volume, so use the builtin path
+            # instead, which applies the level through the device volume
             return None
         return announce_player
 
@@ -444,11 +472,22 @@ class AnnouncementsMixin:
         if tts_engine:
             engine = await resolve_tts_engine(self.mass, tts_engine)
             if engine is None:
-                raise PlayerCommandFailed(f"TTS engine '{tts_engine}' is not available.")
+                raise PlayerCommandFailed(
+                    f"TTS engine '{tts_engine}' is not available.",
+                    translation_key="tts_engine_unavailable",
+                    translation_owner=self.translation_owner,
+                )
         else:
-            engine = await select_core_tts_engine(self.mass, self.domain, CONF_ANNOUNCE_TTS_ENGINE)
+            engine = await resolve_tts_engine_setting(
+                self.mass,
+                self.mass.config.get_raw_core_config_value(self.domain, CONF_ANNOUNCE_TTS_ENGINE),
+            )
             if engine is None:
-                raise PlayerCommandFailed("No text-to-speech engine is available.")
+                raise PlayerCommandFailed(
+                    "No text-to-speech engine is available.",
+                    translation_key="tts_engine_unavailable",
+                    translation_owner=self.translation_owner,
+                )
         stream_details = await query_tts_engine_with_language_fallback(
             engine,
             message,
@@ -469,7 +508,7 @@ class AnnouncementsMixin:
     async def _play_native_announcement(
         self,
         player: Player,
-        announce_player: Player,
+        announce_player: PlayerProtocol,
         announcement: PlayerMedia,
         volume_level: int | None,
     ) -> None:
@@ -477,7 +516,7 @@ class AnnouncementsMixin:
         Hand an announcement to a player that plays it natively.
 
         :param player: The player the announcement is played on.
-        :param announce_player: The player (or linked protocol) that plays the announcement.
+        :param announce_player: The protocol of the player that plays the announcement.
         :param announcement: The announcement to play.
         :param volume_level: Optional volume level override for the announcement.
         """
@@ -487,8 +526,8 @@ class AnnouncementsMixin:
         # in case of a (sync) group, this covers all child players.
         muted_players = [
             muted_player
-            for member_id in player.state.group_members or (player.player_id,)
-            if (muted_player := self.get_player(member_id)) and muted_player.state.volume_muted
+            for member_id in player.group_members or (player.player_id,)
+            if (muted_player := self.get_player(member_id)) and muted_player.volume_muted
         ]
         # filled while the announcement volume is applied below
         prev_volumes: dict[str, int] = {}
@@ -499,7 +538,7 @@ class AnnouncementsMixin:
             announcement_volume = self.get_announcement_volume(player.player_id, volume_level)
             if (
                 announcement_volume is not None
-                and not announce_player.applies_announcement_volume
+                and AnnouncementFeature.APPLIES_VOLUME not in announce_player.announcement_features
                 and not self._output_owns_volume(player, announce_player)
             ):
                 # The level is resolved on the scale of the control that owns the player's
@@ -539,32 +578,35 @@ class AnnouncementsMixin:
         - restore the previous power and volume
         - restore playback (if needed and if possible)
 
-        This default implementation will only be used if the player
-        (provider) has no native support for the PLAY_ANNOUNCEMENT feature.
+        This default implementation is used when the player (provider) has no native
+        support for the PLAY_ANNOUNCEMENT feature, or when its native route ignores a
+        requested volume (see AnnouncementFeature.SUPPORTS_VOLUME) and a level is wanted.
         """
-        prev_state = player.state.playback_state
+        prev_state = player.playback_state
         # A player without power control has no power state to restore, so it counts as
         # powered here - otherwise the restore below would be skipped altogether for it,
         # leaving the player ungrouped from its (sync)group.
         prev_power = (
-            player.state.power_control == PLAYER_CONTROL_NONE
-            or bool(player.state.powered)
+            player.power_control == PLAYER_CONTROL_NONE
+            or bool(player.powered)
             or prev_state != PlaybackState.IDLE
         )
-        prev_synced_to = player.state.synced_to
-        prev_group = (
-            self.get_player(player.state.active_group) if player.state.active_group else None
-        )
-        prev_source = player.state.active_source
-        prev_media = player.state.current_media
+        prev_synced_to = player.synced_to
+        prev_group = self.get_player(player.active_group) if player.active_group else None
+        prev_source = player.active_source
+        prev_media = player.current_media
         prev_media_name = prev_media.title or prev_media.uri if prev_media else None
         # An announcement is transient: a player that is still busy with an earlier
         # announcement holds no user content, so there is nothing to restore for it.
-        # The raw media attribute is read here (instead of state.current_media, which
+        # The raw media attribute is read here (instead of player.current_media, which
         # reports the active queue item) since it tells what the device is playing.
+        device_media = (
+            output_protocol.current_media
+            if (output_protocol := player.resolve_output_protocol())
+            else None
+        )
         restore_playback = prev_state == PlaybackState.PLAYING and not (
-            player.current_media is not None
-            and player.current_media.media_type == MediaType.ANNOUNCEMENT
+            device_media is not None and device_media.media_type == MediaType.ANNOUNCEMENT
         )
         # filled while the players are unmuted and the temporary volume is applied below
         prev_volumes: dict[str, int] = {}
@@ -585,7 +627,7 @@ class AnnouncementsMixin:
             # play the announcement
             self.logger.debug(
                 "Announcement to player %s - playing the announcement on the player...",
-                player.state.name,
+                player.name,
             )
             render = (
                 self.mass.streams.announcement_renderer.get(
@@ -599,7 +641,7 @@ class AnnouncementsMixin:
                 # regardless when it came up empty, so the restore still runs
                 self.logger.warning(
                     "Announcement to player %s - no audio available for %s",
-                    player.state.name,
+                    player.name,
                     announcement.uri,
                 )
             await self._handle_play_media(player.player_id, announcement)
@@ -671,7 +713,7 @@ class AnnouncementsMixin:
             # ungroup player if its currently synced
             self.logger.debug(
                 "Announcement to player %s - ungrouping player from %s...",
-                player.state.name,
+                player.name,
                 prev_synced_to,
             )
             await self.cmd_ungroup(player.player_id)
@@ -680,50 +722,60 @@ class AnnouncementsMixin:
             if PlayerFeature.SET_MEMBERS in prev_group.supported_features:
                 self.logger.debug(
                     "Announcement to player %s - ungrouping from group player %s...",
-                    player.state.name,
-                    prev_group.display_name,
+                    player.name,
+                    prev_group.name,
                 )
-                await prev_group.set_members(player_ids_to_remove=[player.player_id])
+                await self.cmd_set_members(
+                    prev_group.player_id, player_ids_to_remove=[player.player_id]
+                )
             else:
                 # if the player is part of a group player that does not support ungrouping,
                 # we need to power off the groupplayer instead
                 self.logger.debug(
                     "Announcement to player %s - turning off group player %s...",
-                    player.state.name,
-                    prev_group.display_name,
+                    player.name,
+                    prev_group.name,
                 )
                 await self._handle_cmd_power(prev_group.player_id, False)
         elif prev_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             # normal/standalone player: stop player if its currently playing
             self.logger.debug(
                 "Announcement to player %s - stop existing content (%s)...",
-                player.state.name,
+                player.name,
                 prev_media_name,
             )
-            await self._handle_cmd_stop(player.player_id)
+            # Stop the queue (not just the device) so resume_pos is saved.
+            # _handle_stop skips the user permission check on this internal path.
+            if active_queue := self.get_active_queue(player):
+                await self.mass.player_queues._handle_stop(active_queue.queue_id)
+            else:
+                await self._handle_cmd_stop(player.player_id)
             # wait for the player to stop
             await self._wait_for_playback_state(player, PlaybackState.IDLE, 10, 0.4)
         # unmute and adjust volume if needed
         # in case of a (sync) group, we need to do this for all child players
         async with TaskManager(self.mass) as tg:
-            for volume_player_id in player.state.group_members or (player.player_id,):
+            for volume_player_id in player.group_members or (player.player_id,):
                 if not (volume_player := self.get_player(volume_player_id)):
+                    continue
+                if volume_player.offline_by_power_control:
+                    # a member that is switched off does not play the announcement
                     continue
                 # catch any players that have a different source active
                 if (
-                    volume_player.state.active_source
+                    volume_player.active_source
                     not in (
-                        player.state.active_source,
+                        player.active_source,
                         volume_player.player_id,
                         None,
                     )
-                    and volume_player.state.playback_state == PlaybackState.PLAYING
+                    and volume_player.playback_state == PlaybackState.PLAYING
                 ):
                     self.logger.warning(
                         "Detected announcement to playergroup %s while group member %s is playing "
                         "other content, this may lead to unexpected behavior.",
-                        player.state.name,
-                        volume_player.state.name,
+                        player.name,
+                        volume_player.name,
                     )
                     tg.create_task(self._handle_cmd_stop(volume_player.player_id))
                 tg.create_task(
@@ -761,9 +813,7 @@ class AnnouncementsMixin:
         :param prev_media: The media that was loaded before the announcement.
         :param restore_playback: Whether playback needs to be resumed.
         """
-        self.logger.debug(
-            "Announcement to player %s - restore previous state...", player.state.name
-        )
+        self.logger.debug("Announcement to player %s - restore previous state...", player.name)
         # restore volume
         async with TaskManager(self.mass) as tg:
             for volume_player_id, prev_volume in prev_volumes.items():
@@ -782,14 +832,14 @@ class AnnouncementsMixin:
                 # prev_power is always True for a player without power control,
                 # so there is an actual power control to switch off here
                 self.logger.debug(
-                    "Announcement to player %s - turning player off again...", player.state.name
+                    "Announcement to player %s - turning player off again...", player.name
                 )
                 await self._handle_cmd_power(player.player_id, False)
                 return
             if prev_synced_to:
                 self.logger.debug(
                     "Announcement to player %s - syncing back to %s...",
-                    player.state.name,
+                    player.name,
                     prev_synced_to,
                 )
                 await self.cmd_set_members(prev_synced_to, player_ids_to_add=[player.player_id])
@@ -797,17 +847,19 @@ class AnnouncementsMixin:
                 if PlayerFeature.SET_MEMBERS in prev_group.supported_features:
                     self.logger.debug(
                         "Announcement to player %s - grouping back to group player %s...",
-                        player.state.name,
-                        prev_group.display_name,
+                        player.name,
+                        prev_group.name,
                     )
-                    await prev_group.set_members(player_ids_to_add=[player.player_id])
+                    await self.cmd_set_members(
+                        prev_group.player_id, player_ids_to_add=[player.player_id]
+                    )
                 elif restore_playback:
                     # if the player is part of a group player that does not support set_members,
                     # we need to restart the groupplayer
                     self.logger.debug(
                         "Announcement to player %s - restarting playback on group player %s...",
-                        player.state.name,
-                        prev_group.display_name,
+                        player.name,
+                        prev_group.name,
                     )
                     await self.cmd_play(prev_group.player_id)
             elif restore_playback:
@@ -819,7 +871,7 @@ class AnnouncementsMixin:
             # raises. CancelledError is a BaseException and still propagates.
             self.logger.warning(
                 "Announcement to player %s - restoring the previous state failed: %s",
-                player.state.name,
+                player.name,
                 err,
             )
 
@@ -840,15 +892,15 @@ class AnnouncementsMixin:
         :param prev_muted: Set that is filled in-place with the ids of the players that
             were muted.
         """
-        if volume_player.state.volume_muted:
+        if volume_player.volume_muted:
             # an announcement is always meant to be heard, so a deliberate mute is lifted
             # for its duration. this happens before the volume is read below, since a
             # fake mute control parks the player at volume 0 to mute it.
             prev_muted.add(volume_player.player_id)
             await self._set_announcement_mute(volume_player, False)
-        if volume_player.state.volume_control == PLAYER_CONTROL_NONE:
+        if volume_player.volume_control == PLAYER_CONTROL_NONE:
             return
-        if (prev_volume := volume_player.state.volume_level) is None:
+        if (prev_volume := volume_player.volume_level) is None:
             return
         announcement_volume = self.get_announcement_volume(volume_player.player_id, volume_level)
         # get_announcement_volume already returns None when the volume must be left
@@ -859,29 +911,29 @@ class AnnouncementsMixin:
         prev_volumes[volume_player.player_id] = prev_volume
         self.logger.debug(
             "Announcement to player %s - setting temporary volume (%s)...",
-            volume_player.state.name,
+            volume_player.name,
             announcement_volume,
         )
         await self._handle_cmd_volume_set(volume_player.player_id, announcement_volume)
 
-    def _output_owns_volume(self, player: Player, announce_player: Player) -> bool:
+    def _output_owns_volume(self, player: Player, announce_player: PlayerProtocol) -> bool:
         """
         Return True if the announcing output can apply the announcement volume itself.
 
         :param player: The player the announcement is played on.
-        :param announce_player: The player (or linked protocol) that plays the announcement.
+        :param announce_player: The protocol of the player that plays the announcement.
         """
-        volume_control = player.volume_control_for_output(announce_player.player_id)
+        volume_control = player.volume_control_for_output(announce_player.protocol_id)
         if volume_control == PLAYER_CONTROL_NATIVE:
             # A native volume lives on the player itself, so only its own output can
-            # apply it: a linked protocol rendering the audio has no way to reach it.
-            return announce_player.player_id == player.player_id
-        if volume_control == announce_player.player_id:
+            # apply it: an audio protocol rendering the audio has no way to reach it.
+            return announce_player is player.own_protocol
+        if volume_control == announce_player.protocol_id:
             # the volume lives on the device the announcing output talks to
             return True
-        # a bridge player riding on the announcing output forwards its volume to it
-        if control_player := self.get_player(volume_control):
-            return control_player.underlying_player_id == announce_player.player_id
+        # a bridge protocol riding on the announcing output forwards its volume to it
+        if control_protocol := player.attached_protocols.get(volume_control):
+            return control_protocol.underlying_protocol_id == announce_player.protocol_id
         return False
 
     async def _set_announcement_volume(
@@ -895,15 +947,15 @@ class AnnouncementsMixin:
         :param prev_volumes: Mapping that is filled in-place with the previous volume level
             per player id, so the caller can restore the volume even if this call fails.
         """
-        if player.state.volume_control == PLAYER_CONTROL_NONE:
+        if player.volume_control == PLAYER_CONTROL_NONE:
             # nothing in the signal path can set a volume at all
             return
-        if (prev_volume := player.state.volume_level) is None or prev_volume == announcement_volume:
+        if (prev_volume := player.volume_level) is None or prev_volume == announcement_volume:
             return
         prev_volumes[player.player_id] = prev_volume
         self.logger.debug(
             "Announcement to player %s - setting temporary volume (%s)...",
-            player.state.name,
+            player.name,
             announcement_volume,
         )
         await self._handle_cmd_volume_set(player.player_id, announcement_volume)
@@ -922,3 +974,30 @@ class AnnouncementsMixin:
         if mute_control == PLAYER_CONTROL_NONE:
             return
         await self._handle_cmd_volume_mute(player, mute_control, muted)
+
+    def _members_announce_in_step(self, group_player: Player, volume_level: int | None) -> bool:
+        """
+        Return True if every member of a group announces natively and in step with the others.
+
+        A player only lines up its start with the members announcing through the same
+        provider, so the outputs announcing for the members must all belong to one
+        provider instance. A member that would leave its native route to apply a wanted
+        volume (see _native_route_ignores_wanted_volume) does not line up either.
+
+        :param group_player: The group player the announcement is played on.
+        :param volume_level: Optional volume level override for the announcement.
+        """
+        provider_ids: set[str] = set()
+        for member in self.iter_group_members(group_player):
+            announce_player = self._resolve_announce_player(member)
+            if (
+                announce_player is None
+                or AnnouncementFeature.COORDINATES_START
+                not in announce_player.announcement_features
+                # the default implementation frees such a member from the group, which
+                # needs the group's lock that the fan-out holds for the whole announcement
+                or self._native_route_ignores_wanted_volume(member, announce_player, volume_level)
+            ):
+                return False
+            provider_ids.add(announce_player.provider.instance_id)
+        return len(provider_ids) <= 1

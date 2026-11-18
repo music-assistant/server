@@ -282,7 +282,6 @@ async def test_a_speaker_that_does_not_play_over_sendspin_is_not_offered() -> No
     mass = _mock_mass(provider)
     airplay_only = MagicMock()
     airplay_only.player_id = "airplay_only"
-    airplay_only.provider.domain = "universal_player"
     airplay_only.state.available = True
     airplay_only.state.type = PlayerType.PLAYER
     airplay_only.get_output_protocol_by_domain = MagicMock(return_value=None)
@@ -837,6 +836,33 @@ async def test_a_member_that_lost_its_sendspin_client_is_refused() -> None:
     sendspin.set_player_static_delay.assert_not_awaited()
 
 
+async def test_a_member_whose_output_was_handed_over_is_refused() -> None:
+    """
+    A bridged speaker that another protocol took over mid-session has to be measured again.
+
+    Its measurement was taken over the carrier before. Each carrier has a latency and a
+    static delay of its own, so writing the result would correct the wrong one.
+    """
+    provider = await _setup_provider()
+    sendspin = _stub_sendspin(
+        provider,
+        {"lr_client": 0, "kitchen_client": 0},
+        session_members={"living_room": "lr_client", "kitchen": "kitchen_client"},
+    )
+    sendspin.get_player_static_delay_carrier = MagicMock(return_value="airplay")
+    await _run_real_session(provider, ["living_room", "kitchen"])
+    sendspin.get_player_static_delay_carrier = MagicMock(
+        side_effect=lambda protocol_id: (
+            "squeezelite" if protocol_id == "kitchen_client" else "airplay"
+        )
+    )
+
+    with pytest.raises(ActionUnavailable):
+        await provider.apply_measurements({"living_room": 0.0, "kitchen": 40.0})
+
+    sendspin.set_player_static_delay.assert_not_awaited()
+
+
 async def test_measurements_are_refused_when_sendspin_is_gone() -> None:
     """Without the Sendspin provider there is nothing to apply the correction through."""
     provider = await _setup_provider()
@@ -1055,8 +1081,11 @@ def _stub_sendspin(
     sendspin.is_virtual_player = MagicMock(return_value=False)
     sendspin.supports_player_static_delay = MagicMock(side_effect=lambda p: p not in refused)
     sendspin.get_player_static_delay = MagicMock(side_effect=_get)
+    sendspin.get_player_static_delay_carrier = MagicMock(return_value=None)
     sendspin.set_player_static_delay = AsyncMock(
-        side_effect=lambda player_id, delay_ms: current_delays_ms.__setitem__(player_id, delay_ms)
+        side_effect=lambda player_id, delay_ms, **_kwargs: current_delays_ms.__setitem__(
+            player_id, delay_ms
+        )
     )
     _mock_mass(provider).get_provider = MagicMock(return_value=sendspin)
     return sendspin
@@ -1095,23 +1124,18 @@ def _stub_players(provider: SendspinSyncProvider, session_members: dict[str, str
         player.state.current_media = None
         player.state.supported_features = set()
         player.extra_data = {}
-        if sendspin_id == player_id:
-            player.provider.domain = SENDSPIN_DOMAIN
-        else:
-            player.provider.domain = "universal_player"
-            client = MagicMock()
-            client.player_id = sendspin_id
-            protocol = OutputProtocol(
-                output_protocol_id=sendspin_id,
-                name="Sendspin",
-                protocol_domain=SENDSPIN_DOMAIN,
-            )
-            player.get_output_protocol_by_domain = MagicMock(
-                side_effect=lambda domain, found=protocol: (
-                    found if domain == SENDSPIN_DOMAIN else None
-                )
-            )
-            player.get_protocol_player = MagicMock(return_value=client)
+        client = MagicMock()
+        client.protocol_id = sendspin_id
+        protocol = OutputProtocol(
+            # a web player renders through its own protocol, a speaker through a linked one
+            output_protocol_id="native" if sendspin_id == player_id else sendspin_id,
+            name="Sendspin",
+            protocol_domain=SENDSPIN_DOMAIN,
+        )
+        player.get_output_protocol_by_domain = MagicMock(
+            side_effect=lambda domain, found=protocol: found if domain == SENDSPIN_DOMAIN else None
+        )
+        player.get_output_protocol = MagicMock(return_value=client)
         registry[player_id] = player
     mass = _mock_mass(provider)
     mass.players.get_player = MagicMock(side_effect=registry.get)

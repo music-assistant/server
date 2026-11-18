@@ -1,0 +1,34 @@
+{
+  "prev": [
+    {
+      "firstLine": "Le direct",
+      "secondLine": "Gardez le rythme avec notre sélection dance ou Motown, funk, trip-hop, R'n'B et disco",
+      "thirdLine": "Groove",
+      "songUuid": null,
+      "cover": "95cf76c3-26bc-404e-be1c-b81666188c3f",
+      "startTime": null,
+      "endTime": null
+    }
+  ],
+  "now": {
+    "firstLine": "Le direct",
+    "secondLine": "Gardez le rythme avec notre sélection dance ou Motown, funk, trip-hop, R'n'B et disco",
+    "thirdLine": "Groove",
+    "songUuid": null,
+    "cover": "95cf76c3-26bc-404e-be1c-b81666188c3f",
+    "startTime": null,
+    "endTime": null
+  },
+  "next": [
+    {
+      "firstLine": "Le direct",
+      "secondLine": "Gardez le rythme avec notre sélection dance ou Motown, funk, trip-hop, R'n'B et disco",
+      "thirdLine": "Groove",
+      "songUuid": null,
+      "cover": "95cf76c3-26bc-404e-be1c-b81666188c3f",
+      "startTime": null,
+      "endTime": null
+    }
+  ],
+  "delayToRefresh": 10000
+}

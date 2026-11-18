@@ -7,7 +7,7 @@ unchanged across pause/resume, so the debounced media-updated callback never
 fired. Also covers the stale-anchor bug this uncovered: the player's own
 elapsed-time anchor (_attr_elapsed_time_last_updated) is only advanced by the
 audio commit loop, which stops while paused, so it must be fast-forwarded on
-resume - and the snapshot the metadata push actually reads (self.state.current_media)
+resume - and the final value the metadata push actually reads (self.player.current_media)
 must be patched directly, since the queue controller that rebuilds it only
 refreshes its own cached anchor via a 500ms-debounced callback.
 """
@@ -27,18 +27,29 @@ from music_assistant.providers.sendspin.player import SendspinPlayer
 
 
 def _player(
-    *, playback_state: PlaybackState, current_media: PlayerMedia | None
+    *,
+    playback_state: PlaybackState,
+    current_media: PlayerMedia | None,
+    player_state: PlaybackState = PlaybackState.PLAYING,
 ) -> tuple[SendspinPlayer, Mock, AsyncMock]:
-    """Build a real (but un-__init__'d) SendspinPlayer so super() calls resolve correctly."""
+    """
+    Build a real (but un-__init__'d) SendspinPlayer so super() calls resolve correctly.
+
+    :param playback_state: What the protocol reports before the group event.
+    :param current_media: The media its player shows.
+    :param player_state: The playback state of its player after the group event.
+    """
     player = object.__new__(SendspinPlayer)
-    player._player_id = "p1"
+    player._protocol_id = "p1"
     player._attr_playback_state = playback_state
     player._attr_current_media = current_media
     player._attr_elapsed_time_last_updated = 1.0
     # update_state() is mocked out (its real implementation needs a fully-initialized
     # player/mass), so the snapshot it would normally rebuild is seeded directly here.
-    # The fix under test reads/mutates this via the `state` property, not update_state().
-    player._state = SimpleNamespace(current_media=current_media)  # type: ignore[assignment]
+    # The fix under test reads/mutates the state of the player, not update_state().
+    player._player = SimpleNamespace(  # type: ignore[assignment]
+        current_media=current_media, playback_state=player_state
+    )
     player.update_state = Mock()  # type: ignore[method-assign,misc]
     player.send_current_media_metadata = AsyncMock()  # type: ignore[method-assign]
     create_task = Mock(side_effect=lambda coro, **_kwargs: coro.close())
@@ -103,7 +114,7 @@ def test_synced_follower_does_no_resume_work() -> None:
     """
     A synced (non-leader) player never pushes metadata nor touches any anchor.
 
-    A follower's self.state.current_media is a reference to the leader's object,
+    The current_media a follower's player shows is a reference to the leader's object,
     so touching it here would corrupt the leader's anchor - the resume handling
     must be leader-only.
     """
@@ -143,3 +154,20 @@ def test_fresh_play_from_idle_does_not_refresh_anchors() -> None:
     assert player._attr_elapsed_time_last_updated == 1.0
     assert fresh_media.elapsed_time_last_updated == 42.0
     send_metadata.assert_called_once()
+
+
+def test_group_playing_without_its_player_playing_pushes_nothing() -> None:
+    """A group resume pushes no position while the player it plays for does not play."""
+    media = PlayerMedia(
+        uri="track-1", media_type=MediaType.TRACK, elapsed_time=19, elapsed_time_last_updated=1.0
+    )
+    player, _create_task, send_metadata = _player(
+        playback_state=PlaybackState.IDLE, current_media=media, player_state=PlaybackState.IDLE
+    )
+
+    with patch.object(SendspinPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
+        SendspinPlayer.group_event_cb(
+            player, Mock(), GroupStateChangedEvent(state=PlaybackStateType.PLAYING)
+        )
+
+    send_metadata.assert_not_called()

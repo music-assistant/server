@@ -7,7 +7,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '300',
     'media_type': 'album',
@@ -25,6 +25,7 @@
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': None,
@@ -76,7 +77,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '100',
     'media_type': 'artist',
@@ -94,6 +95,7 @@
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': None,
@@ -144,7 +146,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '200',
     'media_type': 'artist',
@@ -170,6 +172,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': None,
@@ -216,10 +219,11 @@
 # ---
 # name: test_parse_playlist_snapshot[minimal]
   dict({
+    'access': None,
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
@@ -239,6 +243,7 @@
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': None,
@@ -291,10 +296,11 @@
 # ---
 # name: test_parse_playlist_snapshot[other_user]
   dict({
+    'access': None,
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': False,
     'is_playable': True,
@@ -314,6 +320,7 @@
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': None,
@@ -375,7 +382,7 @@
     'duration': 180,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '400',
     'last_played': 0,
@@ -394,6 +401,7 @@
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': None,
@@ -448,7 +456,7 @@
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_playable': True,
       'item_id': '20',
       'media_type': 'album',
@@ -474,6 +482,7 @@
         ]),
         'label': None,
         'languages': None,
+        'last_musicbrainz_lookup': None,
         'last_refresh': None,
         'life_span': None,
         'links': None,
@@ -524,7 +533,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '10',
         'media_type': 'artist',
@@ -542,6 +551,7 @@
           'images': None,
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': None,
@@ -592,7 +602,7 @@
     'duration': 240,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '500',
     'last_played': 0,
@@ -619,6 +629,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': None,
