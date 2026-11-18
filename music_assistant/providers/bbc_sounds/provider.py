@@ -234,24 +234,20 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType] | None, limit: int = 5
     ) -> SearchResults:
-        """Perform search for BBC Sounds stations."""
+        """Perform search for BBC Sounds content."""
         results = SearchResults()
         search_result = await self.client.content.search(search_query)
         self.logger.debug(search_result)
+
         if media_types is None or MediaType.RADIO in media_types:
             radios = [await self.adaptor.new_object(radio) for radio in search_result.stations]
             results.radio = [radio for radio in radios if isinstance(radio, Radio)]
-        if (
-            media_types is None
-            or MediaType.TRACK in media_types
-            or MediaType.PODCAST_EPISODE in media_types
-        ):
-            episodes = [await self.adaptor.new_object(track) for track in search_result.episodes]
-            results.tracks = [track for track in episodes if type(track) is Track]
 
         if media_types is None or MediaType.PODCAST in media_types:
             podcasts = [await self.adaptor.new_object(show) for show in search_result.shows]
-            results.podcasts = [podcast for podcast in podcasts if isinstance(podcast, Podcast)]
+            results.podcasts = [
+                podcast for podcast in podcasts if isinstance(podcast, (Podcast, RadioShow))
+            ]
 
         return results
 
