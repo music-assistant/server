@@ -95,7 +95,7 @@ _REASONS: Final[dict[Verdict, str]] = {
         "version before it."
     ),
     Verdict.RESTART_TO_UPDATE: (
-        "Version {0} of this is ready. Restart Music Assistant to finish the update."
+        "Version {0} is ready. Restart Music Assistant to finish the update."
     ),
     Verdict.MOVED: (
         "This moved to the community catalog. Music Assistant installs it from there by itself "
