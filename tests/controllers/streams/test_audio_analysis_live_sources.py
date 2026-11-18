@@ -15,7 +15,10 @@ from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.media_items import AudioFormat, AudioSource
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.controllers.players.audio_sources import AudioSourceMixin, AudioSourceSession
+from music_assistant.controllers.players.audio_sources import (
+    AudioSourceSession,
+    PlayerAudioSourcesMixin,
+)
 from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 from music_assistant.controllers.streams import audio_analysis as audio_analysis_module
 from music_assistant.controllers.streams.audio import StreamsAudio
@@ -78,7 +81,7 @@ class _RecognizingProvider(AudioAnalysisProvider):
         return AudioAnalysisData(loudness_integrated=-14.0)
 
 
-class _Players(AudioSourceMixin):
+class _Players(PlayerAudioSourcesMixin):
     """The live source sessions of the player controller, with nothing else of it."""
 
     def __init__(self) -> None:

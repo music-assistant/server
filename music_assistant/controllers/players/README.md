@@ -715,10 +715,12 @@ and still waits for another one, holds that off.
   level. A group announcement goes to the
   members when they can start it together. An announcement holds the player (and its group) for as
   long as it plays.
-- **Audio sources** ([audio_sources.py](audio_sources.py)): a live source of a plugin (an
-  `AudioSource`, such as Spotify Connect) plays on a player independently of its queue. The
-  controller keeps the session per player and passes the transport commands for it to the plugin
-  that owns it; the queue keeps its items and goes inactive meanwhile.
+- **Audio sources** ([audio_sources.py](audio_sources.py)): a live source of a provider (an
+  `AudioSource`, such as Spotify Connect) plays on a player independently of its queue. Any
+  provider type can deliver them by mixing in `AudioSourceMixin`
+  (`music_assistant/models/media_capabilities.py`). The controller keeps the session per player
+  and passes the transport commands for it to the provider that owns it; the queue keeps its
+  items and goes inactive meanwhile.
 - **An app from outside**: an app Music Assistant did not start can play on an audio protocol of the
   player, such as a stream cast from a phone to its Chromecast receiver. The player shows it unless
   an audio protocol is its active output, its own protocol plays (a paused player keeps its place

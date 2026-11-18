@@ -2913,9 +2913,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue_data is None or queue_data.session_id is None:
             return False
         queue = queue_data.queue
-        if queue.state == PlaybackState.PAUSED or queue_data.halted_by_command:
+        if queue_data.halted_by_command or (
+            queue.state == PlaybackState.PAUSED and not queue_data.play_index_running
+        ):
             # a paused queue hands its slot over to a queue that starts, and one that was
-            # told to pause does so before its player has reported it
+            # told to pause does so before its player has reported it. A queue in the middle
+            # of its own play action goes on, though its player still reports the pause
             return False
         items: list[QueueItem | None] = list(self.mass.streams.audio.claimed_items(queue_id))
         # where the queue goes on, not where its player still is: a start points the
@@ -3447,6 +3450,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._set_transitioning(queue_id, True)
         try:
             queue_data = self._queue_data[queue_id]
+            queue_data.play_index_running = True
             queue = queue_data.queue
             queue.resume_pos = 0
             # A queue picked up from its end plays its items over from the start, so a resume point
@@ -3644,6 +3648,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 self.signal_update(queue_id)
         finally:
             self._set_transitioning(queue_id, False)
+            if (ended := self._queue_data.get(queue_id)) is not None:
+                ended.play_index_running = False
 
     async def _only_enqueues_by_default(
         self,

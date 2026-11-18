@@ -6,7 +6,7 @@ player's queue. A queue is Music Assistant's or it is not a queue: while an
 external source plays, the player's queue keeps its own items and goes inactive,
 exactly as it does for a line-in or TV input.
 
-This module provides the AudioSourceMixin class which is inherited by
+This module provides the PlayerAudioSourcesMixin class which is inherited by
 PlayerController to add per-player audio source sessions and the source commands.
 """
 
@@ -26,6 +26,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
     ProviderFeature,
+    ProviderType,
     RepeatMode,
     SourceControl,
 )
@@ -38,8 +39,8 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import AudioSource
 
 from music_assistant.helpers.api import api_command
+from music_assistant.models.media_capabilities import AudioSourceMixin, SourceControlValue
 from music_assistant.models.player import Player, PlayerMedia
-from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 from .base import _PlayerControllerBase
 from .constants import PlayerLockPurpose, SwitchedOffAction
@@ -131,7 +132,7 @@ class AudioSourceSession:
             self.stream_metadata_last_updated = time.time()
 
 
-class AudioSourceMixin(_PlayerControllerBase):
+class PlayerAudioSourcesMixin(_PlayerControllerBase):
     """
     Mixin class providing live audio source sessions for PlayerController.
 
@@ -168,22 +169,34 @@ class AudioSourceMixin(_PlayerControllerBase):
         """
         return any(session.active_source == source for session in self._source_sessions.values())
 
-    def get_player_audio_source(self, player_id: str) -> tuple[AudioSource, PluginProvider] | None:
+    def get_audio_source_providers(self) -> list[AudioSourceMixin]:
+        """Return the available providers that deliver AudioSources, of any provider type."""
+        return [
+            prov
+            for prov in self.mass.get_providers_supporting_feature(
+                ProviderFeature.AUDIO_SOURCE, priority=(ProviderType.PLUGIN, ProviderType.PLAYER)
+            )
+            if isinstance(prov, AudioSourceMixin)
+        ]
+
+    def get_player_audio_source(
+        self, player_id: str
+    ) -> tuple[AudioSource, AudioSourceMixin] | None:
         """
-        Return the AudioSource playing on the given player and its owning PluginProvider.
+        Return the AudioSource playing on the given player and its owning provider.
 
         Resolves the given player alone, so a group member playing its group's
         source has to be asked for by the group's id.
 
         Returns None when no source is playing on the player, or when the owning
-        plugin provider is no longer available.
+        provider is no longer available.
 
         :param player_id: The player whose source to resolve.
         """
         if (session := self._source_sessions.get(player_id)) is None:
             return None
         provider = self.mass.get_provider(session.provider_instance_id)
-        if not isinstance(provider, PluginProvider):
+        if not isinstance(provider, AudioSourceMixin):
             return None
         # a provider can drop the feature at runtime (reload, config change), which
         # would leave the control hooks raising NotImplementedError
@@ -519,13 +532,13 @@ class AudioSourceMixin(_PlayerControllerBase):
 
     async def release_provider_sources(self, provider_instance_id: str) -> None:
         """
-        Give up the sources a plugin owns on every player playing one.
+        Give up the sources a provider owns on every player playing one.
 
-        Call this when the plugin goes away: a session outliving its provider leaves
+        Call this when the provider goes away: a session outliving its provider leaves
         the player naming a source that can no longer be streamed nor handed back,
         with its own queue held inactive behind it.
 
-        :param provider_instance_id: Instance id of the plugin that is going away.
+        :param provider_instance_id: Instance id of the provider that is going away.
         """
         sessions = [
             (player_id, session.source_id, session.playback_session_id)
@@ -566,7 +579,7 @@ class AudioSourceMixin(_PlayerControllerBase):
 
         :param player_id: The player the source plays on.
         :param source: The AudioSource that was selected.
-        :param provider_instance_id: Instance id of the plugin exposing it.
+        :param provider_instance_id: Instance id of the provider exposing it.
         """
         session = self._source_sessions.get(player_id)
         if (
@@ -608,13 +621,15 @@ class AudioSourceMixin(_PlayerControllerBase):
             self.mass.streams.audio_processing.clear_source(player_id, session.playback_session_id)
         return self._source_sessions.pop(player_id, None)
 
-    def _get_active_audio_source(self, player: Player) -> tuple[AudioSource, PluginProvider] | None:
+    def _get_active_audio_source(
+        self, player: Player
+    ) -> tuple[AudioSource, AudioSourceMixin] | None:
         """
-        Return the live AudioSource a player is playing, and its owning PluginProvider.
+        Return the live AudioSource a player is playing, and its owning provider.
 
         A player hearing its group's or sync leader's audio is playing that player's
         source, so the owner is resolved the same way its active queue is. Returns
-        None when no source is playing on it, or when the owning plugin is gone.
+        None when no source is playing on it, or when the owning provider is gone.
 
         :param player: The player whose source to resolve.
         """
@@ -680,7 +695,7 @@ class AudioSourceMixin(_PlayerControllerBase):
         if (session := self.get_audio_source_session(player.player_id)) is None:
             return
         provider = self.mass.get_provider(session.provider_instance_id)
-        if not isinstance(provider, PluginProvider):
+        if not isinstance(provider, AudioSourceMixin):
             return
         await provider.on_volume_change(session.source_id, volume_level)
 
@@ -785,7 +800,7 @@ class AudioSourceMixin(_PlayerControllerBase):
             return
         self.trigger_player_update(player_id)
         provider = self.mass.get_provider(session.provider_instance_id)
-        if not isinstance(provider, PluginProvider):
+        if not isinstance(provider, AudioSourceMixin):
             return
         try:
             await provider.on_source_released(session.source_id, player_id)
@@ -834,12 +849,12 @@ class AudioSourceMixin(_PlayerControllerBase):
 
     async def _resolve_audio_source_uri(
         self, source: str
-    ) -> tuple[AudioSource, PluginProvider] | None:
+    ) -> tuple[AudioSource, AudioSourceMixin] | None:
         """
         Resolve a source string to a live AudioSource, if that is what it names.
 
         :param source: The source string a select names.
-        :return: The source and its owning plugin, or None when the string names
+        :return: The source and its owning provider, or None when the string names
             something else (a queue, a player-native source).
         """
         if "://" not in source:
@@ -855,14 +870,14 @@ class AudioSourceMixin(_PlayerControllerBase):
         if not isinstance(item, AudioSource):
             return None
         provider = self.mass.get_provider(item.provider)
-        if not isinstance(provider, PluginProvider):
+        if not isinstance(provider, AudioSourceMixin):
             return None
         if ProviderFeature.AUDIO_SOURCE not in provider.supported_features:
             return None
         return item, provider
 
     async def _start_audio_source(
-        self, player: Player, audio_source: AudioSource, provider: PluginProvider
+        self, player: Player, audio_source: AudioSource, provider: AudioSourceMixin
     ) -> None:
         """
         Start a live external source on a player.
@@ -872,7 +887,7 @@ class AudioSourceMixin(_PlayerControllerBase):
 
         :param player: The player to play the source on.
         :param audio_source: The source that was selected.
-        :param provider: The plugin exposing that source.
+        :param provider: The provider exposing that source.
         """
         # a player outputs one source at a time, so another one already on it has to be
         # handed back first: replacing the session silently would leave its plugin
@@ -964,7 +979,7 @@ class AudioSourceMixin(_PlayerControllerBase):
         # exposes EXACTLY ONE AudioSource (it was always a 1:1 mapping under
         # the old API; multi-source providers have to use the explicit URI).
         if (legacy_prov := self.mass.get_provider(source)) and isinstance(
-            legacy_prov, PluginProvider
+            legacy_prov, AudioSourceMixin
         ):
             if ProviderFeature.AUDIO_SOURCE not in legacy_prov.supported_features:
                 raise PlayerCommandFailed(f"Provider {source} does not expose AudioSources")

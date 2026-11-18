@@ -24,7 +24,8 @@ INSTRUCTIONS = (
     "on the speakers (players) in the home. Use these tools to search for media, start "
     "playback, control players (pause, skip, volume, grouping), inspect the play queue and "
     "manage favorites and playlists. Players and media can be referred to by name; a uri "
-    "returned by an earlier tool call is the most precise way to refer to an item."
+    "returned by an earlier tool call is the most precise way to refer to an item. Tools named "
+    "<provider>__<tool> come from a provider and act on that provider."
 )
 
 SearchMediaType = Literal[

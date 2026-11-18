@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import CONF_AI, CONF_CORE
+from music_assistant.constants import CONF_AI, CONF_CORE, CONF_PROVIDERS
 from music_assistant.controllers.ai import AIController
+from music_assistant.controllers.players.controller import PlayerController
+from music_assistant.helpers.plugin_engines import EngineKind, EngineSetting
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
+from music_assistant.providers.ai_radio.provider import AIRadioProvider
+from music_assistant.providers.music_quiz import MusicQuizPlugin
+from music_assistant.providers.playlist_metadata import PlaylistMetadataProvider
+from music_assistant.providers.smart_playlist import SmartPlaylistProvider
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -41,6 +48,31 @@ async def _set_up(mass: MusicAssistant, *plugins: MagicMock) -> AIController:
     mass.ai = AIController(mass)
     await mass.ai.setup(await mass.config.get_core_config(CONF_AI))
     return mass.ai
+
+
+def _create_owner(
+    instance_id: str, name: str, engine_settings: tuple[EngineSetting, ...]
+) -> MagicMock:
+    """Create a mock loaded provider declaring the given engine settings."""
+    provider = MagicMock(spec=PluginProvider)
+    provider.instance_id = instance_id
+    provider.domain = instance_id
+    provider.name = name
+    provider.engine_settings = engine_settings
+    return provider
+
+
+def _store_provider(
+    mass: MusicAssistant,
+    instance_id: str,
+    values: dict[str, Any],
+    setup_data: dict[str, Any] | None = None,
+) -> None:
+    """Store the config of a provider instance."""
+    mass.config.set(
+        f"{CONF_PROVIDERS}/{instance_id}",
+        {"instance_id": instance_id, "values": values, "setup_data": setup_data or {}},
+    )
 
 
 async def test_entries_pick_the_default_of_each_kind(mass_minimal: MusicAssistant) -> None:
@@ -101,3 +133,132 @@ async def test_saving_another_default(mass_minimal: MusicAssistant) -> None:
         "plugin_a/bravo"
     )
     assert controller.config.get_value("text_engine") == "plugin_a/bravo"
+
+
+async def test_engines_of_one_kind(mass_minimal: MusicAssistant) -> None:
+    """The engines of the asked kind are listed with their plugin."""
+    controller = await _set_up(mass_minimal, _create_plugin())
+
+    assert await controller.get_engines(EngineKind.SPEECH) == [
+        {
+            "uid": "plugin_a/voice",
+            "name": "Plugin A | Voice",
+            "kind": EngineKind.SPEECH,
+            "provider": "plugin_a",
+        },
+    ]
+
+
+async def test_engines_of_all_kinds(mass_minimal: MusicAssistant) -> None:
+    """Without a kind, the text, speech and image engines are listed in that order."""
+    controller = await _set_up(mass_minimal, _create_plugin())
+
+    assert [(engine["kind"], engine["uid"]) for engine in await controller.get_engines()] == [
+        (EngineKind.TEXT, "plugin_a/alpha"),
+        (EngineKind.TEXT, "plugin_a/bravo"),
+        (EngineKind.SPEECH, "plugin_a/voice"),
+    ]
+
+
+async def test_usage_lists_the_engine_settings(mass_minimal: MusicAssistant) -> None:
+    """Each declared setting is listed with the engine it selects, core modules first."""
+    # every configurable core module must be there to be asked for its settings
+    await mass_minimal._load_core_controllers()
+    controller = await _set_up(mass_minimal, _create_plugin())
+    quiz = _create_owner("music_quiz", "Music Quiz", (EngineSetting(EngineKind.TEXT, "ai_engine"),))
+    radio = _create_owner(
+        "ai_radio",
+        "AI Radio",
+        (
+            EngineSetting(EngineKind.TEXT, "ai_engine", in_setup_data=True),
+            EngineSetting(EngineKind.SPEECH, "tts_engine", in_setup_data=True),
+        ),
+    )
+    plain = _create_owner("plain", "Plain", ())
+    mass_minimal.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[quiz, radio, plain]
+    )
+    _store_provider(mass_minimal, "music_quiz", values={"ai_engine": "plugin_a/bravo"})
+    _store_provider(
+        mass_minimal,
+        "ai_radio",
+        # the options value of the same key is not the one the setup flow set
+        values={"ai_engine": "plugin_a/bravo"},
+        setup_data={"ai_engine": "global", "tts_engine": "plugin_a/gone"},
+    )
+
+    assert await controller.get_usage() == [
+        {
+            "owner_type": "core",
+            "owner": "players",
+            "domain": "players",
+            "name": "Player Controller",
+            "key": "announce_tts_engine",
+            "kind": EngineKind.SPEECH,
+            "in_setup_data": False,
+            "follows_default": True,
+            "engine": "plugin_a/voice",
+        },
+        {
+            "owner_type": "provider",
+            "owner": "ai_radio",
+            "domain": "ai_radio",
+            "name": "AI Radio",
+            "key": "ai_engine",
+            "kind": EngineKind.TEXT,
+            "in_setup_data": True,
+            "follows_default": True,
+            "engine": "plugin_a/alpha",
+        },
+        {
+            "owner_type": "provider",
+            "owner": "ai_radio",
+            "domain": "ai_radio",
+            "name": "AI Radio",
+            "key": "tts_engine",
+            "kind": EngineKind.SPEECH,
+            "in_setup_data": True,
+            "follows_default": False,
+            "engine": None,
+        },
+        {
+            "owner_type": "provider",
+            "owner": "music_quiz",
+            "domain": "music_quiz",
+            "name": "Music Quiz",
+            "key": "ai_engine",
+            "kind": EngineKind.TEXT,
+            "in_setup_data": False,
+            "follows_default": False,
+            "engine": "plugin_a/bravo",
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("owner", "expected"),
+    [
+        (PlayerController, (EngineSetting(EngineKind.SPEECH, "announce_tts_engine"),)),
+        (
+            AIRadioProvider,
+            (
+                EngineSetting(EngineKind.TEXT, "ai_engine", in_setup_data=True),
+                EngineSetting(EngineKind.SPEECH, "tts_engine", in_setup_data=True),
+            ),
+        ),
+        (SmartPlaylistProvider, (EngineSetting(EngineKind.TEXT, "ai_engine"),)),
+        (MusicQuizPlugin, (EngineSetting(EngineKind.TEXT, "ai_engine"),)),
+        (
+            PlaylistMetadataProvider,
+            (
+                EngineSetting(EngineKind.IMAGE, "ai_image_engine"),
+                EngineSetting(EngineKind.TEXT, "ai_text_engine"),
+            ),
+        ),
+    ],
+)
+def test_features_declare_their_engine_settings(
+    owner: type[Any], expected: tuple[EngineSetting, ...]
+) -> None:
+    """Every feature using an engine declares its engine settings for the usage overview."""
+    assert owner.engine_settings == expected

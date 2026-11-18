@@ -465,20 +465,21 @@ async def test_a_paused_queue_that_starts_a_track_is_not_stopped_by_a_start_that
     paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED, realtime=True)
     starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
 
-    async def _play_action() -> AudioBuffer:
-        # what a play action of the paused queue does: it holds the player while it loads the
-        # track and hands it over, and is under way until its player confirms or the wait for
-        # that ends. A slow speaker reports the pause all that time
-        rig.queues._set_transitioning(PAUSED_QUEUE, True)
-        try:
-            async with rig.playback_lock(PAUSED_QUEUE):
-                buffer = await rig.fill(paused_item)
-                await asyncio.sleep(0.2)
-                return buffer
-        finally:
-            rig.queues._set_transitioning(PAUSED_QUEUE, False)
+    async def _load(item: QueueItem, **_kwargs: Any) -> None:
+        await rig.fill(item)
 
-    playing = asyncio.create_task(_play_action())
+    @contextlib.asynccontextmanager
+    async def _slow_confirmation(*_args: Any, **_kwargs: Any) -> AsyncIterator[None]:
+        # a slow speaker reports the pause until the wait for it to play has ended
+        yield
+        await asyncio.sleep(0.2)
+
+    rig.queues._load_item = _load  # type: ignore[method-assign,assignment]
+    rig.queues._repin_sleep_timer = MagicMock()  # type: ignore[method-assign]
+    rig.queues.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
+    rig.mass.players.wait_for_player_update = _slow_confirmation
+    rig.mass.players.play_media = AsyncMock()
+    playing = asyncio.create_task(rig.queues._play_index(PAUSED_QUEUE, 0, 0, False))
     while not rig.provider.stream_slot_holders:
         await asyncio.sleep(0)
     rig.audio._get_media_stream = _endless_source  # type: ignore[method-assign]
@@ -488,13 +489,59 @@ async def test_a_paused_queue_that_starts_a_track_is_not_stopped_by_a_start_that
     for _ in range(10):
         await asyncio.sleep(0)
     first_audio.set()
-    paused_buffer = await playing
 
     with pytest.raises(ProviderStreamHeldError):
         await asyncio.wait_for(starting, 5)
+    await playing
     rig.stop_device.assert_not_awaited()
+    assert paused_item.streamdetails is not None
+    paused_buffer = paused_item.streamdetails.buffer
+    assert paused_buffer is not None
     assert paused_buffer.is_buffering
     await paused_buffer.clear()
+
+
+async def test_a_paused_queue_that_rebuilds_its_upcoming_tracks_hands_its_slot_over(
+    rig: _Rig,
+) -> None:
+    """A paused dynamic queue that refills its upcoming tracks starts nothing, so it is paused."""
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED, realtime=True)
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+    paused_buffer = await rig.fill(paused_item)
+    queue_data = rig.queues._queue_data[PAUSED_QUEUE]
+    queue_data.queue.is_dynamic = True
+    filling = asyncio.Event()
+    filled = asyncio.Event()
+
+    async def _fill_pool(*_args: Any, **_kwargs: Any) -> list[Any]:
+        filling.set()
+        await filled.wait()
+        return [paused_item.media_item]
+
+    rig.queues._managed_pool = SimpleNamespace(fill=_fill_pool)  # type: ignore[assignment]
+    rig.queues.is_smart_shuffle_active = MagicMock(return_value=False)  # type: ignore[method-assign]
+    rig.queues.load = AsyncMock()  # type: ignore[method-assign]
+    rig.queues.update_next_item_on_player = MagicMock()  # type: ignore[method-assign]
+
+    async def _add() -> None:
+        async with rig.playback_lock(PAUSED_QUEUE):
+            await rig.queues._enter_dynamic_mode(PAUSED_QUEUE, QueueOption.ADD)
+
+    adding = asyncio.create_task(_add())
+    await filling.wait()
+    starting = asyncio.create_task(
+        rig.audio.get_audio_buffer(starting_item, reason="prepare", capacity_wait_timeout=2)
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+    filled.set()
+    await adding
+    buffer = await asyncio.wait_for(starting, 5)
+
+    assert buffer is not None
+    rig.stop_device.assert_awaited_once_with(PAUSED_QUEUE)
+    assert paused_buffer.cancelled
+    await buffer.clear()
 
 
 async def test_an_item_resuming_from_its_own_buffer_is_not_refused(rig: _Rig) -> None:

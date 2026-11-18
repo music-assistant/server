@@ -51,6 +51,7 @@ from music_assistant_models.unique_list import UniqueList
 from PIL import Image, ImageDraw, ImageOps
 
 from music_assistant.helpers.images import get_image_data
+from music_assistant.helpers.plugin_engines import EngineKind, EngineSetting
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
@@ -60,6 +61,8 @@ from .ai import PREVIEW_KEYS, AIArtwork, write_file
 from .ai_constants import (
     CONF_ACTION_PREVIEW,
     CONF_ACTION_REGENERATE,
+    CONF_IMAGE_ENGINE,
+    CONF_TEXT_ENGINE,
     IMAGE_GRACE_SECONDS,
     IMAGE_PREFIX,
     TEMPLATE_AI,
@@ -115,6 +118,10 @@ class PlaylistMetadataProvider(MetadataProvider):
 
     # the key of the artwork template setting, for the AI entries that depend on it
     template_key: Final[str] = CONF_TEMPLATE
+    engine_settings = (
+        EngineSetting(EngineKind.IMAGE, CONF_IMAGE_ENGINE),
+        EngineSetting(EngineKind.TEXT, CONF_TEXT_ENGINE),
+    )
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return config entries for the provider."""
