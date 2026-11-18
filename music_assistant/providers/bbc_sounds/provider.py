@@ -46,9 +46,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers import datetime
+from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
-from music_assistant.providers.bbc_sounds.adaptor import Adaptor, ConversionError
+from music_assistant.providers.bbc_sounds.adaptor import Adaptor, ConversionError, _release_date
 from music_assistant.providers.bbc_sounds.browse import BrowseManager
 from music_assistant.providers.bbc_sounds.constants import Constants
 from music_assistant.providers.bbc_sounds.live_rewind import (
@@ -170,13 +171,15 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         podcast_episodes = await self.client.content.get_podcast_episodes(
             prov_podcast_id, max_items=MAX_PODCAST_EPISODES
         )
+        positions = rank_episodes_by_date([_release_date(episode) for episode in podcast_episodes])
         if podcast_episodes:
-            for episode in podcast_episodes:
+            for episode, position in zip(podcast_episodes, positions, strict=True):
                 try:
                     this_episode = await self.adaptor.new_object(
                         source_obj=episode, force_type=PodcastEpisode
                     )
                     if this_episode and isinstance(this_episode, PodcastEpisode):
+                        this_episode.position = position
                         yield this_episode
                 except ConversionError:
                     self.logger.error("Couldn't convert podcast episode %s", episode)
