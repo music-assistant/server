@@ -68,6 +68,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._hand_over_tasks = set()
     player._airplay_rejoin_members = set()
     player._own_airplay_session = False
+    player._reported_bonded_ids = set()
     player.upnp = MagicMock(
         follow=AsyncMock(), unfollow=AsyncMock(), follows=False, player_ip="192.168.1.20"
     )
@@ -79,6 +80,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     client.player.has_subwoofer = False
     client.player.has_surrounds = False
     client.player.is_stereo_pair = False
+    client.player.bonded_player_ids = []
     player.client = client
     player._provider = MagicMock(get_protocol=lambda pid: player.mass.players.get_protocol(pid))
     player._on_detach_callbacks = []
