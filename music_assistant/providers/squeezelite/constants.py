@@ -15,6 +15,8 @@ DEFAULT_SLIMPROTO_PORT = 3483
 CONF_DISPLAY = "display"
 CONF_VISUALIZATION = "visualization"
 CONF_STORED_VOLUME = "stored_volume"
+# category for caching previous player state (bumped to invalidate old format)
+CACHE_CATEGORY_PREV_STATE = 1
 
 DEFAULT_PLAYER_VOLUME = 20
 DEFAULT_VISUALIZATION = SlimVisualisationType.NONE

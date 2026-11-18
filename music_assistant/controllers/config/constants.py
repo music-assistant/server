@@ -35,6 +35,7 @@ from music_assistant.constants import (
     CONF_PROTOCOL_DEFAULTS,
     CONF_PROTOCOL_EXPERIMENTAL_NOTE,
     CONF_PROTOCOL_IDENTIFIERS,
+    CONF_PROTOCOL_OFF_BY_DEFAULT,
     CONF_REPORTED_MAC,
     CONF_SESSION_ONLY,
     CONF_TTS_PRE_ANNOUNCE,
@@ -117,10 +118,12 @@ AUTOMATIC_VALUE_KEYS: Final = frozenset(
         CONF_SESSION_ONLY,
         "sendspin_static_delay",
         "sendspin_bridge_static_delays",
+        "sendspin_cast_opt_in",
         "sendspin_opt_out_pending",
         "sendspin_unsupported",
         "stored_volume",
         CONF_PROTOCOL_EXPERIMENTAL_NOTE,
+        CONF_PROTOCOL_OFF_BY_DEFAULT,
         CONF_UNDERLYING_PLAYER_ID,
     }
 )

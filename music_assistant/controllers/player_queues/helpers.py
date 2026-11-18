@@ -172,7 +172,12 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                 ) is not None and player.offline_by_power_control:
                     if switched_off == SwitchedOffAction.REFUSE:
                         msg = f"Player {player.name} is switched off"
-                        raise PlayerUnavailableError(msg)
+                        raise PlayerUnavailableError(
+                            msg,
+                            translation_key="player_switched_off",
+                            translation_owner=self.mass.players.translation_owner,
+                            translation_args=[player.name],
+                        )
                     if switched_off == SwitchedOffAction.IGNORE:
                         return None
                     if switched_off == SwitchedOffAction.POWER_ON:

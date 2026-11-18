@@ -19,9 +19,12 @@ from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
+    CACHE_CATEGORY_PREV_STATE,
     CONF_CLI_JSON_PORT,
     CONF_CLI_TELNET_PORT,
     CONF_DISCOVERY,
+    CONF_STORED_VOLUME,
+    DEFAULT_PLAYER_VOLUME,
     DEFAULT_SLIMPROTO_PORT,
 )
 from .player import SqueezelitePlayer
@@ -98,6 +101,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             control_port=control_port,
             cli_command_handler=self._handle_cli_command,
             clock=self._server_time,
+            initial_volume=self._get_initial_volume,
         )
 
     async def loaded_in_mass(self) -> None:
@@ -284,3 +288,15 @@ class SqueezelitePlayerProvider(PlayerProvider):
                 protocol.display_name,
                 err,
             )
+
+    async def _get_initial_volume(self, player_id: str) -> int:
+        """Return the volume a slimproto player starts at on connect: its last one, else default."""
+        if (
+            volume := self.mass.config.get_protocol_value(player_id, CONF_STORED_VOLUME)
+        ) is not None:
+            return cast("int", volume)
+        # older versions kept it in an (expiring) cache entry
+        last_state = await self.mass.cache.get(
+            key=player_id, provider=self.instance_id, category=CACHE_CATEGORY_PREV_STATE
+        )
+        return cast("int", last_state[1]) if last_state else DEFAULT_PLAYER_VOLUME

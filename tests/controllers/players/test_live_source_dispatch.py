@@ -13,14 +13,19 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import (
     PlaybackState,
+    PlayerFeature,
     ProviderFeature,
     RepeatMode,
     SourceControl,
 )
-from music_assistant_models.errors import InvalidCommand, PlayerCommandFailed
+from music_assistant_models.errors import (
+    InvalidCommand,
+    PlayerCommandFailed,
+    UnsupportedFeaturedException,
+)
 from music_assistant_models.media_items import AudioSource
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
-from music_assistant_models.player import PlayerSource
+from music_assistant_models.player import PlayerSoundMode, PlayerSource
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.audio_sources import AudioSourceSession
@@ -343,9 +348,11 @@ async def test_a_device_native_source_without_the_capability_is_refused(
     """A source that does not claim to order its own content is told no, not left waiting."""
     controller, protocol = _native_source_controller()
 
-    with pytest.raises(PlayerCommandFailed, match="unavailable for this source"):
+    with pytest.raises(PlayerCommandFailed, match="unavailable for this source") as error:
         await getattr(controller, command)(PLAYER_ID, **kwargs)
 
+    assert error.value.translation_key == "source_control_unsupported"
+    assert error.value.translation_args == ["Player 1"]
     assert not protocol.shuffle_calls
     assert not protocol.repeat_calls
 
@@ -365,11 +372,81 @@ async def test_a_command_aimed_at_a_source_that_stopped_is_refused() -> None:
     )
     controller.mass.player_queues.set_shuffle = AsyncMock()  # type: ignore[method-assign]
 
-    with pytest.raises(PlayerCommandFailed, match="no longer playing"):
+    with pytest.raises(PlayerCommandFailed, match="no longer playing") as error:
         await controller.cmd_shuffle(PLAYER_ID, shuffle_enabled=True, source_id=NATIVE_SOURCE_ID)
 
+    assert error.value.translation_key == "source_no_longer_playing"
+    assert error.value.translation_args == ["Player 1"]
     controller.mass.player_queues.set_shuffle.assert_not_awaited()
     assert not protocol.shuffle_calls
+
+
+async def test_a_source_the_device_does_not_have_is_refused_by_its_name() -> None:
+    """Selecting a source that is not in the list of the device says which one it lacks."""
+    controller, protocol = _native_source_controller()
+    protocol._attr_supported_features.add(PlayerFeature.SELECT_SOURCE)
+    # an idle device has nothing to stop before the source changes
+    protocol._attr_playback_state = PlaybackState.IDLE
+    controller.get_player(PLAYER_ID).update_state(signal_event=False)  # type: ignore[union-attr]
+
+    with pytest.raises(PlayerCommandFailed, match="invalid source") as error:
+        await controller.select_source(PLAYER_ID, "HDMI 2")
+
+    assert error.value.translation_key == "source_not_found"
+    assert error.value.translation_args == ["Player 1", "HDMI 2"]
+
+
+async def test_a_sound_mode_the_device_does_not_have_is_refused_by_its_name() -> None:
+    """Selecting a sound mode that is not in the list of the device says which one it lacks."""
+    controller, protocol = _native_source_controller()
+    protocol._attr_supported_features.add(PlayerFeature.SELECT_SOUND_MODE)
+    protocol._attr_sound_mode_list = [PlayerSoundMode(id="music", name="Music")]
+    controller.get_player(PLAYER_ID).update_state(signal_event=False)  # type: ignore[union-attr]
+
+    with pytest.raises(PlayerCommandFailed, match="invalid sound_mode") as error:
+        await controller.select_sound_mode(PLAYER_ID, "movie")
+
+    assert error.value.translation_key == "sound_mode_not_found"
+    assert error.value.translation_args == ["Player 1", "movie"]
+
+
+async def test_a_device_that_can_not_seek_says_so() -> None:
+    """A seek in a source that allows it, on a device that can not seek, names the device."""
+    controller, protocol = _native_source_controller()
+    protocol._attr_source_list = [PlayerSource(id=NATIVE_SOURCE_ID, name="Spotify", can_seek=True)]
+    controller.get_player(PLAYER_ID).update_state(signal_event=False)  # type: ignore[union-attr]
+
+    with pytest.raises(UnsupportedFeaturedException) as error:
+        await controller.cmd_seek(PLAYER_ID, 10)
+
+    assert error.value.translation_key == "player_cannot_seek"
+    assert error.value.translation_args == ["Player 1"]
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "translation_key"),
+    [
+        ("cmd_next_track", (), "player_cannot_skip_tracks"),
+        ("cmd_previous_track", (), "player_cannot_skip_tracks"),
+        ("select_source", ("HDMI 2",), "player_no_sources"),
+        ("select_sound_mode", ("movie",), "player_no_sound_modes"),
+    ],
+)
+async def test_a_command_the_device_has_no_ability_for_says_what_it_lacks(
+    command: str, args: tuple[Any, ...], translation_key: str
+) -> None:
+    """A device without the ability a command needs is refused with the ability it lacks."""
+    controller, protocol = _native_source_controller()
+    # an idle device without sources of its own: nothing to stop and nothing to choose from
+    protocol._attr_source_list = []
+    protocol._attr_playback_state = PlaybackState.IDLE
+    controller.get_player(PLAYER_ID).update_state(signal_event=False)  # type: ignore[union-attr]
+
+    with pytest.raises(UnsupportedFeaturedException) as error:
+        await getattr(controller, command)(PLAYER_ID, *args)
+
+    assert error.value.translation_key == translation_key
+    assert error.value.translation_args == ["Player 1"]
 
 
 async def test_a_command_aimed_at_the_queue_still_reaches_it() -> None:

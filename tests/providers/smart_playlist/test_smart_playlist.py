@@ -2266,9 +2266,10 @@ async def test_enrich_tracks_with_db_genres_handles_empty_list() -> None:
 
 
 @pytest.mark.asyncio
-async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
-    """Seed mode should enrich genres when excluded_genre_ids or excluded_genre_names are set."""
+async def test_seed_mode_checks_genre_links_when_excluded_genres_present() -> None:
+    """Seed mode checks excluded genres by the library links, without enriching genres."""
     mass = MagicMock()
+    mass.music.genres.tracks_in_genres = AsyncMock(return_value=set())
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
     config = MagicMock()
@@ -2288,7 +2289,7 @@ async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
     # Mock _tracks_from_seeds to return our test track
     cast("Any", plugin)._tracks_from_seeds = AsyncMock(return_value=[track])
 
-    # Mock _enrich_tracks_with_db_genres to verify it gets called
+    # Mock _enrich_tracks_with_db_genres to verify it is not called
     enrich_mock = AsyncMock()
     cast("Any", plugin)._enrich_tracks_with_db_genres = enrich_mock
 
@@ -2306,8 +2307,8 @@ async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
     )
     await plugin._evaluate_rules(rules)
 
-    # Verify enrichment was called in seed mode
-    enrich_mock.assert_called_once()
+    enrich_mock.assert_not_called()
+    mass.music.genres.tracks_in_genres.assert_awaited_once_with([1], [track])
 
 
 @pytest.mark.asyncio
@@ -2401,8 +2402,8 @@ def _make_ai_plugin(
     """
     Build a SmartPlaylistProvider wired for AI-description tests.
 
-    :param ai_engine: The stored engine selection; defaults to the given provider's engine,
-        as the load-time seeding would have stored it. Pass "" to start out unseeded.
+    :param ai_engine: The stored engine selection; defaults to the given provider's engine.
+        Pass "" to follow the default engine.
     """
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
@@ -2574,24 +2575,24 @@ async def test_generate_ai_description_stays_on_the_configured_engine(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_first_use_adopts_a_concrete_engine_selection(tmp_path: Any) -> None:
-    """An instance without a stored selection adopts one on first use, not at load."""
+async def test_without_a_selection_the_default_engine_is_used(tmp_path: Any) -> None:
+    """An instance without a selection of its own uses the default engine, stored nowhere else."""
     ai_provider = _make_ai_provider("Chill evening vibes.")
     plugin = _make_ai_plugin(tmp_path, ai_provider=ai_provider, ai_engine="")
     await plugin.handle_async_init()
     mass = cast("Any", plugin.mass)
-    mass.config.set_raw_provider_config_value.assert_not_called()
+    mass.config.get_raw_core_config_value.return_value = None
 
     assert (
         await plugin._generate_ai_description("Evening Chill", SmartPlaylistRules())
         == "Chill evening vibes."
     )
 
-    assert mass.config.set_raw_provider_config_value.call_args.args == (
-        plugin.instance_id,
-        CONF_AI_ENGINE,
-        "ai--1/engine",
+    # the engine is adopted as the default, the provider keeps following it
+    mass.config.set_raw_core_config_value.assert_called_once_with(
+        "ai", "text_engine", "ai--1/engine"
     )
+    mass.config.set_raw_provider_config_value.assert_not_called()
 
 
 @pytest.mark.asyncio

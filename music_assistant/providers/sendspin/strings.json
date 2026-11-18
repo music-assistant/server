@@ -194,6 +194,10 @@
         "this_device": "This device"
       }
     },
+    "allow_audio_analysis": {
+      "label": "[%key:common::config_entries::allow_audio_analysis::label%]",
+      "description": "[%key:common::config_entries::allow_audio_analysis::description%]"
+    },
     "source_autostart_unavailable": {
       "label": "This device does not support automatically playing its line-in on a speaker."
     },

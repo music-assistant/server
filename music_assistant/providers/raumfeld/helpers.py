@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse, urlsplit
 import aiohttp
 import defusedxml.ElementTree as DefusedET
 from async_upnp_client.search import async_search
-from music_assistant_models.enums import RepeatMode
+from music_assistant_models.enums import ChannelLayout, PlayerType, RepeatMode
 
 from music_assistant.helpers.util import try_parse_duration
 
@@ -73,6 +73,19 @@ def room_udn_to_protocol_id(room_udn: str) -> str:
     :param room_udn: The room UDN (e.g. ``uuid:1234...``).
     """
     return f"{PROTOCOL_ID_PREFIX}_{room_udn.removeprefix('uuid:')}"
+
+
+def room_player_type(speakers: int) -> tuple[PlayerType, ChannelLayout | None]:
+    """
+    Return the player type and channel layout of a room with the given number of speakers.
+
+    :param speakers: The number of speakers (renderers) the host lists in the room.
+    """
+    if speakers <= 1:
+        return PlayerType.PLAYER, None
+    # every speaker of a room plays the same stereo sound (a Stereo M is a pair of its own, a
+    # Connector drives one): the host gives no speaker a channel of its own
+    return PlayerType.MULTI_CHANNEL, ChannelLayout.STEREO
 
 
 def parse_serial_number(description_xml: str | None) -> str | None:

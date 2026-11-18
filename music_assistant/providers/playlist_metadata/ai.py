@@ -44,10 +44,12 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from music_assistant.helpers.json import json_dumps
 from music_assistant.helpers.plugin_engines import (
+    EngineKind,
     create_ai_engine_config_entries,
     create_image_engine_config_entries,
-    select_ai_engine,
-    select_image_engine,
+    has_engine_choice,
+    resolve_ai_engine_setting,
+    resolve_image_engine_setting,
 )
 
 from .ai_constants import (
@@ -457,14 +459,10 @@ class AIArtwork:
         playlist_id = self.provider.config.get_value(CONF_PREVIEW_PLAYLIST)
         if not playlist_id:
             raise ActionUnavailable("Pick a playlist to preview first")
-        image_engine = await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
+        image_engine = await self._image_engine()
         if image_engine is None:
             raise ActionUnavailable("Pick an image engine first")
-        text_engine = (
-            await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
-            if self.descriptions_enabled
-            else None
-        )
+        text_engine = await self._text_engine() if self.descriptions_enabled else None
         playlist = await self.mass.music.playlists.get_library_item(str(playlist_id))
         looks = self._preview_looks()
         if self._preview_lock.locked():
@@ -595,7 +593,7 @@ class AIArtwork:
             os.path.isfile, os.path.join(self._images_dir, current.path)
         ):
             current = None
-        image_engine = await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
+        image_engine = await self._image_engine()
         if image_engine is None:
             return current
         if (file_name := await self._file_name(playlist, image_engine)) is None:
@@ -624,7 +622,7 @@ class AIArtwork:
         """
         if not self.descriptions_enabled or not self.in_scope(playlist):
             return
-        text_engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+        text_engine = await self._text_engine()
         if text_engine is None or not await self._may_describe(playlist):
             return
         if (checksum := await self._description_checksum(playlist, text_engine)) is None:
@@ -725,16 +723,8 @@ class AIArtwork:
 
     async def _refresh_playlists(self) -> None:
         """Make one pass over the library playlists for the refresh."""
-        image_engine = (
-            await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
-            if self.covers_enabled
-            else None
-        )
-        text_engine = (
-            await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
-            if self.descriptions_enabled
-            else None
-        )
+        image_engine = await self._image_engine() if self.covers_enabled else None
+        text_engine = await self._text_engine() if self.descriptions_enabled else None
         ai_enabled = self.covers_enabled or self.descriptions_enabled
         async for playlist in self.mass.music.playlists.iter_library_items():
             own_images = self.own_images(playlist)
@@ -904,7 +894,7 @@ class AIArtwork:
             or await self._has_own_artwork(playlist)
         ):
             return False
-        engine = await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
+        engine = await self._image_engine()
         if engine is None:
             return False
         if (file_name := await self._file_name(playlist, engine)) is None:
@@ -938,7 +928,7 @@ class AIArtwork:
         """
         if not self.descriptions_enabled or not self.in_scope(playlist):
             return False
-        engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+        engine = await self._text_engine()
         if engine is None or not await self._may_describe(playlist):
             return False
         if (checksum := await self._description_checksum(playlist, engine)) is None:
@@ -1301,7 +1291,7 @@ class AIArtwork:
         """Return the visual concept sentence, written by the prompt engine when one is used."""
         if not self.provider.config.get_value(CONF_USE_PROMPT_ENGINE):
             return DEFAULT_CONCEPT
-        engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+        engine = await self._text_engine()
         if engine is None or self._engine_paused_for(ENGINE_TEXT):
             # the worker waits for a paused engine, so this serves previews and a cover that
             # was already under way when the engine was paused
@@ -1375,10 +1365,12 @@ class AIArtwork:
         style = self._style()
         prompt_engine = ""
         if self.provider.config.get_value(CONF_USE_PROMPT_ENGINE):
-            # the engine the concept is written with, also when it is only picked as it is used
-            text_engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
-            if text_engine is None and self.provider.config.get_value(CONF_TEXT_ENGINE):
-                # the picked engine is gone for now, so the current cover stays
+            # the engine the concept is written with, also when it follows the default
+            text_engine = await self._text_engine()
+            if text_engine is None and has_engine_choice(
+                self.mass, EngineKind.TEXT, self.provider.config.get_value(CONF_TEXT_ENGINE)
+            ):
+                # the picked (or default) engine is gone for now, so the current cover stays
                 return None
             prompt_engine = text_engine.uid if text_engine else ""
         key = json_dumps(
@@ -1456,6 +1448,18 @@ class AIArtwork:
         limit = self.provider.config.get_value(CONF_MAX_PER_HOUR)
         limit = limit if isinstance(limit, int) and limit > 0 else DEFAULT_MAX_PER_HOUR
         return max(0, limit - len(timestamps))
+
+    async def _image_engine(self) -> ImageEngine | None:
+        """Return the engine the covers are drawn with, None when it is not available."""
+        return await resolve_image_engine_setting(
+            self.mass, self.provider.config.get_value(CONF_IMAGE_ENGINE)
+        )
+
+    async def _text_engine(self) -> AIEngine | None:
+        """Return the engine the descriptions and concepts are written with, None if unavailable."""
+        return await resolve_ai_engine_setting(
+            self.mass, self.provider.config.get_value(CONF_TEXT_ENGINE)
+        )
 
     def _style(self) -> Style:
         """Return the configured style."""

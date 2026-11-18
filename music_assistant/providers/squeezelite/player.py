@@ -37,7 +37,6 @@ from .constants import (
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
     CONF_STORED_VOLUME,
-    DEFAULT_PLAYER_VOLUME,
     REPEATMODE_MAP,
     STATE_MAP,
 )
@@ -49,10 +48,6 @@ if TYPE_CHECKING:
     from .provider import SqueezelitePlayerProvider
     from .sendspin_bridge import SendspinSqueezeliteBridge
 
-
-CACHE_CATEGORY_PREV_STATE = (
-    1  # category for caching previous player state (bumped to invalidate old format)
-)
 
 # Device models of the LMS bridge tools that expose AirPlay/Chromecast/UPnP devices as
 # squeezelite players.
@@ -145,21 +140,8 @@ class SqueezelitePlayer(PlayerProtocol):
         self.logger.info("Player %s connected", self.client.name or protocol_id)
         # update all dynamic attributes
         self.update_attributes()
-        # restore volume state
-        init_volume = cast(
-            "int | None",
-            self.mass.config.get_protocol_value(protocol_id, CONF_STORED_VOLUME),
-        )
-        if init_volume is None:
-            # older versions kept it in an (expiring) cache entry
-            last_state = await self.mass.cache.get(
-                key=protocol_id,
-                provider=self.provider.instance_id,
-                category=CACHE_CATEGORY_PREV_STATE,
-            )
-            init_volume = last_state[1] if last_state else DEFAULT_PLAYER_VOLUME
+        # its volume was restored on connect, by the provider's _get_initial_volume
         await self.client.stop()
-        await self.client.volume_set(init_volume)
         await self.mass.players.register(self)
         # carries a volume from the legacy cache over before that entry expires; only after the
         # attach, which creates the record of a new protocol

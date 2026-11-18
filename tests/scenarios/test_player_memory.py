@@ -110,7 +110,7 @@ async def test_a_stop_calls_off_a_power_on_that_waits_for_the_startup(
     A stop while a switched-off player is being powered on calls the power on off.
 
     While the power on waits for the player to start up, the player shows available and
-    powered on. The stop makes the waiting power on fail as switched off, and the plug stays
+    powered on. The stop makes the waiting power on fail as called off, and the plug stays
     on: the player keeps starting up, idle, and gets no command. Once its start-up time is
     over it is on and idle when its device is back, and unavailable when the device never
     came.
@@ -136,7 +136,7 @@ async def test_a_stop_calls_off_a_power_on_that_waits_for_the_startup(
 
     await scenario.mass.players.cmd_stop(player_id)
     await scenario.settle()
-    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+    with pytest.raises(PlayerUnavailableError, match="power on of player Bathroom was called off"):
         await power_on
 
     if device == "is back":

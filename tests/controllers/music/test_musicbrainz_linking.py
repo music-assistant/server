@@ -476,6 +476,7 @@ def _album_harness(
     ctrl.mass = Mock()
     ctrl.mass.music.database.deferred_commit = MagicMock()
     ctrl.mass.music.tracks.update_item_in_library = AsyncMock()
+    ctrl.mass.music.tracks.merge_recording_duplicates = AsyncMock(return_value=set())
     ctrl.mass.music.tracks.add_unclaimed_provider_mappings = AsyncMock()
 
     async def _tracklist(item_id: str, _instance: str) -> list[Track]:

@@ -39,6 +39,7 @@ once and that every test it names exists.
 - [Duplicates, merging and taking a protocol off](#duplicates-merging-and-taking-a-protocol-off) (MERGE)
 - [Restart and upgrade](#restart-and-upgrade) (RESTART)
 - [Removing and disabling](#removing-and-disabling) (REMOVE)
+- [Speakers of a set](#speakers-of-a-set) (SET)
 - [Browser and app players](#browser-and-app-players) (WEB)
 - [Commands to a busy player](#commands-to-a-busy-player) (BUSY)
 - [What a stopped player keeps for a moment](#what-a-stopped-player-keeps-for-a-moment) (KEEP)
@@ -1089,6 +1090,64 @@ gone, and so is the DJ of the AI radio on the queue of the disabled one.
 - Proven by:
   - `test_lifecycle.py::test_a_player_that_is_not_there_is_announced_once_when_it_is_removed`
   - `tests/providers/ai_radio/test_queue_dj_player_lifecycle.py::test_a_dj_goes_with_a_disabled_player_that_is_removed`
+
+## Speakers of a set
+
+A stereo pair or a home theater set is one multi-channel player, delivered by the protocol of its
+primary speaker (APPEAR-10). The other speakers of the set have no player: their provider reports
+them, and their old players are removed for good. In the examples the Patio speaker, a Sonos
+speaker with an AirPlay receiver, goes up in the set of the Living speaker.
+
+### SET-1 · The player of a speaker that goes up in a set is removed for good
+
+Patio plays, on a plug that cuts its power, when its provider reports that it went up in the set
+of Living. Clients are told once that Patio is removed. Its record, the records of its protocols,
+its DSP and queue settings and its saved queue are gone; its plug gets no command and stays on.
+Its providers are not asked to look for it again, so no player comes back for it.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by:
+  - `test_speaker_sets.py::test_the_player_of_a_speaker_that_goes_up_in_a_set_is_removed_for_good`
+  - `test_speaker_sets.py::test_the_providers_of_a_removed_speaker_do_not_look_for_it_again`
+
+### SET-2 · A speaker of a set that another provider finds again is a new player
+
+The provider reports the set of Living once more, which changes nothing. Then the AirPlay provider
+finds the receiver of Patio again: it becomes a new player of its own, which the user removes.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by: `test_speaker_sets.py::test_a_speaker_of_a_set_that_another_provider_finds_again_is_a_new_player`
+
+### SET-3 · A report that names nothing a set can hold removes nothing
+
+A report for a player id instead of the protocol of a set removes nothing, and so does one that
+names a player id instead of a protocol of a speaker, the protocol of the set itself, the protocol
+of a group or a protocol of another provider. Neither does a report that comes while the server
+shuts down.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by: `test_speaker_sets.py::test_a_report_that_names_nothing_to_remove_removes_nothing`
+
+### SET-4 · Two reports of a set at the same moment remove its speaker once
+
+Two reports of the set of Living come at the same moment, while the AirPlay receiver of Patio takes
+its time to detach. Clients are told once that Patio is removed.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by: `test_speaker_sets.py::test_the_same_set_reported_twice_at_once_removes_its_speaker_once`
+
+### SET-5 · A set can be reported while its protocol attaches
+
+The Sonos provider reports the set of Living from the attach of the protocol of Living. Living
+attaches, and the player of Patio is removed.
+
+- End-to-end: **possible with** a provider that reports the speakers of its sets, which none does
+  yet, and a stereo pair of it.
+- Proven by: `test_speaker_sets.py::test_a_set_reported_while_its_protocol_attaches_removes_its_speaker`
 
 ## Browser and app players
 

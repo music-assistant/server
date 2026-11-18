@@ -259,7 +259,9 @@ class QueueCommandsMixin:
             return False
 
         try:
-            LOGGER.info(f"Shuffled queue detected — loading source in original order: {source_key}")
+            LOGGER.info(
+                "Shuffled queue detected — loading source in original order: %s", source_key
+            )
             source_media = await self._resolve_plex_item(source_key)
             await self.provider.mass.player_queues.play_media(
                 queue_id=player_id,
@@ -284,7 +286,7 @@ class QueueCommandsMixin:
             )
             return True
         except Exception as e:
-            LOGGER.debug(f"Could not resolve source for shuffled queue, falling back: {e}")
+            LOGGER.debug("Could not resolve source for shuffled queue, falling back: %s", e)
             return False
 
     async def _resolve_plex_item(self, key: str) -> Any:
@@ -297,12 +299,12 @@ class QueueCommandsMixin:
             try:
                 return await self.provider.get_track(key)
             except Exception as exc:
-                LOGGER.debug(f"Failed to resolve Plex item as track for key '{key}': {exc}")
+                LOGGER.debug("Failed to resolve Plex item as track for key '%s': %s", key, exc)
 
             try:
                 return await self.provider.get_album(key)
             except Exception as exc:
-                LOGGER.debug(f"Failed to resolve Plex item as album for key '{key}': {exc}")
+                LOGGER.debug("Failed to resolve Plex item as album for key '%s': %s", key, exc)
 
             try:
                 return await self.provider.get_artist(key)
@@ -332,7 +334,7 @@ class QueueCommandsMixin:
         :param offset: Starting position in milliseconds.
         """
         try:
-            LOGGER.info(f"Fetching play queue: {container_key}")
+            LOGGER.info("Fetching play queue: %s", container_key)
 
             queue_id_match = re.search(r"/playQueues/(\d+)", container_key)
             if not queue_id_match:
@@ -344,7 +346,7 @@ class QueueCommandsMixin:
 
             if playqueue is not None and playqueue.items:
                 selected_offset = self._selected_item_index(playqueue)
-                LOGGER.info(f"PlayQueue selected item index: {selected_offset}")
+                LOGGER.info("PlayQueue selected item index: %s", selected_offset)
 
                 # When Plex reports a shuffled queue, load the original source into MA
                 # unshuffled and let MA apply its own shuffle, then propagate back to Plex.
@@ -367,7 +369,7 @@ class QueueCommandsMixin:
 
                 try:
                     first_track = await self.provider.get_track(first_track_key)
-                    LOGGER.info(f"Starting playback with first track: {first_track.name}")
+                    LOGGER.info("Starting playback with first track: %s", first_track.name)
 
                     if first_play_queue_item_id:
                         self.play_queue_item_ids[0] = first_play_queue_item_id
@@ -434,8 +436,10 @@ class QueueCommandsMixin:
                 )
 
             LOGGER.info(
-                f"Received playMedia command - key: {key}, "
-                f"containerKey: {container_key}, offset: {offset}ms"
+                "Received playMedia command - key: %s, containerKey: %s, offset: %sms",
+                key,
+                container_key,
+                offset,
             )
 
             player_id = self._ma_player_id
@@ -447,7 +451,7 @@ class QueueCommandsMixin:
                 if queue_id_match:
                     self.play_queue_id = queue_id_match.group(1)
                     self.play_queue_version = 1
-                    LOGGER.info(f"Playing from queue: {container_key} starting at {key}")
+                    LOGGER.info("Playing from queue: %s starting at %s", container_key, key)
                     await self._play_from_plex_queue(player_id, container_key, key, shuffle, offset)
                 else:
                     self.play_queue_id = None
@@ -512,7 +516,7 @@ class QueueCommandsMixin:
             if not uri:
                 return web.Response(status=400, text="Missing 'uri' parameter")
 
-            LOGGER.info(f"Received createPlayQueue command - uri: {uri}, shuffle: {shuffle}")
+            LOGGER.info("Received createPlayQueue command - uri: %s, shuffle: %s", uri, shuffle)
 
             player_id = self._ma_player_id
             if not player_id:
@@ -536,7 +540,7 @@ class QueueCommandsMixin:
                 self._cap_playqueue_items(playqueue, list(playqueue.items))
 
                 LOGGER.info(
-                    f"Created play queue {self.play_queue_id} with {len(playqueue.items)} items"
+                    "Created play queue %s with %s items", self.play_queue_id, len(playqueue.items)
                 )
 
                 self.play_queue_item_ids = {}
@@ -552,7 +556,7 @@ class QueueCommandsMixin:
 
                 try:
                     first_track = await self.provider.get_track(first_track_key)
-                    LOGGER.info(f"Starting playback with first track: {first_track.name}")
+                    LOGGER.info("Starting playback with first track: %s", first_track.name)
 
                     if first_play_queue_item_id:
                         self.play_queue_item_ids[0] = first_play_queue_item_id
@@ -603,14 +607,16 @@ class QueueCommandsMixin:
                 return web.Response(status=400, text="Missing 'playQueueID' parameter")
 
             LOGGER.info(
-                f"Received refreshPlayQueue command - playQueueID: {play_queue_id}, "
-                f"params: {dict(request.query)}"
+                "Received refreshPlayQueue command - playQueueID: %s, params: %s",
+                play_queue_id,
+                dict(request.query),
             )
 
             if self.play_queue_id != play_queue_id:
                 LOGGER.warning(
-                    f"Refresh requested for queue {play_queue_id} but active queue is "
-                    f"{self.play_queue_id}"
+                    "Refresh requested for queue %s but active queue is %s",
+                    play_queue_id,
+                    self.play_queue_id,
                 )
                 return web.Response(
                     status=409,
@@ -635,7 +641,7 @@ class QueueCommandsMixin:
 
             ma_queue = self.provider.mass.player_queues.get(player_id)
             if not ma_queue:
-                LOGGER.error(f"MA queue not found for player {player_id}")
+                LOGGER.error("MA queue not found for player %s", player_id)
                 return web.Response(status=500, text="MA queue not found")
 
             current_index = ma_queue.current_index
@@ -643,8 +649,10 @@ class QueueCommandsMixin:
             ma_queue_count = len(ma_queue_items) if ma_queue_items else 0
 
             LOGGER.debug(
-                f"Queue refresh: Current index={current_index}, "
-                f"MA has {ma_queue_count} items, Plex has {len(playqueue.items)} items"
+                "Queue refresh: Current index=%s, MA has %s items, Plex has %s items",
+                current_index,
+                ma_queue_count,
+                len(playqueue.items),
             )
 
             if current_index is None:
@@ -652,8 +660,8 @@ class QueueCommandsMixin:
                 await self._replace_entire_queue(player_id, playqueue)
             else:
                 LOGGER.debug(
-                    f"Track at index {current_index} is playing, "
-                    f"replacing only items after current track"
+                    "Track at index %s is playing, replacing only items after current track",
+                    current_index,
                 )
                 await self._replace_remaining_queue(player_id, playqueue, current_index)
 
@@ -663,7 +671,7 @@ class QueueCommandsMixin:
             )
 
             LOGGER.info(
-                f"Refreshed play queue {play_queue_id} - now has {len(playqueue.items)} items"
+                "Refreshed play queue %s - now has %s items", play_queue_id, len(playqueue.items)
             )
 
             self._remember_synced_queue(player_id)
