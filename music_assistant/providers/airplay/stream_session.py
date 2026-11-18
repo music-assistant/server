@@ -27,6 +27,10 @@ from .constants import (
     AIRPLAY_LATE_JOIN_RING_MIN_SECONDS,
     AIRPLAY_REPLACEMENT_EOF_TIMEOUT,
     AIRPLAY_REPLACEMENT_POLL_INTERVAL,
+    AIRPLAY_SILENT_MEMBER_JOIN_POLL_INTERVAL,
+    AIRPLAY_SILENT_MEMBER_JOIN_TIMEOUT,
+    AIRPLAY_SILENT_MEMBER_REJOIN_DELAY,
+    AIRPLAY_SILENT_MEMBER_TIMEOUT,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     AIRPLAY_STALL_RESYNC_HOLDOFF,
     AIRPLAY_STALL_RESYNC_MAX_HOLDOFF,
@@ -155,6 +159,14 @@ class AirPlayStreamSession:
         # Earliest moment of the next stall restart, and the hold-off after it.
         self._resync_not_before: float = 0.0
         self._resync_holdoff: float = AIRPLAY_STALL_RESYNC_HOLDOFF
+        # How often each member that is not heard (the Apple TV of a set) was added, by
+        # player id: it joins after the members it goes with, and is added once more at
+        # most after it left. Its pending join, by player id.
+        self._silent_member_joins: dict[str, int] = {}
+        self._silent_member_tasks: dict[str, asyncio.Task[None]] = {}
+        # The members that are not heard and were started since the last (re)start: before
+        # its START a member backs up the feed like any other, which is no stall.
+        self._started_silent_members: set[str] = set()
 
     @property
     def effective_start_time(self) -> float:
@@ -164,16 +176,16 @@ class AirPlayStreamSession:
         ``start_time`` is the cliairplay timeline anchor set at the last group (re)start.
         A member's cliairplay can re-anchor its playout LATER after recovering
         from a PCM starvation, shifting the group's real timeline; that shift is
-        tracked per member. The first sync client is taken as the reference and
-        its accumulated shift is added, so a late joiner maps its first sample to
-        where the group actually plays. Divergent per-member shifts make any
-        single reference imperfect; the current first client is the best
+        tracked per member. The first sync client that is heard is taken as the
+        reference and its accumulated shift is added, so a late joiner maps its
+        first sample to where the group actually plays. Divergent per-member shifts
+        make any single reference imperfect; the current first client is the best
         available choice and the reference transfers to the new first client when
         the old one is removed.
         """
-        if not self.sync_clients:
+        if not (audible := self._audible_clients):
             return self.start_time
-        return self.start_time + self._member_shift(self.sync_clients[0])
+        return self.start_time + self._member_shift(audible[0])
 
     async def start(self, audio_source: AsyncGenerator[bytes]) -> None:
         """
@@ -227,6 +239,7 @@ class AirPlayStreamSession:
                 position_ms,
                 await self._seat_member_anchors(position_ms, start_unix_ms),
             )
+            self._join_silent_members()
         except asyncio.CancelledError:
             await self.stop()
             raise
@@ -255,17 +268,18 @@ class AirPlayStreamSession:
 
         A warm replacement needs the same member set, the same session PCM
         format and a connected stream still taking audio on every member;
-        anything else takes the cold path.
+        anything else takes the cold path. A member that is not heard (the
+        Apple TV of a set) does not count: the replacement goes on without it.
         """
-        if {p.protocol_id for p in sync_clients} != {p.protocol_id for p in self.sync_clients}:
+        audible = self._audible_clients
+        if {p.protocol_id for p in sync_clients} != {p.protocol_id for p in audible}:
             return False
         # the encoding matters as much as the depth here (a 24-bit session carries
         # PCM_S32LE): replace() wires the new source into the session's declared format
         if pcm_format != self.pcm_format:
             return False
         return all(
-            p.stream is not None and p.stream.accepts_audio and p.stream.connected
-            for p in self.sync_clients
+            p.stream is not None and p.stream.accepts_audio and p.stream.connected for p in audible
         )
 
     async def replace(self, audio_source: AsyncGenerator[bytes], media: PlayerMedia) -> bool:
@@ -292,14 +306,20 @@ class AirPlayStreamSession:
                 self._audio_source_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await self._audio_source_task
-            for player in self.sync_clients:
+            members = list(self.sync_clients)
+            self._started_silent_members.clear()
+            for player in members:
                 if ffmpeg := self._player_ffmpeg.pop(player.protocol_id, None):
                     await ffmpeg.kill()
-            flushed = await asyncio.gather(
-                *[self._flush_member(player) for player in self.sync_clients]
-            )
-            if not all(flushed):
+            flushed = await asyncio.gather(*[self._flush_member(player) for player in members])
+            if not all(
+                ok for player, ok in zip(members, flushed, strict=True) if player.renders_audio
+            ):
                 raise PlayerCommandFailed("warm flush was not acknowledged")  # noqa: TRY301 - triggers cold restart fallback
+            for player, ok in zip(members, flushed, strict=True):
+                if not ok:
+                    # the music goes on without a member that is not heard
+                    await self.remove_client(player, reason="warm flush was not acknowledged")
             for player in self.sync_clients:
                 stream = player.stream
                 assert stream
@@ -322,6 +342,7 @@ class AirPlayStreamSession:
             # re-anchor lead replaces the full setup lead.
             await self._wait_members_audio_present()
             await self._start_members(position_ms, self._anchor_start_unix_ms(warm=True))
+            self._join_silent_members()
         except asyncio.CancelledError:
             raise
         except Exception as err:
@@ -343,7 +364,7 @@ class AirPlayStreamSession:
         """
         if not all(
             p.stream is not None and p.stream.accepts_audio and p.stream.connected
-            for p in self.sync_clients
+            for p in self._audible_clients
         ):
             return False
         self.mass.cancel_timer(self._shift_check_task_id)
@@ -351,9 +372,14 @@ class AirPlayStreamSession:
             self._audio_source_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._audio_source_task
-        for player in self.sync_clients:
+        for player in list(self.sync_clients):
             if ffmpeg := self._player_ffmpeg.pop(player.protocol_id, None):
                 await ffmpeg.kill()
+            if not player.renders_audio:
+                # the music is parked whether or not a member that is not heard parks along
+                if not await self._command_silent_member(player, "ACTION=STANDBY"):
+                    await self.remove_client(player, reason="standby command was not delivered")
+                continue
             stream = player.stream
             assert stream
             try:
@@ -383,6 +409,10 @@ class AirPlayStreamSession:
     async def stop(self) -> None:
         """Stop playback and cleanup."""
         self.mass.cancel_timer(self._shift_check_task_id)
+        for task in self._silent_member_tasks.values():
+            # a join that fails ends a session that has nobody left to play
+            if task is not asyncio.current_task():
+                task.cancel()
         if self._audio_source_task and not self._audio_source_task.done():
             self._audio_source_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -443,6 +473,7 @@ class AirPlayStreamSession:
         )
         self._client_skip_bytes.pop(airplay_player.protocol_id, None)
         self._member_shift_base.pop(airplay_player.protocol_id, None)
+        self._started_silent_members.discard(airplay_player.protocol_id)
         ffmpeg = self._player_ffmpeg.pop(airplay_player.protocol_id, None)
         # note that we use kill instead of graceful close here,
         # because otherwise it can take a very long time for the process to exit.
@@ -451,6 +482,39 @@ class AirPlayStreamSession:
         if airplay_player.stream and airplay_player.stream.session == self:
             airplay_player.stream.reset_reanchor_shift()
             await airplay_player.stream.stop(force=True)
+
+    def add_silent_member(self, airplay_player: AirPlayPlayer) -> None:
+        """
+        Add a member that is not heard (the Apple TV of a set) as a late joiner, in a task.
+
+        :param airplay_player: The member to add.
+        """
+        self._silent_member_joins.pop(airplay_player.protocol_id, None)
+        self._schedule_silent_member_join(airplay_player)
+
+    async def remove_silent_member(
+        self,
+        airplay_player: AirPlayPlayer,
+        *,
+        rejoin: bool,
+        reason: str = "stream of a member that is not heard ended",
+    ) -> None:
+        """
+        Take a member that is not heard out of the session, also when it is still joining.
+
+        The other members play on.
+
+        :param airplay_player: The member to take out.
+        :param rejoin: Whether to add it once more, after a short wait, unless it was
+            added again before.
+        :param reason: Short reason for the teardown logs.
+        """
+        pending = self._silent_member_tasks.get(airplay_player.protocol_id)
+        if not rejoin and pending and not pending.done() and pending is not asyncio.current_task():
+            pending.cancel()
+        await self.remove_client(airplay_player, reason=reason)
+        if rejoin:
+            self._rejoin_silent_member(airplay_player)
 
     async def add_client(self, airplay_player: AirPlayPlayer) -> None:  # noqa: PLR0915
         """
@@ -631,28 +695,27 @@ class AirPlayStreamSession:
             airplay_player.protocol_id,
             clock_note,
         )
-        async with self._lock:
-            if not self._session_is_live():
-                await self.stop_client(airplay_player, reason="session ended during late join")
-                return
-            # cliairplay makes the first post-START stdin byte audible exactly at
-            # the instant it acks, so the anchor is commanded first and the
-            # content mapped onto the ack afterwards. It sits just past the
-            # instant the receiver's clock becomes usable; the floor is only a
-            # lower bound, and carries the whole anchor when no projection came.
-            min_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
-            anchor_at = now + min_headroom
-            if ready_at_unix_ms:
-                anchor_at = max(
-                    anchor_at,
-                    (ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS) / 1000,
-                )
-            requested_at, fed_pos_due = map_to(anchor_at, committed=False)[:2]
-            start_unix_ms = int(requested_at * 1000)
-            adjust_ms = airplay_player.sync_offset_ms
-            position_ms = int(((self.media.elapsed_time or 0) + fed_pos_due) * 1000)
-
         try:
+            async with self._lock:
+                if not self._session_is_live():
+                    await self.stop_client(airplay_player, reason="session ended during late join")
+                    return
+                # cliairplay makes the first post-START stdin byte audible exactly at
+                # the instant it acks, so the anchor is commanded first and the
+                # content mapped onto the ack afterwards. It sits just past the
+                # instant the receiver's clock becomes usable; the floor is only a
+                # lower bound, and carries the whole anchor when no projection came.
+                min_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
+                anchor_at = now + min_headroom
+                if ready_at_unix_ms:
+                    anchor_at = max(
+                        anchor_at,
+                        (ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS) / 1000,
+                    )
+                requested_at, fed_pos_due = map_to(anchor_at, committed=False)[:2]
+                start_unix_ms = int(requested_at * 1000)
+                adjust_ms = airplay_player.sync_offset_ms
+                position_ms = int(((self.media.elapsed_time or 0) + fed_pos_due) * 1000)
             # Anchor the joiner BEFORE feeding the prime: pre-START the binary
             # only buffers stdin into its bounded ring and sends nothing, so a
             # prime longer than that ring would wedge that write — and, through
@@ -684,6 +747,9 @@ class AirPlayStreamSession:
                     await self.stop_client(
                         airplay_player, reason="late joiner stopped during start"
                     )
+                    return
+                if not self._admit_silent_member(airplay_player):
+                    await self.stop_client(airplay_player, reason="set left during late join")
                     return
                 # Map the content onto the instant the binary acked — its
                 # verified truth. The ring is re-snapshotted here, so the mapping
@@ -758,6 +824,8 @@ class AirPlayStreamSession:
             airplay_player.protocol_id,
             cli_clock_time() - now,
         )
+        if airplay_player.renders_audio:
+            self._join_silent_members()
 
     def on_member_reanchored(self) -> None:
         """
@@ -766,7 +834,7 @@ class AirPlayStreamSession:
         Once the stall is over, a group whose members came out of it on different
         timelines is restarted at the current position to bring it back in sync.
         """
-        if len(self.sync_clients) < 2:
+        if len(self._audible_clients) < 2:
             return
         # every further report of the same stall postpones the comparison
         self.mass.call_later(
@@ -817,9 +885,9 @@ class AirPlayStreamSession:
 
     def _session_is_live(self) -> bool:
         """Return whether the session still plays a joinable timeline (call under the lock)."""
-        if not self.sync_clients:
+        if not (audible := self._audible_clients):
             return False
-        reference = self.sync_clients[0]
+        reference = audible[0]
         reference_stream = reference.stream
         # A stream that has been sent its audio EOF keeps running while it plays
         # out, but it is on its way to exiting and can never be fed again, so a
@@ -906,9 +974,10 @@ class AirPlayStreamSession:
         # otherwise a re-add to a new session may have already set a new state.
         if stream is not None:
             airplay_player.set_state_from_stream(PlaybackState.IDLE, stream=stream)
-        # Re-check sync_clients under the lock to avoid racing with add_client.
+        # Re-check sync_clients under the lock to avoid racing with add_client. Members
+        # that are not heard do not keep the session going on their own.
         async with self._lock:
-            should_stop = not self.sync_clients
+            should_stop = not self._audible_clients
         if should_stop:
             await self.stop()
 
@@ -1025,8 +1094,8 @@ class AirPlayStreamSession:
                     self.sync_clients.remove(player)
                 self.mass.create_task(self._cleanup_after_removal(player, reason=removal_reason))
 
-            remaining_clients = len(sync_clients) - len(players_to_remove)
-            return remaining_clients > 0
+            removed = {player for player, _ in players_to_remove}
+            return any(x.renders_audio for x in sync_clients if x not in removed)
 
     async def _write_chunk_to_player(self, airplay_player: AirPlayPlayer, chunk: bytes) -> None:
         """Write audio chunk to a player's ffmpeg process."""
@@ -1043,7 +1112,13 @@ class AirPlayStreamSession:
         if ffmpeg := self._player_ffmpeg.get(protocol_id):
             if ffmpeg.closed:
                 return
-            await asyncio.wait_for(ffmpeg.write(chunk), timeout=35.0)
+            # all members are fed under one lock, so one that is not heard must not hold it long
+            timeout = (
+                AIRPLAY_SILENT_MEMBER_TIMEOUT
+                if protocol_id in self._started_silent_members
+                else 35.0
+            )
+            await asyncio.wait_for(ffmpeg.write(chunk), timeout=timeout)
 
     def _replacement_expected(self) -> bool:
         """
@@ -1211,7 +1286,8 @@ class AirPlayStreamSession:
             lands before it. 0 when no member reported a projection, leaving the
             lead below as the whole anchor.
         """
-        if len(self.sync_clients) == 1:
+        audible = self._audible_clients
+        if len(audible) == 1:
             lead_ms = AIRPLAY_START_LEAD_MS
         elif warm:
             lead_ms = AIRPLAY_GROUP_START_LEAD_MS
@@ -1231,7 +1307,7 @@ class AirPlayStreamSession:
         # requirement — otherwise the first round can never succeed for that
         # member and every group start pays a corrective round.
         member_requirement = 0
-        for player in self.sync_clients:
+        for player in audible:
             stream = player.stream
             if stream is None or stream.warm_lead_ms <= 0:
                 continue
@@ -1242,7 +1318,7 @@ class AirPlayStreamSession:
                 anchor,
                 int(cli_clock_time() * 1000) + member_requirement + AIRPLAY_SPLICE_LEAD_MARGIN_MS,
             )
-        for player in self.sync_clients:
+        for player in audible:
             stream = player.stream
             if stream is None or stream.flushed_head_unix_ms <= 0:
                 continue
@@ -1266,7 +1342,7 @@ class AirPlayStreamSession:
         the very same wait.
         """
         await self._wait_feed_settled()
-        members = [(p, p.stream) for p in self.sync_clients if p.stream]
+        members = [(p, p.stream) for p in self._audible_clients if p.stream]
         results = await asyncio.gather(*[stream.wait_audio_present() for _, stream in members])
         if all(results):
             return
@@ -1322,7 +1398,7 @@ class AirPlayStreamSession:
         results = await asyncio.gather(
             *[
                 p.stream.wait_clock_ready(timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000)
-                for p in self.sync_clients
+                for p in self._audible_clients
                 if p.stream
             ]
         )
@@ -1391,7 +1467,7 @@ class AirPlayStreamSession:
         for _ in range(4):
             member_tasks: list[tuple[int, asyncio.Task[int]]] = []
             async with asyncio.TaskGroup() as task_group:
-                for player in self.sync_clients:
+                for player in self._audible_clients:
                     stream = player.stream
                     if stream is None:
                         continue
@@ -1447,11 +1523,17 @@ class AirPlayStreamSession:
         self.start_time = target_ms / 1000
         # the only place a session (re)gains a live timeline, so any park ends here
         self.parked = False
+        await self._start_silent_members(position_ms, target_ms)
 
     async def _flush_member(self, player: AirPlayPlayer) -> bool:
         """Flush one member's live stream in place and report the binary's ack."""
         stream = player.stream
         if stream is None:
+            return False
+        if not player.renders_audio:
+            # the members that are heard are not kept waiting long by one that is not
+            with suppress(TimeoutError):
+                return await asyncio.wait_for(stream.flush(), AIRPLAY_SILENT_MEMBER_TIMEOUT)
             return False
         return await stream.flush()
 
@@ -1482,11 +1564,12 @@ class AirPlayStreamSession:
             or self._replacement_expected()
         ):
             return
-        shifts = [(player.display_name, self._member_shift(player)) for player in self.sync_clients]
+        audible = self._audible_clients
+        shifts = [(player.display_name, self._member_shift(player)) for player in audible]
         spread = max(shift for _, shift in shifts) - min(shift for _, shift in shifts)
         if spread * 1000 <= AIRPLAY_STALL_SHIFT_TOLERANCE_MS:
             return
-        players = [member.player for member in self.sync_clients if member.player]
+        players = [owner.player for member in audible if (owner := member.owner) and owner.player]
         if not players:
             return
         now = time.monotonic()
@@ -1517,6 +1600,144 @@ class AirPlayStreamSession:
             task_id=f"airplay_stall_resync_{id(self)}",
         )
 
+    @property
+    def _audible_clients(self) -> list[AirPlayPlayer]:
+        """Return the members whose audio is heard."""
+        return [player for player in self.sync_clients if player.renders_audio]
+
+    def _join_silent_members(self) -> None:
+        """Add the members that are not heard and were not added yet, after those they go with."""
+        for player in self._audible_clients:
+            owner = player.owner
+            member = owner.silent_member if owner else None
+            if (
+                member is not None
+                and member not in self.sync_clients
+                and not self._silent_member_joins.get(member.protocol_id)
+                and not (
+                    (pending := self._silent_member_tasks.get(member.protocol_id))
+                    and not pending.done()
+                )
+            ):
+                self._schedule_silent_member_join(member)
+
+    def _admit_silent_member(self, airplay_player: AirPlayPlayer) -> bool:
+        """
+        Return whether a late joiner that is not heard may stay, and count it as started.
+
+        It may not once its set left the session while it joined.
+
+        :param airplay_player: The late joiner, whose START was acked.
+        """
+        if airplay_player.renders_audio:
+            return True
+        if not any(endpoint in self.sync_clients for endpoint in airplay_player.endpoints):
+            return False
+        self._started_silent_members.add(airplay_player.protocol_id)
+        return True
+
+    def _rejoin_silent_member(self, airplay_player: AirPlayPlayer) -> None:
+        """
+        Add a member that is not heard once more after it left, unless it was before.
+
+        :param airplay_player: The member that left.
+        """
+        if self._silent_member_joins.get(airplay_player.protocol_id, 0) < 2:
+            self._schedule_silent_member_join(
+                airplay_player, delay=AIRPLAY_SILENT_MEMBER_REJOIN_DELAY
+            )
+
+    def _schedule_silent_member_join(self, airplay_player: AirPlayPlayer, delay: float = 0) -> None:
+        """
+        Add a member that is not heard in a task of its own, so nothing waits for it.
+
+        :param airplay_player: The member to add.
+        :param delay: Seconds to wait first.
+        """
+        protocol_id = airplay_player.protocol_id
+        pending = self._silent_member_tasks.get(protocol_id)
+        if pending and not pending.done() and pending is not asyncio.current_task():
+            pending.cancel()
+        self._silent_member_tasks[protocol_id] = self.mass.create_task(
+            self._join_silent_member(airplay_player, delay)
+        )
+
+    async def _join_silent_member(self, airplay_player: AirPlayPlayer, delay: float) -> None:
+        """
+        Add a member that is not heard as a late joiner while the members it goes with play.
+
+        :param airplay_player: The member to add.
+        :param delay: Seconds to wait first.
+        """
+        await asyncio.sleep(delay)
+        # It joins once the members it goes with play: an Apple TV resets its session when
+        # its SETUP precedes the one of its speakers (measured), and a late joiner is
+        # anchored on the timeline they play.
+        deadline = time.monotonic() + AIRPLAY_SILENT_MEMBER_JOIN_TIMEOUT
+        while not self._session_is_live() and time.monotonic() < deadline:
+            await asyncio.sleep(AIRPLAY_SILENT_MEMBER_JOIN_POLL_INTERVAL)
+        if (
+            not self._session_is_live()
+            or airplay_player in self.sync_clients
+            or airplay_player.silent_member is not airplay_player
+            or not any(endpoint in self.sync_clients for endpoint in airplay_player.endpoints)
+        ):
+            return
+        protocol_id = airplay_player.protocol_id
+        self._silent_member_joins[protocol_id] = self._silent_member_joins.get(protocol_id, 0) + 1
+        await self.add_client(airplay_player)
+        if airplay_player not in self.sync_clients:
+            self._rejoin_silent_member(airplay_player)
+
+    async def _start_silent_members(self, position_ms: int, start_unix_ms: int) -> None:
+        """
+        Anchor the members that are not heard on the instant the others start at.
+
+        A member that does not take its anchor leaves the session; the others play on.
+
+        :param position_ms: Media position mapped to the first sample of the anchor.
+        :param start_unix_ms: Audible-start instant of the other members in unix epoch ms.
+        """
+        members = [
+            (player, stream)
+            for player in self.sync_clients
+            if not player.renders_audio and (stream := player.stream)
+        ]
+        results = await asyncio.gather(
+            *[
+                asyncio.wait_for(
+                    stream.start(start_unix_ms + player.sync_offset_ms, position_ms),
+                    AIRPLAY_SILENT_MEMBER_TIMEOUT,
+                )
+                for player, stream in members
+            ],
+            return_exceptions=True,
+        )
+        for (player, _), result in zip(members, results, strict=True):
+            if isinstance(result, BaseException):
+                await self.remove_client(player, reason=f"start failed: {result!r}")
+            else:
+                self._started_silent_members.add(player.protocol_id)
+
+    async def _command_silent_member(self, airplay_player: AirPlayPlayer, command: str) -> bool:
+        """
+        Send a command to a member that is not heard; False when it did not arrive.
+
+        :param airplay_player: The member to send the command to.
+        :param command: The command for its binary.
+        """
+        if (stream := airplay_player.stream) is None:
+            return False
+        try:
+            return await asyncio.wait_for(
+                stream.send_cli_command(command), AIRPLAY_SILENT_MEMBER_TIMEOUT
+            )
+        except Exception as err:
+            self.prov.logger.debug(
+                "Could not send %s to %s: %s", command, airplay_player.protocol_id, err
+            )
+            return False
+
     async def _start_player_ffmpeg(
         self, player: AirPlayPlayer, media: PlayerMedia, stream: AirPlayStream
     ) -> None:
@@ -1536,14 +1757,18 @@ class AirPlayStreamSession:
         if ffmpeg := self._player_ffmpeg.pop(player.protocol_id, None):
             await ffmpeg.close()
         handoff_format = stream.pcm_format
-        output_plan = self.mass.streams.audio.get_player_output_plan(
-            player.output_plan_protocol_id,
-            input_format=self.pcm_format,
-            output_format=get_final_output_format(handoff_format),
-            handoff_format=handoff_format,
-            queue_id=media.source_id,
-            session_id=get_media_session_id(media),
-        )
+        if player.renders_audio:
+            filter_params = self.mass.streams.audio.get_player_output_plan(
+                player.output_plan_protocol_id,
+                input_format=self.pcm_format,
+                output_format=get_final_output_format(handoff_format),
+                handoff_format=handoff_format,
+                queue_id=media.source_id,
+                session_id=get_media_session_id(media),
+            ).filter_params
+        else:
+            # what an Apple TV of a set is fed can not be heard, so it is fed silence
+            filter_params = ["volume=0"]
         cli_proc = stream._cli_proc
         assert cli_proc
         assert cli_proc.proc
@@ -1554,7 +1779,7 @@ class AirPlayStreamSession:
             audio_input="-",
             input_format=self.pcm_format,
             output_format=handoff_format,
-            filter_params=output_plan.filter_params,
+            filter_params=filter_params,
             audio_output=audio_output,
         )
         await ffmpeg.start()

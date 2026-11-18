@@ -75,6 +75,7 @@ def _make_player() -> MagicMock:
     player.device_info.model = "Test1,1"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
+    player.settings = player.config
     player.device_password = None
     player.player.active_group = None
     player.streaming_mode = STREAMING_MODE_AUTO
@@ -84,6 +85,7 @@ def _make_player() -> MagicMock:
     ]
     player.synced_to = None
     player.group_members = []
+    player.owner = player
     # A real None: a stream only speaks for the player while it is the published
     # one, and a bare MagicMock reads as some other stream having taken over.
     player.stream = None
@@ -4642,3 +4644,133 @@ async def test_accepts_audio_ends_with_the_audio_eof() -> None:
         assert not stream.accepts_audio
     finally:
         await cli_proc.close()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_a_speaker_takes_its_set_out_of_the_group() -> None:
+    """A speaker whose process dies leaves the group with its set, which re-joins it."""
+    speaker = _make_player()
+    speaker.player = None
+    airplay_set = MagicMock(protocol_id="apset", synced_to="leader", group_members=[])
+    airplay_set.player.player_id = "plset"
+    airplay_set.provider = speaker.provider
+    speaker.owner = airplay_set
+    leader = MagicMock()
+    leader.group_members = ["leader", "apset", "sibling"]
+    speaker.provider.mass.players.get_protocol.return_value = leader
+
+    stream = await _run_unexpected_process_death(speaker)
+
+    stream._leave_group.assert_called_once_with(leader.player, "plset")  # type: ignore[attr-defined]
+    airplay_set.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"])
+    speaker.schedule_group_rejoin.assert_not_called()
+    speaker.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE, elapsed_time=0, stream=stream
+    )
+
+
+def test_current_metadata_of_a_speaker_prefers_the_composition_of_its_set() -> None:
+    """A speaker pushes the media its set's player composed, as the media updates do."""
+    speaker = _make_player()
+    speaker.player = None
+    airplay_set = MagicMock()
+    state_media = MagicMock(queue_item_id="item-1", title="Track (Remastered)")
+    airplay_set.player.current_media = state_media
+    speaker.owner = airplay_set
+    stream = AirPlayStream(speaker)
+    stream.session = MagicMock(media=MagicMock(queue_item_id="item-1", title="Track"))
+
+    assert stream._current_metadata() is state_media
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_a_speaker_ends_the_session_of_its_set() -> None:
+    """A set that plays on its own and loses a speaker stops, as a player that lost its stream."""
+    speaker = _make_player()
+    speaker.player = None
+    airplay_set = MagicMock(protocol_id="apset", synced_to=None, group_members=[])
+    speaker.owner = airplay_set
+    session = MagicMock()
+    session.stop = MagicMock(return_value="stop-coro")
+    speaker.provider.mass.create_task = MagicMock()
+
+    stream = AirPlayStream(speaker)
+    stream.session = session
+    stream._leave_group = MagicMock()  # type: ignore[method-assign]
+    speaker.stream = stream
+    process = MagicMock()
+    stream._cli_proc = process
+
+    async def _stderr_lines() -> AsyncGenerator[str]:
+        yield "some final log line"
+
+    with (
+        patch.object(process, "iter_stderr", return_value=_stderr_lines()),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream._stderr_reader()
+
+    speaker.provider.mass.create_task.assert_any_call("stop-coro")
+    airplay_set.schedule_group_rejoin.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("receiver_closed", [False, True])
+async def test_the_apple_tv_of_a_set_losing_its_stream_leaves_its_speakers_playing(
+    receiver_closed: bool,
+) -> None:
+    """
+    The Apple TV of a set leaves the music alone: no ungroup, no re-join, no state.
+
+    It is added once more, unless it ended the session itself for another sender.
+    """
+    apple_tv = _make_player()
+    apple_tv.renders_audio = False
+    apple_tv.synced_to = "leader"
+    session = MagicMock()
+    session.remove_silent_member = MagicMock(return_value="leave")
+    apple_tv.provider.mass.create_task = MagicMock()
+
+    stream = AirPlayStream(apple_tv)
+    stream.session = session
+    stream._receiver_closed = receiver_closed
+    stream._leave_group = MagicMock()  # type: ignore[method-assign]
+    apple_tv.stream = stream
+    process = MagicMock()
+    stream._cli_proc = process
+
+    async def _stderr_lines() -> AsyncGenerator[str]:
+        yield "some final log line"
+
+    with (
+        patch.object(process, "iter_stderr", return_value=_stderr_lines()),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream._stderr_reader()
+
+    session.remove_silent_member.assert_called_once_with(apple_tv, rejoin=not receiver_closed)
+    apple_tv.provider.mass.create_task.assert_called_once_with("leave")
+    stream._leave_group.assert_not_called()
+    apple_tv.schedule_group_rejoin.assert_not_called()
+    apple_tv.set_state_from_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_sends_no_volume_to_the_apple_tv_of_a_set() -> None:
+    """An AirPlay volume writes the level of the Apple TV, which is not heard: none is sent."""
+    player = _make_player()
+    player.renders_audio = False
+    player.owns_volume = True
+    player.volume_muted = True
+    stream = AirPlayStream(player)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+
+    send_command.assert_not_awaited()

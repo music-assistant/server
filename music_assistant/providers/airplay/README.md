@@ -64,6 +64,7 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
 airplay/
 ├── provider.py           # Main provider class, MDNS discovery, DACP server, PTP daemon
 ├── player.py             # AirPlayPlayer implementation
+├── speaker.py            # AirPlaySpeaker: a speaker of the home theater set of an Apple TV
 ├── stream_session.py     # Manages streaming sessions for synchronized playback
 ├── pairing.py           # Pairing: HAP via cliairplay --pair-setup, RAOP native
 ├── helpers.py           # Utility functions (binary lookup, TXT serialization, etc.)
@@ -165,6 +166,7 @@ The provider discovers AirPlay devices via two MDNS service types:
    - Display name
    - Manufacturer and model (via `get_model_info()` in [helpers.py](helpers.py))
 3. **Filter checks**:
+   - Keep a speaker of a home theater set as a speaker of that set, never a player (see [Home Theater Sets](#home-theater-sets)); this runs before the next check
    - Skip if the player controller does not want the device (`mass.players.wants_protocol()`: the player is disabled, or its AirPlay output is switched off)
    - Skip ShairportSync instances running on the same Music Assistant server (to avoid conflicts with AirPlay Receiver provider)
 4. **Create the protocol object** → `AirPlayPlayer` instance
@@ -175,6 +177,41 @@ replay of the cached mDNS records (when the provider loads, and on every discove
 players controller, such as when a player is enabled or removed) offers exactly the devices that
 have no attached protocol. A device whose services
 disappear from mDNS is unregistered: its player stays, unavailable, until the device returns.
+
+### Home Theater Sets
+
+An Apple TV can use one HomePod, or a stereo pair of them, as its speakers. It never passes a
+stream on to them, so Music Assistant plays such a set as one player: the protocol of the Apple
+TV is the player of the set (named after the room, multi-channel with a stereo layout for a
+pair), and the HomePods are fed directly as its speakers.
+
+- The set is read from the `_airplay._tcp` records only, and only from the keys that stay the
+  same whoever plays to the devices: the Apple TV carries `psgid`, `psgtp=1` and `pgmid=0`, each
+  HomePod the same `psgid` with `pgmid` above zero (`parse_set_membership()` in
+  [helpers.py](helpers.py)). `gid`, `pgid` and `igl` change with every session.
+- A HomePod named by its set is an `AirPlaySpeaker` ([speaker.py](speaker.py)), which is never
+  registered. It plays with the settings, password, output settings and volume of its set,
+  otherwise with the defaults of its device, and stores nothing itself. Its state, commands and
+  stream loss count for its set. Only a current `_airplay._tcp` record makes it available: after
+  a goodbye of either of its records, a `_raop._tcp` record alone does not.
+- The speakers start the session of the set. The Apple TV joins it as a late joiner after them,
+  as its session resets when its SETUP goes out before the one of a HomePod (measured), and in
+  the background, so the music never waits for it. It is fed silence and sent no volume: it only
+  shows what plays and takes the commands of its remote. When its stream ends it is added once
+  more; it never stops or fails its speakers. Power and wake act on the Apple TV, as for a plain
+  Apple TV, which needs to be paired for this.
+- The player option "Play on HomePods only" leaves the Apple TV out: no session to it, no
+  wake and no power control (the players controller powers a player on before it plays), and
+  no pairing needed.
+- A set plays on all of its speakers or not at all: a speaker whose stream ends stops its set,
+  or takes it out of the group it plays in. A speaker that was away when its set started is
+  added to the session when it is back.
+- When the set protocol is attached and both current records name a speaker, the player that
+  speaker had before is removed (`mass.players.remove_absorbed_players()`).
+- While the player of the Apple TV is disabled, its HomePods are players of their own. Without
+  the Apple TV on the network, the player of the set is unavailable and its HomePods stay
+  speakers.
+- A set has no Sendspin bridge yet; the Sendspin output of its player stays stored.
 
 ### Protocol ID Format
 
