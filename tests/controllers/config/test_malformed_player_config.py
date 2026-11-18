@@ -77,7 +77,7 @@ async def test_registered_player_with_ghost_config_recovers(
     monkeypatch.setattr(
         mass_minimal.config, "_get_output_protocol_config_values", _empty_values_async
     )
-    monkeypatch.setattr(mass_minimal.config, "_get_plugin_provider_config_values", lambda _e: {})
+    monkeypatch.setattr(mass_minimal.config, "_get_audio_source_config_values", lambda _e: {})
     mass_minimal.config.set(f"{CONF_PLAYERS}/{PLAYER_ID}", _ghost_entry())
 
     conf = await mass_minimal.config.get_player_config(PLAYER_ID)

@@ -19,7 +19,9 @@ from music_assistant_models.enums import ProtocolRole, RepeatMode
 from music_assistant_models.media_items import AudioSource, ProviderMapping
 
 from music_assistant.controllers.players.audio_sources import AudioSourceSession
+from music_assistant.models.media_capabilities import AudioSourceMixin
 from music_assistant.models.player import Player
+from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider
 from tests.common import MockProvider, attach_mock, mock_player_mass
 
@@ -92,16 +94,28 @@ class _InputSourcePlugin(PluginProvider):
         return [self._source] if player_id == self._device_player_id else []
 
 
+class _LineInPlayerProvider(AudioSourceMixin, PlayerProvider):
+    """Player provider stub that reports one AudioSource as an input of its own device."""
+
+    def __init__(self, source: AudioSource, player_id: str) -> None:
+        self._source = source
+        self._device_player_id = player_id
+
+    def get_player_input_sources(self, player_id: str) -> list[AudioSource]:
+        """Return the input for the device's own player only."""
+        return [self._source] if player_id == self._device_player_id else []
+
+
 def _input_plugin(mock_mass: MagicMock, source: AudioSource, player_id: str) -> None:
     """Expose the given source as an input of the given player via a plugin provider."""
     plugin = _InputSourcePlugin(source, player_id)
-    mock_mass.get_providers_supporting_feature = MagicMock(return_value=[plugin])
+    mock_mass.players.get_audio_source_providers = MagicMock(return_value=[plugin])
 
 
 def _bound_plugin(mock_mass: MagicMock, source: AudioSource, player_id: str = PLAYER_ID) -> None:
     """Expose the given source as bound to the given player via a plugin provider."""
     plugin = _BoundSourcePlugin(source, player_id)
-    mock_mass.get_providers_supporting_feature = MagicMock(return_value=[plugin])
+    mock_mass.players.get_audio_source_providers = MagicMock(return_value=[plugin])
 
 
 def _live_source(player: Player, uri: str = SOURCE_URI) -> PlayerSource | None:
@@ -171,6 +185,17 @@ def test_device_input_gets_a_standing_entry(mock_mass: MagicMock, provider: Mock
     """An input of the player's own device is selectable without a session being active."""
     player, _ = attach_mock(provider, "protocol_1", "Player", player_id=PLAYER_ID)
     _input_plugin(mock_mass, _audio_source(can_initiate=True), PLAYER_ID)
+
+    assert _live_source(player) is not None
+
+
+def test_input_of_a_player_provider_gets_a_standing_entry(
+    mock_mass: MagicMock, provider: MockProvider
+) -> None:
+    """A player provider delivering AudioSources lists its device input like a plugin does."""
+    player, _ = attach_mock(provider, "protocol_1", "Player", player_id=PLAYER_ID)
+    line_in = _LineInPlayerProvider(_audio_source(can_initiate=True), PLAYER_ID)
+    mock_mass.players.get_audio_source_providers = MagicMock(return_value=[line_in])
 
     assert _live_source(player) is not None
 

@@ -140,8 +140,8 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.helpers.webserver import Webserver, redact_sensitive_headers
 from music_assistant.models.core_controller import CoreController
+from music_assistant.models.media_capabilities import AudioSourceMixin
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
-from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine
@@ -278,7 +278,7 @@ class AudioSourceStream:
         self,
         streams: StreamsController,
         session: AudioSourceSession,
-        provider: PluginProvider,
+        provider: AudioSourceMixin,
         streamdetails: StreamDetails,
         playback_session_id: str,
         stream_session_id: str,
@@ -1000,13 +1000,13 @@ class StreamsController(CoreController):
         # renderer probing with HEAD before GET should not trigger any of
         # that. The actual GET request goes through the full hook chain.
         if request.method != "GET" and is_audio_source:
-            # Validate the providing plugin still exists before advertising the
+            # Validate the AudioSource provider still exists before advertising the
             # source. Many DLNA renderers cache HEAD responses; returning 200
-            # for a URI whose plugin has been unloaded would lie to the
+            # for a URI whose provider has been unloaded would lie to the
             # renderer and the follow-up GET would fail unrecoverably.
             assert queue_item.media_item is not None
             if not isinstance(
-                self.mass.get_provider(queue_item.media_item.provider), PluginProvider
+                self.mass.get_provider(queue_item.media_item.provider), AudioSourceMixin
             ):
                 raise web.HTTPNotFound(
                     reason=f"AudioSource provider {queue_item.media_item.provider} unavailable"
@@ -1042,7 +1042,7 @@ class StreamsController(CoreController):
         # teardown (e.g. a same-queue reconnect's first request completing
         # AFTER its replacement has already started streaming) from the
         # currently active session's real teardown.
-        audio_source_provider: PluginProvider | None = None
+        audio_source_provider: AudioSourceMixin | None = None
         audio_source_id: str | None = None
         stream_session_id = uuid4().hex
         # registered before any await below: a session rotation mid-setup must be
@@ -1073,7 +1073,7 @@ class StreamsController(CoreController):
                 is_audio_source
                 and queue_item.media_item is not None
                 and (prov := self.mass.get_provider(queue_item.media_item.provider))
-                and isinstance(prov, PluginProvider)
+                and isinstance(prov, AudioSourceMixin)
             ):
                 audio_source_id = queue_item.media_item.item_id
                 # Wire the provider into the finally block BEFORE awaiting the
@@ -2174,9 +2174,9 @@ class StreamsController(CoreController):
 
     def _resolve_audio_source_request(
         self, request: web.Request
-    ) -> tuple[AudioSourceSession, PlayerProtocol, PluginProvider]:
+    ) -> tuple[AudioSourceSession, PlayerProtocol, AudioSourceMixin]:
         """
-        Resolve a source stream request to its session, consuming player and plugin.
+        Resolve a source stream request to its session, consuming player and provider.
 
         :param request: The stream request to resolve.
         :raises web.HTTPNotFound: When any of the three is gone, or the url names a
@@ -2193,7 +2193,7 @@ class StreamsController(CoreController):
         if not (player := self.mass.players.get_output_protocol(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         prov = self.mass.get_provider(session.provider_instance_id)
-        if not isinstance(prov, PluginProvider):
+        if not isinstance(prov, AudioSourceMixin):
             raise web.HTTPNotFound(
                 reason=f"AudioSource provider {session.provider_instance_id} unavailable"
             )
@@ -2245,7 +2245,7 @@ class StreamsController(CoreController):
         self, request: web.Request, session: AudioSourceSession
     ) -> web.StreamResponse:
         """
-        Answer a HEAD probe for a live audio source without touching the plugin.
+        Answer a HEAD probe for a live audio source without touching its provider.
 
         :param request: The probe to answer.
         :param session: The session whose source is being probed.
@@ -2267,7 +2267,7 @@ class StreamsController(CoreController):
         player: PlayerProtocol,
         session: AudioSourceSession,
         streamdetails: StreamDetails,
-        provider: PluginProvider,
+        provider: AudioSourceMixin,
         stream_session_id: str,
     ) -> tuple[web.StreamResponse, AsyncGenerator[bytes]]:
         """
@@ -2277,7 +2277,7 @@ class StreamsController(CoreController):
         :param player: The player consuming this stream.
         :param session: The session whose source is being streamed.
         :param streamdetails: The stream details resolved for that source.
-        :param provider: Plugin delivering the live source.
+        :param provider: Provider delivering the live source.
         :param stream_session_id: Token of the stream request that claimed the session.
         :return: The prepared response and the encoded audio to write to it.
         """
@@ -2370,7 +2370,7 @@ class StreamsController(CoreController):
         self, session: AudioSourceSession, consumer_player_id: str
     ) -> AudioSourceStream:
         prov = self.mass.get_provider(session.provider_instance_id)
-        if not isinstance(prov, PluginProvider):
+        if not isinstance(prov, AudioSourceMixin):
             raise AudioError(
                 f"AudioSource provider {session.provider_instance_id} is not available"
             )
@@ -2412,7 +2412,7 @@ class StreamsController(CoreController):
     async def _close_audio_source(
         self,
         session: AudioSourceSession,
-        provider: PluginProvider,
+        provider: AudioSourceMixin,
         playback_session_id: str,
         stream_session_id: str,
         *,
@@ -2472,7 +2472,7 @@ class StreamsController(CoreController):
         assert media_item is not None  # caller checked media_type == AUDIO_SOURCE
         prov = self.mass.get_provider(media_item.provider)
         queue_id = queue_item.queue_id
-        if not isinstance(prov, PluginProvider):
+        if not isinstance(prov, AudioSourceMixin):
             async for chunk in inner:
                 yield chunk
             return
@@ -2614,13 +2614,13 @@ class StreamsController(CoreController):
     def _update_audio_source_processing_context(
         self,
         session: AudioSourceSession,
-        provider: PluginProvider,
+        provider: AudioSourceMixin,
     ) -> None:
         """
         Publish source-owned processing for a live AudioSource.
 
         :param session: Active source session to publish.
-        :param provider: Plugin delivering the live source.
+        :param provider: Provider delivering the live source.
         """
         if session.streamdetails is None:
             return
