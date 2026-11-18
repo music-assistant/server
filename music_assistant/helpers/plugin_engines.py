@@ -178,7 +178,9 @@ async def list_engine_usage(mass: MusicAssistant) -> list[EngineUsage]:
     """
     Return the engine settings of the core modules and loaded providers, with their engines.
 
-    The core modules come first, then the providers by name.
+    The core modules come first, then the providers by name. Only the declared settings are
+    listed: an engine a feature picks within its own data, such as the voice of an AI Radio
+    host, is not.
 
     :param mass: The Music Assistant instance to query.
     """

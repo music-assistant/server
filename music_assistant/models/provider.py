@@ -42,7 +42,8 @@ class Provider:
     # set to True in providers that capture a mass.streams address or port while loading,
     # to have them reloaded onto the new one when the streamserver network changes
     reload_on_streams_network_change: bool = False
-    # the AI engine settings of this provider, listed on the AI settings page
+    # the AI engine settings of this provider, listed on the AI settings page; engine choices
+    # kept in the provider's own data (such as the voice of an AI Radio host) are not listed
     engine_settings: ClassVar[tuple[EngineSetting, ...]] = ()
 
     def __init__(
