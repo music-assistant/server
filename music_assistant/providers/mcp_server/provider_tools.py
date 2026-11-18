@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .registry import MCPTool
+from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
+
+from .registry import MCPTool, ToolError
 from .tools import _resolve_player
 
 if TYPE_CHECKING:
@@ -16,16 +18,17 @@ if TYPE_CHECKING:
 
 def get_provider_tools(mass: MusicAssistant) -> list[MCPTool]:
     """
-    Return the tools of the loaded providers that the current user may use an instance of.
+    Return the tools of the loaded providers that the authenticated user may use an instance of.
 
     A tool is named ``<domain>__<id>``. A tool of a provider of which the user may use several
     instances takes the instance to act on as its ``instance`` argument, and a tool that
-    requires a player takes the player as its ``player`` argument.
+    requires a player takes the player as its ``player`` argument. A call refuses an instance
+    that the user it acts as (such as a Home Assistant user) may not use.
 
     :param mass: The Music Assistant instance.
     """
     instances: dict[str, list[ProviderInstanceType]] = {}
-    for provider in mass.get_providers():
+    for provider in mass.get_providers_for_user(current_user.get()):
         if provider.manifest.mcp_tools and provider.available and not provider.unloading:
             instances.setdefault(provider.domain, []).append(provider)
     return [
@@ -66,6 +69,9 @@ def _provider_tool(declared: ProviderMCPTool, providers: list[ProviderInstanceTy
         if len(providers) > 1:
             instance_id = arguments.pop("instance")
             provider = next(p for p in providers if p.instance_id == instance_id)
+        # the tool is built for the user who lists it, a call may act as another user
+        if all(p.instance_id != provider.instance_id for p in mass.get_providers()):
+            raise ToolError(f"Not allowed: {provider.name} is not available to this user")
         player_id = None
         if declared.requires_player:
             player_id = _resolve_player(mass, arguments.pop("player")).player_id

@@ -170,22 +170,21 @@ class MCPTransport:
     ) -> web.Response:
         """Run the tool of a tools/call request and return its result."""
         name = params.get("name")
+        tool = self._tools().get(name) if isinstance(name, str) else None
         arguments = params.get("arguments") or {}
+        if tool is None:
+            return _error_response(message_id, INVALID_PARAMS, f"Unknown tool: {name}")
         if not isinstance(arguments, dict):
             return _error_response(message_id, INVALID_PARAMS, "Arguments must be an object")
         try:
-            # the provider tools depend on the user the call acts as
             await impersonate_home_assistant_user(self.mass, params)
-            tool = self._tools().get(name) if isinstance(name, str) else None
-            if tool is None:
-                return _error_response(message_id, INVALID_PARAMS, f"Unknown tool: {name}")
             self._check_scopes(tool)
             result = await tool.call(self.mass, arguments)
             text = json_dumps(result)
         except (ToolError, MusicAssistantError) as err:
             return _tool_error_response(message_id, str(err) or type(err).__name__)
         except Exception:
-            LOGGER.exception("Error running MCP tool %s", name)
+            LOGGER.exception("Error running MCP tool %s", tool.name)
             return _tool_error_response(message_id, "Internal error")
         tool_result: dict[str, Any] = {
             "content": [{"type": "text", "text": text}],

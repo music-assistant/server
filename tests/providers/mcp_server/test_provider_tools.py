@@ -274,36 +274,68 @@ async def test_impersonated_user_needs_the_scope(
     provider.handle_mcp_tool.assert_not_awaited()
 
 
-async def test_call_uses_the_instances_of_the_acting_user(
-    mass: MusicAssistant, add_provider: Callable[..., _FakeProvider]
+@pytest.mark.parametrize("shared_with_home_assistant", [False, True])
+async def test_home_assistant_calls_what_it_listed(
+    mass: MusicAssistant,
+    add_provider: Callable[..., _FakeProvider],
+    shared_with_home_assistant: bool,
 ) -> None:
-    """A call Home Assistant makes for a linked user acts on an instance of that user."""
+    """
+    A tool Home Assistant listed takes the same arguments when it calls it for a linked user.
+
+    The linked user may use the household instance and a private one, Home Assistant the
+    household instance and, in one case, an instance shared with it only. The call acts on an
+    instance the linked user may use, and refuses the one only Home Assistant may use.
+    """
     await _create_admin(mass)
     member = await mass.webserver.auth.create_user(username="member")
     await mass.webserver.auth.link_user_to_provider(member, AuthProviderType.HOME_ASSISTANT, "ha-m")
     system_user = await mass.webserver.auth.get_homeassistant_system_user()
-    own = add_provider(f"{DOMAIN}--a", provider_type=ProviderType.MUSIC)
-    other = add_provider(f"{DOMAIN}--b", provider_type=ProviderType.MUSIC)
+    household = add_provider(f"{DOMAIN}--a", provider_type=ProviderType.MUSIC)
+    private = add_provider(f"{DOMAIN}--b", provider_type=ProviderType.MUSIC)
+    shared = add_provider(f"{DOMAIN}--c", provider_type=ProviderType.MUSIC)
     set_music_source_access(
         mass,
         {
-            own.instance_id: ProviderAccess(owner=member.user_id, sharing=ProviderSharing.PRIVATE),
-            other.instance_id: ProviderAccess(
-                sharing=ProviderSharing.SELECTED, shared_users=[system_user.user_id]
+            household.instance_id: None,
+            private.instance_id: ProviderAccess(
+                owner=member.user_id, sharing=ProviderSharing.PRIVATE
+            ),
+            shared.instance_id: ProviderAccess(
+                sharing=ProviderSharing.SELECTED,
+                shared_users=[system_user.user_id] if shared_with_home_assistant else [],
             ),
         },
     )
-    message = _call(f"{DOMAIN}__show_stations", {}, meta={"io.home-assistant/user_id": "ha-m"})
-    with patch(
-        "music_assistant.providers.mcp_server.auth.get_ip_addresses",
-        AsyncMock(return_value=(HOST_IP, INGRESS_IP)),
-    ):
-        response = await _post(
-            mass, message, None, peer=INGRESS_IP, ingress=True, home_assistant=True
-        )
+
+    listed = _body(await _from_home_assistant(mass, _rpc("tools/list")))["result"]["tools"]
+    schema = next(t for t in listed if t["name"] == f"{DOMAIN}__show_stations")["inputSchema"]
+    instances = schema["properties"].get("instance", {}).get("enum")
+    assert instances == ([f"{DOMAIN}--a", f"{DOMAIN}--c"] if shared_with_home_assistant else None)
+    arguments = {"instance": household.instance_id} if instances else {}
+    response = await _from_home_assistant(
+        mass,
+        _call(f"{DOMAIN}__show_stations", arguments, meta={"io.home-assistant/user_id": "ha-m"}),
+    )
     assert not _body(response)["result"]["isError"]
-    own.handle_mcp_tool.assert_awaited_once()
-    other.handle_mcp_tool.assert_not_awaited()
+    household.handle_mcp_tool.assert_awaited_once_with("show_stations", {}, None)
+
+    if shared_with_home_assistant:
+        response = await _from_home_assistant(
+            mass,
+            _call(
+                f"{DOMAIN}__show_stations",
+                {"instance": shared.instance_id},
+                meta={"io.home-assistant/user_id": "ha-m"},
+            ),
+        )
+        result = _body(response)["result"]
+        assert result["isError"]
+        assert (
+            result["content"][0]["text"] == "Not allowed: Radio Box c is not available to this user"
+        )
+        shared.handle_mcp_tool.assert_not_awaited()
+    private.handle_mcp_tool.assert_not_awaited()
 
 
 async def test_hidden_music_source_hides_its_tools(
@@ -466,6 +498,15 @@ async def test_provider_tool_never_replaces_a_builtin(
         await _post(mass, _call("get_players", {}), admin_token)
     assert tools["get_players"]["description"] == TOOLS["get_players"].description
     impostor.handler.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def _from_home_assistant(mass: MusicAssistant, message: dict[str, Any]) -> web.Response:
+    """Send a message to the private endpoint as Home Assistant on the host, without token."""
+    with patch(
+        "music_assistant.providers.mcp_server.auth.get_ip_addresses",
+        AsyncMock(return_value=(HOST_IP, INGRESS_IP)),
+    ):
+        return await _post(mass, message, None, peer=INGRESS_IP, ingress=True, home_assistant=True)
 
 
 async def _list(mass: MusicAssistant, token: str) -> dict[str, dict[str, Any]]:
