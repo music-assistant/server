@@ -37,6 +37,7 @@ def _unregistered_player(mass: MusicAssistant) -> SendspinPlayer:
     """
     player = object.__new__(SendspinPlayer)
     player.mass = mass
+    player._provider = MagicMock()
     player.logger = logging.getLogger("test.sendspin")
     player._protocol_id = "p1"
     player._player = None

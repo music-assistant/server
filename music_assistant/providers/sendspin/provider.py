@@ -6,7 +6,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from ipaddress import ip_address
@@ -85,6 +85,7 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.helpers.virtual_player import cleanup_virtual_player
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.media_capabilities import AudioSourceMixin
 from music_assistant.models.player import OWN_PROTOCOL_ROLES
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
@@ -122,9 +123,10 @@ from music_assistant.providers.sendspin.security import (
     IDENTITY_FILENAME,
     get_or_create_server_identity,
 )
+from music_assistant.providers.sendspin.sources import SendspinSources
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Collection, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Collection, Sequence
 
     from aiosendspin.models.management import (
         ManagementResultData,
@@ -136,8 +138,11 @@ if TYPE_CHECKING:
     from aiosendspin.server.server import ExternalStreamStartRequest
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import MediaType
     from music_assistant_models.event import MassEvent
+    from music_assistant_models.media_items import AudioSource
     from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.webserver.auth import AuthenticationManager
     from music_assistant.providers.hass import HomeAssistantProvider
@@ -372,8 +377,8 @@ def _manual_client_url(address: str) -> str:
     )
 
 
-class SendspinProvider(PlayerProvider):
-    """Player Provider for Sendspin."""
+class SendspinProvider(AudioSourceMixin, PlayerProvider):
+    """Player Provider for Sendspin, which also delivers the line-ins of its clients."""
 
     reload_on_streams_network_change = True
     server_api: SendspinServer
@@ -440,6 +445,7 @@ class SendspinProvider(PlayerProvider):
         self._hass_available = False
         self._server_start_failed = False
         self._hass_auto_pairer = HassAutoPairer(self)
+        self.sources = SendspinSources(self)
         self.unregister_cbs = []
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -1267,6 +1273,7 @@ class SendspinProvider(PlayerProvider):
             self.mass.webserver.auth.subscribe_user_access_revoked(self._on_user_access_revoked)
         )
         await self._remove_orphan_virtual_player_configs()
+        self.sources.start()
         # Start server for handling incoming Sendspin connections from clients
         # and mDNS discovery of new clients
         try:
@@ -1319,6 +1326,7 @@ class SendspinProvider(PlayerProvider):
         self._management_sessions.clear()
         self._pairing_config_snapshots.clear()
         self._hass_auto_pairer.close()
+        await self.sources.stop()
         if self._running_pairing_evictions:
             await asyncio.gather(*self._running_pairing_evictions, return_exceptions=True)
         # Stop the Sendspin server. A failed start already cleaned up after itself,
@@ -1333,6 +1341,40 @@ class SendspinProvider(PlayerProvider):
         self._client_event_versions.clear()
         self._virtual_players.clear()
         self._bridge_waiters.clear()
+
+    async def get_audio_sources(self) -> list[AudioSource]:
+        """Return the line-ins of the connected Sendspin clients and approved held ones."""
+        return await self.sources.get_audio_sources()
+
+    def get_player_input_sources(self, player_id: str) -> list[AudioSource]:
+        """Return the line-in of the Sendspin client of the given player."""
+        return self.sources.get_player_input_sources(player_id)
+
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Return the StreamDetails of a Sendspin line-in."""
+        return await self.sources.get_stream_details(item_id, media_type)
+
+    async def on_source_selected(
+        self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
+    ) -> None:
+        """Claim a Sendspin line-in and ask its client to start streaming."""
+        await self.sources.on_source_selected(
+            source_id, player_id, owner_player_id, stream_session_id
+        )
+
+    async def on_source_unselected(
+        self, source_id: str, owner_player_id: str, stream_session_id: str
+    ) -> None:
+        """Release a Sendspin line-in when its stream is torn down."""
+        await self.sources.on_source_unselected(source_id, owner_player_id, stream_session_id)
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """Return the PCM of a Sendspin line-in; a line-in can not seek."""
+        async with aclosing(self.sources.get_audio_stream(streamdetails)) as stream:
+            async for chunk in stream:
+                yield chunk
 
     def _set_aiosendspin_log_level(self) -> None:
         """Keep aiosendspin's (very chatty) logging quiet unless verbose logging is enabled."""

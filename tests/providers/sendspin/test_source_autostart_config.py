@@ -24,6 +24,7 @@ from music_assistant.providers.sendspin.player import (
     SendspinPlayer,
     SendspinSourcePlayer,
 )
+from music_assistant.providers.sendspin.sources import SendspinSources
 
 if TYPE_CHECKING:
     from aiosendspin.server.client import SendspinClient
@@ -294,6 +295,7 @@ async def test_the_line_in_target_picked_in_the_setup_flow_is_kept(
     cast("Any", sendspin).clients = clients
     cast("Any", sendspin).server_api = SimpleNamespace(get_client=clients.get)
     cast("Any", sendspin).is_virtual_player = lambda _client_id: False
+    cast("Any", sendspin).sources = SendspinSources(cast("SendspinProvider", sendspin))
     first = _line_in(sendspin)
     assert first.session_only is True
     await scenario.mass.players.register(first)
@@ -318,6 +320,7 @@ async def test_the_line_in_target_picked_in_the_setup_flow_is_kept(
     cast("Any", sendspin).clients = clients
     cast("Any", sendspin).server_api = SimpleNamespace(get_client=clients.get)
     cast("Any", sendspin).is_virtual_player = lambda _client_id: False
+    cast("Any", sendspin).sources = SendspinSources(cast("SendspinProvider", sendspin))
     after_restart = _line_in(sendspin)
     await scenario.mass.players.register(after_restart)
     await scenario.settle()
@@ -389,6 +392,7 @@ async def test_a_change_of_the_analysis_switch_reaches_the_playing_input(
     cast("Any", sendspin).clients = {}
     cast("Any", sendspin).server_api = SimpleNamespace(get_client=cast("Any", sendspin).clients.get)
     cast("Any", sendspin).is_virtual_player = lambda _client_id: False
+    sources = cast("Any", sendspin).sources = MagicMock()
     protocol: SendspinBasePlayer
     if as_output:
         protocol = _speaker_with_microphone(sendspin)
@@ -400,17 +404,9 @@ async def test_a_change_of_the_analysis_switch_reaches_the_playing_input(
     await scenario.settle()
     assert protocol.player is not None
     assert (protocol.player.own_protocol is protocol) is not as_output
-    source_plugin = MagicMock()
-    get_provider = scenario.mass.get_provider
-    monkeypatch.setattr(
-        scenario.mass,
-        "get_provider",
-        lambda domain, *args, **kwargs: (
-            source_plugin if domain == "sendspin_source" else get_provider(domain, *args, **kwargs)
-        ),
-    )
+    sources.reset_mock()
 
     await scenario.mass.config.save_player_config(protocol.player.player_id, {key: False})
 
-    source_plugin.on_client_config_updated.assert_called_once_with(protocol.protocol_id)
+    sources.on_client_config_updated.assert_called_once_with(protocol.protocol_id)
     assert protocol.config.get_value(CONF_ALLOW_AUDIO_ANALYSIS) is False
