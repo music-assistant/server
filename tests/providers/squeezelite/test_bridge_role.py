@@ -26,7 +26,14 @@ from aiosendspin.noise.trust_store import InMemoryServerPairingStore
 from aiosendspin.server import ClientUpdatedEvent, SendspinServer
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
-from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.enums import (
+    ContentType,
+    MediaType,
+    StreamType,
+    VolumeNormalizationMode,
+)
+from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_FLOW_MODE_SAMPLE_RATE
 from music_assistant.controllers.streams.audio import StreamsAudio
@@ -138,14 +145,36 @@ def _sendspin_player(role: SlimprotoBridgeRole, config: dict[str, str]) -> Any:
     player.mass.streams.audio.select_flow_pcm_format = StreamsAudio.select_flow_pcm_format.__get__(
         audio, StreamsAudio
     )
+    player.mass.streams.audio.get_output_format = StreamsAudio.get_output_format.__get__(
+        audio, StreamsAudio
+    )
     return player
 
 
-def _track(sample_rate: int) -> MagicMock:
-    """Return the stream details of a track with a sample rate."""
-    streamdetails = MagicMock(media_type=MediaType.TRACK)
-    streamdetails.audio_format.sample_rate = sample_rate
-    return streamdetails
+def _track(
+    sample_rate: int,
+    content_type: ContentType = ContentType.FLAC,
+    bit_depth: int = 16,
+    media_type: MediaType = MediaType.TRACK,
+) -> StreamDetails:
+    """
+    Return the stream details of a track, or of another item.
+
+    :param sample_rate: The sample rate of its source.
+    :param content_type: What its source is.
+    :param bit_depth: The bit depth its source is probed as.
+    :param media_type: What the item is.
+    """
+    return StreamDetails(
+        provider="test",
+        item_id="track",
+        audio_format=AudioFormat(
+            content_type=content_type, sample_rate=sample_rate, bit_depth=bit_depth
+        ),
+        media_type=media_type,
+        stream_type=StreamType.HTTP,
+        path="http://example.local/track",
+    )
 
 
 async def test_sendspin_makes_this_role_for_a_bridge_client(server: SendspinServer) -> None:
@@ -199,6 +228,108 @@ def test_the_role_plays_the_first_format_of_the_hello_by_default() -> None:
     assert _plays(role) == (48000, 16, 2)
     assert role.set_preferred_format(None)
     assert _plays(role) == (44100, 24, 2)
+
+
+TRACK = MediaType.TRACK
+RADIO = MediaType.RADIO
+PLAIN = VolumeNormalizationMode.DISABLED
+NORMALIZED = VolumeNormalizationMode.DYNAMIC
+
+
+@pytest.mark.parametrize(
+    ("media_type", "content_type", "bit_depth", "normalization", "dsp", "session_bit_depth"),
+    [
+        # nothing works on the audio: the bits its first item is decoded to
+        (TRACK, ContentType.FLAC, 16, PLAIN, False, 16),
+        (TRACK, ContentType.FLAC, 24, PLAIN, False, 24),
+        (TRACK, ContentType.MP3, 16, PLAIN, False, 16),
+        # DSD is probed as 8 bits and decoded to more than a player takes
+        (TRACK, ContentType.DSF, 8, PLAIN, False, 24),
+        (TRACK, ContentType.WAVPACK, 8, PLAIN, False, 24),
+        # volume normalization or DSP works on a track: all the bits of the player
+        (TRACK, ContentType.FLAC, 16, NORMALIZED, False, 24),
+        (TRACK, ContentType.FLAC, 16, PLAIN, True, 24),
+        # a radio station has the bits of its source, whatever works on it
+        (RADIO, ContentType.MP3, 16, NORMALIZED, False, 16),
+        (RADIO, ContentType.AAC, 16, PLAIN, True, 16),
+        (RADIO, ContentType.FLAC, 24, NORMALIZED, False, 24),
+    ],
+)
+async def test_a_session_keeps_its_bit_depth_for_the_bridge(
+    media_type: MediaType,
+    content_type: ContentType,
+    bit_depth: int,
+    normalization: VolumeNormalizationMode,
+    dsp: bool,
+    session_bit_depth: int,
+) -> None:
+    """The Sendspin provider hands the bit depth of a session on, and the role plays no more."""
+    role = _role()
+    player = _sendspin_player(role, {})
+    # the bit depth as Music Assistant picks it for the audio of a session
+    audio = player.mass.streams.audio.select_flow_pcm_format.__self__
+    audio._pick_pcm_bit_depth = StreamsAudio._pick_pcm_bit_depth.__get__(audio, StreamsAudio)
+    audio._resolve_player_dsp_config.return_value.enabled = dsp
+    role.limit_bit_depth(lambda: player.session_bit_depth)
+    streamdetails = _track(48000, content_type, bit_depth, media_type)
+    streamdetails.volume_normalization_mode = normalization
+
+    await player.follow_session_sample_rate(streamdetails)
+
+    assert player.session_bit_depth == session_bit_depth
+    assert _plays(role) == (48000, session_bit_depth, 2)
+    await player.follow_session_sample_rate(None)
+    assert player.session_bit_depth is None
+    assert _plays(role) == (44100, 24, 2)
+
+
+@pytest.mark.parametrize(
+    ("formats", "asked", "source_bit_depth", "plays"),
+    [
+        # no more bits than the source has, at the rate that is asked for
+        (FORMATS, None, 16, (44100, 16, 2)),
+        (FORMATS, _pcm(48000, 24), 16, (48000, 16, 2)),
+        (FORMATS, None, 24, (44100, 24, 2)),
+        (FORMATS, _pcm(48000, 24), 24, (48000, 24, 2)),
+        # nor more than was asked for: a format the user set is not raised
+        (FORMATS, _pcm(48000, 16), 24, (48000, 16, 2)),
+        # a source that is not known plays as it is asked for
+        (FORMATS, None, None, (44100, 24, 2)),
+        # a player that plays one depth plays that
+        ([(44100, 16), (48000, 16)], None, 24, (44100, 16, 2)),
+        ([(44100, 24), (48000, 24)], _pcm(48000, 24), 16, (48000, 24, 2)),
+        # a player that only plays more bits plays the fewest it has
+        ([(44100, 32), (44100, 24)], None, 16, (44100, 24, 2)),
+    ],
+)
+def test_the_bit_depth_follows_the_source(
+    formats: list[tuple[int, int]],
+    asked: SendspinAudioFormat | None,
+    source_bit_depth: int | None,
+    plays: tuple[int, int, int],
+) -> None:
+    """A 16-bit source is played in 16 bits, also by a player that plays 24."""
+    role = _role(formats)
+    role.limit_bit_depth(lambda: source_bit_depth)
+
+    assert role.set_preferred_format(asked, AudioCodec.PCM if asked else None)
+
+    assert _plays(role) == plays
+
+
+def test_another_bit_depth_is_reported_to_the_group() -> None:
+    """A source of another depth makes Sendspin start the stream of the role again."""
+    client = MagicMock(info=_hello(FORMATS))
+    role = SlimprotoBridgeRole(client=client)
+    depths = iter([24, 16, 16])
+    role.limit_bit_depth(lambda: next(depths))
+    assert role.set_preferred_format(None)
+    client.group.on_role_format_changed.assert_not_called()
+
+    assert role.set_preferred_format(None)
+    client.group.on_role_format_changed.assert_called_once_with(role)
+    assert role.set_preferred_format(None)
+    client.group.on_role_format_changed.assert_called_once_with(role)
 
 
 @pytest.mark.parametrize(

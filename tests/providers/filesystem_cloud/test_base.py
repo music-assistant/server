@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import quote
 
@@ -11,6 +11,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 
+from music_assistant.helpers.tags import AudioTags
 from music_assistant.providers.filesystem_cloud.base import CloudFileSystemProvider, RawItem
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 
@@ -524,3 +525,34 @@ async def test_parse_playlist_line_missing_file_returns_none(
 
     assert await provider._parse_playlist_line("Missing/nope.mp3", "Playlists") is None
     provider.logger.warning.assert_called_once()  # type: ignore[attr-defined]
+
+
+async def test_parse_tags_uses_cloud_path_as_filename(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Filename-based tag fallbacks see the decoded cloud path, not the encoded stream URL."""
+    tree: dict[str, list[RawItem]] = {
+        ROOT_ID: [("show-id", "My Show", True, "2026-01-01", None, None)],
+        "show-id": [("ep-id", "01 - Episode One.mp3", False, "2026-01-02", 1000, None)],
+    }
+    provider = _make_provider(tree=tree)
+    raw: dict[str, Any] = {
+        "format": {"filename": "", "format_name": "mp3", "duration": "10.0", "tags": {}},
+        "streams": [{"codec_type": "audio", "channels": 2, "sample_rate": "44100"}],
+    }
+
+    async def _fake_parse(input_file: str, _file_size: int | None = None) -> AudioTags:
+        raw["format"]["filename"] = input_file
+        return AudioTags.parse(raw)
+
+    monkeypatch.setattr(
+        "music_assistant.providers.filesystem_cloud.base.async_parse_tags", _fake_parse
+    )
+    entry = await provider._lookup("My Show/01 - Episode One.mp3")
+    assert entry is not None
+    file_item = entry[1]
+    assert "%20" in file_item.absolute_path
+
+    tags = await provider._parse_tags(file_item)
+
+    assert tags.filename == "My Show/01 - Episode One.mp3"
+    assert tags.title == "Episode One"
+    assert tags.track == 1

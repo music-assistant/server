@@ -151,7 +151,7 @@ async def test_nothing_is_reported_while_the_server_is_closing() -> None:
 
 
 def test_the_event_and_the_hook_receive_the_same_report() -> None:
-    """A progress report reaches both the event bus and the scrobbler plugins."""
+    """A progress report reaches the event bus, the scrobbler plugins and the streaming provider."""
     track = Track(
         item_id="1",
         provider="library",
@@ -181,13 +181,14 @@ def test_the_event_and_the_hook_receive_the_same_report() -> None:
                 userid="user-1",
                 enqueued_media_items=[],
                 credited_albums=set(),
-                served_item_ids={"qi-1"},
+                served_item_ids={"qi-1": None},
             )
         },
         get_item=Mock(return_value=item),
         _apply_probed_duration=Mock(),
         _should_mark_played=Mock(return_value=False),
         _report_to_scrobblers=Mock(),
+        _report_to_streaming_provider=Mock(),
         logger=logger,
         mass=SimpleNamespace(signal_event=Mock(), metadata=MagicMock()),
     )
@@ -220,3 +221,6 @@ def test_the_event_and_the_hook_receive_the_same_report() -> None:
     assert report.userid == "user-1"
     assert report.player_id == QUEUE_ID
     tracker._report_to_scrobblers.assert_called_once_with(report)
+    tracker._report_to_streaming_provider.assert_called_once_with(
+        item, report, PlaybackState.PLAYING
+    )

@@ -217,9 +217,11 @@ async def test_http_output_is_registered_to_the_source_session(
         session,
         MagicMock(),
         provider,
+        "tok-1",
     )
 
     assert result == (response, "encoded-audio")
+    assert ctrl.audio.get_audio_source_stream.call_args.kwargs["stream_session_id"] == "tok-1"
     ctrl.audio.get_player_output_plan.assert_called_once_with(
         protocol_id=player.protocol_id,
         input_format=pcm_format,

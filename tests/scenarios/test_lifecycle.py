@@ -9,9 +9,11 @@ from unittest.mock import ANY
 
 import pytest
 from music_assistant_models.enums import (
+    ChannelLayout,
     EventType,
     IdentifierType,
     PlayerFeature,
+    PlayerType,
     ProviderTier,
 )
 from music_assistant_models.player import PlayerMedia
@@ -1443,3 +1445,80 @@ async def test_a_browser_player_is_offered_to_a_plugin_only_while_it_is_its_choi
         living_id,
         "sendspin_web_3f2a",
     ]
+
+
+@pytest.mark.parametrize("reported_type", [PlayerType.MULTI_CHANNEL, PlayerType.STEREO_PAIR])
+async def test_a_multi_channel_player_shows_the_layout_of_its_speakers(
+    scenario: Scenario, reported_type: PlayerType
+) -> None:
+    """
+    A set of speakers is a multi-channel player with the layout its provider reports.
+
+    A provider that still reports a stereo pair gives a multi-channel player as well. A layout
+    the provider reports later shows right away; a single speaker has no layout.
+    """
+    chromecast = await scenario.add_provider("chromecast")
+    pair = chromecast.protocol(
+        "cast_living", "Living", type=reported_type, channel_layout=ChannelLayout.STEREO
+    )
+    speaker = chromecast.protocol("cast_den", "Den", identifiers=DEN)
+    await scenario.register(pair)
+    await scenario.register(speaker)
+    await scenario.idle()
+    living_id, den_id = scenario.player_of(pair), scenario.player_of(speaker)
+    assert living_id is not None
+    assert den_id is not None
+
+    living, den = scenario.player(living_id), scenario.player(den_id)
+    assert living is not None
+    assert den is not None
+    assert (living.type, living.channel_layout) == (PlayerType.MULTI_CHANNEL, ChannelLayout.STEREO)
+    assert (den.type, den.channel_layout) == (PlayerType.PLAYER, None)
+
+    await scenario.report(pair, channel_layout=ChannelLayout.LAYOUT_5_1)
+
+    living = scenario.player(living_id)
+    assert living is not None
+    assert living.channel_layout == ChannelLayout.LAYOUT_5_1
+
+
+async def test_a_player_stored_as_a_stereo_pair_is_a_multi_channel_player(
+    scenario: Scenario,
+) -> None:
+    """
+    A player an older version stored as a stereo pair is a multi-channel player.
+
+    It is one from the start, also while its device is away, and it is stored as one.
+    """
+    chromecast = await scenario.add_provider("chromecast")
+    pair = chromecast.protocol(
+        "cast_living",
+        "Living",
+        type=PlayerType.MULTI_CHANNEL,
+        channel_layout=ChannelLayout.STEREO,
+    )
+    await scenario.register(pair)
+    await scenario.idle()
+    living_id = scenario.player_of(pair)
+    assert living_id is not None
+    scenario.set_present("cast_living", False)
+
+    await scenario.seed_config({CONF_PLAYERS: {living_id: {"player_type": "stereo_pair"}}})
+    await scenario.idle()
+
+    living = scenario.player(living_id)
+    assert living is not None
+    assert (living.available, living.type) == (False, PlayerType.MULTI_CHANNEL)
+    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{living_id}/player_type") == "multi_channel"
+
+    scenario.set_present("cast_living", True)
+    await scenario.register(scenario.protocol("cast_living"))
+    await scenario.idle()
+
+    living = scenario.player(living_id)
+    assert living is not None
+    assert (living.available, living.type, living.channel_layout) == (
+        True,
+        PlayerType.MULTI_CHANNEL,
+        ChannelLayout.STEREO,
+    )

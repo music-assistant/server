@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
+    ChannelLayout,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
         PlayerSoundMode,
     )
     from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.streamdetails import StreamMetadata
 
     from music_assistant.controllers.players.audio_sources import AudioSourceSession
 
@@ -146,19 +148,21 @@ class GroupSnapshot:
 @dataclass(slots=True, kw_only=True)
 class QueueSnapshot:
     """
-    A queue, with the artwork of its current item resolved to urls.
+    A queue, with the stream metadata and artwork of its current item resolved.
 
-    The urls are only given where they count: for the queue the player takes its
+    These are only given where they count: for the queue the player takes its
     current media from (see resolve_media_queue).
 
     :param queue: The queue.
     :param item_image_url: Url of the image of the current queue item.
     :param media_item_image_url: Url of the image of the media item it holds.
+    :param stream_metadata: What the stream of the current item plays, as shown.
     """
 
     queue: PlayerQueue
     item_image_url: str | None = None
     media_item_image_url: str | None = None
+    stream_metadata: StreamMetadata | None = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -173,6 +177,7 @@ class StateInputs:
     :param player_id: Id of the player.
     :param provider: Instance id of the provider of the player.
     :param player_type: Type of the player.
+    :param channel_layout: Layout of the speakers of a multi-channel player.
     :param now: Current time, as a timestamp.
     :param previous_state: The state published before this one.
     :param enabled: Whether the player is enabled in its config.
@@ -192,8 +197,8 @@ class StateInputs:
     :param powered: Power state the power control reports.
     :param volume_level: Volume level the volume control reports.
     :param volume_muted: Mute state the mute control reports.
-    :param offline_by_power_control: Whether the device is offline because it is
-        switched off at its power control.
+    :param offline_by_power_control: Whether the device is off, or starting up, at a
+        power control that cuts its power.
     :param own: What the player's own protocol reports: its native protocol, one that
         controls it without an audio path, or the virtual one of a group.
     :param device_info: Device info of the player.
@@ -238,6 +243,7 @@ class StateInputs:
     player_id: str
     provider: str
     player_type: PlayerType
+    channel_layout: ChannelLayout | None
     now: float
     previous_state: PlayerState
     enabled: bool
@@ -346,6 +352,7 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
         player_id=inputs.player_id,
         provider=inputs.provider,
         type=inputs.player_type,
+        channel_layout=inputs.channel_layout,
         # the client view: it includes a player switched off at its power control, so
         # internal code that needs a reachable device checks available_for_playback
         available=inputs.enabled
@@ -1096,10 +1103,8 @@ def _queue_media(inputs: StateInputs, active_queue: QueueSnapshot) -> PlayerMedi
         # queue is active but no current item
         return None
     item_image_url = active_queue.item_image_url
-    if current_item.streamdetails and (
-        stream_metadata := current_item.streamdetails.stream_metadata
-    ):
-        # handle stream metadata in streamdetails (e.g. for radio stream)
+    if stream_metadata := active_queue.stream_metadata:
+        # handle stream metadata (e.g. for radio stream)
         image_url = stream_metadata.image_url or item_image_url
         elapsed_time, elapsed_time_last_updated = _resolve_position(
             stream_metadata.elapsed_time,
@@ -1297,7 +1302,7 @@ def _volume_members(inputs: StateInputs, state: PlayerState) -> list[PlayerState
         peer = inputs.peers.get(member_id)
         # the player itself may be named by one of its legacy ids
         if (peer.player_id if peer else member_id) == inputs.player_id:
-            if inputs.player_type != PlayerType.PLAYER:
+            if inputs.player_type == PlayerType.GROUP:
                 continue
             available_for_playback: bool | None = (
                 _playable(inputs) and not inputs.offline_by_power_control

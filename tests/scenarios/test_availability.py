@@ -10,6 +10,9 @@ from music_assistant_models.enums import IdentifierType
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerMedia
 
+from music_assistant.constants import DEFAULT_POWER_ON_STARTUP_TIME
+from music_assistant.controllers.players.power import EXTERNAL_POWER_OFF_STOP_DELAY
+
 from .harness import (
     MUSIC_PROVIDER,
     TEST_TRACK_URI,
@@ -116,8 +119,9 @@ async def _switched_off_player(scenario: Scenario) -> tuple[FakeProtocol, FakePo
     """
     Return a native player's protocol, its power control and its id, with the device gone.
 
-    The user switched the control off by hand, after which the device dropped off the
-    network. The player is expected to show available and powered off.
+    The power control cuts the power of the player. The user switched it off by hand, after
+    which the device dropped off the network. The player is expected to show available and
+    powered off.
     """
     squeezelite = await scenario.add_provider("squeezelite")
     pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=BATHROOM)
@@ -125,18 +129,21 @@ async def _switched_off_player(scenario: Scenario) -> tuple[FakeProtocol, FakePo
     player_id = scenario.single_player(pi).player_id
     plug = await scenario.add_power_control("switch.bathroom_plug", "Bathroom plug", powered=True)
     await scenario.configure_player(player_id, power_control=plug.control_id)
+    await scenario.configure_player(player_id, power_control_cuts_power=True)
     await scenario.switch(plug, False)
     await scenario.unregister(pi)
+    await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY)
     await scenario.idle()
     return pi, plug, player_id
 
 
 async def test_offline_device_is_powered_on_through_its_power_control(scenario: Scenario) -> None:
     """
-    A player whose device is gone is powered on through its external power control.
+    A player whose power is cut at its power control is powered on through that control.
 
     While the control is off the player shows available and powered off; power on switches
-    the control, and the player plays once the device is back.
+    the control and returns once the start-up time of the player is over, and the player
+    plays.
     """
     pi, plug, player_id = await _switched_off_player(scenario)
 
@@ -147,10 +154,10 @@ async def test_offline_device_is_powered_on_through_its_power_control(scenario: 
     power_on = await scenario.command(scenario.mass.players.cmd_power(player_id, True))
 
     assert plug.commands == [True]
-    assert not power_on.done()
     await scenario.register(pi)
-    # the power on looks for the device every 0.5 s
-    await scenario.advance(1)
+    await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME - 1)
+    assert not power_on.done()
+    await scenario.advance(2)
     await power_on
     await scenario.mass.players.play_media(player_id, MEDIA)
     await scenario.settle()
@@ -163,10 +170,10 @@ async def test_offline_device_is_powered_on_through_its_power_control(scenario: 
 
 async def test_play_on_a_switched_off_player_powers_it_on(scenario: Scenario) -> None:
     """
-    Play on a player whose device is gone but has a power control is accepted: it powers on.
+    Play on a player whose power is cut at its power control is accepted: it powers on.
 
-    The play command switches the control, waits for the device and plays, instead of being
-    refused as unavailable.
+    The play command switches the control, waits for the start-up time of the player and
+    plays, instead of being refused as unavailable.
     """
     pi, plug, player_id = await _switched_off_player(scenario)
 
@@ -177,10 +184,11 @@ async def test_play_on_a_switched_off_player_powers_it_on(scenario: Scenario) ->
     play = await scenario.command(scenario.mass.players.play_media(player_id, MEDIA))
 
     assert plug.commands == [True]
-    assert not play.done()
     await scenario.register(pi)
-    # the power on looks for the device every 0.5 s
-    await scenario.advance(1)
+    await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME - 1)
+    assert not play.done()
+    assert pi.commands == []
+    await scenario.advance(2)
     await play
 
     assert ("play_media", MEDIA) in pi.commands
@@ -192,8 +200,9 @@ async def test_a_stop_of_a_queue_whose_player_waits_for_its_device_goes_to_no_de
     """
     A stop of the queue of a player that is being powered on calls the power on off, no more.
 
-    The play that switched the control on waits for the device. The stop of its queue ends
-    that wait and does not go on to the player, whose device is not there to take a stop.
+    The play that switched the control on waits for the player to start up. The stop of its
+    queue ends that wait and does not go on to the player, whose device is not there to take
+    a stop.
     """
     _pi, plug, player_id = await _switched_off_player(scenario)
     await scenario.mass.config._create_provider_instance(MUSIC_PROVIDER, {})
@@ -205,12 +214,16 @@ async def test_a_stop_of_a_queue_whose_player_waits_for_its_device_goes_to_no_de
 
     with patch.object(players, "_handle_cmd_stop", wraps=players._handle_cmd_stop) as stop_player:
         await scenario.mass.player_queues.stop(player_id)
+        await scenario.settle()
 
     stop_player.assert_not_awaited()
-    # the power on looks for the device every 0.5 s
-    await scenario.advance(1)
-    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+    with pytest.raises(
+        PlayerUnavailableError, match="power on of player Bathroom was called off"
+    ) as error:
         await play
+    # its plug is on: it was stopped, not switched off
+    assert error.value.translation_key == "player_stopped_during_startup"
+    assert error.value.translation_args == ["Bathroom"]
     assert plug.commands == [True]
 
 
@@ -244,8 +257,10 @@ async def test_command_to_an_unavailable_player_raises(
     player_id = await _detached_player(scenario)
 
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, False)]
-    with pytest.raises(PlayerUnavailableError):
+    with pytest.raises(PlayerUnavailableError) as error:
         await getattr(scenario.mass.players, command)(player_id, *args)
+    assert error.value.translation_key == "player_not_available"
+    assert error.value.translation_args == ["Den"]
 
 
 async def test_power_on_of_an_unavailable_player_is_accepted(scenario: Scenario) -> None:

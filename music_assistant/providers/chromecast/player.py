@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
@@ -13,6 +14,7 @@ if TYPE_CHECKING:
 
 import pychromecast
 from music_assistant_models.enums import (
+    ChannelLayout,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -30,9 +32,14 @@ from pychromecast.controllers.media import (
 )
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.error import PyChromecastError
-from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
+from pychromecast.socket_client import (
+    CONNECTION_STATUS_CONNECTED,
+    CONNECTION_STATUS_DISCONNECTED,
+    ConnectionStatus,
+)
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.player import served_duration
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -62,11 +69,15 @@ from .receiver_commands import MassCastCommandController
 
 if TYPE_CHECKING:
     from pychromecast import Chromecast
+    from pychromecast.controllers import BaseController
     from pychromecast.controllers.media import MediaStatus
     from pychromecast.controllers.receiver import CastStatus
-    from pychromecast.socket_client import ConnectionStatus
 
     from .provider import ChromecastProvider
+
+# takes what a client that is stopped on purpose still logs
+_STOPPED_CLIENT_LOGGER = logging.getLogger(f"{__name__}.stopped_client")
+_STOPPED_CLIENT_LOGGER.disabled = True
 
 
 class ChromecastPlayer(PlayerProtocol):
@@ -92,7 +103,8 @@ class ChromecastPlayer(PlayerProtocol):
         """Init."""
         super().__init__(provider, protocol_id)
         if cast_info.is_audio_group and cast_info.is_multichannel_group:
-            player_type = PlayerType.STEREO_PAIR
+            player_type = PlayerType.MULTI_CHANNEL
+            self._attr_channel_layout = ChannelLayout.STEREO
         elif cast_info.is_audio_group:
             player_type = PlayerType.GROUP
         else:
@@ -115,6 +127,8 @@ class ChromecastPlayer(PlayerProtocol):
         self._media_error_reported = False
         # a volume set while idle, kept back until playback starts (see volume_set)
         self._pending_volume: int | None = None
+        # controllers registered with register_client_handler
+        self._client_handlers: list[BaseController] = []
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -315,23 +329,11 @@ class ChromecastPlayer(PlayerProtocol):
 
         :param player: The player the protocol is attached to.
         """
-        provider = cast("ChromecastProvider", self.provider)
-        assert provider.mz_mgr is not None  # for type checking
-        self.cc = pychromecast.get_chromecast_from_cast_info(
-            self.cast_info.to_cast_info(), self.mass.discovery.aiozc.zeroconf
-        )
-        self.status_listener = CastStatusListener(self, provider.mz_mgr)
-        # the groups it is a member of may have changed while it was detached
-        self.update_active_cast_group()
-        if self.type == PlayerType.GROUP:
-            self.mz_controller = MultizoneController(self.cast_info.uuid)
-            self.cc.register_handler(self.mz_controller)
-        self.command_controller = MassCastCommandController(self._handle_receiver_command)
-        self.cc.register_handler(self.command_controller)
         # started without an await, so a detach never finds the client half set up
-        self.cc.start()
+        self._start_client()
         # not awaited: claiming the Sendspin client of the receiver app attaches that
         # client, which waits for this attach to finish
+        provider = cast("ChromecastProvider", self.provider)
         self._bridge_task = self.mass.create_task(
             provider.bridge_manager.evaluate_bridge(self), eager_start=False
         )
@@ -367,6 +369,54 @@ class ChromecastPlayer(PlayerProtocol):
             disconnect_cast(self.cc, 0)
         else:
             await asyncio.to_thread(disconnect_cast, self.cc, 10)
+
+    async def on_power_cut(self) -> None:
+        """Stop the client of the device, whose power was cut: it reads unavailable."""
+        if self.player is None or self.cast_info.is_audio_group or self.status_listener is None:
+            # not attached, a cast group, which is no device of its own, or no client that
+            # runs: that has no listener
+            return
+        self._stop_client()
+        # what a client reports that closed its connection itself
+        self._handle_connection_status(ConnectionStatus(CONNECTION_STATUS_DISCONNECTED, None, None))
+
+    async def on_power_restored(self) -> None:
+        """Connect to the device anew, now that its power is back and it has started up."""
+        if self.player is None or self.cast_info.is_audio_group or self.command_controller is None:
+            # not attached, a cast group, which is no device of its own, or no client yet:
+            # the attach that is still to run starts one
+            return
+        # from what a power cut leaves: a client that lost the device waits ever longer
+        # before it tries again, and one that did not notice yet reaches nothing
+        await self.on_power_cut()
+        if self.player is None:
+            # detached meanwhile, which stops the client itself
+            return  # type: ignore[unreachable]
+        self._start_client()
+        listener = self.status_listener
+        # until the new client reports its connection, in the time the players controller
+        # gives, unless that client is stopped or replaced meanwhile
+        while self.status_listener is listener and not self.available:
+            await asyncio.sleep(0.1)
+
+    def register_client_handler(self, handler: BaseController) -> None:
+        """
+        Register a controller on the client of the device, and on every client that replaces it.
+
+        :param handler: The controller to register.
+        """
+        self._client_handlers.append(handler)
+        self.cc.register_handler(handler)
+
+    def unregister_client_handler(self, handler: BaseController) -> None:
+        """
+        Unregister a controller registered with register_client_handler.
+
+        :param handler: The controller to unregister.
+        """
+        if handler in self._client_handlers:
+            self._client_handlers.remove(handler)
+        self.cc.unregister_handler(handler)
 
     async def on_remove(self) -> None:
         """Handle logic when the player is removed for good."""
@@ -614,7 +664,8 @@ class ChromecastPlayer(PlayerProtocol):
         )
         # handle stereo pairs
         if self.cast_info.is_multichannel_group:
-            self._attr_type = PlayerType.STEREO_PAIR
+            self._attr_type = PlayerType.MULTI_CHANNEL
+            self._attr_channel_layout = ChannelLayout.STEREO
             self._attr_group_members.clear()
         # handle cast groups
         if self.cast_info.is_audio_group and not self.cast_info.is_multichannel_group:
@@ -680,6 +731,8 @@ class ChromecastPlayer(PlayerProtocol):
             return
 
         self._report_media_error(status, group_player)
+        if group_player is None:
+            self._restart_lost_stream(status)
 
         if group_player is None and self._in_app_track_change(status):
             return
@@ -764,6 +817,21 @@ class ChromecastPlayer(PlayerProtocol):
             self.display_name,
             status.content_id or "the loaded media",
         )
+
+    def _restart_lost_stream(self, status: MediaStatus) -> None:
+        """
+        Have the queue restart a stream the receiver gave up on while it played it.
+
+        :param status: Media status as reported by the receiver.
+        """
+        if (
+            status.player_is_idle
+            and status.idle_reason == "ERROR"
+            and self._attr_playback_state == PlaybackState.PLAYING
+            and status.content_id
+        ):
+            # nothing is queued on the receiver after a flow stream, so it stays idle otherwise
+            self.mass.streams.restart_lost_stream(status.content_id)
 
     def _update_playback_state(self, status: MediaStatus, is_playing: bool) -> None:
         """
@@ -963,6 +1031,38 @@ class ChromecastPlayer(PlayerProtocol):
                 # Poll current group status
                 self.update_active_cast_group()
 
+    def _start_client(self) -> None:
+        """Create and start the client of the device, and follow its status."""
+        provider = cast("ChromecastProvider", self.provider)
+        assert provider.mz_mgr is not None  # for type checking
+        self.cc = pychromecast.get_chromecast_from_cast_info(
+            self.cast_info.to_cast_info(), self.mass.discovery.aiozc.zeroconf
+        )
+        self.status_listener = CastStatusListener(self, provider.mz_mgr)
+        # the groups it is a member of may have changed while it was detached
+        self.update_active_cast_group()
+        if self.type == PlayerType.GROUP:
+            self.mz_controller = MultizoneController(self.cast_info.uuid)
+            self.cc.register_handler(self.mz_controller)
+        self.command_controller = MassCastCommandController(self._handle_receiver_command)
+        self.cc.register_handler(self.command_controller)
+        for handler in self._client_handlers:
+            self.cc.register_handler(handler)
+        self.cc.start()
+
+    def _stop_client(self) -> None:
+        """Stop the client of the device without waiting for it, and follow it no longer."""
+        if self.status_listener is not None:
+            self.status_listener.invalidate()
+        self.status_listener = None
+        # off the client before it stops, which would tear its controllers down
+        for handler in (self.mz_controller, self.command_controller, *self._client_handlers):
+            if handler is not None:
+                self.cc.unregister_handler(handler)
+        # its worker logs the end of a connect that was stopped as an error
+        self.cc.socket_client.logger.logger = _STOPPED_CLIENT_LOGGER
+        disconnect_cast(self.cc, 0)
+
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""
         # Always use LIVE stream type because MA streams are real-time encoded by FFmpeg,
@@ -986,7 +1086,7 @@ class ChromecastPlayer(PlayerProtocol):
             "contentType": f"audio/{file_ext}",
             "streamType": stream_type,
             "metadata": metadata,
-            "duration": media.stream_duration or media.duration,
+            "duration": served_duration(media, stream_url),
         }
 
     def _handle_receiver_command(self, command: str) -> None:

@@ -175,7 +175,6 @@ class Context:
     """Context information for object conversion."""
 
     provider: BBCSoundsProvider
-    provider_domain: str
     path_parts: list[str] | None = None
     force_type: (
         type[
@@ -223,7 +222,7 @@ class BaseConverter(ABC):
 
     def _create_provider_mapping(self, item_id: str) -> ProviderMapping:
         """Create provider mapping for the item."""
-        return self.context.provider._get_provider_mapping(item_id)
+        return self.context.provider.adaptor._get_provider_mapping(item_id)
 
     def _get_attr(self, obj: Any, attr_path: str, default: Any = None) -> Any:
         """
@@ -299,7 +298,7 @@ class StationConverter(BaseConverter):
             provider=station.provider,
             audio_format=_audio_format(source_obj.stream),
             data={
-                "provider": self.context.provider_domain,
+                "provider": self.context.provider.instance_id,
                 "station": station.item_id,
             },
         )
@@ -329,9 +328,9 @@ class StationConverter(BaseConverter):
         return Radio(
             item_id=station.id,
             name=title,
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
-                image_url, self.context.provider_domain
+                image_url, self.context.provider.instance_id
             ),
             provider_mappings={self._create_provider_mapping(station.id)},
         )
@@ -344,9 +343,9 @@ class StationConverter(BaseConverter):
         return Radio(
             item_id=station.id,
             name=f"BBC {name}",
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
-                image_url, self.context.provider_domain
+                image_url, self.context.provider.instance_id
             ),
             provider_mappings={self._create_provider_mapping(station.id)},
         )
@@ -356,9 +355,9 @@ class StationConverter(BaseConverter):
         return Radio(
             item_id=station.service_id,
             name=f"BBC {station.station_name}",
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
-                station.station_image_url, self.context.provider_domain
+                station.station_image_url, self.context.provider.instance_id
             ),
             provider_mappings={self._create_provider_mapping(station.service_id)},
         )
@@ -438,7 +437,7 @@ class PodcastConverter(BaseConverter):
                 stream_type=StreamType.HLS,
                 path=source_obj.stream,
                 item_id=source_obj.pid,
-                provider=self.context.provider_domain,
+                provider=self.context.provider.instance_id,
                 audio_format=_audio_format(source_obj.stream),
                 allow_seek=True,
                 can_seek=True,
@@ -470,7 +469,7 @@ class PodcastConverter(BaseConverter):
                 stream_type=StreamType.HLS,
                 path=source_obj.stream,
                 item_id=episode.item_id,
-                provider=self.context.provider_domain,
+                provider=self.context.provider.instance_id,
                 audio_format=_audio_format(source_obj.stream),
                 can_seek=True,
                 duration=episode.duration,
@@ -500,7 +499,7 @@ class PodcastConverter(BaseConverter):
         )
 
         metadata = ImageProvider.create_metadata_with_image(
-            image_url, self.context.provider_domain, description
+            image_url, self.context.provider.instance_id, description
         )
         if isinstance(podcast, Podcast):
             metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
@@ -508,7 +507,7 @@ class PodcastConverter(BaseConverter):
         return MAPodcast(
             item_id=item_id,
             name=name,
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             metadata=metadata,
             provider_mappings={self._create_provider_mapping(item_id)},
         )
@@ -533,13 +532,13 @@ class PodcastConverter(BaseConverter):
         ma_episode = MAPodcastEpisode(
             item_id=episode.pid,
             name=self._format_podcast_episode_title(episode),
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             duration=duration,
             position=0,
             resume_position_ms=resume_position_ms,
             metadata=ImageProvider.create_metadata_with_image(
                 url=episode.image_url,
-                provider=self.context.provider_domain,
+                provider=self.context.provider.instance_id,
                 description=description,
             ),
             podcast=podcast,
@@ -576,11 +575,11 @@ class PodcastConverter(BaseConverter):
             return Track(
                 item_id=show.pid,
                 name=self._format_show_title(show),
-                provider=self.context.provider_domain,
+                provider=self.context.provider.instance_id,
                 duration=duration,
                 metadata=ImageProvider.create_metadata_with_image(
                     url=show.image_url,
-                    provider=self.context.provider_domain,
+                    provider=self.context.provider.instance_id,
                     description=self._get_synopsis(show),
                 ),
                 provider_mappings={self._create_provider_mapping(show.pid)},
@@ -597,12 +596,12 @@ class PodcastConverter(BaseConverter):
         episode = MAPodcastEpisode(
             item_id=show.pid,
             name=self._format_show_title(show),
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             duration=duration,
             resume_position_ms=resume_position_ms,
             metadata=ImageProvider.create_metadata_with_image(
                 url=show.image_url,
-                provider=self.context.provider_domain,
+                provider=self.context.provider.instance_id,
                 description=self._get_synopsis(show),
             ),
             podcast=podcast,
@@ -631,10 +630,10 @@ class PodcastConverter(BaseConverter):
             episode = MAPodcastEpisode(
                 item_id=clip.pid,
                 name=self._get_attr(clip, "titles.entity_title", "Unknown title"),
-                provider=self.context.provider_domain,
+                provider=self.context.provider.instance_id,
                 duration=duration,
                 metadata=ImageProvider.create_metadata_with_image(
-                    clip.image_url, self.context.provider_domain, description
+                    clip.image_url, self.context.provider.instance_id, description
                 ),
                 provider_mappings={self._create_provider_mapping(clip.pid)},
                 podcast=podcast,
@@ -645,10 +644,10 @@ class PodcastConverter(BaseConverter):
         return Track(
             item_id=clip.pid,
             name=self._get_attr(clip, "titles.entity_title", "Unknown Track"),
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             duration=duration,
             metadata=ImageProvider.create_metadata_with_image(
-                clip.image_url, self.context.provider_domain, description
+                clip.image_url, self.context.provider.instance_id, description
             ),
             provider_mappings={self._create_provider_mapping(clip.pid)},
         )
@@ -688,7 +687,7 @@ class LiveProgrammeConverter(BaseConverter):
             podcast = ItemMapping(
                 media_type=MediaType.PODCAST,
                 item_id=programme_id.station_id,
-                provider=self.context.provider_domain,
+                provider=self.context.provider.instance_id,
                 name=self._get_attr(source_obj, "network.short_title", programme_id.station_id),
             )
         return MAPodcastEpisode(
@@ -699,11 +698,11 @@ class LiveProgrammeConverter(BaseConverter):
                 show_name=self._get_attr(source_obj, "titles.primary", ""),
                 show_title=self._get_attr(source_obj, "titles.secondary", ""),
             ),
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             duration=programme_id.duration,
             metadata=ImageProvider.create_metadata_with_image(
                 url=source_obj.image_url,
-                provider=self.context.provider_domain,
+                provider=self.context.provider.instance_id,
                 description=self._get_synopsis(source_obj),
             ),
             podcast=podcast,
@@ -716,9 +715,10 @@ class LiveProgrammeConverter(BaseConverter):
         station_id = self._get_attr(item, "network.id")
         if not (station_id and item.item_id and item.start and item.end):
             return None
+        item_id = self._require_id(item.item_id, item)
         return LiveProgrammeId(
             station_id=station_id,
-            pid=item.item_id,
+            pid=item_id,
             start=int(item.start.timestamp()),
             end=int(item.end.timestamp()),
         )
@@ -766,12 +766,12 @@ class BrowseConverter(BaseConverter):
         if not item.image_url:
             image_url = ImageProvider.get_icon_url(item_id)
             image = (
-                ImageProvider.create_image(image_url, self.context.provider_domain)
+                ImageProvider.create_image(image_url, self.context.provider.instance_id)
                 if image_url
                 else None
             )
         else:
-            image = ImageProvider.create_image(item.image_url, self.context.provider_domain)
+            image = ImageProvider.create_image(item.image_url, self.context.provider.instance_id)
 
         path = self._build_path(item_id)
 
@@ -782,7 +782,7 @@ class BrowseConverter(BaseConverter):
         return return_type(
             item_id=self._require_id(item.item_id, item),
             name=item.title,
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             path=path,
             image=image,
         )
@@ -794,20 +794,20 @@ class BrowseConverter(BaseConverter):
         item_id = self._require_id(item.item_id, item)
         if isinstance(item, Playlist):
             if not isinstance(self.context.path_parts, list):
-                path = f"{self.context.provider_domain}://playlists/{item_id}"
+                path = f"{self.context.provider.instance_id}://playlists/{item_id}"
             else:
                 path = "/".join([*self.context.path_parts, item_id])
         else:
             path_prefix = "categories" if isinstance(item, Category) else "collections"
-            path = f"{self.context.provider_domain}://{path_prefix}/{item_id}"
+            path = f"{self.context.provider.instance_id}://{path_prefix}/{item_id}"
 
         return BrowseFolder(
             item_id=item_id,
             name=self._get_attr(item, "titles.primary", "Untitled folder"),
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             path=path,
             image=(
-                ImageProvider.create_image(item.image_url, self.context.provider_domain)
+                ImageProvider.create_image(item.image_url, self.context.provider.instance_id)
                 if item.image_url
                 else None
             ),
@@ -819,7 +819,7 @@ class BrowseConverter(BaseConverter):
             item_id="schedule",
             name="Schedule",
             translation_key="schedule",
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             path=self._build_path("schedule"),
         )
 
@@ -841,7 +841,7 @@ class BrowseConverter(BaseConverter):
         return RecommendationFolder(
             item_id=self._require_id(item.item_id, item),
             name=item.title,
-            provider=self.context.provider_domain,
+            provider=self.context.provider.instance_id,
             items=UniqueList(items),
         )
 
@@ -849,7 +849,7 @@ class BrowseConverter(BaseConverter):
         """Build path for browse items."""
         if self.context.path_parts:
             return "/".join([*self.context.path_parts, item_id])
-        return f"{self.context.provider_domain}://{item_id}"
+        return f"{self.context.provider.instance_id}://{item_id}"
 
 
 class Adaptor:
@@ -869,6 +869,13 @@ class Adaptor:
         context = self._create_context(force_type=MAPodcastEpisode)
         return await LiveProgrammeConverter(context).convert(programme)
 
+    def _get_provider_mapping(self, item_id: str) -> ProviderMapping:
+        return ProviderMapping(
+            item_id=item_id,
+            provider_domain=self.provider.domain,
+            provider_instance=self.provider.instance_id,
+        )
+
     def _create_context(
         self,
         path_parts: list[str] | None = None,
@@ -887,7 +894,6 @@ class Adaptor:
     ) -> Context:
         return Context(
             provider=self.provider,
-            provider_domain=self.provider.domain,
             path_parts=path_parts,
             force_type=force_type,
         )

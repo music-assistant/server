@@ -11,9 +11,11 @@ from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import EventType, MediaType, ProviderSharing
 from music_assistant_models.favorite_update import FavoriteUpdate
+from music_assistant_models.media_items import Artist, ProviderMapping, UniqueList
 
 from music_assistant.constants import DB_TABLE_FAVORITES
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
+from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
@@ -349,3 +351,58 @@ async def test_removing_an_item_drops_its_favorites(favorites_mass: MusicAssista
     await mass.music.tracks.remove_item_from_library(track.item_id)
 
     assert await _favorite_rows(mass, track.item_id) == []
+
+
+@pytest.mark.parametrize("radio", [True, False], ids=["radio-song", "queue-track"])
+async def test_currently_playing_track_carries_the_favorite_of_the_user_who_asks(
+    favorites_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, radio: bool
+) -> None:
+    """The track that plays on a player carries the like of the user who asks for it."""
+    mass = favorites_mass
+    # the search results cache is not set up on this instance
+    monkeypatch.setattr(mass.cache, "get", AsyncMock(return_value=None))
+    monkeypatch.setattr(mass.cache, "set", AsyncMock())
+    track = await _add_track(mass, "Currently Playing")
+    track.artists = UniqueList(
+        [
+            Artist(
+                item_id="playing-artist",
+                provider=PROV_OWNED,
+                name="Playing Artist",
+                provider_mappings={
+                    ProviderMapping(
+                        item_id="playing-artist",
+                        provider_domain="spotify",
+                        provider_instance=PROV_OWNED,
+                    )
+                },
+            )
+        ]
+    )
+    track = await mass.music.tracks.update_item_in_library(track.item_id, track)
+    await mass.music.tracks.set_favorite(track.item_id, True, [USER_A])
+    # the queue holds the track as it was when it was queued
+    track.favorite = None
+    queue = MagicMock(queue_id="player1")
+    queue.current_item.media_item = MagicMock(media_type=MediaType.RADIO) if radio else track
+    queue.current_item.streamdetails.stream_title = "Playing Artist - Currently Playing"
+    players = PlayerController.__new__(PlayerController)
+    players.mass = mass
+
+    favorites: dict[str, bool | None] = {}
+    with (
+        patch.object(players, "check_player_access"),
+        patch.object(players, "_get_player_with_redirect", return_value=MagicMock()),
+        patch.object(players, "get_active_queue", return_value=queue),
+    ):
+        for user_id in (USER_A, USER_B):
+            token = current_user.set(_user(user_id))
+            try:
+                playing = await players.get_currently_playing_track("player1", library_only=True)
+            finally:
+                current_user.reset(token)
+            assert playing is not None
+            assert playing.item_id == track.item_id
+            favorites[user_id] = playing.favorite
+
+    assert favorites == {USER_A: True, USER_B: None}

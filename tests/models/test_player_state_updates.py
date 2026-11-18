@@ -922,6 +922,29 @@ class TestInputCollection:
         assert player.current_media is not None
         assert player.current_media.image_url == (stream_image_url or "http://ma/item.jpg")
 
+    def test_a_radio_station_shows_the_song_analysis_recognised(self, mock_mass: MagicMock) -> None:
+        """A station that sends no metadata shows what its analysis recognised."""
+        streamdetails = StreamDetails(
+            provider="test_provider",
+            item_id="station",
+            audio_format=AudioFormat(),
+            media_type=MediaType.RADIO,
+        )
+        recognised = StreamMetadata(title="Recognised", artist="Someone")
+        shown = MagicMock(return_value=recognised)
+        mock_mass.streams.audio_analysis.shown_stream_metadata = shown
+        player = _queue_item_player(mock_mass, _queue_item(streamdetails=streamdetails))
+
+        player.update_state(signal_event=False)
+
+        shown.assert_called_with(streamdetails)
+        assert player.current_media is not None
+        assert player.current_media.title == "Recognised"
+        assert player.current_media.artist == "Someone"
+        # the song has no image of its own, so the station's is shown
+        assert player.current_media.image_url == "http://ma/item.jpg"
+        assert mock_mass.metadata.get_image_url.call_count == 1
+
     @pytest.mark.parametrize("stream_image_url", [None, "http://stream/now.jpg"])
     def test_image_of_a_live_source_is_only_looked_up_when_what_it_plays_has_none(
         self, mock_mass: MagicMock, stream_image_url: str | None

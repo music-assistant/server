@@ -8,12 +8,17 @@ from functools import partial
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
 from pyheos import PlayState as HeosPlayState
 from pyheos import const as heos_const
 
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.heos.player import HeosPlayer
+
+HIRES_SAMPLE_RATES = [
+    (sr, bd) for sr in (44100, 48000, 88200, 96000, 176400, 192000) for bd in (16, 24)
+]
 
 
 def _url_stream_now_playing() -> MagicMock:
@@ -193,10 +198,13 @@ async def test_detach_cancels_playback_transition() -> None:
     assert protocol._ma_playback_starting is False
 
 
-async def _start_ma_playback(protocol: HeosPlayer) -> dict[str, Callable[[], None]]:
-    """Start MA playback on a playing player and return its pending timers by task id."""
+async def _start_ma_playback(
+    protocol: HeosPlayer, state: HeosPlayState = HeosPlayState.PLAY
+) -> dict[str, Callable[[], None]]:
+    """Start MA playback on a player in the given state and return its pending timers."""
     mass = cast("MagicMock", protocol.mass)
     device = cast("MagicMock", protocol._device)
+    device.state = state
     timers: dict[str, Callable[[], None]] = {}
 
     def call_later(
@@ -210,7 +218,8 @@ async def _start_ma_playback(protocol: HeosPlayer) -> dict[str, Callable[[], Non
     device.play_url = AsyncMock()
     protocol.get_config_value = MagicMock(return_value=5)  # type: ignore[method-assign]
     protocol.set_dynamic_attributes()
-    assert protocol.playback_state == PlaybackState.PLAYING
+    if state == HeosPlayState.PLAY:
+        assert protocol.playback_state == PlaybackState.PLAYING
 
     await protocol.play_media(
         PlayerMedia(uri="library://track/2", media_type=MediaType.TRACK, title="Next")
@@ -337,3 +346,128 @@ def test_missing_progress_stays_none() -> None:
     assert protocol._attr_current_media.elapsed_time is None
     assert protocol._attr_current_media.duration is None
     assert protocol._attr_elapsed_time is None
+
+
+async def _report_progress(protocol: HeosPlayer, position: int) -> None:
+    """Feed a HEOS progress event (milliseconds) into the protocol."""
+    now_playing = cast("MagicMock", protocol._device).now_playing_media
+    now_playing.current_position = position
+    now_playing.current_position_updated = datetime(2026, 1, 1, tzinfo=UTC)
+    await protocol._player_event_received(heos_const.EVENT_PLAYER_NOW_PLAYING_PROGRESS)
+
+
+async def test_previous_stream_progress_is_ignored_while_restarting() -> None:
+    """
+    Ignore progress until HEOS plays the new MA stream.
+
+    Right after play_url, HEOS can still send a progress event of the previous
+    stream. Reporting it as the position of the new item makes a later resume
+    (e.g. after an announcement) seek past the end of a shorter track, which is
+    then skipped with "No audio was received".
+
+    See https://github.com/music-assistant/support/issues/7014
+    """
+    protocol = _make_player(_url_stream_now_playing())
+    await _start_ma_playback(protocol)
+
+    await _report_progress(protocol, 244000)
+    assert protocol._attr_elapsed_time is None
+
+    await _set_device_state(protocol, HeosPlayState.STOP)
+    await _report_progress(protocol, 244000)
+    assert protocol._attr_elapsed_time is None
+
+    await _set_device_state(protocol, HeosPlayState.PLAY)
+    await _report_progress(protocol, 2000)
+    assert protocol._attr_elapsed_time == 2
+
+
+async def test_previous_stream_position_is_cleared_when_new_playback_starts() -> None:
+    """Do not publish the previous stream's cached position with the new media."""
+    protocol = _make_player(_external_now_playing(244000))
+    protocol._attr_active_source = protocol.protocol_id
+
+    await _start_ma_playback(protocol)
+
+    assert protocol._attr_elapsed_time is None
+    assert protocol._attr_elapsed_time_last_updated is None
+
+
+async def test_play_before_restart_stop_does_not_end_progress_wait() -> None:
+    """Keep ignoring progress when HEOS still reports the old stream as playing."""
+    protocol = _make_player(_url_stream_now_playing())
+    await _start_ma_playback(protocol)
+
+    await _set_device_state(protocol, HeosPlayState.PLAY)
+    await _report_progress(protocol, 244000)
+
+    assert protocol._attr_elapsed_time is None
+
+
+async def test_new_playback_during_transition_ignores_previous_progress() -> None:
+    """Wait for the next restart again when MA starts another stream."""
+    protocol = _make_player(_url_stream_now_playing())
+    await _start_ma_playback(protocol)
+    await _set_device_state(protocol, HeosPlayState.STOP)
+    await _set_device_state(protocol, HeosPlayState.PLAY)
+
+    await protocol.play_media(
+        PlayerMedia(uri="library://track/3", media_type=MediaType.TRACK, title="Other")
+    )
+    await _report_progress(protocol, 5000)
+
+    assert protocol._attr_elapsed_time is None
+
+
+@pytest.mark.parametrize("state", [HeosPlayState.STOP, HeosPlayState.PAUSE])
+async def test_progress_is_reported_when_starting_from_stop_or_pause(
+    state: HeosPlayState,
+) -> None:
+    """Report progress on the first play when there is no restart stop to wait for."""
+    protocol = _make_player(_url_stream_now_playing())
+    await _start_ma_playback(protocol, state)
+
+    await _set_device_state(protocol, HeosPlayState.PLAY)
+    await _report_progress(protocol, 1000)
+
+    assert protocol._ma_playback_starting is True
+    assert protocol._attr_elapsed_time == 1
+
+
+async def test_progress_is_reported_after_transition_ends_without_play() -> None:
+    """Report progress again once the playback transition has ended."""
+    protocol = _make_player(_url_stream_now_playing())
+    timers = await _start_ma_playback(protocol)
+    transition_timer = f"heos_playback_transition_{protocol.protocol_id}"
+
+    timers.pop(transition_timer)()
+    await _report_progress(protocol, 3000)
+
+    assert protocol._ma_playback_starting is False
+    assert protocol._attr_elapsed_time == 3
+
+
+def test_group_members_need_the_stream_of_their_leader() -> None:
+    """Members are moved along when their leader renders through another protocol."""
+    player = HeosPlayer.__new__(HeosPlayer)
+
+    assert player.native_grouping_requires_own_stream is True
+
+
+@pytest.mark.parametrize(
+    ("device_model", "expected_rates"),
+    [
+        ("HEOS 3", [(44100, 16), (48000, 16)]),
+        ("HEOS 3 HS2", HIRES_SAMPLE_RATES),
+    ],
+)
+def test_sample_rates_follow_heos_generation(
+    device_model: str, expected_rates: list[tuple[int, int]]
+) -> None:
+    """Gen 1 HEOS speakers are capped at 48kHz/16-bit, HS2 models get hi-res."""
+    player = _make_player(_url_stream_now_playing())
+    player._device.model = device_model
+
+    player.set_device_info()
+
+    assert player._attr_supported_sample_rates == expected_rates

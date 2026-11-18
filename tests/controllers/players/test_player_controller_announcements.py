@@ -1027,9 +1027,10 @@ class TestPlayAnnouncementMessage:
 
         with (
             patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=None)),
-            pytest.raises(PlayerCommandFailed, match="No text-to-speech engine"),
+            pytest.raises(PlayerCommandFailed, match="No text-to-speech engine") as error,
         ):
             await controller.play_announcement("player_1", message="hello")
+        assert error.value.translation_key == "tts_engine_unavailable"
 
     async def test_audio_that_can_not_be_fetched_is_rejected(self, mock_mass: MagicMock) -> None:
         """An engine that only rendered to disk fails, since an announcement is fetched by url."""

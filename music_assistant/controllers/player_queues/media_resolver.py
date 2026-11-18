@@ -525,6 +525,7 @@ class MediaResolver:
                     fully_played,
                     resume_position_ms,
                 ) = await self.mass.music.get_resume_position(resolved_episode, userid=userid)
+                resolved_episode.fully_played = fully_played
                 resolved_episode.resume_position_ms = 0 if fully_played else resume_position_ms
         elif isinstance(episode, str):
             resolved_episode = next(
@@ -536,6 +537,7 @@ class MediaResolver:
                     fully_played,
                     resume_position_ms,
                 ) = await self.mass.music.get_resume_position(resolved_episode, userid=userid)
+                resolved_episode.fully_played = fully_played
                 resolved_episode.resume_position_ms = 0 if fully_played else resume_position_ms
         else:
             # get first episode that is not fully played
@@ -752,6 +754,7 @@ class MediaResolver:
             )
             if fully_played:
                 continue
+            candidate.fully_played = False
             candidate.resume_position_ms = resume_position_ms
             return candidate
         return None
@@ -1001,6 +1004,8 @@ class MediaResolver:
             return self._played_from(media_item, genre_tracks, pin=False)
         if media_item.media_type == MediaType.AUDIOBOOK:
             media_item = cast("Audiobook", media_item)
+            # the resume point set below already starts a finished book over
+            media_item.fully_played = False
             if start_position is not None:
                 media_item.resume_position_ms = int(start_position * 1000)
             else:
@@ -1027,6 +1032,7 @@ class MediaResolver:
                     item, userid=userid
                 )
                 if not fully_played:
+                    item.fully_played = False
                     item.resume_position_ms = resume_position_ms
                     book = item
                     break

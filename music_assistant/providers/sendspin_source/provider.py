@@ -44,6 +44,7 @@ from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+from music_assistant.constants import CONF_ALLOW_AUDIO_ANALYSIS
 from music_assistant.helpers.player import get_available_player
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sendspin.constants import (
@@ -76,7 +77,7 @@ if TYPE_CHECKING:
         SourceStream,
     )
     from aiosendspin.server.roles import SourceV1Role
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
 
@@ -404,6 +405,19 @@ class SendspinSourceProvider(PluginProvider):
                 # point would fabricate silence into the timeline, so re-anchor instead.
                 next_deadline = loop.time()
 
+    def on_client_config_updated(self, client_id: str) -> None:
+        """
+        Let the input of a client that is playing follow its changed settings.
+
+        :param client_id: ID of the Sendspin client whose config changed.
+        """
+        if (session := self._get_session(client_id)) is None or (
+            client := self._get_client(client_id)
+        ) is None:
+            return
+        # the session publishes the source it was selected with, so hand it the new one
+        self.mass.players.refresh_source(session.owner_player_id, self._audio_source(client))
+
     @property
     def _sendspin_provider(self) -> SendspinProvider | None:
         return cast("SendspinProvider | None", self.mass.get_provider("sendspin"))
@@ -437,7 +451,19 @@ class SendspinSourceProvider(PluginProvider):
             exclusive=True,
             allow_external_trigger=True,
             can_initiate=True,
+            # the client does not say which kind of input it is, so the user decides per device
+            allow_audio_analysis=self._protocol_config_value(
+                client.client_id, CONF_ALLOW_AUDIO_ANALYSIS, True
+            ),
         )
+
+    def _protocol_config_value[T: ConfigValueType](self, client_id: str, key: str, default: T) -> T:
+        """Return a value of the config of the client's Sendspin player."""
+        # Config entry defaults are not persisted until the user saves the page, so the
+        # config the client's protocol holds answers with its default.
+        if (protocol := self.mass.players.get_protocol(client_id)) is not None:
+            return protocol.get_config_value(key, default)
+        return self.mass.config.get_protocol_value(client_id, key, default)
 
     async def _is_selectable(self, client: SendspinClient) -> bool:
         return self._get_source_role(client) is not None or await self._can_reclaim(client)
@@ -677,16 +703,9 @@ class SendspinSourceProvider(PluginProvider):
 
     async def _resolve_autostart_target(self, client_id: str) -> tuple[str, str] | None:
         """Return the queue id and source uri to autostart, if the source is configured."""
-        # Config entry defaults are not persisted until the user saves the page, so the
-        # config the client's protocol holds answers with its default.
-        if (protocol := self.mass.players.get_protocol(client_id)) is not None:
-            target_player_id = protocol.get_config_value(
-                CONF_SOURCE_AUTOSTART_TARGET, SOURCE_AUTOSTART_OFF
-            )
-        else:
-            target_player_id = self.mass.config.get_protocol_value(
-                client_id, CONF_SOURCE_AUTOSTART_TARGET, SOURCE_AUTOSTART_OFF
-            )
+        target_player_id = self._protocol_config_value(
+            client_id, CONF_SOURCE_AUTOSTART_TARGET, SOURCE_AUTOSTART_OFF
+        )
         if not target_player_id or target_player_id == SOURCE_AUTOSTART_OFF:
             return None
         player = get_available_player(self.mass, target_player_id)
