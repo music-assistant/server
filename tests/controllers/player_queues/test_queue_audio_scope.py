@@ -216,14 +216,18 @@ async def test_a_replaced_buffer_whose_source_broke_off_long_ago_goes_at_once(
     breaks_off.set()
     while not failed.has_error:
         await asyncio.sleep(0)
+    assert failed.seconds_available == 3
     failed._last_access_time -= 3600
     rig.sources["track 0"] = partial(source, 3)
 
     second = await rig.ask(track)
+    await rig.settle()
 
     assert second is not None
     assert second is not failed
-    assert await _given_up(failed)
+    assert failed.cancelled
+    assert failed.seconds_available == 0
+    assert not rig.fills(failed)
 
 
 # --- no source is opened for a track that left the scope

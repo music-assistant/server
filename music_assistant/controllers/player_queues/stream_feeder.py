@@ -95,12 +95,12 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     return
                 # unplayable items are skipped, so the prepared item can be a later one
                 queue_data.next_item_id_preparing = prepared_item.queue_item_id
-                # the queue can be replaced while the details are fetched, and audio warmed
-                # for an item that left it would sit on a buffer no cleanup reaches
+                # the queue can be replaced while the details are fetched: an item that left
+                # it no longer plays next, so it is neither prepared nor hinted to the source
+                # of the streamed item below
                 if self.get_item(queue_id, prepared_item.queue_item_id) is None:
                     return
-                # a stop releases the audio of its session once; what gets attached to a queue
-                # without a session after that stays until its inactivity timeout
+                # nor is anything prepared or hinted for a queue whose playback ended meanwhile
                 if queue_data.session_id is None:
                     return
                 if (streamed_item := self.get_item(queue_id, queue_item_id)) and (
