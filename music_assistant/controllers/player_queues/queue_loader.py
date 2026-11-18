@@ -1422,12 +1422,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 raise MediaNotFoundError(
                     "No playable items found", translation_key="no_playable_items"
                 )
+            if start_playing:
+                # from the release of the audio it drops until its track plays, a rebuild that
+                # starts playback is the queue's own play action
+                play_action.enter_context(self._own_play_action(queue_id))
             if option == QueueOption.REPLACE:
                 # as on the linear path: end the prewarm of the old next track, release the
                 # outgoing audio while its items are still on the queue, and drop the stale
-                # position. From here until its track plays the replace is the queue's own play
-                # action
-                play_action.enter_context(self._own_play_action(queue_id))
+                # position
                 self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
                 await self._cleanup_queue_audio_data(queue_id)
                 queue.index_in_buffer = None

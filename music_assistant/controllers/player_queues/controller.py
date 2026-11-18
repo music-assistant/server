@@ -1139,8 +1139,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # the pause did not go through, so the queue plays on
                 queue_data.halted_by_command = False
             raise
-        # a stream slot that is still kept for the queue is free to everyone again
-        self._end_stream_slot_reservations(queue_id)
+        queue_data = self._queue_data.get(queue_id)
+        if queue_data is None or not queue_data.own_play_action:
+            # a stream slot that is still kept for the queue is free to everyone again; a play
+            # action of the queue still plays its track and keeps it
+            self._end_stream_slot_reservations(queue_id)
 
         async def _watch_pause(player: Player) -> None:
             count = 0
@@ -2059,7 +2062,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         session of its queue goes on with that provider: the track its player fetches or a
         start is loading, the one after it, or one a stream of that session decided to
         play still gets audio from there. A queue that is paused, or was told to pause or
-        to stop, keeps nothing.
+        to stop, keeps nothing, unless its own play action runs: that action plays its track.
 
         :param audio_buffer: The buffer whose source gives its slot back.
         :param provider_instance: The provider instance the slot is of.
