@@ -2,6 +2,9 @@
   "menu_actions": {
     "show_item": {
       "label": "Ask the demo plugin about this"
+    },
+    "open_page": {
+      "label": "Open the demo plugin page"
     }
   },
   "config_actions": {

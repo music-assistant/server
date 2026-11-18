@@ -606,7 +606,8 @@ class MusicAssistant:
         """
         Run a menu action of a provider instance for a media item, as the calling user.
 
-        Answers nothing, or the outcome to show the user (a message and/or a url to open once).
+        Answers nothing, or the outcome to show the user (a message, and/or a url or the
+        provider's page to open once).
 
         :param instance_id: The provider instance that declares the action.
         :param action_id: The id of the action in the manifest of the provider.
@@ -657,6 +658,7 @@ class MusicAssistant:
         result = await provider.handle_menu_action(action_id, uri, player_id)
         if result is not None:
             result.translation_owner = result.translation_owner or provider.translation_owner
+            self.webserver.provider_pages.prepare_action_result(provider, result, action.scope)
         return result
 
     @api_command("catalog/recommendations", required_scope=Scope.PROVIDERS_READ)
@@ -1415,6 +1417,7 @@ class MusicAssistant:
                     self._provider_ready_events[provider.domain].clear()
                 self._providers.pop(instance_id, None)
                 self.discovery.on_provider_unload(instance_id)
+                self.webserver.provider_pages.drop_instance(instance_id)
                 await self._update_available_providers_cache()
                 self.signal_event(EventType.PROVIDERS_UPDATED, data=self.providers)
 

@@ -290,6 +290,9 @@ class ProviderConfigMixin:
             return []
         if isinstance(result, ConfigActionResult):
             result.translation_owner = result.translation_owner or f"provider.{provider.domain}"
+            self.mass.webserver.provider_pages.prepare_action_result(
+                provider, result, Scope.CONFIG_PROVIDERS_OWN
+            )
             return result
         return self._wrap_provider_config_entries(provider, result)
 

@@ -111,6 +111,7 @@ from .helpers.auth_middleware import (
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
 from .helpers.login_flow import AuthTransport, RedirectTarget
+from .provider_pages import PROVIDER_PAGE_ROUTE, ProviderPageManager
 from .remote_access import RemoteAccessManager
 from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
@@ -229,6 +230,7 @@ class WebserverController(CoreController):
         self.auth = AuthenticationManager(self)
         self.remote_access = RemoteAccessManager(self)
         self._sendspin_proxy = SendspinProxyHandler(self)
+        self.provider_pages = ProviderPageManager(self)
         # the first-time setup makes exactly one admin, however many attempts arrive at once
         self._setup_lock = asyncio.Lock()
         # Preview tokens keyed on the token in the URL, value is
@@ -419,7 +421,16 @@ class WebserverController(CoreController):
         routes.append(("POST", "/setup", self._handle_setup))
         # add sendspin proxy route (authenticated WebSocket proxy to internal sendspin server)
         routes.append(("GET", "/sendspin", self._sendspin_proxy.handle_sendspin_proxy))
+        # pages providers serve, behind a short-lived address (see provider_pages.py)
+        routes.append(
+            (
+                "*",
+                f"/{PROVIDER_PAGE_ROUTE}/{{session}}/{{tail:.*}}",
+                self.provider_pages.handle_request,
+            )
+        )
         await self.auth.setup()
+        self.provider_pages.setup()
         # start the webserver
         if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor we start an additional TCP site
@@ -462,6 +473,7 @@ class WebserverController(CoreController):
             # Add mass object to app for use by the auth helpers
             app_state={"mass": self.mass},
             ssl_context=ssl_context,
+            response_prepare_hooks=[self.provider_pages.on_response_prepare],
         )
         # adopt what the server actually bound to: a configured port of 0 is only resolved
         # by the OS at bind time and an unavailable bind IP falls back to all interfaces
@@ -522,6 +534,7 @@ class WebserverController(CoreController):
         for client in set(self.clients):
             await client.disconnect()
         await self._server.close()
+        self.provider_pages.close()
         await self.auth.close()
 
     def register_websocket_client(self, client: WebsocketClientHandler) -> None:

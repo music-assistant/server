@@ -202,7 +202,9 @@ async def test_answer_translated_for_the_caller(
     async with _client(mass, token, language) as client:
         answer = await _invoke(client, instance_id, "send_to_frame", ALBUM_URI)
 
-    assert answer == {"result": {"message": message.format(instance_id), "open_url": None}}
+    assert answer == {
+        "result": {"message": message.format(instance_id), "open_url": None, "open_page": None}
+    }
 
 
 async def test_each_instance_answers_for_itself(mass: MusicAssistant, location: Path) -> None:
@@ -316,8 +318,30 @@ async def test_demo_menu_action(mass: MusicAssistant) -> None:
 
     item = await mass.music.get_item_by_uri(uri)
     assert answer == {
-        "result": {"message": f"The demo plugin was asked about {item.name}", "open_url": None}
+        "result": {
+            "message": f"The demo plugin was asked about {item.name}",
+            "open_url": None,
+            "open_page": None,
+        }
     }
+
+
+async def test_demo_page(mass: MusicAssistant) -> None:
+    """The other menu action of the demo plugin opens its one-line page for the calling user."""
+    await mass.register_provider_manifest(os.path.join(PROVIDERS_PATH, DEMO), ProviderTier.CORE)
+    instance_id = await _setup(mass, DEMO)
+    token = await _token(mass, UserRole.GUEST)
+
+    async with _client(mass, token) as client:
+        answer = await _invoke(client, instance_id, "open_page", ALBUM_URI)
+    address = answer["result"]["open_page"]
+    async with mass.http_session_no_ssl.get(
+        f"{mass.webserver.internal_base_url}/{address}"
+    ) as response:
+        page = await response.text()
+
+    assert address.startswith("provider_page/")
+    assert page == "<!doctype html><p>Hello user_guest, from the demo plugin.</p>"
 
 
 async def _register(mass: MusicAssistant, location: Path) -> list[str]:

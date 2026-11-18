@@ -14,6 +14,7 @@ from music_assistant_models.errors import ActionUnavailable, UnsupportedFeatured
 from music_assistant.constants import CONF_LOG_LEVEL, CONF_PROVIDERS, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
+    from aiohttp import web
     from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.config_entries import (
         ConfigActionResult,
@@ -120,6 +121,25 @@ class Provider:
         :param player_id: The player to act on for an action that requires a player, else None.
         """
         raise ActionUnavailable(f"Unknown menu action: {action_id}")
+
+    async def handle_page_request(self, request: web.Request, path: str) -> web.StreamResponse:
+        """
+        Serve a request to the page of this provider instance.
+
+        Override to serve a page of your own, such as a small web interface. A menu action or
+        settings action opens it by answering ``ConfigActionResult(open_page=<path>)``, and the
+        server turns that into a short-lived address for the calling user that the app opens in
+        a new tab. The server only calls this for a user who may still use this instance and
+        still holds the scope of the action that opened the page, as that user
+        (``get_current_user()``). The page runs sandboxed in its own origin: it gets no token or
+        cookie and can not reach the app, so it calls its own sub-paths to talk to the provider.
+        Return any aiohttp response, a streamed or WebSocket response included; the server sets
+        the security headers itself and removes any cookie.
+
+        :param request: The request; read its method, query and body from it.
+        :param path: The part of the address after the page's root ("" for the root itself).
+        """
+        raise ActionUnavailable(f"Provider {self.instance_id} has no page")
 
     async def handle_mcp_tool(
         self, tool_id: str, arguments: dict[str, Any], player_id: str | None

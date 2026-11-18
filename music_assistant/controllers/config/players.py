@@ -374,6 +374,9 @@ class PlayerConfigMixin:
         if isinstance(result, ConfigActionResult):
             # the strings belong to the provider that handled the action
             result.translation_owner = result.translation_owner or target.translation_owner
+            self.mass.webserver.provider_pages.prepare_action_result(
+                target.provider, result, Scope.CONFIG_PLAYERS_WRITE
+            )
             return result
         # re-render the full player entries so injected protocol entries refresh
         return await self.get_player_config_entries(player_id)
