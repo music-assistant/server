@@ -453,10 +453,14 @@ async def test_an_output_switched_on_over_cast_and_off_again_is_the_off_of_the_u
 # ---------------------------------------------------------------- rule 5: the default of Cast
 
 
-@pytest.mark.parametrize("full_form", [False, True], ids=["single key", "full form"])
+@pytest.mark.parametrize(
+    ("full_form", "output_first"),
+    [(False, False), (True, False), (True, True)],
+    ids=["single key", "carrier first", "output first"],
+)
 @pytest.mark.parametrize("carrier", ["squeezelite", "airplay"])
 async def test_saving_the_carrier_off_does_not_opt_in_to_cast(
-    full_form: bool, carrier: str
+    full_form: bool, output_first: bool, carrier: str
 ) -> None:
     """An unchanged output switch cannot opt in to an experimental carrier during a save."""
     device = _device(cast=True)
@@ -469,7 +473,9 @@ async def test_saving_the_carrier_off_does_not_opt_in_to_cast(
     client_id = next(iter(device.outputs()))
     device.timeline.clear()
 
-    await _save_player_config(device, carrier, False, full_form=full_form)
+    await _save_player_config(
+        device, carrier, False, full_form=full_form, output_first=output_first
+    )
 
     record = device.output()
     assert record["enabled"] is False
@@ -481,10 +487,14 @@ async def test_saving_the_carrier_off_does_not_opt_in_to_cast(
     assert ("registered", "chromecast") not in device.timeline
 
 
-@pytest.mark.parametrize("full_form", [False, True], ids=["single key", "full form"])
+@pytest.mark.parametrize(
+    ("full_form", "output_first"),
+    [(False, False), (True, False), (True, True)],
+    ids=["single key", "carrier first", "output first"],
+)
 @pytest.mark.parametrize("carrier", ["squeezelite", "airplay"])
 async def test_saving_a_carrier_on_restores_the_output_cast_left_off(
-    full_form: bool, carrier: str
+    full_form: bool, output_first: bool, carrier: str
 ) -> None:
     """An unchanged output switch cannot override the default of its new carrier."""
     device = _device(cast=True)
@@ -495,7 +505,7 @@ async def test_saving_a_carrier_on_restores_the_output_cast_left_off(
     assert device.state() == (None, client_id, "chromecast", "off-default")
     device.timeline.clear()
 
-    await _save_player_config(device, carrier, True, full_form=full_form)
+    await _save_player_config(device, carrier, True, full_form=full_form, output_first=output_first)
 
     record = device.output()
     assert record["enabled"] is True
@@ -507,15 +517,23 @@ async def test_saving_a_carrier_on_restores_the_output_cast_left_off(
     assert ("registered", "chromecast") not in device.timeline
 
 
-@pytest.mark.parametrize("full_form", [False, True], ids=["single key", "full form"])
-async def test_saving_the_cast_output_switch_respects_the_users_choice(full_form: bool) -> None:
+@pytest.mark.parametrize(
+    ("full_form", "output_first"),
+    [(False, False), (True, False), (True, True)],
+    ids=["single key", "carrier first", "output first"],
+)
+async def test_saving_the_cast_output_switch_respects_the_users_choice(
+    full_form: bool, output_first: bool
+) -> None:
     """Switching the Cast output on opts in, and switching it off keeps the user's off."""
     device = _device(airplay=False, squeezelite=False, cast=True)
     await device.attach(device.cast)
     client_id = next(iter(device.outputs()))
     assert device.state() == (None, client_id, "chromecast", "off-default")
 
-    await _save_player_config(device, client_id, True, full_form=full_form)
+    await _save_player_config(
+        device, client_id, True, full_form=full_form, output_first=output_first
+    )
 
     record = device.output()
     assert record["enabled"] is True
@@ -527,7 +545,9 @@ async def test_saving_the_cast_output_switch_respects_the_users_choice(full_form
     assert ("registered", "chromecast") in device.timeline
     device.timeline.clear()
 
-    await _save_player_config(device, client_id, False, full_form=full_form)
+    await _save_player_config(
+        device, client_id, False, full_form=full_form, output_first=output_first
+    )
 
     record = device.output()
     assert record["enabled"] is False
@@ -539,7 +559,12 @@ async def test_saving_the_cast_output_switch_respects_the_users_choice(full_form
 
 
 async def _save_player_config(
-    device: BridgedDevice, target: str, enabled: bool, *, full_form: bool
+    device: BridgedDevice,
+    target: str,
+    enabled: bool,
+    *,
+    full_form: bool,
+    output_first: bool,
 ) -> None:
     """Save a protocol switch through the player API, optionally with every other switch."""
     protocol_id = device.protocols[target].protocol_id if target in device.protocols else target
@@ -552,6 +577,8 @@ async def _save_player_config(
         else {}
     )
     values[f"{protocol_id}{CONF_PROTOCOL_KEY_SPLITTER}enabled"] = enabled
+    if output_first:
+        values = dict(reversed(values.items()))
 
     async def _protocol_changed(pid: str, changed_keys: set[str]) -> None:
         await device.on_protocol_config_change(pid, changed_keys)
