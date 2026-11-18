@@ -15,7 +15,10 @@ from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.media_items import AudioFormat, AudioSource
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.controllers.players.audio_sources import AudioSourceMixin, AudioSourceSession
+from music_assistant.controllers.players.audio_sources import (
+    AudioSourceSession,
+    PlayerAudioSourcesMixin,
+)
 from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 from music_assistant.controllers.streams import audio_analysis as audio_analysis_module
 from music_assistant.controllers.streams.audio import StreamsAudio
@@ -78,7 +81,7 @@ class _RecognizingProvider(AudioAnalysisProvider):
         return AudioAnalysisData(loudness_integrated=-14.0)
 
 
-class _Players(AudioSourceMixin):
+class _Players(PlayerAudioSourcesMixin):
     """The live source sessions of the player controller, with nothing else of it."""
 
     def __init__(self) -> None:
@@ -286,6 +289,32 @@ async def test_source_that_does_not_allow_analysis_is_offered_to_no_provider(
 
     assert session_key is None
     prov.start_analysis.assert_not_awaited()
+
+
+async def test_analysis_ends_when_the_source_stops_allowing_it(
+    controller: AudioAnalysisController, registry: dict[str, Any]
+) -> None:
+    """Analysis the user disables for a source that plays ends, and does not start again."""
+    follower = _aa_provider("follower", LIVE_ONLY)
+    registry["follower"] = follower
+    recognizer = _recognizer(controller, registry)
+    source_session = _source_session(controller)
+    placeholder = StreamMetadata(title="Turntable")
+    source_session.attach_streamdetails(_source_streamdetails(placeholder))
+    session_key = await _start_source(controller, source_session)
+    worker = controller._workers[session_key]
+    recognizer.report_stream_metadata(session_key, StreamMetadata(title="Recognised"))
+
+    _players(controller).refresh_source(PLAYER_ID, _audio_source(allow_audio_analysis=False))
+    controller.feed_source_analysis(session_key, b"\x00" * ONE_SECOND)
+    await _ended(worker)
+
+    follower.process_pcm_chunk.assert_not_awaited()
+    follower.cancel.assert_awaited_once_with(session_key)
+    assert source_session.stream_metadata is placeholder
+    _assert_nothing_left(controller, recognizer)
+    # a resume of the same selection asks again
+    assert _start_analysis(controller, source_session) is None
 
 
 @pytest.mark.asyncio

@@ -235,9 +235,28 @@ async def test_discovery_skips_a_manual_speaker_that_is_attached_or_not_wanted(
     provider = _manual_ip_provider(attached=attached, wanted=wanted)
     monkeypatch.setattr(
         "music_assistant.providers.sonos.provider.get_discovery_info",
-        AsyncMock(return_value={"device": {"id": PLAYER_ID}}),
+        AsyncMock(return_value={"device": {"id": PLAYER_ID, "capabilities": ["PLAYBACK"]}}),
     )
     player_class = MagicMock()
+    monkeypatch.setattr("music_assistant.providers.sonos.provider.SonosPlayer", player_class)
+
+    await provider.discover_players()
+
+    player_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_discovery_skips_a_manual_speaker_that_is_a_satellite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A satellite of a stereo pair or home theater set entered by IP address is no player."""
+    provider = _manual_ip_provider()
+    monkeypatch.setattr(
+        "music_assistant.providers.sonos.provider.get_discovery_info",
+        AsyncMock(return_value={"device": {"id": PLAYER_ID, "capabilities": ["CLOUD"]}}),
+    )
+    player_class = MagicMock()
+    player_class.return_value.setup = AsyncMock()
     monkeypatch.setattr("music_assistant.providers.sonos.provider.SonosPlayer", player_class)
 
     await provider.discover_players()
@@ -251,7 +270,7 @@ async def test_discovery_sets_up_a_manual_speaker_without_an_attached_protocol(
 ) -> None:
     """A removed or re-enabled speaker at a configured address is set up again."""
     provider = _manual_ip_provider()
-    discovery_info = {"device": {"id": PLAYER_ID}}
+    discovery_info = {"device": {"id": PLAYER_ID, "capabilities": ["PLAYBACK"]}}
     monkeypatch.setattr(
         "music_assistant.providers.sonos.provider.get_discovery_info",
         AsyncMock(return_value=discovery_info),
@@ -274,7 +293,7 @@ async def test_discovery_goes_on_when_a_manual_speaker_can_not_be_connected(
     provider = _manual_ip_provider()
     monkeypatch.setattr(
         "music_assistant.providers.sonos.provider.get_discovery_info",
-        AsyncMock(return_value={"device": {"id": PLAYER_ID}}),
+        AsyncMock(return_value={"device": {"id": PLAYER_ID, "capabilities": ["PLAYBACK"]}}),
     )
     player_class = MagicMock()
     player_class.return_value.setup = AsyncMock(side_effect=CannotConnect(OSError("refused")))

@@ -23,6 +23,11 @@ ACTION = {
     "media_types": ["album"],
     "scope": "library.read",
 }
+TOOL = {
+    "id": "show_photo",
+    "description": "Show a photo of the playing album on the picture frame.",
+    "scope": "library.read",
+}
 
 
 def _manifest(**keys: Any) -> dict[str, Any]:
@@ -42,6 +47,7 @@ def test_manifest_without_menu_actions() -> None:
     manifest, problems = manifest_from_dict(_manifest())
     assert manifest.domain == "frame"
     assert manifest.menu_actions == []
+    assert manifest.mcp_tools == []
     assert problems == []
 
 
@@ -76,6 +82,47 @@ def test_broken_menu_actions_never_break_the_manifest(menu_actions: object, prob
     assert manifest.menu_actions == []
     assert len(problems) == 1
     assert problems[0].startswith(problem)
+
+
+def test_valid_mcp_tools_kept() -> None:
+    """Valid MCP tools are kept as declared."""
+    manifest, problems = manifest_from_dict(_manifest(mcp_tools=[TOOL]))
+    assert [tool.to_dict() for tool in manifest.mcp_tools] == [
+        {**TOOL, "input_schema": {}, "requires_player": False}
+    ]
+    assert problems == []
+
+
+@pytest.mark.parametrize(
+    ("mcp_tools", "problem"),
+    [
+        ({"id": "show_photo"}, "'mcp_tools' must be a list"),
+        (None, "'mcp_tools' must be a list"),
+        (["show_photo"], "MCP tool 0: needs string id"),
+        ([{**TOOL, "input_schema": []}], "MCP tool 0: needs string id"),
+        ([{**TOOL, "input_schema": {"type": "array"}}], "MCP tool 'show_photo': needs an"),
+        ([{**TOOL, "id": "x" * 51}], "MCP tool '" + "x" * 51 + "': needs an id"),
+    ],
+)
+def test_broken_mcp_tools_never_break_the_manifest(mcp_tools: object, problem: str) -> None:
+    """Whatever mcp_tools holds, the manifest is read, the tool left out and its problem named."""
+    manifest, problems = manifest_from_dict(_manifest(mcp_tools=mcp_tools))
+    assert manifest.domain == "frame"
+    assert manifest.mcp_tools == []
+    assert len(problems) == 1
+    assert problems[0].startswith(problem)
+
+
+def test_problems_of_menu_actions_and_mcp_tools_both_named() -> None:
+    """The problems of the menu actions and of the MCP tools are both returned, in that order."""
+    manifest, problems = manifest_from_dict(
+        _manifest(menu_actions=[{**ACTION, "scope": "x"}], mcp_tools=[{**TOOL, "scope": "x"}])
+    )
+    assert (manifest.menu_actions, manifest.mcp_tools) == ([], [])
+    assert [problem.split(":")[0] for problem in problems] == [
+        "menu action 'send_to_frame'",
+        "MCP tool 'show_photo'",
+    ]
 
 
 def test_invalid_manifest_still_fails() -> None:

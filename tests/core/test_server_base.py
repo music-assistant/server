@@ -30,6 +30,7 @@ async def test_start_and_stop_server(mass: MusicAssistant) -> None:
     domains = frozenset(p.domain for p in mass.get_provider_manifests())
     core_providers = frozenset(
         (
+            "ai",
             "builtin",
             "cache",
             "discovery",

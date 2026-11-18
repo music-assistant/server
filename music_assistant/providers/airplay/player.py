@@ -1002,7 +1002,8 @@ class AirPlayPlayer(PlayerProtocol):
         """Handle logic when the player config is updated."""
         await super().on_config_updated()
         prov = cast("AirPlayProvider", self.provider)
-        await prov.bridge_manager.evaluate_bridge(self)
+        # not awaited: the attach of this protocol does not wait for its Sendspin bridge
+        self.mass.create_task(prov.bridge_manager.evaluate_bridge(self))
 
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""

@@ -44,7 +44,7 @@ class Registry:
     status: int = 200
     etag: str = '"one"'
     delay: float = 0
-    # the line and the If-None-Match header of each request
+    # the channel and the If-None-Match header of each request
     requests: list[tuple[str, str | None]] = field(default_factory=list)
     # the address of the index over https, and the same index over plain http
     url: str = ""
@@ -107,16 +107,16 @@ def assert_refused(
     assert refused.value.translation_args == list(args)
 
 
-def catalog_index(line: str = "nightly", schema: int = 1) -> dict[str, Any]:
+def catalog_index(channel: str = "nightly", schema: int = 1) -> dict[str, Any]:
     """
     Return an index with one provider of each kind the list has to tell apart.
 
-    :param line: The line of the index.
+    :param channel: The channel of the index.
     :param schema: The format of the index.
     """
     return {
         "schema": schema,
-        "server_line": line,
+        "channel": channel,
         "generated": "2026-11-14T08:00:00Z",
         "a_field_of_a_later_registry": True,
         "providers": {
@@ -212,7 +212,7 @@ async def registry(monkeypatch: pytest.MonkeyPatch, tls: Tls) -> AsyncGenerator[
 
     async def serve_index(request: web.Request) -> web.StreamResponse:
         if_none_match = request.headers.get(hdrs.IF_NONE_MATCH)
-        registry.requests.append((request.match_info["line"], if_none_match))
+        registry.requests.append((request.match_info["channel"], if_none_match))
         await asyncio.sleep(registry.delay)
         if registry.status != 200:
             return web.Response(status=registry.status)
@@ -224,10 +224,10 @@ async def registry(monkeypatch: pytest.MonkeyPatch, tls: Tls) -> AsyncGenerator[
 
     https_app, http_app = web.Application(), web.Application()
     for app in (https_app, http_app):
-        app.router.add_get("/v1/{line}.json", serve_index)
+        app.router.add_get("/v1/{channel}.json", serve_index)
     async with serve(https_app, tls.server) as https_root, serve(http_app, None) as http_root:
-        registry.url = f"{https_root}/v1/{{line}}.json"
-        registry.http_url = f"{http_root}/v1/{{line}}.json"
+        registry.url = f"{https_root}/v1/{{channel}}.json"
+        registry.http_url = f"{http_root}/v1/{{channel}}.json"
         monkeypatch.setattr(index_module, "INDEX_URL", registry.url)
         yield registry
 
@@ -273,7 +273,7 @@ def _entry(
     :param status: Whether the catalog offers the provider.
     :param reason: Why the provider is blocked or withdrawn.
     :param manifest: The manifest snapshot, a plugin that claims to be built-in when omitted.
-    :param latest: The newest version for the line.
+    :param latest: The newest version for the channel.
     """
     version = {
         "commit": "0123abcd",

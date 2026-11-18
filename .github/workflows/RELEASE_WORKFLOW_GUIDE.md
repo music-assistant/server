@@ -93,6 +93,45 @@ Do not create or publish a GitHub release manually. A draft created outside the 
 is accepted only when its exact tag name and target SHA match; conflicting tags,
 published mutable releases, and mismatched drafts fail closed.
 
+## Community catalog channels
+
+A server reads the community catalog index of its own channel from
+`https://catalog.music-assistant.io/v1/<channel>.json`: nightlies read `nightly`, betas and
+RCs read `beta`, and a stable release reads `X.Y`. The registry
+(`music-assistant/community-catalog`) builds an index for each channel in its
+`channels.json` and lists only provider versions that passed the checks in that channel's
+server image. Without the index of its channel, a stable release offers no catalog
+providers in the Marketplace, and a refresh reports that the catalog could not be reached.
+Each step below is a pull request on the registry; how to add a channel, change its image,
+or freeze it is in the registry's `MAINTAINING.md`, section **Channels**.
+
+For every new minor version `X.Y`:
+
+1. **First beta of `X.Y` published:** add the stable `X.Y` channel with the image
+   `ghcr.io/music-assistant/server:beta`. The registry's daily **Releases** workflow checks
+   the provider versions on the new channel; dispatch it to start right away. A pull
+   request on `dev` that moves a provider out of the server needs this channel once
+   `X.(Y-1).0` is out (`scripts/check_moved_providers.py`), so it waits until the channel
+   is added.
+2. **Before the stable release:** open `https://catalog.music-assistant.io/v1/X.Y.json`
+   (for example `v1/2.11.json`) and `v1/beta.json`; until now both channels run in the beta
+   image. Release `X.Y.0` only when `v1/X.Y.json` loads, its `channel` is `X.Y`, and
+   every provider with a `latest` version in `v1/beta.json` has one there too.
+3. **After the stable release:** once `ghcr.io/music-assistant/server:X.Y` exists, set the
+   image of the stable `X.Y` channel to it.
+4. **Stable release of the next minor version:** mark the stable `X.Y` channel `frozen`
+   (2.11 is frozen when 2.12.0 is out). Its versions are no longer checked, while blocks
+   and withdrawals still reach its index.
+
+## Marketplace suggestions
+
+Two rows of the Marketplace come from lists the team keeps by hand in
+`music_assistant/constants.py`: `CATALOG_POPULAR` ("Popular") and `CATALOG_PAIRINGS`
+("Goes well with what you have"). Before the first beta of every minor version, check that
+they still fit: what users set up most today, and what a new provider pairs well with. A
+change is a normal pull request on `dev`. The "New in X.Y" row needs no step: the release
+build writes it.
+
 ## Authentication
 
 Same-repository tags, releases, assets, attestations, and GHCR writes use the job's

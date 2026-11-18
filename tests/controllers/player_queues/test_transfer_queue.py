@@ -97,12 +97,16 @@ async def test_transfer_queue_refuses_non_audio_target() -> None:
     """
     target_player = MagicMock()
     target_player.type = PlayerType.VISUALIZER
+    target_player.name = "Lights"
     fake = _fake_controller("src", target_player)
 
-    with pytest.raises(PlayerCommandFailed):
+    with pytest.raises(PlayerCommandFailed) as error:
         await PlayerQueuesController.transfer_queue(
             cast("PlayerQueuesController", fake), "src", "viz", auto_play=False
         )
+
+    assert error.value.translation_key == "player_cannot_play_audio"
+    assert error.value.translation_args == ["Lights"]
 
     fake.stop.assert_not_awaited()
     fake._clear.assert_not_called()

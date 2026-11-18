@@ -271,7 +271,12 @@ class OutputsMixin(_PlayerControllerBase):
                 )
                 return protocol, player.get_linked_protocol(protocol.protocol_id)
 
-        raise PlayerCommandFailed(f"Player {player.name} has no available output protocols")
+        raise PlayerCommandFailed(
+            f"Player {player.name} has no available output protocols",
+            translation_key="player_not_available",
+            translation_owner=self.translation_owner,
+            translation_args=[player.name],
+        )
 
     def _get_grouped_output_protocol(self, player: Player) -> PlayerProtocol | None:
         """

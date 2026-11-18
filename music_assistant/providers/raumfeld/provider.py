@@ -165,6 +165,14 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """
         return self._room_models.get(room)
 
+    def room_speaker_count(self, room: str) -> int:
+        """
+        Return how many speakers the host lists in a room.
+
+        :param room: The Raumfeld room name to look up.
+        """
+        return len(self.host.renderer_udns(room))
+
     def room_software_version(self, room: str) -> str | None:
         """
         Return the software version of a room's speaker, or ``None`` if it is unknown.
@@ -665,6 +673,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
                         existing.set_software_version(self.room_software_version(room))
                         # a room keeps its player when the speaker it plays through changes
                         existing.set_model(self.room_model(room))
+                        existing.set_speaker_count(self.room_speaker_count(room))
                         renderer_uuid, renderer_ip = self.resolve_room_renderer(room)
                         existing.set_line_in(self.line_in(renderer_uuid))
                         await existing.set_renderer(renderer_uuid, renderer_ip)

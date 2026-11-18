@@ -56,7 +56,11 @@ _CLIENT_CODE = (
     "hold_bridge_client",
     "get_bridge_holder",
     "release_bridge_client",
+    "wait_for_bridge_client",
+    "stop_waiting_for_bridge_client",
+    "wake_bridge_waiters",
     "refresh_bridge_client",
+    "bridge_lock",
     "_begin_client_event",
     "_finish_client_event",
     "_is_current_client_event",
@@ -105,6 +109,8 @@ def _sendspin(scenario: Scenario) -> Any:
     provider._bridge_static_delay_defaults = {}
     provider._bridge_player_types = {}
     provider._bridge_holders = {}
+    provider._bridge_waiters = {}
+    provider._bridge_locks = {}
     return provider
 
 

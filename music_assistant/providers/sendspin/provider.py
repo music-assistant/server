@@ -88,7 +88,10 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import OWN_PROTOCOL_ROLES
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.providers.sendspin.bridge_manager import evaluate_bridge_of
+from music_assistant.providers.sendspin.bridge_manager import (
+    evaluate_bridge_of,
+    evaluate_bridges_of_player,
+)
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
     BRIDGE_CHANNELS,
@@ -379,6 +382,8 @@ class SendspinProvider(PlayerProvider):
     _bridge_identifiers: dict[str, dict[IdentifierType, str]]
     _bridge_underlying_protocols: dict[str, str]
     _bridge_holders: dict[str, str]
+    _bridge_waiters: dict[str, dict[str, Callable[[], None]]]
+    _bridge_locks: dict[str, asyncio.Lock]
     _bridge_static_delay_defaults: dict[str, int]
     _client_event_versions: dict[str, int]
     _client_event_task_counts: dict[str, int]
@@ -410,6 +415,10 @@ class SendspinProvider(PlayerProvider):
         self._bridge_underlying_protocols = {}
         # bridge client id -> the protocol whose bridge registered or claimed it last
         self._bridge_holders = {}
+        # bridge client id -> protocol id -> what to do once its holder lets it go
+        self._bridge_waiters = {}
+        # player id -> the lock its bridges hand its Sendspin output over under
+        self._bridge_locks = {}
         self._bridge_static_delay_defaults = {}
         self._bridge_player_types: dict[str, PlayerType] = {}
         self._client_event_versions = {}
@@ -503,6 +512,7 @@ class SendspinProvider(PlayerProvider):
             self.server_api.add_event_listener(self.event_cb),
             self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED),
             self.mass.subscribe(self._on_queue_updated, EventType.QUEUE_UPDATED),
+            self.mass.subscribe(self._on_player_config_updated, EventType.PLAYER_CONFIG_UPDATED),
         ]
         # seed the hass availability snapshot so the first (un)load is seen as a change
         hass = self.mass.get_provider("hass")
@@ -670,6 +680,54 @@ class SendspinProvider(PlayerProvider):
         """
         if self._bridge_holders.get(client_id) == protocol_id:
             del self._bridge_holders[client_id]
+            self.wake_bridge_waiters(client_id)
+
+    def wake_bridge_waiters(self, client_id: str) -> None:
+        """
+        Call back, once, the protocols that wait for a bridge client to be let go.
+
+        :param client_id: The bridge client id.
+        """
+        for callback in self._bridge_waiters.pop(client_id, {}).values():
+            callback()
+
+    def wait_for_bridge_client(
+        self, client_id: str, protocol_id: str, callback: Callable[[], None]
+    ) -> bool:
+        """
+        Call back once, when the bridge that holds a bridge client lets it go.
+
+        :param client_id: The bridge client id.
+        :param protocol_id: The id of the protocol that waits for it; a later wait of the same
+            protocol leaves this one in place.
+        :param callback: What to call.
+        :return: Whether the protocol did not wait for the client yet.
+        """
+        waiters = self._bridge_waiters.setdefault(client_id, {})
+        if protocol_id in waiters:
+            return False
+        waiters[protocol_id] = callback
+        return True
+
+    def stop_waiting_for_bridge_client(self, client_id: str, protocol_id: str) -> None:
+        """
+        Forget that a protocol waits for a bridge client.
+
+        :param client_id: The bridge client id.
+        :param protocol_id: The id of the protocol that waits for it.
+        """
+        if (waiters := self._bridge_waiters.get(client_id)) is not None:
+            waiters.pop(protocol_id, None)
+            if not waiters:
+                del self._bridge_waiters[client_id]
+
+    def bridge_lock(self, player_id: str) -> asyncio.Lock:
+        """
+        Return the lock under which the bridges of a player hand its Sendspin output over.
+
+        :param player_id: Id of the player.
+        """
+        return self._bridge_locks.setdefault(player_id, asyncio.Lock())
 
     def refresh_bridge_client(self, client_id: str) -> None:
         """
@@ -1274,6 +1332,7 @@ class SendspinProvider(PlayerProvider):
         self._client_event_task_counts.clear()
         self._client_event_versions.clear()
         self._virtual_players.clear()
+        self._bridge_waiters.clear()
 
     def _set_aiosendspin_log_level(self) -> None:
         """Keep aiosendspin's (very chatty) logging quiet unless verbose logging is enabled."""
@@ -2056,6 +2115,12 @@ class SendspinProvider(PlayerProvider):
         for player in self.protocols:
             if isinstance(player, SendspinPlayer):
                 player.on_queue_updated(queue_id)
+
+    async def _on_player_config_updated(self, event: MassEvent) -> None:
+        """Let the bridges of a player follow a saved config, such as an output switched off."""
+        if self._unloading or self.mass.closing or (player_id := event.object_id) is None:
+            return
+        await evaluate_bridges_of_player(self.mass, player_id)
 
     async def _remove_orphan_virtual_player_configs(self) -> None:
         """Delete stored configs of virtual players whose owner provider is gone."""

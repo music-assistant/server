@@ -15,6 +15,7 @@ from music_assistant_models.media_items import AudioFormat, AudioSource, Provide
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import (
+    CONF_ALLOW_AUDIO_ANALYSIS,
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_ENTRY_WARN_PREVIEW,
@@ -35,7 +36,6 @@ from .constants import (
     DEFAULT_PCM_AUDIO_FORMAT,
     DEFAULT_PCM_SAMPLE_RATE,
     DEFAULT_UDP_PORT,
-    SUPPORTED_FEATURES,
     VBAN_QUEUE_STRATEGIES,
 )
 from .helpers import get_supported_pcm_formats
@@ -63,7 +63,7 @@ class VBANReceiverProvider(PluginProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
+        super().__init__(mass, manifest, config)
         # Setup values fall back to legacy option values for existing instances.
         self._bind_port: int = cast("int", self.get_setup_value(CONF_BIND_PORT) or DEFAULT_UDP_PORT)
         self._bind_ip: str = cast("str", self.get_setup_value(CONF_BIND_IP) or "0.0.0.0")  # noqa: S104 - user-configurable bind address
@@ -129,13 +129,19 @@ class VBANReceiverProvider(PluginProvider):
             exclusive=True,
             allow_external_trigger=False,
             can_initiate=True,
-            allow_audio_analysis=True,
+            allow_audio_analysis=bool(self.config.get_value(CONF_ALLOW_AUDIO_ANALYSIS, True)),
         )
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return runtime options for this provider."""
         return (
             CONF_ENTRY_WARN_PREVIEW,
+            ConfigEntry(
+                key=CONF_ALLOW_AUDIO_ANALYSIS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+            ),
             ConfigEntry(
                 key=CONF_VBAN_QUEUE_STRATEGY,
                 type=ConfigEntryType.STRING,
