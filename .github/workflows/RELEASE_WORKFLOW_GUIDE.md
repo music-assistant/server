@@ -123,6 +123,15 @@ For every new minor version `X.Y`:
    (2.11 is frozen when 2.12.0 is out). Its versions are no longer checked, while blocks
    and withdrawals still reach its index.
 
+## Marketplace suggestions
+
+Two rows of the Marketplace come from lists the team keeps by hand in
+`music_assistant/constants.py`: `CATALOG_POPULAR` ("Popular") and `CATALOG_PAIRINGS`
+("Goes well with what you have"). Before the first beta of every minor version, check that
+they still fit: what users set up most today, and what a new provider pairs well with. A
+change is a normal pull request on `dev`. The "New in X.Y" row needs no step: the release
+build writes it.
+
 ## Authentication
 
 Same-repository tags, releases, assets, attestations, and GHCR writes use the job's
