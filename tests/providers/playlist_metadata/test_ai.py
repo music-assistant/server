@@ -2024,6 +2024,8 @@ def _make_provider(tmp_path: Path) -> PlaylistMetadataProvider:
     mass.call_later = MagicMock()
     mass.cache = _FakeCache()
     mass.music.playlists.iter_tracks = MagicMock(side_effect=lambda *_: _async_iter([]))
+    mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    mass.music.artists.library_items = AsyncMock(return_value=[])
     smart_playlist_provider = MagicMock()
     smart_playlist_provider.domain = "smart_playlist"
     smart_playlist_provider.get_smart_playlist_rules = AsyncMock(return_value=SMART_RULES)
