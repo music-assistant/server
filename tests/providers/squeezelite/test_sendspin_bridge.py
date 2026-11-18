@@ -4152,16 +4152,22 @@ async def test_a_bridge_that_does_not_play_shows_nothing(rig: _Rig) -> None:
 
 
 @pytest.mark.parametrize(
-    "end", ["taken back", "bridge removed", "ended before its start", "gave up"]
+    "end",
+    ["taken back", "taken out of its group", "bridge removed", "ended before its start", "gave up"],
 )
 async def test_nothing_is_left_on_the_player_when_its_stream_is_over(rig: _Rig, end: str) -> None:
     """A stop keeps the media of a player: the bridge has it forgotten with its session."""
-    rig.grouped()
+    client = rig.grouped()
     session = await rig.start_playing()
     rig.client.clear_media.assert_not_called()
 
     if end == "taken back":
         assert rig.bridge.stop_streaming()
+    elif end == "taken out of its group":
+        # as the group removes a member: its stream ends, it moves on, then it is stopped
+        rig.bridge._on_stream_end()
+        client.moved_to(MagicMock(clients=[client], has_active_stream=False))
+        rig.bridge._on_explicit_stop()
     elif end == "bridge removed":
         await rig.bridge.stop()
     elif end == "ended before its start":
@@ -4278,6 +4284,66 @@ async def test_the_play_key_of_a_player_resumes_its_stopped_group(rig: _Rig) -> 
         # owns its playback
         rig.mass.players.cmd_play.assert_awaited_once_with("kitchen")
         assert _stream_commands(sent) == []
+    finally:
+        client._reader_task.cancel()
+
+
+@pytest.mark.parametrize("leaves_by", ["taken out of the group", "bridge removed"])
+async def test_a_player_that_leaves_its_stopped_group_shows_nothing(
+    rig: _Rig, leaves_by: str
+) -> None:
+    """The stopped track of a group is not left on a player that is no longer in it."""
+    reader, _sent = _real_client(rig)
+    client = rig.client
+    try:
+        rig.protocol.player.current_media = _media("One")
+        sendspin_client = rig.grouped()
+        await rig.start_playing()
+        await _player_reports(reader, b"STMs")
+        rig.bridge._on_stream_end()
+        rig.bridge._on_explicit_stop()
+        await _settle()
+        await _player_reports(reader, b"STMf")
+        assert client.current_media is not None
+
+        if leaves_by == "taken out of the group":
+            # as the group removes a member, with no stream left to end or stop
+            rig.bridge._on_stream_end()
+            sendspin_client.moved_to(MagicMock(clients=[sendspin_client], has_active_stream=False))
+            rig.bridge._on_explicit_stop()
+        else:
+            await rig.bridge.stop()
+        await _settle()
+
+        assert client.current_media is None
+    finally:
+        client._reader_task.cancel()
+
+
+@pytest.mark.parametrize("change", ["put into a group", "bridge removed"])
+async def test_a_player_keeps_a_track_of_its_own_when_its_bridge_moves_on(
+    rig: _Rig, change: str
+) -> None:
+    """What the player plays on its own is not for the bridge to clear."""
+    reader, _sent = _real_client(rig)
+    client = rig.client
+    try:
+        sendspin_client = rig.grouped()
+        sendspin_client.moved_to(MagicMock(clients=[sendspin_client], has_active_stream=False))
+        await client.play_url(f"{BASE_URL}/track.flac")
+        await _player_reports(reader, b"STMs")
+        media = client.current_media
+        assert media is not None
+
+        if change == "put into a group":
+            sendspin_client.moved_to(
+                MagicMock(clients=[sendspin_client, MagicMock()], has_active_stream=False)
+            )
+        else:
+            await rig.bridge.stop()
+        await _settle()
+
+        assert client.current_media is media
     finally:
         client._reader_task.cancel()
 
