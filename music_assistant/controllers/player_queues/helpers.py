@@ -6,7 +6,7 @@ import asyncio
 import functools
 import random
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard, overload
 
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerType, SleepTimerMode
@@ -20,11 +20,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
-from music_assistant.constants import (
-    ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    ATTR_PLAY_ACTION_IN_PROGRESS,
-    EXTERNAL_ID_PROVIDER,
-)
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, EXTERNAL_ID_PROVIDER
 from music_assistant.controllers.player_queues.constants import (
     PLAY_REQUEST_RESOLVE_TIMEOUT,
     ArtistOrder,
@@ -33,6 +29,8 @@ from music_assistant.controllers.players.constants import SwitchedOffAction
 from music_assistant.helpers.external_ids import external_item_id, parse_external_item_id
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     from music_assistant_models.enums import ContentType
     from music_assistant_models.media_items import (
         Album,
@@ -87,6 +85,10 @@ class _PlayActionHost(Protocol):
 
     def _drop_pending_step(self, queue_id: str) -> None: ...
 
+    def _show_play_action(
+        self, queue_id: str, *, while_playing: bool = False
+    ) -> AbstractContextManager[None]: ...
+
 
 @overload
 def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
@@ -123,7 +125,8 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
 
     Acquires the playback lock for the queue's player, preceded by that of the group
     holding the player (both re-entrant), and sets ATTR_PLAY_ACTION_IN_PROGRESS on the
-    queue while the action runs. The action waits for a running one to finish and fails
+    queue while the action runs, and on a queue that does not play already while it waits
+    for players to start up. The action waits for a running one to finish and fails
     with ResourceBusyError when that takes too long, rather than run alongside it.
     Uses an internal refcount so nested actions don't clear the flag prematurely.
 
@@ -161,56 +164,50 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                 # the action takes the place of a step (next, previous) that has not played
                 # yet, from the moment it arrives
                 self._drop_pending_step(queue_id)
-            if (
-                player := self.mass.players.get_player(queue_id)
-            ) is not None and player.offline_by_power_control:
-                if switched_off == SwitchedOffAction.REFUSE:
-                    msg = f"Player {player.name} is switched off"
-                    raise PlayerUnavailableError(msg)
-                if switched_off == SwitchedOffAction.IGNORE:
-                    return None
-                if switched_off == SwitchedOffAction.POWER_ON:
-                    await self.mass.players._power_on_switched_off_player(queue_id)
-                    # the queue can register anew while its player starts up
-                    queue_data = self._queue_data[queue_id]
-            elif player is not None and (
-                switched_off == SwitchedOffAction.POWER_ON
-                or (
-                    starts_unless_playing
-                    and queue_data.queue.active
-                    and queue_data.queue.state != PlaybackState.PLAYING
-                    # parked for an announcement: a seek during the clip starts no player
-                    and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
-                )
-            ):
-                # the group player itself, or the group that the playback of a member goes to
-                target = self.mass.players._resolve_play_media_target(player)
-                if target.type == PlayerType.GROUP:
-                    await self.mass.players._power_on_members(target)
-            queue = queue_data.queue
-            # a play action on the queue of a player captured by a (sync)group releases the
-            # player from it first, which takes the group's lock - so that one is taken
-            # before the player's own (see PlayerController.get_group_and_player_lock)
-            async with self.mass.players.get_group_and_player_lock(queue_id):
-                prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
-                try:
-                    queue_data.play_action_refcount += 1
-                    queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
-                    if not prev_in_progress:
-                        self.signal_update(queue_id)
-                    return await fn(self, *args, **kwargs)
-                finally:
-                    queue_data.play_action_refcount -= 1
-                    if queue_data.play_action_refcount <= 0:
-                        queue_data.play_action_refcount = 0
-                        queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
-                        # the queue follows the player through a debounced update, which is
-                        # also suppressed while an action is transitioning; recalculate it
-                        # here so the update that clears the flag already carries the
-                        # action's resulting state
-                        if (player := self.mass.players.get_player(queue_id)) is not None:
-                            self.on_player_update(player, {})
-                        self.signal_update(queue_id)
+            # the action shows on a queue that does not play from the start of its wait for
+            # players to start up; once it holds the locks it shows by itself
+            with ExitStack() as waiting:
+                if (
+                    player := self.mass.players.get_player(queue_id)
+                ) is not None and player.offline_by_power_control:
+                    if switched_off == SwitchedOffAction.REFUSE:
+                        msg = f"Player {player.name} is switched off"
+                        raise PlayerUnavailableError(
+                            msg,
+                            translation_key="player_switched_off",
+                            translation_owner=self.mass.players.translation_owner,
+                            translation_args=[player.name],
+                        )
+                    if switched_off == SwitchedOffAction.IGNORE:
+                        return None
+                    if switched_off == SwitchedOffAction.POWER_ON:
+                        waiting.enter_context(self._show_play_action(queue_id))
+                        await self.mass.players._power_on_switched_off_player(queue_id)
+                elif player is not None and (
+                    switched_off == SwitchedOffAction.POWER_ON
+                    or (
+                        starts_unless_playing
+                        and queue_data.queue.active
+                        and queue_data.queue.state != PlaybackState.PLAYING
+                        # parked for an announcement: a seek during the clip starts no player
+                        and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+                    )
+                ):
+                    # the group player itself, or the group that the playback of a member goes to
+                    target = self.mass.players._resolve_play_media_target(player)
+                    if target.type == PlayerType.GROUP:
+                        if self.mass.players._members_to_power_on(target):
+                            waiting.enter_context(self._show_play_action(queue_id))
+                        await self.mass.players._power_on_members(target)
+                # a play action on the queue of a player captured by a (sync)group releases the
+                # player from it first, which takes the group's lock - so that one is taken
+                # before the player's own (see PlayerController.get_group_and_player_lock)
+                async with self.mass.players.get_group_and_player_lock(queue_id):
+                    # the queue can register anew while its player starts up: the action
+                    # shows on the queue that is registered by now
+                    with self._show_play_action(queue_id, while_playing=True):
+                        waiting.close()
+                        return await fn(self, *args, **kwargs)
 
         return wrapper
 

@@ -225,14 +225,14 @@ async def test_no_longer_listed(tmp_path: Path, registry: Registry, github: GitH
         await _assert_not_loaded(mass, DOMAIN, CommunityProviderState.UNAVAILABLE, reason)
 
 
-async def test_copy_of_another_line(
+async def test_copy_of_another_channel(
     tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
 ) -> None:
-    """With only a copy of another line the provider loads, nothing is offered, a block applies."""
+    """With only a copy of another channel the provider loads, nothing is offered, a block applies."""
     await _install(tmp_path, registry, github)
     registry.status = 503
     kept = json.loads((catalog / "index.json").read_bytes())
-    kept["server_line"] = "2.11"
+    kept["channel"] = "2.11"
     kept["providers"]["other_one"] = _publish(github, "other_one")
     (catalog / "index.json").write_text(json.dumps(kept))
 
@@ -270,6 +270,32 @@ async def test_no_kept_copy(
             CommunityProviderState.UNAVAILABLE,
             _REASONS[Verdict.CATALOG_UNREACHABLE],
         )
+
+
+async def test_kept_copy_without_channel(
+    tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
+) -> None:
+    """A kept copy without a channel reads as no copy, until the next start that fetches the index."""
+    await _install(tmp_path, registry, github)
+    kept = json.loads((catalog / "index.json").read_bytes())
+    kept["server_line"] = kept.pop("channel")
+    (catalog / "index.json").write_text(json.dumps(kept))
+    registry.status = 503
+
+    async with _server(tmp_path) as mass:
+        await _assert_not_loaded(
+            mass,
+            DOMAIN,
+            CommunityProviderState.UNAVAILABLE,
+            _REASONS[Verdict.CATALOG_UNREACHABLE],
+        )
+
+    registry.status = 200
+    async with _server(tmp_path) as mass:
+        _assert_loaded(mass, catalog, DOMAIN)
+    # without a readable copy the server fetches the whole index, not only a change
+    assert registry.requests[-1] == ("nightly", None)
+    assert json.loads((catalog / "index.json").read_bytes())["channel"] == "nightly"
 
 
 @pytest.mark.parametrize(
@@ -648,7 +674,9 @@ def test_reasons_match_the_texts() -> None:
 
 
 @pytest.mark.usefixtures("registry")
-async def test_client_reads_why_a_command_is_refused(mass: MusicAssistant) -> None:
+async def test_client_reads_why_a_command_is_refused(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """
     A client gets the reason of a refusal, in a language without a translation of it in English.
 
@@ -667,6 +695,10 @@ async def test_client_reads_why_a_command_is_refused(mass: MusicAssistant) -> No
     )
     reason = f"{DOMAIN} is not installed from the community catalog."
     await mass.translations.ensure_locale_loaded("nl")
+    # Dutch without a translation of the reason, whatever Lokalise has for it
+    monkeypatch.delitem(
+        mass.translations._locales["nl"], f"common.errors.{error.translation_key}", raising=False
+    )
 
     for locale in ("en", "nl"):
         token = TRANSLATION_RESOLVER.set(partial(mass.translations.get_translation, locale=locale))
@@ -786,10 +818,10 @@ def _provider_files(
 
 
 def _index(providers: dict[str, Any]) -> dict[str, Any]:
-    """Return an index of the line of a server run from source."""
+    """Return an index of the channel of a server run from source."""
     return {
         "schema": 1,
-        "server_line": "nightly",
+        "channel": "nightly",
         "generated": "2026-11-14T08:00:00Z",
         "providers": providers,
     }

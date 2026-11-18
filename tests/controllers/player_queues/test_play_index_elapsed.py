@@ -177,8 +177,10 @@ async def test_seek_past_duration_still_raises() -> None:
     ctrl, _queue, _signals = _controller_with_stale_queue()
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
 
-    with pytest.raises(InvalidCommand, match="outside of duration range"):
+    with pytest.raises(InvalidCommand, match="outside of duration range") as error:
         await ctrl.seek(QUEUE_ID, 50_001)
+    assert error.value.translation_key == "seek_past_end"
+    assert error.value.translation_args == ["old"]
 
 
 async def test_play_index_stops_and_reports_a_source_capacity_failure() -> None:

@@ -240,8 +240,7 @@ def test_replayer_reports_a_segue_and_its_cause(
     fade_out = _analysis_with_bands(1.0, 0.5, 0.5, 0.3)
     fade_out.rms_energy = [0.5] * 1765 + [0.1] * 35
     low_in = [1.0] * 1800 if kick_in_head else [0.01] * 90 + [1.0] * 1710
-    fade_in = _analysis_with_bands(low_in, 0.5, 0.5, 0.3)
-    fade_in.bpm = 150.0
+    fade_in = _analysis_with_bands(low_in, 0.5, 0.5, 0.3, bpm=150.0)
     analyses = {out_key: fade_out, in_key: fade_in}
     tracks = {key: TrackInfo(name=key[0]) for key in analyses}
 
@@ -264,9 +263,10 @@ def test_replayer_reports_a_filter_out(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(CandidateSelector, "select", CandidateSelector.select)
     monkeypatch.setattr(CandidateSelector, "_score", CandidateSelector._score)
     out_key, in_key = ("out", "filesystem--x"), ("in", "filesystem--x")
-    fade_in = _analysis_with_bands(1.0, 0.5, 0.5, 0.3)
-    fade_in.bpm = 134.0
-    analyses = {out_key: _analysis_with_bands(1.0, 0.5, 0.5, 0.3), in_key: fade_in}
+    analyses = {
+        out_key: _analysis_with_bands(1.0, 0.5, 0.5, 0.3),
+        in_key: _analysis_with_bands(1.0, 0.5, 0.5, 0.3, bpm=134.0),
+    }
     tracks = {key: TrackInfo(name=key[0]) for key in analyses}
 
     row = Replayer(analyses, tracks, ceiling=45.0).replay(out_key, in_key)

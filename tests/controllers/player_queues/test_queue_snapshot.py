@@ -297,7 +297,7 @@ async def test_restore_is_not_settled_by_the_end_of_the_replaced_content() -> No
     # repeat would wrap the last item on to the first, which keeps the queue from ending at all
     queue.repeat_mode = RepeatMode.OFF
     quiz_item = queue_data.items[0]
-    queue_data.served_item_ids.add(quiz_item.queue_item_id)
+    queue_data.served_item_ids[quiz_item.queue_item_id] = None
     ctrl._handle_end_of_queue(
         queue,
         _played_to(quiz_item, PlaybackState.PLAYING),

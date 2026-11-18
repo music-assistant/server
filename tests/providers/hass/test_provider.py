@@ -2130,3 +2130,23 @@ async def test_init_cancelled_during_connect_unregisters_search_command() -> Non
                 await provider.handle_async_init()
 
     unregister.assert_called_once()
+
+
+async def test_unexpected_connect_error_unregisters_search_command() -> None:
+    """Test an unexpected error while connecting releases the search command for the next init."""
+    hass = _HomeAssistantClient(
+        [], connect_error=TypeError("Received message 257:None is not WSMsgType.TEXT")
+    )
+    mass = _mass()
+    unregister = MagicMock()
+    mass.register_api_command = MagicMock(return_value=unregister)
+    manifest = MagicMock()
+    manifest.domain = "hass"
+    manifest.name = "Home Assistant"
+    with patch("music_assistant.providers.hass.HomeAssistantClient", return_value=hass):
+        provider = await setup(mass, manifest, _config())
+        with pytest.raises(TypeError):
+            await provider.handle_async_init()
+
+    unregister.assert_called_once()
+    assert hass.disconnected

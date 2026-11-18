@@ -33,6 +33,7 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import (
+    ChannelLayout,
     PlaybackState,
     PlayerFeature,
     PlayerType,
@@ -268,6 +269,7 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "player_id": state.player_id,
         "provider": state.provider,
         "type": state.type,
+        "channel_layout": state.channel_layout,
         "name": state.name,
         "available": state.available,
         "playback_state": state.playback_state,
@@ -444,6 +446,7 @@ def _protocol_inputs(protocol: PlayerProtocol, probe_synced_to: bool) -> tuple[A
     device_info = protocol.device_info
     return (
         protocol.type,
+        protocol.channel_layout,
         protocol.private,
         protocol.available,
         protocol.enabled,
@@ -880,6 +883,11 @@ class Player:
         return self._state.protocols
 
     @property
+    def channel_layout(self) -> ChannelLayout | None:
+        """Return how the speakers of a multi-channel player are laid out, None if not known."""
+        return self._state.channel_layout
+
+    @property
     def corrected_elapsed_time(self) -> float | None:
         """Return the elapsed time of the current media as of now."""
         return self._state.corrected_elapsed_time
@@ -968,7 +976,12 @@ class Player:
         own = self._own_protocol
         player_type = own.type if own is not None else self._config.player_type
         # a player is never a protocol, whatever one of its protocols reports
-        return PlayerType.PLAYER if player_type == PlayerType.PROTOCOL else player_type
+        if player_type == PlayerType.PROTOCOL:
+            return PlayerType.PLAYER
+        # a stereo pair is a multi-channel player
+        if player_type == PlayerType.STEREO_PAIR:
+            return PlayerType.MULTI_CHANNEL
+        return player_type
 
     @property
     def provider_id(self) -> str:
@@ -2436,6 +2449,7 @@ class Player:
             player_id=self.player_id,
             provider=self.provider_id,
             player_type=self.reported_type,
+            channel_layout=own_protocol.channel_layout if own_protocol else None,
             now=time.time(),
             previous_state=self._state,
             enabled=self._config.enabled,

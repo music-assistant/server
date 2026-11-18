@@ -19,6 +19,7 @@ from music_assistant_models.media_items import Album, ItemMapping, Radio, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
+from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -96,12 +97,16 @@ async def test_transfer_queue_refuses_non_audio_target() -> None:
     """
     target_player = MagicMock()
     target_player.type = PlayerType.VISUALIZER
+    target_player.name = "Lights"
     fake = _fake_controller("src", target_player)
 
-    with pytest.raises(PlayerCommandFailed):
+    with pytest.raises(PlayerCommandFailed) as error:
         await PlayerQueuesController.transfer_queue(
             cast("PlayerQueuesController", fake), "src", "viz", auto_play=False
         )
+
+    assert error.value.translation_key == "player_cannot_play_audio"
+    assert error.value.translation_args == ["Lights"]
 
     fake.stop.assert_not_awaited()
     fake._clear.assert_not_called()
@@ -851,6 +856,57 @@ async def test_a_transfer_that_does_not_play_leaves_a_switched_off_target_off() 
 
     fake.mass.players._power_on_switched_off_player.assert_not_awaited()
     fake.load.assert_awaited_once()
+
+
+@pytest.mark.parametrize("wait", ["starts up", "fails"])
+async def test_a_transfer_shows_on_a_target_that_starts_up(wait: str) -> None:
+    """
+    A transfer that plays on a switched-off target shows on the target while it starts up.
+
+    It shows until the target plays, and no more when the power on failed.
+
+    :param wait: How the wait for the target ends.
+    """
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, _item = _playing_transfer(PlaybackState.IDLE, track)
+    _with_real_locks(fake)
+    fake._show_play_action = lambda queue_id: PlayerQueuesController._show_play_action(
+        cast("PlayerQueuesController", fake), queue_id
+    )
+    target_queue = fake._queue_data["tgt"].queue
+    target_player = fake.mass.players.get_player("tgt")
+    target_player.offline_by_power_control = True
+    seen: list[tuple[str, bool]] = []
+
+    def _flagged() -> bool:
+        return target_queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False) is True
+
+    async def _power_on(_player_id: str) -> None:
+        seen.append(("power on", _flagged()))
+        if wait == "fails":
+            raise PlayerUnavailableError("Player tgt could not be reached")
+        target_player.offline_by_power_control = False
+
+    async def _play(*_args: object) -> None:
+        seen.append(("play", _flagged()))
+
+    fake.mass.players._power_on_switched_off_player = AsyncMock(side_effect=_power_on)
+    fake.play_index = AsyncMock(side_effect=_play)
+
+    if wait == "fails":
+        with pytest.raises(PlayerUnavailableError):
+            await PlayerQueuesController.transfer_queue(
+                cast("PlayerQueuesController", fake), "src", "tgt"
+            )
+    else:
+        await PlayerQueuesController.transfer_queue(
+            cast("PlayerQueuesController", fake), "src", "tgt"
+        )
+
+    expected = [("power on", True)] if wait == "fails" else [("power on", True), ("play", True)]
+    assert seen == expected, f"the transfer does not show on the target while it starts up: {seen}"
+    assert target_queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
+    assert fake._queue_data["tgt"].play_action_refcount == 0
 
 
 @pytest.mark.parametrize("taken", [False, True])

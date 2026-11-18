@@ -472,11 +472,19 @@ class AnnouncementsMixin(_PlayerControllerBase):
         if tts_engine:
             engine = await resolve_tts_engine(self.mass, tts_engine)
             if engine is None:
-                raise PlayerCommandFailed(f"TTS engine '{tts_engine}' is not available.")
+                raise PlayerCommandFailed(
+                    f"TTS engine '{tts_engine}' is not available.",
+                    translation_key="tts_engine_unavailable",
+                    translation_owner=self.translation_owner,
+                )
         else:
             engine = await select_core_tts_engine(self.mass, self.domain, CONF_ANNOUNCE_TTS_ENGINE)
             if engine is None:
-                raise PlayerCommandFailed("No text-to-speech engine is available.")
+                raise PlayerCommandFailed(
+                    "No text-to-speech engine is available.",
+                    translation_key="tts_engine_unavailable",
+                    translation_owner=self.translation_owner,
+                )
         stream_details = await query_tts_engine_with_language_fallback(
             engine,
             message,

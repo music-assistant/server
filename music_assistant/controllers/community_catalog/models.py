@@ -93,10 +93,10 @@ class IndexProvider(DataClassDictMixin):
 
 @dataclass
 class CatalogIndex(DataClassDictMixin):
-    """The index of the community catalog for one server line."""
+    """The index of the community catalog for one channel."""
 
     schema: int
-    server_line: str
+    channel: str
     generated: str
     providers: dict[str, IndexProvider] = field(default_factory=dict)
 

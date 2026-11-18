@@ -184,3 +184,70 @@ def test_menu_actions_breaking_the_rules_rejected() -> None:
         "playlist, podcast, podcast_episode, radio, track",
         "menu action 'twice': another menu action of this provider has the same id",
     ]
+
+
+def _mcp_tool(**overrides: object) -> dict[str, object]:
+    """Return a valid declared MCP tool, with fields changed."""
+    return {
+        "id": "play_station",
+        "description": "Play one of the user's saved stations of this service on a player.",
+        "scope": "queues.control",
+        "requires_player": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {"station": {"type": "string", "description": "The station."}},
+            "required": ["station"],
+        },
+        **overrides,
+    }
+
+
+def test_valid_mcp_tools_accepted() -> None:
+    """Declared MCP tools that follow the rules produce no issues, one without schema included."""
+    manifest = _valid_manifest()
+    without_schema = _mcp_tool(id="list_stations")
+    del without_schema["input_schema"]
+    manifest["mcp_tools"] = [_mcp_tool(), without_schema]
+    assert _validate(manifest, "demo") == []
+
+
+def test_mcp_tools_with_wrong_types_rejected() -> None:
+    """MCP tools of the wrong type are reported, as the server leaves them out."""
+    manifest = _valid_manifest()
+    manifest["mcp_tools"] = {"id": "play_station"}
+    assert _validate(manifest, "demo") == ["'mcp_tools' must be a list"]
+    manifest["mcp_tools"] = [_mcp_tool(description=None), _mcp_tool(input_schema="none")]
+    issues = _validate(manifest, "demo")
+    assert [issue.split(":")[0] for issue in issues] == ["MCP tool 0", "MCP tool 1"]
+
+
+def test_mcp_tools_breaking_the_rules_rejected() -> None:
+    """A built-in manifest whose MCP tools break the server's rules fails the check."""
+    manifest = _valid_manifest()
+    manifest["mcp_tools"] = [
+        _mcp_tool(scope="everything"),
+        _mcp_tool(
+            id="reserved",
+            input_schema={
+                "type": "object",
+                "properties": {"player": {"type": "string", "description": "A player."}},
+            },
+        ),
+        _mcp_tool(id="twice"),
+        _mcp_tool(id="twice"),
+    ]
+    assert _validate(manifest, "demo") == [
+        "MCP tool 'play_station': needs a scope that Music Assistant knows, such as 'library.read'",
+        "MCP tool 'reserved': input_schema property 'player' is added by the server",
+        "MCP tool 'twice': another MCP tool of this provider has the same id",
+    ]
+
+
+def test_mcp_tool_name_checked_with_the_folder_name() -> None:
+    """The tool name limit is checked with the provider folder, the domain it must have."""
+    folder = "d" * 40
+    manifest = {**_valid_manifest(), "domain": folder, "mcp_tools": [_mcp_tool(id="x" * 23)]}
+    assert _validate(manifest, folder) == [
+        f"MCP tool '{'x' * 23}': needs a shorter id: the tool name '{folder}__{'x' * 23}' has "
+        "more than 64 characters"
+    ]

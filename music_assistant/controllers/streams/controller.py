@@ -144,7 +144,7 @@ from music_assistant.models.music_provider import MusicProvider, ProviderStreamL
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Awaitable, Callable, Coroutine
 
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.player import PlayerMedia
@@ -376,6 +376,9 @@ class StreamsController(CoreController):
         # Per queue, the session and the items whose GET requests ended in it since the
         # player last asked for another item, which that next request checks
         self._ended_item_streams: dict[str, tuple[str, set[str]]] = {}
+        # Per player, the path of the flow stream it got last and the bytes sent of it, which a
+        # player that lost the connection asks to continue after
+        self._flow_bytes_sent: dict[str, tuple[str, int]] = {}
         # Number of queue streams (single item or flow) actively serving a player right now,
         # counted for both entry points: the http routes and the raw-PCM get_stream helper.
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
@@ -570,6 +573,30 @@ class StreamsController(CoreController):
         :param queue_id: Queue to check.
         """
         return queue_id in self._boundary_mix_owners
+
+    def flow_stream_blends_items(self, queue: PlayerQueue, start_queue_item: QueueItem) -> bool:
+        """
+        Return whether the flow stream of a queue blends the audio of its items.
+
+        :param queue: The queue that plays.
+        :param start_queue_item: The item the flow stream starts with.
+        """
+        crossfade_mode = (
+            self.get_crossfade_mode(queue)
+            if start_queue_item.media_type == MediaType.TRACK
+            else CrossfadeMode.DISABLED
+        )
+        # a declared tail overlap is mixed like a crossfade, and a queue a plugin holds
+        # in flow mode or has the boundaries mixed of is about to carry such items
+        return (
+            crossfade_mode != CrossfadeMode.DISABLED
+            or self.flow_mode_required(queue.queue_id)
+            or self.boundary_mix_required(queue.queue_id)
+            or (
+                start_queue_item.streamdetails is not None
+                and start_queue_item.streamdetails.tail_overlap is not None
+            )
+        )
 
     def mixes_item_boundaries(self, queue_id: str) -> bool:
         """
@@ -907,6 +934,26 @@ class StreamsController(CoreController):
         :param session_id: The playback session the requests must belong to.
         """
         return self._requested_item_ids(queue_id, session_id)
+
+    def restart_lost_stream(self, stream_url: str) -> bool:
+        """
+        Restart the queue of a stream a player gave up on, at the position that plays now.
+
+        For a player that reports a playback error on a stream it was playing. Only the flow
+        stream of the queue's current session restarts, within the queue's restart limit.
+
+        :param stream_url: The URL of the stream the player gave up on.
+        :return: Whether the queue restarts.
+        """
+        flow_url_prefix = f"{self.base_url}/flow/"
+        if not stream_url.startswith(flow_url_prefix):
+            return False
+        # <session_id>/<queue_id>/<queue_item_id>/<player_id>.<fmt>
+        url_parts = stream_url.removeprefix(flow_url_prefix).split("/")
+        if len(url_parts) != 4:
+            return False
+        session_id, queue_id = url_parts[:2]
+        return self.mass.player_queues.restart_lost_flow_stream(queue_id, session_id)
 
     @_log_not_found
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: C901, PLR0912, PLR0915
@@ -1552,30 +1599,31 @@ class StreamsController(CoreController):
                     headers={"Content-Range": f"bytes */{range_start}"}
                 )
             raise web.HTTPNotFound(reason=f"Flow stream already finished: {session_id}")
+        if (
+            request.method == "GET"
+            and request.headers.get("Range")
+            and (range_start := request.http_range.start)
+            and (flow_sent := self._flow_bytes_sent.get(player_id))
+            and flow_sent[0] == request.path
+            and range_start <= flow_sent[1]
+            and self.mass.player_queues.restart_lost_flow_stream(queue_id, session_id)
+        ):
+            # the player lost its connection and asks to continue after the bytes it holds,
+            # which a new stream can not do: the queue restarts it where it plays now
+            raise web.HTTPRequestRangeNotSatisfiable(
+                headers={"Content-Range": f"bytes */{range_start}"}
+            )
         start_queue_item_id = request.match_info["queue_item_id"]
         start_queue_item = self._get_flow_start_item(queue, start_queue_item_id)
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
 
         # select the PCM format for the flow stream, anchored on the first track
-        crossfade_mode = (
-            self.get_crossfade_mode(queue)
-            if start_queue_item.media_type == MediaType.TRACK
-            else CrossfadeMode.DISABLED
-        )
         mix_overlay = overlay_mixed_in(queue, start_queue_item, flow_mode=True)
         flow_pcm_format = await self.audio.select_flow_pcm_format(
             player,
             start_streamdetails=start_queue_item.streamdetails,
-            # a declared tail overlap is mixed like a crossfade, and a queue a plugin holds
-            # in flow mode or has the boundaries mixed of is about to carry such items
-            crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED
-            or self.flow_mode_required(queue_id)
-            or self.boundary_mix_required(queue_id)
-            or (
-                start_queue_item.streamdetails is not None
-                and start_queue_item.streamdetails.tail_overlap is not None
-            ),
+            crossfade_enabled=self.flow_stream_blends_items(queue, start_queue_item),
             overlay_active=mix_overlay,
         )
 
@@ -1679,6 +1727,15 @@ class StreamsController(CoreController):
             # with ICY framing the write loop counts bytes towards the metadata interval
             chunk_size=ICY_WRITE_SIZE if enable_icy else None,
         )
+        bytes_sent = 0
+
+        async def write(data: bytes) -> None:
+            nonlocal bytes_sent
+            # counted before the write, so a player never holds more than recorded
+            bytes_sent += len(data)
+            self._flow_bytes_sent[player_id] = (request.path, bytes_sent)
+            await resp.write(data)
+
         client_disconnected = False
         # same registry as the single-item route: a forced-flow player (overlay)
         # seeks through the same session rotation and its stale response must be
@@ -1699,7 +1756,7 @@ class StreamsController(CoreController):
                 async for chunk in audio_bytes:
                     try:
                         if not enable_icy:
-                            await resp.write(chunk)
+                            await write(chunk)
                             continue
                         pending = chunk
                         while pending:
@@ -1707,19 +1764,30 @@ class StreamsController(CoreController):
                                 pending[:icy_bytes_until_meta],
                                 pending[icy_bytes_until_meta:],
                             )
-                            await resp.write(head)
+                            await write(head)
                             icy_bytes_until_meta -= len(head)
                             if icy_bytes_until_meta == 0:
-                                await resp.write(
+                                await write(
                                     _icy_metadata_block(
                                         self.audio_analysis, queue, full=icy_preference == "full"
                                     )
                                 )
                                 icy_bytes_until_meta = icy_meta_interval
-                    except BrokenPipeError, ConnectionResetError, ConnectionError:
+                    except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
                         # a superseded response is aborted under us and this is
                         # its normal end
                         client_disconnected = True
+                        if queue_data.session_id == session_id and not (
+                            player.player and player.player.stop_called
+                        ):
+                            self.logger.info(
+                                "Player %s disconnected from the flow stream of %s - "
+                                "error: %s, sent %d bytes",
+                                player.display_name,
+                                queue.display_name,
+                                err.__class__.__name__,
+                                bytes_sent,
+                            )
                         break
         except AbortFlowStream:
             await audio_bytes.aclose()
@@ -1834,6 +1902,7 @@ class StreamsController(CoreController):
         pcm_format: AudioFormat,
         player_id: str | None = None,
         force_flow_mode: bool = False,
+        flow_restart: Callable[[StreamDetails], Awaitable[bool]] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get a stream of the given media as raw PCM audio.
@@ -1847,6 +1916,8 @@ class StreamsController(CoreController):
             if flow mode should be used based on the player's capabilities.
         :param force_flow_mode: Force flow mode regardless of player capabilities.
             Used for multi-client streaming scenarios that require continuous streams.
+        :param flow_restart: For a consumer that picks the rate of its flow stream itself,
+            see ``get_queue_flow_stream``.
         """
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
@@ -1917,6 +1988,7 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,
                     session_id=queue_session_id,
                     protocol_player=protocol_player,
+                    flow_restart=flow_restart,
                 )
                 if mix_overlay:
                     flow_stream = self.audio.get_overlay_mixed_stream(

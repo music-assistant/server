@@ -199,7 +199,12 @@ class _PlayerControllerBase(CoreController):
         if player := self._players.get(self.resolve_player_id(player_id)):
             if (not player.available or not player.enabled) and raise_unavailable:
                 msg = f"Player {player_id} is not available"
-                raise PlayerUnavailableError(msg)
+                raise PlayerUnavailableError(
+                    msg,
+                    translation_key="player_not_available",
+                    translation_owner=self.translation_owner,
+                    translation_args=[player.name],
+                )
             return player
         if raise_unavailable:
             msg = f"Player {player_id} is not available"
@@ -570,7 +575,12 @@ class _PlayerControllerBase(CoreController):
         assert player is not None  # for type checking
         if player.offline_by_power_control:
             msg = f"Player {player.name} is switched off"
-            raise PlayerUnavailableError(msg)
+            raise PlayerUnavailableError(
+                msg,
+                translation_key="player_switched_off",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
         return player
 
     def _get_player_with_redirect(self, player_id: str) -> Player:
@@ -819,6 +829,9 @@ class _PlayerControllerBase(CoreController):
         async def _power_on_members(
             self, owner: Player, member_ids: Iterable[str] | None = None
         ) -> set[str]: ...
+        def _members_to_power_on(
+            self, owner: Player, member_ids: Iterable[str] | None = None
+        ) -> list[Player]: ...
         def _cancel_power_on(self, player: Player) -> None: ...
         def _cancel_member_power_ons(self, *players: Player) -> None: ...
         # volume

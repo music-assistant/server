@@ -353,6 +353,39 @@ async def test_detach_while_the_address_of_a_device_is_resolved_stops_the_attach
     assert _stored(scenario) == ([], [])
 
 
+@pytest.mark.parametrize(
+    ("reported_type", "resolved"),
+    [
+        (PlayerType.PLAYER, True),
+        (PlayerType.MULTI_CHANNEL, True),
+        (PlayerType.GROUP, False),
+    ],
+)
+async def test_the_address_of_a_set_of_speakers_is_resolved_like_that_of_a_speaker(
+    scenario: Scenario, reported_type: PlayerType, resolved: bool
+) -> None:
+    """
+    A set of speakers is a device with an address of its own, which is resolved at the attach.
+
+    A group player stands for no device of its own: its address is not resolved.
+    """
+    sonos = await scenario.add_provider("sonos")
+    device = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, type=reported_type)
+    players = scenario.mass.players
+    seen: list[str] = []
+    resolve = players._resolve_mac_addresses
+
+    async def _resolve(protocol: Any) -> None:
+        seen.append(protocol.protocol_id)
+        await resolve(protocol)
+
+    players._resolve_mac_addresses = _resolve  # type: ignore[method-assign]
+    await scenario.register(device)
+    await scenario.idle()
+
+    assert seen == (["RINCON_KITCHEN"] if resolved else [])
+
+
 async def test_detach_of_another_protocol_does_not_stop_an_attach(scenario: Scenario) -> None:
     """An attach only stops for a detach of its own protocol."""
     sonos = await scenario.add_provider("sonos")
@@ -1194,8 +1227,10 @@ async def test_remove_unavailable_is_refused_while_the_providers_find_their_devi
         await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
         await scenario.reload_provider(sonos)
 
-    with pytest.raises(ActionUnavailable):
+    with pytest.raises(ActionUnavailable) as error:
         await scenario.mass.players.remove_unavailable()
+    assert error.value.translation_key == "players_still_being_found"
+    assert error.value.translation_args == [REMOVE_UNAVAILABLE_GRACE]
     assert _stored(scenario) == ([player_id], ["RINCON_KITCHEN"])
 
     await scenario.advance(REMOVE_UNAVAILABLE_GRACE)

@@ -699,7 +699,12 @@ class AudioSourceMixin(_PlayerControllerBase):
         # a queue can be named by a legacy id of its player
         if source_id is not None and self.resolve_player_id(source_id) != active_source_id:
             msg = f"The source this was meant for is no longer playing on {player.name}."
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="source_no_longer_playing",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
         return active_source_id
 
     async def _forward_to_external_source(
@@ -743,7 +748,12 @@ class AudioSourceMixin(_PlayerControllerBase):
                 f"The active source ({audio_source.name}) on player "
                 f"{player.name} does not support this action"
             )
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="source_control_unsupported",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
         try:
             await provider.on_source_control(audio_source.item_id, action, value)
         except NotImplementedError as err:
@@ -753,7 +763,12 @@ class AudioSourceMixin(_PlayerControllerBase):
                 f"The active source ({audio_source.name}) on player "
                 f"{player.name} can not be controlled"
             )
-            raise PlayerCommandFailed(msg) from err
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="source_control_unsupported",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            ) from err
         return True
 
     async def _release_audio_source(self, player_id: str) -> None:
@@ -970,11 +985,19 @@ class AudioSourceMixin(_PlayerControllerBase):
         # basic check if player supports source selection
         if PlayerFeature.SELECT_SOURCE not in player.supported_features:
             raise UnsupportedFeaturedException(
-                f"Player {player.name} does not support source selection"
+                f"Player {player.name} does not support source selection",
+                translation_key="player_no_sources",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
             )
         # basic check if source is valid for player
         if not any(x for x in player.source_list if x.id == source):
-            raise PlayerCommandFailed(f"{source} is an invalid source for player {player.name}")
+            raise PlayerCommandFailed(
+                f"{source} is an invalid source for player {player.name}",
+                translation_key="source_not_found",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name, source],
+            )
         # the selected source plays, not the queue that auto play would resume
         await self._power_on_for_playback(player, skip_auto_play=True)
         # forward to player

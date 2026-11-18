@@ -361,7 +361,10 @@ def use_api_command_registry(mass: MagicMock, *command_owners: object) -> None:
                 continue
             if hasattr(handler := getattr(owner, attr_name), "api_cmd"):
                 mass.register_api_command(
-                    handler.api_cmd, handler, required_scope=handler.api_required_scope
+                    handler.api_cmd,
+                    handler,
+                    required_scope=handler.api_required_scope,
+                    allow_impersonation=handler.api_allow_impersonation,
                 )
 
 
@@ -794,6 +797,7 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "player_id": player_id,
         "provider": "test_prov",
         "player_type": PlayerType.PLAYER,
+        "channel_layout": None,
         "now": 1000.0,
         "previous_state": make_player_state(player_id),
         "enabled": True,
