@@ -47,6 +47,7 @@ from music_assistant_models.enums import (
     PlayerType,
     ProviderFeature,
     ProviderType,
+    SpeakerChannel,
     StreamType,
     VolumeNormalizationMode,
 )
@@ -271,6 +272,12 @@ _EXTINF_DURATION = re.compile(r"^#EXTINF:\s*(\d+(?:\.\d+)?)", re.MULTILINE)
 RADIO_MAX_FAILED_RESTARTS = 3
 RADIO_RESTART_MIN_PLAYTIME = 60
 RADIO_RESTART_DELAY = 1.0
+
+# The output channels that play the channel of a speaker of a multi-channel player.
+SPEAKER_CHANNEL_OUTPUT = {
+    SpeakerChannel.FRONT_LEFT: "left",
+    SpeakerChannel.FRONT_RIGHT: "right",
+}
 
 
 @dataclass
@@ -1379,6 +1386,7 @@ class StreamsAudio:
         queue_id: str | None = None,
         session_id: str | None = None,
         queue_item_id: str | None = None,
+        channel: SpeakerChannel | None = None,
     ) -> AudioOutputPlan:
         """
         Return executable filters and matching output details for a player.
@@ -1393,6 +1401,8 @@ class StreamsAudio:
         :param queue_id: Explicit queue identifier for the processing snapshot.
         :param session_id: Explicit queue session identifier for the processing snapshot.
         :param queue_item_id: Queue item for a single-item output path.
+        :param channel: The channel a speaker of the multi-channel player plays, in place
+            of the configured output channels.
         """
         filter_params: list[str | ComplexFilter] = []
         player = self.mass.players.get_output_protocol(protocol_id)
@@ -1445,7 +1455,11 @@ class StreamsAudio:
             if dsp.output_gain != 0:
                 filter_params.append(f"volume={dsp.output_gain}dB")
 
-        channel_value = self._get_output_channels(player, protocol_id)
+        channel_value = (
+            SPEAKER_CHANNEL_OUTPUT.get(channel, "stereo")
+            if channel is not None
+            else self._get_output_channels(player, protocol_id)
+        )
         source_channel = None
         channel_mix = ""
         # a single channel source is already the downmix and holds no FL/FR to select
@@ -1480,7 +1494,8 @@ class StreamsAudio:
                 output_gain=dsp.output_gain if dsp.enabled else 0.0,
                 preset_id=dsp.preset_id,
             ),
-            source_channel=source_channel,
+            # together the speakers of a multi-channel player play every channel
+            source_channel=source_channel if channel is None else None,
             output_format=output_format,
         )
         output_plan = AudioOutputPlan(
