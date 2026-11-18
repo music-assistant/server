@@ -103,6 +103,10 @@ class SqueezelitePlayer(PlayerProtocol):
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.MULTI_DEVICE_DSP,
             PlayerFeature.VOLUME_SET,
+            # `volume_mute()` exists below and keeps the player's volume_muted in sync, but the feature
+            # was never advertised, so the API and the Home Assistant integration both refused it
+            # ("does not support action") and a Squeezebox's own Stumm was unreachable.
+            PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,

@@ -526,6 +526,19 @@ def _connected_player(device_model: str = "SqueezeLite") -> tuple[SqueezelitePla
     return SqueezelitePlayer(provider, client.player_id, client), mass
 
 
+@pytest.mark.parametrize("device_model", ["SqueezeLite", "Squeezebox Radio"])
+async def test_the_protocol_advertises_the_mute_it_implements(device_model: str) -> None:
+    """Mute is in the feature set, because the provider implements it and a host cannot call it otherwise."""
+    player, _mass = _connected_player(device_model)
+    player.client.mute = AsyncMock()
+
+    assert PlayerFeature.VOLUME_MUTE in player.supported_features
+
+    await player.volume_mute(muted=True)
+
+    player.client.mute.assert_awaited_once_with(True)
+
+
 @pytest.mark.parametrize("device_model", ["SqueezeLite", "WiiM Player"])
 def test_the_protocol_groups_no_players_itself(device_model: str) -> None:
     """A group of squeezelite players is one of their Sendspin outputs, never of the protocol."""
