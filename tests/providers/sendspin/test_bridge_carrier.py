@@ -34,6 +34,7 @@ from music_assistant.providers.sendspin.constants import (
     CONF_SENDSPIN_CAST_OPT_IN,
     CONF_SENDSPIN_STATIC_DELAY,
 )
+from music_assistant.providers.sendspin.provider import SendspinProvider
 
 from .bridge_harness import (
     AIRPLAY_CLIENT,
@@ -776,6 +777,75 @@ async def test_a_refused_bridge_that_left_is_not_woken_by_the_other_bridge_going
 
     evaluate.assert_not_called()
     assert device.timeline == [("registered", "airplay"), ("stopped", "airplay")]
+
+
+async def test_two_players_with_an_output_of_the_device_each_take_turns_with_it() -> None:
+    """Two players that each have an output of one device stored use it one at a time."""
+    device = _device()
+    device.records()[SQUEEZELITE_ID]["player_id"] = OTHER_PLAYER_ID
+    device.store_output(AIRPLAY_CLIENT, AIRPLAY_ID)
+    device.store_output(SQUEEZELITE_CLIENT, SQUEEZELITE_ID)
+
+    await device.attach(device.airplay)
+    await device.attach(device.squeezelite, device.other_player)
+
+    assert device.timeline == [("registered", "airplay")]
+    assert set(device.outputs()) == {AIRPLAY_CLIENT, SQUEEZELITE_CLIENT}, "an output was lost"
+
+    await device.detach(device.airplay)
+    await asyncio.wait_for(
+        _until(lambda: device.manager_of(device.squeezelite).get_bridge(SQUEEZELITE_ID)),
+        timeout=1,
+    )
+
+    assert device.timeline[-1] == ("registered", "squeezelite")
+    assert set(device.outputs()) == {AIRPLAY_CLIENT, SQUEEZELITE_CLIENT}
+
+
+async def test_a_bridge_that_waits_again_after_each_wake_keeps_one_detach_hook() -> None:
+    """Waiting again after the other player reconnects adds no hook to the protocol."""
+    device = _device()
+    await device.attach(device.airplay)
+    await device.attach(device.squeezelite, device.other_player)
+    hooks = len(device.squeezelite._on_detach_callbacks)
+
+    for _ in range(5):
+        await device.detach(device.airplay)
+        await device.attach(device.airplay)
+
+    assert len(device.squeezelite._on_detach_callbacks) == hooks
+
+
+async def test_the_waits_of_bridges_go_with_the_sendspin_provider() -> None:
+    """An unloaded Sendspin provider keeps no waits, and no hook keeps the provider."""
+    device = _device()
+    device.store_output(AIRPLAY_CLIENT, AIRPLAY_ID)
+    await device.attach(device.squeezelite, device.other_player)
+    sendspin = device.providers["sendspin"]
+    assert sendspin._bridge_waiters
+    # what the unload clears besides the waits, as a started provider has it
+    for name in (
+        "_pin_sessions",
+        "_management_sessions",
+        "_pairing_config_snapshots",
+        "_client_event_task_counts",
+        "_client_event_versions",
+        "_virtual_players",
+    ):
+        setattr(sendspin, name, {})
+    sendspin._pending_pairing_evictions = set()
+    sendspin._running_pairing_evictions = set()
+    sendspin._server_start_failed = False
+    sendspin.unregister_cbs = []
+
+    await SendspinProvider.unload(sendspin)
+
+    assert sendspin._bridge_waiters == {}
+    assert not any(
+        cell.cell_contents is sendspin
+        for callback in device.squeezelite._on_detach_callbacks
+        for cell in getattr(callback, "__closure__", None) or ()
+    ), "a hook of the protocol keeps the unloaded provider"
 
 
 async def test_a_bridge_adopts_an_output_of_its_id_that_belongs_to_no_player() -> None:

@@ -699,14 +699,15 @@ class SendspinProvider(PlayerProvider):
 
         :param client_id: The bridge client id.
         :param protocol_id: The id of the protocol that waits for it; a later wait of the same
-            protocol replaces this one.
+            protocol leaves this one in place.
         :param callback: What to call.
         :return: Whether the protocol did not wait for the client yet.
         """
         waiters = self._bridge_waiters.setdefault(client_id, {})
-        is_new = protocol_id not in waiters
+        if protocol_id in waiters:
+            return False
         waiters[protocol_id] = callback
-        return is_new
+        return True
 
     def stop_waiting_for_bridge_client(self, client_id: str, protocol_id: str) -> None:
         """
@@ -1331,6 +1332,7 @@ class SendspinProvider(PlayerProvider):
         self._client_event_task_counts.clear()
         self._client_event_versions.clear()
         self._virtual_players.clear()
+        self._bridge_waiters.clear()
 
     def _set_aiosendspin_log_level(self) -> None:
         """Keep aiosendspin's (very chatty) logging quiet unless verbose logging is enabled."""

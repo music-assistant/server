@@ -529,8 +529,9 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         """
         Return the form of a client id that another player has, if one has it.
 
-        That is the id of the stored Sendspin output of another player, or of the client a
-        bridge of another player holds, in either form of the MAC address of the device.
+        That is the id of the client a bridge of another player holds, in either form of
+        the MAC address of the device, and for a player without a stored Sendspin output of
+        its own also the id of the stored Sendspin output of another player.
 
         :param protocol: The protocol to bridge.
         :param client_id: The client id its bridge would register under.
@@ -542,11 +543,15 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             *self.mass.config.get_protocol_ids_of_player(player.player_id),
         }
         sendspin_provider = self.sendspin_provider
+        # of two players that each have an output of the device stored, the one whose
+        # bridge registers first has it, as long as that bridge holds it
+        has_own_output = get_bridge_output_id(self.mass, player.player_id) is not None
         for variant in bridge_client_id_variants(client_id):
             record = self.mass.config.get_protocol_record(variant)
             owner_id = record.get("player_id") if isinstance(record, dict) else None
             if (
-                isinstance(owner_id, str)
+                not has_own_output
+                and isinstance(owner_id, str)
                 and owner_id != player.player_id
                 and self.mass.config.get(f"{CONF_PLAYERS}/{owner_id}")
             ):
@@ -583,14 +588,18 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             return
         protocol_id = protocol.protocol_id
 
+        def _stop_waiting() -> None:
+            if current_provider := self.sendspin_provider:
+                current_provider.stop_waiting_for_bridge_client(client_id, protocol_id)
+
         def _on_release() -> None:
+            with suppress(ValueError):
+                protocol._on_detach_callbacks.remove(_stop_waiting)
             if self.provider.get_protocol(protocol_id) is protocol:
                 self.mass.create_task(self.evaluate_bridge(protocol))
 
         if sendspin_provider.wait_for_bridge_client(client_id, protocol_id, _on_release):
-            protocol._on_detach_callbacks.append(
-                lambda: sendspin_provider.stop_waiting_for_bridge_client(client_id, protocol_id)
-            )
+            protocol._on_detach_callbacks.append(_stop_waiting)
 
     def _is_only_connection(self, protocol: PlayerProtocol) -> bool:
         """
