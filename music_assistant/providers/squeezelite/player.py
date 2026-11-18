@@ -13,6 +13,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     IdentifierType,
+    ImageType,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -20,6 +21,7 @@ from music_assistant_models.enums import (
     RepeatMode,
 )
 from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.media_items import MediaItemImage
 
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
@@ -37,6 +39,7 @@ from .constants import (
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
     CONF_STORED_VOLUME,
+    PLAYER_ARTWORK_SIZE,
     REPEATMODE_MAP,
     STATE_MAP,
 )
@@ -44,6 +47,8 @@ from .constants import (
 if TYPE_CHECKING:
     from aioslimproto.client import SlimClient
     from aioslimproto.models import MediaMetadata
+    from music_assistant_models.queue_item import QueueItem
+    from music_assistant_models.streamdetails import StreamMetadata
 
     from .provider import SqueezelitePlayerProvider
     from .sendspin_bridge import SendspinSqueezeliteBridge
@@ -285,6 +290,7 @@ class SqueezelitePlayer(PlayerProtocol):
 
     def update_attributes(self) -> None:
         """Update player attributes from slim player."""
+        self._sync_live_stream_metadata()
         # Update player state from slim player
         self._attr_available = self.client.connected
         self._attr_name = self.client.name
@@ -327,6 +333,71 @@ class SqueezelitePlayer(PlayerProtocol):
         if self._plays_for_bridge:
             # the stream of the Sendspin bridge is no media of this protocol
             self._attr_current_media = None
+
+    def _sync_live_stream_metadata(self) -> None:
+        """
+        Hand the current title, artist and cover of a live stream to the player.
+
+        A radio keeps one media item in the player while what that item carries changes all the
+        time, so the media handed over when the stream started is what the status answers keep
+        announcing and what the player keeps on its screen. The queue knows what plays right now
+        (the stream reader stores it as the ICY blocks arrive), so it is copied into the client's
+        media here — the one place both the status document and the player's display read.
+        """
+        if (media := self.client.current_media) is None:
+            return
+        player_id = self.player.player_id if self.player else self.protocol_id
+        queue = self.mass.player_queues.get_active_queue(player_id)
+        item = queue.current_item if queue else None
+        if item is None or item.streamdetails is None:
+            return
+        if media.metadata.get("queue_item_id") != item.queue_item_id:
+            # the player holds the item that will play next (gapless buffering), not this one
+            return
+        live = self.mass.streams.audio_analysis.shown_stream_metadata(item.streamdetails)
+        if live is None or not live.title:
+            return
+        metadata = dict(media.metadata)
+        metadata["title"] = live.title
+        # written even when empty: a station that sends no ICY titles would otherwise keep the
+        # artist of the one heard before it
+        metadata["artist"] = live.artist or ""
+        if cover := self._player_artwork_url(live, item):
+            metadata["image_url"] = cover
+        if metadata == media.metadata:
+            return
+        self.mass.create_task(self.client.update_metadata(cast("MediaMetadata", metadata)))
+
+    def _player_artwork_url(self, live: StreamMetadata, item: QueueItem) -> str | None:
+        """
+        Return the cover of what a live stream plays, as a URL the player can fetch itself.
+
+        A SqueezePlay fetches artwork over plain http only: handed an https URL it requests
+        nothing at all (measured on a SqueezeBox Radio, firmware 7.7.3), so the picture is served
+        by this server instead of pointing at the origin.
+
+        :param live: What the stream plays right now.
+        :param item: The queue item that streams it.
+        """
+        path = (live.image_url or "").strip()
+        image: MediaItemImage | None = item.image
+        if path:
+            # the stream's own artwork is just a URL, with no provider behind it that could
+            # resolve a local path: any identifier will do, it only namespaces the image cache
+            image = MediaItemImage(
+                type=ImageType.THUMB,
+                path=path,
+                provider=self.provider.instance_id,
+                remotely_accessible=True,
+            )
+        if image is None:
+            return None
+        return self.mass.metadata.get_image_url(
+            image,
+            size=PLAYER_ARTWORK_SIZE,
+            image_format="jpeg",
+            prefer_stream_server=True,
+        )
 
     async def _handle_play_url_for_slimplayer(
         self,
