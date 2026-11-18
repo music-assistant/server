@@ -19,7 +19,7 @@ from auntie_sounds.models import (
 from auntie_sounds.models import PodcastEpisode as SoundsPodcastEpisode
 from auntie_sounds.schedule import catch_up_dates, schedule_dates
 from music_assistant_models.enums import ImageType
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
@@ -108,14 +108,14 @@ class BrowseManager:
             return await self._browse_collections(path_parts)
         if dispatch_menu == "playlists":
             if len(path_parts) < 3:
-                raise KeyError("Invalid subpath")
+                raise MediaNotFoundError("Invalid subpath")
             return await self._get_playlist(path_parts[2])
         if (
             dispatch_menu != ""
             and dispatch_menu not in ValidMenuIDs
             and Constants.LATEST_NEWS_PLAYLIST_SUFFIX not in dispatch_menu
         ):
-            raise KeyError("Invalid subpath")
+            raise MediaNotFoundError("Invalid subpath")
         return await self._browse_menu(path_parts)
 
     async def refresh_menu_from_api(self) -> None:
