@@ -313,8 +313,6 @@ class BridgeSession:
         self.started = False
         # no more audio goes to the player: its stream ends
         self.ended = False
-        # the client of the bridge moved out of the group of this stream
-        self.left_group = False
         # only silence goes to the player: where it is on its timeline is not corrected yet
         self.aligning = True
         self.start_error_taken = False
@@ -849,11 +847,9 @@ class SendspinSqueezeliteBridge:
             # nothing about the player there. A return of the bridge itself is noted once
             # the client is in its group.
             self._rejoined = False
-            # what plays or shows on the player is of the group it was in
-            if (session := self._session) is not None:
-                session.left_group = True
-            else:
-                self._clear_stopped_track()
+            # Sendspin ends the stream of a client before it moves it: what is left on the
+            # player is of the group it was in
+            self._clear_stopped_track()
 
     def _on_role_stream_start(self) -> None:
         """Start a session for a stream that begins without a stream start request."""
@@ -897,9 +893,8 @@ class SendspinSqueezeliteBridge:
             # nothing is left playing, or a new stream took the bridge over already
             return
         self.logger.debug("Explicit stop for %s", self.protocol.display_name)
-        # the player keeps the stopped track of a group it stays in: its play key does
-        # nothing on an empty playlist
-        self._close_session(session, stop_player=True, keep_media=not session.left_group)
+        # the player keeps the stopped track: its play key does nothing on an empty playlist
+        self._close_session(session, stop_player=True, keep_media=True)
 
     def _on_volume_change(self, volume: int) -> None:
         """Forward a volume change to the squeezelite player."""

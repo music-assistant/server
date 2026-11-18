@@ -4164,6 +4164,10 @@ async def test_nothing_is_left_on_the_player_when_its_stream_is_over(rig: _Rig, 
     if end == "taken back":
         assert rig.bridge.stop_streaming()
     elif end == "taken out of its group":
+        # the player lists the stream it plays
+        rig.client.current_media.url = (
+            f"{BASE_URL}{BRIDGE_STREAM_PATH}?player_id={PLAYER_ID}&sid={session.session_id}"
+        )
         # as the group removes a member: its stream ends, it moves on, then it is stopped
         rig.bridge._on_stream_end()
         client.moved_to(MagicMock(clients=[client], has_active_stream=False))
