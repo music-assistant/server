@@ -625,6 +625,81 @@ async def test_get_media_stream_corrects_a_declared_length_the_source_never_had(
 
 
 @pytest.mark.asyncio
+async def test_get_media_stream_corrects_a_declared_length_after_ffmpeg_seeked(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """Resuming an item that is shorter than declared still corrects its length."""
+    streamdetails = _seekable_streamdetails()
+    # unlike an MP3, a FLAC file is sought exactly
+    streamdetails.audio_format = AudioFormat(content_type=ContentType.FLAC)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 180)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=60))
+
+    assert patch_two_minute_ffmpeg.last_instance is not None
+    assert "-ss" in (patch_two_minute_ffmpeg.last_instance.extra_input_args or [])
+    # 60 s skipped plus the two minutes ffmpeg delivered is all the 180 s source has
+    assert streamdetails.duration == 180
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_ffmpeg_seeked_into_a_source_that_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """A resumed source that stops before the end it announced keeps the declared length."""
+    streamdetails = _seekable_streamdetails()
+    # unlike an MP3, a FLAC file is sought exactly
+    streamdetails.audio_format = AudioFormat(content_type=ContentType.FLAC)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3600)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=60))
+
+    assert patch_two_minute_ffmpeg.last_instance is not None
+    extra_input_args = patch_two_minute_ffmpeg.last_instance.extra_input_args or []
+    assert "-ss" in extra_input_args
+    assert "+fastseek" not in extra_input_args
+    assert streamdetails.duration == 3600
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_ffmpeg_fast_seeks_an_mp3_by_itself(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+) -> None:
+    """Ffmpeg fast-seeks a remote MP3 whether or not the probe found hints for it."""
+    streamdetails = _seekable_streamdetails()
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 180)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=3500))
+
+    assert streamdetails.duration == 3600
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_duration_when_the_seek_only_lands_approximately(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+    mp3_probe: _FakeProbe,
+) -> None:
+    """A fast seek may land anywhere, so what follows it says nothing about the length."""
+    streamdetails = _seekable_streamdetails()
+    mp3_probe.result = Mp3SeekHints(True, 0)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 180)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=3500))
+
+    assert patch_two_minute_ffmpeg.last_instance is not None
+    assert "+fastseek" in (patch_two_minute_ffmpeg.last_instance.extra_input_args or [])
+    assert streamdetails.duration == 3600
+
+
+@pytest.mark.asyncio
 async def test_get_media_stream_stores_measured_duration_that_ends_a_little_short(
     monkeypatch: pytest.MonkeyPatch,
     patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],

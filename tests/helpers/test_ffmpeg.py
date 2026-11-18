@@ -37,6 +37,7 @@ from music_assistant.helpers.ffmpeg import (
     parse_ffmpeg_duration,
     parse_ffmpeg_stream_info,
     probe_audio_stream,
+    seeks_by_byte_offset,
 )
 from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.music_provider import ProviderStreamLimitError
@@ -158,6 +159,32 @@ def test_get_ffmpeg_args_no_fastseek_outside_http_mp3_seek(
     )
 
     assert _input_fflags(args) == []
+
+
+@pytest.mark.parametrize(
+    ("content_type", "input_path", "extra_input_args", "by_byte_offset"),
+    [
+        (ContentType.MP3, "https://example.invalid/book.mp3", ["-ss", "30"], True),
+        (ContentType.MPEG, "https://example.invalid/book.mp3", ["-ss", "30"], True),
+        # fastseek asked for by the caller or the MP3 probe, whatever the format says
+        (ContentType.UNKNOWN, "-", ["-fflags", "+fastseek", "-ss", "30"], True),
+        (ContentType.MP3, "https://example.invalid/book.mp3", [], False),
+        (ContentType.FLAC, "https://example.invalid/track.flac", ["-ss", "30"], False),
+        (ContentType.MP3, "/media/book.mp3", ["-ss", "30"], False),
+        (ContentType.MP3, "https://example.invalid/book.mp3", ["-f", "mp3", "-ss", "30"], False),
+    ],
+)
+def test_seeks_by_byte_offset(
+    content_type: ContentType,
+    input_path: str,
+    extra_input_args: list[str],
+    by_byte_offset: bool,
+) -> None:
+    """Only a seek that ffmpeg takes by byte offset lands off the requested position."""
+    assert (
+        seeks_by_byte_offset(input_path, AudioFormat(content_type=content_type), extra_input_args)
+        is by_byte_offset
+    )
 
 
 def _split_at_input(args: list[str]) -> tuple[list[str], list[str]]:
