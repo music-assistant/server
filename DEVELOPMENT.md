@@ -281,7 +281,7 @@ The manifest file contains metadata and configuration about a provider. The supp
 | codeowners  | List of Github names of the codeowners of the provider  | array[string]  |
 | support_url | Optional https URL where the maintainer takes bug reports and questions, when not the project's support repository. | string |
 | stage | The development/stability stage: `alpha`, `beta`, `stable`, `experimental`, `unmaintained` or `deprecated`. Defaults to `stable`. | string |
-| requirements | Python packages the provider needs, in standard pip / [PEP 508](https://peps.python.org/pep-0508/) requirement syntax, e.g. `package==version`, a version range, an extras marker, or a `git+https://…` direct reference | array[string] |
+| requirements | Python packages the provider needs, in standard pip / [PEP 508](https://peps.python.org/pep-0508/) requirement syntax, e.g. `package==version`, a version range, an extras marker, or a `git+https://…` direct reference. A provider in the community catalog may only use package names with optional extras and version specifiers (no URLs, environment markers or options), available as wheels for Linux amd64 and arm64. | array[string] |
 | documentation | URL to the provider's documentation page. | string |
 | multi_instance | Whether multiple instances of the provider are supported, e.g. multiple user accounts for Spotify | boolean |
 | builtin | Whether this is a system/builtin provider that is loaded by default | boolean |
@@ -382,7 +382,7 @@ When a user chooses the entry, the app calls the API command `providers/open_pag
 The demo plugin (`_demo_plugin_provider`) declares a one-line page.
 
 ## 🤝 Contributing a provider
-**Consider the community catalog first.** Instead of adding a provider to the server itself, which comes with the expectations below and a longer wait for reviews, you can publish it in the [community catalog](https://github.com/music-assistant/.github/blob/main/COMMUNITY_CATALOG_RULES.md), especially when it covers a limited use case or a small group of users. There you keep it in your own repository and release whenever you want, and users install it from the Marketplace in Music Assistant. The [provider template](https://github.com/music-assistant/community-provider-template) gets you started.
+**Consider the community catalog first.** Instead of adding a provider to the server itself, which comes with the expectations below and a longer wait for reviews, you can publish it in the [community catalog](https://github.com/music-assistant/.github/blob/main/COMMUNITY_CATALOG_RULES.md), especially when it covers a limited use case or a small group of users. There you keep it in your own repository and release whenever you want, and an administrator installs it from the Marketplace in Music Assistant. The [provider template](https://github.com/music-assistant/community-provider-template) gets you started.
 
 A provider that ships with Music Assistant is installed for every user and supported by the project. A new one therefore asks for more than working code:
 

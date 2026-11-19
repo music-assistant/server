@@ -83,19 +83,19 @@ _REASONS: Final[dict[Verdict, str]] = {
         "something else from the community catalog, so it does not run."
     ),
     Verdict.REINSTALL_FAILED: (
-        "The files of this were changed on your server and could not be downloaded again "
-        "({0}), so it does not run. Restart Music Assistant to try again."
+        "Its files were changed on your server and could not be downloaded again ({0}), "
+        "so it does not run. Restart Music Assistant to try again."
     ),
     Verdict.WENT_BACK: (
-        "Version {0} of this failed to load, and the version before it is no longer "
-        "available, so it does not run."
+        "Version {0} failed to load, and the version before it is no longer available, "
+        "so it does not run."
     ),
     Verdict.RESTART_TO_GO_BACK: (
-        "Version {0} of this failed to load. Restart Music Assistant to finish going back "
-        "to the version before it."
+        "Version {0} failed to load. Restart Music Assistant to finish going back to the "
+        "version before it."
     ),
     Verdict.RESTART_TO_UPDATE: (
-        "Version {0} of this is ready. Restart Music Assistant to finish the update."
+        "Version {0} is ready. Restart Music Assistant to finish the update."
     ),
     Verdict.MOVED: (
         "This moved to the community catalog. Music Assistant installs it from there by itself "
