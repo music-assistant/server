@@ -37,7 +37,11 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
 
     from music_assistant.helpers.json import SerializableType
-    from music_assistant.providers.music_quiz.models import MusicQuizConfig, MusicQuizGame
+    from music_assistant.providers.music_quiz.models import (
+        MusicQuizConfig,
+        MusicQuizGame,
+        TitleRevealTypoTolerance,
+    )
 
 SYSTEM_RANDOM = secrets.SystemRandom()
 
@@ -121,16 +125,15 @@ class TitleRevealQuizType(QuizType):
             if self.config.artist_bonus_mode == TimelineBonusMode.FREE_TEXT
             else []
         )
+        accepted_answers = _accepted_answers(track, solution)
         return MusicQuizRound(
             round_index=round_index,
             track_uri=track.uri,
             answer_label=build_answer_label(artist_name, solution),
             answer_state=HintTextRoundState(
                 solution=solution,
-                accepted_answers=_accepted_answers(track, solution),
-                allowed_typos=allowed_typos(
-                    len(normalize_guess(solution)), self.config.typo_tolerance
-                ),
+                accepted_answers=accepted_answers,
+                allowed_typos=_typo_budget(accepted_answers, self.config.typo_tolerance),
                 reveal_order=reveal_order,
                 hint_fractions=build_hint_fractions(
                     hint_count(len(reveal_order), self.config.hint_speed)
@@ -181,3 +184,9 @@ def _accepted_answers(track: Track, solution: str) -> list[str]:
         for answer in dict.fromkeys(normalize_guess(title) for title in (solution, search_title))
         if answer
     ]
+
+
+def _typo_budget(accepted_answers: list[str], tolerance: TitleRevealTypoTolerance) -> int:
+    """Return how many typos a guess may contain."""
+    # the shortest answer sets the budget, a longer one's would let unrelated words match it
+    return allowed_typos(min(len(answer) for answer in accepted_answers), tolerance)

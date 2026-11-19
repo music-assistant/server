@@ -12,6 +12,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.providers.music_quiz.answer_types.hint_text import HintTextAnswerType
+from music_assistant.providers.music_quiz.matching import compare_hint_guess
 from music_assistant.providers.music_quiz.models import (
     HintTextRoundState,
     MusicQuizAnswerType,
@@ -87,6 +88,22 @@ async def test_prepare_round_builds_a_masked_title_round() -> None:
         answer_type=MusicQuizAnswerType.HINT_TEXT,
     )
     HintTextAnswerType().validate_round(game, state)
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_bases_the_typo_budget_on_the_shortest_answer() -> None:
+    """Refuse an unrelated word that is within the longer answer's typo budget of the shorter."""
+    quiz_type = _quiz_type(
+        [_track("1", "Hello ft. Someone")], typo_tolerance=TitleRevealTypoTolerance.NORMAL
+    )
+
+    state = (await quiz_type.prepare_round(0, [])).answer_state
+
+    assert isinstance(state, HintTextRoundState)
+    assert state.accepted_answers == ["helloftsomeone", "hello"]
+    assert state.allowed_typos == 1
+    assert not compare_hint_guess("yellow", state.accepted_answers, state.allowed_typos)[0]
+    assert compare_hint_guess("helo", state.accepted_answers, state.allowed_typos)[0]
 
 
 @pytest.mark.asyncio
