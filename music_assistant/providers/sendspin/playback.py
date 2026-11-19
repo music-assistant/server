@@ -1515,7 +1515,8 @@ class SendspinPlaybackSession:
             # Skip this on cancellation/error paths to avoid stop-event races with transitions.
             if producer_stopped_cleanly and not self._cancel_requested:
                 with suppress(Exception):
-                    await self.player.api.group.stop()
+                    # the clip of an announcement ends where the held track stands still
+                    await self.player.api.group.stop(keep_progress=self.player.announcement_held())
 
     # -- Join injection --------------------------------------------------------
 

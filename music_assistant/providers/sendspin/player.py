@@ -95,6 +95,8 @@ from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
 from music_assistant.constants import (
+    ATTR_ANNOUNCEMENT_HELD_QUEUE,
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     CONF_ALLOW_AUDIO_ANALYSIS,
     CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
@@ -1516,6 +1518,8 @@ class SendspinPlayer(SendspinBasePlayer):
     _scheduled_item: tuple[str | None, int, int] | None = None
     # Album artwork URL scheduled on the group, and the server-clock time it takes effect.
     _scheduled_artwork: tuple[str | None, int] | None = None
+    # The queue the metadata last published was held for at the position of an announcement.
+    _published_held_queue_id: str | None = None
     playback_session: SendspinPlaybackSession
     # set once the format a client asks for could not be read from its player role
     _requested_format_unreadable: ClassVar[bool] = False
@@ -2203,9 +2207,33 @@ class SendspinPlayer(SendspinBasePlayer):
             abort_existing=True,
         )
 
+    def announcement_held(self) -> bool:
+        """Return whether an announcement holds the queue this player plays from."""
+        if self.player is None or not (
+            queue_id := self.player.extra_data.get(ATTR_ANNOUNCEMENT_HELD_QUEUE)
+        ):
+            return False
+        return (
+            self._announcement_held_position_ms(self.mass.player_queues.get(queue_id)) is not None
+        )
+
     def on_queue_updated(self, queue_id: str) -> None:
         """Push the repeat and shuffle state of the queue this player is playing."""
         current_media = self._player_media
+        queue = self.mass.player_queues.get(queue_id)
+        if (
+            current_media is None
+            and queue_id == self._published_held_queue_id
+            and self.synced_to is None
+            and self._announcement_held_position_ms(queue) is None
+        ):
+            # the announcement is over and the music did not come back: clear what was held
+            self.mass.create_task(
+                self.send_current_media_metadata(),
+                task_id=f"sendspin_metadata_{self.protocol_id}",
+                abort_existing=True,
+            )
+            return
         if (
             self.synced_to is not None
             or self._content_takeover_pending
@@ -2214,8 +2242,14 @@ class SendspinPlayer(SendspinBasePlayer):
             or not current_media.queue_item_id
         ):
             return
-        repeat, shuffle = self._queue_repeat_shuffle(self.mass.player_queues.get(queue_id))
+        repeat, shuffle = self._queue_repeat_shuffle(queue)
         self._publish_repeat_shuffle(repeat, shuffle=shuffle)
+        if self._published_held != (self._announcement_held_position_ms(queue) is not None):
+            self.mass.create_task(
+                self.send_current_media_metadata(),
+                task_id=f"sendspin_metadata_{self.protocol_id}",
+                abort_existing=True,
+            )
 
     async def send_current_media_metadata(self) -> None:
         """Send the current media metadata to the sendspin group."""
@@ -2224,6 +2258,10 @@ class SendspinPlayer(SendspinBasePlayer):
         generation = self._metadata_generation
         current_media = self._player_media
         if current_media is None:
+            if self._published_held and self.announcement_held():
+                # the clip of an announcement ended and the music is not back yet: the held
+                # track stays on the clients instead of an empty one
+                return
             async with self._metadata_lock:
                 await self._clear_current_media_metadata(generation=generation)
             return
@@ -2265,9 +2303,12 @@ class SendspinPlayer(SendspinBasePlayer):
         track_progress = metadata.track_progress
         if track_progress is None:
             return
-        metadata, timestamp_us = self._timeline_anchored(
+        metadata, timestamp_us, held_ms = self._held_or_anchored(
             metadata, queue, queue_item, is_playing=is_playing
         )
+        if held_ms is not None:
+            track_progress = held_ms
+            is_playing = False
 
         if not self._metadata_publish_allowed(generation):
             return
@@ -2285,6 +2326,9 @@ class SendspinPlayer(SendspinBasePlayer):
                 self._published_item = (current_media.uri, current_media.queue_item_id)
                 self._published_metadata = metadata
                 self._published_effective_us = timestamp_us
+                self._published_held_queue_id = (
+                    current_media.source_id if held_ms is not None else None
+                )
                 # this metadata replaces the scheduled metadata
                 self._scheduled_item = None
         self.on_upcoming_item_changed()
@@ -2635,6 +2679,44 @@ class SendspinPlayer(SendspinBasePlayer):
     def _player_playing(self) -> bool:
         """Return whether the player this protocol is attached to is playing."""
         return self.player is not None and self.player.playback_state == PlaybackState.PLAYING
+
+    @property
+    def _published_held(self) -> bool:
+        """Return whether the metadata last published was held at the position of an announcement."""
+        return self._published_held_queue_id is not None
+
+    @staticmethod
+    def _announcement_held_position_ms(queue: PlayerQueue | None) -> int | None:
+        """Return the position in ms an announcement holds the queue at, None if it does not."""
+        if queue is None or not queue.extra_attributes.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            return None
+        return max(0, int(queue.elapsed_time * 1000))
+
+    def _held_or_anchored(
+        self,
+        metadata: Metadata,
+        queue: PlayerQueue | None,
+        queue_item: QueueItem | None,
+        *,
+        is_playing: bool,
+    ) -> tuple[Metadata, int | None, int | None]:
+        """
+        Return the metadata to publish, the server-clock time it takes effect at and the held position.
+
+        :param metadata: The metadata of the track as the player plays it.
+        :param queue: The queue the track plays from.
+        :param queue_item: The queue item of the track.
+        :param is_playing: Whether the player is playing.
+        """
+        held_ms = self._announcement_held_position_ms(queue)
+        if held_ms is None:
+            metadata, timestamp_us = self._timeline_anchored(
+                metadata, queue, queue_item, is_playing=is_playing
+            )
+            return metadata, timestamp_us, None
+        # the clip of an announcement plays on the device: the track stands still where
+        # the music resumes from, instead of counting along with the clip
+        return replace(metadata, track_progress=held_ms, playback_speed=0), None, held_ms
 
     def _media_identity(self) -> tuple[object, ...] | None:
         """Return the current media values that trigger on_player_media_updated when changed."""
@@ -3221,6 +3303,7 @@ class SendspinPlayer(SendspinBasePlayer):
         self.last_sent_artist_artwork_url = None
         self._published_item = None
         self._published_metadata = None
+        self._published_held_queue_id = None
         self._published_effective_us = None
         self._scheduled_item = None
         self._scheduled_artwork = None
@@ -3294,6 +3377,8 @@ class SendspinPlayer(SendspinBasePlayer):
             queue_item = self.mass.player_queues.get_item(
                 current_media.source_id, current_media.queue_item_id
             )
+        if self._announcement_held_position_ms(queue) is not None:
+            return
         is_playing = self._player_playing
         track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
         await self._send_beat_schedule(
@@ -3483,6 +3568,9 @@ class SendspinPlayer(SendspinBasePlayer):
         if media.source_id and media.queue_item_id:
             queue = self.mass.player_queues.get(media.source_id)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        if self._announcement_held_position_ms(queue) is not None:
+            # the timeline now is the one of the clip, the track stands still where it is held
+            return
         # Drop the stored timestamp: the position from the timeline counts as of now.
         base = replace(published, timestamp_us=None)
         metadata, timestamp_us = self._timeline_anchored(
@@ -3503,6 +3591,7 @@ class SendspinPlayer(SendspinBasePlayer):
             metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
             self._published_metadata = metadata
             self._published_effective_us = timestamp_us
+            self._published_held_queue_id = None
             self._scheduled_item = None
         self.on_upcoming_item_changed()
 
