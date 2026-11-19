@@ -127,9 +127,8 @@ class PlayerQueueData:
     # Maps each to the stream session that served it
     served_item_ids: dict[str, str | None] = field(default_factory=dict)
     # queue_item_ids whose source failed to deliver audio since audio of an item last reached the
-    # player or new media replaced the queue, in the order they failed, each with the provider
-    # instance it streamed from
-    failed_source_items: dict[str, str | None] = field(default_factory=dict)
+    # player
+    failed_source_items: set[str] = field(default_factory=set)
     # the point an END_OF_ITEM/END_OF_CHAPTER sleep timer stops the queue at; while set, the
     # queue does not advance past that item on its own
     sleep_timer_target: SleepTimerTarget | None = None

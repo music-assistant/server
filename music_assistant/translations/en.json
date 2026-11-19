@@ -972,8 +972,6 @@
   "core.player_queues.errors.dynamic_queue_order_fixed": "Shuffle and repeat can not be changed while {0} plays a dynamic playlist.",
   "core.player_queues.errors.length_unknown": "The length of {0} is unknown, so this is not possible.",
   "core.player_queues.errors.live_input_plays_alone": "A live input can only be played on its own, not together with other items.",
-  "core.player_queues.errors.no_audio_from_provider": "Could not get audio from {0}.",
-  "core.player_queues.errors.no_audio_from_sources": "Could not get audio for the tracks in the queue.",
   "core.player_queues.errors.play_request_timeout": "Loading what you asked to play took longer than {0} seconds and was cancelled.",
   "core.player_queues.errors.playback_speed_not_supported": "The playback speed can only be changed for audiobooks and podcasts.",
   "core.player_queues.errors.player_cannot_play_audio": "{0} can not play audio.",
