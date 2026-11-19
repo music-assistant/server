@@ -5,7 +5,7 @@
   "name": "Tune-In Radio",
   "description": "Listen to global radio stations, sports, and podcasts through TuneIn.",
   "codeowners": ["@music-assistant"],
-  "tier": "core",
+  "provides": ["radio"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/tunein/",
   "multi_instance": true

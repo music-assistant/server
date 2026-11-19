@@ -22,6 +22,7 @@ from music_assistant_models.errors import (
     ActionUnavailable,
     LoginFailed,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderPermissionDenied,
     UnsupportedFeaturedException,
 )
@@ -116,6 +117,7 @@ class OpenSonicProvider(MusicProvider):
     _pagination_size: int = 200
     _id_lyrics: bool = False
     _direct_podcast_episode: bool = False
+    _sonic_similarity: bool = False
     _raw_file: bool = True
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -228,6 +230,8 @@ class OpenSonicProvider(MusicProvider):
                     self._id_lyrics = True
                 elif entry.name == OpenSubsonicExtensions.GET_PODCAST_EPISODE:
                     self._direct_podcast_episode = True
+                elif entry.name == OpenSubsonicExtensions.SONIC_SIMILARITY:
+                    self._sonic_similarity = True
         except OSError:
             self.logger.info("Failed to query server for OpenSubsonic extensions")
 
@@ -345,7 +349,12 @@ class OpenSonicProvider(MusicProvider):
         return folder.items
 
     async def resolve_image(self, path: str) -> bytes | Any:
-        """Return the image."""
+        """
+        Return cover artwork, or None if the server does not have it.
+
+        :param path: The cover art ID on the server.
+        :raises MusicAssistantError: If the server rejects the cover art request.
+        """
         self.logger.debug("Requesting cover art for '%s'", path)
 
         try:
@@ -354,6 +363,18 @@ class OpenSonicProvider(MusicProvider):
         except DataNotFoundError:
             self.logger.warning("Unable to locate a cover image for %s", path)
             return None
+        except SonicError as err:
+            msg = f"Open Subsonic could not retrieve cover art {path}"
+            raise MusicAssistantError(msg) from err
+
+    def accepts_stored_image_path(self, path: str) -> bool:
+        """
+        Return whether path can be a cover art id of the Subsonic server.
+
+        :param path: The stored image path.
+        """
+        # a cover art id is opaque and only ever sent to the server, which decides if it exists
+        return bool(path)
 
     @use_cache(3600 * 3)  # cache for 3 hours
     async def search(
@@ -740,6 +761,21 @@ class OpenSonicProvider(MusicProvider):
     @use_cache(3600 * 3)  # cache for 3 hours
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get tracks similar to selected track."""
+        if self._sonic_similarity:
+            try:
+                matches = await self.conn.get_sonic_similar_tracks(
+                    song_id=prov_track_id, count=limit
+                )
+            except (SonicError, ClientResponseError, TimeoutError) as e:
+                # A server can advertise the extension while its analysis backend is
+                # unavailable, so fall back to the metadata based getSimilarSongs.
+                self.logger.debug(
+                    "Sonic similarity lookup failed for %s, falling back: %s", prov_track_id, e
+                )
+            else:
+                if matches:
+                    sonic_songs = [m.entry for m in matches if m.entry.id != prov_track_id]
+                    return await self._parse_similar_songs(sonic_songs)
         try:
             songs: list[SonicItem] = await self.conn.get_similar_songs(
                 iid=prov_track_id, count=limit
@@ -750,12 +786,7 @@ class OpenSonicProvider(MusicProvider):
             # exception means we didn't find anything similar.
             self.logger.info(e)
             return []
-        tracks = []
-        for entry in songs:
-            self._set_loudness(entry)
-            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
-            tracks.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
-        return tracks
+        return await self._parse_similar_songs(songs)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new empty playlist on the server."""
@@ -1166,3 +1197,16 @@ class OpenSonicProvider(MusicProvider):
             translation_owner=self.translation_owner,
             translation_args=[base_url],
         ) from cause
+
+    async def _parse_similar_songs(self, songs: list[SonicItem]) -> list[Track]:
+        """
+        Parse a list of Subsonic songs into Tracks, including loudness and lyrics.
+
+        :param songs: The Subsonic songs to parse.
+        """
+        tracks = []
+        for entry in songs:
+            self._set_loudness(entry)
+            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
+            tracks.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
+        return tracks

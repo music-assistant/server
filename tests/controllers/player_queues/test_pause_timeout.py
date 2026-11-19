@@ -35,11 +35,12 @@ def _setup(pause_timeout: Any = None) -> tuple[PlayerQueuesController, MagicMock
     player = MagicMock()
     player.offline_by_power_control = False
     player.extra_data = {}
-    player.state.playback_state = PlaybackState.PLAYING
+    player.playback_state = PlaybackState.PLAYING
     mass.players.get_player = MagicMock(return_value=player)
+    mass.players._has_waiting_start = MagicMock(return_value=False)
 
     async def _device_pause(_queue_id: str) -> None:
-        player.state.playback_state = PlaybackState.PAUSED
+        player.playback_state = PlaybackState.PAUSED
 
     mass.players._handle_cmd_pause = AsyncMock(side_effect=_device_pause)
 
@@ -94,11 +95,67 @@ async def test_queue_resumed_within_the_pause_timeout_is_not_stopped() -> None:
 
     async def _resume_at_100_seconds(_seconds: float) -> None:
         if sleep.await_count == 100:
-            player.state.playback_state = PlaybackState.PLAYING
+            player.playback_state = PlaybackState.PLAYING
 
     sleep = AsyncMock(side_effect=_resume_at_100_seconds)
 
     await _pause_and_watch(ctrl, sleep)
 
     assert sleep.await_count == 100
+    cast("AsyncMock", ctrl.stop).assert_not_awaited()
+
+
+async def test_the_pause_timeout_does_not_stop_a_queue_whose_start_waits() -> None:
+    """A start that waits for players to start up is not stopped under: it plays, and that is it."""
+    ctrl, player = _setup()
+    waits = cast("MagicMock", ctrl.mass).players._has_waiting_start
+
+    async def _start_at_10_and_play_at_50_seconds(_seconds: float) -> None:
+        if sleep.await_count == 10:
+            waits.return_value = True
+        if sleep.await_count == 50:
+            waits.return_value = False
+            player.playback_state = PlaybackState.PLAYING
+
+    sleep = AsyncMock(side_effect=_start_at_10_and_play_at_50_seconds)
+
+    await _pause_and_watch(ctrl, sleep)
+
+    assert sleep.await_count == 50
+    cast("AsyncMock", ctrl.stop).assert_not_awaited()
+
+
+async def test_the_pause_timeout_counts_again_from_the_end_of_a_start_that_waited() -> None:
+    """A queue that is still paused once the start that waited is over is stopped a timeout later."""
+    ctrl, _player = _setup()
+    waits = cast("MagicMock", ctrl.mass).players._has_waiting_start
+
+    async def _wait_from_10_to_50_seconds(_seconds: float) -> None:
+        waits.return_value = 10 <= sleep.await_count < 50
+
+    sleep = AsyncMock(side_effect=_wait_from_10_to_50_seconds)
+
+    await _pause_and_watch(ctrl, sleep)
+
+    assert sleep.await_count == 50 + 30
+    cast("AsyncMock", ctrl.stop).assert_awaited_once_with(QUEUE_ID)
+
+
+async def test_a_start_that_waits_in_the_last_second_of_the_pause_timeout_is_not_stopped() -> None:
+    """A start that begins to wait just before the timeout ends is seen before the stop."""
+    ctrl, player = _setup()
+    waits = cast("MagicMock", ctrl.mass).players._has_waiting_start
+
+    async def _start_in_the_last_second(_seconds: float) -> None:
+        if sleep.await_count == 30:
+            waits.return_value = True
+        if sleep.await_count == 45:
+            waits.return_value = False
+            player.playback_state = PlaybackState.PLAYING
+
+    sleep = AsyncMock(side_effect=_start_in_the_last_second)
+
+    await _pause_and_watch(ctrl, sleep)
+
+    assert sleep.await_count == 45
     cast("AsyncMock", ctrl.stop).assert_not_awaited()

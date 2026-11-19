@@ -6,6 +6,7 @@ import asyncio
 import codecs
 import functools
 import html
+import http.client
 import importlib
 import inspect
 import logging
@@ -42,7 +43,7 @@ from urllib.parse import urlparse, urlsplit
 
 import ifaddr
 from markdownify import markdownify
-from music_assistant_models.enums import AlbumType, IdentifierType
+from music_assistant_models.enums import AlbumType, IdentifierType, ProviderTier
 from music_assistant_models.errors import UnsupportedSystemError
 from zeroconf import InterfaceChoice, IPVersion
 
@@ -59,6 +60,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant_models.player import DeviceInfo
+    from music_assistant_models.provider import ProviderManifest
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
@@ -658,9 +660,14 @@ def filename_from_string(string: str) -> str:
 _FORBIDDEN_HEADER_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
+def strip_control_characters(value: str) -> str:
+    """Replace control characters (including line breaks) with a space and strip the result."""
+    return _FORBIDDEN_HEADER_CHARS_RE.sub(" ", value).strip()
+
+
 def sanitize_http_header_value(value: str) -> str:
     """Replace control characters that are not allowed in HTTP header values."""
-    return _FORBIDDEN_HEADER_CHARS_RE.sub(" ", value).strip()
+    return strip_control_characters(value)
 
 
 def try_parse_int(possible_int: Any, default: int | None = 0) -> int | None:
@@ -1122,7 +1129,7 @@ def _enumerate_ip_addresses(include_ipv6: bool, publish_candidates_only: bool) -
         # doesn't even have to be reachable
         _sock.connect(("10.254.254.254", 1))
         primary_ip = _sock.getsockname()[0]
-    except Exception:
+    except OSError:
         primary_ip = ""
     finally:
         _sock.close()
@@ -1133,7 +1140,7 @@ def _enumerate_ip_addresses(include_ipv6: bool, publish_candidates_only: bool) -
         try:
             _sock6.connect(("2001:db8::1", 1))
             primary_ip = _sock6.getsockname()[0]
-        except Exception:
+        except OSError:
             primary_ip = ""
         finally:
             _sock6.close()
@@ -1195,12 +1202,18 @@ def interface_name_for_ip(ip: str) -> str | None:
     their mDNS/zeroconf advertisement interface by name (e.g. shairport-sync and
     go-librespot), so the advertisement stays on the intended network.
 
-    :param ip: The IPv4/IPv6 address to look up.
+    :param ip: The IPv4/IPv6 address to look up, in any notation; None is returned for a
+        value that is not an IP address.
     """
+    try:
+        # ifaddr reports addresses in their canonical notation
+        wanted = str(ip_address(ip))
+    except ValueError:
+        return None
     for adapter in ifaddr.get_adapters():
         for ip_config in adapter.ips:
             addr = ip_config.ip if isinstance(ip_config.ip, str) else ip_config.ip[0]
-            if addr == ip:
+            if addr == wanted:
                 return adapter.name
     return None
 
@@ -1285,7 +1298,7 @@ async def get_ip_from_host(dns_name: str) -> str | None:
             results = socket.getaddrinfo(dns_name, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
             if results:
                 return str(results[0][4][0])
-        except Exception:
+        except OSError, ValueError:
             # fail gracefully!
             return None
         return None
@@ -1479,7 +1492,7 @@ async def is_hass_supervisor() -> bool:
         except urllib.error.URLError as err:
             # this should return a 401 unauthorized if it exists
             return getattr(err, "code", 999) == 401
-        except Exception:
+        except OSError, http.client.HTTPException:
             return False
         return False
 
@@ -1519,13 +1532,24 @@ async def import_module_in_thread(name: str, package: str | None = None) -> Modu
         return await loop.run_in_executor(_IMPORT_EXECUTOR, importlib.import_module, name, package)
 
 
-async def load_provider_module(domain: str, requirements: list[str]) -> ProviderModuleType:
-    """Return module for given provider domain and make sure the requirements are met."""
+async def load_provider_module(manifest: ProviderManifest) -> ProviderModuleType:
+    """
+    Return the module of a provider and make sure its requirements are met.
+
+    The requirements of a community provider are not installed here.
+
+    :param manifest: Manifest of the provider to import.
+    """
 
     async def _get_provider_module() -> ProviderModuleType:
-        module = await import_module_in_thread(f".{domain}", "music_assistant.providers")
+        module = await import_module_in_thread(f".{manifest.domain}", "music_assistant.providers")
         return cast("ProviderModuleType", module)
 
+    if manifest.tier == ProviderTier.COMMUNITY:
+        # nothing a community provider asks for may end up in the server environment
+        return await _get_provider_module()
+
+    requirements = manifest.requirements
     # ensure module requirements are met
     for requirement in requirements:
         if requirement in _checked_requirements:
@@ -1555,6 +1579,35 @@ async def load_provider_module(domain: str, requirements: list[str]) -> Provider
     # try loading the provider again to be safe
     # this will fail if something else is wrong (as it should)
     return await _get_provider_module()
+
+
+def set_provider_tier(manifest: ProviderManifest, tier: ProviderTier) -> None:
+    """
+    Set who maintains a provider, which overrides what its manifest says about being built-in.
+
+    :param manifest: Manifest of the provider, changed in place.
+    :param tier: Who maintains the provider.
+    """
+    manifest.tier = tier
+    if tier == ProviderTier.COMMUNITY:
+        manifest.builtin = False
+        manifest.allow_disable = True
+
+
+def purge_provider_modules(domain: str) -> None:
+    """
+    Forget the imported code of a provider, so its next import reads the files again.
+
+    :param domain: Domain of the provider.
+    """
+    package = "music_assistant.providers"
+    module_name = f"{package}.{domain}"
+    for name in list(sys.modules):
+        if name == module_name or name.startswith(f"{module_name}."):
+            del sys.modules[name]
+    # the package keeps an imported provider as attribute, which a from-import would return
+    vars(importlib.import_module(package)).pop(domain, None)
+    importlib.invalidate_caches()
 
 
 async def has_tmpfs_mount() -> bool:
@@ -1774,7 +1827,7 @@ async def detect_charset(data: bytes, fallback: str = "utf-8", preferred: str | 
             prefer_superset=True,
             no_match_encoding=fallback,
         )
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - chardet raises undocumented errors
         LOGGER.debug("Failed to detect charset: %s", err)
         return fallback
     if not (encoding := detected["encoding"]):
@@ -1856,7 +1909,7 @@ def validate_announcement_chime_url(url: str) -> bool:
 
         return any(path_lower.endswith(ext) for ext in audio_extensions)
 
-    except Exception:
+    except ValueError:
         return False
 
 
@@ -1876,7 +1929,7 @@ async def get_mac_address(ip_address: str) -> str | None:
     except TimeoutError:
         LOGGER.debug("Timed out resolving MAC address for %s", ip_address)
         return None
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - getmac raises undocumented errors
         LOGGER.debug("Failed to resolve MAC address for %s: %s", ip_address, err)
         return None
 

@@ -8,28 +8,23 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping, PodcastEpisode, ProviderMapping
 from music_assistant_models.queue_item import QueueItem
 
-from tests.common import MockPlayer, MockProvider
+from music_assistant.models.player import Player
+from tests.common import MockProvider, attach_mock, mock_player_mass
 
 PLAYER_ID = "player_1"
 
 
-def _player_playing(queue_item: QueueItem) -> MockPlayer:
+def _player_playing(queue_item: QueueItem) -> Player:
     """Create a player whose MA queue is playing the given item."""
-    mass = MagicMock()
-    mass.closing = False
-    mass.config.get_raw_player_config_value = MagicMock(
-        side_effect=lambda _player_id, _key, default=None: default
-    )
+    mass = mock_player_mass()
     queue = MagicMock()
     queue.queue_id = PLAYER_ID
     queue.current_item = queue_item
     queue.elapsed_time = 0
     queue.elapsed_time_last_updated = 0
     mass.player_queues.get = MagicMock(return_value=queue)
-    mass.players.get_audio_source_session = MagicMock(return_value=None)
-    mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _player_id, volume: volume)
     mass.metadata.get_image_url = MagicMock(return_value=None)
-    player = MockPlayer(MockProvider("test_provider", mass=mass), PLAYER_ID, "Player 1")
+    player, _ = attach_mock(MockProvider("test_provider", mass=mass), PLAYER_ID, "Player 1")
     player.set_active_mass_source(PLAYER_ID)
     return player
 
@@ -60,7 +55,7 @@ def test_podcast_episode_reports_podcast_as_artist_only() -> None:
 
     player.update_state(signal_event=False)
 
-    media = player.state.current_media
+    media = player.current_media
     assert media is not None
     assert media.title == "Episode 1"
     assert media.artist == "My Podcast"

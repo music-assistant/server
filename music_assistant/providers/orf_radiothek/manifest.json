@@ -11,5 +11,5 @@
   "dependencies": [],
   "config_entries": [],
   "codeowners": ["@DButter"],
-  "tier": "community"
+  "provides": ["radio", "podcast"]
 }

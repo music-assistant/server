@@ -231,11 +231,6 @@ class RemoteAccessManager:
         mode = "optimized" if using_ha_cloud else "basic"
         self.logger.info("Starting remote access in %s mode", mode)
 
-        # resolved once, at gateway start: this follows the streams bind IP, while the socket
-        # behind it is only bound when the Sendspin provider loads, so the two can disagree
-        # either way and re-resolving per session would be no more reliable
-        sendspin_url = self.webserver.internal_sendspin_url
-
         gateway = WebRTCGateway(
             http_session=self.mass.http_session,
             remote_id=self._remote_id,
@@ -243,7 +238,7 @@ class RemoteAccessManager:
             key_pem=self._key_pem,
             signaling_url=SIGNALING_SERVER_URL,
             local_ws_url=local_ws_url,
-            sendspin_url=sendspin_url,
+            sendspin_url_callback=lambda: self.webserver.internal_sendspin_url,
             ice_servers=ice_servers,
             # Pass callback to get fresh ICE servers for each client connection
             # This ensures TURN credentials are always valid

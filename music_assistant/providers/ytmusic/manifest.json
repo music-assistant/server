@@ -5,7 +5,7 @@
   "name": "YouTube Music",
   "description": "Stream songs and podcasts from YouTube Music.",
   "codeowners": ["@MarvinSchenkel"],
-  "tier": "community",
+  "provides": ["artist", "album", "track", "playlist", "podcast"],
   "credits": ["[ytmusicapi](https://github.com/sigma67/ytmusicapi)"],
   "requirements": [
     "ytmusicapi==1.12.3",

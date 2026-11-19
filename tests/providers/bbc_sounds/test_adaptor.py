@@ -1,12 +1,11 @@
 """Test BBC Sounds provider adaptor that converts auntie-sounds objects to Music Assistant objects."""
 
+from auntie_sounds.models import Duration, Playlist, Podcast, RadioShow, Synopses, Titles
 from music_assistant_models.media_items import BrowseFolder, Track
 from music_assistant_models.media_items import PodcastEpisode as MAPodcastEpisode
-from sounds import Podcast
-from sounds.models import Playlist, RadioShow
 
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
-from music_assistant.providers.bbc_sounds.constants import _Constants
+from music_assistant.providers.bbc_sounds.constants import Constants
 
 
 class TestMenuLoading:
@@ -16,8 +15,8 @@ class TestMenuLoading:
         """Test a RadioShow equal to the TRACK_DURATION_THRESHOLD is converted to a Track."""
         show = RadioShow(
             id="id",
-            duration={"value": _Constants.TRACK_DURATION_THRESHOLD},
-            titles={"entity_title": "Track name"},
+            duration=Duration(label="", value=Constants.TRACK_DURATION_THRESHOLD),
+            titles=Titles(entity_title="Track name"),
             pid="pid",
         )
         assert type(await provider.adaptor.new_object(show)) is Track
@@ -28,8 +27,8 @@ class TestMenuLoading:
         """Test a RadioShow over the TRACK_DURATION_THRESHOLD is converted to a PodcastEpisode."""
         show = RadioShow(
             id="id",
-            duration={"value": _Constants.TRACK_DURATION_THRESHOLD + 1},
-            titles={"entity_title": "Track name"},
+            duration=Duration(label="", value=Constants.TRACK_DURATION_THRESHOLD + 1),
+            titles=Titles(entity_title="Track name"),
             pid="pid",
             container=Podcast(
                 type="brand",
@@ -37,8 +36,8 @@ class TestMenuLoading:
                 title="Podcast",
                 description=None,
                 image_url=None,
-                synopses={},
-                titles={},
+                synopses=Synopses(),
+                titles=Titles(),
                 urn="urn:bbc:radio:brand:p07f4d9w",
             ),
         )
@@ -50,8 +49,8 @@ class TestMenuLoading:
         """Test a RadioShow over the TRACK_DURATION_THRESHOLD without a container is converted to a Track."""
         show = RadioShow(
             id="id",
-            duration={"value": _Constants.TRACK_DURATION_THRESHOLD + 1},
-            titles={"entity_title": "Track name"},
+            duration=Duration(label="", value=Constants.TRACK_DURATION_THRESHOLD + 1),
+            titles=Titles(entity_title="Track name"),
             pid="pid",
         )
         assert type(await provider.adaptor.new_object(show)) is Track
@@ -67,8 +66,8 @@ class TestMenuLoading:
         """
         show = RadioShow(
             id="id",
-            duration={"value": _Constants.TRACK_DURATION_THRESHOLD - 1},
-            titles={"entity_title": "Track name"},
+            duration=Duration(label="", value=Constants.TRACK_DURATION_THRESHOLD - 1),
+            titles=Titles(entity_title="Track name"),
             pid="pid",
             container=Podcast(id="podcast"),
         )

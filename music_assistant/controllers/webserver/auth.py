@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import logging
 import secrets
+import sqlite3
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from datetime import datetime, timedelta
@@ -32,7 +33,6 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import (
-    CONF_PLAYERS,
     DB_TABLE_BOOKMARKS,
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PLAY_HISTORY,
@@ -187,9 +187,6 @@ class AuthenticationManager:
         # migrate the Home Assistant system user of pre-existing installs to the service role
         await self._migrate_system_user_role()
 
-        # repair filters that were left pointing at removed providers/players
-        await self._prune_stale_user_filters()
-
         # clear rows left behind by user deletions from before those were cleaned up
         await self._prune_orphaned_user_rows()
 
@@ -277,7 +274,7 @@ class AuthenticationManager:
             return None
         except pyjwt.InvalidTokenError:
             self.logger.debug("Token is not a valid JWT, trying legacy hash lookup")
-        except Exception as err:
+        except ValueError as err:
             self.logger.debug("Error decoding JWT token: %s, trying legacy hash lookup", err)
 
         # Fallback to legacy hash-based token lookup
@@ -609,17 +606,17 @@ class AuthenticationManager:
 
         :param user: The user to update.
         :param username: New username (optional).
-        :param display_name: New display name (optional).
-        :param avatar_url: New avatar URL (optional).
+        :param display_name: New display name, an empty string clears it (optional).
+        :param avatar_url: New avatar URL, an empty string clears it (optional).
         """
-        updates = {}
+        updates: dict[str, str | None] = {}
         if username is not None:
             # Normalize username for case-insensitive authentication
             updates["username"] = normalize_username(username)
         if display_name is not None:
-            updates["display_name"] = display_name
+            updates["display_name"] = display_name or None
         if avatar_url is not None:
-            updates["avatar_url"] = avatar_url
+            updates["avatar_url"] = avatar_url or None
 
         if updates:
             await self.database.update("users", {"user_id": user.user_id}, updates)
@@ -627,6 +624,7 @@ class AuthenticationManager:
         # Return updated user
         updated_user = await self.get_user(user.user_id)
         assert updated_user is not None  # User exists, so get_user must return it
+        self.webserver.update_active_user(updated_user)
         return updated_user
 
     async def update_user_preferences(
@@ -655,6 +653,7 @@ class AuthenticationManager:
         # Return updated user
         updated_user = await self.get_user(user.user_id)
         assert updated_user is not None  # User exists, so get_user must return it
+        self.webserver.update_active_user(updated_user)
         return updated_user
 
     async def update_provider_link(
@@ -1595,13 +1594,11 @@ class AuthenticationManager:
                 {"user_id": target_user.user_id},
                 {"player_filter": json_dumps(player_filter)},
             )
-            self.webserver.update_active_user_filters(
-                target_user.user_id, player_filter=player_filter
-            )
-        # Refresh target user to get updated filters
-        refreshed_user = await self.get_user(target_user.user_id)
-        if not refreshed_user:
-            raise InvalidDataError("Failed to refresh user after filter update")
+            # Refresh target user to get updated filters
+            refreshed_user = await self.get_user(target_user.user_id)
+            if not refreshed_user:
+                raise InvalidDataError("Failed to refresh user after filter update")
+            self.webserver.update_active_user(refreshed_user)
         return refreshed_user
 
     async def remove_from_user_filters(self, player_ids: Collection[str] = ()) -> None:
@@ -1710,8 +1707,8 @@ class AuthenticationManager:
 
         :param user_id: User ID to update (optional, defaults to current user).
         :param username: New username (optional, minimum 2 characters, must not be in use).
-        :param display_name: New display name (optional).
-        :param avatar_url: New avatar URL (optional).
+        :param display_name: New display name, an empty string clears it (optional).
+        :param avatar_url: New avatar URL, an empty string clears it (optional).
         :param password: New password (optional, minimum 8 characters).
         :param role: The id of the (builtin or custom) role to assign (optional, set by admin only).
         :param preferences: User preferences dict (completely replaces existing, optional).
@@ -1760,7 +1757,7 @@ class AuthenticationManager:
             target_user = refreshed_user
 
         # Update basic profile fields
-        if username or display_name or avatar_url:
+        if username is not None or display_name is not None or avatar_url is not None:
             updated_user = await self.update_user(
                 target_user,
                 username=username,
@@ -2060,7 +2057,7 @@ class AuthenticationManager:
                 prev_version = int(db_row["value"])
             else:
                 prev_version = DB_SCHEMA_VERSION
-        except KeyError, ValueError, Exception:
+        except KeyError, TypeError, ValueError, sqlite3.Error:
             # settings table doesn't exist yet or other error
             prev_version = 0
 
@@ -2479,17 +2476,8 @@ class AuthenticationManager:
             await self.database.commit()
             if total > 0:
                 self.logger.info("Cleaned up %d row(s) of deleted user(s)", total)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - optional hygiene, see the comment above
             self.logger.warning("Failed to clean up rows of deleted users: %s", err)
-
-    async def _prune_stale_user_filters(self) -> None:
-        """Drop user access filter entries for players that no longer exist."""
-        known_players = set(self.mass.config.get(CONF_PLAYERS, {}))
-        # an empty config section means nothing is configured yet, which must not be
-        # mistaken for everything having been removed
-        await self._rewrite_user_filters(
-            keep_player=(lambda x: x in known_players) if known_players else None,
-        )
 
     async def _rewrite_user_filters(
         self,
@@ -2548,7 +2536,8 @@ class AuthenticationManager:
                 )
                 # a session holds its own copy of the User object, so the live ones have to
                 # follow or they keep applying the filter that was just rewritten
-                self.webserver.update_active_user_filters(row["user_id"], player_filter=remaining)
+                if user := await self.get_user(row["user_id"]):
+                    self.webserver.update_active_user(user)
 
     async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
         """
@@ -2568,7 +2557,7 @@ class AuthenticationManager:
             )
             await self.mass.music.database.commit()
             self.logger.info("Migrated existing playlog entries to first user: %s", user_id)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - best effort, must not block creating the first user
             self.logger.warning("Failed to migrate playlog entries: %s", err)
 
     async def _update_profile_password(

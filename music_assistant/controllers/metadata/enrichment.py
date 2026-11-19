@@ -52,7 +52,11 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.external_ids import is_valid_barcode, is_valid_isrc
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider, relation_urls
+from music_assistant.providers.musicbrainz.provider import (
+    MusicbrainzProvider,
+    artist_type_and_life_span,
+    relation_urls,
+)
 
 from .constants import (
     CONF_ENABLE_ONLINE_METADATA,
@@ -482,6 +486,8 @@ class MetadataEnrichmentMixin:
                 album.metadata.update(_without_description(prov_item.metadata))
                 # backfill identifiers (e.g. barcode) missing on a sparse library add
                 album.external_ids.update(prov_item.external_ids)
+                if not album.artists and prov_item.artists:
+                    album.artists = UniqueList(prov_item.artists)
                 if album.year is None and prov_item.year:
                     album.year = prov_item.year
                 if album.album_type == AlbumType.UNKNOWN:
@@ -870,6 +876,11 @@ class MetadataEnrichmentMixin:
                 if follow_merged:
                     # MusicBrainz answers a merged artist's old id with the artist it was merged into
                     await self._follow_merged_id(artist, details.id)
+                entity_type, life_span = artist_type_and_life_span(details)
+                merge_metadata(
+                    artist.metadata,
+                    MediaItemMetadata(artist_entity_type=entity_type, life_span=life_span),
+                )
                 urls = relation_urls(details.relations)
                 if not artist.get_external_id(ExternalID.DISCOGS) and (
                     discogs := discogs_external_id(urls, MediaType.ARTIST)
@@ -962,6 +973,7 @@ class MetadataEnrichmentMixin:
                 self.logger.debug("Track %s was not found on MusicBrainz", track.name)
             else:
                 fill_track_from_recording(track, recording)
+                await self.mass.music.tracks.merge_recording_duplicates(track)
                 if self.link_providers_via_musicbrainz:
                     await self.mass.music.tracks.link_musicbrainz_mappings(
                         track, relation_urls(recording.relations)
@@ -1076,8 +1088,8 @@ class MetadataEnrichmentMixin:
             return identified.artist.id, identified.by_name
         # last resort for library items without identifiers: the artist's top tracks
         tried = {track.uri for track in ref_tracks}
-        # only a music provider ranks its own catalog without a search per track, so the
-        # listing is narrowed to them and never falls back to a metadata provider
+        # a metadata provider's ranking is matched against the library tracks below, so this
+        # listing is narrowed to the music providers and never falls back to a metadata provider
         if ranking := self._ranking_music_providers(artist):
             top_tracks = _identifying_first(
                 [

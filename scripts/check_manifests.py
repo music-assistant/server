@@ -7,9 +7,14 @@ omits one of them — or whose ``domain`` does not match its folder, whose ``typ
 provider type, or whose ``codeowners`` are malformed — only fails once the server tries to load the
 provider. This pre-commit/CI guard scans every provider manifest up front and prints each problem.
 
-Every public provider (folder name not starting with ``_``) must also declare its maintainer ``tier``
-(``core`` or ``community``); ``core`` is only valid with ``@music-assistant`` in ``codeowners``. An
-optional ``support_url`` must be an ``https`` URL with a host.
+A manifest must not contain ``tier``: the server sets it from where the provider loads. Nor a
+top-level ``media_types``: the server does not read it, the media types go in ``provides``. An
+optional ``support_url`` must be an ``https`` URL with a host. Declared ``provides`` must be known
+``ProviderOffering`` values that fit the provider type, each listed once. Declared
+``menu_actions``, ``mcp_tools`` and ``page`` must follow the rules the server applies when it
+reads a manifest
+(``music_assistant.helpers.menu_actions``, ``music_assistant.helpers.mcp_tools``); the server
+leaves out an action, tool or page that breaks them, here it is an error.
 
 When invoked with file or folder arguments (as pre-commit does for the changed files) only the
 manifests in scope are validated; with no arguments every provider manifest is scanned.
@@ -26,6 +31,11 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from music_assistant_models.enums import ProviderOffering
+
+from music_assistant.helpers.mcp_tools import read_mcp_tools
+from music_assistant.helpers.menu_actions import read_menu_actions, read_page
+
 # ruff: noqa: T201
 
 # repo paths (this file lives at <repo>/scripts/check_manifests.py)
@@ -36,14 +46,34 @@ PROVIDERS_PATH = REPO_ROOT / "music_assistant" / "providers"
 # music_assistant_models.provider.ProviderManifest.
 MANDATORY_KEYS = ("type", "domain", "name", "description", "codeowners")
 
+# Valid ``provides`` values (minus ``unknown``, the runtime fallback for an unknown value).
+VALID_OFFERINGS = frozenset(offering.value for offering in ProviderOffering) - {
+    ProviderOffering.UNKNOWN.value
+}
+
+# The ``provides`` values each provider type may declare; the other types declare none.
+OFFERINGS_BY_TYPE: dict[str, frozenset[str]] = {
+    "music": frozenset(
+        {"artist", "album", "track", "playlist", "radio", "podcast", "audiobook", "sound_effect"}
+    ),
+    "player": frozenset({"audio_source"}),
+    "plugin": frozenset(
+        {
+            "audio_source",
+            "ai",
+            "tts",
+            "scrobble",
+            "assistant",
+            "visualizer",
+            "recommendations",
+            "fun",
+        }
+    ),
+}
+
 # Valid provider types, mirroring music_assistant_models.enums.ProviderType (minus ``unknown``,
 # which is a runtime fallback and must never be authored into a manifest).
 VALID_TYPES = frozenset({"music", "player", "metadata", "plugin", "core", "audio_analysis"})
-
-# Maintainer tiers, mirroring music_assistant_models.enums.ProviderTier; ``core`` is reserved for
-# providers the organization maintains.
-VALID_TIERS = frozenset({"core", "community"})
-CORE_CODEOWNER = "@music-assistant"
 
 
 def find_violations(manifest_paths: Iterable[Path] | None = None) -> list[str]:
@@ -134,9 +164,20 @@ def _validate(data: dict[str, object], folder_name: str) -> list[str]:
             issues.append(f"'{text_key}' must be a non-empty string")
     if "codeowners" in data:
         issues.extend(_validate_codeowners(data["codeowners"]))
-    issues.extend(_validate_tier(data, folder_name))
+    if "tier" in data:
+        issues.append("'tier' is set by the server and must not be in the manifest")
+    if "media_types" in data:
+        issues.append("'media_types' is not read by the server, use 'provides' instead")
     if "support_url" in data and not _is_https_url(data["support_url"]):
         issues.append("'support_url' must be an https URL with a host")
+    if "provides" in data:
+        issues.extend(_validate_provides(data["provides"], provider_type))
+    if "menu_actions" in data:
+        issues.extend(read_menu_actions(data["menu_actions"])[1])
+    if "mcp_tools" in data:
+        issues.extend(read_mcp_tools(data["mcp_tools"], folder_name)[1])
+    if "page" in data:
+        issues.extend(read_page(data["page"])[1])
     return issues
 
 
@@ -151,22 +192,29 @@ def _validate_codeowners(codeowners: object) -> list[str]:
     ]
 
 
-def _validate_tier(data: dict[str, object], folder_name: str) -> list[str]:
+def _validate_provides(provides: object, provider_type: object) -> list[str]:
     """
-    Return problems with the ``tier`` field.
+    Return problems with the ``provides`` field (known, unique values that fit the type).
 
-    :param data: The parsed manifest contents.
-    :param folder_name: The provider folder name; demo providers (``_`` prefix) may omit ``tier``.
+    :param provides: The declared ``provides`` value.
+    :param provider_type: The declared provider type, only checked against when it is valid.
     """
-    if "tier" not in data:
-        return [] if folder_name.startswith("_") else ["missing mandatory key 'tier'"]
-    tier = data["tier"]
-    if not isinstance(tier, str) or tier not in VALID_TIERS:
-        return [f"tier '{tier}' is not one of {sorted(VALID_TIERS)}"]
-    codeowners = data.get("codeowners")
-    if tier == "core" and not (isinstance(codeowners, list) and CORE_CODEOWNER in codeowners):
-        return [f"tier 'core' requires '{CORE_CODEOWNER}' in 'codeowners', use 'community'"]
-    return []
+    if not isinstance(provides, list):
+        return ["'provides' must be a list"]
+    check_fit = isinstance(provider_type, str) and provider_type in VALID_TYPES
+    allowed = OFFERINGS_BY_TYPE.get(str(provider_type), frozenset())
+    issues: list[str] = []
+    seen: set[str] = set()
+    for offering in provides:
+        if not isinstance(offering, str) or offering not in VALID_OFFERINGS:
+            issues.append(f"offering '{offering}' is not a known ProviderOffering")
+        elif offering in seen:
+            issues.append(f"offering '{offering}' is listed more than once")
+        else:
+            seen.add(offering)
+            if check_fit and offering not in allowed:
+                issues.append(f"offering '{offering}' does not fit provider type '{provider_type}'")
+    return issues
 
 
 def _is_https_url(value: object) -> bool:

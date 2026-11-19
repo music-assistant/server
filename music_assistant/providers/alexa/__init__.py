@@ -20,6 +20,7 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import (
     ConfigEntryType,
+    IdentifierType,
     PlaybackState,
     PlayerFeature,
     ProviderFeature,
@@ -29,7 +30,7 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.helpers.util import lock
-from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
 
 _LOGGER = logging.getLogger(__name__)
@@ -71,6 +72,23 @@ VOLUME_POLL_HOLD = 2
 VOLUME_READ_MAX_AGE = 2
 VOLUME_READ_TIMEOUT = 5
 VOLUME_STEP_TIMEOUT = 10
+
+# Alexa pauses skill audio for every voice request and resumes it on its own, so the Echo
+# falls behind a clock started at play_media. While paused, poll this often too, so the
+# position from the skill API (and the resume) shows up within seconds.
+POSITION_POLL_INTERVAL = 5
+# MA polls its players one after another, so an unreachable skill API is left alone for
+# a while rather than holding up every poll round with a timeout per Echo.
+PLAYBACK_STATE_RETRY_DELAY = 60
+
+# AudioPlayer activity reported by the Echo. IDLE and FINISHED are left to MA's own
+# stop and end-of-stream handling.
+ECHO_PLAYBACK_STATES = {
+    "PLAYING": PlaybackState.PLAYING,
+    "BUFFER_UNDERRUN": PlaybackState.PLAYING,
+    "STOPPED": PlaybackState.PAUSED,
+    "PAUSED": PlaybackState.PAUSED,
+}
 
 
 async def setup(
@@ -198,6 +216,14 @@ async def api_request(
 
     Returns the response text on success or raises `ActionUnavailable` on failure.
     """
+    url, auth = _api_target(provider, endpoint)
+    return await _request_with_session(
+        provider.mass.http_session, method, url, json_data, timeout, auth
+    )
+
+
+def _api_target(provider: PlayerProvider, endpoint: str) -> tuple[str, BasicAuth | None]:
+    """Return the full URL and basic auth for an endpoint of the configured API."""
     username = provider.get_setup_value(CONF_API_BASIC_AUTH_USERNAME)
     password = provider.get_setup_value(CONF_API_BASIC_AUTH_PASSWORD)
 
@@ -206,11 +232,36 @@ async def api_request(
         auth = BasicAuth(str(username), str(password))
 
     api_url = str(provider.get_setup_value(CONF_API_URL) or "")
-    url = f"{api_url.rstrip('/')}/{endpoint.lstrip('/')}"
+    return f"{api_url.rstrip('/')}/{endpoint.lstrip('/')}", auth
 
-    return await _request_with_session(
-        provider.mass.http_session, method, url, json_data, timeout, auth
-    )
+
+async def get_playback_state(provider: AlexaProvider, player_id: str) -> dict[str, Any] | None:
+    """
+    Return what the Echo last reported to the skill API for this player.
+
+    Returns None when the API cannot be reached, answers with an error or lacks the
+    endpoint (older skill versions); unlike api_request this is quiet, as it runs on
+    every poll.
+    """
+    if provider.mass.loop.time() < provider._playback_state_retry_at:
+        return None
+    url, auth = _api_target(provider, "/alexa/playback-state")
+    try:
+        async with provider.mass.http_session.get(
+            url,
+            params={"player_id": player_id},
+            auth=auth,
+            timeout=aiohttp.ClientTimeout(total=5),
+        ) as resp:
+            # an error answer (e.g. a slow 504) backs off like an unreachable API
+            resp.raise_for_status()
+            data = await resp.json(content_type=None)
+    except aiohttp.ClientError, TimeoutError:
+        provider._playback_state_retry_at = provider.mass.loop.time() + PLAYBACK_STATE_RETRY_DELAY
+        return None
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
@@ -232,25 +283,28 @@ class AlexaDevice:
     _locale: str
 
 
-class AlexaPlayer(Player):
+class AlexaPlayer(PlayerProtocol):
     """Implementation of an Alexa Player."""
 
     def __init__(
         self,
         provider: AlexaProvider,
-        player_id: str,
+        protocol_id: str,
         device: AlexaDevice,
     ) -> None:
         """Initialize AlexaPlayer."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self.device = device
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
         }
-        self._attr_name = player_id
+        self._attr_name = protocol_id
         self._attr_device_info = DeviceInfo()
+        self._attr_device_info.add_identifier(
+            IdentifierType.SERIAL_NUMBER, device.device_serial_number
+        )
         self._attr_powered = False
         self._attr_available = True
         self._attr_needs_poll = True
@@ -259,6 +313,14 @@ class AlexaPlayer(Player):
         self._volume_sending = False
         self._volume_retried = False
         self._volume_task: asyncio.Task[None] | None = None
+        self._volume_read_at = -math.inf
+        # The skill API report already applied, so a repeat doesn't undo later changes.
+        self._position_observed_at: float | None = None
+        # Bumped by every playback command, so a report fetched before it is discarded.
+        self._playback_generation = 0
+        # When MA's last playback command completed; an Echo report observed before it
+        # describes the state that command replaced.
+        self._command_completed_at = -math.inf
         # Keep track of the last metadata we pushed to avoid unnecessary uploads
         self._last_meta_checksum: str | None = None
         # Keep last stream url pushed (set in play_media)
@@ -281,34 +343,51 @@ class AlexaPlayer(Player):
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
+        self._playback_generation += 1
         provider = cast("AlexaProvider", self.provider)
 
         utter = await provider.get_intent_utterance("AMAZON.StopIntent", "stop")
         await self.api.run_custom(utter)
 
+        # Reports requested while the command was out describe the state before it.
+        self._playback_generation += 1
+        self._command_completed_at = time.time()
+        self._attr_paused_position_reliable = False
         self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
+        self._playback_generation += 1
         provider = cast("AlexaProvider", self.provider)
 
         if not await self._send_to_open_screen("resume"):
             utter = await provider.get_intent_utterance("AMAZON.ResumeIntent", "resume")
             await self.api.run_custom(utter)
 
+        # Reports requested while the command was out describe the state before it.
+        self._playback_generation += 1
+        self._command_completed_at = time.time()
+        self._attr_paused_position_reliable = False
+        self._hold_position()
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
+        self._playback_generation += 1
         provider = cast("AlexaProvider", self.provider)
 
         if not await self._send_to_open_screen("pause"):
             utter = await provider.get_intent_utterance("AMAZON.PauseIntent", "pause")
             await self.api.run_custom(utter)
 
+        # Reports requested while the command was out describe the state before it.
+        self._playback_generation += 1
+        self._command_completed_at = time.time()
+        self._attr_paused_position_reliable = False
+        self._hold_position()
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
@@ -319,45 +398,35 @@ class AlexaPlayer(Player):
 
     @property
     def poll_interval(self) -> int:
-        """Poll often while playing, when the volume is most likely to change on the Echo."""
+        """Poll often while playing or paused, when the Echo can move on its own."""
         if self.playback_state == PlaybackState.PLAYING:
             return VOLUME_POLL_INTERVAL_PLAYING
+        if self.playback_state == PlaybackState.PAUSED:
+            return POSITION_POLL_INTERVAL
         return VOLUME_POLL_INTERVAL_IDLE
 
     async def poll(self) -> None:
-        """Read the Echo's volume back from Amazon."""
-        set_at = self._volume_set_at
-        if self._volume_sending or self.mass.loop.time() - set_at < VOLUME_POLL_HOLD:
+        """Correct the position from the skill API, and read the volume back from Amazon."""
+        await self._correct_position()
+        if (
+            self.playback_state == PlaybackState.PAUSED
+            and self.mass.loop.time() - self._volume_read_at < VOLUME_POLL_INTERVAL_IDLE
+        ):
+            # Polled often only for the position; read the volume at the idle pace.
             return
-        provider = cast("AlexaProvider", self.provider)
-        if provider._volumes_lock.locked():
-            return
-        try:
-            volumes = await provider.get_volumes()
-        except (AlexapyError, aiohttp.ClientError, TimeoutError, ValueError) as err:
-            self.logger.debug("Could not read the volume of %s: %s", self.display_name, err)
-            return
-        if self._volume_sending or self._volume_set_at != set_at:
-            return
-        if (volume := volumes.get(self.device.device_serial_number)) is None:
-            return
-        self._echo_volume = volume
-        if volume == self._attr_volume_level:
-            return
-        self.logger.debug("%s volume: changed on the Echo to %s", self.display_name, volume)
-        self._attr_volume_level = volume
-        self.update_state()
+        await self._read_volume()
 
-    async def on_unload(self) -> None:
+    async def on_detach(self) -> None:
         """Drop a volume change still waiting or being sent."""
-        self.mass.cancel_timer(f"alexa_volume_{self.player_id}")
+        self.mass.cancel_timer(f"alexa_volume_{self.protocol_id}")
         if self._volume_task is not None:
             self._volume_task.cancel()
-        await super().on_unload()
+        await super().on_detach()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        self._playback_generation += 1
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
 
         payload = {
             "streamUrl": stream_url,
@@ -373,7 +442,7 @@ class AlexaPlayer(Player):
                     self.provider,
                     "/ma/push-url",
                     method="POST",
-                    json_data={**payload, "playerId": self.player_id, "canSkipSpeech": True},
+                    json_data={**payload, "playerId": self._skill_player_id, "canSkipSpeech": True},
                     timeout=10,
                 )
             )
@@ -404,6 +473,10 @@ class AlexaPlayer(Player):
 
         if not screen_handled:
             await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
+        # Reports requested while the command was out describe the state before it.
+        self._playback_generation += 1
+        self._command_completed_at = time.time()
+        self._attr_paused_position_reliable = False
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self._attr_playback_state = PlaybackState.PLAYING
@@ -418,10 +491,10 @@ class AlexaPlayer(Player):
         to the configured Music Assistant / Alexa API so the Alexa side can
         display/update the playing item.
         """
-        if self._last_stream_url is None:
+        if self._last_stream_url is None or self.player is None:
             return
 
-        media = self.state.current_media
+        media = self.player.current_media
 
         async def _upload_metadata() -> None:
             stream_url = self._last_stream_url
@@ -453,7 +526,7 @@ class AlexaPlayer(Player):
             self._last_meta_checksum = meta_checksum
 
         self.mass.create_task(
-            _upload_metadata(), task_name=f"alexa_upload_metadata_{self.player_id}"
+            _upload_metadata(), task_name=f"alexa_upload_metadata_{self.protocol_id}"
         )
 
     def _schedule_volume_send(self, delay: float = VOLUME_SEND_DELAY, retry: bool = False) -> None:
@@ -466,7 +539,7 @@ class AlexaPlayer(Player):
             if self._volume_task is None or self._volume_task.done():
                 self._volume_task = self.mass.create_task(self._send_volume())
 
-        self.mass.call_later(delay, _start_send, task_id=f"alexa_volume_{self.player_id}")
+        self.mass.call_later(delay, _start_send, task_id=f"alexa_volume_{self.protocol_id}")
 
     async def _send_volume(self) -> None:
         """Step the Echo to MA's volume, again if that changed while a step was sent."""
@@ -525,7 +598,7 @@ class AlexaPlayer(Player):
                     "/ma/control",
                     method="POST",
                     json_data={
-                        "playerId": self.player_id,
+                        "playerId": self._skill_player_id,
                         "command": command,
                         "canSkipSpeech": True,
                     },
@@ -538,6 +611,97 @@ class AlexaPlayer(Player):
         # pageLive: true means the skill has taken the command over. The skill must apply these
         # in the order it got them, e.g. a pause right after a new track pauses the new track.
         return bool(_parse_json_object(resp).get("pageLive"))
+
+    async def _correct_position(self) -> None:
+        """
+        Correct elapsed time and play/pause state from the Echo's own reports.
+
+        In flow mode the elapsed time is the position in the whole flow stream, which is
+        exactly the stream offset the Echo reports; MA maps it to the right queue item.
+        """
+        if self.playback_state == PlaybackState.IDLE:
+            # Stopped by MA; the Echo has nothing newer to say about this queue.
+            return
+        generation = self._playback_generation
+        requested_at = time.time()
+        report = await get_playback_state(
+            cast("AlexaProvider", self.provider), self._skill_player_id
+        )
+        if generation != self._playback_generation:
+            # A playback command ran while the report was on its way; it describes the past.
+            return
+        if not report or not report.get("current"):
+            # No report (yet), or the Echo is still on an older stream.
+            return
+        state = ECHO_PLAYBACK_STATES.get(str(report.get("activity")))
+        offset_ms = report.get("offsetMs")
+        age = report.get("ageSeconds")
+        observed_at = report.get("observedAt")
+        if (
+            state is None
+            or not isinstance(offset_ms, (int, float))
+            or not isinstance(age, (int, float))
+            or observed_at == self._position_observed_at
+        ):
+            return
+        # The age keeps the observation on MA's clock even if the skill API runs elsewhere.
+        # The answer was built after the request went out, so this is the latest it can be.
+        if requested_at - age < self._command_completed_at:
+            # Cached from before MA's last playback command, so older than what MA knows.
+            return
+        self._position_observed_at = observed_at
+        self._attr_elapsed_time = offset_ms / 1000
+        self._attr_elapsed_time_last_updated = time.time() - age
+        self._attr_playback_state = state
+        # The Echo's paused offset is its real position, so the queue may follow it.
+        self._attr_paused_position_reliable = state == PlaybackState.PAUSED
+        self.update_state()
+
+    def _hold_position(self) -> None:
+        """
+        Keep the position reached so far as the anchor from now on.
+
+        A pause freezes the clock estimate where it is, and a resume continues from the
+        paused position (also one the Echo reported) instead of adding the paused time.
+        """
+        now = time.time()
+        if (
+            self._attr_playback_state == PlaybackState.PLAYING
+            and self._attr_elapsed_time is not None
+            and self._attr_elapsed_time_last_updated is not None
+        ):
+            self._attr_elapsed_time += now - self._attr_elapsed_time_last_updated
+        self._attr_elapsed_time_last_updated = now
+
+    async def _read_volume(self) -> None:
+        """Read the Echo's volume back from Amazon."""
+        set_at = self._volume_set_at
+        if self._volume_sending or self.mass.loop.time() - set_at < VOLUME_POLL_HOLD:
+            return
+        provider = cast("AlexaProvider", self.provider)
+        if provider._volumes_lock.locked():
+            return
+        self._volume_read_at = self.mass.loop.time()
+        try:
+            volumes = await provider.get_volumes()
+        except (AlexapyError, aiohttp.ClientError, TimeoutError, ValueError) as err:
+            self.logger.debug("Could not read the volume of %s: %s", self.display_name, err)
+            return
+        if self._volume_sending or self._volume_set_at != set_at:
+            return
+        if (volume := volumes.get(self.device.device_serial_number)) is None:
+            return
+        self._echo_volume = volume
+        if volume == self._attr_volume_level:
+            return
+        self.logger.debug("%s volume: changed on the Echo to %s", self.display_name, volume)
+        self._attr_volume_level = volume
+        self.update_state()
+
+    @property
+    def _skill_player_id(self) -> str:
+        """Return the id the skill knows this Echo by: its Music Assistant player id."""
+        return self.player.player_id if self.player else self.protocol_id
 
 
 class AlexaProvider(PlayerProvider):
@@ -580,6 +744,7 @@ class AlexaProvider(PlayerProvider):
         self._volumes: dict[str, int] | None = None
         self._volumes_read_at = -math.inf
         self._volumes_lock = asyncio.Lock()
+        self._playback_state_retry_at = -math.inf
         self._intents: list[dict[str, Any]] | None = None
         self._invocation_name: str | None = None
 
@@ -610,8 +775,7 @@ class AlexaProvider(PlayerProvider):
 
         for device in devices:
             if device.get("capabilities") and "MUSIC_SKILL" in device.get("capabilities"):
-                dev_name = device["accountName"]
-                player_id = dev_name
+                protocol_id = device["accountName"]
                 # Initialize AlexaDevice
                 device_object = AlexaDevice()
                 device_object._device_type = device["deviceType"]
@@ -619,16 +783,19 @@ class AlexaProvider(PlayerProvider):
                 device_object._device_family = device["deviceOwnerCustomerId"]
                 device_object._cluster_members = device["clusterMembers"]
                 device_object._locale = alexa_locale
-                self.devices[player_id] = device_object
-
-                # Create AlexaPlayer instance
-                player = AlexaPlayer(self, player_id, device_object)
-                await self.mass.players.register_or_update(player)
+                self.devices[protocol_id] = device_object
 
         if self.devices:
             # builds the csrf header the volume calls need
             AlexaAPI(next(iter(self.devices.values())), self.login)
         await self._load_intents()
+
+    async def discover_players(self) -> None:
+        """Register the Echo devices of the account that have no attached protocol."""
+        for protocol_id, device in self.devices.items():
+            if self.get_protocol(protocol_id) or not self.mass.players.wants_protocol(protocol_id):
+                continue
+            await self.mass.players.register(AlexaPlayer(self, protocol_id, device))
 
     async def get_volumes(self) -> dict[str, int]:
         """Return each Echo's volume by serial number, read once per poll round."""

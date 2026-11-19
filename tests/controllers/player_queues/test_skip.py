@@ -14,7 +14,7 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
-from music_assistant.controllers.players import controller as players_controller
+from music_assistant.controllers.players import locks as players_locks
 from tests.common import bare_player_controller
 
 QUEUE_ID = "q1"
@@ -195,7 +195,8 @@ async def test_pending_skips_start_from_a_position_set_meanwhile() -> None:
 
 async def test_failed_seek_does_not_carry_into_the_next_skip() -> None:
     """A skip that could not be applied must not add its offset to a later one."""
-    ctrl, _queue, seek = _controller(elapsed_time=100.0, anchor_age=0.0)
+    # paused, so the position does not move while the test runs
+    ctrl, _queue, seek = _controller(elapsed_time=100.0, state=PlaybackState.PAUSED)
     seek.side_effect = [InvalidCommand("seek failed"), None]
 
     with pytest.raises(InvalidCommand, match="seek failed"):
@@ -209,7 +210,8 @@ async def test_failed_seek_does_not_carry_into_the_next_skip() -> None:
 
 async def test_cancelled_skip_does_not_carry_into_the_next_skip() -> None:
     """A press cancelled while waiting for its turn must not add its offset to a later one."""
-    ctrl, queue, _seek = _controller(elapsed_time=100.0, anchor_age=0.0, real_lock=True)
+    # paused, so the position does not move while the test runs
+    ctrl, queue, _seek = _controller(elapsed_time=100.0, state=PlaybackState.PAUSED, real_lock=True)
     positions = _anchoring_seek(ctrl, queue)
 
     async with ctrl.mass.players.get_group_and_player_lock(QUEUE_ID):
@@ -227,10 +229,22 @@ async def test_skip_requires_an_item_with_a_duration() -> None:
     """Radio and not-yet-probed items have no range to skip within."""
     ctrl, _queue, seek = _controller(duration=None)
 
-    with pytest.raises(InvalidCommand, match="without duration"):
+    with pytest.raises(InvalidCommand, match="without duration") as error:
         await ctrl.skip(QUEUE_ID, 10)
 
+    assert error.value.translation_key == "length_unknown"
+    assert error.value.translation_args == ["chapter one"]
     seek.assert_not_awaited()
+
+
+async def test_the_playback_speed_of_a_track_can_not_change() -> None:
+    """Only audiobooks and podcasts play at another speed."""
+    ctrl, _queue, _seek = _controller()
+
+    with pytest.raises(InvalidCommand, match="only supported for audiobooks") as error:
+        await ctrl.set_playback_speed(QUEUE_ID, 1.5)
+
+    assert error.value.translation_key == "playback_speed_not_supported"
 
 
 async def test_skip_requires_an_active_queue() -> None:
@@ -238,9 +252,11 @@ async def test_skip_requires_an_active_queue() -> None:
     ctrl, queue, seek = _controller()
     queue.active = False
 
-    with pytest.raises(InvalidCommand, match="not active"):
+    with pytest.raises(InvalidCommand, match="not active") as error:
         await ctrl.skip(QUEUE_ID, 10)
 
+    assert error.value.translation_key == "queue_not_active"
+    assert error.value.translation_args == ["Q1"]
     seek.assert_not_awaited()
 
 
@@ -258,20 +274,19 @@ async def test_previous_restarts_the_track_when_past_the_threshold() -> None:
     assert queue.current_index == 1
 
 
-async def test_overlapping_presses_stay_serialized_past_the_lock_timeout(
+async def test_overlapping_presses_stay_serialized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A play action waits for the running one however long it takes, never runs alongside it."""
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 1.0)
+    monkeypatch.setattr(players_locks, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+    monkeypatch.setattr(players_locks, "PLAYER_LOCK_TIMEOUT", 1.0)
     ctrl, _queue, seek = _controller(elapsed_time=100.0, anchor_age=0.0, real_lock=True)
     release = asyncio.Event()
     seeks: list[int] = []
 
     async def _slow_seek(_queue_id: str, position: int) -> None:
         seeks.append(position)
-        # the first press stands in for a play request that outlasts the lock timeout
+        # the first press stands in for a play request that takes long
         if len(seeks) == 1:
             await release.wait()
 
@@ -280,7 +295,7 @@ async def test_overlapping_presses_stay_serialized_past_the_lock_timeout(
     first = asyncio.create_task(ctrl.skip(QUEUE_ID, 10))
     await asyncio.sleep(0)
     second = asyncio.create_task(ctrl.skip(QUEUE_ID, 10))
-    # well past the point where the lock used to be given up on
+    # well past the slow threshold
     await asyncio.sleep(0.1)
     assert len(seeks) == 1
     release.set()

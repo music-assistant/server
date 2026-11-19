@@ -206,7 +206,7 @@ async def test_replace_cancels_the_prewarm_of_the_track_it_swaps_out(dynamic: bo
 
     await ctrl.play_media("q1", _playlist("pl1", dynamic=dynamic), QueueOption.REPLACE)
 
-    assert order[0] == "prepare_next_audio_buffer_q1"
+    assert order.index("prepare_next_audio_buffer_q1") < order.index("release")
     assert order.count("release") == len(replaced)
 
 
@@ -329,11 +329,13 @@ async def test_a_player_still_reporting_the_replaced_item_keeps_the_new_queue_po
     queue.next_item = new_items[1]
     player = SimpleNamespace(
         player_id="q1",
-        active_output_protocol="native",
-        current_media=SimpleNamespace(
-            source_id="q1", queue_item_id=replaced[0].queue_item_id, uri=None
+        resolve_output_protocol=lambda: SimpleNamespace(
+            current_media=SimpleNamespace(
+                source_id="q1", queue_item_id=replaced[0].queue_item_id, uri=None
+            )
         ),
-        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, corrected_elapsed_time=12.0),
+        playback_state=PlaybackState.PLAYING,
+        corrected_elapsed_time=12.0,
     )
 
     updated = ctrl._update_current_index_from_player(queue, cast("Player", player))

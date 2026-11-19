@@ -6,7 +6,9 @@ import asyncio
 import dataclasses
 import json
 import logging
+import platform
 import re
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -146,6 +148,44 @@ def configure_plex_identity(client_id: str) -> None:
     plexapi.BASE_HEADERS["X-Plex-Client-Identifier"] = client_id
 
 
+def compute_client_id(plex_provider_id: str, ma_player_id: str) -> str:
+    """
+    Return the stable Plex client identifier of a Music Assistant player.
+
+    The Plex provider reports a player's playback under this identifier, and Plex Connect
+    uses it as GDM Resource-Identifier, companion server machineIdentifier and plex.tv
+    X-Plex-Client-Identifier, so Plex sees the player as one and the same device.
+
+    :param plex_provider_id: Instance id of the Plex music provider.
+    :param ma_player_id: The Music Assistant player id.
+    """
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_DNS,
+            f"music-assistant-plex-{plex_provider_id}-{ma_player_id}",
+        )
+    )
+
+
+def player_client_headers(client_id: str, device_name: str) -> dict[str, str]:
+    """
+    Return the headers that present a Music Assistant player to the Plex server.
+
+    :param client_id: The player's client identifier, see compute_client_id.
+    :param device_name: The name Plex shows for the player.
+    """
+    return {
+        # header values are sent as Latin-1, so the UTF-8 bytes of the name are passed
+        # as Latin-1 text to reach Plex as UTF-8 in any script
+        "X-Plex-Device-Name": device_name.encode().decode("latin-1"),
+        "X-Plex-Session-Identifier": client_id,
+        "X-Plex-Client-Identifier": client_id,
+        "X-Plex-Product": APPLICATION_NAME,
+        "X-Plex-Platform": APPLICATION_NAME,
+        "X-Plex-Platform-Version": platform.release(),
+    }
+
+
 def extract_library_name(conf_value: str) -> str:
     """
     Extract the library name from a config value that may include server name.
@@ -252,6 +292,8 @@ async def get_section_info(
     :param local_server_port: Port of the Plex server.
     :param local_server_verify_cert: Whether to verify SSL certificate.
     :param instance_id: Provider instance ID to use for cache isolation.
+    :raises PlexServerAccessError: The signed-in account has no verified access to the server.
+    :raises requests.ConnectionError: The server could not be reached.
     """
     cache_key = "plex_section_info"
     cache_provider = instance_id or local_server_ip
@@ -274,7 +316,7 @@ async def get_section_info(
                 local_server_port,
                 err,
             )
-            return []
+            raise
 
     def _get_section_info() -> list[PlexSectionInfo]:
         plex_server: PlexServer
@@ -291,7 +333,7 @@ async def get_section_info(
                 local_server_port,
                 err,
             )
-            return []
+            raise
         results: list[PlexSectionInfo] = []
         for media_section in cast("list[PlexLibrarySection]", plex_server.library.sections()):
             if media_section.type != PlexMusicSection.TYPE:

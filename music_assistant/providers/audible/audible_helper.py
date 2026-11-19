@@ -30,6 +30,8 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
+    RateLimited,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     Audiobook,
@@ -47,6 +49,11 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.helpers.datetime import from_iso_string, utc
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.mass import MusicAssistant
 
 CACHE_DOMAIN = "audible"
@@ -63,6 +70,10 @@ AUDIOBOOK_CONTENT_TYPES = ("SinglePartBook", "MultiPartBook")
 PODCAST_CONTENT_TYPES = ("PodcastParent", "Periodical")
 # legacy series report their episodes as show issues rather than podcast episodes
 SHOW_CONTENT_TYPE = "Show"
+
+# Audible publishes no rate limit for its API, so stay at a modest 4 requests per second
+API_RATE_LIMIT = 4
+API_RATE_PERIOD = 1
 
 _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 
@@ -209,6 +220,7 @@ class AudibleHelper:
         self.provider = provider
         self.logger = logger or logging.getLogger("audible_helper")
         self._acr_cache: dict[tuple[str, MediaType], str] = {}
+        self.throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
 
     async def _fetch_library_items(
         self,
@@ -285,7 +297,7 @@ class AudibleHelper:
             if cached_book is not None:
                 return self._parse_audiobook(cached_book)
             return self._parse_audiobook(audiobook_data)
-        except Exception as exc:
+        except (MediaNotFoundError, AttributeError, KeyError, TypeError, ValueError) as exc:
             self.provider.report_skipped_sync_item(MediaType.AUDIOBOOK, asin or None, exc)
             return None
 
@@ -370,8 +382,10 @@ class AudibleHelper:
                 duration = int(sum(chapter.get("length_ms", 0) for chapter in chapters_data) / 1000)
                 if duration > 0:
                     book.duration = duration
-            except Exception as exc:
-                self.logger.warning(f"Error calculating duration from chapters for {asin}: {exc}")
+            except (AttributeError, TypeError) as exc:
+                self.logger.warning(
+                    "Error calculating duration from chapters for %s: %s", asin, exc
+                )
 
         # Fetch resume position
         book.resume_position_ms = await self.get_last_position(asin=asin)
@@ -396,13 +410,14 @@ class AudibleHelper:
             if chapters:
                 try:
                     duration = int(sum(chapter.get("length_ms", 0) for chapter in chapters) / 1000)
-                except Exception as exc:
-                    self.logger.warning(f"Error calculating duration for ASIN {asin}: {exc}")
+                except (AttributeError, TypeError) as exc:
+                    self.logger.warning("Error calculating duration for ASIN %s: %s", asin, exc)
 
         try:
             # Podcasts use Mpeg (non-DRM MP3), audiobooks use HLS
             if media_type == MediaType.PODCAST_EPISODE:
-                playback_info = await self.client.post(
+                playback_info = await self._request(
+                    "post",
                     f"content/{asin}/licenserequest",
                     body={
                         "consumption_type": "Streaming",
@@ -411,7 +426,8 @@ class AudibleHelper:
                     },
                 )
             else:
-                playback_info = await self.client.post(
+                playback_info = await self._request(
+                    "post",
                     f"content/{asin}/licenserequest",
                     body={
                         "quality": "High",
@@ -429,7 +445,7 @@ class AudibleHelper:
 
             content_license = playback_info.get("content_license", {})
             if not content_license:
-                self.logger.error(f"No content_license in playback_info for ASIN {asin}")
+                self.logger.error("No content_license in playback_info for ASIN %s", asin)
                 raise ValueError(f"Missing content_license for ASIN {asin}")  # noqa: TRY301 - converted to ValueError below
 
             content_metadata = content_license.get("content_metadata", {})
@@ -438,7 +454,7 @@ class AudibleHelper:
 
             stream_url = content_license.get("license_response")
             if not stream_url:
-                self.logger.error(f"No license_response (stream URL) for ASIN {asin}")
+                self.logger.error("No license_response (stream URL) for ASIN %s", asin)
                 raise ValueError(f"Missing stream URL for ASIN {asin}")  # noqa: TRY301 - converted to ValueError below
 
             acr = content_license.get("acr", "")
@@ -449,7 +465,7 @@ class AudibleHelper:
                 ContentType.MP3 if media_type == MediaType.PODCAST_EPISODE else ContentType.AAC
             )
         except Exception as exc:
-            self.logger.error(f"Error getting stream details for ASIN {asin}: {exc}")
+            self.logger.error("Error getting stream details for ASIN %s: %s", asin, exc)
             raise ValueError(f"Failed to get stream details: {exc}") from exc
 
         return StreamDetails(
@@ -487,17 +503,17 @@ class AudibleHelper:
                 )
 
                 if not response:
-                    self.logger.warning(f"Failed to get metadata for ASIN {asin}")
+                    self.logger.warning("Failed to get metadata for ASIN %s", asin)
                     return []
 
                 content_metadata = response.get("content_metadata")
                 if not content_metadata:
-                    self.logger.warning(f"No content_metadata for ASIN {asin}")
+                    self.logger.warning("No content_metadata for ASIN %s", asin)
                     return []
 
                 chapter_info = content_metadata.get("chapter_info")
                 if not chapter_info:
-                    self.logger.warning(f"No chapter_info for ASIN {asin}")
+                    self.logger.warning("No chapter_info for ASIN %s", asin)
                     return []
 
                 chapters_data = chapter_info.get("chapters") or []
@@ -508,8 +524,8 @@ class AudibleHelper:
                     provider=self.provider_instance,
                     category=CACHE_CATEGORY_CHAPTERS,
                 )
-            except Exception as exc:
-                self.logger.error(f"Error fetching chapters for ASIN {asin}: {exc}")
+            except (ProviderUnavailableError, RateLimited, AttributeError) as exc:
+                self.logger.error("Error fetching chapters for ASIN %s: %s", asin, exc)
                 chapters_data = []
 
         return chapters_data
@@ -603,25 +619,29 @@ class AudibleHelper:
                 acr = stream_details.data.get("acr")
 
             if not acr:
-                self.logger.warning(f"No ACR available for ASIN {asin}, cannot report position")
+                self.logger.warning("No ACR available for ASIN %s, cannot report position", asin)
                 return
 
-            await self.client.put(
-                f"lastpositions/{asin}", body={"acr": acr, "asin": asin, "position_ms": position_ms}
+            await self._request(
+                "put",
+                f"lastpositions/{asin}",
+                body={"acr": acr, "asin": asin, "position_ms": position_ms},
             )
 
-            self.logger.debug(f"Successfully reported position {position_ms}ms for ASIN {asin}")
+            self.logger.debug("Successfully reported position %sms for ASIN %s", position_ms, asin)
 
         except (KeyError, TypeError) as exc:
             self.logger.error(
-                f"Error accessing data while reporting position for ASIN {asin}: {exc}"
+                "Error accessing data while reporting position for ASIN %s: %s", asin, exc
             )
         except TimeoutError as exc:
-            self.logger.error(f"Timeout while reporting position for ASIN {asin}: {exc}")
+            self.logger.error("Timeout while reporting position for ASIN %s: %s", asin, exc)
         except ConnectionError as exc:
-            self.logger.error(f"Connection error while reporting position for ASIN {asin}: {exc}")
-        except Exception as exc:
-            self.logger.error(f"Unexpected error reporting position for ASIN {asin}: {exc}")
+            self.logger.error(
+                "Connection error while reporting position for ASIN %s: %s", asin, exc
+            )
+        except (audible.exceptions.RequestError, RetriesExhausted, RateLimited, ValueError) as exc:
+            self.logger.error("Unexpected error reporting position for ASIN %s: %s", asin, exc)
 
     async def get_audible_resume_position(self, asin: str) -> tuple[bool, int, datetime | None]:
         """
@@ -655,8 +675,8 @@ class AudibleHelper:
             )
         if not response:
             try:
-                response = await self.client.get(path, **kwargs)
-            except audible.exceptions.RequestError as exc:
+                response = await self._request("get", path, **kwargs)
+            except (audible.exceptions.RequestError, RetriesExhausted) as exc:
                 raise ProviderUnavailableError(
                     f"Audible API request failed for '{path}': {exc}"
                 ) from exc
@@ -809,7 +829,7 @@ class AudibleHelper:
             if cached_podcast is not None:
                 return self._parse_podcast(cached_podcast)
             return self._parse_podcast(podcast_data)
-        except Exception as exc:
+        except (MediaNotFoundError, AttributeError, KeyError, TypeError, ValueError) as exc:
             self.provider.report_skipped_sync_item(MediaType.PODCAST, asin or None, exc)
             return None
 
@@ -927,7 +947,7 @@ class AudibleHelper:
                 yield self._parse_podcast_episode(episode_data, podcast, position)
             except (AttributeError, KeyError, TypeError, ValueError) as exc:
                 asin = episode_data.get("asin", "unknown")
-                self.logger.warning(f"Error parsing podcast episode {asin}: {exc}")
+                self.logger.warning("Error parsing podcast episode %s: %s", asin, exc)
 
     async def get_podcast_episode(self, episode_asin: str) -> PodcastEpisode:
         """
@@ -1241,6 +1261,24 @@ class AudibleHelper:
     async def deregister(self) -> None:
         """Deregister this provider from Audible."""
         await asyncio.to_thread(self.client.auth.deregister_device)
+
+    @throttle_with_retries
+    async def _request(self, /, method: str, path: str, **kwargs: Any) -> Any:
+        """
+        Send a request to the Audible API within the rate limit of the provider.
+
+        :param method: The HTTP method of the request: get, post or put.
+        :param path: The API path to request.
+        :param kwargs: Further arguments for the Audible client, such as query params or body.
+        :raises RetriesExhausted: When Audible keeps rate limiting the account.
+        """
+        try:
+            return await getattr(self.client, method)(path, **kwargs)
+        except audible.exceptions.RatelimitError as err:
+            raise RateLimited(
+                "Audible rate limit",
+                backoff_time=parse_retry_after(err.response.headers.get("Retry-After")),
+            ) from err
 
 
 def _html_to_txt(html_text: str) -> str:

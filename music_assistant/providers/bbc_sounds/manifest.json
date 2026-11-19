@@ -7,14 +7,23 @@
   "codeowners": [
     "@kieranhogg"
   ],
-  "tier": "community",
+  "provides": ["radio", "podcast"],
   "documentation": "https://music-assistant.io/music-providers/bbc-sounds/",
   "credits": [
     "[auntie-sounds](https://github.com/kieranhogg/auntie-sounds)"
   ],
   "requirements": [
-    "auntie-sounds==2.0.9",
-    "pytz==2026.2"
+    "auntie-sounds==3.1.0"
   ],
-  "multi_instance": false
+  "multi_instance": true,
+  "menu_actions": [
+    {
+      "id": "listen_from_start",
+      "label": "Listen from start",
+      "media_types": ["radio"],
+      "scope": "queues.control",
+      "icon": "mdi-restart",
+      "requires_player": true
+    }
+  ]
 }

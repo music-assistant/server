@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import json
+import logging
 import time
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, quote, urlparse
@@ -18,10 +19,17 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
+    BrowseFolder,
     MediaItemImage,
     Playlist,
     ProviderMapping,
@@ -35,6 +43,11 @@ from soundcloudpy import SoundcloudAsyncAPI
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider, describe_sync_error
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
@@ -49,6 +62,19 @@ TOKEN_URL = "https://secure.soundcloud.com/oauth/token"  # noqa: S105 - endpoint
 # renew the access token this many seconds before it expires
 TOKEN_REFRESH_BUFFER = 300
 TOKEN_REFRESH_RETRY_DELAY = 60
+
+# Soundcloud documents no rate limit for its web api, so stay at a conservative pace
+API_RATE_LIMIT = 4
+API_RATE_PERIOD = 1
+# the tracks endpoint rejects a request for more ids than this
+TRACK_IDS_BATCH_SIZE = 50
+
+# browse folder that lists the playlists and albums of the users the account follows
+BROWSE_FOLLOWING = "following"
+# the number of followed users fetched per request; the whole list is paged through
+FOLLOWING_PAGE_SIZE = 200
+# the number of a user's playlists, and of its albums, a browse listing fetches
+USER_SETS_LIMIT = 100
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -76,7 +102,7 @@ PREVIEW_CDN_HOST = "cf-preview-media.sndcdn.com"
 
 
 class _SoundcloudAPI(SoundcloudAsyncAPI):  # type: ignore[misc]
-    """Soundcloud api client that awaits a hook before every request."""
+    """Soundcloud api client that throttles every request and awaits a hook before it."""
 
     def __init__(
         self,
@@ -84,6 +110,7 @@ class _SoundcloudAPI(SoundcloudAsyncAPI):  # type: ignore[misc]
         client_id: str,
         http_session: ClientSession,
         before_request: Callable[[], Awaitable[None]],
+        logger: logging.Logger,
     ) -> None:
         """
         Initialize the api client.
@@ -92,19 +119,38 @@ class _SoundcloudAPI(SoundcloudAsyncAPI):  # type: ignore[misc]
         :param client_id: The Soundcloud client id.
         :param http_session: The aiohttp session to send the requests with.
         :param before_request: Coroutine function awaited before each request.
+        :param logger: Logger for the throttling and retry messages.
         """
         super().__init__(auth_token, client_id, http_session)
         self._before_request = before_request
+        self.logger = logger
+        self.throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
 
+    @throttle_with_retries
     async def get(
         self,
         url: str,
         headers: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Run the hook, then send the request."""
+        """
+        Run the hook, then send the request within the rate limit.
+
+        :param url: The url to request.
+        :param headers: The headers to send along.
+        :param params: The query parameters to add to the url.
+        :raises RetriesExhausted: When Soundcloud keeps rate limiting the request or stays
+            unavailable.
+        """
         await self._before_request()
-        return cast("dict[str, Any]", await super().get(url, headers=headers, params=params))
+        async with self.http_session.get(url=url, params=params, headers=headers) as response:
+            if response.status == 429:
+                msg = "Soundcloud rate limit reached"
+                retry_after = parse_retry_after(response.headers.get("Retry-After"))
+                raise RateLimited(msg, backoff_time=retry_after)
+            if response.status in (502, 503):
+                raise ResourceTemporarilyUnavailable(backoff_time=30)
+            return cast("dict[str, Any]", await response.json())
 
 
 class DrmProtectedTrackError(MediaNotFoundError):
@@ -119,11 +165,11 @@ class DrmProtectedTrackError(MediaNotFoundError):
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
     from aiohttp import ClientSession
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-    from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItemType
+    from music_assistant_models.media_items import ItemMapping, MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -149,6 +195,11 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
     _token_expires_at: int | None = None
     _token_lock: asyncio.Lock
 
+    @property
+    def account_id(self) -> str | None:
+        """Return the SoundCloud user id of the logged-in account."""
+        return self._user_id or None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
@@ -165,7 +216,11 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self._token_expires_at = _token_claims(auth_token).get("exp")
         self._token_lock = asyncio.Lock()
         self._soundcloud = _SoundcloudAPI(
-            auth_token, str(client_id), self.mass.http_session, self._ensure_valid_token
+            auth_token,
+            str(client_id),
+            self.mass.http_session,
+            self._ensure_valid_token,
+            self.logger,
         )
         await self._soundcloud.login()
         self._me = await self._soundcloud.get_account_details()
@@ -331,6 +386,69 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
             return UniqueList(await self._get_subscribed_feed_tracks())
         return await self._recommendation_items_from_payload(item_id)
 
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Browse this provider's items.
+
+        :param path: The path to browse, (e.g. provider_id://following/muloka).
+        """
+        base = f"{self.instance_id}://"
+        path_parts = [part for part in path.removeprefix(base).split("/") if part]
+        if len(path_parts) == 1 and path_parts[0] in ("artists", "tracks", "playlists"):
+            return await self._browse_library_folder(path_parts[0])
+        if not path_parts or path_parts[0] != BROWSE_FOLLOWING:
+            result = list(await super().browse(path))
+            if not path_parts:
+                result.append(
+                    BrowseFolder(
+                        item_id=BROWSE_FOLLOWING,
+                        provider=self.instance_id,
+                        path=f"{base}{BROWSE_FOLLOWING}",
+                        name="Following",
+                        translation_key=BROWSE_FOLLOWING,
+                    )
+                )
+            return result
+
+        if len(path_parts) == 1:
+            return [
+                self._user_folder(artist, f"{base}{BROWSE_FOLLOWING}")
+                for artist in await self._get_followed_users()
+            ]
+        if len(path_parts) == 2:
+            user_id = await self._resolve_user_segment(path_parts[1])
+            return await self._get_user_sets(user_id)
+        msg = f"Invalid browse path: {path}"
+        raise InvalidDataError(msg)
+
+    async def _browse_library_folder(
+        self, folder: str
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Return every library item of a standard library folder.
+
+        :param folder: The folder: artists, tracks or playlists.
+        """
+        # overriding browse turns off the server's paged reading of these folders, and the
+        # default browse stops at 500 items, so the whole folder is read for the server to page
+        if folder == "artists":
+            if artists := await self.mass.music.artists.library_items(
+                provider=self.instance_id, summary=False, limit=0
+            ):
+                return artists
+            return [x async for x in self.get_library_artists()]
+        if folder == "tracks":
+            if tracks := await self.mass.music.tracks.library_items(
+                provider=self.instance_id, summary=False, limit=0
+            ):
+                return tracks
+            return [x async for x in self.get_library_tracks()]
+        if playlists := await self.mass.music.playlists.library_items(
+            provider=self.instance_id, summary=False, limit=0
+        ):
+            return playlists
+        return [x async for x in self.get_library_playlists()]
+
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the mixed-selection collections as folders with items."""
         folders: list[RecommendationFolder] = []
@@ -449,18 +567,10 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if "tracks" not in playlist_obj:
             return result
         drm_protected = 0
-        for index, item in enumerate(playlist_obj["tracks"], 1):
+        tracks = await self._with_full_track_objects(playlist_obj["tracks"])
+        for index, item in enumerate(tracks, 1):
             try:
-                # Skip some ugly "tracks" entries, example:
-                # {'id': 123, 'kind': 'track', 'monetization_model': 'NOT_APPLICABLE'}  # noqa: ERA001
-                if "title" in item:
-                    if track := await self._parse_track(item, index):
-                        result.append(track)
-                # But also try to get the track details if the track is not in the playlist
-                else:
-                    track_details = await self._soundcloud.get_track_details(item["id"])
-                    if track := await self._parse_track(track_details[0], index):
-                        result.append(track)
+                result.append(await self._parse_track(item, index))
             except DrmProtectedTrackError:
                 drm_protected += 1
                 continue
@@ -510,15 +620,16 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
         drm_protected = 0
         for item in collection:
-            song = await self._soundcloud.get_track_details(item["id"])
             try:
-                track = await self._parse_track(song[0])
+                track = await self._parse_track(item)
                 tracks.append(track)
             except DrmProtectedTrackError:
                 drm_protected += 1
                 continue
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("Skipping track %s: %s", item["id"], describe_sync_error(error))
+                self.logger.debug(
+                    "Skipping track %s: %s", _item_id(item), describe_sync_error(error)
+                )
                 continue
         if drm_protected:
             self.logger.debug(
@@ -551,15 +662,16 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
         drm_protected = 0
         for item in collection:
-            song = await self._soundcloud.get_track_details(item["id"])
             try:
-                track = await self._parse_track(song[0])
+                track = await self._parse_track(item)
                 tracks.append(track)
             except DrmProtectedTrackError:
                 drm_protected += 1
                 continue
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("Skipping track %s: %s", item["id"], describe_sync_error(error))
+                self.logger.debug(
+                    "Skipping track %s: %s", _item_id(item), describe_sync_error(error)
+                )
                 continue
 
         if drm_protected:
@@ -759,11 +871,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
             },
             position=playlist_position,
         )
-        user_id = track_obj["user"]["id"]
-        user = await self._soundcloud.get_user_details(user_id)
-        artist = await self._parse_artist(user)
-        if artist and artist.item_id not in {x.item_id for x in track.artists}:
-            track.artists.append(artist)
+        track.artists.append(await self._parse_artist(track_obj["user"]))
 
         if track_obj.get("artwork_url"):
             track.metadata.images = UniqueList(
@@ -789,6 +897,109 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Patch artwork URL to a high quality thumbnail."""
         # This is undocumented in their API docs, but was previously
         return artwork_url.replace("large", "t500x500")
+
+    async def _with_full_track_objects(
+        self, track_objs: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """
+        Return the given track objects, with each stub replaced by the full track object.
+
+        A stub of a track that Soundcloud no longer returns is kept as is.
+
+        :param track_objs: Raw track objects, of which some may hold little more than an id.
+        """
+        # Soundcloud sends the later tracks of a playlist as stubs like this one:
+        # {'id': 123, 'kind': 'track', 'monetization_model': 'NOT_APPLICABLE'}  # noqa: ERA001
+        stub_ids = [str(item["id"]) for item in track_objs if "title" not in item and "id" in item]
+        full_objs: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(stub_ids), TRACK_IDS_BATCH_SIZE):
+            batch = stub_ids[start : start + TRACK_IDS_BATCH_SIZE]
+            details = await self._soundcloud.get_track_details(",".join(batch))
+            if isinstance(details, list):
+                full_objs.update((str(obj.get("id")), obj) for obj in details)
+        return [full_objs.get(str(item.get("id")), item) for item in track_objs]
+
+    @use_cache(3600, allow_expired_cache=True)  # Cache for 1 hour
+    async def _get_followed_users(self) -> list[Artist]:
+        """Return the users the account follows that have public playlists or albums."""
+        artists: list[Artist] = []
+        response = await self._soundcloud.get_following(self._user_id, FOLLOWING_PAGE_SIZE)
+        user_objs = _browse_collection(response, "followed users")
+        while next_href := response.get("next_href"):
+            response = await self._soundcloud.get(next_href, headers=self._soundcloud.headers)
+            user_objs.extend(_browse_collection(response, "followed users"))
+        for user_obj in user_objs:
+            # a user without sets would only lead to an empty folder; the count also holds
+            # sets that are not public, so a user that passes can still show an empty folder
+            if user_obj.get("playlist_count", 1) == 0:
+                continue
+            try:
+                artists.append(await self._parse_artist(user_obj))
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self.logger.debug(
+                    "Skipping followed user %s: %s", _item_id(user_obj), describe_sync_error(error)
+                )
+        return artists
+
+    @use_cache(3600 * 3, allow_expired_cache=True)  # Cache for 3 hours
+    async def _get_user_sets(self, user_id: str) -> list[Playlist]:
+        """
+        Return the public playlists and albums of a Soundcloud user, newest first.
+
+        :param user_id: The Soundcloud user id.
+        """
+        playlists_obj = await self._soundcloud.get_playlists_from_user(user_id, USER_SETS_LIMIT)
+        albums_obj = await self._soundcloud.get_album_from_user(user_id, USER_SETS_LIMIT)
+        set_objs = [
+            *_browse_collection(playlists_obj, f"playlists of user {user_id}"),
+            *_browse_collection(albums_obj, f"albums of user {user_id}"),
+        ]
+        set_objs.sort(key=lambda obj: str(obj.get("created_at") or ""), reverse=True)
+        playlists: list[Playlist] = []
+        for playlist_obj in set_objs:
+            try:
+                playlists.append(await self._parse_playlist(playlist_obj))
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self.logger.debug(
+                    "Skipping playlist %s of user %s: %s",
+                    _item_id(playlist_obj),
+                    user_id,
+                    describe_sync_error(error),
+                )
+        return playlists
+
+    def _user_folder(self, artist: Artist, base_path: str) -> BrowseFolder:
+        """
+        Return the browse folder of a Soundcloud user.
+
+        :param artist: The user, as parsed by _parse_artist.
+        :param base_path: The browse path the folder sits in.
+        """
+        # the permalink makes the breadcrumb readable, where the numeric id would not be
+        folder = BrowseFolder(
+            item_id=artist.item_id,
+            provider=self.instance_id,
+            path=f"{base_path}/{_user_permalink(artist) or artist.item_id}",
+            name=artist.name,
+        )
+        if artist.metadata.images:
+            folder.image = artist.metadata.images[0]
+        return folder
+
+    async def _resolve_user_segment(self, segment: str) -> str:
+        """
+        Return the user id that a user segment of a browse path stands for.
+
+        :param segment: The permalink of a followed user, or a numeric user id.
+        :raises MediaNotFoundError: When the segment matches no followed user and is no id.
+        """
+        for artist in await self._get_followed_users():
+            if _user_permalink(artist) == segment:
+                return artist.item_id
+        if segment.isdigit():
+            return segment
+        msg = f"Soundcloud user {segment} is not available"
+        raise MediaNotFoundError(msg)
 
     def _report_skipped_item(
         self, media_type: MediaType, item_obj: dict[str, Any], err: Exception
@@ -897,6 +1108,35 @@ def _item_id(item_obj: Any) -> Any:
     """Return the id of a raw api object, or None if it does not have a readable one."""
     # called from the handlers that log an unusable object, so it must never raise itself
     return item_obj.get("id") if isinstance(item_obj, dict) else None
+
+
+def _browse_collection(response: Any, what: str) -> list[dict[str, Any]]:
+    """
+    Return the items of a browse response, which must not be cached when this raises.
+
+    :param response: The api response.
+    :param what: What was requested, for the error message.
+    :raises MediaNotFoundError: When Soundcloud does not know the requested user.
+    :raises InvalidDataError: When Soundcloud answered with any other error.
+    """
+    if isinstance(response, dict) and isinstance(collection := response.get("collection"), list):
+        return collection
+    # Soundcloud answers an error with an object such as
+    # {'errors': [{'error_message': '404 - Not Found'}]}  # noqa: ERA001
+    errors = response.get("errors") if isinstance(response, dict) else None
+    if errors and "404" in str(errors):
+        msg = f"Soundcloud has no {what}"
+        raise MediaNotFoundError(msg)
+    msg = f"Soundcloud answered the request for the {what} with an error: {errors or response}"
+    raise InvalidDataError(msg)
+
+
+def _user_permalink(artist: Artist) -> str | None:
+    """Return the permalink of a Soundcloud user, taken from its profile url."""
+    for mapping in artist.provider_mappings:
+        if mapping.url:
+            return mapping.url.rstrip("/").rsplit("/", 1)[-1] or None
+    return None
 
 
 def _token_claims(auth_token: str) -> dict[str, Any]:

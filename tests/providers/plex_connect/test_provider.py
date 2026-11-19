@@ -10,8 +10,9 @@ import aiohttp
 import pytest
 
 from music_assistant.providers import plex_connect
+from music_assistant.providers.plex.helpers import compute_client_id
 from music_assistant.providers.plex_connect import PlexConnectProvider
-from music_assistant.providers.plex_connect.plextv import PlexTvAuthError, compute_client_id
+from music_assistant.providers.plex_connect.plextv import PlexTvAuthError
 
 
 def _make_provider(token: str | None = "devtoken") -> Any:  # noqa: S107
@@ -20,7 +21,7 @@ def _make_provider(token: str | None = "devtoken") -> Any:  # noqa: S107
     mock_mass.version = "2.10.0"
     mock_mass.streams.publish_ip = "192.168.1.10"
     player = MagicMock()
-    player.display_name = "Living Room"
+    player.name = "Living Room"
     mock_mass.players.get_player.return_value = player
 
     # setup_data holds the one-time selections plus the (encrypted) plex.tv token;

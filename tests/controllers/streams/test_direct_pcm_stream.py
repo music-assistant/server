@@ -67,6 +67,8 @@ def _controller(queue_item: QueueItem) -> tuple[StreamsController, dict[str, Any
         queue_id=QUEUE_ID, active=True, display_name="Player", available=True, items=1
     )
     mass.player_queues.get_item.return_value = queue_item
+    # the queue's player is no group that shares one stream with its members
+    mass.players.get_player.return_value.own_protocol.get_shared_stream.return_value = None
     controller = StreamsController(mass)
     call_kwargs: dict[str, Any] = {}
 

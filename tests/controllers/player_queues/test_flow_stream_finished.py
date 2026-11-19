@@ -22,7 +22,7 @@ from music_assistant.controllers.player_queues.state import PlayerQueueData
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
 
-    from music_assistant.models.player import Player
+    from music_assistant.models.player_protocol import PlayerProtocol
 
 
 def _fake_controller(queue: MagicMock) -> MagicMock:
@@ -161,9 +161,9 @@ def _streamed_session(state: PlaybackState = PlaybackState.PLAYING) -> MagicMock
 def _played_out(
     fake: MagicMock, elapsed: float | None, queue_id: str = "q", session_id: str = "sess-1"
 ) -> bool:
-    player = SimpleNamespace(state=SimpleNamespace(corrected_elapsed_time=elapsed))
+    protocol = SimpleNamespace(corrected_elapsed_time=elapsed)
     return PlayerQueuesController.flow_stream_played_out(
-        cast("PlayerQueuesController", fake), queue_id, session_id, cast("Player", player)
+        cast("PlayerQueuesController", fake), queue_id, session_id, cast("PlayerProtocol", protocol)
     )
 
 

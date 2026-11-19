@@ -36,10 +36,17 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.helpers import create_safe_string
-from music_assistant_models.media_items import Playlist, PlaylistSummary, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    Album,
+    Playlist,
+    PlaylistSummary,
+    ProviderMapping,
+    Track,
+)
 
 from music_assistant.constants import (
     DB_TABLE_PLAYLISTS,
+    EXTERNAL_ID_PROVIDER,
     HOMEASSISTANT_SYSTEM_USER,
     PLAYLIST_MEDIA_TYPES,
     PlaylistPlayableItem,
@@ -1862,7 +1869,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def _add_audio_metadata(self, items: Sequence[PlaylistPlayableItem]) -> None:
         """
-        Fill in bpm and musical key from stored audio analysis on tracks that lack them.
+        Fill in bpm, musical key and energy level from stored audio analysis on tracks that lack them.
 
         :param items: One page of playlist items, updated in place.
         """
@@ -1994,8 +2001,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
             # special: the builtin provider can handle uri's from all providers (with uri as id)
             if playlist_prov.domain == "builtin":
-                # it stores the uri as given, so one naming a source the user may not see is
-                # left out here (it resolves the items itself, as this user, when read)
+                # it takes the uri as given, so one naming a source the user may not see is
+                # left out here (it resolves the items itself, as this user)
                 _, provider_instance_id_or_domain, _ = await parse_uri(uri)
                 if provider_instance_id_or_domain in hidden_sources:
                     self.logger.warning(
@@ -2049,7 +2056,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "AudiobooksController | RadioController | TracksController",
                 self.mass.music.get_controller(media_type),
             )
-            if media_type == MediaType.TRACK:
+            # a track known only by an external id costs its lookup and nothing more
+            looked_up: Track | None = None
+            if provider_instance_id_or_domain == EXTERNAL_ID_PROVIDER:
+                try:
+                    looked_up = await self.mass.music.tracks.get(
+                        item_id, EXTERNAL_ID_PROVIDER, allow_update_metadata=False, recursive=False
+                    )
+                except MediaNotFoundError as err:
+                    self.logger.warning("Can't add %s to playlist %s - %s", uri, playlist.name, err)
+                    report_current_task_failure(f"Can't add {uri} to playlist: {err}")
+                    continue
+                full_item = looked_up
+            elif media_type == MediaType.TRACK:
                 assert isinstance(controller, TracksController)  # for type checking
                 full_item = await controller.get(
                     item_id,
@@ -2069,13 +2088,22 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 and playlist_prov.domain not in track_prov_domains
             ):
                 # try to match the track to the playlist's provider
-                full_item.provider_mappings.update(
-                    await controller.match_provider(
+                if looked_up is not None:
+                    # the album the lookup found is the reference, so no album search runs
+                    album = looked_up.album
+                    matches = await self.mass.music.tracks.match_provider(
+                        looked_up,
+                        playlist_prov,
+                        strict=False,
+                        ref_albums=[album] if isinstance(album, Album) else [],
+                    )
+                else:
+                    matches = await controller.match_provider(
                         full_item,  # type: ignore[arg-type]
                         playlist_prov,
                         strict=False,
                     )
-                )
+                full_item.provider_mappings.update(matches)
 
             # a track can contain multiple versions on the same provider
             # simply sort by quality and just add the first available version
@@ -2127,10 +2155,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
         update_current_task_progress(90, f"Adding {len(ids_to_add)} item(s) to playlist")
         task = get_current_task()
         failures_before = task.failure_count if task else 0
-        await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
+        try:
+            await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
+        finally:
+            # an add that fails or is cancelled part way can leave some of the items added
+            await self._after_tracks_change(playlist, playlist_prov, playlist_prov_item_id)
         # the provider reports each item it could not add as a task failure
         skipped = task.failure_count - failures_before if task else 0
-        await self._request_metadata_refresh(playlist)
         update_current_task_progress(100, f"Added {len(ids_to_add) - skipped} item(s) to playlist")
 
     async def _handle_remove_playlist_tracks(
@@ -2152,8 +2183,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if ProviderFeature.PLAYLIST_TRACKS_EDIT not in provider.supported_features:
             msg = f"Provider {provider.name} does not support editing playlists"
             raise InvalidDataError(msg)
-        await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
-        await self._request_metadata_refresh(playlist)
+        try:
+            await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
+        finally:
+            # a removal that fails or is cancelled part way can leave some of the items removed
+            await self._after_tracks_change(playlist, provider, playlist_prov_item_id)
 
     async def _get_reorderable_playlist(
         self, db_playlist_id: str | int
@@ -2268,6 +2302,29 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 provider_instance_id,
                 err,
             )
+
+    async def _after_tracks_change(
+        self, playlist: Playlist, provider: MusicProvider, prov_playlist_id: str
+    ) -> None:
+        """
+        Let the next look at a playlist see its tracks as they are after a change to them.
+
+        :param playlist: The library playlist whose tracks were changed.
+        :param provider: The provider the change was made on.
+        :param prov_playlist_id: The id of the playlist on that provider.
+        """
+        try:
+            await provider.forget_playlist_tracks(prov_playlist_id)
+        except Exception as err:
+            # the outcome of the change stands, only the kept copy may stay until it expires
+            self.logger.warning(
+                "Provider %s could not forget the tracks it kept of playlist %s: %s",
+                provider.name,
+                playlist.name,
+                err,
+            )
+        finally:
+            await self._request_metadata_refresh(playlist)
 
     async def _request_metadata_refresh(self, playlist: Playlist) -> None:
         """Have the next metadata run refresh the playlist, and announce its changed items."""

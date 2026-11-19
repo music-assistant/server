@@ -1,42 +1,82 @@
-"""Model/base for a Metadata Provider implementation."""
+"""Model/base for a Player Provider implementation."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import inspect
+from typing import TYPE_CHECKING, final
+
+from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.errors import PlayerUnavailableError
 
 from .provider import Provider
 
 if TYPE_CHECKING:
+    from music_assistant_models.enums import SpeakerChannel
+
     from music_assistant.models.player import Player
+    from music_assistant.models.player_protocol import PlayerProtocol
 
 
 class PlayerProvider(Provider):
     """
-    Base representation of a Player Provider (controller).
+    Base representation of a Player Provider.
 
+    A player provider owns protocols (PlayerProtocol), not players: it registers one per
+    device it reaches with the players controller, which owns the player of that device.
     Player Provider implementations should inherit from this base model.
     """
+
+    @property
+    @final
+    def supported_features(self) -> set[ProviderFeature]:
+        """Return the features supported by this Provider."""
+        # every player can be removed, which the players controller handles itself
+        return {*self._supported_features, ProviderFeature.REMOVE_PLAYER}
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
 
-    def on_player_enabled(self, player_id: str) -> None:
-        """Call (by config manager) when a player gets enabled."""
-        # default implementation: trigger discovery - feel free to override
+    def get_protocol(
+        self, protocol_id: str, raise_unavailable: bool = False
+    ) -> PlayerProtocol | None:
+        """
+        Return the protocol object with the given id.
+
+        Only pass ids of this provider's own protocol objects.
+
+        :param protocol_id: ID of one of this provider's protocol objects.
+        :param raise_unavailable: Raise if the protocol object is unknown, unavailable or disabled.
+        :raises PlayerUnavailableError: If raise_unavailable is set and the protocol object is
+            unknown, unavailable or disabled.
+        """
+        protocol = self.mass.players.get_protocol(protocol_id)
+        if (
+            protocol is not None
+            # a mocked provider (tests) is no owner to compare against
+            and isinstance(protocol.provider, PlayerProvider)
+            and protocol.provider is not self
+        ):
+            # still returned: the warning only surfaces callers passing another provider's id,
+            # so it names the call site
+            caller = frame.f_back if (frame := inspect.currentframe()) else None
+            self.logger.warning(
+                "Provider %s looked up %s, which belongs to provider %s (called from %s:%s)",
+                self.instance_id,
+                protocol_id,
+                protocol.provider.instance_id,
+                caller.f_globals.get("__name__") if caller else "?",
+                caller.f_lineno if caller else "?",
+            )
+            del frame, caller
+        if raise_unavailable and (protocol is None or not protocol.available_for_playback):
+            msg = f"Player {protocol_id} is not available"
+            raise PlayerUnavailableError(msg)
+        return protocol
+
+    def schedule_discovery(self) -> None:
+        """Run the discovery of this provider in a few seconds; repeated requests run it once."""
         task_id = f"discover_players_{self.instance_id}"
         self.mass.call_later(5, self.mass.run_provider_discovery, self.instance_id, task_id=task_id)
-
-    def on_player_disabled(self, player_id: str) -> None:
-        """Call (by config manager) when a player gets disabled."""
-        # default implementation: unregister player from player controller
-        # which will also trigger an unload on the player instance
-        # feel free to override with a better implementation
-        self.mass.create_task(self.mass.players.unregister(player_id))
-
-    async def remove_player(self, player_id: str) -> None:
-        """Remove a player from this provider."""
-        # will only be called for providers with REMOVE_PLAYER feature set.
-        raise NotImplementedError
 
     async def create_group_player(
         self, name: str, members: list[str], dynamic: bool = True
@@ -52,32 +92,60 @@ class PlayerProvider(Provider):
         """
         raise NotImplementedError
 
-    async def remove_group_player(self, player_id: str) -> None:
+    async def create_multi_channel_player(
+        self, name: str, speakers: dict[str, SpeakerChannel]
+    ) -> Player:
         """
-        Remove a group player.
+        Combine speakers into one new multi-channel player.
 
-        Only called for providers that support REMOVE_GROUP_PLAYER feature.
+        Only called for providers that support the CREATE_MULTI_CHANNEL_PLAYER feature.
 
-        :param player_id: ID of the group player to remove.
+        :param name: Name of the new player.
+        :param speakers: The channel each speaker plays, by the id of this provider's
+            protocol of that speaker.
+        """
+        raise NotImplementedError
+
+    def get_multi_channel_candidates(self) -> list[str]:
+        """
+        Return the ids of this provider's protocols that can be a speaker of a new multi-channel player.
+
+        Only called for providers that support the CREATE_MULTI_CHANNEL_PLAYER feature.
         """
         raise NotImplementedError
 
     async def discover_players(self) -> None:
-        """Discover players for this provider."""
-        # This will be called when the player provider is (re)loaded into MA.
-        # For providers that support dynamic discovery of players via mdns,
-        # there is no need to implement this method.
+        """
+        Register every device this provider knows of that has no attached protocol.
+
+        Called when the provider is (re)loaded and on every discovery request of the players
+        controller: when one of its players is enabled or, unless it is a group, removed, and
+        when one of its protocols that is not attached moves to another player (in a merge, or
+        when it is taken off its player) or is switched on again as an output. A provider that discovers its devices through mdns only does not need to
+        implement this.
+        """
+
+    async def on_protocol_removed(self, protocol_id: str) -> None:
+        """
+        Handle a protocol of this provider whose player was removed for good.
+
+        Called after the config of the protocol was deleted, also when this provider holds
+        no object for it, such as for a device that has not connected since the server started.
+        Override this to forget what the provider stores about the device outside the
+        config of the protocol.
+
+        :param protocol_id: ID of the removed protocol.
+        """
 
     @property
-    def players(self) -> list[Player]:
-        """Return all players belonging to this provider."""
-        # a provider owns these players, so it always sees all of them - narrowing this
+    def protocols(self) -> list[PlayerProtocol]:
+        """
+        Return the protocol objects of this provider that the players controller holds.
+
+        One that still waits for the player it belongs to is included (its ``player``
+        is None).
+        """
+        # a provider owns these protocols, so it always sees all of them - narrowing this
         # to what some user happens to see corrupts the provider's own bookkeeping, such
-        # as the grouping options it derives from this list. Note this still hides
-        # disabled and still-initializing players; teardown needs those too and therefore
-        # walks the registry itself (see mass.unload_provider).
-        return list(
-            self.mass.players.iter_players(
-                provider_filter=self.instance_id, return_protocol_players=True
-            )
-        )
+        # as the grouping options it derives from this list.
+        return list(self.mass.players.iter_protocols(self.instance_id))

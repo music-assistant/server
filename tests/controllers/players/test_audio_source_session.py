@@ -16,9 +16,10 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.audio_sources import (
-    AudioSourceMixin,
     AudioSourceSession,
+    PlayerAudioSourcesMixin,
 )
+from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
 
@@ -44,7 +45,7 @@ def _audio_source(item_id: str = SOURCE_ID, *, can_seek: bool = False) -> AudioS
     )
 
 
-class _Controller(AudioSourceMixin):
+class _Controller(PlayerAudioSourcesMixin):
     """Minimal stand-in for the parts of PlayerController the mixin relies on."""
 
     def __init__(self, provider: object | None) -> None:
@@ -56,7 +57,12 @@ class _Controller(AudioSourceMixin):
         self.logger = self.log_mock
         self.updated_players: list[str] = []
 
-    def trigger_player_update(self, player_id: str) -> None:
+    def trigger_player_update(
+        self,
+        player_id: str,
+        force_update: bool = False,
+        debounce_delay: float = PLAYER_UPDATE_DEBOUNCE,
+    ) -> None:
         """Record that a player update was signalled."""
         self.updated_players.append(player_id)
 
@@ -158,16 +164,16 @@ def test_source_unresolvable_when_the_feature_was_turned_off() -> None:
     assert ctrl.get_player_audio_source(PLAYER_ID) is None
 
 
-def test_source_unresolvable_when_the_provider_is_not_a_plugin() -> None:
+def test_source_unresolvable_when_the_provider_delivers_no_audio_sources() -> None:
     """
-    A non-PluginProvider behind the instance id is skipped.
+    A provider without the AudioSource contract behind the instance id is skipped.
 
     It declares the AUDIO_SOURCE feature so the feature guard cannot be what
     rejects it — only the isinstance check can.
     """
-    not_a_plugin = MagicMock(spec=MusicProvider)
-    not_a_plugin.supported_features = {ProviderFeature.AUDIO_SOURCE}
-    ctrl = _Controller(not_a_plugin)
+    not_a_source_provider = MagicMock(spec=MusicProvider)
+    not_a_source_provider.supported_features = {ProviderFeature.AUDIO_SOURCE}
+    ctrl = _Controller(not_a_source_provider)
     ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
 
     assert ctrl.get_player_audio_source(PLAYER_ID) is None
@@ -318,7 +324,7 @@ def test_mixin_is_attached_to_the_real_player_controller() -> None:
     mass.config.get_raw_core_config_value.return_value = "INFO"
     controller = PlayerController(mass)
 
-    assert isinstance(controller, AudioSourceMixin)
+    assert isinstance(controller, PlayerAudioSourcesMixin)
     assert controller._source_sessions == {}
     assert controller.get_audio_source_session("no-such-player") is None
 
@@ -355,7 +361,7 @@ def test_a_fallback_only_source_follows_a_changed_placeholder() -> None:
     """
     A source that never reports keeps taking its placeholder from the stream details.
 
-    vban_receiver and sendspin_source never call update_stream_metadata, so the
+    vban_receiver and sendspin never call update_stream_metadata, so the
     placeholder is all they have. Adopting one must not stop a later one landing:
     a VBAN reconnect from a different sender describes something else.
     """
@@ -496,3 +502,75 @@ def test_live_source_recognised_by_the_uri_it_publishes() -> None:
 
     ctrl._end_audio_source_session(PLAYER_ID)
     assert not ctrl.is_live_audio_source(session.source_uri)
+
+
+def _claimed_session(ctrl: _Controller) -> AudioSourceSession:
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+    ctrl.claim_audio_source_session(session, session.playback_session_id, "tok-1")
+    ctrl.updated_players.clear()
+    return session
+
+
+def test_analysis_metadata_shows_without_counting_as_the_sources_own() -> None:
+    """A recognised song is shown, and the plugin's next report still replaces it."""
+    ctrl = _Controller(_plugin_provider())
+    session = _claimed_session(ctrl)
+    recognised = StreamMetadata(title="Take Five")
+
+    ctrl.show_analysis_metadata(session, session.playback_session_id, "tok-1", recognised)
+
+    assert session.stream_metadata is recognised
+    assert session.stream_metadata_reported is False
+    assert ctrl.updated_players == [PLAYER_ID]
+    session.attach_streamdetails(_streamdetails(StreamMetadata(title="Turntable")))
+    assert session.stream_metadata is not None
+    assert session.stream_metadata.title == "Turntable"
+
+
+def test_analysis_metadata_never_replaces_what_the_plugin_reported() -> None:
+    """Once the plugin reported, what analysis recognises is not shown."""
+    ctrl = _Controller(_plugin_provider())
+    session = _claimed_session(ctrl)
+    owners = StreamMetadata(title="From the plugin")
+    ctrl.update_source_metadata(PLAYER_ID, SOURCE_ID, PROVIDER_INSTANCE, owners)
+
+    ctrl.show_analysis_metadata(
+        session, session.playback_session_id, "tok-1", StreamMetadata(title="Recognised")
+    )
+
+    assert session.stream_metadata is owners
+
+
+def test_analysis_metadata_of_a_superseded_stream_is_dropped() -> None:
+    """A report about a stream that no longer serves the session is not shown."""
+    ctrl = _Controller(_plugin_provider())
+    session = _claimed_session(ctrl)
+    first_playback = session.playback_session_id
+    # the same source reselected keeps the session object with fresh tokens
+    ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+    ctrl.claim_audio_source_session(session, session.playback_session_id, "tok-2")
+
+    ctrl.show_analysis_metadata(session, first_playback, "tok-1", StreamMetadata(title="Old"))
+    ctrl.show_analysis_metadata(
+        session, session.playback_session_id, "tok-1", StreamMetadata(title="Old")
+    )
+
+    assert session.stream_metadata is None
+    assert not ctrl.updated_players
+
+
+def test_withdrawn_analysis_metadata_falls_back_to_the_placeholder() -> None:
+    """Withdrawing restores what the stream details carry, and nothing else is touched."""
+    ctrl = _Controller(_plugin_provider())
+    session = _claimed_session(ctrl)
+    placeholder = StreamMetadata(title="Turntable")
+    session.attach_streamdetails(_streamdetails(placeholder))
+    recognised = StreamMetadata(title="Take Five")
+    ctrl.show_analysis_metadata(session, session.playback_session_id, "tok-1", recognised)
+
+    ctrl.withdraw_analysis_metadata(session, StreamMetadata(title="Another report"))
+    assert session.stream_metadata is recognised
+    ctrl.withdraw_analysis_metadata(session, recognised)
+
+    assert session.stream_metadata is placeholder
+    assert ctrl.updated_players == [PLAYER_ID, PLAYER_ID]

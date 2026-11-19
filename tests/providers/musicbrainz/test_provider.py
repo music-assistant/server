@@ -1394,6 +1394,7 @@ async def test_browse_releases_by_release_group_lists_every_edition() -> None:
     assert [release.id for release in releases] == ["rel-1", "rel-2"]
     assert relation_urls(releases[0].relations) == ["https://open.spotify.com/album/a"]
     assert releases[1].media[0].format == "CD"
+    assert releases[0].barcode == BARCODE
 
 
 async def test_browse_releases_by_release_group_is_empty_without_a_complete_listing() -> None:

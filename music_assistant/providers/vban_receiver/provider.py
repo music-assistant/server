@@ -15,6 +15,7 @@ from music_assistant_models.media_items import AudioFormat, AudioSource, Provide
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import (
+    CONF_ALLOW_AUDIO_ANALYSIS,
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_ENTRY_WARN_PREVIEW,
@@ -129,12 +130,19 @@ class VBANReceiverProvider(PluginProvider):
             exclusive=True,
             allow_external_trigger=False,
             can_initiate=True,
+            allow_audio_analysis=bool(self.config.get_value(CONF_ALLOW_AUDIO_ANALYSIS, True)),
         )
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return runtime options for this provider."""
         return (
             CONF_ENTRY_WARN_PREVIEW,
+            ConfigEntry(
+                key=CONF_ALLOW_AUDIO_ANALYSIS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+            ),
             ConfigEntry(
                 key=CONF_VBAN_QUEUE_STRATEGY,
                 type=ConfigEntryType.STRING,
@@ -210,7 +218,7 @@ class VBANReceiverProvider(PluginProvider):
             if self._udp_socket_fut:
                 try:
                     await self._udp_socket_fut
-                except Exception as err:
+                except OSError as err:
                     self.logger.debug("Error while closing UDP transport: %s", err)
                 else:
                     self.logger.debug("Closed UDP transport")

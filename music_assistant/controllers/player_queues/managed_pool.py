@@ -41,6 +41,7 @@ from music_assistant.controllers.player_queues.constants import (
     MANAGED_POOL_TARGET,
 )
 from music_assistant.controllers.player_queues.helpers import (
+    can_be_enqueued,
     interleave_groups,
     is_dynamic_source,
     space_by_artist,
@@ -283,7 +284,9 @@ class ManagedPool:
         """Fetch a TRACKS source's own (playable) tracks, honoring the user's selection prefs."""
         with suppress(MusicAssistantError):
             tracks = await self.queues.get_tracks_for_playback(media_item)
-            return [track for track in tracks if isinstance(track, Track) and track.available]
+            return [
+                track for track in tracks if isinstance(track, Track) and can_be_enqueued(track)
+            ]
         return []
 
     async def _materialize(

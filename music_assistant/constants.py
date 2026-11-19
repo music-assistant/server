@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 108
+API_SCHEMA_VERSION: Final[int] = 124
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -126,9 +126,14 @@ CONF_ENCRYPTION_KEY_MIGRATED: Final[str] = "encryption_key_migrated"
 CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED: Final[str] = "apple_music_sync_schedule_migrated"
 CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED: Final[str] = "emby_album_artists_heal_migrated"
 CONF_RAUMFELD_ICY_BASIC_MIGRATED: Final[str] = "raumfeld_icy_basic_migrated"
+CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: Final[str] = "airplay_sync_adjust_sign_migrated"
+CONF_SENDSPIN_ONE_OUTPUT_MIGRATED: Final[str] = "sendspin_one_output_migrated"
 CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING: Final[str] = "emby_album_artists_heal_pending"
 CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
+CONF_AI_DEFAULT_ENGINES_MIGRATED: Final[str] = "ai_default_engines_migrated"
+CONF_PLAYER_SPLIT_SESSION_ONLY: Final[str] = "player_split_session_only"
+CONF_PLAYER_SPLIT_TREE: Final[str] = "player_split_tree"
 CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
 # the registered folders that were a mountpoint when they were registered
 CONF_STORAGE_FOLDER_MOUNTS: Final[str] = "storage_folder_mounts"
@@ -137,7 +142,9 @@ CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
 CONF_PLAYERS: Final[str] = "players"
+CONF_PLAYER_PROTOCOLS: Final[str] = "player_protocols"
 CONF_PLAYER_QUEUES: Final[str] = "player_queues"
+CONF_AI: Final[str] = "ai"
 CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
 CONF_NAME: Final[str] = "name"
@@ -163,10 +170,10 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")  # noqa: S104 - the wildcard addresses themselves
-# Port used by the built-in Sendspin server (runs next to, not behind, the webserver)
-SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_IDLE_POWER_OFF: Final[str] = "idle_power_off"
+CONF_POWER_CONTROL_CUTS_POWER: Final[str] = "power_control_cuts_power"
+CONF_POWER_ON_STARTUP_TIME: Final[str] = "power_on_startup_time"
 CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
@@ -180,10 +187,14 @@ CONF_ANNOUNCE_VOLUME_MIN: Final[str] = "announce_volume_min"
 CONF_ANNOUNCE_VOLUME_MAX: Final[str] = "announce_volume_max"
 CONF_PRE_ANNOUNCE_CHIME_URL: Final[str] = "pre_announcement_chime_url"
 CONF_ANNOUNCE_TTS_ENGINE: Final[str] = "announce_tts_engine"
+# the default engine of each kind, stored by the AI core module
+CONF_DEFAULT_TEXT_ENGINE: Final[str] = "text_engine"
+CONF_DEFAULT_SPEECH_ENGINE: Final[str] = "speech_engine"
+CONF_DEFAULT_IMAGE_ENGINE: Final[str] = "image_engine"
 CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
-CONF_HTTP_PROFILE: Final[str] = "http_profile"
+CONF_REQUIRES_FIXED_CONTENT_LENGTH: Final[str] = "requires_fixed_content_length"
 CONF_BYPASS_NORMALIZATION_RADIO: Final[str] = "bypass_normalization_radio"
 CONF_ENABLE_ICY_METADATA: Final[str] = "enable_icy_metadata"
 CONF_VOLUME_NORMALIZATION_RADIO: Final[str] = "volume_normalization_radio"
@@ -197,17 +208,37 @@ CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_MIN_VOLUME: Final[str] = "min_volume"
 CONF_MAX_VOLUME: Final[str] = "max_volume"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
-CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast restart
-CONF_PROTOCOL_PARENT_ID: Final[str] = (
-    "protocol_parent_id"  # cached native player ID for protocol player
-)
+CONF_ALLOW_AUDIO_ANALYSIS: Final[str] = "allow_audio_analysis"
+CONF_LEGACY_IDS: Final[str] = "legacy_ids"  # ids a player is also known under
+# the player the user took a protocol off, which it is not merged back into by itself
+CONF_UNLINKED_FROM: Final[str] = "unlinked_from"
+CONF_LAST_SEEN: Final[str] = "last_seen"  # when a player last had an available protocol
+# a player that only exists while its device is connected (a browser tab, an app)
+CONF_SESSION_ONLY: Final[str] = "session_only"
+# the device info a player last published, for when none of its protocols is attached
+CONF_DEVICE_INFO: Final[str] = "device_info"
+# the defaults the own protocol of a player last gave it, for when that is not attached
+CONF_PROTOCOL_DEFAULTS: Final[str] = "protocol_defaults"
+# the identifiers a player from before the protocols kept their own stored for its device
+CONF_DEVICE_IDENTIFIERS: Final[str] = "device_identifiers"
+# the identifiers a protocol reported for its device, as [type, value] pairs
+CONF_PROTOCOL_IDENTIFIERS: Final[str] = "identifiers"
+# the ZONE identifier of the main zone of a chassis, where its protocols that report no
+# zone (AirPlay, DLNA, ...) play
+MAIN_ZONE: Final[str] = "main"
+# the moment a player was created, as a nanosecond timestamp so players created in
+# the same second still order
+CONF_CREATED_AT: Final[str] = "created_at"
 CONF_UNDERLYING_PLAYER_ID: Final[str] = (
-    "underlying_player_id"  # player this (bridge) protocol player is derived from
+    "underlying_player_id"  # protocol this (bridge) protocol is derived from
 )
-# Translation key of the warning a provider stores on a protocol player it considers
+# Translation key of the warning a provider stores on a protocol it considers
 # experimental. Its presence also makes the output's enable entry default to disabled;
 # a stored enabled state still wins, so the provider persists that one itself.
 CONF_PROTOCOL_EXPERIMENTAL_NOTE: Final[str] = "protocol_experimental_note"
+# Marker a provider stores on a protocol it switched off itself as its default. Without
+# it a protocol that is switched off was switched off by the user.
+CONF_PROTOCOL_OFF_BY_DEFAULT: Final[str] = "protocol_off_by_default"
 CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
 CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
@@ -372,9 +403,17 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "player_queues",
     "tasks",
     "statistics",
+    "ai",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
+PROVIDER_LOAD_CONCURRENCY = 8
+# the error code recorded for a provider load that failed with an error that is not a
+# MusicAssistantError, which is a bug rather than a handled condition
+UNHANDLED_PROVIDER_ERROR_CODE: Final = 999
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
+# the provider of an item known only by an external id, which is looked up on the music
+# providers when it is opened or played; its item id is built by external_item_id()
+EXTERNAL_ID_PROVIDER: Final[str] = "external"
 # The music sources that read the user's own files. Background audio analysis is deliberately
 # limited to these: pulling a streaming service's catalogue for audio nobody asked to hear is
 # not something we do. Keep it that way.
@@ -467,6 +506,28 @@ CONF_ENTRY_IDLE_POWER_OFF = ConfigEntry(
     category="player_controls",
 )
 
+CONF_ENTRY_POWER_CONTROL_CUTS_POWER = ConfigEntry(
+    key=CONF_POWER_CONTROL_CUTS_POWER,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    category="player_controls",
+)
+
+# The start-up time (in seconds) of a player whose power control cuts its power: what a
+# player gets unless the user sets it, and the shortest and longest that can be set.
+DEFAULT_POWER_ON_STARTUP_TIME: Final[int] = 30
+POWER_ON_STARTUP_TIME_RANGE: Final[tuple[int, int]] = (5, 300)
+
+CONF_ENTRY_POWER_ON_STARTUP_TIME = ConfigEntry(
+    key=CONF_POWER_ON_STARTUP_TIME,
+    type=ConfigEntryType.INTEGER,
+    default_value=DEFAULT_POWER_ON_STARTUP_TIME,
+    range=POWER_ON_STARTUP_TIME_RANGE,
+    depends_on=CONF_POWER_CONTROL_CUTS_POWER,
+    category="player_controls",
+    advanced=True,
+)
+
 CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP = ConfigEntry(
     key=CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     type=ConfigEntryType.BOOLEAN,
@@ -517,7 +578,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(-30, -5),
     default_value=-14,
-    category="playback",
+    category="volume_normalization",
     advanced=True,
     requires_reload=True,
 )
@@ -676,50 +737,19 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
 )
 
 
-CONF_ENTRY_HTTP_PROFILE = ConfigEntry(
-    key=CONF_HTTP_PROFILE,
-    type=ConfigEntryType.STRING,
-    options=[
-        ConfigValueOption("chunked"),
-        ConfigValueOption("no_content_length"),
-        ConfigValueOption("forced_content_length"),
-    ],
-    default_value="no_content_length",
+CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH = ConfigEntry(
+    key=CONF_REQUIRES_FIXED_CONTENT_LENGTH,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
 )
-
-CONF_ENTRY_HTTP_PROFILE_DEFAULT_1 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "chunked"}
+CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_DEFAULT_ENABLED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH.to_dict(), "default_value": True}
 )
-
-CONF_ENTRY_HTTP_PROFILE_DEFAULT_2 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "no_content_length"}
-)
-CONF_ENTRY_HTTP_PROFILE_DEFAULT_3 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "forced_content_length"}
-)
-
-CONF_ENTRY_HTTP_PROFILE_FORCED_1 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE_DEFAULT_1.to_dict(), "hidden": True}
-)
-CONF_ENTRY_HTTP_PROFILE_FORCED_2 = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_HTTP_PROFILE.to_dict(),
-        "default_value": "no_content_length",
-        "hidden": True,
-    }
-)
-CONF_ENTRY_HTTP_PROFILE_FORCED_3 = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_HTTP_PROFILE.to_dict(),
-        "default_value": "forced_content_length",
-        "hidden": True,
-    }
-)
-CONF_ENTRY_HTTP_PROFILE_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "hidden": True}
+CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_ENFORCED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH.to_dict(), "default_value": True, "hidden": True}
 )
 
 
@@ -1005,8 +1035,6 @@ ATTR_MUTE_CONTROL: Final[str] = "mute_control"
 ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
-ATTR_POWER_OFF_IN_PROGRESS: Final[str] = "power_off_in_progress"
-ATTR_POWER_ON_IN_PROGRESS: Final[str] = "power_on_in_progress"
 ATTR_IDLE_SINCE: Final[str] = "idle_since"
 
 # Album type detection patterns
@@ -1046,6 +1074,14 @@ PROTOCOL_PRIORITY: Final[dict[str, int]] = {
     "dlna": 50,
 }
 
+# How a provider whose native protocol stands for a device of another make ranks below the
+# vendor's own native protocol of that device (0, any domain not listed): of two native
+# protocols of one device, the better ranked one is its native protocol, the other one its
+# control protocol.
+NATIVE_PRIORITY: Final[dict[str, int]] = {
+    "hass_players": 1,
+}
+
 PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     # Player features that may be copied from (inactive) protocol implementations
     PlayerFeature.PLAY_ANNOUNCEMENT,
@@ -1062,7 +1098,7 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
 }
 
 FOREIGN_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
-    # Player features that may be copied from the protocol player that plays an app
+    # Player features that may be copied from the audio protocol that plays an app
     # Music Assistant did not start
     PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.PAUSE,
@@ -1070,6 +1106,10 @@ FOREIGN_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
 }
 
 PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"
+
+# setup reason of a player without any protocol whose provider is not installed
+SETUP_REASON_PROVIDER_NOT_INSTALLED: Final[str] = "provider_not_installed"
+
 DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # list of providers that are setup by default once
     # (and they can be removed/disabled by the user if they want to)
@@ -1090,6 +1130,26 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # ambient_sounds provides out-of-the-box sound effects (e.g. for the queue
     # audio overlay feature) at zero resource cost until actually used
     ("ambient_sounds", False),
+}
+
+# The editorial part of the Marketplace, which the team edits per release.
+CATALOG_POPULAR: Final[tuple[str, ...]] = (
+    "spotify",
+    "tidal",
+    "qobuz",
+    "filesystem_local",
+    "sonos",
+    "chromecast",
+    "airplay",
+    "spotify_connect",
+    "airplay_receiver",
+)
+# what to suggest next to a provider that is set up
+CATALOG_PAIRINGS: Final[dict[str, tuple[str, ...]]] = {
+    "spotify": ("spotify_connect", "lastfm_scrobble"),
+    "tidal": ("lastfm_scrobble",),
+    "qobuz": ("lastfm_scrobble",),
+    "airplay": ("airplay_receiver",),
 }
 
 # Seconds an external source may sit paused before we consider its session ended.

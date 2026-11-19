@@ -10,6 +10,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Album, Artist, Playlist, SearchResults, Track
 
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT
 from music_assistant.providers.music247e.api_client import JsonLike
 from music_assistant.providers.music247e.constants import (
     GET_POPULAR_TRACKS_LIMIT,
@@ -229,7 +230,7 @@ class Music247eMediaManager:
         return parse_artist(self.provider, result["data"]["catalog"]["artist"])
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist."""
+        """Get a list of albums for the given artist."""
         query = """
             query Catalog($id: ID!, $imageSize: Int = 512, $first: Int = 50, $after: String) {
                 catalog {
@@ -283,6 +284,8 @@ class Music247eMediaManager:
             ["data", "catalog", "artist", "albums"],
         ):
             albums.append(parse_album(self.provider, item))
+            if len(albums) >= ARTIST_ALBUMS_LIMIT:
+                break
 
         return albums
 

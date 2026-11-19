@@ -176,3 +176,16 @@ async def test_log_listen_sends_the_context(monkeypatch: pytest.MonkeyPatch) -> 
         sent.append(api_call.call_args.kwargs["args"]["params"]["ctxt"])
 
     assert sent == [{"t": "album_page", "id": "2", "c": "2"}, {"t": "search_page", "id": "1"}]
+
+
+async def test_hi_res_listen_is_reported_as_flac(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deezer drops a listen reported as FLAC_24, so a hi-res play is logged as FLAC."""
+    client = GWClient(Mock(), "arl")
+    api_call = AsyncMock()
+    monkeypatch.setattr(client, "_gw_api_call", api_call)
+    streamdetails = _streamdetails()
+    streamdetails.data |= {"format": "FLAC_24", "start_ts": 0, "stream_id": "s"}
+
+    await client.log_listen(last_track=streamdetails)
+
+    assert api_call.call_args.kwargs["args"]["params"]["media"]["format"] == "FLAC"

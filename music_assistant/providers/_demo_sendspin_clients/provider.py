@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import SENDSPIN_SERVER_PORT
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -105,7 +104,9 @@ class DemoSendspinClientsProvider(PlayerProvider):
         await super().loaded_in_mass()
         storage_dir = Path(self.mass.storage_path) / self.domain
         await asyncio.to_thread(storage_dir.mkdir, parents=True, exist_ok=True)
-        server_url = self._server_url()
+        if (server_url := self._server_url()) is None:
+            self.logger.error("The Sendspin provider is not loaded, so no fake device can connect")
+            return
         for scenario in self._selected_scenarios():
             device = FakeSendspinDevice(scenario, storage_dir, server_url, self.mass.http_session)
             # registered before it starts, so a teardown that begins meanwhile can see it
@@ -159,8 +160,11 @@ class DemoSendspinClientsProvider(PlayerProvider):
             if scenario_id in SCENARIOS_BY_ID
         ]
 
-    def _server_url(self) -> str:
-        """Return the WebSocket URL of this server's own Sendspin endpoint."""
+    def _server_url(self) -> str | None:
+        """Return the WebSocket URL of this server's own Sendspin endpoint, if it runs."""
+        sendspin = cast("SendspinProvider | None", self.mass.get_provider(SENDSPIN_DOMAIN))
+        if sendspin is None:
+            return None
         bind_ip = self.mass.streams.bind_ip
         if not bind_ip or bind_ip == "0.0.0.0":  # noqa: S104 - comparison, not a bind
             host = "127.0.0.1"
@@ -169,7 +173,7 @@ class DemoSendspinClientsProvider(PlayerProvider):
             host = "::1"
         else:
             host = bind_ip
-        return f"ws://{format_ip_for_url(host)}:{SENDSPIN_SERVER_PORT}/sendspin"
+        return f"ws://{format_ip_for_url(host)}:{sendspin.server_port}/sendspin"
 
     def _device_entries(self, scenario: Scenario) -> list[ConfigEntry]:
         """Return the status label and controls for one fake device."""

@@ -120,9 +120,20 @@ class MusicDatabaseSetupMixin:
         """Perform database cleanup/maintenance."""
         self.logger.debug("Performing database cleanup...")
         update_current_task_progress_text("Cleaning old playlog entries")
-        # Remove playlog entries older than 90 days
+        # Remove playlog entries older than 90 days, except the progress of library audiobooks
+        # and of the episodes of library podcasts; a library row that only holds a dislike is
+        # not in the library
         await self.database.delete_where_query(
-            DB_TABLE_MEDIA_PROGRESS, f"timestamp < strftime('%s','now') - {3600 * 24 * 90}"
+            DB_TABLE_MEDIA_PROGRESS,
+            f"timestamp < strftime('%s','now') - {3600 * 24 * 90} "
+            f"AND NOT (provider = 'library' AND media_type = 'audiobook' AND EXISTS (SELECT 1 "
+            f"FROM {DB_TABLE_PROVIDER_MAPPINGS} m WHERE m.media_type = 'audiobook' "
+            f"AND m.item_id = {DB_TABLE_MEDIA_PROGRESS}.item_id AND m.in_library = 1)) "
+            f"AND NOT (media_type = 'podcast_episode' AND EXISTS (SELECT 1 FROM "
+            f"{DB_TABLE_PROVIDER_MAPPINGS} m WHERE m.media_type = 'podcast' "
+            f"AND m.provider_instance = {DB_TABLE_MEDIA_PROGRESS}.provider "
+            f"AND m.provider_item_id = {DB_TABLE_MEDIA_PROGRESS}.podcast_item_id "
+            "AND m.in_library = 1))",
         )
         # db tables cleanup
         for ctrl in (
@@ -166,11 +177,13 @@ class MusicDatabaseSetupMixin:
             )
             await self.mass.music.database.delete_where_query(DB_TABLE_FAVORITES, query)
         # Bookmarks of an audiobook copy, or of an episode of a podcast copy, that is no longer
-        # in the library; episodes have no mappings of their own
+        # in the library; episodes have no mappings of their own, and a mapping kept for a
+        # dislike or for metadata only is not in the library
         await self.database.delete_where_query(
             DB_TABLE_BOOKMARKS,
             f"NOT EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} AS pm "
             f"WHERE pm.provider_instance = {DB_TABLE_BOOKMARKS}.provider_instance "
+            "AND pm.in_library = 1 "
             f"AND ((pm.media_type = {DB_TABLE_BOOKMARKS}.media_type "
             f"AND pm.provider_item_id = {DB_TABLE_BOOKMARKS}.provider_item_id) "
             f"OR (pm.media_type = '{self.podcasts.media_type}' "
@@ -314,6 +327,7 @@ class MusicDatabaseSetupMixin:
                 [queue_id] TEXT,
                 [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
                 [playback_speed] REAL NOT NULL DEFAULT 1.0,
+                [podcast_item_id] TEXT,
                 UNIQUE(item_id, provider, media_type, userid));"""
             )
         await self.database.execute(

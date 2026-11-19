@@ -18,10 +18,12 @@ import pytest
 import yaml
 
 from music_assistant.helpers.build_info import BUILD_INFO_FILE
+from music_assistant.helpers.catalog import CATALOG_NEW_FILE, read_new_domains
 from scripts.release_workflow import (
     APP_SECRETS_PATH,
     OCI_REVISION_ANNOTATION,
     OCI_WHEEL_ANNOTATION,
+    PROVIDERS_PATH,
     GitRepository,
     ReleaseWorkflowError,
     channel_branch,
@@ -30,6 +32,8 @@ from scripts.release_workflow import (
     determine_auto_release,
     inspect_assets,
     is_current_release,
+    main,
+    new_providers,
     select_release,
     set_addon_version,
     update_addon_release,
@@ -47,6 +51,7 @@ PINNED_ACTION_FILES = (
     ROOT / ".github" / "workflows" / "release.yml",
     ROOT / ".github" / "workflows" / "auto-release.yml",
     ROOT / ".github" / "workflows" / "build-base-image.yml",
+    ROOT / ".github" / "workflows" / "dev-image.yml",
     ROOT / ".github" / "workflows" / "dependabot-sync-manifests.yml",
     ROOT / ".github" / "workflows" / "pr-labels.yaml",
     ROOT / ".github" / "actions" / "generate-release-notes" / "action.yml",
@@ -162,6 +167,20 @@ def test_stable_preserves_patch_versioning_across_diverged_branches(
     assert decision.should_release is True
 
 
+@pytest.mark.parametrize(("channel", "tag"), [("stable", "2.9.9"), ("beta", "2.10.0b1")])
+def test_auto_release_skips_without_new_commits(
+    repository: tuple[Path, GitRepository], channel: str, tag: str
+) -> None:
+    """No channel releases when nothing was committed since its latest tag."""
+    path, git_repository = repository
+    _git(path, "tag", tag)
+
+    decision = determine_auto_release(git_repository, channel, "HEAD")
+
+    assert decision.commits_since == 0
+    assert decision.should_release is False
+
+
 def test_stable_auto_release_fails_when_unreleased_rc_exists(
     repository: tuple[Path, GitRepository],
 ) -> None:
@@ -223,6 +242,71 @@ def test_current_release_combines_beta_and_rc_channels(
         False,
         "2.10.0rc1",
     )
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["2.11.0.dev2026111503", "2.11.0b2", "2.11.0rc1", "2.11.0", "2.11.4"],
+)
+def test_new_providers_are_those_the_previous_release_line_lacks(
+    repository: tuple[Path, GitRepository], version: str
+) -> None:
+    """A provider stays new for its whole release line, on every channel."""
+    path, git_repository = repository
+    _add_file(path, _manifest("universal_player"))
+    _git(path, "tag", "2.10.0")
+    _add_file(path, _manifest("backported"))
+    _git(path, "tag", "2.10.1")
+    # a provider that takes the place of a removed one is new as well
+    _git(path, "rm", "--quiet", _manifest("universal_player"))
+    _add_file(path, _manifest("yoto"))
+    _git(path, "tag", "2.11.0")
+    source_sha = _add_file(path, _manifest("fip"))
+    _add_file(path, _manifest("after_the_release"))
+
+    assert new_providers(git_repository, version, source_sha) == ["fip", "yoto"]
+
+
+def test_new_providers_need_a_stable_release_of_an_earlier_line(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """Without a stable release of an earlier line there is nothing to compare with."""
+    path, git_repository = repository
+    _git(path, "tag", "2.10.0b3")
+    _git(path, "tag", "2.11.0")
+    source_sha = _add_file(path, _manifest("fip"))
+
+    assert new_providers(git_repository, "2.11.1", source_sha) == []
+
+
+def test_new_providers_are_provider_folders_only(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """Only the manifest of a provider folder counts, not a template or a file next to it."""
+    path, git_repository = repository
+    _add_file(path, _manifest("snapcast"))
+    _git(path, "tag", "2.10.0")
+    _add_file(path, _manifest("_demo_music_provider"))
+    _add_file(path, f"{PROVIDERS_PATH}/snapcast/snapweb/manifest.json")
+    _add_file(path, f"{PROVIDERS_PATH}/snapcast/icon.svg")
+    source_sha = _add_file(path, _manifest("fip"))
+
+    assert new_providers(git_repository, "2.11.0b1", source_sha) == ["fip"]
+
+
+def test_new_providers_file_is_what_the_server_reads(
+    repository: tuple[Path, GitRepository], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release build writes the list in the form the server reads at start."""
+    path, _ = repository
+    _git(path, "tag", "2.10.0")
+    source_sha = _add_file(path, _manifest("fip"))
+    monkeypatch.chdir(path)
+    command = f"new-providers --version 2.11.0b1 --source-sha {source_sha} --output new.json"
+    monkeypatch.setattr("sys.argv", ["release_workflow.py", *command.split()])
+
+    assert main() == 0
+    assert read_new_domains(path / "new.json") == {"fip"}
 
 
 @pytest.mark.parametrize(
@@ -411,6 +495,29 @@ def test_release_workflow_builds_the_source_distribution_without_app_secrets() -
     assert "if" not in _workflow_step(workflow, "build_artifacts", "Verify bundled app secrets")
 
 
+def test_release_workflow_records_the_new_providers_before_it_builds() -> None:
+    """The list of new providers is worked out from the release tags, for both distributions."""
+    workflow_text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    workflow = cast("dict[str, Any]", yaml.safe_load(workflow_text))
+    step_names = [step.get("name") for step in workflow["jobs"]["build_artifacts"]["steps"]]
+    name = "Record the providers that are new in this release line"
+
+    assert step_names.index(name) < step_names.index("Build source distribution")
+    # the release tags only come with the full history
+    checkout = _workflow_step(workflow, "build_artifacts", "Check out release source")
+    assert checkout["with"]["fetch-depth"] == 0
+    step = _workflow_step(workflow, "build_artifacts", name)
+    # recorded whenever the distributions are built
+    sdist_step = _workflow_step(workflow, "build_artifacts", "Build source distribution")
+    assert step["if"] == sdist_step["if"]
+    assert step["env"]["SOURCE_SHA"] == "${{ needs.resolve.outputs.source_sha }}"
+    run = str(step["run"])
+    assert "release_workflow.py new-providers" in run
+    assert f"--output source/{CATALOG_NEW_FILE.relative_to(ROOT).as_posix()}" in run
+    # a release without the file only marks nothing as new
+    assert step["continue-on-error"] is True
+
+
 def test_oci_manifest_requires_exact_platforms_and_provenance() -> None:
     """The exact image identifies its source and wheel on both target platforms."""
     source_sha = "a" * 40
@@ -550,7 +657,7 @@ def test_addon_version_update_leaves_the_rest_of_the_config_alone(tmp_path: Path
     config = tmp_path / "config.yaml"
     original = (
         "name: Music Assistant DEV SERVER\n"
-        "# tracks the nightly base image; bumped by the server release workflow\n"
+        "# the nightly the development image sits on; bumped once that image is published\n"
         "version: 1.6.0\n"
         "slug: music_assistant_dev\n"
     )
@@ -586,33 +693,12 @@ def test_addon_version_update_requires_exactly_one_version_field(
     assert config.read_text(encoding="utf-8") == config_text
 
 
-def test_release_workflow_bumps_the_dev_addon_on_nightly_only() -> None:
-    """Nightly carries the locally built dev add-on along with the nightly add-on."""
+def test_release_workflow_leaves_the_dev_addon_alone() -> None:
+    """The dev add-on follows the development image, which a release run does not publish."""
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-    parsed_workflow = cast("dict[str, Any]", yaml.safe_load(workflow))
-    channel_run = str(
-        _workflow_step(parsed_workflow, "update_addon", "Resolve add-on channel")["run"]
-    )
 
-    assert channel_run.index('dev_folder=""') < channel_run.index('case "$CHANNEL" in')
-    assert channel_run.count('dev_folder="music_assistant_dev"') == 1
-    nightly_arm = channel_run.split("nightly)")[1].split(";;", maxsplit=1)[0]
-    assert 'dev_folder="music_assistant_dev"' in nightly_arm
-    assert 'echo "dev_folder=$dev_folder" >> "$GITHUB_OUTPUT"' in channel_run
-
-    dev_step = _workflow_step(parsed_workflow, "update_addon", "Update dev add-on version")
-    assert dev_step["if"] == "steps.channel.outputs.dev_folder != ''"
-    dev_run = str(dev_step["run"])
-    assert "release_workflow.py set-addon-version" in dev_run
-    assert '--config "addon-repo/$DEV_FOLDER/config.yaml"' in dev_run
-
-    commit_step = _workflow_step(parsed_workflow, "update_addon", "Commit add-on update")
-    assert commit_step["env"]["DEV_FOLDER"] == "${{ steps.channel.outputs.dev_folder }}"
-    assert 'git add "$DEV_FOLDER/config.yaml"' in str(commit_step["run"])
-
-    # the bump is only committed if it happens first
-    step_names = [step.get("name") for step in parsed_workflow["jobs"]["update_addon"]["steps"]]
-    assert step_names.index("Update dev add-on version") < step_names.index("Commit add-on update")
+    assert "music_assistant_dev" not in workflow
+    assert "set-addon-version" not in workflow
 
 
 def test_automation_drops_legacy_credentials() -> None:
@@ -860,8 +946,8 @@ def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() 
         "pull-requests": "read",
     }
     assert jobs["build_artifacts"]["permissions"] == {"contents": "write"}
-    assert workflow.count("actions/create-github-app-token@") == 5
-    assert workflow.count("outputs.installation-id") == 5
+    assert workflow.count("actions/create-github-app-token@") == 6
+    assert workflow.count("outputs.installation-id") == 6
     assert 'EXPECTED_APP_INSTALLATION_ID: "146062122"' in workflow
     assert set(re.findall(r"secrets\.([A-Z0-9_]+)", workflow)) == {
         "MUSIC_ASSISTANT_BOT_PRIVATE_KEY"
@@ -1066,6 +1152,25 @@ def test_release_workflow_publication_state_uses_release_ids() -> None:
     assert "Release $VERSION is neither a mutable draft nor immutable" in publication_step
 
 
+def test_release_workflow_docs_dispatch_never_fails_the_release() -> None:
+    """The docs site hears about beta and stable releases without risking the release."""
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    jobs = yaml.safe_load(workflow)["jobs"]
+    job = jobs["notify_docs"]
+
+    assert job["needs"] == ["resolve", "publish_release"]
+    assert job["if"] == "inputs.channel != 'nightly'"
+    assert job["permissions"] == {}
+    assert not any("notify_docs" in str(other.get("needs", "")) for other in jobs.values())
+    *guarded_steps, warning = job["steps"]
+    assert all(step["continue-on-error"] is True for step in guarded_steps)
+    assert guarded_steps[0]["with"]["repositories"] == "music-assistant.io"
+    assert "server-release" in guarded_steps[-1]["run"]
+    assert "repos/music-assistant/music-assistant.io/dispatches" in guarded_steps[-1]["run"]
+    assert warning["if"] == "steps.dispatch.outcome != 'success'"
+    assert "::warning" in warning["run"]
+
+
 def _api_asset(path: Path) -> dict[str, str | int]:
     return {
         "name": path.name,
@@ -1086,6 +1191,19 @@ def _write_dists(
         names = ["music_assistant/__init__.py"] + ([APP_SECRETS_PATH] if sdist_secrets else [])
         for name in names:
             sdist.addfile(tarfile.TarInfo(f"music_assistant-{version}/{name}"), io.BytesIO())
+
+
+def _manifest(domain: str) -> str:
+    return f"{PROVIDERS_PATH}/{domain}/manifest.json"
+
+
+def _add_file(path: Path, name: str) -> str:
+    file = path / name
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text("{}\n", encoding="utf-8")
+    _git(path, "add", name)
+    _git(path, "commit", "-m", f"add {name}")
+    return _git(path, "rev-parse", "HEAD")
 
 
 def _commit(path: Path, message: str) -> str:

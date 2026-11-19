@@ -11,7 +11,7 @@ from music_assistant_models.player import PlayerMedia, PlayerSource
 
 from music_assistant.providers.chromecast.constants import APP_MEDIA_RECEIVER
 from music_assistant.providers.chromecast.player import ChromecastPlayer
-from tests.common import MockPlayer, MockProvider
+from tests.common import MockProvider, attach_mock, mock_player_mass
 from tests.providers.chromecast.test_media_status_updates import _fake_player, _media_status
 
 STREAM_BASE_URL = "http://192.168.1.10:8097"
@@ -59,27 +59,20 @@ def test_own_session_on_media_receiver_is_no_foreign_source(content_id: str) -> 
 
 def test_foreign_cast_app_takes_over_the_ma_queue() -> None:
     """A foreign app the Cast player reports as source releases the MA queue it played."""
-    mass = MagicMock()
-    mass.closing = False
-    mass.config.get_raw_player_config_value = MagicMock(
-        side_effect=lambda _player_id, _key, default=None: default
-    )
-    mass.player_queues.get = MagicMock(return_value=None)
-    mass.players.get_audio_source_session = MagicMock(return_value=None)
-    mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, volume: volume)
-    player = MockPlayer(MockProvider("chromecast", mass=mass), PLAYER_ID, "Cast group")
-    player.set_active_mass_source(PLAYER_ID)
+    provider = MockProvider("chromecast", mass=mock_player_mass())
+    player, protocol = attach_mock(provider, PLAYER_ID, "Cast group", player_id="pl0123456789ab")
+    player.set_active_mass_source(player.player_id)
     # the trust flag and source entry a real ChromecastPlayer carries for a foreign app
-    player._attr_trusts_reported_source = ChromecastPlayer._attr_trusts_reported_source
-    player._attr_source_list = [
+    protocol._attr_trusts_reported_source = ChromecastPlayer._attr_trusts_reported_source
+    protocol._attr_source_list = [
         PlayerSource(id="bbc_sounds", name="BBC Sounds", passive=True),
     ]
-    player._attr_active_source = "bbc_sounds"
-    player._attr_playback_state = PlaybackState.PLAYING
+    protocol._attr_active_source = "bbc_sounds"
+    protocol._attr_playback_state = PlaybackState.PLAYING
 
     player.update_state(signal_event=False)
 
-    assert player.state.active_source == "bbc_sounds"
+    assert player.active_source == "bbc_sounds"
 
 
 def test_a_known_app_in_its_own_spelling_gets_controls() -> None:

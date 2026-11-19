@@ -44,6 +44,9 @@ from aioaudiobookshelf.schema.calls_items import (
 from aioaudiobookshelf.schema.calls_playlists import (
     CreatePlaylistParameters as AbsCreatePlaylistParameters,
 )
+from aioaudiobookshelf.schema.calls_playlists import (
+    UpdatePlaylistParameters as AbsUpdatePlaylistParameters,
+)
 from aioaudiobookshelf.schema.calls_session import SyncOpenSessionParameters
 from aioaudiobookshelf.schema.library import (
     LibraryItemExpanded,
@@ -127,6 +130,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import from_utc_timestamp
+from music_assistant.helpers.playlists import move_playlist_block
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.audiobookshelf.parsers import (
@@ -411,6 +415,8 @@ for more details.
         # safe guard user updates
         self._pending_user_update: User | None = None
         self._user_update_task: asyncio.Task[None] | None = None
+        # catch up on progresses changed while mass was offline
+        await self._socket_abs_user_updated(abs_user)
 
         # create close sessions task
         self._close_sessions_task = self.mass.create_task(self._cleanup_open_sessions_loop())
@@ -484,6 +490,7 @@ for more details.
         if len(self.libraries.audiobooks) > 1 or len(self.libraries.podcasts) > 1:
             return features
         features.add(ProviderFeature.PLAYLIST_TRACKS_EDIT)
+        features.add(ProviderFeature.PLAYLIST_TRACKS_MOVE)
         features.add(ProviderFeature.LIBRARY_PLAYLISTS_EDIT)
         if len(self.libraries.audiobooks) == 1:
             features.add(ProviderFeature.PLAYLIST_CREATE_AUDIOBOOKS)
@@ -677,8 +684,8 @@ for more details.
                         cover_version=item.library_item.updated_at,
                     )
                 )
-        for cnt, playlist_item in enumerate(playlist_items):
-            playlist_item.position = cnt
+        for position, playlist_item in enumerate(playlist_items, 1):
+            playlist_item.position = position
 
         return playlist_items
 
@@ -741,8 +748,8 @@ for more details.
         except AbsNotFoundError:
             return
         items_to_remove: list[AbsPlaylistItem] = []
-        for item_cnt, item in enumerate(abs_playlist.items):
-            if item_cnt in positions_to_remove:
+        for position, item in enumerate(abs_playlist.items, 1):
+            if position in positions_to_remove:
                 items_to_remove.append(
                     AbsPlaylistItem(
                         library_item_id=item.library_item_id, episode_id=item.episode_id
@@ -754,6 +761,33 @@ for more details.
                 await self._client.remove_item_from_playlist_batch(
                     playlist_id=prov_playlist_id, items=items_to_remove
                 )
+
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """Move one item of the playlist to another position (both 1-based)."""
+        await self.move_playlist_tracks(prov_playlist_id, [from_position], to_position)
+
+    @handle_refresh_token
+    async def move_playlist_tracks(
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int | None = None
+    ) -> None:
+        """Move items of the playlist as one block to another position (all 1-based)."""
+        abs_playlist = await self._client.get_playlist(playlist_id=prov_playlist_id)
+        items = [
+            AbsPlaylistItem(library_item_id=item.library_item_id, episode_id=item.episode_id)
+            for item in abs_playlist.items
+        ]
+        if to_position is None:
+            to_position = len(items) - len(positions) + 1
+        # abs reorders by writing back the full list of items
+        items = move_playlist_block(items, positions, to_position)
+        async with self.playlist_lock:
+            self.playlist_last = time.time()
+            await self._client.update_playlist(
+                playlist_id=prov_playlist_id,
+                parameters=AbsUpdatePlaylistParameters(name=abs_playlist.name, items=items),
+            )
 
     @handle_refresh_token
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -1400,7 +1434,7 @@ for more details.
                 )
                 if mp is not None:
                     await self._client.remove_my_media_progress(media_progress_id=mp.id_)
-                    self.logger.debug(f"Removed media progress of {media_type.value}.")
+                    self.logger.debug("Removed media progress of %s.", media_type.value)
                 return
 
             duration = media_item.duration
@@ -1410,7 +1444,7 @@ for more details.
             # a session sync can't mark the item finished
             if not updated or fully_played:
                 self.logger.debug(
-                    f"Updating media progress of {media_type.value}, title {media_item.name}."
+                    "Updating media progress of %s, title %s.", media_type.value, media_item.name
                 )
                 await self._client.update_my_media_progress(
                     item_id=abs_podcast_id,
@@ -1438,7 +1472,7 @@ for more details.
                 mp = await self._client.get_my_media_progress(item_id=prov_item_id)
                 if mp is not None:
                     await self._client.remove_my_media_progress(media_progress_id=mp.id_)
-                    self.logger.debug(f"Removed media progress of {media_type.value}.")
+                    self.logger.debug("Removed media progress of %s.", media_type.value)
                 return
 
             duration = media_item.duration
@@ -1446,7 +1480,9 @@ for more details.
             if session_helper := self.sessions.get(prov_item_id):
                 updated = await _update_by_session(session_helper=session_helper, duration=duration)
             if not updated or fully_played:
-                self.logger.debug(f"Updating {media_type.value} named {media_item.name} progress")
+                self.logger.debug(
+                    "Updating %s named %s progress", media_type.value, media_item.name
+                )
                 await self._client.update_my_media_progress(
                     item_id=prov_item_id,
                     duration_seconds=duration,
@@ -1821,7 +1857,7 @@ for more details.
         if progress.library_item_id not in known_ids:
             return
 
-        self.logger.debug(f"Updated progress of item {progress.library_item_id} via socket.")
+        self.logger.debug("Updated progress of item %s via socket.", progress.library_item_id)
 
         if progress.episode_id is None:
             await self._update_playlog_book(progress)
@@ -2039,7 +2075,7 @@ for more details.
                 await self._update_playlog_book(progress)
             else:
                 await self._update_playlog_episode(progress)
-        self.logger.debug(f"Updated {__updated_items} from full playlog.")
+        self.logger.debug("Updated %s from full playlog.", __updated_items)
 
         # Get MA's known progresses of ABS.
         # In ABS the user may discard a progress, which removes the progress completely.
@@ -2086,7 +2122,9 @@ for more details.
             return
         if int(progress.current_time) == 0 and not progress.is_finished:
             await self.mass.music.mark_item_unplayed(
-                mass_audiobook, provider_instance_id=self.instance_id
+                mass_audiobook,
+                provider_instance_id=self.instance_id,
+                progress_timestamp=progress.last_update // 1000,
             )
         else:
             await self.mass.music.mark_item_played(
@@ -2095,6 +2133,7 @@ for more details.
                 seconds_played=int(progress.current_time),
                 user_initiated=False,
                 provider_instance_id=self.instance_id,
+                progress_timestamp=progress.last_update // 1000,
             )
 
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
@@ -2113,7 +2152,9 @@ for more details.
             return
         if int(progress.current_time) == 0 and not progress.is_finished:
             await self.mass.music.mark_item_unplayed(
-                mass_episode, provider_instance_id=self.instance_id
+                mass_episode,
+                provider_instance_id=self.instance_id,
+                progress_timestamp=progress.last_update // 1000,
             )
         else:
             await self.mass.music.mark_item_played(
@@ -2122,6 +2163,7 @@ for more details.
                 seconds_played=int(progress.current_time),
                 user_initiated=False,
                 provider_instance_id=self.instance_id,
+                progress_timestamp=progress.last_update // 1000,
             )
 
     # other abs clients report the progress of a playing episode every 15s

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -47,13 +48,14 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
 )
+from music_assistant.controllers.metadata.constants import MUSICBRAINZ_LINK_DOMAINS
 from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
 from music_assistant.controllers.music.helpers import (
     provider_mappings_for_update,
     search_name_match_clause,
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
-from music_assistant.controllers.music.listing_cache import Listing
+from music_assistant.controllers.music.listing_cache import Listing, invalidate_listings
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     TrackMatchConfidence,
@@ -64,6 +66,7 @@ from music_assistant.helpers.compare import (
     compare_track_title,
     get_keep_remasters_apart,
     loose_compare_strings,
+    track_durations_agree,
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.external_ids import is_valid_isrc, normalize_external_id
@@ -71,6 +74,7 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
 from music_assistant.helpers.provider_access import visible_items
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.musicbrainz.provider import recording_matches_track
 
 from .base import (
     EXTERNAL_ID_LOOKUP_ERRORS,
@@ -80,10 +84,12 @@ from .base import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from music_assistant import MusicAssistant
     from music_assistant.models.media_capabilities import MusicDiscoveryMixin
+    from music_assistant.providers.musicbrainz.models import MusicBrainzRecording
+    from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +131,7 @@ class TracksController(MediaControllerBase[Track]):
     media_type = MediaType.TRACK
     item_cls = Track
     summary_item_cls = TrackSummary
+    not_available_translation_key = "track_not_available_on_music_services"
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
@@ -677,6 +684,60 @@ class TracksController(MediaControllerBase[Track]):
             random_seed=random_seed,
         )
 
+    def can_look_up_recordings(self) -> bool:
+        """Return whether a track can be looked up by its recording id for the current user."""
+        # the music sources the lookup asks: the ones MusicBrainz links a recording to, and
+        # the ones that find a track by the ISRC of the recording
+        return any(
+            provider.domain in MUSICBRAINZ_LINK_DOMAINS
+            or ProviderFeature.TRACK_BY_EXTERNAL_ID in provider.supported_features
+            for provider in self.mass.music.providers
+        )
+
+    async def resolve_musicbrainz_recording(
+        self,
+        recording: MusicBrainzRecording,
+        accept: Callable[[Track], bool] | None = None,
+    ) -> Track | None:
+        """
+        Return the track MusicBrainz links a recording to on one of the user's music providers.
+
+        Only the first provider the recording is linked to is asked.
+
+        :param recording: The MusicBrainz recording, with its links and artist credits.
+        :param accept: Tells whether the linked track is the one looked for; one that is the
+            recording by title and credited artist is when omitted.
+        :raises MusicAssistantError: The linked provider could not hand the track over, which
+            says nothing about whether it has it.
+        """
+        linked = await self._linked_provider_mappings(recording.relations)
+        if not linked:
+            return None
+        mapping = linked[0]
+        try:
+            track = await self.get_provider_item(
+                mapping.item_id,
+                mapping.provider_instance,
+                allow_fallback=False,
+                strict_provider_instance=True,
+            )
+        except MediaNotFoundError:
+            self.logger.debug(
+                "%s no longer has the track MusicBrainz links recording %s to",
+                mapping.provider_instance,
+                recording.id,
+            )
+            return None
+        if not (accept(track) if accept else recording_matches_track(recording, track)):
+            self.logger.debug(
+                "Track %s on %s is not what recording %s was looked up for",
+                track.name,
+                mapping.provider_instance,
+                recording.id,
+            )
+            return None
+        return track
+
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete record from the database."""
         db_id = int(item_id)  # ensure integer
@@ -686,6 +747,25 @@ class TracksController(MediaControllerBase[Track]):
         await self.mass.music.database.delete(DB_TABLE_ALBUM_TRACKS, {"track_id": db_id})
         # delete entry(s) from trackartists table
         await self.mass.music.database.delete(DB_TABLE_TRACK_ARTISTS, {"track_id": db_id})
+
+    async def remove_album_link(self, item_id: str | int, album_id: str | int) -> None:
+        """
+        Remove a library track from a library album, keeping both items.
+
+        :param item_id: The library item id of the track.
+        :param album_id: The library item id of the album.
+        """
+        db_id = int(item_id)  # ensure integer
+        db_album_id = int(album_id)  # ensure integer
+        await self.mass.music.database.delete(
+            DB_TABLE_ALBUM_TRACKS, {"track_id": db_id, "album_id": db_album_id}
+        )
+        with suppress(MediaNotFoundError):
+            await invalidate_listings(
+                self.mass, await self.mass.music.albums.get_library_item(db_album_id)
+            )
+        with suppress(MediaNotFoundError):
+            await invalidate_listings(self.mass, await self.get_library_item(db_id))
 
     async def set_identifiers(
         self,
@@ -738,7 +818,43 @@ class TracksController(MediaControllerBase[Track]):
         if not changed:
             return
 
+        await self.merge_recording_duplicates(track)
         await self.update_item_in_library(int(track.item_id), track)
+
+    async def merge_recording_duplicates(self, track: Track) -> set[str]:
+        """
+        Merge other library tracks of the same MusicBrainz recording into this track.
+
+        :param track: The library track whose recording id to look for.
+        :return: The library ids of the tracks that were merged into it.
+        """
+        recording_ids = self._recording_ids(track)
+        if len(recording_ids) != 1:
+            return set()
+        merged: set[str] = set()
+        for other in await self.get_library_items_by_external_id(
+            recording_ids.pop(), ExternalID.MB_RECORDING, limit=None
+        ):
+            if (
+                int(other.item_id) == int(track.item_id)
+                or len(self._recording_ids(other)) != 1
+                or not track_durations_agree(other, track)
+                or not await self._confirm_library_candidate(other, track)
+            ):
+                continue
+            self.logger.debug(
+                "Merging track item id %s into item id %s: both are recording %s",
+                other.item_id,
+                track.item_id,
+                track.mbid,
+            )
+            merged_item = await self.merge_library_items(track.item_id, other.item_id)
+            track.provider_mappings.update(merged_item.provider_mappings)
+            if merged_item.duration > 0:
+                track.duration = merged_item.duration
+            track.date_added = merged_item.date_added
+            merged.add(other.item_id)
+        return merged
 
     async def get_preview_url(self, provider_instance_id_or_domain: str, item_id: str) -> str:
         """Return url to short preview sample."""
@@ -1729,6 +1845,81 @@ class TracksController(MediaControllerBase[Track]):
                 row["album_id"], provider_instance_id
             )
 
+    async def _resolve_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """
+        Return the track an external id names, if the library or a music provider has it.
+
+        :param external_id: The external identifier.
+        :param external_id_type: Type of the identifier.
+        :raises ProviderUnavailableError: A MusicBrainz id is asked for while the MusicBrainz
+            provider is not loaded.
+        :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when the track was not
+            found while a music provider or MusicBrainz could not answer.
+        """
+        if external_id_type == ExternalID.MB_RECORDING:
+            return await self._track_by_recording_id(external_id)
+        return await super()._resolve_external_id(external_id, external_id_type)
+
+    async def _track_by_recording_id(self, recording_id: str) -> Track | None:
+        """
+        Return the track a MusicBrainz recording is, if the library or a music provider has it.
+
+        :param recording_id: MusicBrainz recording id.
+        :raises ProviderUnavailableError: The MusicBrainz provider is not loaded.
+        :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when the track was not
+            found while a music provider or MusicBrainz could not answer.
+        """
+        musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+        if musicbrainz is None:
+            raise ProviderUnavailableError("MusicBrainz is not available")
+        try:
+            with self._musicbrainz_request():
+                recording = await musicbrainz.get_recording_details(recording_id)
+        except InvalidDataError as err:
+            self.logger.debug("Recording %s could not be looked up: %s", recording_id, err)
+            return None
+        isrcs = sorted(
+            {
+                normalize_external_id(ExternalID.ISRC, isrc)
+                for isrc in recording.isrcs or ()
+                if is_valid_isrc(isrc)
+            }
+        )
+        # an ISRC is occasionally reused, so whatever carries one only counts when it is
+        # the recording, in the library as much as on a provider
+        for isrc in isrcs:
+            for library_track in await self.get_library_items_by_external_id(
+                isrc, ExternalID.ISRC, limit=None
+            ):
+                if self._has_visible_source(library_track) and recording_matches_track(
+                    recording, library_track
+                ):
+                    return library_track
+        could_not_answer: MusicAssistantError | None = None
+        try:
+            if track := await self.resolve_musicbrainz_recording(recording):
+                return track
+        except EXTERNAL_ID_LOOKUP_ERRORS as err:
+            # a linked provider in trouble is still asked by ISRC, as are the others
+            self.logger.debug("Linked track of recording %s not fetched: %s", recording_id, err)
+            # which linked provider failed is not known here
+            could_not_answer = self._unanswered_lookup_error(
+                err, "the linked music provider", named=False
+            )
+        track = None
+        if isrcs:
+            # one ISRC keeps this to a single request per provider
+            track = await self._provider_item_by_external_id(
+                isrcs[0],
+                ExternalID.ISRC,
+                accept=lambda track: recording_matches_track(recording, track),
+            )
+        if track is None and could_not_answer is not None:
+            raise could_not_answer
+        return track
+
     async def _verify_musicbrainz_mapping(self, db_item: Track, mapping: ProviderMapping) -> bool:
         """Return True if a linked track may be added, checked while remasters are kept apart."""
         if not get_keep_remasters_apart():
@@ -1839,6 +2030,15 @@ class TracksController(MediaControllerBase[Track]):
             "(json_extract(tracks.metadata, '$.explicit') IS NULL "
             "OR json_extract(tracks.metadata, '$.explicit') = 0)"
         ]
+
+    @staticmethod
+    def _recording_ids(track: Track) -> set[str]:
+        """Return the distinct MusicBrainz recording ids of a track."""
+        return {
+            normalize_external_id(ExternalID.MB_RECORDING, value)
+            for id_type, value in track.external_ids
+            if id_type == ExternalID.MB_RECORDING
+        }
 
     def _get_sort_sql(self, field: SortField, direction: SortDirection | None) -> str:
         """Return the ORDER BY clause for a sort field, ARTIST_NAME through the artists join."""

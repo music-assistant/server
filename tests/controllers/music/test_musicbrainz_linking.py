@@ -473,9 +473,11 @@ def _album_harness(
     """
     ctrl = AlbumsController.__new__(AlbumsController)
     ctrl.logger = logging.getLogger("test.musicbrainz.linking")
+    ctrl._logged_hints = set()
     ctrl.mass = Mock()
     ctrl.mass.music.database.deferred_commit = MagicMock()
     ctrl.mass.music.tracks.update_item_in_library = AsyncMock()
+    ctrl.mass.music.tracks.merge_recording_duplicates = AsyncMock(return_value=set())
     ctrl.mass.music.tracks.add_unclaimed_provider_mappings = AsyncMock()
 
     async def _tracklist(item_id: str, _instance: str) -> list[Track]:
@@ -512,6 +514,43 @@ async def test_release_tracks_fill_recording_ids_isrcs_and_marker_by_position() 
     assert all(track.metadata.last_musicbrainz_lookup is not None for track in updated)
 
 
+@pytest.mark.parametrize("on_musicbrainz", [False, True])
+async def test_release_tracks_log_the_isrcs_musicbrainz_lacks_once(
+    caplog: pytest.LogCaptureFixture, on_musicbrainz: bool
+) -> None:
+    """The ISRCs MusicBrainz lacks are logged once, numbered across the release's mediums."""
+    caplog.set_level(logging.DEBUG, logger="test.musicbrainz.linking")
+    db_tracks = [
+        _library_track("t1", 1, isrcs=["GBSTK0700001"]),
+        _library_track("t2", 2, isrcs=["GBSTK0700002"]),
+        _library_track("d2", 1, disc_number=2, isrcs=["GBSTK0700003"]),
+    ]
+    release = _release(
+        [
+            _recording(RECORDING_ID, "Track 1", None, "GBSTK0700001"),
+            _recording(OTHER_RECORDING_ID, "Track 2", None, *(["GBSTK0700002"] * on_musicbrainz)),
+        ],
+        [
+            _recording(
+                "7f6e5d4c-3b2a-4c1d-8e0f-a1b2c3d4e5f6",
+                "Track 1",
+                None,
+                "GBSTK0700003" if on_musicbrainz else "GBSTK0700009",
+            )
+        ],
+    )
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
+
+    hints = [(x.levelno, x.getMessage()) for x in caplog.records if "MagicISRC" in x.getMessage()]
+    expected = (
+        'Album "In Rainbows" has ISRCs MusicBrainz lacks, add them all at once with MagicISRC: '
+        f"https://magicisrc.kepstin.ca/?mbid={release.id}&isrc2=GBSTK0700002&isrc3=GBSTK0700003"
+    )
+    assert hints == ([] if on_musicbrainz else [(logging.DEBUG, expected)])
+
+
 async def test_release_tracks_skip_a_length_or_title_mismatch() -> None:
     """A recording that is 20 seconds off or named differently is not the library track."""
     db_tracks = [_library_track("t1", 1, duration=200), _library_track("t2", 2)]
@@ -522,6 +561,37 @@ async def test_release_tracks_skip_a_length_or_title_mismatch() -> None:
         await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
 
     assert harness.updated_tracks() == []
+
+
+async def test_release_tracks_match_a_movement_title_by_a_shared_isrc() -> None:
+    """A track titled by its movement alone is the recording at its position sharing its ISRC."""
+    db_tracks = [
+        _library_track("t1", 1, name="I. Allegro con brio", isrcs=["DEF058130201"]),
+        _library_track("t2", 2, name="II. Andante con moto", duration=200, isrcs=["DEF058130202"]),
+    ]
+    release = _release(
+        [
+            _recording(
+                RECORDING_ID,
+                "Symphony no. 5 in C minor, op. 67: I. Allegro con brio",
+                238000,
+                "DEF058130201",
+            ),
+            # the same ISRC but 20 seconds longer is not the track
+            _recording(
+                OTHER_RECORDING_ID,
+                "Symphony no. 5 in C minor, op. 67: II. Andante con moto",
+                220000,
+                "DEF058130202",
+            ),
+        ]
+    )
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
+
+    assert [(track.item_id, track.mbid) for track in harness.updated_tracks()] == [
+        ("t1", RECORDING_ID)
+    ]
 
 
 async def test_release_tracks_keep_an_existing_recording_id() -> None:
@@ -842,6 +912,19 @@ async def test_release_tracks_without_a_link_log_no_hint_for_an_unknown_length(
 
     assert harness.updated_tracks() == []
     assert _length_hints(caplog) == []
+
+
+async def test_release_tracks_compare_the_length_on_the_release() -> None:
+    """The length a track has on the release counts, not the length of its recording."""
+    release = _release([_recording(RECORDING_ID, "Track 1", 237000)])
+    release.media[0].tracks[0].length = 300000
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(
+            _library_album(), [_library_track("t1", 1, duration=300)], release
+        )
+
+    (updated,) = harness.updated_tracks()
+    assert updated.mbid == RECORDING_ID
 
 
 async def test_provider_tracks_are_matched_by_isrc_before_position() -> None:

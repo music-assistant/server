@@ -616,10 +616,14 @@ def construct_media_item_from_playlist_item(
             image_type = ImageType(img.type)
         except ValueError:
             continue
-        # nothing in the file proves who owns a local path, so only remote references are
-        # imported, and only from builtin or a provider that is loaded
-        if not img.path.startswith(_REMOTE_IMAGE_PREFIXES) or not (
-            img.provider == "builtin" or mass.get_provider(img.provider) is not None
+        # nothing in the file proves who owns a path, so only remote references from builtin
+        # or a loaded provider are imported, plus paths a loaded provider explicitly accepts
+        prov = mass.get_provider(img.provider)
+        is_remote = img.path.startswith(_REMOTE_IMAGE_PREFIXES)
+        if not (
+            (img.provider == "builtin" or prov is not None)
+            if is_remote
+            else (prov is not None and prov.accepts_stored_image_path(img.path))
         ):
             LOGGER.debug("Skipping playlist image %s of provider %s", img.path, img.provider)
             continue
@@ -628,7 +632,8 @@ def construct_media_item_from_playlist_item(
                 type=image_type,
                 path=img.path,
                 provider=img.provider,
-                remotely_accessible=img.remotely_accessible,
+                # a path only its provider can resolve is never reachable by a client itself
+                remotely_accessible=is_remote and img.remotely_accessible,
             )
         )
     return media_item
@@ -716,12 +721,19 @@ def playlist_block_move_steps(
 def _resolve_provider_mappings(item: PlaylistItem, mass: MusicAssistant) -> set[ProviderMapping]:
     """Resolve provider mappings from playlist item, checking loaded providers."""
     provider_mappings: set[ProviderMapping] = set()
+    loaded_instances = {
+        p.instance_id for p in item.providers if p.instance_id and mass.get_provider(p.instance_id)
+    }
     for prov_info in item.providers:
         prov = None
         if prov_info.instance_id:
             prov = mass.get_provider(prov_info.instance_id)
         if not prov:
             prov = mass.get_provider(prov_info.domain)
+            # item ids can differ per instance, so don't move this one onto an
+            # instance that has its own line in this entry
+            if prov and prov.instance_id in loaded_instances:
+                prov = None
         audio_format = AudioFormat(
             content_type=ContentType.try_parse(prov_info.content_type),
             sample_rate=prov_info.sample_rate,
@@ -1006,17 +1018,17 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     ):
         metadata["mb_track"] = mb_track
 
-    # collect one provider mapping per domain (highest quality)
+    # collect one provider mapping per instance (highest quality): instances of one
+    # domain can belong to different users, who each need their own mapping to play it
     prov_infos: list[ProviderMappingInfo] = []
-    seen_domains: set[str] = set()
+    seen_instances: set[str] = set()
     for prov_mapping in sorted_mappings:
-        domain = prov_mapping.provider_domain
-        if domain in seen_domains:
+        if prov_mapping.provider_instance in seen_instances:
             continue
-        seen_domains.add(domain)
+        seen_instances.add(prov_mapping.provider_instance)
         prov_infos.append(
             ProviderMappingInfo(
-                domain=domain,
+                domain=prov_mapping.provider_domain,
                 item_id=prov_mapping.item_id,
                 instance_id=prov_mapping.provider_instance,
                 content_type=prov_mapping.audio_format.content_type.value,

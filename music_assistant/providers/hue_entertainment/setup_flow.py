@@ -213,7 +213,7 @@ async def _setup_zigbee(session: SetupSession) -> None:
             )
         except ZhaUnavailableError as err:
             raise AbortFlow("zha_unavailable") from err
-        except ZigguratError, StepExpiredError:
+        except ZigguratError, StepExpiredError, TimeoutError:
             errors = {"base": "ziggurat_unreachable"}
             continue
         except Exception as err:

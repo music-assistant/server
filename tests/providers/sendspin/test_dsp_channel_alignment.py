@@ -133,13 +133,15 @@ class _SessionHarness:
         self.entered = 0
         self.returned = 0
         self._source_limit: int | None = None
+        # How often the producer asked the source for a slice.
+        self.source_reads = 0
         self.source_ended = False
         self._source_wakeup = asyncio.Event()
         self.start_hooks: deque[Callable[[], Awaitable[None]] | None] = deque()
         self.ffmpegs: list[_FifoFFMpeg] = []
         self._yielding_writes = yielding_writes
 
-        player = MagicMock(player_id=LEADER_ID)
+        player = MagicMock(protocol_id=LEADER_ID)
         player.mass.streams.get_stream = MagicMock(side_effect=lambda *_a, **_k: self._source())
         self.session = SendspinPlaybackSession(player)
         session = self.session
@@ -162,7 +164,6 @@ class _SessionHarness:
             "_read_pipeline_config",
             lambda player_id: _PipelineConfig(
                 requires_transform=player_id in dsp_ids,
-                output_channels="stereo",
                 filter_params=("volume=1.0",) if player_id in dsp_ids else (),
             ),
         )
@@ -262,6 +263,7 @@ class _SessionHarness:
     async def _source(self) -> AsyncIterator[bytes]:
         index = 0
         while True:
+            self.source_reads += 1
             while self._source_limit is not None and index >= self._source_limit:
                 if self.source_ended:
                     return
@@ -277,11 +279,13 @@ class _SessionHarness:
         self.returned += 1
 
     async def _until(self, condition: Callable[[], bool]) -> None:
-        for _ in range(20_000):
-            if condition():
-                return
+        # bounded in time, not in loop turns: the first commit loads av on a worker thread
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5
+        while not condition():
+            if loop.time() > deadline:
+                raise AssertionError("playback loop stalled")
             await asyncio.sleep(0)
-        raise AssertionError("playback loop stalled")
 
     def _parked(self) -> bool:
         return self.returned == self.released and self.entered == self.released + 1
@@ -355,7 +359,7 @@ async def test_leader_switch_to_dsp_member_keeps_alignment(
         _assert_aligned(harness.offsets_us(harness.session._member_pipelines[DSP_ID].channel_id))
 
         # SendspinPlayer.set_members on the old leader, then the new leader's membership sync.
-        await harness.session.transfer_to(MagicMock(player_id=DSP_ID))
+        await harness.session.transfer_to(MagicMock(protocol_id=DSP_ID))
         await harness.session.sync_members({PLAIN_ID})
         # PlayerV1Role.get_audio_requirements re-resolves its channel on every call.
         leader_channel = harness.session._resolve_channel_for_player(DSP_ID)

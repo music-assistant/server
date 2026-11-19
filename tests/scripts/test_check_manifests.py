@@ -1,6 +1,12 @@
 """Tests for the provider manifest.json validator."""
 
-from scripts.check_manifests import PROVIDERS_PATH, _resolve_manifests, _validate, find_violations
+from scripts.check_manifests import (
+    PROVIDERS_PATH,
+    VALID_TYPES,
+    _resolve_manifests,
+    _validate,
+    find_violations,
+)
 
 
 def _valid_manifest() -> dict[str, object]:
@@ -11,7 +17,6 @@ def _valid_manifest() -> dict[str, object]:
         "name": "Demo",
         "description": "A demo provider.",
         "codeowners": ["@octocat"],
-        "tier": "community",
     }
 
 
@@ -39,8 +44,10 @@ def test_non_string_type_rejected() -> None:
     """A non-string type (list/dict) is reported instead of crashing the validator."""
     for bad_type in (["music"], {"type": "music"}):
         manifest = _valid_manifest()
-        manifest["type"] = bad_type
-        assert any("is not one of" in issue for issue in _validate(manifest, "demo"))
+        manifest.update(type=bad_type, provides=["radio"])
+        assert _validate(manifest, "demo") == [
+            f"type '{bad_type}' is not one of {sorted(VALID_TYPES)}"
+        ]
 
 
 def test_domain_must_match_folder() -> None:
@@ -85,30 +92,14 @@ def test_empty_text_fields_rejected() -> None:
     )
 
 
-def test_tier_required_for_public_provider() -> None:
-    """A public provider without a tier is reported; a demo provider may omit it."""
-    manifest = _valid_manifest()
-    del manifest["tier"]
-    assert any("missing mandatory key 'tier'" in issue for issue in _validate(manifest, "demo"))
-    manifest["domain"] = "_demo_music_provider"
-    assert _validate(manifest, "_demo_music_provider") == []
-
-
-def test_invalid_tier_rejected() -> None:
-    """A tier outside core/community is rejected."""
-    for bad_tier in ("official", ["core"], None):
+def test_tier_rejected() -> None:
+    """A manifest that sets a tier is reported, whatever the value."""
+    for tier in ("core", "community"):
         manifest = _valid_manifest()
-        manifest["tier"] = bad_tier
-        assert any("is not one of" in issue for issue in _validate(manifest, "demo"))
-
-
-def test_core_tier_requires_org_codeowner() -> None:
-    """Tier core is only valid with @music-assistant in codeowners."""
-    manifest = _valid_manifest()
-    manifest["tier"] = "core"
-    assert any("requires '@music-assistant'" in issue for issue in _validate(manifest, "demo"))
-    manifest["codeowners"] = ["@music-assistant", "@octocat"]
-    assert _validate(manifest, "demo") == []
+        manifest["tier"] = tier
+        assert _validate(manifest, "demo") == [
+            "'tier' is set by the server and must not be in the manifest"
+        ]
 
 
 def test_support_url_must_be_https() -> None:
@@ -132,6 +123,50 @@ def test_support_url_must_be_https() -> None:
         assert any("'support_url' must be" in issue for issue in _validate(manifest, "demo"))
 
 
+def test_valid_provides_accepted() -> None:
+    """Declared offerings that are known and fit the provider type produce no issues."""
+    manifest = _valid_manifest()
+    manifest["provides"] = ["radio", "podcast"]
+    assert _validate(manifest, "demo") == []
+    manifest["provides"] = []
+    assert _validate(manifest, "demo") == []
+    manifest.update(type="plugin", provides=["audio_source", "scrobble"])
+    assert _validate(manifest, "demo") == []
+    manifest.update(type="player", provides=["audio_source"])
+    assert _validate(manifest, "demo") == []
+
+
+def test_provides_breaking_the_rules_rejected() -> None:
+    """Offerings that are not a list of known, unique values that fit the type are reported."""
+    manifest = _valid_manifest()
+    manifest["provides"] = "radio"
+    assert _validate(manifest, "demo") == ["'provides' must be a list"]
+    manifest["provides"] = ["radio", "radios", "unknown", 1, "radio", "scrobble"]
+    assert _validate(manifest, "demo") == [
+        "offering 'radios' is not a known ProviderOffering",
+        "offering 'unknown' is not a known ProviderOffering",
+        "offering '1' is not a known ProviderOffering",
+        "offering 'radio' is listed more than once",
+        "offering 'scrobble' does not fit provider type 'music'",
+    ]
+    manifest.update(type="metadata", provides=["audio_source"])
+    assert _validate(manifest, "demo") == [
+        "offering 'audio_source' does not fit provider type 'metadata'"
+    ]
+    manifest.update(type="speaker", provides=["radio"])
+    assert _validate(manifest, "demo") == [f"type 'speaker' is not one of {sorted(VALID_TYPES)}"]
+
+
+def test_top_level_media_types_rejected() -> None:
+    """A top-level media_types is reported with a pointer to provides; a menu action's is not."""
+    manifest = _valid_manifest()
+    manifest["media_types"] = ["radio"]
+    manifest["menu_actions"] = [_menu_action()]
+    assert _validate(manifest, "demo") == [
+        "'media_types' is not read by the server, use 'provides' instead"
+    ]
+
+
 def test_real_tree_is_clean() -> None:
     """Every shipped provider manifest passes validation."""
     assert find_violations() == []
@@ -153,3 +188,129 @@ def test_find_violations_scoped_to_given_manifest() -> None:
     """Validating a single explicit manifest only inspects that manifest."""
     manifest = PROVIDERS_PATH / "_demo_music_provider" / "manifest.json"
     assert find_violations([manifest]) == []
+
+
+def _menu_action(**overrides: object) -> dict[str, object]:
+    """Return a valid declared menu action, with fields changed."""
+    return {
+        "id": "send_to_frame",
+        "label": "Show on the picture frame",
+        "media_types": ["album", "playlist"],
+        "scope": "library.read",
+        "icon": "mdi-image-frame",
+        "requires_player": False,
+        **overrides,
+    }
+
+
+def test_valid_menu_actions_accepted() -> None:
+    """Declared menu actions that follow the rules produce no issues, a null icon included."""
+    manifest = _valid_manifest()
+    manifest["menu_actions"] = [_menu_action(), _menu_action(id="play", icon=None)]
+    assert _validate(manifest, "demo") == []
+
+
+def test_menu_actions_with_wrong_types_rejected() -> None:
+    """Menu actions of the wrong type are reported, as the server leaves them out."""
+    manifest = _valid_manifest()
+    manifest["menu_actions"] = {"id": "send_to_frame"}
+    assert _validate(manifest, "demo") == ["'menu_actions' must be a list"]
+    manifest["menu_actions"] = [_menu_action(label=None), _menu_action(requires_player="yes")]
+    issues = _validate(manifest, "demo")
+    assert [issue.split(":")[0] for issue in issues] == ["menu action 0", "menu action 1"]
+
+
+def test_menu_actions_breaking_the_rules_rejected() -> None:
+    """A built-in manifest whose menu actions break the server's rules fails the check."""
+    manifest = _valid_manifest()
+    manifest["menu_actions"] = [
+        _menu_action(scope="everything"),
+        _menu_action(id="unknown_type", media_types=["genre"]),
+        _menu_action(id="twice"),
+        _menu_action(id="twice"),
+    ]
+    assert _validate(manifest, "demo") == [
+        "menu action 'send_to_frame': needs a scope that Music Assistant knows, such as "
+        "'library.read'",
+        "menu action 'unknown_type': needs media_types from: album, artist, audiobook, "
+        "playlist, podcast, podcast_episode, radio, track",
+        "menu action 'twice': another menu action of this provider has the same id",
+    ]
+
+
+def test_page_checked() -> None:
+    """A valid page passes, and one that breaks the server's rules fails the check."""
+    manifest = _valid_manifest()
+    manifest["page"] = {"label": "Picture frame", "scope": "library.read", "icon": "mdi-image"}
+    assert _validate(manifest, "demo") == []
+    manifest["page"] = {"label": "Picture frame", "scope": "everything"}
+    assert _validate(manifest, "demo") == [
+        "page: needs a scope that Music Assistant knows, such as 'library.read'"
+    ]
+
+
+def _mcp_tool(**overrides: object) -> dict[str, object]:
+    """Return a valid declared MCP tool, with fields changed."""
+    return {
+        "id": "play_station",
+        "description": "Play one of the user's saved stations of this service on a player.",
+        "scope": "queues.control",
+        "requires_player": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {"station": {"type": "string", "description": "The station."}},
+            "required": ["station"],
+        },
+        **overrides,
+    }
+
+
+def test_valid_mcp_tools_accepted() -> None:
+    """Declared MCP tools that follow the rules produce no issues, one without schema included."""
+    manifest = _valid_manifest()
+    without_schema = _mcp_tool(id="list_stations")
+    del without_schema["input_schema"]
+    manifest["mcp_tools"] = [_mcp_tool(), without_schema]
+    assert _validate(manifest, "demo") == []
+
+
+def test_mcp_tools_with_wrong_types_rejected() -> None:
+    """MCP tools of the wrong type are reported, as the server leaves them out."""
+    manifest = _valid_manifest()
+    manifest["mcp_tools"] = {"id": "play_station"}
+    assert _validate(manifest, "demo") == ["'mcp_tools' must be a list"]
+    manifest["mcp_tools"] = [_mcp_tool(description=None), _mcp_tool(input_schema="none")]
+    issues = _validate(manifest, "demo")
+    assert [issue.split(":")[0] for issue in issues] == ["MCP tool 0", "MCP tool 1"]
+
+
+def test_mcp_tools_breaking_the_rules_rejected() -> None:
+    """A built-in manifest whose MCP tools break the server's rules fails the check."""
+    manifest = _valid_manifest()
+    manifest["mcp_tools"] = [
+        _mcp_tool(scope="everything"),
+        _mcp_tool(
+            id="reserved",
+            input_schema={
+                "type": "object",
+                "properties": {"player": {"type": "string", "description": "A player."}},
+            },
+        ),
+        _mcp_tool(id="twice"),
+        _mcp_tool(id="twice"),
+    ]
+    assert _validate(manifest, "demo") == [
+        "MCP tool 'play_station': needs a scope that Music Assistant knows, such as 'library.read'",
+        "MCP tool 'reserved': input_schema property 'player' is added by the server",
+        "MCP tool 'twice': another MCP tool of this provider has the same id",
+    ]
+
+
+def test_mcp_tool_name_checked_with_the_folder_name() -> None:
+    """The tool name limit is checked with the provider folder, the domain it must have."""
+    folder = "d" * 40
+    manifest = {**_valid_manifest(), "domain": folder, "mcp_tools": [_mcp_tool(id="x" * 23)]}
+    assert _validate(manifest, folder) == [
+        f"MCP tool '{'x' * 23}': needs a shorter id: the tool name '{folder}__{'x' * 23}' has "
+        "more than 64 characters"
+    ]

@@ -33,13 +33,19 @@ from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import (
     AsyncProcess,
     descriptor_path,
-    get_subprocess_env,
     open_in_thread,
 )
 from music_assistant.helpers.security import has_control_chars
 from music_assistant.helpers.util import infer_album_type, try_parse_int
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
+
+# An unresponsive or malformed (live) stream can keep ffprobe/ffmpeg busy indefinitely,
+# so a probe gets killed once it runs past these limits.
+FFPROBE_TIMEOUT = 60
+FFMPEG_DURATION_TIMEOUT = 600
+NETWORK_READ_TIMEOUT = 10
+MAX_ID3_TAG_SIZE = 32 * 1024 * 1024
 
 
 # the only multi-item splitter we accept is the semicolon,
@@ -666,7 +672,7 @@ class AudioTags:
 
         if tag := self.tags.get("replaygaintrackgain"):
             try:
-                gain_adjustment = float(tag.split(" ")[0])
+                gain_adjustment = _parse_replaygain_gain(tag)
                 return -18 - gain_adjustment
             except (ValueError, IndexError) as e:
                 LOGGER.warning("Invalid replaygaintrackgain tag value: %r — %s", tag, e)
@@ -685,7 +691,7 @@ class AudioTags:
 
         if tag := self.tags.get("replaygainalbumgain"):
             try:
-                gain_adjustment = float(tag.split(" ")[0])
+                gain_adjustment = _parse_replaygain_gain(tag)
                 return -18 - gain_adjustment
             except (ValueError, IndexError) as e:
                 LOGGER.warning("Invalid replaygainalbumgain tag value: %r — %s", tag, e)
@@ -762,35 +768,13 @@ async def async_parse_tags(
         returns its descriptor; the file is then only read through that descriptor.
     :param verify_ssl: Whether the certificate of an https source must be verified.
     """
-    return await asyncio.to_thread(
-        parse_tags, input_file, file_size, require_duration, opener, verify_ssl
-    )
-
-
-def parse_tags(
-    input_file: str,
-    file_size: int | None = None,
-    require_duration: bool = False,
-    opener: Callable[[str, int], int] | None = None,
-    verify_ssl: bool = True,
-) -> AudioTags:
-    """
-    Parse tags from a media file (or URL). NOT Async friendly.
-
-    :param input_file: A (local) filename or URL accessible by ffmpeg.
-    :param file_size: Size of the file, to estimate a missing duration from its bitrate.
-    :param require_duration: Decode the whole file when its duration is not in its header.
-    :param opener: Opens input_file like the opener of open(), with the os.open flags, and
-        returns its descriptor; the file is then only read through that descriptor.
-    :param verify_ssl: Whether the certificate of an https source must be verified.
-    """
     try:
-        fd = opener(input_file, os.O_RDONLY) if opener else None
+        fd = await open_in_thread(opener, input_file, os.O_RDONLY) if opener else None
     except OSError as err:
         raise InvalidDataError(f"Unable to retrieve info for {input_file}: {err}") from err
     source = input_file if fd is None else descriptor_path(fd)
     pass_fds = () if fd is None else (fd,)
-    args = (
+    args = [
         "ffprobe",
         "-hide_banner",
         "-loglevel",
@@ -805,13 +789,93 @@ def parse_tags(
         "json",
         *tls_verify_args(source, verify_ssl),
         *user_agent_args(source),
+        *(
+            ["-rw_timeout", str(NETWORK_READ_TIMEOUT * 1_000_000)]
+            if source.startswith("http")
+            else []
+        ),
         "-i",
         source,
-    )
+    ]
     try:
-        res = subprocess.check_output(  # noqa: S603
-            args, stderr=subprocess.PIPE, env=get_subprocess_env(), pass_fds=pass_fds
+        try:
+            await asyncio.to_thread(_validate_id3_tag_size, source, fd)
+        except (OSError, InvalidDataError) as err:
+            raise InvalidDataError(f"Unable to retrieve info for {input_file}: {err}") from err
+        async with AsyncProcess(
+            args, stdin=False, stdout=True, stderr=True, pass_fds=pass_fds
+        ) as probe:
+            res, stderr = await probe.communicate(timeout=FFPROBE_TIMEOUT)
+            if probe.returncode:
+                error = subprocess.CalledProcessError(
+                    probe.returncode, args, output=res, stderr=stderr
+                )
+                raise InvalidDataError(
+                    f"Unable to retrieve info for {input_file} ({_get_ffprobe_error(error)})"
+                )
+        parse_task = asyncio.create_task(
+            asyncio.to_thread(_parse_tags_output, res, input_file, source, file_size, fd)
         )
+        try:
+            tags = await asyncio.shield(parse_task)
+        except asyncio.CancelledError:
+            # Mutagen must release the descriptor before the caller closes it.
+            await parse_task
+            raise
+        del res
+        if not tags.duration and require_duration:
+            duration_args = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "info",
+                *tls_verify_args(source, verify_ssl),
+                *user_agent_args(source),
+                *(
+                    ["-rw_timeout", str(NETWORK_READ_TIMEOUT * 1_000_000)]
+                    if source.startswith("http")
+                    else []
+                ),
+                "-i",
+                source,
+                "-f",
+                "null",
+                "-",
+            ]
+            try:
+                async with AsyncProcess(
+                    duration_args,
+                    stdin=False,
+                    stdout=True,
+                    stderr=subprocess.STDOUT,
+                    pass_fds=pass_fds,
+                ) as decoder:
+                    output, _ = await decoder.communicate(timeout=FFMPEG_DURATION_TIMEOUT)
+                    if decoder.returncode:
+                        raise InvalidDataError(f"Unable to retrieve duration for {input_file}")
+                # extract duration from ffmpeg output
+                duration_str = output.decode().split("time=")[-1].split(" ")[0].strip()
+                duration = 0.0
+                for part in duration_str.split(":"):
+                    duration = duration * 60 + float(part)
+                tags.duration = duration
+            except (TimeoutError, OSError, ValueError, IndexError) as err:
+                raise InvalidDataError(f"Unable to retrieve duration for {input_file}") from err
+        return tags
+    except TimeoutError as err:
+        raise InvalidDataError(
+            f"Unable to retrieve info for {input_file} (no result within {FFPROBE_TIMEOUT} seconds)"
+        ) from err
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _parse_tags_output(
+    res: bytes, input_file: str, source: str, file_size: int | None, fd: int | None
+) -> AudioTags:
+    """Return tags from ffprobe output and any additional local metadata."""
+    try:
         data = json.loads(res)
         if error := data.get("error"):
             raise InvalidDataError(error["string"])  # noqa: TRY301 - message rebuilt below
@@ -822,16 +886,11 @@ def parse_tags(
             # ffprobe names the descriptor path, which the tags fall back to for a title
             data["format"]["filename"] = input_file
         tags = AudioTags.parse(data)
-        del res
-        del data
         if not tags.duration and file_size and tags.bit_rate:
             # estimate duration from filesize/bitrate
             tags.duration = int((file_size * 8) / tags.bit_rate)
         if not tags.duration and tags.raw.get("format", {}).get("duration"):
             tags.duration = float(tags.raw["format"]["duration"])
-
-        if not tags.duration and require_duration:
-            tags.duration = get_file_duration(source, pass_fds, verify_ssl)
 
         # we parse all (basic) tags for all file formats using ffmpeg
         # but we also try to extract some extra tags for local files using mutagen
@@ -846,9 +905,6 @@ def parse_tags(
             if not tags.has_cover_image and _format_uses_apev2(tags.format):
                 tags.has_cover_image = True
         return tags
-    except subprocess.CalledProcessError as err:
-        error_msg = f"Unable to retrieve info for {input_file} ({_get_ffprobe_error(err)})"
-        raise InvalidDataError(error_msg) from err
     except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
         try:
             msg = f"Unable to retrieve info for {input_file}: {err!s}"
@@ -856,50 +912,31 @@ def parse_tags(
         except UnicodeEncodeError:
             msg = f"Unable to retrieve info for a file with a non-UTF-8 filename: {input_file!r}"
         raise InvalidDataError(msg) from err
-    finally:
-        if fd is not None:
-            os.close(fd)
 
 
-def get_file_duration(
-    input_file: str, pass_fds: tuple[int, ...] = (), verify_ssl: bool = True
-) -> float:
-    """
-    Parse file/stream duration from an audio file using ffmpeg.
-
-    NOT Async friendly.
-
-    :param input_file: A (local) filename or URL accessible by ffmpeg.
-    :param pass_fds: Descriptors ffmpeg needs to open input_file.
-    :param verify_ssl: Whether the certificate of an https source must be verified.
-    """
-    args = (
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "info",
-        *tls_verify_args(input_file, verify_ssl),
-        *user_agent_args(input_file),
-        "-i",
-        input_file,
-        "-f",
-        "null",
-        "-",
-    )
-    try:
-        res = subprocess.check_output(  # noqa: S603
-            args, stderr=subprocess.STDOUT, env=get_subprocess_env(), pass_fds=pass_fds
-        ).decode()
-        # extract duration from ffmpeg output
-        duration_str = res.split("time=")[-1].split(" ")[0].strip()
-        duration_parts = duration_str.split(":")
-        duration = 0.0
-        for part in duration_parts:
-            duration = duration * 60 + float(part)
-        return duration
-    except Exception as err:
-        error_msg = f"Unable to retrieve duration for {input_file}"
-        raise InvalidDataError(error_msg) from err
+def _validate_id3_tag_size(source: str, fd: int | None) -> None:
+    """Reject oversized ID3 tags before FFprobe or Mutagen reads their payload."""
+    if fd is not None:
+        header = os.pread(fd, 10, 0)
+    elif not source.startswith("http") and Path(source).is_file():
+        with open(source, "rb") as file:
+            header = file.read(10)
+    else:
+        return
+    if len(header) != 10 or header[:3] != b"ID3":
+        return
+    if any(value & 0x80 for value in header[6:10]):
+        msg = "Invalid ID3 tag size"
+        raise InvalidDataError(msg)
+    tag_size = 0
+    for value in header[6:10]:
+        tag_size = (tag_size << 7) | value
+    if tag_size > MAX_ID3_TAG_SIZE:
+        msg = (
+            f"ID3 metadata is too large to inspect safely ({tag_size} bytes; "
+            f"limit {MAX_ID3_TAG_SIZE} bytes)"
+        )
+        raise InvalidDataError(msg)
 
 
 def _get_ffprobe_error(err: subprocess.CalledProcessError) -> str:
@@ -1661,7 +1698,7 @@ def parse_tags_mutagen(input_file: str, fd: int | None = None) -> dict[str, Any]
             result = _parse_id3_tags(audio.tags)
 
         return result
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.debug("Error parsing mutagen tags for %s: %s", input_file, err)
         return result
 
@@ -1819,7 +1856,7 @@ def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
 
     try:
         audio = mutagen.File(path)
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.debug("mutagen could not open %s: %s", path, err)
         return False
     if audio is None:
@@ -1828,7 +1865,7 @@ def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
     if audio.tags is None:
         try:
             audio.add_tags()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
             LOGGER.debug("could not initialise tags on %s: %s", path, err)
             return False
 
@@ -1859,7 +1896,7 @@ def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
     except (OSError, PermissionError) as err:
         LOGGER.debug("could not write replaygain tag to %s: %s", path, err)
         return False
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.warning("unexpected failure writing replaygain tag to %s: %s", path, err)
         return False
 
@@ -1904,7 +1941,7 @@ def _open_mutagen_for_write(path: str) -> Any | None:
         audio = mutagen.File(path)
     # Broad: mutagen.File can raise format-specific parse errors, struct errors,
     # and IOError variants whose hierarchy is not stable across mutagen versions.
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.debug("mutagen could not open %s: %s", path, err)
         return None
     if audio is None:
@@ -1913,7 +1950,7 @@ def _open_mutagen_for_write(path: str) -> Any | None:
         try:
             audio.add_tags()
         # Broad: add_tags() can raise per-format exceptions that don't share a base class.
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
             LOGGER.debug("could not initialise tags on %s: %s", path, err)
             return None
     return audio
@@ -1953,7 +1990,7 @@ def _write_identifier_tags_sync(
         return False
     # Broad boundary: mutagen's save() can raise per-format exceptions; logged as
     # warning so unexpected surprises are visible but never crash the scan.
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.warning("unexpected failure saving identifier tags to %s: %s", path, err)
         return False
 
@@ -1987,7 +2024,7 @@ def _apply_mbid_tag(tags: Any, mbid: str) -> bool:
             return False
         return True
     # Broad: mutagen's tag APIs are untyped and per-format exceptions don't share a base.
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.warning("unexpected failure applying MusicBrainz Recording Id: %s", err)
         return False
 
@@ -2018,7 +2055,7 @@ def _apply_acoustid_tag(tags: Any, acoustid: str) -> bool:
         else:
             return False
         return True
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.warning("unexpected failure applying Acoustid Id: %s", err)
         return False
 
@@ -2046,7 +2083,7 @@ def _apply_isrc_tag(tags: Any, isrcs: list[str]) -> bool:
         else:
             return False
         return True
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.warning("unexpected failure applying ISRC: %s", err)
         return False
 
@@ -2077,9 +2114,25 @@ def _apply_artist_mbid_tag(tags: Any, artist_mbids: list[str]) -> bool:
         else:
             return False
         return True
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - mutagen raises undocumented errors
         LOGGER.warning("unexpected failure applying MusicBrainz Artist Id: %s", err)
         return False
+
+
+def _parse_replaygain_gain(value: str) -> float:
+    """
+    Return the gain in dB of a ReplayGain gain tag.
+
+    Accepts the standard form ("-5.30 dB") as well as the variants taggers write
+    without a space before the unit ("-5.30dB") or without the unit at all ("-5.30").
+
+    :param value: The raw tag value.
+    :raises ValueError: When the value holds no number.
+    """
+    value = value.strip()
+    if value[-2:].lower() == "db":
+        value = value[:-2]
+    return float(value)
 
 
 def _parse_release_date(value: str) -> datetime | None:

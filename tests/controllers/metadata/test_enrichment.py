@@ -26,6 +26,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    ItemMapping,
     MediaItemImage,
     ProviderMapping,
     Track,
@@ -44,6 +45,7 @@ from music_assistant.controllers.music.helpers import fill_track_from_recording
 from music_assistant.controllers.music.listing_cache import Listing
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
+    MusicBrainzLifeSpan,
     MusicBrainzRecording,
     MusicBrainzRelation,
     MusicBrainzRelease,
@@ -108,6 +110,7 @@ def _enrichment(musicbrainz: MagicMock | None = None) -> MetadataEnrichmentMixin
         controller.link_musicbrainz_mappings = AsyncMock(return_value=[])
     music.get_controller.return_value.set_external_ids = AsyncMock()
     music.artists.merge_library_artists_by_mbid = AsyncMock(return_value=1)
+    music.tracks.merge_recording_duplicates = AsyncMock(return_value=set())
     music.albums.get_library_album_tracks = AsyncMock(return_value=[])
     music.albums.link_album_tracks = AsyncMock()
     return enrichment
@@ -195,6 +198,87 @@ async def test_album_enrichment_backfills_external_ids() -> None:
     await enrichment._update_album_metadata(album, force_refresh=True)
 
     assert (ExternalID.BARCODE, "0602577915181") in album.external_ids
+
+
+@pytest.mark.asyncio
+async def test_album_enrichment_backfills_missing_artists() -> None:
+    """An album added sparsely without artists gets them backfilled from the provider item."""
+    enrichment = _enrichment()
+    prov_artist = ItemMapping(
+        item_id="art1",
+        provider="ytmusic_1",
+        name="Test Artist",
+        media_type=MediaType.ARTIST,
+    )
+    prov_item = Album(
+        item_id="prov1",
+        provider="ytmusic_1",
+        name="Test Album",
+        provider_mappings=set(),
+        artists=UniqueList([prov_artist]),
+        metadata=MediaItemMetadata(),
+    )
+    _mass(enrichment).music.albums.get_provider_item = AsyncMock(return_value=prov_item)
+
+    album = Album(
+        item_id="1",
+        provider="library",
+        name="Test Album",
+        provider_mappings={
+            ProviderMapping(
+                item_id="prov1", provider_domain="ytmusic", provider_instance="ytmusic_1"
+            )
+        },
+        metadata=MediaItemMetadata(),
+    )
+
+    await enrichment._update_album_metadata(album, force_refresh=True)
+
+    assert list(album.artists) == [prov_artist]
+
+
+@pytest.mark.asyncio
+async def test_album_enrichment_preserves_existing_artists() -> None:
+    """Existing album artists are not overwritten by the provider item during enrichment."""
+    enrichment = _enrichment()
+    existing_artist = Artist(
+        item_id="lib_art1",
+        provider="library",
+        name="Existing Artist",
+        provider_mappings=set(),
+    )
+    prov_artist = ItemMapping(
+        item_id="art2",
+        provider="ytmusic_1",
+        name="Provider Artist",
+        media_type=MediaType.ARTIST,
+    )
+    prov_item = Album(
+        item_id="prov1",
+        provider="ytmusic_1",
+        name="Test Album",
+        provider_mappings=set(),
+        artists=UniqueList([prov_artist]),
+        metadata=MediaItemMetadata(),
+    )
+    _mass(enrichment).music.albums.get_provider_item = AsyncMock(return_value=prov_item)
+
+    album = Album(
+        item_id="1",
+        provider="library",
+        name="Test Album",
+        artists=UniqueList([existing_artist]),
+        provider_mappings={
+            ProviderMapping(
+                item_id="prov1", provider_domain="ytmusic", provider_instance="ytmusic_1"
+            )
+        },
+        metadata=MediaItemMetadata(),
+    )
+
+    await enrichment._update_album_metadata(album, force_refresh=True)
+
+    assert list(album.artists) == [existing_artist]
 
 
 @pytest.mark.asyncio
@@ -2216,6 +2300,33 @@ async def test_artist_identity_with_linking_disabled_fills_discogs_but_links_not
     assert artist.get_external_id(ExternalID.DISCOGS) == "3840"
     assert artist.metadata.last_musicbrainz_lookup is not None
     _mass(enrichment).music.artists.link_musicbrainz_mappings.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artist_identity_stores_the_type_and_life_span_it_looked_up() -> None:
+    """The artist details fetched for linking also fill in the artist's type and life span."""
+    details = MusicBrainzArtist(
+        id=OTHER_MBID,
+        name="Johnny Cash",
+        sort_name="Cash, Johnny",
+        type="Person",
+        life_span=MusicBrainzLifeSpan(begin="1932-02-26", end="2003-09-12", ended=True),
+    )
+    musicbrainz = _musicbrainz(artist=details)
+    enrichment = _enrichment(musicbrainz)
+    artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Johnny Cash",
+        provider_mappings=set(),
+        external_ids={(ExternalID.MB_ARTIST, OTHER_MBID)},
+    )
+
+    assert await enrichment._link_artist_to_musicbrainz(artist) is False
+
+    musicbrainz.get_artist_details.assert_awaited_once_with(OTHER_MBID)
+    assert artist.metadata.artist_entity_type == ArtistEntityType.PERSON
+    assert artist.metadata.life_span == LifeSpan(begin="1932-02-26", end="2003-09-12", ended=True)
 
 
 def _merged_artist(external_ids: set[tuple[ExternalID, str]] | None = None) -> Artist:

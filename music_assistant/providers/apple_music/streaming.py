@@ -86,7 +86,11 @@ class AppleMusicStreamingManager:
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return StreamDetails for a single catalog or library track."""
         stream_metadata = await self._fetch_song_stream_metadata(item_id)
-        if is_library_id(item_id):
+        license_url = stream_metadata.get("hls-key-server-url")
+        if is_library_id(item_id) and not license_url:
+            # Uploads and iTunes Match are the only library items Apple serves in the
+            # clear, and they are recognisable by the absence of a key server rather
+            # than by the ID form. Everything else takes the Widevine path below.
             try:
                 stream_url = stream_metadata["assets"][0]["URL"]
             except (KeyError, IndexError, TypeError) as exc:
@@ -107,17 +111,25 @@ class AppleMusicStreamingManager:
                 "Widevine CDM files are not available. "
                 "Cannot stream encrypted catalog tracks without them."
             )
-        license_url = stream_metadata["hls-key-server-url"]
+        if not license_url:
+            raise MediaNotFoundError(f"No key server offered for song {item_id}.")
         stream_url, uri = await self._parse_stream_url_and_uri(stream_metadata["assets"])
         if not stream_url or not uri:
             raise MediaNotFoundError("No stream URL found for song.")
         key_id = base64.b64decode(uri.split(",")[1])
+        # A purchased library track is licensed under the adam ID of the purchase, not
+        # under its library ID, which the license server rejects with status -1003.
+        # webPlayback reports that adam ID as songId, and for a catalog track songId is
+        # the catalog ID, so this is the same value the catalog path always sent.
+        adam_id = stream_metadata.get("songId") or item_id
         return StreamDetails(
             item_id=item_id,
             provider=self.provider.instance_id,
             audio_format=AudioFormat(content_type=ContentType.MP4, codec_type=ContentType.AAC),
             stream_type=StreamType.ENCRYPTED_HTTP,
-            decryption_key=await self._get_decryption_key(license_url, key_id, uri, item_id),
+            decryption_key=await self._get_decryption_key(
+                license_url, key_id, uri, item_id, adam_id
+            ),
             path=stream_url,
             can_seek=True,
             allow_seek=True,
@@ -262,9 +274,15 @@ class AppleMusicStreamingManager:
         }
 
     async def _get_decryption_key(
-        self, license_url: str, key_id: bytes, uri: str, item_id: str
+        self, license_url: str, key_id: bytes, uri: str, item_id: str, adam_id: str
     ) -> str:
-        """Get (or retrieve from cache) the decryption key for a song."""
+        """
+        Get (or retrieve from cache) the decryption key for a song.
+
+        :param item_id: The provider item ID, used for caching and error messages.
+        :param adam_id: The adam ID the license is requested under, which differs from
+            ``item_id`` for a purchased library track.
+        """
         if decryption_key := await self.provider.mass.cache.get(
             key=item_id,
             provider=self.provider.instance_id,
@@ -276,7 +294,7 @@ class AppleMusicStreamingManager:
         decryption_key, _ = await self.get_content_key(
             license_url,
             self._build_pssh(key_id),
-            {"uri": uri, "adamId": item_id, "isLibrary": False, "user-initiated": True},
+            {"uri": uri, "adamId": adam_id, "isLibrary": False, "user-initiated": True},
             f"song {item_id}",
             ssl=False,
         )

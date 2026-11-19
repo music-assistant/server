@@ -269,6 +269,9 @@ def test_output_plan_is_registered_for_all_snapcast_members() -> None:
     )
     provider._snapserver.groups = [group]
     provider._get_ma_id.return_value = "child"
+    # the client is known by its protocol, which is attached to a player of its own
+    players = {"leader": MagicMock(player_id="leader"), "child": MagicMock(player_id="pl_child")}
+    provider.mass.players.get_player_by_protocol.side_effect = players.get
     output_details = MagicMock(player_ids=["leader"])
     stream._output_plan = MagicMock(output_details=output_details)
 
@@ -277,7 +280,7 @@ def test_output_plan_is_registered_for_all_snapcast_members() -> None:
     registered_ids = {
         call.args[0] for call in provider.mass.streams.audio_processing.update_output.call_args_list
     }
-    assert registered_ids == {"leader", "child"}
+    assert registered_ids == {"leader", "pl_child"}
 
 
 @pytest.mark.asyncio
@@ -712,3 +715,25 @@ async def test_run_stopped_while_starting_does_not_signal_started(fake_provider:
         await asyncio.wait_for(stream._streamer_task, 1)
 
     assert started_at_kill == [False]
+
+
+def test_output_plan_keeps_its_players_when_a_protocol_of_another_has_the_id_of_one() -> None:
+    """The players of the output plan are registered as they are, only clients are translated."""
+    provider = MagicMock()
+    provider.stream_audio_format = DEFAULT_SNAPCAST_FORMAT
+    stream = _make_stream(provider)
+    stream.media.source_id = "queue-1"
+    stream.media.queue_session_id = "session-1"
+    stream.snap_stream = MagicMock(identifier="stream-1")
+    provider._snapserver.groups = []
+    # a protocol of another player has the id of the player of the plan
+    other = MagicMock(player_id="pl_other")
+    provider.mass.players.get_player_by_protocol.side_effect = {"wiim_living": other}.get
+    stream._output_plan = MagicMock(output_details=MagicMock(player_ids=["wiim_living"]))
+
+    stream._register_output_plan()
+
+    registered_ids = {
+        call.args[0] for call in provider.mass.streams.audio_processing.update_output.call_args_list
+    }
+    assert registered_ids == {"wiim_living"}

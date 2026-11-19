@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    ProtocolRole,
     RepeatMode,
     SleepTimerMode,
 )
@@ -30,7 +31,13 @@ from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.models.player import Player, PlayerMedia
-from tests.common import MockPlayer, MockProvider, as_user, grouping_player_controller
+from tests.common import (
+    MockProtocol,
+    MockProvider,
+    as_user,
+    attach_mock,
+    grouping_player_controller,
+)
 
 KINDS = ["synced", "dynamic", "static"]
 OWNER = {"synced": "b", "dynamic": "g", "static": "g"}
@@ -108,30 +115,34 @@ class _Setup:
         players = grouping_player_controller("a", "b")
         self.players = players
         self.mass = cast("MagicMock", players.mass)
-        group = MockPlayer(
+        _, group = attach_mock(
             MockProvider("group", instance_id="group", mass=self.mass),
-            "g",
+            "group_g",
             "Group G",
+            role=ProtocolRole.VIRTUAL,
             player_type=PlayerType.GROUP,
+            player_id="g",
         )
         group._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
-        players._players["g"] = group
-        group.set_initialized()
         owner = players._players[OWNER[kind]]
+        owner_protocol = cast("MockProtocol", owner.own_protocol)
         if kind == "synced":
-            owner._attr_group_members = ["b", "a"]
+            owner_protocol._attr_group_members = ["proto_b", "proto_a"]
         else:
+            # a group reports its members by their player ids
             group._attr_group_members = ["a", "b"]
             group._attr_static_group_members = ["a", "b"] if kind == "static" else []
         for player in players._players.values():
-            player._attr_supported_features |= {
+            protocol = cast("MockProtocol", player.own_protocol)
+            protocol._attr_supported_features |= {
+                PlayerFeature.PLAY_MEDIA,
                 PlayerFeature.PAUSE,
                 PlayerFeature.SEEK,
                 PlayerFeature.NEXT_PREVIOUS,
                 PlayerFeature.SELECT_SOURCE,
                 PlayerFeature.POWER,
             }
-            player._attr_source_list = [
+            protocol._attr_source_list = [
                 PlayerSource(
                     id=source_id,
                     name=source_id,
@@ -145,11 +156,14 @@ class _Setup:
                 for source_id in ("line_in", "aux")
             ]
             for method in DEVICE_METHODS:
-                setattr(player, method, AsyncMock(side_effect=self._recorder(player, method)))
-        owner._attr_playback_state = PlaybackState.PAUSED
-        owner._attr_active_source = OWNER[kind] if source == "queue" else "line_in"
-        owner.set_sleep_timer_mode(SleepTimerMode.DURATION)
-        owner.set_sleep_timer_expires_at(SLEEP_TIMER)
+                setattr(
+                    protocol,
+                    method,
+                    AsyncMock(side_effect=self._recorder(player, protocol, method)),
+                )
+        owner_protocol._attr_playback_state = PlaybackState.PAUSED
+        owner_protocol._attr_active_source = OWNER[kind] if source == "queue" else "line_in"
+        owner.set_sleep_timer(SleepTimerMode.DURATION, SLEEP_TIMER)
         self.mass.player_queues = self._queue_controller(OWNER[kind] if source == "queue" else None)
         players.get_player_audio_source = Mock(return_value=None)  # type: ignore[method-assign]
         players.wait_for_player_update = _no_wait  # type: ignore[method-assign]
@@ -162,6 +176,8 @@ class _Setup:
         for _ in range(2):
             for player in sorted(players._players.values(), key=lambda p: p.player_id != "g"):
                 player._cache.clear()
+                for attached in player.attached_protocols.values():
+                    attached._cache.clear()
                 player.update_state(force_update=True, signal_event=False)
         member = players._players["a"].state
         assert (member.synced_to or member.active_group) == OWNER[kind]
@@ -182,21 +198,18 @@ class _Setup:
                 for pid, p in self.players._players.items()
             },
             self.mass.call_later.call_count,
-            {
-                pid: p.state.synced_to or p.state.active_group
-                for pid, p in self.players._players.items()
-            },
+            {pid: p.synced_to or p.active_group for pid, p in self.players._players.items()},
         )
 
-    def _recorder(self, player: Player, method: str) -> Any:
+    def _recorder(self, player: Player, protocol: MockProtocol, method: str) -> Any:
         """Return a side effect that records a device call; a stop or power reports its state."""
 
         def _record(*args: Any, **kwargs: Any) -> None:
             self.calls.append((player.player_id, method, *args, *kwargs.values()))
             if method == "stop":
-                player._attr_playback_state = PlaybackState.IDLE
+                protocol._attr_playback_state = PlaybackState.IDLE
             elif method == "power":
-                player._attr_powered = args[0]
+                protocol._attr_powered = args[0]
             player.update_state(force_update=True, signal_event=False)
 
         return _record

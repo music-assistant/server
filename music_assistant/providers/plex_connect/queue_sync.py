@@ -44,8 +44,6 @@ class QueueSyncMixin:
 
         async def _broadcast_timeline(self) -> None: ...
 
-        async def _send_timeline_to_server(self) -> None: ...
-
         def _selected_item_index(self, playqueue: PlayQueue) -> int: ...
 
     def _collect_synced_keys(self, player_id: str) -> list[str]:
@@ -96,7 +94,7 @@ class QueueSyncMixin:
             if old_idx in self.play_queue_item_ids:
                 new_item_ids[new_idx] = self.play_queue_item_ids[old_idx]
 
-        LOGGER.info(f"Started playback from offset {start_index} (reordered queue)")
+        LOGGER.info("Started playback from offset %s (reordered queue)", start_index)
         return reordered_tracks, new_item_ids
 
     async def _load_remaining_queue_tracks(
@@ -137,7 +135,7 @@ class QueueSyncMixin:
                         track = await self.provider.get_track(track_key)
                         return plex_idx, track, play_queue_item_id
                     except Exception as e:
-                        LOGGER.debug(f"Could not fetch track {track_key}: {e}")
+                        LOGGER.debug("Could not fetch track %s: %s", track_key, e)
                 return plex_idx, None, None
 
             fetch_tasks = [fetch_track(idx, item) for idx, item in remaining_items]
@@ -146,7 +144,7 @@ class QueueSyncMixin:
             tracks_to_add: list[object] = []
             for result in results:
                 if isinstance(result, Exception):
-                    LOGGER.debug(f"Error fetching track: {result}")
+                    LOGGER.debug("Error fetching track: %s", result)
                     continue
                 _plex_idx, track, play_queue_item_id = result  # type: ignore[misc]
                 if track:
@@ -156,7 +154,7 @@ class QueueSyncMixin:
                         self.play_queue_item_ids[ma_idx] = play_queue_item_id
 
             if tracks_to_add:
-                LOGGER.info(f"Adding {len(tracks_to_add)} remaining tracks to queue")
+                LOGGER.info("Adding %s remaining tracks to queue", len(tracks_to_add))
 
                 # Guard against the ADD firing QUEUE_ITEMS_UPDATED before we update
                 # _last_synced_ma_queue_keys, which would trigger a spurious MA→Plex sync.
@@ -176,8 +174,9 @@ class QueueSyncMixin:
                     await self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
 
                 LOGGER.info(
-                    f"Successfully loaded {len(tracks_to_add)} remaining tracks "
-                    f"(total queue: {self._last_synced_ma_queue_length} tracks)"
+                    "Successfully loaded %s remaining tracks (total queue: %s tracks)",
+                    len(tracks_to_add),
+                    self._last_synced_ma_queue_length,
                 )
             else:
                 LOGGER.warning("No valid remaining tracks found in play queue")
@@ -205,7 +204,7 @@ class QueueSyncMixin:
                     if play_queue_item_id:
                         self.play_queue_item_ids[len(all_tracks) - 1] = play_queue_item_id
                 except Exception as e:
-                    LOGGER.debug(f"Could not fetch track {track_key}: {e}")
+                    LOGGER.debug("Could not fetch track %s: %s", track_key, e)
                     continue
 
         if all_tracks:
@@ -219,7 +218,7 @@ class QueueSyncMixin:
                 # Plex's shuffle flag onto the queue once the items have landed.
                 shuffle=False,
             )
-            LOGGER.info(f"Replaced queue with {len(all_tracks)} tracks")
+            LOGGER.info("Replaced queue with %s tracks", len(all_tracks))
 
     def _plex_index_of(self, playqueue: PlayQueue, ma_index: int) -> int | None:
         """
@@ -321,7 +320,7 @@ class QueueSyncMixin:
                     if play_queue_item_id:
                         new_item_mappings[base_index + len(remaining_tracks)] = play_queue_item_id
                 except Exception as e:
-                    LOGGER.debug(f"Could not fetch track {track_key}: {e}")
+                    LOGGER.debug("Could not fetch track %s: %s", track_key, e)
                     continue
 
         if remaining_tracks:
@@ -338,7 +337,9 @@ class QueueSyncMixin:
                 if index <= base_index
             }
             self.play_queue_item_ids.update(new_item_mappings)
-            LOGGER.info(f"Replaced {len(remaining_tracks)} tracks after queue index {base_index}")
+            LOGGER.info(
+                "Replaced %s tracks after queue index %s", len(remaining_tracks), base_index
+            )
         else:
             LOGGER.debug("No tracks after current track in Plex queue")
 
@@ -360,7 +361,7 @@ class QueueSyncMixin:
 
                 return await asyncio.to_thread(fetch_item)
             except Exception as e:
-                LOGGER.debug(f"Failed to fetch Plex item {plex_key}: {e}")
+                LOGGER.debug("Failed to fetch Plex item %s: %s", plex_key, e)
                 return None
 
         fetch_tasks = []
@@ -414,7 +415,7 @@ class QueueSyncMixin:
                     self.play_queue_item_ids = self._play_queue_item_ids_by_position(playqueue)
 
                 LOGGER.info(
-                    f"Created Plex PlayQueue {self.play_queue_id} with {len(plex_items)} tracks"
+                    "Created Plex PlayQueue %s with %s tracks", self.play_queue_id, len(plex_items)
                 )
         except Exception:
             LOGGER.exception("Error creating Plex PlayQueue")
@@ -447,7 +448,7 @@ class QueueSyncMixin:
             await self._create_plex_playqueue_from_ma()
             self._remember_synced_queue(self._ma_player_id)
         except Exception as e:
-            LOGGER.debug(f"Failed to sync initial queue to Plex on startup: {e}")
+            LOGGER.debug("Failed to sync initial queue to Plex on startup: %s", e)
 
     async def _handle_state_event(self, event: MassEvent) -> None:
         """Forward an MA player/queue state change to the subscribed Plex controllers."""
@@ -458,10 +459,9 @@ class QueueSyncMixin:
             return
 
         try:
-            await self._send_timeline_to_server()
             await self._broadcast_timeline()
         except Exception as e:
-            LOGGER.debug(f"Error handling state event: {e}")
+            LOGGER.debug("Error handling state event: %s", e)
 
     async def _handle_queue_items_updated(self, event: MassEvent) -> None:
         """Handle queue items being added/removed/reordered."""
@@ -484,16 +484,16 @@ class QueueSyncMixin:
             return
 
         LOGGER.info(
-            f"MA queue changed: {self._last_synced_ma_queue_length} -> {len(current_keys)} items"
+            "MA queue changed: %s -> %s items", self._last_synced_ma_queue_length, len(current_keys)
         )
 
         try:
             await self._create_plex_playqueue_from_ma()
             self._remember_synced_queue(self._ma_player_id, current_keys)
         except Exception as e:
-            LOGGER.debug(f"Error creating Plex PlayQueue: {e}")
+            LOGGER.debug("Error creating Plex PlayQueue: %s", e)
 
         try:
             await self._broadcast_timeline()
         except Exception as e:
-            LOGGER.debug(f"Error broadcasting timeline: {e}")
+            LOGGER.debug("Error broadcasting timeline: %s", e)

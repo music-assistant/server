@@ -376,6 +376,8 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.resolve.outputs.source_sha }}
+          # the release tags tell which providers are new in this release line
+          fetch-depth: 0
           path: source
           persist-credentials: false
 
@@ -480,6 +482,21 @@ jobs:
           pyproject["project"]["version"] = os.environ["VERSION"]
           with open("pyproject.toml", "wb") as file_handle:
               tomli_w.dump(pyproject, file_handle)
+
+      # Without this file the Marketplace marks no provider as new, so a failure here
+      # never holds up a release.
+      - name: Record the providers that are new in this release line
+        if: needs.resolve.outputs.assets_ready != 'true'
+        continue-on-error: true
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 .release-workflow/scripts/release_workflow.py new-providers \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --repository source \
+            --output source/music_assistant/catalog_new.json
 
       # The app secrets are not covered by the Apache-2.0 license (see NOTICE), so they ship in
       # the wheel (and the image built from it) but never in the source distribution.
@@ -1485,7 +1502,6 @@ jobs:
         env:
           CHANNEL: ${{ inputs.channel }}
         run: |
-          dev_folder=""
           case "$CHANNEL" in
             stable)
               folder="music_assistant"
@@ -1495,12 +1511,9 @@ jobs:
               ;;
             nightly)
               folder="music_assistant_nightly"
-              # the dev add-on is built from the nightly image, so it follows this release
-              dev_folder="music_assistant_dev"
               ;;
           esac
           echo "folder=$folder" >> "$GITHUB_OUTPUT"
-          echo "dev_folder=$dev_folder" >> "$GITHUB_OUTPUT"
 
       - name: Update add-on release
         env:
@@ -1522,20 +1535,9 @@ jobs:
             --notes "$RUNNER_TEMP/release-notes.md" \
             --retain 3
 
-      - name: Update dev add-on version
-        if: steps.channel.outputs.dev_folder != ''
-        env:
-          DEV_FOLDER: ${{ steps.channel.outputs.dev_folder }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          python3 .release-workflow/scripts/release_workflow.py set-addon-version \
-            --config "addon-repo/$DEV_FOLDER/config.yaml" \
-            --version "$VERSION"
-
       - name: Commit add-on update
         env:
           ADDON_FOLDER: ${{ steps.channel.outputs.folder }}
-          DEV_FOLDER: ${{ steps.channel.outputs.dev_folder }}
           APP_SLUG: ${{ steps.app.outputs.slug }}
           APP_USER_ID: ${{ steps.app.outputs.user_id }}
           ADDON_BRANCH: ${{ steps.addon_repository.outputs.default_branch }}
@@ -1544,9 +1546,6 @@ jobs:
         run: |
           cd addon-repo
           git add "$ADDON_FOLDER/config.yaml" "$ADDON_FOLDER/CHANGELOG.md"
-          if [ -n "$DEV_FOLDER" ]; then
-            git add "$DEV_FOLDER/config.yaml"
-          fi
           if git diff --cached --quiet; then
             echo "Add-on $ADDON_FOLDER already references $VERSION"
             exit 0
@@ -1683,3 +1682,65 @@ jobs:
           gh api --method POST \
             "repos/music-assistant/app.music-assistant.io/dispatches" \
             --input "$RUNNER_TEMP/dispatch.json"
+
+  notify_docs:
+    name: Notify music-assistant.io
+    runs-on: ubuntu-latest
+    needs: [resolve, publish_release]
+    if: inputs.channel != 'nightly'
+    permissions: {}
+    steps:
+      # The docs site also checks for new releases daily, so a failed dispatch only delays
+      # merging its waiting docs pull requests and must never fail the release.
+      - name: Create docs repository token
+        id: docs_token
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: music-assistant.io
+          permission-contents: write
+
+      - name: Verify GitHub App identity
+        id: identity
+        if: steps.docs_token.outcome == 'success'
+        continue-on-error: true
+        env:
+          APP_SLUG: ${{ steps.docs_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.docs_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
+
+      - name: Dispatch server release
+        id: dispatch
+        if: steps.identity.outcome == 'success'
+        continue-on-error: true
+        env:
+          CHANNEL: ${{ inputs.channel == 'rc' && 'beta' || inputs.channel }}
+          GH_TOKEN: ${{ steps.docs_token.outputs.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          jq -n \
+            --arg channel "$CHANNEL" \
+            --arg server_version "$VERSION" \
+            '{
+              event_type: "server-release",
+              client_payload: {
+                channel: $channel,
+                server_version: $server_version
+              }
+            }' > "$RUNNER_TEMP/dispatch.json"
+          gh api --method POST \
+            "repos/music-assistant/music-assistant.io/dispatches" \
+            --input "$RUNNER_TEMP/dispatch.json"
+
+      - name: Warn when the docs site was not notified
+        if: steps.dispatch.outcome != 'success'
+        run: |
+          echo "::warning title=Docs site not notified::music-assistant.io was not told about this release; its daily check will merge the waiting docs pull requests instead. The failed step above says why."

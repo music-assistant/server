@@ -6,7 +6,10 @@
     },
     "announce_tts_engine": {
       "label": "Announcement text-to-speech engine",
-      "description": "The engine used to speak an announcement that is sent as a text message instead of an audio link."
+      "description": "The engine used to speak an announcement that is sent as a text message instead of an audio link. Unless you pick one, it uses the default text-to-speech engine from the AI settings.",
+      "option_descriptions": {
+        "global": "Follows the default engine in the AI settings."
+      }
     }
   },
   "manifest": {
@@ -14,6 +17,36 @@
     "description": "Configuration of the core player management module"
   },
   "errors": {
-    "member_cannot_follow_protocol": "Cannot add {0} to {1}: {2} cannot play over {3}."
+    "member_cannot_follow_protocol": "Cannot add {0} to {1}: {2} cannot play over {3}.",
+    "merge_session_only": "{0} only exists while it is connected and can not be merged.",
+    "merge_group": "{0} is a group and can not be merged.",
+    "merge_two_own_protocols": "{0} and {1} each stand for a device of their own, so they can not be one player.",
+    "merge_shared_domain": "{0} and {1} both have a {2} output, so they can not be one player.",
+    "merge_identifiers_differ": "{0} and {1} report different devices, so they can not be one player.",
+    "unlink_session_only": "{0} only exists while it is connected and can not get a player of its own.",
+    "unlink_derived": "{0} rides on another output and follows it.",
+    "unlink_group": "{0} belongs to a group and can not be taken off it.",
+    "unlink_only_protocol": "{0} is the only output of its player, which is a player of its own already.",
+    "player_busy": "{0} is still busy with a previous command. Try again in a moment.",
+    "player_not_started_up": "{0} could not be reached {1} s after it was switched on. Raise its start-up time.",
+    "player_switched_off": "{0} is switched off.",
+    "player_stopped_during_startup": "{0} was stopped while it was starting up.",
+    "player_not_available": "{0} is unavailable.",
+    "player_cannot_seek": "{0} does not support seeking.",
+    "player_cannot_skip_tracks": "{0} can not skip tracks.",
+    "player_cannot_mute": "{0} can not be muted.",
+    "player_no_volume_control": "{0} has no volume control.",
+    "player_no_sources": "{0} has no sources to choose from.",
+    "player_no_sound_modes": "{0} has no sound modes.",
+    "player_cannot_group": "{0} can not be grouped with other players.",
+    "source_control_unsupported": "The source playing on {0} does not support this.",
+    "source_no_longer_playing": "The source this was meant for no longer plays on {0}.",
+    "source_not_found": "{0} has no source called {1}.",
+    "sound_mode_not_found": "{0} has no sound mode called {1}.",
+    "nothing_playing": "Nothing is playing on {0}.",
+    "favorite_track_unknown": "Music Assistant can not tell which track is playing on {0}, so it can not be added to your favorites.",
+    "group_leave_failed": "{0} could not leave its group because the player it follows is unavailable.",
+    "tts_engine_unavailable": "The text-to-speech engine for this announcement is unavailable.",
+    "players_still_being_found": "Players are still being found. Try again in {0} seconds."
   }
 }

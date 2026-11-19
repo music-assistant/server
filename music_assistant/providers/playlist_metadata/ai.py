@@ -25,15 +25,18 @@ from collections import Counter, deque
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
+from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any, Final, cast
 
-import aiohttp
+from aiohttp import ClientError
+from hass_client.exceptions import BaseHassClientError
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ImageType
 from music_assistant_models.errors import (
     ActionUnavailable,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderUnavailableError,
     RateLimited,
     ResourceTemporarilyUnavailable,
@@ -41,13 +44,16 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import MediaItemImage, Playlist, Track
 from music_assistant_models.unique_list import UniqueList
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL.Image import DecompressionBombError
 
 from music_assistant.helpers.json import json_dumps
 from music_assistant.helpers.plugin_engines import (
+    EngineKind,
     create_ai_engine_config_entries,
     create_image_engine_config_entries,
-    select_ai_engine,
-    select_image_engine,
+    has_engine_choice,
+    resolve_ai_engine_setting,
+    resolve_image_engine_setting,
 )
 
 from .ai_constants import (
@@ -141,11 +147,12 @@ PROMPT_RULE_KEYS: Final = ("seed_names", "artist_names", "genre_names", "year_fr
 TRANSIENT_ERRORS: Final = (
     TimeoutError,
     ConnectionError,
-    aiohttp.ClientError,
+    ClientError,
     ProviderUnavailableError,
     RateLimited,
     ResourceTemporarilyUnavailable,
 )
+AI_REQUEST_ERRORS: Final = (MusicAssistantError, BaseHassClientError, ClientError, OSError)
 
 # the settings only read by the preview button, saved as soon as they are changed
 PREVIEW_KEYS: Final = frozenset(
@@ -457,14 +464,10 @@ class AIArtwork:
         playlist_id = self.provider.config.get_value(CONF_PREVIEW_PLAYLIST)
         if not playlist_id:
             raise ActionUnavailable("Pick a playlist to preview first")
-        image_engine = await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
+        image_engine = await self._image_engine()
         if image_engine is None:
             raise ActionUnavailable("Pick an image engine first")
-        text_engine = (
-            await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
-            if self.descriptions_enabled
-            else None
-        )
+        text_engine = await self._text_engine() if self.descriptions_enabled else None
         playlist = await self.mass.music.playlists.get_library_item(str(playlist_id))
         looks = self._preview_looks()
         if self._preview_lock.locked():
@@ -595,7 +598,7 @@ class AIArtwork:
             os.path.isfile, os.path.join(self._images_dir, current.path)
         ):
             current = None
-        image_engine = await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
+        image_engine = await self._image_engine()
         if image_engine is None:
             return current
         if (file_name := await self._file_name(playlist, image_engine)) is None:
@@ -624,7 +627,7 @@ class AIArtwork:
         """
         if not self.descriptions_enabled or not self.in_scope(playlist):
             return
-        text_engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+        text_engine = await self._text_engine()
         if text_engine is None or not await self._may_describe(playlist):
             return
         if (checksum := await self._description_checksum(playlist, text_engine)) is None:
@@ -700,7 +703,7 @@ class AIArtwork:
                 return await cast("SmartPlaylistProvider", provider).get_smart_playlist_rules(
                     mapping.item_id
                 )
-            except Exception as err:
+            except (MusicAssistantError, OperationalError) as err:
                 self.logger.warning(
                     "Could not read the rules of '%s': %s", playlist.name, err, exc_info=err
                 )
@@ -725,16 +728,8 @@ class AIArtwork:
 
     async def _refresh_playlists(self) -> None:
         """Make one pass over the library playlists for the refresh."""
-        image_engine = (
-            await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
-            if self.covers_enabled
-            else None
-        )
-        text_engine = (
-            await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
-            if self.descriptions_enabled
-            else None
-        )
+        image_engine = await self._image_engine() if self.covers_enabled else None
+        text_engine = await self._text_engine() if self.descriptions_enabled else None
         ai_enabled = self.covers_enabled or self.descriptions_enabled
         async for playlist in self.mass.music.playlists.iter_library_items():
             own_images = self.own_images(playlist)
@@ -833,7 +828,7 @@ class AIArtwork:
                 kinds = self._pending.pop(item_id, set())
                 try:
                     waiting_kinds, retry_in = await self._process(item_id, kinds)
-                except Exception as err:
+                except (MusicAssistantError, OperationalError, OSError, ClientError) as err:
                     # one playlist failing must not stop the others
                     self.logger.warning(
                         "Could not generate for playlist %s: %s", item_id, err, exc_info=err
@@ -904,7 +899,7 @@ class AIArtwork:
             or await self._has_own_artwork(playlist)
         ):
             return False
-        engine = await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
+        engine = await self._image_engine()
         if engine is None:
             return False
         if (file_name := await self._file_name(playlist, engine)) is None:
@@ -920,7 +915,7 @@ class AIArtwork:
             concept = await self._concept(playlist, context)
             cover = await self._render(playlist, engine, self._look(), context, concept)
             await asyncio.to_thread(write_file, self._images_dir, file_name, cover)
-        except Exception as err:
+        except (*AI_REQUEST_ERRORS, DecompressionBombError, ValueError) as err:
             # an unreachable or misbehaving engine must not stop the worker
             self.logger.warning(
                 "Could not generate a cover for '%s': %s", playlist.name, err, exc_info=err
@@ -938,7 +933,7 @@ class AIArtwork:
         """
         if not self.descriptions_enabled or not self.in_scope(playlist):
             return False
-        engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+        engine = await self._text_engine()
         if engine is None or not await self._may_describe(playlist):
             return False
         if (checksum := await self._description_checksum(playlist, engine)) is None:
@@ -951,7 +946,7 @@ class AIArtwork:
         await self._reserve(self._described_at, CACHE_KEY_DESCRIBED_AT)
         try:
             description = await self._write_description(playlist, engine)
-        except Exception as err:
+        except AI_REQUEST_ERRORS as err:
             self.logger.warning(
                 "Could not write a description for '%s': %s", playlist.name, err, exc_info=err
             )
@@ -1206,7 +1201,7 @@ class AIArtwork:
                 raise ActionUnavailable("The image engine could not be reached")
             try:
                 return await self._render(playlist, engine, look, context, concept)
-            except Exception as err:
+            except TRANSIENT_ERRORS as err:
                 self._pause_if_unreachable(ENGINE_IMAGE, err)
                 raise
 
@@ -1225,7 +1220,7 @@ class AIArtwork:
             return ""
         try:
             return await self._write_description(playlist, engine, context)
-        except Exception as err:
+        except AI_REQUEST_ERRORS as err:
             self._pause_if_unreachable(ENGINE_TEXT, err)
             # the covers are still worth showing
             self.logger.warning(
@@ -1301,7 +1296,7 @@ class AIArtwork:
         """Return the visual concept sentence, written by the prompt engine when one is used."""
         if not self.provider.config.get_value(CONF_USE_PROMPT_ENGINE):
             return DEFAULT_CONCEPT
-        engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+        engine = await self._text_engine()
         if engine is None or self._engine_paused_for(ENGINE_TEXT):
             # the worker waits for a paused engine, so this serves previews and a cover that
             # was already under way when the engine was paused
@@ -1310,7 +1305,7 @@ class AIArtwork:
         try:
             async with asyncio.timeout(PROMPT_TIMEOUT_SECONDS):
                 concept = await engine.provider.ai_query(query, engine_id=engine.id)
-        except Exception as err:
+        except AI_REQUEST_ERRORS as err:
             self._pause_if_unreachable(ENGINE_TEXT, err)
             self.logger.warning(
                 "The text engine could not write a visual concept for '%s': %s",
@@ -1348,7 +1343,7 @@ class AIArtwork:
                 count += 1
                 if count >= MAX_CONTEXT_TRACKS:
                     break
-        except Exception as err:
+        except (MusicAssistantError, OperationalError, OSError, ClientError) as err:
             self.logger.warning(
                 "Could not read the tracks of '%s': %s", playlist.name, err, exc_info=err
             )
@@ -1375,10 +1370,12 @@ class AIArtwork:
         style = self._style()
         prompt_engine = ""
         if self.provider.config.get_value(CONF_USE_PROMPT_ENGINE):
-            # the engine the concept is written with, also when it is only picked as it is used
-            text_engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
-            if text_engine is None and self.provider.config.get_value(CONF_TEXT_ENGINE):
-                # the picked engine is gone for now, so the current cover stays
+            # the engine the concept is written with, also when it follows the default
+            text_engine = await self._text_engine()
+            if text_engine is None and has_engine_choice(
+                self.mass, EngineKind.TEXT, self.provider.config.get_value(CONF_TEXT_ENGINE)
+            ):
+                # the picked (or default) engine is gone for now, so the current cover stays
                 return None
             prompt_engine = text_engine.uid if text_engine else ""
         key = json_dumps(
@@ -1457,6 +1454,18 @@ class AIArtwork:
         limit = limit if isinstance(limit, int) and limit > 0 else DEFAULT_MAX_PER_HOUR
         return max(0, limit - len(timestamps))
 
+    async def _image_engine(self) -> ImageEngine | None:
+        """Return the engine the covers are drawn with, None when it is not available."""
+        return await resolve_image_engine_setting(
+            self.mass, self.provider.config.get_value(CONF_IMAGE_ENGINE)
+        )
+
+    async def _text_engine(self) -> AIEngine | None:
+        """Return the engine the descriptions and concepts are written with, None if unavailable."""
+        return await resolve_ai_engine_setting(
+            self.mass, self.provider.config.get_value(CONF_TEXT_ENGINE)
+        )
+
     def _style(self) -> Style:
         """Return the configured style."""
         try:
@@ -1502,7 +1511,7 @@ class AIArtwork:
                 ):
                     continue
                 options.append(ConfigValueOption(str(playlist.item_id), title=playlist.name))
-        except Exception as err:
+        except (MusicAssistantError, OperationalError) as err:
             # the settings page still opens, with only the current selection to pick from
             self.logger.warning("Could not list the playlists: %s", err, exc_info=err)
         known = {option.value for option in options}
@@ -1516,7 +1525,7 @@ class AIArtwork:
         try:
             async for playlist in self.mass.music.playlists.iter_library_items():
                 options.append(ConfigValueOption(str(playlist.item_id), title=playlist.name))
-        except Exception as err:
+        except (MusicAssistantError, OperationalError) as err:
             # the settings page still opens, with only the current selection to pick from
             self.logger.warning("Could not list the playlists: %s", err, exc_info=err)
         if selected and str(selected) not in {option.value for option in options}:

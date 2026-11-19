@@ -84,6 +84,9 @@ STREAMING_MODE_AP2_NTP: Final[str] = "ap2_ntp"
 STREAMING_MODE_AP2_COMPAT: Final[str] = "ap2_compat"
 STREAMING_MODE_RAOP: Final[str] = "raop"
 CONF_STORED_VOLUME: Final[str] = "stored_volume"
+# Player option of an Apple TV with HomePods as its speakers, stored on its protocol (absent
+# is off): play on the HomePods only, without a session to the Apple TV.
+CONF_HOMEPODS_ONLY: Final[str] = "homepods_only"
 CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
 CONF_NATIVE_MRP_CREDENTIALS: Final[str] = "native_mrp_credentials"
@@ -151,6 +154,11 @@ CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
 # cliairplay then makes up to 12 attempts, 500 ms apart. Cover that 5.5-second
 # retry span plus control-response and status-delivery margin.
 AIRPLAY_START_ACK_TIMEOUT_MS: Final[int] = 7000
+# How long a forced stop waits for the binary to confirm STOP ([STATUS] stopped)
+# before it kills the process. The binary first releases the receiver (RTSP
+# TEARDOWN), which some receivers need to free their output (squeezelite-esp32);
+# that normally takes milliseconds.
+AIRPLAY_STOP_ACK_TIMEOUT: Final[float] = 2.0
 # A join can additionally withhold its ack while receiver-clock verification
 # settles. Keep its independently named bound aligned with the buffered retry
 # span too; command failures still answer either wait immediately.
@@ -182,6 +190,14 @@ AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 # audibly out of sync. Warm re-anchors reuse a locked clock and keep the
 # short leads above; solo cold starts have no sync partner to miss.
 AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
+# How far out a cold group whose members all stream buffered first anchors, so
+# every receiver has accepted an anchor before any audio leaves. A strict
+# receiver can reject anchors for the whole 5.5-second retry span of
+# AIRPLAY_START_ACK_TIMEOUT_MS, and audio leaves up to one send window before
+# the anchor (3 s at the deepest CONF_BUFFER_DEPTH), so this clears both with
+# 500 ms to spare. A re-START after audio has left never puts it back: that
+# member skips what it was already sent and plays ahead of the others.
+AIRPLAY_ANCHOR_SEAT_LEAD_MS: Final[int] = 9000
 
 # How long a start waits for the source to hand over its first audio before it
 # judges the members on what they never received. A seek may land up to
@@ -211,6 +227,25 @@ AIRPLAY_REPLACEMENT_POLL_INTERVAL: Final[float] = 1.0
 # flush acks and the shared START so every member's skip target lands beyond
 # its queued audio.
 AIRPLAY_SPLICE_LEAD_MARGIN_MS: Final[int] = 150
+
+# How long a group waits after the last starvation shift ([STATUS] REANCHOR) of
+# any member before it compares the members' shifts. Each member recovers from a
+# dry feed on its own: a realtime member shifts by about its queue depth minus
+# the binary's 250 ms floor, and again every depth for as long as the feed stays
+# dry, while a buffered member never shifts. At the deepest queue (3 s) those
+# reports come up to 3 s apart, so this outlasts the reports of one stall.
+AIRPLAY_STALL_SETTLE_SECONDS: Final[float] = 4.0
+# How far apart the members' shifts may be and still play as one group. Members
+# with the same queue depth shift by the same amount, give or take a few ms of
+# scheduling jitter. Different depths, or a buffered member next to a realtime
+# one, put them hundreds of ms apart.
+AIRPLAY_STALL_SHIFT_TOLERANCE_MS: Final[int] = 30
+# Minimum time between two restarts that bring a group back in sync after a
+# stall. It doubles with each restart up to the cap, so a source that keeps
+# stalling cannot keep restarting the group. A group that drifts apart within it
+# is restarted once it has passed.
+AIRPLAY_STALL_RESYNC_HOLDOFF: Final[float] = 60.0
+AIRPLAY_STALL_RESYNC_MAX_HOLDOFF: Final[float] = 900.0
 
 # Floor for the late-join PCM ring, which has to hold every sample between the
 # audible position and the write head: a joiner's anchor maps onto content the
@@ -251,6 +286,20 @@ AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 # that the group still plays and the player was not repurposed meanwhile, and
 # the whole schedule is abandoned as soon as either no longer holds.
 AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5, 15, 30, 60, 120)
+# Seconds before the one re-add of the Apple TV of a set that left the session of its
+# speakers: a session opened 5 s after the Apple TV reset one stayed up (measured).
+AIRPLAY_SILENT_MEMBER_REJOIN_DELAY: Final[int] = 5
+# A speaker of a set that sets up resets the session of the Apple TV of the set, which then
+# reports another sender took over (measured, about 1 s after that SETUP). For this long after
+# a speaker joined, that report is taken for the reset, not for another sender.
+AIRPLAY_SILENT_MEMBER_RESET_WINDOW: Final[float] = 10.0
+# How long the Apple TV of a set waits for all its speakers to play before it joins those
+# that do (it needs their timeline), and how often it looks.
+AIRPLAY_SILENT_MEMBER_JOIN_TIMEOUT: Final[float] = 10.0
+AIRPLAY_SILENT_MEMBER_JOIN_POLL_INTERVAL: Final[float] = 0.25
+# Longest the session waits on the Apple TV of a set (a flush, a START, or an audio write once
+# it was started) before it plays on without it.
+AIRPLAY_SILENT_MEMBER_TIMEOUT: Final[float] = 5.0
 
 # Shared audible instant for a native announcement over a live stream: now +
 # the largest member span + this margin. A member can only mix the clip into
@@ -350,17 +399,17 @@ AIRPLAY_VOLUME_ECHO_GRACE_S: Final[float] = 2.0
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )
-# Sample rates advertised for a receiver that supports 24-bit (AirPlay 2 flow
-# only). At 24-bit the cliairplay binary expects raw s32le on stdin and truncates
-# to 24-bit ALAC internally.
-AIRPLAY_HIRES_SAMPLE_RATES: Final[list[tuple[int, int]]] = [(44100, 24), (48000, 24)]
-
-# Bits in the audioFormat bit space (shared with the receiver's /info format
-# tables) that mark 24-bit ALAC: 44.1 kHz and 48 kHz respectively. Receivers
-# understate these - the Apple TV lists them for its buffered stream only, yet
-# renders them fine on the realtime stream - so a device advertising either bit
-# on either stream is treated as 24-bit capable.
-AIRPLAY_HIRES_AUDIO_FORMATS: Final[int] = (1 << 19) | (1 << 21)
+# 24-bit ALAC sample rates (AirPlay 2 flow only) by their bit in the audioFormat
+# bit space, shared with the receiver's /info format tables. Receivers understate
+# the stream they list them for - the Apple TV lists them for its buffered stream
+# only, yet renders them fine on the realtime stream - so a format listed on
+# either stream counts. At 24-bit the cliairplay binary expects raw s32le on
+# stdin and truncates to 24-bit ALAC internally.
+AIRPLAY_HIRES_FORMATS: Final[dict[int, int]] = {1 << 19: 44100, 1 << 21: 48000}
+AIRPLAY_HIRES_AUDIO_FORMATS: Final[int] = sum(AIRPLAY_HIRES_FORMATS)
+AIRPLAY_HIRES_SAMPLE_RATES: Final[list[tuple[int, int]]] = [
+    (sample_rate, 24) for sample_rate in AIRPLAY_HIRES_FORMATS.values()
+]
 
 BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PLAY_MEDIA,

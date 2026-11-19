@@ -21,9 +21,12 @@ from contextlib import suppress
 from dataclasses import replace as dc_replace
 from itertools import zip_longest
 from pathlib import Path
+from sqlite3 import IntegrityError, OperationalError
 from types import EllipsisType
 from typing import TYPE_CHECKING, Any, cast
 
+from aiohttp import ClientError
+from hass_client.exceptions import BaseHassClientError
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
@@ -34,7 +37,12 @@ from music_assistant_models.enums import (
     ProviderFeature,
     SortField,
 )
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    InvalidProviderURI,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant_models.media_items import (
     BrowseFolder,
     Genre,
@@ -47,6 +55,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.media_items.metadata import MediaItemImage, MediaItemMetadata
+from orjson import JSONDecodeError
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.controllers.cache import use_cache
@@ -57,8 +66,10 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
 from music_assistant.helpers.plugin_engines import (
+    EngineKind,
+    EngineSetting,
     create_ai_engine_config_entries,
-    select_ai_engine,
+    resolve_ai_engine_setting,
 )
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.track_filter import filter_tracks
@@ -174,6 +185,8 @@ def _filter_by_last_played(tracks: list[Track], value: int | None, unit: str | N
 class SmartPlaylistProvider(PluginProvider):
     """Smart Playlist plugin provider for Music Assistant."""
 
+    engine_settings = (EngineSetting(EngineKind.TEXT, CONF_AI_ENGINE),)
+
     _rules_dir: str
     _rules_store: dict[str, SmartPlaylistRules]
     _names_store: dict[str, str]
@@ -284,7 +297,7 @@ class SmartPlaylistProvider(PluginProvider):
                     await self.mass.music.remove_item_from_library(
                         MediaType.PLAYLIST, library_item.item_id
                     )
-                except Exception as exc:
+                except (MusicAssistantError, OperationalError, IntegrityError) as exc:
                     self.logger.debug(
                         "Could not remove playlist %s from library: %s", playlist_id, exc
                     )
@@ -435,7 +448,7 @@ class SmartPlaylistProvider(PluginProvider):
                 self.logger.info("Re-adding missing smart playlist '%s' to library", playlist_id)
                 playlist = await self._build_playlist(playlist_id, rules)
                 await self.mass.music.playlists.add_item_to_library(playlist)
-            except Exception as exc:
+            except (MusicAssistantError, OperationalError, IntegrityError) as exc:
                 self.logger.warning("Could not re-add smart playlist %s: %s", playlist_id, exc)
 
     async def _on_media_item_deleted(self, event: MassEvent) -> None:
@@ -694,11 +707,12 @@ class SmartPlaylistProvider(PluginProvider):
         # Try to resolve as a library DB id
         try:
             library_item = await self.mass.music.playlists.get_library_item(playlist_id)
-            for mapping in library_item.provider_mappings:
-                if mapping.provider_instance == self.instance_id:
-                    return mapping.item_id
-        except Exception as err:
+        except (ValueError, MediaNotFoundError) as err:
             self.logger.debug("Could not resolve playlist id %s: %s", playlist_id, err)
+            return None
+        for mapping in library_item.provider_mappings:
+            if mapping.provider_instance == self.instance_id:
+                return mapping.item_id
         return None
 
     async def _build_playlist(
@@ -809,11 +823,6 @@ class SmartPlaylistProvider(PluginProvider):
                 tracks, rules.last_played_before_value, rules.last_played_before_unit
             )
 
-            # In non-seed mode, _evaluate_and/_evaluate_or already query by genre_ids.
-            # Only enrich if excluded_genre_ids is set (needs track.metadata.genres).
-            if rules.excluded_genre_ids:
-                await self._enrich_tracks_with_db_genres(tracks)
-
         # Apply exclusions regardless of source mode. Recency (don't repeat recently-played) is
         # no longer handled here: the player queue owns it globally for dynamic playlists.
         excluded_genre_names, excl_album_type_ids = await asyncio.gather(
@@ -825,6 +834,11 @@ class SmartPlaylistProvider(PluginProvider):
         tracks = self._apply_exclusions(
             tracks, rules, excluded_genre_names, excl_album_type_ids or None
         )
+        if rules.excluded_genre_ids:
+            in_excluded_genre = await self.mass.music.genres.tracks_in_genres(
+                rules.excluded_genre_ids, tracks
+            )
+            tracks = [t for t in tracks if (t.provider, t.item_id) not in in_excluded_genre]
         if rules.exclude_favorites:
             tracks = await with_user_favorites(self.mass, get_current_user(), tracks)
             tracks = [track for track in tracks if track.favorite is not True]
@@ -838,7 +852,7 @@ class SmartPlaylistProvider(PluginProvider):
         rules: SmartPlaylistRules,
     ) -> list[Track]:
         """Apply post-filters (popularity, favorites, genre, year) to a seed-derived track list."""
-        has_genre_filter = bool(rules.genre_ids or rules.excluded_genre_ids)
+        has_genre_filter = bool(rules.genre_ids)
 
         if rules.min_popularity is not None:
             tracks = [
@@ -1374,13 +1388,17 @@ class SmartPlaylistProvider(PluginProvider):
         for uri in seed_uris:
             try:
                 media_type, provider, item_id = await parse_uri(uri)
-            except Exception:
+            except InvalidProviderURI:
                 self.logger.warning("Cannot parse seed URI: %s", uri)
                 continue
             try:
                 ctrl = self.mass.music.get_controller(media_type)
+            except NotImplementedError as exc:
+                self.logger.warning("Could not resolve seed %s: %s", uri, exc)
+                continue
+            try:
                 seeds.append(await ctrl.get(item_id, provider))
-            except Exception as exc:
+            except (MusicAssistantError, OSError, ClientError) as exc:
                 self.logger.warning("Could not resolve seed %s: %s", uri, exc)
         if not seeds:
             return []
@@ -1472,7 +1490,7 @@ class SmartPlaylistProvider(PluginProvider):
             await self.mass.music.playlists.update_item_in_library(
                 library_item_id, updated, overwrite=True
             )
-        except Exception as exc:
+        except (MusicAssistantError, OperationalError, IntegrityError) as exc:
             self.logger.debug("Could not update description for %s: %s", library_item_id, exc)
 
     def _visible_folders(self, folder_paths: list[str]) -> list[str]:
@@ -1538,18 +1556,17 @@ class SmartPlaylistProvider(PluginProvider):
         if not self.config.get_value(CONF_AI_DESCRIPTIONS):
             return None
         locale = self.mass.metadata.locale
-        # selected on first use rather than at init: providers load concurrently, so the
+        # resolved on use rather than at init: providers load concurrently, so the
         # plugin supplying the engines may not have been available back then
-        engine = await select_ai_engine(self, CONF_AI_ENGINE)
+        engine = await resolve_ai_engine_setting(self.mass, self.config.get_value(CONF_AI_ENGINE))
         if engine is None:
             return None
+        prompt = self._build_ai_prompt(name, rules, locale)
         query_timeout = asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS)
         try:
             async with query_timeout:
-                response = await engine.provider.ai_query(
-                    self._build_ai_prompt(name, rules, locale), engine_id=engine.id
-                )
-        except Exception as exc:
+                response = await engine.provider.ai_query(prompt, engine_id=engine.id)
+        except (MusicAssistantError, BaseHassClientError, TimeoutError) as exc:
             # expired() tells our own cap apart from a timeout raised inside the engine
             details: str | Exception = (
                 f"no response within {AI_QUERY_TIMEOUT_SECONDS}s"
@@ -1579,25 +1596,39 @@ class SmartPlaylistProvider(PluginProvider):
         )
 
     async def _load_rules_from_disk(self) -> None:
-        """Load all persisted rules from the rules directory."""
+        """Load valid persisted rules, skipping malformed playlist entries."""
         rules_file = os.path.join(self._rules_dir, RULES_FILENAME)
         if not await asyncio.to_thread(os.path.isfile, rules_file):
             return
         try:
             data = await read_json(rules_file)
-            for playlist_id, entry in data.items():
-                self._rules_store[playlist_id] = SmartPlaylistRules.from_dict(entry["rules"])
-                self._names_store[playlist_id] = entry.get("name", playlist_id)
-                # a description persisted before the size cap existed is dropped here too
-                description = entry.get("ai_description")
-                if (
-                    isinstance(description, str)
-                    and description
-                    and len(description.encode("utf-8")) <= MAX_AI_DESCRIPTION_BYTES
-                ):
-                    self._descriptions_store[playlist_id] = description
-        except Exception as exc:
+        except (OSError, JSONDecodeError, UnicodeDecodeError) as exc:
             self.logger.warning("Failed to load smart playlist rules: %s", exc)
+            return
+        if not isinstance(data, dict):
+            self.logger.warning("Failed to load smart playlist rules: expected a JSON object")
+            return
+        # Saving rewrites the entire file from memory, so a single bad entry must not
+        # prevent later valid playlists from being loaded.
+        for playlist_id, entry in data.items():
+            if not isinstance(entry, dict) or not isinstance(entry.get("rules"), dict):
+                self.logger.warning("Invalid rules for smart playlist %s", playlist_id)
+                continue
+            try:
+                rules = SmartPlaylistRules.from_dict(entry["rules"])
+            except InvalidDataError as exc:
+                self.logger.warning("Invalid rules for smart playlist %s: %s", playlist_id, exc)
+                continue
+            self._rules_store[playlist_id] = rules
+            self._names_store[playlist_id] = entry.get("name", str(playlist_id))
+            # a description persisted before the size cap existed is dropped here too
+            description = entry.get("ai_description")
+            if (
+                isinstance(description, str)
+                and description
+                and len(description.encode("utf-8")) <= MAX_AI_DESCRIPTION_BYTES
+            ):
+                self._descriptions_store[playlist_id] = description
 
     async def _save_rules(self, playlist_id: str, rules: SmartPlaylistRules) -> None:
         """Persist rules to disk and update in-memory store."""

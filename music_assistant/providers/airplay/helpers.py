@@ -8,6 +8,7 @@ import platform
 import plistlib
 import re
 import time
+from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any, Final
 
@@ -16,12 +17,14 @@ from aiosendspin.clock import RawMonotonicClock
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import format_ip_for_url
 
-from .constants import AIRPLAY_BUFFER_DEPTH_DEFAULTS
+from .constants import AIRPLAY_BUFFER_DEPTH_DEFAULTS, AIRPLAY_DISCOVERY_TYPE
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import PlayerConfig
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
@@ -48,6 +51,19 @@ def cli_clock_time() -> float:
     return (_RAW_CLOCK.now_us() * 1000 + CLI_CLOCK_OFFSET_NS) / 1e9
 
 
+def get_sync_offset_ms(config: PlayerConfig) -> int:
+    """
+    Return how much later than the group an AirPlay player is commanded to play, in ms.
+
+    The sync adjust setting is the extra latency of the device's audio chain, so a
+    positive setting makes the player play earlier and returns a negative offset.
+
+    :param config: The config of the AirPlay player.
+    """
+    sync_adjust = config.get_value(CONF_SYNC_ADJUST, 0)
+    return -sync_adjust if isinstance(sync_adjust, int) else 0
+
+
 def convert_airplay_volume(value: float) -> int:
     """Remap AirPlay dB volume (-30..0) to 0..100 scale."""
     airplay_min = -30.0
@@ -57,7 +73,7 @@ def convert_airplay_volume(value: float) -> int:
     return max(0, min(100, round(portion)))
 
 
-def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
+def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911, C901
     """Return Manufacturer and Model name from mdns info."""
     manufacturer = info.decoded_properties.get("manufacturer")
     model = info.decoded_properties.get("model")
@@ -89,6 +105,8 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
         return ("Apple", "Apple TV 4K Gen2")
     if model == "AppleTV14,1":
         return ("Apple", "Apple TV 4K Gen3")
+    if model.startswith("HomeAccessory"):
+        return ("Apple", "HomeView")
     if model == "UPL-AMP":
         return ("Ubiquiti Inc.", "UPL-AMP")
     if "AirPort" in model:
@@ -155,13 +173,13 @@ def is_apple_device(manufacturer: str, model: str) -> bool:
     """
     Check if a device is a (standalone) Apple device with native AirPlay support.
 
-    Apple devices (HomePod, Apple TV) have native AirPlay support
-    and should be exposed as PlayerType.PLAYER.
+    Apple devices (HomePod, HomeView, Apple TV) have native AirPlay support
+    and a control plane of their own, so their AirPlay protocol is the native one.
     We don't include MacBooks etc. here as they are not standalone devices
     and may also be used for other protocols.
     """
     return manufacturer.lower().startswith("apple") and (
-        "homepod" in model.lower() or "apple tv" in model.lower()
+        any(name in model.lower() for name in ("homepod", "homeview", "apple tv"))
     )
 
 
@@ -234,6 +252,50 @@ def get_decoded_property(discovery_info: AsyncServiceInfo, key: str) -> str | No
         if prop_key.casefold() == folded_key:
             return prop_value
     return None
+
+
+@dataclass(frozen=True)
+class SetMembership:
+    """The place of an AirPlay device in the home theater set of an Apple TV."""
+
+    # id of the set, shared by the Apple TV and its speakers
+    set_id: str
+    # 0 for the Apple TV that carries the set, above 0 for one of its speakers
+    position: int
+    # number of devices in the set, the Apple TV included
+    size: int
+    # name of the room the set is in
+    name: str | None
+
+
+def parse_set_membership(discovery_info: AsyncServiceInfo | None) -> SetMembership | None:
+    """
+    Return the place of a device in the home theater set of an Apple TV, None outside one.
+
+    Only the keys that stay the same while any sender plays to the set are read, so the
+    result does not change with a session.
+
+    :param discovery_info: The _airplay._tcp record of the device.
+    """
+    if discovery_info is None or discovery_info.type != AIRPLAY_DISCOVERY_TYPE:
+        return None
+    set_id = get_decoded_property(discovery_info, "psgid")
+    if not set_id or get_decoded_property(discovery_info, "psgtp") != "1":
+        return None
+    try:
+        position = int(get_decoded_property(discovery_info, "pgmid") or "")
+    except ValueError:
+        return None
+    try:
+        size = int(get_decoded_property(discovery_info, "psgsz") or 0)
+    except ValueError:
+        size = 0
+    return SetMembership(
+        set_id=set_id.upper(),
+        position=position,
+        size=size,
+        name=get_decoded_property(discovery_info, "gpn") or None,
+    )
 
 
 def supports_companion_pairing(discovery_info: AsyncServiceInfo | None) -> bool:

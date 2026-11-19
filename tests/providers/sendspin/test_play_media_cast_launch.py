@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
 from aiosendspin.models.types import PlaybackStateType
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import PlayerMedia
 
@@ -31,7 +31,7 @@ def _player(ready: asyncio.Future[None]) -> tuple[SendspinPlayer, Mock, Mock, li
     """
     calls: list[str] = []
     player = object.__new__(SendspinPlayer)
-    player._player_id = "p1"
+    player._protocol_id = "p1"
     player.logger = Mock()
 
     async def cancel(_reason: str, *, keep_stream: bool = False) -> None:
@@ -59,7 +59,9 @@ def _player(ready: asyncio.Future[None]) -> tuple[SendspinPlayer, Mock, Mock, li
     manager = Mock()
     manager.get_bridge_by_client_id.return_value = bridge
     player._get_cast_bridge_manager = Mock(return_value=manager)  # type: ignore[method-assign]
-    player._state = SimpleNamespace(current_media=None)  # type: ignore[assignment]
+    player._player = SimpleNamespace(  # type: ignore[assignment]
+        current_media=None, playback_state=PlaybackState.IDLE
+    )
     player._attr_current_media = None
     player.update_state = Mock()  # type: ignore[method-assign,misc]
     player.mass = Mock(create_task=Mock(side_effect=lambda coro, **_kwargs: coro.close()))
@@ -79,9 +81,6 @@ def _media() -> PlayerMedia:
 async def _play_media(player: SendspinPlayer) -> None:
     with (
         patch.object(SendspinPlayer, "synced_to", new_callable=PropertyMock, return_value=None),
-        patch.object(
-            SendspinPlayer, "protocol_parent_id", new_callable=PropertyMock, return_value=None
-        ),
         patch.object(SendspinPlayer, "display_name", new_callable=PropertyMock, return_value="P"),
         patch.object(
             SendspinPlayer, "translation_owner", new_callable=PropertyMock, return_value="sendspin"

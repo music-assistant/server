@@ -22,6 +22,7 @@ from music_assistant_models.errors import InsufficientPermissions, MediaNotFound
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    AudioSource,
     Genre,
     Playlist,
     ProviderMapping,
@@ -185,6 +186,7 @@ async def test_browse_root_honors_admin_music_sources(mock_get_user: Mock) -> No
     mass.get_providers_supporting_feature.side_effect = lambda feature: (
         [music_a, music_b] if feature == ProviderFeature.BROWSE else []
     )
+    mass.players.get_audio_source_providers.return_value = []
 
     controller = MusicController.__new__(MusicController)
     controller.mass = mass
@@ -505,6 +507,28 @@ def test_check_item_playable_keeps_plugin_items_reachable() -> None:
     item = Track(item_id="42", provider="smart_playlist", name="Track", provider_mappings=set())
 
     controller.check_item_playable_for_user(item, _user(USER_B))
+
+
+def test_check_item_playable_keeps_audio_sources_of_a_player_provider_reachable() -> None:
+    """Only music sources carry an access record, so a player provider's sources stay playable."""
+    player_provider = _make_prov("sendspin", ProviderType.PLAYER, {ProviderFeature.AUDIO_SOURCE})
+    controller = _controller_with_sources(
+        {PROV_A: _private(USER_A), PROV_B: _private(USER_B)}, providers=[player_provider]
+    )
+    source = AudioSource(
+        item_id="line_in",
+        provider="sendspin",
+        name="Line-in",
+        provider_mappings={
+            ProviderMapping(
+                item_id="line_in", provider_domain="sendspin", provider_instance="sendspin"
+            )
+        },
+    )
+
+    controller.check_item_playable_for_user(source, _user(USER_A))
+    with pytest.raises(MediaNotFoundError):
+        controller.check_item_playable_for_user(_library_track(PROV_B), _user(USER_A))
 
 
 def test_check_item_playable_for_anonymous_playback() -> None:
@@ -905,18 +929,18 @@ async def test_library_count_unchanged_without_user(counted_mass: MusicAssistant
     """Without an authenticated user the counts stay the true library totals."""
     for media_type in ("tracks", "albums", "artists"):
         controller = getattr(counted_mass.music, media_type)
-        total_rows = await counted_mass.music.database.get_count(controller.db_table)
         with patch(GET_CURRENT_USER, return_value=None):
-            assert await controller.library_count() == total_rows
+            library_items = await controller.library_items(limit=500)
+            assert await controller.library_count() == len(library_items)
 
 
 async def test_library_count_unchanged_for_unrestricted_user(
     counted_mass: MusicAssistant,
 ) -> None:
     """A user that may see every music source sees the true library totals."""
-    total_rows = await counted_mass.music.database.get_count("tracks")
     with patch(GET_CURRENT_USER, return_value=_user(USER_ALL)):
-        assert await counted_mass.music.tracks.library_count() == total_rows
+        library_items = await counted_mass.music.tracks.library_items(limit=500)
+        assert await counted_mass.music.tracks.library_count() == len(library_items)
 
 
 async def test_album_artists_only_ignores_albums_on_hidden_sources(

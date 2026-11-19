@@ -11,6 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
+from music_assistant_models.enums import MediaType
+
 from music_assistant.helpers.util import join_task
 from music_assistant.models.audio_analysis import AudioAnalysisError
 
@@ -25,7 +27,7 @@ if TYPE_CHECKING:
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.provider import ProviderManifest
-    from music_assistant_models.streamdetails import StreamDetails
+    from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -79,6 +81,11 @@ class AnalysisSessionData:
     streamdetails: StreamDetails
     audio_format: AudioFormat
 
+    @property
+    def stored(self) -> bool:
+        """Return whether this session's result and failures are stored: a live source's never are."""
+        return self.streamdetails.media_type != MediaType.AUDIO_SOURCE
+
 
 class AudioAnalysisProvider(Provider):
     """
@@ -94,6 +101,9 @@ class AudioAnalysisProvider(Provider):
     # their algorithm changes significantly. The base class compares this against
     # the stored version to decide whether to re-analyze a track.
     analysis_version: int = 1
+
+    # The media types this provider is offered.
+    media_types: frozenset[MediaType] = frozenset({MediaType.TRACK})
 
     # Maximum track duration (seconds) this provider will analyze; longer tracks are skipped by
     # start_analysis. None means no limit. Providers that accumulate whole-track state set it.
@@ -233,7 +243,7 @@ class AudioAnalysisProvider(Provider):
                 )
                 if session is not None:
                     await self._record_failure(session, str(err), None)
-            if analysis is not None and session is not None:
+            if analysis is not None and session is not None and session.stored:
                 try:
                     await self.mass.streams.audio_analysis.set_audio_analysis(
                         item_id=session.streamdetails.item_id,
@@ -280,6 +290,33 @@ class AudioAnalysisProvider(Provider):
         """
         return
 
+    def report_stream_metadata(self, session_id: str, stream_metadata: StreamMetadata) -> bool:
+        """
+        Report what plays right now in the stream of an analysis session, such as a recognised song.
+
+        Reported metadata is shown for a live source while the source's plugin reports none
+        itself, and for a radio station that sends none itself once the listener reaches the
+        audio it was recognised in. It is shown until replaced or the session ends, and never
+        stored.
+
+        Returns whether the report is accepted. On False (the stream has metadata of its own,
+        the session is gone, or this provider no longer takes part) stop recognising for this
+        session.
+
+        A recogniser declares MediaType.RADIO (and AUDIO_SOURCE if wanted), returns quickly
+        from process_pcm_chunk by copying the audio into a small ring buffer, runs the
+        recognition in a task of its own throttled to one sample every 30 to 60 seconds, and
+        returns None from _finalize so nothing is stored.
+
+        :param session_id: The analysis session ID.
+        :param stream_metadata: What plays right now.
+        """
+        if session_id not in self._sessions:
+            return False
+        return self.mass.streams.audio_analysis.show_stream_metadata(
+            self, session_id, stream_metadata
+        )
+
     async def cancel(self, session_id: str) -> None:
         """Cancel an in-progress analysis session."""
         self._sessions.pop(session_id, None)
@@ -304,6 +341,8 @@ class AudioAnalysisProvider(Provider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload, cancelling in-flight analysis work and freeing models."""
+        # an instance loaded later under the same id must not inherit the running sessions
+        self.mass.streams.audio_analysis.release_provider(self.instance_id)
         for session_id in list(self._sessions):
             await self.cancel(session_id)
         # Cancelled, not awaited: inference runs for minutes and records no failure, so the
@@ -416,10 +455,7 @@ class AudioAnalysisProvider(Provider):
         solo_lock = solo if isinstance(solo, asyncio.Lock) else None
         take_solo = False
         if solo_lock is not None:
-            try:
-                take_solo = bool(controller.playback_active())
-            except Exception:
-                take_solo = False
+            take_solo = bool(controller.playback_active())
 
         solo_held = False
 
@@ -499,6 +535,8 @@ class AudioAnalysisProvider(Provider):
         retry_at: datetime | None,
     ) -> None:
         """Record a failure for this session's track."""
+        if not session.stored:
+            return
         # Swallow DB write errors so a failed recorder write never breaks the session
         # lifecycle (record_analysis_failure only performs a sqlite insert).
         try:

@@ -88,6 +88,21 @@ def test_room_details_are_read_from_their_elements() -> None:
     assert not host.plays_spotify_connect("Kitchen")
 
 
+def test_a_room_lists_every_renderer_in_the_hosts_order() -> None:
+    """A room of several speakers lists them all; the first is the room's own renderer."""
+    host = RaumfeldHost(MagicMock(), "http://192.168.1.41:47365")
+    host._apply_zone_config(
+        _ZONES.replace(
+            "<renderer udn='uuid:kitchen-renderer' name='Connector Kitchen'></renderer>",
+            "<renderer udn='uuid:kitchen-2'/><renderer udn='uuid:kitchen-1'/>",
+        )
+    )
+    assert host.renderer_udns("Kitchen") == ["uuid:kitchen-2", "uuid:kitchen-1"]
+    assert host.renderer_udn("Kitchen") == "uuid:kitchen-2"
+    assert host.renderer_udns("Sofa") == ["uuid:sofa-renderer"]
+    assert host.renderer_udns("Attic") == []
+
+
 def test_an_unknown_room_has_no_details() -> None:
     """A room the host does not list gives nothing, rather than raising."""
     host = _loaded_host()

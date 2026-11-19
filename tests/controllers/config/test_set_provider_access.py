@@ -683,3 +683,46 @@ async def test_release_user_sources_skips_an_unreadable_record(mass: MusicAssist
     mass.config.release_user_sources("alice")
 
     assert mass.config.get("providers/spotify--alice/access") == {"shared_users": 5}
+
+
+async def test_share_candidates_can_include_guests_without_granting_access(
+    access_mass: MusicAssistant,
+) -> None:
+    """An owner can pick a guest without sharing its source with every member."""
+    owner = await _create_user(access_mass, "owner")
+    guest = await _create_user(access_mass, "party_guest", UserRole.GUEST)
+    other = await _create_user(access_mass, "other")
+    disabled = await _create_user(access_mass, "disabled_guest", UserRole.GUEST)
+    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
+    set_current_user(admin)
+    await access_mass.webserver.auth.disable_user(disabled.user_id)
+    set_current_user(owner)
+    set_music_source_access(
+        access_mass,
+        {MUSIC_INSTANCE: ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+
+    candidates = await access_mass.config.get_share_candidates(include_guests=True)
+    assert guest.user_id in {candidate.user_id for candidate in candidates}
+    assert disabled.user_id not in {candidate.user_id for candidate in candidates}
+    assert guest.user_id not in {
+        candidate.user_id for candidate in await access_mass.config.get_share_candidates()
+    }
+    assert not access_allows(
+        ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE), guest
+    )
+
+    config = await access_mass.config.set_provider_access(
+        MUSIC_INSTANCE,
+        owner=owner.user_id,
+        sharing=ProviderSharing.SELECTED,
+        shared_users=[guest.user_id],
+    )
+    assert access_allows(config.access, owner)
+    assert access_allows(config.access, guest)
+    assert not access_allows(config.access, other)
+
+    config = await access_mass.config.set_provider_access(
+        MUSIC_INSTANCE, owner=owner.user_id, sharing=ProviderSharing.PRIVATE
+    )
+    assert not access_allows(config.access, guest)

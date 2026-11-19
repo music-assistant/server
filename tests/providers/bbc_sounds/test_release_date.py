@@ -6,8 +6,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from auntie_sounds.models import Podcast, PodcastEpisode, Titles
 from music_assistant_models.media_items import PodcastEpisode as MAPodcastEpisode
-from sounds.models import Podcast, PodcastEpisode
 
 from music_assistant.providers.bbc_sounds.adaptor import Context, PodcastConverter
 
@@ -38,12 +38,12 @@ async def test_podcast_episode_gets_the_release_date(
     expected: datetime | None,
 ) -> None:
     """The release date is used, or when the episode became available if it has none."""
-    converter = PodcastConverter(Context(provider=provider, provider_domain="bbc_sounds"))
+    converter = PodcastConverter(Context(provider=provider))
     episode = PodcastEpisode(
         id="e01",
         pid="e01",
-        titles={"primary": "A podcast", "secondary": "An episode"},
-        container=Podcast(id="p01", titles={"primary": "A podcast"}),
+        titles=Titles(primary="A podcast", secondary="An episode"),
+        container=Podcast(id="p01", titles=Titles(primary="A podcast")),
         release=release,
         availability=availability,
     )
