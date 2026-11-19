@@ -41,6 +41,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_HOMEPODS_ONLY,
     CONF_MRP_CREDENTIALS,
     CONF_NATIVE_MRP_CREDENTIALS,
+    CONF_STORED_VOLUME,
     EXTERNAL_ARTWORK_PATH_PREFIX,
     MRP_DISCOVERY_TYPE,
 )
@@ -382,6 +383,42 @@ def test_transient_mrp_volume_report_never_latches_mute() -> None:
     assert player.volume_level == 62
     cast("MagicMock", player.mass.config).set_protocol_value.assert_not_called()
     update_state.assert_not_called()
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["idle", "streaming"])
+def test_transient_mrp_volume_report_follows_the_homepod_while_idle(streaming: bool) -> None:
+    """A level a HomePod reports over its transient MRP tunnel is applied while it is idle."""
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    assert player._uses_transient_mrp is True
+    assert player._companion_device is None
+    player.stream = MagicMock(running=streaming)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+
+    with patch.object(player, "update_state"):
+        player._handle_volume_update("mrp", 30)
+
+    assert player.volume_muted is False
+    set_protocol_value = cast("MagicMock", player.mass.config).set_protocol_value
+    if streaming:
+        assert player.volume_level == 62
+        set_protocol_value.assert_not_called()
+    else:
+        assert player.volume_level == 30
+        set_protocol_value.assert_called_once_with(PLAYER_ID, CONF_STORED_VOLUME, 30)
+
+
+def test_mrp_volume_report_is_ignored_while_companion_owns_the_volume() -> None:
+    """An MRP level is ignored while Companion, which owns the volume, is connected."""
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player.stream = MagicMock(running=False)
+    player._companion_device = MagicMock(spec=AppleTV)
+    player._attr_volume_level = 62
+
+    with patch.object(player, "update_state"):
+        player._handle_volume_update("mrp", 30)
+
+    assert player.volume_level == 62
 
 
 def test_native_volume_update_applies_when_idle() -> None:
