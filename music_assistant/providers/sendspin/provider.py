@@ -1500,7 +1500,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
 
         Priority: player role -> SendspinPlayer, metadata role -> DISPLAY,
         visualizer role -> VISUALIZER, source role -> SendspinSourcePlayer,
-        artwork role -> DISPLAY, color role -> LIGHT, controller role -> DISPLAY.
+        artwork role -> DISPLAY, color role -> LIGHT, controller role -> CONTROLLER.
         Bridge-registered type overrides the default.
         """
         extra_ids = self._bridge_identifiers.pop(client_id, None)
@@ -1553,12 +1553,15 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             player = SendspinSourcePlayer(self, client_id, initial_hello=initial_hello)
         elif negotiated_families & {"artwork", "color", "controller"}:
             # Without an audio sink it can follow a group but never play or lead one.
-            # A controller-only client has no type of its own and passes for a display.
-            colors_only = "color" in negotiated_families and "artwork" not in negotiated_families
-            viz_player = SendspinVisualizerPlayer(self, client_id, initial_hello=initial_hello)
-            viz_player._attr_type = bridge_player_type or (
-                PlayerType.LIGHT if colors_only else PlayerType.DISPLAY
+            default_type = (
+                PlayerType.DISPLAY
+                if "artwork" in negotiated_families
+                else PlayerType.LIGHT
+                if "color" in negotiated_families
+                else PlayerType.CONTROLLER
             )
+            viz_player = SendspinVisualizerPlayer(self, client_id, initial_hello=initial_hello)
+            viz_player._attr_type = bridge_player_type or default_type
             player = viz_player
         else:
             audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
