@@ -6,7 +6,7 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ContentType, ImageType, LinkType, MediaType
+from music_assistant_models.enums import AlbumType, ContentType, ImageType, LinkType, MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -26,7 +26,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, UNKNOWN_ARTIST
 from music_assistant.helpers.tags import clean_mbid
-from music_assistant.helpers.util import parse_title_and_version
+from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
 if TYPE_CHECKING:
     from libopensonic.media import AlbumID3 as SonicAlbum
@@ -283,6 +283,24 @@ def parse_artist(
     return artist
 
 
+def _map_release_type(sonic_album: SonicAlbum):
+    """ Map a release_type into AlbumType """
+    if sonic_album.release_types:
+        # Convert release_types to lowercase, for comparisons
+        lower_types = [item.lower() for item in sonic_album.release_types]
+
+        for ma_album_type in (
+            AlbumType.LIVE,
+            AlbumType.SOUNDTRACK,
+            AlbumType.COMPILATION,
+            AlbumType.EP,
+            AlbumType.SINGLE,
+            AlbumType.ALBUM,
+        ):
+            if ma_album_type.value in lower_types:
+                return ma_album_type
+
+
 def parse_album(
     logger: logging.Logger,
     instance_id: str,
@@ -349,6 +367,8 @@ def parse_album(
     if mbid := clean_mbid(sonic_album.music_brainz_id, f"album {sonic_album.name}", logger):
         album.mbid = mbid
 
+    various_artist_album: bool = False
+
     if sonic_album.artist_id:
         album.artists.append(
             ItemMapping(
@@ -358,6 +378,8 @@ def parse_album(
                 name=sonic_album.artist or UNKNOWN_ARTIST,
             )
         )
+        if sonic_album.artist == "Various Artists":
+            various_artist_album = True
     elif not sonic_album.artists:
         logger.info(
             "Unable to find an artist ID for album '%s' with ID '%s'.",
@@ -388,6 +410,17 @@ def parse_album(
                     media_type=MediaType.ARTIST, item_id=a.id, provider=instance_id, name=a.name
                 )
             )
+
+    album_type = _map_release_type(sonic_album)
+
+    if album_type is not None:
+        album.album_type = album_type
+    else:
+        inferred_type = infer_album_type(name, version)
+        if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
+            album.album_type = inferred_type
+        elif sonic_album.is_compilation or various_artist_album:
+            album.album_type = AlbumType.COMPILATION
 
     return album
 
