@@ -391,12 +391,18 @@ its own (`players/create_multi_channel_player`, offered through
   it plays in, also when it joins another leader. Group members and leaders leave the speakers
   out: a group lists the set.
 - The session of the leader gives each speaker a pipeline of its own: the DSP of the set, then
-  the channel of the speaker. While a speaker is disconnected the others play every channel; such
-  a change starts the stream again, as a DSP change does. The silent client gets no pipeline and
-  does not count for the sample rate of the session.
+  the channel of the speaker, while it is in the group of the set. While a speaker is away the
+  others play every channel; such a change starts the stream again, as a DSP change does. The
+  silent client gets no pipeline and does not count for the sample rate of the session.
+- A speaker is away while it is disconnected, and while it is out of the group of its set. One
+  that leaves by itself, as it is unavailable or went to a group of its own, comes back at the
+  next playback session; one that the group of another player takes (its switch) is taken back
+  at once.
 - One volume: a level set on the set goes to every speaker, and a level a speaker reports itself
   goes to the others. A speaker that reports back a level the set sent changes nothing.
-- Taking a set apart is removing its player: its speakers register as clients of their own again.
+- Taking a set apart is removing its player: its speakers register as clients of their own again,
+  one that is away once it connects again. A speaker belongs to one set; a second request for it
+  is refused.
 
 ## Related Documentation
 
