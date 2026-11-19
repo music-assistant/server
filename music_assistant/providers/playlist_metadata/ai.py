@@ -25,15 +25,18 @@ from collections import Counter, deque
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
+from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any, Final, cast
 
-import aiohttp
+from aiohttp import ClientError
+from hass_client.exceptions import BaseHassClientError
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ImageType
 from music_assistant_models.errors import (
     ActionUnavailable,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderUnavailableError,
     RateLimited,
     ResourceTemporarilyUnavailable,
@@ -41,6 +44,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import MediaItemImage, Playlist, Track
 from music_assistant_models.unique_list import UniqueList
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL.Image import DecompressionBombError
 
 from music_assistant.helpers.json import json_dumps
 from music_assistant.helpers.plugin_engines import (
@@ -143,11 +147,12 @@ PROMPT_RULE_KEYS: Final = ("seed_names", "artist_names", "genre_names", "year_fr
 TRANSIENT_ERRORS: Final = (
     TimeoutError,
     ConnectionError,
-    aiohttp.ClientError,
+    ClientError,
     ProviderUnavailableError,
     RateLimited,
     ResourceTemporarilyUnavailable,
 )
+AI_REQUEST_ERRORS: Final = (MusicAssistantError, BaseHassClientError, ClientError, OSError)
 
 # the settings only read by the preview button, saved as soon as they are changed
 PREVIEW_KEYS: Final = frozenset(
@@ -698,7 +703,7 @@ class AIArtwork:
                 return await cast("SmartPlaylistProvider", provider).get_smart_playlist_rules(
                     mapping.item_id
                 )
-            except Exception as err:
+            except (MusicAssistantError, OperationalError) as err:
                 self.logger.warning(
                     "Could not read the rules of '%s': %s", playlist.name, err, exc_info=err
                 )
@@ -823,7 +828,7 @@ class AIArtwork:
                 kinds = self._pending.pop(item_id, set())
                 try:
                     waiting_kinds, retry_in = await self._process(item_id, kinds)
-                except Exception as err:
+                except (MusicAssistantError, OperationalError, OSError, ClientError) as err:
                     # one playlist failing must not stop the others
                     self.logger.warning(
                         "Could not generate for playlist %s: %s", item_id, err, exc_info=err
@@ -910,8 +915,7 @@ class AIArtwork:
             concept = await self._concept(playlist, context)
             cover = await self._render(playlist, engine, self._look(), context, concept)
             await asyncio.to_thread(write_file, self._images_dir, file_name, cover)
-        except Exception as err:
-            # an unreachable or misbehaving engine must not stop the worker
+        except (*AI_REQUEST_ERRORS, DecompressionBombError, ValueError) as err:
             self.logger.warning(
                 "Could not generate a cover for '%s': %s", playlist.name, err, exc_info=err
             )
@@ -941,7 +945,7 @@ class AIArtwork:
         await self._reserve(self._described_at, CACHE_KEY_DESCRIBED_AT)
         try:
             description = await self._write_description(playlist, engine)
-        except Exception as err:
+        except AI_REQUEST_ERRORS as err:
             self.logger.warning(
                 "Could not write a description for '%s': %s", playlist.name, err, exc_info=err
             )
@@ -1196,7 +1200,7 @@ class AIArtwork:
                 raise ActionUnavailable("The image engine could not be reached")
             try:
                 return await self._render(playlist, engine, look, context, concept)
-            except Exception as err:
+            except TRANSIENT_ERRORS as err:
                 self._pause_if_unreachable(ENGINE_IMAGE, err)
                 raise
 
@@ -1215,7 +1219,7 @@ class AIArtwork:
             return ""
         try:
             return await self._write_description(playlist, engine, context)
-        except Exception as err:
+        except AI_REQUEST_ERRORS as err:
             self._pause_if_unreachable(ENGINE_TEXT, err)
             # the covers are still worth showing
             self.logger.warning(
@@ -1300,7 +1304,7 @@ class AIArtwork:
         try:
             async with asyncio.timeout(PROMPT_TIMEOUT_SECONDS):
                 concept = await engine.provider.ai_query(query, engine_id=engine.id)
-        except Exception as err:
+        except AI_REQUEST_ERRORS as err:
             self._pause_if_unreachable(ENGINE_TEXT, err)
             self.logger.warning(
                 "The text engine could not write a visual concept for '%s': %s",
@@ -1338,7 +1342,7 @@ class AIArtwork:
                 count += 1
                 if count >= MAX_CONTEXT_TRACKS:
                     break
-        except Exception as err:
+        except (MusicAssistantError, OperationalError, OSError, ClientError) as err:
             self.logger.warning(
                 "Could not read the tracks of '%s': %s", playlist.name, err, exc_info=err
             )
@@ -1506,7 +1510,7 @@ class AIArtwork:
                 ):
                     continue
                 options.append(ConfigValueOption(str(playlist.item_id), title=playlist.name))
-        except Exception as err:
+        except (MusicAssistantError, OperationalError) as err:
             # the settings page still opens, with only the current selection to pick from
             self.logger.warning("Could not list the playlists: %s", err, exc_info=err)
         known = {option.value for option in options}
@@ -1520,7 +1524,7 @@ class AIArtwork:
         try:
             async for playlist in self.mass.music.playlists.iter_library_items():
                 options.append(ConfigValueOption(str(playlist.item_id), title=playlist.name))
-        except Exception as err:
+        except (MusicAssistantError, OperationalError) as err:
             # the settings page still opens, with only the current selection to pick from
             self.logger.warning("Could not list the playlists: %s", err, exc_info=err)
         if selected and str(selected) not in {option.value for option in options}:

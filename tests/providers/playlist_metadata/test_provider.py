@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ImageType
+from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import MediaItemImage, Playlist, ProviderMapping, Track
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 from music_assistant_models.unique_list import UniqueList
@@ -293,8 +294,11 @@ async def test_get_playlist_metadata_handles_exception(
 
 
 @pytest.mark.asyncio
-async def test_album_grid_uses_remaining_cover_when_one_is_missing(tmp_path: Path) -> None:
-    """A missing source image does not prevent rendering with the remaining cover."""
+@pytest.mark.parametrize("error_type", [FileNotFoundError, MusicAssistantError])
+async def test_album_grid_uses_remaining_cover_when_one_fails(
+    tmp_path: Path, error_type: type[Exception]
+) -> None:
+    """A missing image or provider error does not prevent rendering the other cover."""
     provider = _make_provider(tmp_path)
     with BytesIO() as source:
         Image.new("RGB", (16, 16), "white").save(source, "PNG")
@@ -306,7 +310,7 @@ async def test_album_grid_uses_remaining_cover_when_one_is_missing(tmp_path: Pat
 
     async def fetch_image(_mass: Any, path: str, _provider: str) -> bytes:
         if path == "missing.jpg":
-            raise FileNotFoundError(path)
+            raise error_type(path)
         return cover
 
     with patch(
