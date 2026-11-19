@@ -916,6 +916,7 @@ class AIArtwork:
             cover = await self._render(playlist, engine, self._look(), context, concept)
             await asyncio.to_thread(write_file, self._images_dir, file_name, cover)
         except (*AI_REQUEST_ERRORS, DecompressionBombError, ValueError) as err:
+            # an unreachable or misbehaving engine must not stop the worker
             self.logger.warning(
                 "Could not generate a cover for '%s': %s", playlist.name, err, exc_info=err
             )
