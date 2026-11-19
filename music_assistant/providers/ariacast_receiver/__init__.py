@@ -21,7 +21,12 @@ from music_assistant_models.enums import (
     SourceControl,
     StreamType,
 )
-from music_assistant_models.errors import AudioError, MediaNotFoundError, SetupFailedError
+from music_assistant_models.errors import (
+    AudioError,
+    MediaNotFoundError,
+    MusicAssistantError,
+    SetupFailedError,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     AudioSource,
@@ -55,6 +60,9 @@ ARIACAST_PORT = 12889
 DISCOVERY_PORT = 12888
 FRAME_SIZE = 3840  # 20 ms of PCM S16LE 48 kHz stereo
 MAX_ARTWORK_BYTES = 4 * 1024 * 1024
+
+# Errors raised when sending to a WebSocket whose peer has gone away
+WS_SEND_ERRORS = (aiohttp.ClientError, ConnectionError, RuntimeError)
 
 
 # ---------------------------------------------------------------------------
@@ -558,7 +566,7 @@ class AriaCastReceiver(PluginProvider):
                     pass
                 elif value is not None:
                     await self.mass.players.cmd_volume_set(player_id, int(value))
-        except Exception as exc:
+        except (MusicAssistantError, ValueError, TypeError) as exc:
             self.logger.debug("Volume command failed: %s", exc)
             with suppress(Exception):
                 await ws.send_json({"command": "volume", "level": -1, "success": False})
@@ -645,7 +653,7 @@ class AriaCastReceiver(PluginProvider):
                 for ws in list(self._stats_sockets):
                     try:
                         await ws.send_json(msg)
-                    except Exception:
+                    except WS_SEND_ERRORS:
                         dead.add(ws)
                 self._stats_sockets -= dead
 
@@ -802,7 +810,7 @@ class AriaCastReceiver(PluginProvider):
         for ws in list(self._meta_sockets):
             try:
                 await ws.send_json(msg)
-            except Exception:
+            except WS_SEND_ERRORS:
                 dead.add(ws)
         self._meta_sockets -= dead
 
@@ -842,7 +850,7 @@ class AriaCastReceiver(PluginProvider):
                 )
                 self._stream_meta.image_url = self.mass.metadata.get_image_url(image)
                 await self._broadcast_meta()
-        except Exception as exc:
+        except (aiohttp.ClientError, TimeoutError) as exc:
             self.logger.debug("Artwork fetch failed: %s", exc)
 
     # -----------------------------------------------------------------------
@@ -908,7 +916,7 @@ class AriaCastReceiver(PluginProvider):
                 continue
             try:
                 await ws.send_json(msg)
-            except Exception:
+            except WS_SEND_ERRORS:
                 dead.add(ws)
         self._control_senders -= dead
 
@@ -917,7 +925,7 @@ class AriaCastReceiver(PluginProvider):
         self.logger.debug("play_media %s → %s", uri, target)
         try:
             await self.mass.player_queues.play_media(target, uri)
-        except Exception as exc:
+        except MusicAssistantError as exc:
             self.logger.warning("play_media failed for player %s: %s", target, exc)
             if self._in_use_by_player == target:
                 self._in_use_by_player = None
@@ -967,7 +975,7 @@ class AriaCastReceiver(PluginProvider):
             )
             self._discovery_transport = transport
             self.logger.info("UDP discovery active on port %d", DISCOVERY_PORT)
-        except Exception as exc:
+        except OSError as exc:
             self.logger.warning(
                 "UDP discovery unavailable (port %d in use?): %s", DISCOVERY_PORT, exc
             )
