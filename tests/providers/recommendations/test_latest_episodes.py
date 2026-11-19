@@ -59,7 +59,7 @@ def provider() -> LibraryRecommendationsProvider:
     mass = Mock()
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "recommendations"
     config = Mock()
     config.instance_id = "recommendations"

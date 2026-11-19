@@ -8,11 +8,11 @@ provider type, or whose ``codeowners`` are malformed — only fails once the ser
 provider. This pre-commit/CI guard scans every provider manifest up front and prints each problem.
 
 A manifest must not contain ``tier``: the server sets it from where the provider loads. An optional
-``support_url`` must be an ``https`` URL with a host. Declared ``features`` must be known
-``ProviderFeature`` values, each listed once. Declared ``menu_actions`` and ``mcp_tools``
-must follow the rules the server applies when it reads a manifest
+``support_url`` must be an ``https`` URL with a host. Declared ``media_types`` must be known
+``MediaType`` values, each listed once. Declared ``menu_actions``, ``mcp_tools`` and
+``page`` must follow the rules the server applies when it reads a manifest
 (``music_assistant.helpers.menu_actions``, ``music_assistant.helpers.mcp_tools``); the server
-leaves out an action or tool that breaks them, here it is an error.
+leaves out an action, tool or page that breaks them, here it is an error.
 
 When invoked with file or folder arguments (as pre-commit does for the changed files) only the
 manifests in scope are validated; with no arguments every provider manifest is scanned.
@@ -29,10 +29,10 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import MediaType
 
 from music_assistant.helpers.mcp_tools import read_mcp_tools
-from music_assistant.helpers.menu_actions import read_menu_actions
+from music_assistant.helpers.menu_actions import read_menu_actions, read_page
 
 # ruff: noqa: T201
 
@@ -44,9 +44,9 @@ PROVIDERS_PATH = REPO_ROOT / "music_assistant" / "providers"
 # music_assistant_models.provider.ProviderManifest.
 MANDATORY_KEYS = ("type", "domain", "name", "description", "codeowners")
 
-# Valid manifest features (minus ``unknown``, the runtime fallback for an unknown value).
-VALID_FEATURES = frozenset(feature.value for feature in ProviderFeature) - {
-    ProviderFeature.UNKNOWN.value
+# Valid manifest media types (minus ``unknown``, the runtime fallback for an unknown value).
+VALID_MEDIA_TYPES = frozenset(media_type.value for media_type in MediaType) - {
+    MediaType.UNKNOWN.value
 }
 
 # Valid provider types, mirroring music_assistant_models.enums.ProviderType (minus ``unknown``,
@@ -146,12 +146,14 @@ def _validate(data: dict[str, object], folder_name: str) -> list[str]:
         issues.append("'tier' is set by the server and must not be in the manifest")
     if "support_url" in data and not _is_https_url(data["support_url"]):
         issues.append("'support_url' must be an https URL with a host")
-    if "features" in data:
-        issues.extend(_validate_features(data["features"]))
+    if "media_types" in data:
+        issues.extend(_validate_media_types(data["media_types"]))
     if "menu_actions" in data:
         issues.extend(read_menu_actions(data["menu_actions"])[1])
     if "mcp_tools" in data:
         issues.extend(read_mcp_tools(data["mcp_tools"], folder_name)[1])
+    if "page" in data:
+        issues.extend(read_page(data["page"])[1])
     return issues
 
 
@@ -166,19 +168,19 @@ def _validate_codeowners(codeowners: object) -> list[str]:
     ]
 
 
-def _validate_features(features: object) -> list[str]:
-    """Return problems with the ``features`` field (a list of known, unique feature values)."""
-    if not isinstance(features, list):
-        return ["'features' must be a list"]
+def _validate_media_types(media_types: object) -> list[str]:
+    """Return problems with the ``media_types`` field (a list of known, unique media types)."""
+    if not isinstance(media_types, list):
+        return ["'media_types' must be a list"]
     issues: list[str] = []
     seen: set[str] = set()
-    for feature in features:
-        if not isinstance(feature, str) or feature not in VALID_FEATURES:
-            issues.append(f"feature '{feature}' is not a known ProviderFeature")
-        elif feature in seen:
-            issues.append(f"feature '{feature}' is listed more than once")
+    for media_type in media_types:
+        if not isinstance(media_type, str) or media_type not in VALID_MEDIA_TYPES:
+            issues.append(f"media type '{media_type}' is not a known MediaType")
+        elif media_type in seen:
+            issues.append(f"media type '{media_type}' is listed more than once")
         else:
-            seen.add(feature)
+            seen.add(media_type)
     return issues
 
 

@@ -18,7 +18,7 @@ async def test_episode_with_a_space_in_guid_and_stream_url() -> None:
         "log_level": "INFO",
     }.get(key, default)
     provider = ITunesPodcastsProvider(
-        Mock(), Mock(domain="itunes_podcasts", features=set()), config, SUPPORTED_FEATURES
+        Mock(), Mock(domain="itunes_podcasts"), config, SUPPORTED_FEATURES
     )
     await provider.handle_async_init()
     podcast = {

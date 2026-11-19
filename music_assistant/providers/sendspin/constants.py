@@ -49,6 +49,6 @@ CONF_ACTION_MANAGEMENT_STATIC_PIN_DISABLE = "management_static_pin_disable"
 CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_ENABLE = "management_dynamic_pin_enable"
 CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_DISABLE = "management_dynamic_pin_disable"
 
-# Declared here because only the player provider can add player config entries.
+# The player a line-in starts playing on when its client senses a signal.
 CONF_SOURCE_AUTOSTART_TARGET = "source_autostart_target"
 SOURCE_AUTOSTART_OFF = "off"

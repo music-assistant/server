@@ -87,6 +87,7 @@ from music_assistant.controllers.config.helpers import (
     _reject_encrypted_values,
     _with_translation_owner,
 )
+from music_assistant.helpers.action_result import without_insecure_open_url
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS, PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.util import validate_announcement_chime_url
@@ -374,7 +375,7 @@ class PlayerConfigMixin:
         if isinstance(result, ConfigActionResult):
             # the strings belong to the provider that handled the action
             result.translation_owner = result.translation_owner or target.translation_owner
-            return result
+            return without_insecure_open_url(target.provider, result)
         # re-render the full player entries so injected protocol entries refresh
         return await self.get_player_config_entries(player_id)
 

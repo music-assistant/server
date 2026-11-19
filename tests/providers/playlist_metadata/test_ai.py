@@ -21,6 +21,7 @@ import pytest
 from music_assistant_models.enums import ImageType
 from music_assistant_models.errors import (
     ActionUnavailable,
+    InvalidDataError,
     MediaNotFoundError,
     ProviderUnavailableError,
     RateLimited,
@@ -429,7 +430,7 @@ async def test_a_failed_generation_keeps_the_previous_cover(
     await _metadata(provider, playlist)
     first = playlist.image
     provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
-        side_effect=RuntimeError("quota exceeded")
+        side_effect=InvalidDataError("engine rejected the request")
     )
     playlist.name = "Renamed"
 
@@ -616,7 +617,7 @@ async def test_a_failing_cover_backs_off_and_then_gives_up(
 ) -> None:
     """Each failure waits longer before the next try; after the last one it stops trying."""
     provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
-        side_effect=RuntimeError("content policy")
+        side_effect=InvalidDataError("content policy")
     )
     playlist = _smart_playlist()
     start = time.time()
@@ -1869,7 +1870,7 @@ async def test_preview_without_a_description(provider: PlaylistMetadataProvider)
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
     _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["bold"]})
     provider.test_text_engine.provider.ai_query = AsyncMock(  # type: ignore[attr-defined]
-        side_effect=RuntimeError("text engine down")
+        side_effect=InvalidDataError("engine rejected the request")
     )
 
     with _no_engine_pickers():
@@ -2024,6 +2025,8 @@ def _make_provider(tmp_path: Path) -> PlaylistMetadataProvider:
     mass.call_later = MagicMock()
     mass.cache = _FakeCache()
     mass.music.playlists.iter_tracks = MagicMock(side_effect=lambda *_: _async_iter([]))
+    mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    mass.music.artists.library_items = AsyncMock(return_value=[])
     smart_playlist_provider = MagicMock()
     smart_playlist_provider.domain = "smart_playlist"
     smart_playlist_provider.get_smart_playlist_rules = AsyncMock(return_value=SMART_RULES)

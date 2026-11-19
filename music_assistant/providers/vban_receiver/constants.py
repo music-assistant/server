@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from aiovban.asyncio.util import BackPressureStrategy
+from music_assistant_models.enums import ProviderFeature
 
 DEFAULT_UDP_PORT = 6980
 DEFAULT_PCM_AUDIO_FORMAT = "S16LE"
@@ -23,3 +24,5 @@ VBAN_QUEUE_STRATEGIES = {
     "Clear the oldest half of the queue": BackPressureStrategy.DRAIN_OLDEST,
     "Remove single oldest queue entry": BackPressureStrategy.POP,
 }
+
+SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}

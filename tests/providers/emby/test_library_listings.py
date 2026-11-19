@@ -18,7 +18,7 @@ from music_assistant.providers.emby.const import ITEM_KEY_ID, ITEM_KEY_MEDIA_STR
 def provider() -> EmbyProvider:
     """Create an Emby provider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "emby"
     config = Mock()
     config.instance_id = "emby--test123"

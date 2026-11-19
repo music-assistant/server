@@ -185,7 +185,7 @@ class _Live:
                 async for chunk in audio_input:
                     run["input"].append(chunk)
                     await output.put(chunk)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - mirrors the real decoder, which captures any input error
                 failure.append(err)
             await output.put(None)
 

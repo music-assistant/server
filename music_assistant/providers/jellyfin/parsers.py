@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from logging import Logger
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from aiojellyfin import ImageType as JellyImageType
@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.helpers.lyrics import convert_to_lrc_lyrics
 from music_assistant.helpers.util import parse_title_and_version
 
 from .const import (
@@ -286,6 +287,18 @@ def parse_track(
     user_data = jellyfin_track.get(ITEM_KEY_USER_DATA, {})
     track.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
     return track
+
+
+def parse_lyrics(raw: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Return (plain_lyrics, lrc_lyrics) from a Jellyfin lyrics response."""
+    cues = raw.get("Lyrics") or []
+    if not cues:
+        return None, None
+    plain = "\n".join(cue.get("Text") or "" for cue in cues)
+    if not all(cue.get("Start") is not None for cue in cues):
+        return plain, None
+    lrc = convert_to_lrc_lyrics([(cue.get("Text") or "", cue["Start"] // 10_000) for cue in cues])
+    return plain, lrc or None
 
 
 def parse_playlist(

@@ -84,7 +84,7 @@ LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX = "spb_msx_"
 LEGACY_HTTP_PROFILE_KEY = "http_profile"
 
 # domains of the removed builtin providers, whose stored configs nothing can load anymore
-RETIRED_BUILTIN_PROVIDER_DOMAINS = ("builtin_player", "universal_player")
+RETIRED_BUILTIN_PROVIDER_DOMAINS = ("builtin_player", "universal_player", "sendspin_source")
 
 # the order in which the Sendspin bridges took a device while each kept an output of its
 # own, only referenced by the migration that folds those outputs into one

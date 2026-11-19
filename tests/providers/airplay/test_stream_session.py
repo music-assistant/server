@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -84,7 +84,7 @@ def _make_session(
     leader.stream.connected = True
     leader.stream.wait_audio_present = AsyncMock(return_value=True)
     leader.stream.cumulative_shift_seconds = 0.0
-    leader.config.get_value = MagicMock(return_value=0)
+    leader.sync_offset_ms = 0
 
     # media without a queue session: nothing can be mid-handover to this session,
     # so a source that ends is by default the end of the stream
@@ -103,8 +103,7 @@ def _make_late_joiner() -> MagicMock:
     player.protocol_id = "late_joiner"
     player.protocol = StreamingProtocol.RAOP
     player.stream = None
-    player.config = MagicMock()
-    player.config.get_value = MagicMock(return_value=0)
+    player.sync_offset_ms = 0
     return player
 
 
@@ -188,10 +187,10 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
     first_player: Any = session.sync_clients[0]
     first_player.protocol_id = "first"
     first_player.protocol = first_protocol
-    first_player.config.get_value = MagicMock(return_value=0)
+    first_player.sync_offset_ms = 0
     second_player = MagicMock(protocol_id="second")
     second_player.protocol = second_protocol
-    second_player.config.get_value = MagicMock(return_value=0)
+    second_player.sync_offset_ms = 0
     session.sync_clients.append(second_player)
     session.media.elapsed_time = 12
     operations: list[str] = []
@@ -237,9 +236,9 @@ async def test_group_start_never_anchors_before_every_receiver_clock_is_usable()
     session = _make_session(0, 0)
     first: Any = session.sync_clients[0]
     first.protocol = StreamingProtocol.AIRPLAY2
-    first.config.get_value = MagicMock(return_value=0)
+    first.sync_offset_ms = 0
     second = MagicMock(protocol_id="second", protocol=StreamingProtocol.AIRPLAY2)
-    second.config.get_value = MagicMock(return_value=0)
+    second.sync_offset_ms = 0
     session.sync_clients.append(second)
     # The slower member's clock lands past the cold group lead, so anchoring on
     # that lead alone would leave it seated at a different instant to the first.
@@ -278,7 +277,7 @@ async def test_solo_start_waits_for_the_receiver_clock_projection() -> None:
     session = _make_session(0, 0)
     player: Any = session.sync_clients[0]
     player.protocol = StreamingProtocol.AIRPLAY2
-    player.config.get_value = MagicMock(return_value=0)
+    player.sync_offset_ms = 0
 
     async def start_client(_player: MagicMock, _use_shared_ptp: bool) -> None:
         stream = _stream_defaults(MagicMock(running=True))
@@ -309,7 +308,7 @@ async def test_solo_start_with_a_usable_clock_keeps_the_short_lead() -> None:
     session = _make_session(0, 0)
     player: Any = session.sync_clients[0]
     player.protocol = StreamingProtocol.AIRPLAY2
-    player.config.get_value = MagicMock(return_value=0)
+    player.sync_offset_ms = 0
 
     async def start_client(_player: MagicMock, _use_shared_ptp: bool) -> None:
         stream = _stream_defaults(MagicMock(running=True))
@@ -360,7 +359,7 @@ async def _start_group(
         MagicMock(protocol_id=name, protocol=StreamingProtocol.AIRPLAY2) for name in accept_delays
     ]
     for player in players:
-        player.config.get_value = MagicMock(return_value=0)
+        player.sync_offset_ms = 0
     session.sync_clients = players
 
     def member_stream(name: str) -> MagicMock:
@@ -452,10 +451,10 @@ async def test_group_start_that_never_converges_anchors_where_members_landed() -
     """A group that keeps correcting is anchored at the members' own last instant."""
     session = _make_session(0, 0)
     first: Any = session.sync_clients[0]
-    first.config.get_value = MagicMock(return_value=0)
+    first.sync_offset_ms = 0
     second = MagicMock(protocol_id="second")
     second.protocol = StreamingProtocol.RAOP
-    second.config.get_value = MagicMock(return_value=0)
+    second.sync_offset_ms = 0
     session.sync_clients.append(second)
     commanded: list[int] = []
 
@@ -485,7 +484,7 @@ async def test_corrected_solo_start_adopts_the_instant_without_reanchoring() -> 
     """A corrected solo start is anchored at the binary's instant with no re-START."""
     session = _make_session(0, 0)
     player: Any = session.sync_clients[0]
-    player.config.get_value = MagicMock(return_value=0)
+    player.sync_offset_ms = 0
     stream = _stream_defaults(MagicMock(running=True))
     # The binary corrects the commanded instant forward; a re-START would only
     # re-base reported position on the raw one, so exactly one START may be
@@ -506,7 +505,7 @@ async def test_group_start_fails_when_a_member_never_acknowledges() -> None:
     first_player: Any = session.sync_clients[0]
     first_player.protocol = StreamingProtocol.RAOP
     second_player = MagicMock(protocol_id="silent", protocol=StreamingProtocol.RAOP)
-    second_player.config.get_value = MagicMock(return_value=0)
+    second_player.sync_offset_ms = 0
     session.sync_clients.append(second_player)
     anchor_before = (session.start_unix_ms, session.start_time)
 
@@ -549,7 +548,7 @@ async def test_initial_single_player_starts_after_connect(
     player: Any = session.sync_clients[0]
     player.protocol_id = "solo"
     player.protocol = protocol
-    player.config.get_value = MagicMock(return_value=0)
+    player.sync_offset_ms = 0
     stream = _stream_defaults(MagicMock(running=True))
     stream.wait_for_connection = AsyncMock()
     stream.wait_audio_present = AsyncMock(return_value=True)
@@ -775,7 +774,7 @@ async def test_standby_resumes_warm_on_existing_streams(
         player = MagicMock()
         player.protocol_id = f"player-{index}"
         player.protocol = protocol
-        player.config.get_value = MagicMock(return_value=0)
+        player.sync_offset_ms = 0
         player.stream = _stream_defaults(MagicMock(running=True, connected=True))
         player.stream.send_cli_command = AsyncMock(return_value=True)
         player.stream.wait_audio_present = AsyncMock(return_value=True)
@@ -820,7 +819,7 @@ async def test_warm_replace_flushes_all_before_starting_any() -> None:
 
     for player_id in ("first", "delayed"):
         player = MagicMock(protocol_id=player_id, protocol=StreamingProtocol.AIRPLAY2)
-        player.config.get_value = MagicMock(return_value=0)
+        player.sync_offset_ms = 0
         stream = _stream_defaults(MagicMock(running=True, connected=True))
 
         async def flush(*, current_id: str = player_id) -> bool:
@@ -862,7 +861,7 @@ async def test_warm_replace_stops_old_audio_and_ffmpeg_before_flush() -> None:
     session = _make_session(0, 0)
     operations: list[str] = []
     player: Any = session.sync_clients[0]
-    player.config.get_value = MagicMock(return_value=0)
+    player.sync_offset_ms = 0
     stream = player.stream
     stream.running = True
     stream.connected = True
@@ -912,7 +911,7 @@ async def test_warm_replace_flush_failure_falls_back_to_cold() -> None:
     players: list[Any] = []
     for player_id, acked in (("ok", True), ("failed", False)):
         player = MagicMock(protocol_id=player_id, protocol=StreamingProtocol.RAOP)
-        player.config.get_value = MagicMock(return_value=0)
+        player.sync_offset_ms = 0
         stream = _stream_defaults(MagicMock(running=True, connected=True))
         stream.flush = AsyncMock(return_value=acked)
         player.stream = stream
@@ -936,7 +935,7 @@ async def test_warm_replace_start_failure_falls_back_to_cold() -> None:
     """A failed shared START after flush returns False so the caller restarts cold."""
     session = _make_session(0, 0)
     player: Any = session.sync_clients[0]
-    player.config.get_value = MagicMock(return_value=0)
+    player.sync_offset_ms = 0
     stream = player.stream
     stream.running = True
     stream.connected = True
@@ -984,7 +983,7 @@ def test_warm_anchor_clears_the_receivers_queued_audio(
     members.append(second)
     for player, (warm_lead_ms, sync_adjust) in zip(members, member_specs, strict=True):
         player.stream.warm_lead_ms = warm_lead_ms
-        player.config.get_value = MagicMock(return_value=sync_adjust)
+        player.sync_offset_ms = -sync_adjust
 
     with patch(
         "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
@@ -1005,11 +1004,11 @@ def test_warm_anchor_clears_the_head_every_flushed_member_froze() -> None:
     session = _make_session(0, 0)
     first: Any = session.sync_clients[0]
     first.stream.flushed_head_unix_ms = 102_000
-    first.config.get_value = MagicMock(return_value=0)
+    first.sync_offset_ms = 0
     second = MagicMock(protocol_id="second", protocol=StreamingProtocol.AIRPLAY2)
     second.stream = _stream_defaults(MagicMock(running=True, connected=True))
     second.stream.flushed_head_unix_ms = 105_000
-    second.config.get_value = MagicMock(return_value=300)
+    second.sync_offset_ms = -300
     session.sync_clients.append(second)
 
     with patch(
@@ -1060,6 +1059,37 @@ async def test_start_player_ffmpeg_wires_persistent_cli_stdin() -> None:
     assert ffmpeg_factory.call_args.kwargs["audio_output"] == 77
     new_ffmpeg.start.assert_awaited_once()
     assert session._player_ffmpeg[player.protocol_id] is new_ffmpeg
+
+
+@pytest.mark.asyncio
+async def test_start_player_ffmpeg_applies_the_output_plan_the_player_names() -> None:
+    """The member's ffmpeg runs the output plan of the protocol its output settings belong to."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.output_plan_protocol_id = "plan_owner"
+    stream = _stream_defaults(MagicMock())
+    stream.pcm_format = session.pcm_format
+    stream._cli_proc = MagicMock()
+    get_plan = cast("MagicMock", session.mass.streams.audio.get_player_output_plan)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.get_final_output_format",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "music_assistant.providers.airplay.stream_session.get_media_session_id",
+            return_value="session-id",
+        ),
+        patch(
+            "music_assistant.providers.airplay.stream_session.FFMpeg",
+            return_value=MagicMock(start=AsyncMock()),
+        ) as ffmpeg_factory,
+    ):
+        await session._start_player_ffmpeg(player, MagicMock(), stream)
+
+    assert get_plan.call_args.args[0] == "plan_owner"
+    assert ffmpeg_factory.call_args.kwargs["filter_params"] is get_plan.return_value.filter_params
 
 
 @pytest.mark.asyncio
@@ -1160,7 +1190,7 @@ async def test_warm_replace_rearms_the_feed_question() -> None:
     """The new source answers for its own feed; what the old one delivered does not count."""
     session = _make_session(0, 0)
     player: Any = session.sync_clients[0]
-    player.config.get_value = MagicMock(return_value=0)
+    player.sync_offset_ms = 0
     player.stream.flush = AsyncMock(return_value=True)
     session._feed_settled.set()
 
@@ -1387,7 +1417,7 @@ async def test_a_replacement_claiming_the_session_cancels_the_withheld_eof() -> 
     player: Any = session.sync_clients[0]
     player.stream.write_audio_eof = AsyncMock()
     player.stream.flush = AsyncMock(return_value=True)
-    player.config.get_value = MagicMock(return_value=0)
+    player.sync_offset_ms = 0
     session.media = MagicMock(source_id="queue-1", queue_session_id="session-1")
     queues: Any = session.mass.player_queues
     queues.queue_data_or_none = MagicMock(
@@ -2106,7 +2136,7 @@ async def test_late_join_maps_content_from_the_acked_instant() -> None:
     # A sync_adjust rides on top of the commanded instant, so it has to be taken
     # back out of the ack before the content is mapped onto it.
     sync_adjust = 200
-    player.config.get_value = MagicMock(return_value=sync_adjust)
+    player.sync_offset_ms = -sync_adjust
     deferral_ms = 1500
 
     def setup_deferred_ack(*_args: Any, **_kwargs: Any) -> None:
@@ -2206,7 +2236,7 @@ async def test_replace_clears_skip_and_shift_state() -> None:
     """A warm replace re-anchors everyone, so skip counters and shifts reset."""
     session = _make_session(0, 0)
     player: Any = session.sync_clients[0]
-    player.config.get_value = MagicMock(return_value=0)
+    player.sync_offset_ms = 0
     stream = player.stream
     stream.running = True
     stream.connected = True

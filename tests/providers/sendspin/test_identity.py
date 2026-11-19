@@ -19,6 +19,7 @@ from music_assistant.models.player import Player
 from music_assistant.providers.sendspin.constants import CONF_SENDSPIN_STATIC_DELAY
 from music_assistant.providers.sendspin.player import SendspinPlayer
 from music_assistant.providers.sendspin.provider import SendspinProvider
+from music_assistant.providers.sendspin.sources import SendspinSources
 
 if TYPE_CHECKING:
     from tests.scenarios.harness import FakePlayerProvider, Scenario
@@ -58,6 +59,7 @@ async def _sendspin(scenario: Scenario) -> FakePlayerProvider:
     cast("Any", provider).is_virtual_player = lambda _client_id: False
     cast("Any", provider).is_held_unapproved = lambda _client_id: False
     cast("Any", provider)._device_role = SendspinProvider._device_role.__get__(provider)
+    cast("Any", provider).sources = SendspinSources(cast("SendspinProvider", provider))
     return provider
 
 

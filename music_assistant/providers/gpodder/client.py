@@ -176,7 +176,7 @@ class GPodderClient:
                 auth=self.auth,
             ) as response:
                 if response.status != 200:
-                    self.logger.debug(f"Call failed with status {response.status}")
+                    self.logger.debug("Call failed with status %s", response.status)
                     raise RuntimeError(f"Api post call failed to {endpoint} failed!")
                 return await response.read()
         except ClientResponseError as exc:
@@ -197,7 +197,7 @@ class GPodderClient:
                 return await response.read()
             if status == 404:
                 return b""
-            self.logger.debug(f"Call failed with status {response.status}")
+            self.logger.debug("Call failed with status %s", response.status)
             raise RuntimeError(f"API GET call to {endpoint} failed.")
 
     async def get_subscriptions(self, since: int = 0) -> SubscriptionsGet | None:

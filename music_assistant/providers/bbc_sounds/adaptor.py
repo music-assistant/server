@@ -330,7 +330,7 @@ class StationConverter(BaseConverter):
             name=title,
             provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
-                image_url, self.context.provider.instance_id
+                image_url, self.context.provider.instance_id, station.description
             ),
             provider_mappings={self._create_provider_mapping(station.id)},
         )
@@ -345,7 +345,7 @@ class StationConverter(BaseConverter):
             name=f"BBC {name}",
             provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
-                image_url, self.context.provider.instance_id
+                image_url, self.context.provider.instance_id, station.description
             ),
             provider_mappings={self._create_provider_mapping(station.id)},
         )

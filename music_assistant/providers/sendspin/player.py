@@ -349,7 +349,6 @@ if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
     from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
     from music_assistant.providers.hass import HomeAssistantProvider
-    from music_assistant.providers.sendspin_source.provider import SendspinSourceProvider
 
     from .provider import PinPairingSession, SendspinProvider
 
@@ -550,11 +549,8 @@ class SendspinBasePlayer(PlayerProtocol):
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
-        if source_provider := self.mass.get_provider("sendspin_source"):
-            # an input that is playing holds the source it was selected with
-            cast("SendspinSourceProvider", source_provider).on_client_config_updated(
-                self.protocol_id
-            )
+        # an input that is playing holds the source it was selected with
+        cast("SendspinProvider", self.provider).sources.on_client_config_updated(self.protocol_id)
 
     async def handle_config_action(self, action: str) -> list[ConfigEntry]:
         """Run an unpair/management/input action, then re-render the entries."""
@@ -3342,7 +3338,7 @@ class SendspinPlayer(SendspinBasePlayer):
 
 
 class SendspinVisualizerPlayer(SendspinBasePlayer):
-    """A non-audio Sendspin player for visualizer/lighting devices."""
+    """A non-audio Sendspin player for display, visualizer, lighting and controller devices."""
 
     _attr_type = PlayerType.VISUALIZER
     # keep in line with SESSION_ONLY_DEFAULTS in controllers/config/player_split.py
@@ -3472,7 +3468,7 @@ class SendspinSourcePlayer(SendspinBasePlayer):
 
     Renders nothing and is never a playback or grouping target. It is listed as an
     audio input so its pairing, enabling and line-in autostart settings are easy to
-    reach. The sendspin_source plugin exposes the audio itself.
+    reach. The Sendspin provider exposes the audio itself, as a line-in source.
     """
 
     _attr_type = PlayerType.SOURCE

@@ -16,7 +16,7 @@ from music_assistant.providers.neteasecloudmusic import (
 def provider() -> NeteaseCloudMusicProvider:
     """Create a real NeteaseCloudMusicProvider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "neteasecloudmusic"
     config = Mock()
     config.instance_id = "ncm--test123"

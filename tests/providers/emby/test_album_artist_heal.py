@@ -64,7 +64,7 @@ def _album(*artists: Artist) -> Album:
 @pytest.fixture
 async def provider(music_mass: MusicAssistant) -> EmbyProvider:
     """Create an Emby provider on a real library with an album linked to a featured artist."""
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "emby"
     config = Mock()
     config.instance_id = INSTANCE_ID

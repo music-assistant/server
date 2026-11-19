@@ -7,7 +7,7 @@ from dataclasses import fields
 from typing import cast
 from unittest.mock import MagicMock
 
-from music_assistant_models.enums import EventType, ProviderFeature, ProviderType
+from music_assistant_models.enums import EventType, ProviderType
 from music_assistant_models.errors import LoginFailed
 from music_assistant_models.provider import ProviderInstance
 
@@ -15,22 +15,17 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.provider import Provider
 
 
-def _make_base_provider(
-    log_level: str = "GLOBAL",
-    manifest_features: set[ProviderFeature] | None = None,
-    supported_features: set[ProviderFeature] | None = None,
-) -> Provider:
+def _make_base_provider(log_level: str = "GLOBAL") -> Provider:
     """Construct a minimal base Provider with stubbed mass/manifest/config."""
     mass = MagicMock()
     manifest = MagicMock()
     manifest.type = ProviderType.MUSIC
     manifest.domain = "test_provider"
-    manifest.features = manifest_features or set()
     config = MagicMock()
     config.name = "Test Provider"
     config.instance_id = "test_instance"
     config.get_value = MagicMock(return_value=log_level)
-    return Provider(mass, manifest, config, supported_features=supported_features or set())
+    return Provider(mass, manifest, config, supported_features=set())
 
 
 def test_to_dict_matches_provider_instance_schema() -> None:
@@ -39,19 +34,6 @@ def test_to_dict_matches_provider_instance_schema() -> None:
     assert set(result) == {f.name for f in fields(ProviderInstance)}
     # the served payload must also deserialize back into the model
     ProviderInstance.from_dict(result)
-
-
-def test_manifest_features_merge_into_supported_features() -> None:
-    """Features declared in the manifest are supported next to the ones passed at setup."""
-    provider = _make_base_provider(
-        manifest_features={ProviderFeature.AUDIO_SOURCE},
-        supported_features={ProviderFeature.SCROBBLE},
-    )
-    assert provider.supported_features == {ProviderFeature.AUDIO_SOURCE, ProviderFeature.SCROBBLE}
-    assert provider.supports_feature(ProviderFeature.AUDIO_SOURCE)
-    assert _make_base_provider(
-        manifest_features={ProviderFeature.AUDIO_SOURCE}
-    ).supported_features == {ProviderFeature.AUDIO_SOURCE}
 
 
 def test_default_name_uses_instance_number_fallback() -> None:

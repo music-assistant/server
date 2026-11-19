@@ -40,9 +40,7 @@ def _provider(asset_id: str | None = ASSET_ID) -> ARDAudiothek:
     """Return a signed in provider whose API knows the given asset id for every episode."""
     config = Mock(instance_id="ard_audiothek--test", enabled=True)
     config.get_value.side_effect = lambda key, default=None: CONFIG.get(key, default)
-    provider = ARDAudiothek(
-        Mock(), Mock(domain="ard_audiothek", features=set()), config, SUPPORTED_FEATURES
-    )
+    provider = ARDAudiothek(Mock(), Mock(domain="ard_audiothek"), config, SUPPORTED_FEATURES)
     provider.get_setup_value = Mock(  # type: ignore[method-assign]
         side_effect=lambda key, default=None: (
             "refresh-token" if key == CONF_REFRESH_TOKEN else default
@@ -75,9 +73,7 @@ def _setup_provider(setup_data: dict[str, Any]) -> ARDAudiothek:
     """Return a provider with the given setup data, for testing the client creation."""
     config = Mock(instance_id="ard_audiothek--test", enabled=True)
     config.get_value.side_effect = lambda key, default=None: CONFIG.get(key, default)
-    provider = ARDAudiothek(
-        Mock(), Mock(domain="ard_audiothek", features=set()), config, SUPPORTED_FEATURES
-    )
+    provider = ARDAudiothek(Mock(), Mock(domain="ard_audiothek"), config, SUPPORTED_FEATURES)
     provider.get_setup_value = Mock(  # type: ignore[method-assign]
         side_effect=lambda key, default=None: setup_data.get(key, default)
     )
@@ -386,7 +382,7 @@ async def test_library_only_with_an_account(refresh_token: str | None) -> None:
     config = Mock(instance_id="ard_audiothek--test", enabled=True)
     config.get_value.side_effect = lambda key, default=None: CONFIG.get(key, default)
 
-    provider = await setup(mass, Mock(domain="ard_audiothek", features=set()), config)
+    provider = await setup(mass, Mock(domain="ard_audiothek"), config)
 
     for feature in (ProviderFeature.LIBRARY_PODCASTS, ProviderFeature.LIBRARY_PODCASTS_EDIT):
         assert (feature in provider.supported_features) is bool(refresh_token)

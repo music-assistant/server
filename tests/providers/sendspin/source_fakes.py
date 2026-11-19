@@ -1,20 +1,20 @@
-"""Shared fakes for the Sendspin Source provider tests."""
+"""Fakes for the tests of the line-in sources of the Sendspin provider."""
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
-import pytest
-from music_assistant_models.enums import PlaybackState, ProviderFeature
+from music_assistant_models.enums import PlaybackState
 
-from music_assistant.providers.sendspin_source.provider import SendspinSourceProvider
+from music_assistant.providers.sendspin.sources import SendspinSources
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from music_assistant.mass import MusicAssistant
+    from music_assistant.providers.sendspin.provider import SendspinProvider
 
 
 class _FakeSourceRole:
@@ -278,23 +278,15 @@ class _FakeConfigController:
 
 
 class _FakeMass:
-    """MusicAssistant stand-in providing loop, task creation and provider lookup."""
+    """MusicAssistant stand-in providing loop and task creation."""
 
-    cache = None
-
-    def __init__(self, sendspin_provider: Any) -> None:
+    def __init__(self) -> None:
         self.loop = asyncio.get_running_loop()
         self.players = _FakePlayers()
         self.player_queues = _FakePlayerQueues()
         self.config = _FakeConfigController()
-        self._sendspin_provider = sendspin_provider
         self._timers: dict[str, asyncio.TimerHandle] = {}
         self._tasks: dict[str, asyncio.Task[Any]] = {}
-
-    def get_provider(self, domain: str) -> Any:
-        if domain == "sendspin":
-            return self._sendspin_provider
-        return None
 
     def create_task(
         self,
@@ -354,86 +346,59 @@ class _FakeMass:
             task.cancel()
 
 
-class _FakeConfig:
-    """
-    Provider config stand-in.
-
-    Values default to unset, as they are at load time: a provider's own entries are
-    only resolved once its instance is loaded, so nothing has been parsed yet.
-    """
-
-    instance_id = "sendspin_source"
-    name = "Sendspin Source"
-
-    def __init__(self, values: dict[str, Any] | None = None) -> None:
-        self.values = values or {}
-
-    def get_value(self, key: str, default: Any = None) -> Any:
-        return self.values.get(key, default)
-
-
-async def make_provider(
-    clients: list[_FakeClient], config_values: dict[str, Any] | None = None
-) -> SendspinSourceProvider:
-    """Build a provider wired to fake mass/server_api around the given clients."""
-    server_api = _FakeServerApi(clients)
-    sendspin_provider = type("FakeSendspinProvider", (), {"server_api": server_api})()
-    # Constructed rather than hand-populated, so a new instance attribute cannot go
-    # missing here and take the fake out of step with the provider.
-    provider = SendspinSourceProvider(
-        cast("MusicAssistant", _FakeMass(sendspin_provider)),
-        cast(
-            "Any",
-            SimpleNamespace(domain="sendspin_source", features={ProviderFeature.AUDIO_SOURCE}),
-        ),
-        cast("Any", _FakeConfig(config_values)),
+async def make_sources(clients: list[_FakeClient]) -> SendspinSources:
+    """Build the started sources of a fake Sendspin provider serving the given clients."""
+    provider = SimpleNamespace(
+        mass=_FakeMass(),
+        logger=logging.getLogger(__name__),
+        server_api=_FakeServerApi(clients),
+        instance_id="sendspin",
+        domain="sendspin",
+        name="Sendspin",
+        translation_owner="provider.sendspin",
     )
+    # Constructed rather than hand-populated, so a new instance attribute cannot go
+    # missing here and take the fake out of step with the sources.
+    sources = SendspinSources(cast("SendspinProvider", provider))
     for client in clients:
-        attach_client(provider, client.client_id, client.client_id)
-    await provider.loaded_in_mass()
-    return provider
+        attach_client(sources, client.client_id, client.client_id)
+    sources.start()
+    return sources
 
 
 def attach_client(
-    provider: SendspinSourceProvider, client_id: str, player_id: str, **player: Any
+    sources: SendspinSources, client_id: str, player_id: str, **player: Any
 ) -> _FakePlayer:
     """
     Attach the Sendspin protocol of a client to a player, which is created.
 
-    :param provider: The provider whose fake players controller holds it.
+    :param sources: The sources whose fake players controller holds it.
     :param client_id: The client id, which is the id of its protocol.
     :param player_id: The id of the player: the client id for a pre-split record, else
         an id of its own.
     :param player: More attributes of the player, such as its display name.
     """
-    players = get_players(provider)
+    players = get_players(sources)
     attached = players.players[player_id] = _FakePlayer(player_id, **player)
-    players.protocols[client_id] = _FakeProtocol(client_id, get_config(provider), attached)
+    players.protocols[client_id] = _FakeProtocol(client_id, get_config(sources), attached)
     return attached
 
 
-def get_config(provider: SendspinSourceProvider) -> _FakeConfigController:
-    """Return the fake config controller the given provider is wired to."""
-    return cast("_FakeConfigController", provider.mass.config)
+def get_config(sources: SendspinSources) -> _FakeConfigController:
+    """Return the fake config controller the given sources are wired to."""
+    return cast("_FakeConfigController", sources.mass.config)
 
 
-def get_queues(provider: SendspinSourceProvider) -> _FakePlayerQueues:
-    """Return the fake queue controller the given provider is wired to."""
-    return cast("_FakePlayerQueues", provider.mass.player_queues)
+def get_queues(sources: SendspinSources) -> _FakePlayerQueues:
+    """Return the fake queue controller the given sources are wired to."""
+    return cast("_FakePlayerQueues", sources.mass.player_queues)
 
 
-def get_server_api(provider: SendspinSourceProvider) -> _FakeServerApi:
-    """Return the fake server api the given provider is wired to."""
-    sendspin = cast("Any", provider.mass.get_provider("sendspin"))
-    return cast("_FakeServerApi", sendspin.server_api)
+def get_server_api(sources: SendspinSources) -> _FakeServerApi:
+    """Return the fake server api the given sources are wired to."""
+    return cast("_FakeServerApi", sources.provider.server_api)
 
 
-def get_players(provider: SendspinSourceProvider) -> _FakePlayers:
-    """Return the fake players controller the given provider is wired to."""
-    return cast("_FakePlayers", provider.mass.players)
-
-
-@pytest.fixture
-def fake_client() -> _FakeClient:
-    """Return a connected client with an active source role."""
-    return _FakeClient("client-1", name="Turntable")
+def get_players(sources: SendspinSources) -> _FakePlayers:
+    """Return the fake players controller the given sources are wired to."""
+    return cast("_FakePlayers", sources.mass.players)
