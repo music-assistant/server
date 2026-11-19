@@ -1702,12 +1702,10 @@ def test_the_state_of_a_set_follows_its_speakers_while_they_play() -> None:
 
 
 @pytest.mark.parametrize("command", ["play", "play_media"])
-async def test_a_set_plays_on_its_speakers_when_its_apple_tv_does_not_wake(command: str) -> None:
-    """
-    A wake for playback that fails leaves the set playing on its speakers.
-
-    A power command or a wake of its own still raises, and so does the wake of a plain Apple TV.
-    """
+async def test_a_set_whose_apple_tv_does_not_wake_fails_to_play_as_a_plain_apple_tv(
+    command: str,
+) -> None:
+    """A wake for playback that fails raises for a set just as for a plain Apple TV."""
     room, speaker = _make_set_player()
     plain = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "credentials"})
     speaker.stream = MagicMock(running=True, session=MagicMock())
@@ -1723,11 +1721,11 @@ async def test_a_set_plays_on_its_speakers_when_its_apple_tv_does_not_wake(comma
         patch.object(AirPlayControlPlayer, "_stream_active", True),
     ):
         args = (MagicMock(),) if command == "play_media" else ()
-        await getattr(room, command)(*args)
-        with pytest.raises(PlayerCommandFailed, match="no answer"):
-            await getattr(plain, command)(*args)
+        for apple_tv in (room, plain):
+            with pytest.raises(PlayerCommandFailed, match="no answer"):
+                await getattr(apple_tv, command)(*args)
+        # and so do its power and a wake asked for itself, such as for a dashboard
         with pytest.raises(PlayerCommandFailed, match="no answer"):
             await room.power(True)
-        # a wake asked for itself, such as for a dashboard, still raises
         with pytest.raises(PlayerCommandFailed, match="no answer"):
             await room.wake()

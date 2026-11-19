@@ -855,18 +855,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
         await self._wait_for_wake()
 
     async def _wake_before_play(self) -> None:
-        """Wake the device before playback; a set plays on its speakers when it does not wake."""
+        """Wake the device before playback, unless its set plays on its HomePods only."""
         # a set that plays on its speakers only has no session to wake its device for
-        if self.homepods_only:
-            return
-        try:
+        if not self.homepods_only:
             await self._wake_for_playback()
-        except PlayerCommandFailed as err:
-            if not self.carries_set:
-                raise
-            self.logger.warning(
-                "Could not wake %s, playing on its speakers: %s", self.display_name, err
-            )
 
     async def _wait_for_wake(self) -> None:
         """Wait briefly for a pushed powered-on state."""
