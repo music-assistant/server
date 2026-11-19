@@ -283,8 +283,8 @@ def parse_artist(
     return artist
 
 
-def _map_release_type(sonic_album: SonicAlbum):
-    """ Map a release_type into AlbumType """
+def _map_release_type(sonic_album: SonicAlbum) -> AlbumType | None:
+    """Map a release_type into AlbumType."""
     if sonic_album.release_types:
         # Convert release_types to lowercase, for comparisons
         lower_types = [item.lower() for item in sonic_album.release_types]
@@ -299,6 +299,7 @@ def _map_release_type(sonic_album: SonicAlbum):
         ):
             if ma_album_type.value in lower_types:
                 return ma_album_type
+    return None
 
 
 def parse_album(
