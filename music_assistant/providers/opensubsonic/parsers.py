@@ -368,8 +368,6 @@ def parse_album(
     if mbid := clean_mbid(sonic_album.music_brainz_id, f"album {sonic_album.name}", logger):
         album.mbid = mbid
 
-    various_artist_album: bool = False
-
     if sonic_album.artist_id:
         album.artists.append(
             ItemMapping(
@@ -379,8 +377,6 @@ def parse_album(
                 name=sonic_album.artist or UNKNOWN_ARTIST,
             )
         )
-        if sonic_album.artist == "Various Artists":
-            various_artist_album = True
     elif not sonic_album.artists:
         logger.info(
             "Unable to find an artist ID for album '%s' with ID '%s'.",
@@ -415,7 +411,7 @@ def parse_album(
     album_type = _map_release_type(sonic_album)
 
     if (album_type is None or album_type == AlbumType.ALBUM) and (
-        sonic_album.is_compilation or various_artist_album
+        sonic_album.is_compilation or sonic_album.artist == "Various Artists"
     ):
         album.album_type = AlbumType.COMPILATION
     elif album_type is not None:
