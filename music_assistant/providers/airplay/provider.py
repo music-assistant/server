@@ -64,6 +64,7 @@ from .constants import (
     StreamingProtocol,
 )
 from .control_player import AirPlayControlPlayer
+from .control_relay import RELAY_MARKER
 from .dashboard import AirPlayDashboards
 from .helpers import (
     CLI_CLOCK_OFFSET_NS,
@@ -280,6 +281,8 @@ class AirPlayProvider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
+        if info is not None and info.decoded_properties.get(RELAY_MARKER) == "1":
+            return
         if (info and info.type == COMPANION_DISCOVERY_TYPE) or name.endswith(
             COMPANION_DISCOVERY_TYPE
         ):
@@ -319,6 +322,8 @@ class AirPlayProvider(PlayerProvider):
         if player := cast("AirPlayPlayer | None", self.get_protocol(protocol_id)):
             # update the latest discovery info for existing player
             player.set_discovery_info(info, display_name)
+            if player.stream is not None:
+                self.mass.create_task(player.stream.refresh_control_relay())
             # only control players can ever be dashboard endpoints
             if isinstance(player, AirPlayControlPlayer):
                 self.dashboards.reconcile(protocol_id)
