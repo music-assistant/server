@@ -29,6 +29,7 @@ class MusicQuizAnswerType(StrEnum):
 
     MULTIPLE_CHOICE = "multiple_choice"
     TIMELINE = "timeline"
+    HINT_TEXT = "hint_text"
 
 
 class MusicQuizDifficulty(StrEnum):
@@ -37,6 +38,22 @@ class MusicQuizDifficulty(StrEnum):
     EASY = "easy"
     NORMAL = "normal"
     HARD = "hard"
+
+
+class TitleRevealHintSpeed(StrEnum):
+    """How much of the title the title-reveal quiz type uncovers over a round."""
+
+    SLOW = "slow"
+    NORMAL = "normal"
+    FAST = "fast"
+
+
+class TitleRevealTypoTolerance(StrEnum):
+    """How many typos the title-reveal quiz type accepts in a guess."""
+
+    STRICT = "strict"
+    NORMAL = "normal"
+    LENIENT = "lenient"
 
 
 class TimelineBonusMode(StrEnum):
@@ -100,9 +117,13 @@ class MusicQuizConfig(DataClassDictMixin):
     # trivia specific; other quiz types ignore this
     language: str = DEFAULT_TRIVIA_LANGUAGE
     play_reveal_audio: bool = True
-    # timeline specific; other answer types ignore these
+    # timeline specific (title reveal also uses artist_bonus_mode); other answer types
+    # ignore these
     artist_bonus_mode: TimelineBonusMode = TimelineBonusMode.OFF
     title_bonus_mode: TimelineBonusMode = TimelineBonusMode.OFF
+    # title-reveal specific; other quiz types ignore these
+    hint_speed: TitleRevealHintSpeed = TitleRevealHintSpeed.NORMAL
+    typo_tolerance: TitleRevealTypoTolerance = TitleRevealTypoTolerance.NORMAL
 
 
 @dataclass
@@ -375,6 +396,70 @@ class TimelineRoundState(QuizRoundAnswerState):
     finished_at: dict[str, float] = field(default_factory=dict)
     results: dict[str, TimelineAnswerResult] = field(default_factory=dict)
     revealed: bool = False
+
+
+@dataclass
+class HintTextAttempt(DataClassDictMixin):
+    """A player's free-text guess in a hint-text round."""
+
+    text: str
+    submitted_at: float
+    is_correct: bool
+    # a wrong guess that missed the accepted typo budget by a single edit
+    is_close: bool = False
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        forbid_extra_keys = True
+
+
+@dataclass
+class HintTextSolve(DataClassDictMixin):
+    """A player's correct guess in a hint-text round."""
+
+    solved_at: float
+    # time-based points of the title guess, without the bonuses below
+    points: int
+    first_bonus: int = 0
+    # the artist bonus is offered once the title is solved; done once answered or skipped
+    artist_done: bool = False
+    artist_guess: str | None = None
+    artist_correct: bool = False
+    artist_points: int = 0
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        forbid_extra_keys = True
+
+
+@dataclass
+class HintTextRoundState(QuizRoundAnswerState):
+    """Persisted state for a hint-text round."""
+
+    answer_type: Literal[MusicQuizAnswerType.HINT_TEXT] = field(
+        default=MusicQuizAnswerType.HINT_TEXT,
+        init=False,
+    )
+    # the solution, its reveal order and the accepted answers are protected
+    # until reveal; only the characters uncovered so far are public
+    solution: str
+    accepted_answers: list[str]
+    allowed_typos: int
+    reveal_order: list[int]
+    # fraction of the audible answer window after which each hint is uncovered
+    hint_fractions: list[float]
+    # accepted artist names; empty when the round offers no artist bonus
+    artist_answers: list[str] = field(default_factory=list)
+    artist_label: str | None = None
+    # set when the round starts
+    audio_started_at: float | None = None
+    deadline: float | None = None
+    hint_times: list[float] = field(default_factory=list)
+    revealed_count: int = 0
+    attempts: dict[str, list[HintTextAttempt]] = field(default_factory=dict)
+    solves: dict[str, HintTextSolve] = field(default_factory=dict)
 
 
 @dataclass

@@ -38,6 +38,7 @@ def _provider(*, wanted: bool = True) -> tuple[SendspinProvider, MagicMock]:
     provider._pending_unregisters = {}
     provider._client_event_versions = {}
     provider._client_event_task_counts = {}
+    provider._multi_channel_speakers = {}
     provider._await_client_hello = AsyncMock(return_value=True)  # type: ignore[method-assign]
     provider._auto_trust_guest_access = AsyncMock()  # type: ignore[method-assign]
     provider._apply_hass_esphome_enrichment = AsyncMock()  # type: ignore[method-assign]
@@ -130,6 +131,7 @@ def _bridge_client(*, wanted: bool) -> tuple[SendspinPlayer, list[Any]]:
     protocol._player = None
     protocol._attr_underlying_protocol_id = "apaabbccddeeff"
     protocol._on_detach_callbacks = []
+    protocol._provider = MagicMock()
     protocol.playback_session = MagicMock(close=AsyncMock())
     protocol.logger = logging.getLogger("test.sendspin.client_events")
     tasks: list[Any] = []

@@ -8,6 +8,7 @@ import platform
 import plistlib
 import re
 import time
+from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any, Final
 
@@ -20,7 +21,7 @@ from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import format_ip_for_url
 
-from .constants import AIRPLAY_BUFFER_DEPTH_DEFAULTS
+from .constants import AIRPLAY_BUFFER_DEPTH_DEFAULTS, AIRPLAY_DISCOVERY_TYPE
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import PlayerConfig
@@ -251,6 +252,50 @@ def get_decoded_property(discovery_info: AsyncServiceInfo, key: str) -> str | No
         if prop_key.casefold() == folded_key:
             return prop_value
     return None
+
+
+@dataclass(frozen=True)
+class SetMembership:
+    """The place of an AirPlay device in the home theater set of an Apple TV."""
+
+    # id of the set, shared by the Apple TV and its speakers
+    set_id: str
+    # 0 for the Apple TV that carries the set, above 0 for one of its speakers
+    position: int
+    # number of devices in the set, the Apple TV included
+    size: int
+    # name of the room the set is in
+    name: str | None
+
+
+def parse_set_membership(discovery_info: AsyncServiceInfo | None) -> SetMembership | None:
+    """
+    Return the place of a device in the home theater set of an Apple TV, None outside one.
+
+    Only the keys that stay the same while any sender plays to the set are read, so the
+    result does not change with a session.
+
+    :param discovery_info: The _airplay._tcp record of the device.
+    """
+    if discovery_info is None or discovery_info.type != AIRPLAY_DISCOVERY_TYPE:
+        return None
+    set_id = get_decoded_property(discovery_info, "psgid")
+    if not set_id or get_decoded_property(discovery_info, "psgtp") != "1":
+        return None
+    try:
+        position = int(get_decoded_property(discovery_info, "pgmid") or "")
+    except ValueError:
+        return None
+    try:
+        size = int(get_decoded_property(discovery_info, "psgsz") or 0)
+    except ValueError:
+        size = 0
+    return SetMembership(
+        set_id=set_id.upper(),
+        position=position,
+        size=size,
+        name=get_decoded_property(discovery_info, "gpn") or None,
+    )
 
 
 def supports_companion_pairing(discovery_info: AsyncServiceInfo | None) -> bool:

@@ -211,10 +211,22 @@ def use_real_bridge_holders(sendspin_provider: Any) -> None:
     """
     Give a stand-in of the Sendspin provider its real record of which bridge holds a client.
 
+    With it comes the real lock under which the bridges of a player hand its output over.
+
     :param sendspin_provider: The mocked or fake Sendspin provider.
     """
     sendspin_provider._bridge_holders = {}
-    for name in ("hold_bridge_client", "get_bridge_holder", "release_bridge_client"):
+    sendspin_provider._bridge_waiters = {}
+    sendspin_provider._bridge_locks = {}
+    for name in (
+        "hold_bridge_client",
+        "get_bridge_holder",
+        "release_bridge_client",
+        "wait_for_bridge_client",
+        "stop_waiting_for_bridge_client",
+        "wake_bridge_waiters",
+        "bridge_lock",
+    ):
         method = MethodType(getattr(SendspinProvider, name), sendspin_provider)
         setattr(sendspin_provider, name, method)
 
@@ -361,7 +373,10 @@ def use_api_command_registry(mass: MagicMock, *command_owners: object) -> None:
                 continue
             if hasattr(handler := getattr(owner, attr_name), "api_cmd"):
                 mass.register_api_command(
-                    handler.api_cmd, handler, required_scope=handler.api_required_scope
+                    handler.api_cmd,
+                    handler,
+                    required_scope=handler.api_required_scope,
+                    allow_impersonation=handler.api_allow_impersonation,
                 )
 
 
@@ -794,6 +809,7 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "player_id": player_id,
         "provider": "test_prov",
         "player_type": PlayerType.PLAYER,
+        "channel_layout": None,
         "now": 1000.0,
         "previous_state": make_player_state(player_id),
         "enabled": True,

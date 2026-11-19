@@ -5,12 +5,10 @@ import base64
 import logging
 import shutil
 import struct
-import subprocess
 import time
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from io import BytesIO
-from itertools import pairwise
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -41,6 +39,11 @@ from music_assistant.providers.apple_music.live_radio import (
 from music_assistant.providers.apple_music.parsers import parse_station
 from music_assistant.providers.apple_music.provider import AppleMusicProvider
 from music_assistant.providers.apple_music.streaming import LicenseRefusedError
+from tests.providers.apple_music.cbcs_segments import (
+    encrypt_init,
+    encrypt_segment,
+    fragmented_aac,
+)
 
 MODULE = "music_assistant.providers.apple_music.live_radio"
 MASTER = """#EXTM3U
@@ -182,7 +185,7 @@ class _Live:
                 async for chunk in audio_input:
                     run["input"].append(chunk)
                     await output.put(chunk)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - mirrors the real decoder, which captures any input error
                 failure.append(err)
             await output.put(None)
 
@@ -289,57 +292,12 @@ async def test_a_title_shows_when_its_audio_plays(monkeypatch: pytest.MonkeyPatc
     assert live.details.data["pending_metadata"] == []
 
 
-def _fragmented_aac(tmp_path: Path) -> tuple[bytes, list[bytes]]:
-    """Return the init segment and three segments of a 6 second clear AAC fMP4 from ffmpeg."""
-    path = tmp_path / "clear.mp4"
-    subprocess.run(  # noqa: S603
-        [  # noqa: S607
-            "ffmpeg",
-            "-loglevel",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=440:sample_rate=48000:duration=6",
-            "-ac",
-            "2",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "256k",
-            "-f",
-            "mp4",
-            "-movflags",
-            "+frag_keyframe+empty_moov+default_base_moof",
-            "-frag_duration",
-            "2000000",
-            str(path),
-        ],
-        check=True,
-    )
-    data = path.read_bytes()
-    boxes: list[tuple[bytes, bytes]] = []
-    position = 0
-    while position < len(data):
-        size, name = struct.unpack(">I4s", data[position : position + 8])
-        boxes.append((name, data[position : position + size]))
-        position += size
-    init = b"".join(box for name, box in boxes if name in (b"ftyp", b"moov"))
-    fragments = [
-        moof + mdat
-        for (first, moof), (second, mdat) in pairwise(boxes)
-        if (first, second) == (b"moof", b"mdat")
-    ]
-    # ffmpeg may close with a short fragment, a segment can hold more than one
-    return init, [*fragments[:2], b"".join(fragments[2:])]
-
-
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
 async def test_a_key_change_through_real_ffmpeg_keeps_the_pcm_continuous(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The first ffmpeg flushes all of its audio at the key change, and none is left over."""
-    init, fragments = _fragmented_aac(tmp_path)
+    init, fragments = fragmented_aac(tmp_path)
     assert len(fragments) == 3
     live = _Live(
         [_media(10, ["A"] * 3), _media(10, ["A"] * 3 + ["B"] * 3)], monkeypatch, real_decoder=True
@@ -381,6 +339,29 @@ async def test_a_key_change_through_real_ffmpeg_keeps_the_pcm_continuous(
     assert per_decoder[0] / second_per_second == pytest.approx(6.0, abs=0.1)
     assert len(processes) == 2
     assert all(process.returncode is not None for process in processes)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+async def test_a_station_with_whole_sample_subsamples_plays(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Segments with a subsample per sample, like those of Apple Music Chill, decode in full."""
+    init, fragments = fragmented_aac(tmp_path)
+    live = _Live([_media(10, ["A"] * 3)], monkeypatch, real_decoder=True)
+    live.segments = {"init_A": encrypt_init(init)}
+    for index, fragment in enumerate(fragments):
+        live.segments[f"s{10 + index}"] = encrypt_segment(fragment)
+    second_per_second = 48000 * 2 * 4
+
+    pcm = 0
+    stream = live.radio.get_audio_stream(live.details)
+    async for chunk in stream:
+        pcm += len(chunk)
+        if pcm >= 5 * second_per_second:
+            break
+    await stream.aclose()
+
+    assert pcm >= 5 * second_per_second
 
 
 async def test_an_error_of_the_input_keeps_its_own_type(monkeypatch: pytest.MonkeyPatch) -> None:

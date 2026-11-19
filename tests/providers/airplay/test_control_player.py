@@ -38,6 +38,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_DISCOVERY_TYPE,
     COMPANION_DISCOVERY_TYPE,
     CONF_COMPANION_CREDENTIALS,
+    CONF_HOMEPODS_ONLY,
     CONF_MRP_CREDENTIALS,
     CONF_NATIVE_MRP_CREDENTIALS,
     EXTERNAL_ARTWORK_PATH_PREFIX,
@@ -1611,3 +1612,120 @@ async def test_an_attach_after_a_detach_connects_the_control_services_again() ->
         await _bind()
 
     connect.assert_awaited_once()
+
+
+def _make_set_player(*, homepods_only: bool = False) -> tuple[AirPlayControlPlayer, MagicMock]:
+    """
+    Create an Apple TV that carries a home theater set, and the speaker of that set.
+
+    :param homepods_only: The stored value of the option to play on the HomePods only.
+    """
+    player = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "credentials"})
+    cast("MagicMock", player.airplay_discovery_info).decoded_properties.update(
+        {"psgid": "3F2A9C1E", "psgsz": "2", "psgtp": "1", "pgmid": "0", "gpn": "Study"}
+    )
+    cast("MagicMock", player.mass.config).get_protocol_value.side_effect = (
+        lambda _protocol_id, key, default=None: (
+            homepods_only if key == CONF_HOMEPODS_ONLY else default
+        )
+    )
+    speaker = MagicMock(stream=None)
+    cast("MagicMock", player.provider).get_set_speakers.return_value = [speaker]
+    return player, speaker
+
+
+@pytest.mark.parametrize("command", ["play", "play_media"])
+@pytest.mark.parametrize("homepods_only", [False, True])
+async def test_a_set_wakes_its_apple_tv_unless_it_plays_on_its_homepods_only(
+    command: str, homepods_only: bool
+) -> None:
+    """
+    A set has the power control and the wake of its Apple TV, which play leaves out.
+
+    With the HomePods only there is no session to wake the Apple TV for, and no power
+    control the players controller could switch it on with before playback.
+    """
+    player, speaker = _make_set_player(homepods_only=homepods_only)
+    player._attr_powered = False
+    # resume reaches the stream of the set, which plays on its speaker
+    speaker.stream = MagicMock(running=True, session=MagicMock())
+
+    assert (PlayerFeature.POWER in player.supported_features) is not homepods_only
+    with (
+        patch.object(AirPlayControlPlayer, "_wake_for_playback", AsyncMock()) as wake,
+        patch.object(AirPlayPlayer, command, AsyncMock()) as base_command,
+    ):
+        if command == "play":
+            await player.play()
+        else:
+            await player.play_media(MagicMock())
+
+    assert wake.await_count == (0 if homepods_only else 1)
+    base_command.assert_awaited_once()
+
+
+async def test_the_volume_of_a_set_is_not_the_volume_of_its_apple_tv() -> None:
+    """The set's volume never goes to the Apple TV, nor does the Apple TV's volume come back."""
+    player, _ = _make_set_player()
+    device = MagicMock()
+    device.audio.set_volume = AsyncMock()
+
+    with patch.object(player, "_device_for_feature", return_value=device):
+        await player.volume_set(30)
+        await player.volume_mute(True)
+    player._handle_volume_update("companion", 70)
+
+    device.audio.set_volume.assert_not_awaited()
+    assert player.volume_level == 30
+    assert player.volume_muted is True
+
+
+def test_the_state_of_a_set_follows_its_speakers_while_they_play() -> None:
+    """While its speaker streams, the Apple TV going to standby or playing an app is ignored."""
+    player, speaker = _make_set_player()
+    speaker.stream = MagicMock(running=True, session=MagicMock())
+    player._attr_powered = True
+    player._attr_playback_state = PlaybackState.PLAYING
+    media = MagicMock()
+    player._attr_current_media = media
+
+    with patch.object(player, "update_state"):
+        player._handle_power_update("companion", PowerState.Off)
+        player._handle_playing_update(
+            Playing(device_state=DeviceState.Playing, title="An app on the TV")
+        )
+
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.current_media is media
+    # as for a plain Apple TV, a sleep reported while Music Assistant streams is ignored
+    assert player.powered is True
+
+
+@pytest.mark.parametrize("command", ["play", "play_media"])
+async def test_a_set_whose_apple_tv_does_not_wake_fails_to_play_as_a_plain_apple_tv(
+    command: str,
+) -> None:
+    """A wake for playback that fails raises for a set just as for a plain Apple TV."""
+    room, speaker = _make_set_player()
+    plain = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "credentials"})
+    speaker.stream = MagicMock(running=True, session=MagicMock())
+    device = MagicMock()
+    device.power.turn_on = AsyncMock(side_effect=pyatv_exceptions.CommandError("no answer"))
+    for apple_tv in (room, plain):
+        apple_tv._attr_powered = False
+
+    with (
+        patch.object(AirPlayControlPlayer, "_device_for_power_feature", return_value=device),
+        patch.object(AirPlayPlayer, "play", AsyncMock()),
+        patch.object(AirPlayPlayer, "play_media", AsyncMock()),
+        patch.object(AirPlayControlPlayer, "_stream_active", True),
+    ):
+        args = (MagicMock(),) if command == "play_media" else ()
+        for apple_tv in (room, plain):
+            with pytest.raises(PlayerCommandFailed, match="no answer"):
+                await getattr(apple_tv, command)(*args)
+        # and so do its power and a wake asked for itself, such as for a dashboard
+        with pytest.raises(PlayerCommandFailed, match="no answer"):
+            await room.power(True)
+        with pytest.raises(PlayerCommandFailed, match="no answer"):
+            await room.wake()

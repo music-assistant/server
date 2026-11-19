@@ -32,7 +32,7 @@ async def test_attaching_a_new_device_creates_the_config_of_its_player_and_proto
     sonos = await scenario.add_provider("sonos")
     # not the default type, so a stored type can only come from what the protocol reports
     speaker = sonos.protocol(
-        "RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, type=PlayerType.STEREO_PAIR
+        "RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, type=PlayerType.MULTI_CHANNEL
     )
 
     await scenario.register(speaker)
@@ -43,7 +43,7 @@ async def test_attaching_a_new_device_creates_the_config_of_its_player_and_proto
     assert player_record["enabled"] is True
     assert player_record["default_name"] == "Kitchen"
     assert player_record["name"] is None
-    assert player_record["player_type"] == PlayerType.STEREO_PAIR
+    assert player_record["player_type"] == PlayerType.MULTI_CHANNEL
     protocol_record = scenario.mass.config.get_protocol_record("RINCON_KITCHEN")
     assert protocol_record is not None
     assert protocol_record["player_id"] == player_id

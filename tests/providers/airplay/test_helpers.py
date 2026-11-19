@@ -8,8 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import ClientError
 
+from music_assistant.providers.airplay.constants import (
+    AIRPLAY_DISCOVERY_TYPE,
+    RAOP_DISCOVERY_TYPE,
+)
 from music_assistant.providers.airplay.helpers import (
     _CLI_BINARY_CHECK_TIMEOUT,
+    SetMembership,
     cli_clock_time,
     default_buffer_depth,
     get_cli_binary,
@@ -17,6 +22,7 @@ from music_assistant.providers.airplay.helpers import (
     get_model_info,
     is_apple_device,
     is_apple_tv,
+    parse_set_membership,
     probe_audio_formats,
     serialize_txt_records,
     supports_airplay2,
@@ -284,3 +290,60 @@ def test_home_accessory_is_recognised_as_apple_receiver() -> None:
     assert (manufacturer, model) == ("Apple", "HomeView")
     assert is_apple_device(manufacturer, model)
     assert not is_apple_tv(manufacturer, model)
+
+
+# The TXT keys of an Apple TV and its HomePod, idle and while senders play to the set
+# (ids made up); gid, pgid, igl, gcgl and pgcgl change with a session.
+_SET_ID = "3F2A9C1E-7B44-4D0E-9A61-2C8D5E7F1A30"
+_SET_KEYS = {"psgid": _SET_ID, "psgsz": "2", "psgtp": "1", "pgm": "3", "gpn": "Study"}
+_APPLE_TV_IDLE = {"gid": _SET_ID, "igl": "1", "gcgl": "1", "flags": "0x644", "pgmid": "0"}
+_HOMEPOD_IDLE = {"gid": _SET_ID, "pgid": _SET_ID, "igl": "0", "flags": "0xa0c04", "pgmid": "1"}
+_OUR_GROUP = "6D0A1F2B-3C4D-4E5F-8A9B-0C1D2E3F4A5B"
+_APPLE_SENDER_GROUP = "9E8D7C6B-5A49-4382-9170-6F5E4D3C2B1A"
+
+
+def _txt_record(service_type: str, properties: dict[str, str]) -> MagicMock:
+    """Return a record of the given type that carries the given TXT keys."""
+    return MagicMock(type=service_type, decoded_properties=properties)
+
+
+@pytest.mark.parametrize(
+    ("properties", "position"),
+    [
+        (_APPLE_TV_IDLE, 0),
+        (_HOMEPOD_IDLE, 1),
+        # our session to the HomePod
+        ({**_HOMEPOD_IDLE, "gid": _OUR_GROUP, "pgid": _OUR_GROUP, "flags": "0x1a0c04"}, 1),
+        # an Apple sender playing to the room
+        (
+            {**_APPLE_TV_IDLE, "gid": _APPLE_SENDER_GROUP, "pgid": _APPLE_SENDER_GROUP, "igl": "0"},
+            0,
+        ),
+        ({**_HOMEPOD_IDLE, "gid": _APPLE_SENDER_GROUP, "pgid": _APPLE_SENDER_GROUP}, 1),
+    ],
+)
+def test_the_set_of_a_device_stays_the_same_whoever_plays_to_it(
+    properties: dict[str, str], position: int
+) -> None:
+    """The set is read from the keys that stay put, whatever session the devices are in."""
+    record = _txt_record(AIRPLAY_DISCOVERY_TYPE, {**_SET_KEYS, **properties})
+
+    assert parse_set_membership(record) == SetMembership(_SET_ID, position, 2, "Study")
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        # an Apple TV without a set, and a speaker of another brand
+        _txt_record(AIRPLAY_DISCOVERY_TYPE, {"flags": "0x644", "model": "AppleTV14,1"}),
+        _txt_record(AIRPLAY_DISCOVERY_TYPE, {"gid": "AA:BB:CC:00:22:01", "manufacturer": "Sonos"}),
+        # the RAOP record, the same keys under another type, a set of another kind
+        _txt_record(RAOP_DISCOVERY_TYPE, {**_SET_KEYS, **_HOMEPOD_IDLE}),
+        _txt_record(AIRPLAY_DISCOVERY_TYPE, {**_SET_KEYS, **_HOMEPOD_IDLE, "psgtp": "2"}),
+        _txt_record(AIRPLAY_DISCOVERY_TYPE, {**_SET_KEYS, "pgmid": "x"}),
+        None,
+    ],
+)
+def test_a_device_outside_a_set_has_no_place_in_one(record: MagicMock | None) -> None:
+    """Only an _airplay record with the keys of an Apple TV's set names a place in one."""
+    assert parse_set_membership(record) is None

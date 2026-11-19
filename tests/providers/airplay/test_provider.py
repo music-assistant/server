@@ -58,6 +58,7 @@ def _remote_command_player(bridge_target: str | None) -> tuple[AirPlayProvider, 
     airplay_player.protocol_id = "apc43875e9e53a"
     airplay_player.player.player_id = "plc43875e9e53a"
     airplay_player.playback_state = PlaybackState.PLAYING
+    airplay_player.owner = airplay_player
     return prov, airplay_player
 
 
@@ -163,6 +164,7 @@ def _ptp_provider() -> AirPlayProvider:
     prov.logger = logging.getLogger("test.airplay.provider")
     prov._ptp_daemon = None
     prov._ptp_daemon_ready = None
+    prov._speakers = {}
     return prov
 
 
@@ -585,6 +587,7 @@ def _ap2_player() -> MagicMock:
     """Return a mock player that resolves to native AirPlay 2."""
     player = MagicMock()
     player.protocol = StreamingProtocol.AIRPLAY2
+    player.sync_offset_ms = 0
     return player
 
 
@@ -592,6 +595,7 @@ def _raop_player() -> MagicMock:
     """Return a mock player that resolves to legacy RAOP."""
     player = MagicMock()
     player.protocol = StreamingProtocol.RAOP
+    player.sync_offset_ms = 0
     return player
 
 
@@ -736,7 +740,6 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
         player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
         player.stream.start = AsyncMock(side_effect=_ack_commanded_instant)
         player.stream.buffered_route = False
-        player.config.get_value = MagicMock(return_value=0)
     session = _make_ptp_session(prov, players)
     now = 100.0
 
@@ -784,6 +787,7 @@ def _stream_player(*, ptp_daemon_ready: bool) -> MagicMock:
     player.device_info.model = "Test1,1"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(return_value=None)
+    player.device_password = None
     # Keep the arg build on its shortest path: no discovery records to expand.
     player.airplay_discovery_info = None
     player.raop_discovery_info = None
@@ -1234,3 +1238,16 @@ def test_a_failed_compat_pin_reset_is_retried_on_the_next_load() -> None:
         prov._reset_auto_pinned_compat_modes()
 
     config.set_raw_provider_config_value.assert_not_called()
+
+
+def test_a_remote_command_of_a_speaker_controls_its_set() -> None:
+    """A command a HomePod of a set reports acts on the player of the set."""
+    prov, airplay_set = _remote_command_player(None)
+    speaker = MagicMock(owner=airplay_set)
+    speaker.player = None
+
+    prov.handle_remote_command(speaker, AirPlayRemoteCommand.PAUSE)
+
+    bridge_manager = cast("MagicMock", prov._bridge_manager)
+    bridge_manager.get_transport_command_target.assert_called_once_with("apc43875e9e53a")
+    cast("MagicMock", prov.mass).players.cmd_pause.assert_called_once_with("plc43875e9e53a")

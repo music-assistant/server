@@ -38,7 +38,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers import datetime
 from music_assistant.providers.bbc_sounds.constants import Constants, ValidMenuIDs
-from music_assistant.providers.bbc_sounds.now_playing import station_programme_display
+from music_assistant.providers.bbc_sounds.now_playing import live_station_to_metadata
 
 if TYPE_CHECKING:
     from music_assistant.providers.bbc_sounds.provider import BBCSoundsProvider
@@ -74,6 +74,7 @@ class BrowseManager:
         self.provider = provider
         self.mass = self.provider.mass
         self.domain = self.provider.domain
+        self.instance_id = self.provider.instance_id
         self.menu: Menu | None = None
         self.menu_last_fetched: float | None = None
 
@@ -84,13 +85,13 @@ class BrowseManager:
         :param path: The path to browse, (e.g. provider_id://artists).
         """
         self.provider.logger.debug("Browsing path: %s", path)
-        if not path.startswith(f"{self.domain}://"):
-            raise MusicAssistantError(f"Invalid path for {self.domain} provider: {path}")
+        if not path.startswith(f"{self.instance_id}://"):
+            raise MusicAssistantError(f"Invalid path for {self.instance_id} provider: {path}")
         path_parts = path.split("://", 1)[1].split("/")
         self.provider.logger.debug("Path parts: %s", path_parts)
 
         path_parts = [
-            f"{self.domain}:/",
+            f"{self.instance_id}:/",
             *[part for part in path_parts if len(part) > 0],
         ]
         dispatch_menu = path_parts[1] if len(path_parts) > 1 else ""
@@ -330,7 +331,7 @@ class BrowseManager:
                         item_id="local",
                         translation_key="local_radio",
                         name="Local Radio",
-                        provider=self.domain,
+                        provider=self.instance_id,
                         path="/".join([*path_parts, "local"]),
                     ),
                 ]
@@ -355,10 +356,10 @@ class BrowseManager:
                             if station.network and station.network.short_title
                             else "Unknown station"
                         ),
-                        provider=self.domain,
+                        provider=self.instance_id,
                         image=MediaItemImage(
                             type=ImageType.THUMB,
-                            provider=self.domain,
+                            provider=self.instance_id,
                             path=station.network.logo_url,
                             remotely_accessible=True,
                         )
@@ -392,14 +393,14 @@ class BrowseManager:
                         item_id="local",
                         translation_key="local_radio",
                         name="Local Radio",
-                        provider=self.domain,
+                        provider=self.instance_id,
                         path="/".join([*path_parts, "local"]),
                     ),
                     BrowseFolder(
                         item_id="international",
                         translation_key="international_radio",
                         name="International Radio",
-                        provider=self.domain,
+                        provider=self.instance_id,
                         path="/".join([*path_parts, "international"]),
                     ),
                 ]
@@ -422,7 +423,7 @@ class BrowseManager:
             ):
                 # A plain Station has no programme, so its titles and synopses are empty
                 station_info = (
-                    station_programme_display(station)
+                    live_station_to_metadata(station)
                     if show_current_programme and isinstance(station, LiveStation)
                     else None
                 )
@@ -435,7 +436,7 @@ class BrowseManager:
                             [
                                 MediaItemImage(
                                     type=ImageType.THUMB,
-                                    provider=self.domain,
+                                    provider=self.instance_id,
                                     path=station.network.logo_url,
                                     remotely_accessible=True,
                                 ),
@@ -454,12 +455,12 @@ class BrowseManager:
                 Radio(
                     item_id=station.item_id,
                     name=display_name,
-                    provider=self.domain,
+                    provider=self.instance_id,
                     metadata=metadata,
                     provider_mappings={
                         ProviderMapping(
                             item_id=station.item_id,
-                            provider_domain=self.domain,
+                            provider_domain=self.provider.domain,
                             provider_instance=self.provider.instance_id,
                         )
                     },
@@ -487,7 +488,7 @@ class BrowseManager:
                 if isinstance(sub_menu, MenuItem) and sub_menu.sub_items is not None:
                     for item in sub_menu.sub_items:
                         if new_item := await self._render_browse_item(
-                            item, path_parts=[f"{self.domain}:/", *path_parts]
+                            item, path_parts=[f"{self.instance_id}:/", *path_parts]
                         ):
                             item_list.append(new_item)
                 # Playlists are returned empty in the main menu API

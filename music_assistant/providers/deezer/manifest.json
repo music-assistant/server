@@ -5,6 +5,7 @@
   "name": "Deezer",
   "description": "Stream Deezer’s full music catalogue in FLAC audio, up to 24-bit hi-res.",
   "codeowners": ["@jdaberkow"],
+  "provides": ["artist", "album", "track", "playlist", "radio", "audiobook", "podcast"],
   "credits": [
     "[deezer-python-gql](https://github.com/music-assistant/deezer-python-gql)"
   ],

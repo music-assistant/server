@@ -34,6 +34,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlayerType,
     ProtocolRole,
+    SpeakerChannel,
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import (
@@ -986,6 +987,36 @@ def test_player_output_plan_feeds_every_output_channel() -> None:
 
     assert plan.filter_params == ["pan=stereo|c0=0.5*FL+0.5*FR|c1=0.5*FL+0.5*FR"]
     assert plan.output_details.source_channel == AudioChannel.ALL
+
+
+@pytest.mark.parametrize(
+    ("channel", "pan"),
+    [
+        (SpeakerChannel.FRONT_LEFT, "pan=stereo|c0=FL|c1=FL"),
+        (SpeakerChannel.FRONT_RIGHT, "pan=stereo|c0=FR|c1=FR"),
+    ],
+)
+def test_player_output_plan_plays_the_channel_of_a_speaker(
+    channel: SpeakerChannel, pan: str
+) -> None:
+    """
+    A speaker of a multi-channel player plays its own channel, after the DSP of that player.
+
+    The configured output channels do not apply, and the player as a whole plays every
+    channel.
+    """
+    mass = MagicMock()
+    mass.players.get_output_protocol.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=True, input_gain=-2.0)
+    mass.config.get_protocol_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan("set-1", audio_format, audio_format, channel=channel)
+
+    assert plan.filter_params == ["volume=-2.0dB", pan]
+    assert plan.dsp_config_id == "set-1"
+    assert plan.output_details.source_channel is None
 
 
 def test_player_output_plan_skips_channel_selection_for_mono_source() -> None:
@@ -2255,6 +2286,7 @@ def _native_stream_handler_context(
     controller = cast("Any", object.__new__(StreamsController))
     controller._open_item_streams = {}
     controller._ended_item_streams = {}
+    controller._flow_bytes_sent = {}
     controller.mass = mass
     controller.audio = audio
     controller.logger = MagicMock()

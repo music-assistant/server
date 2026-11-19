@@ -29,6 +29,7 @@ from music_assistant.constants import (
     CONF_PLAYER_SPLIT_SESSION_ONLY,
     CONF_PLAYER_SPLIT_TREE,
     CONF_PROVIDERS,
+    CONF_SENDSPIN_ONE_OUTPUT_MIGRATED,
 )
 from music_assistant.controllers.config.migrations import migrate
 from music_assistant.mass import MusicAssistant
@@ -66,6 +67,7 @@ async def test_migrate_leaves_valid_provider_configs_alone() -> None:
         CONF_PLAYER_SPLIT_SESSION_ONLY: True,
         CONF_PLAYER_SPLIT_TREE: True,
         CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED: True,
+        CONF_SENDSPIN_ONE_OUTPUT_MIGRATED: True,
     }
     assert await migrate(data) is False
     assert "filesystem_local--1" in data[CONF_PROVIDERS]

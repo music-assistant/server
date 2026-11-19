@@ -287,7 +287,7 @@ class BookOrbitProvider(MusicProvider):
         except LoginFailed:
             await self._client.close()
             raise
-        except Exception as err:
+        except (ClientError, TimeoutError) as err:
             await self._client.close()
             _reraise_bookorbit_error(err, base_url=self.base_url)
         except asyncio.CancelledError:
@@ -429,7 +429,7 @@ class BookOrbitProvider(MusicProvider):
             raise MediaNotFoundError(
                 f"BookOrbit book {prov_audiobook_id} has an unusable audio file list"
             ) from err
-        except Exception as err:
+        except (ClientError, TimeoutError) as err:
             _reraise_bookorbit_error(err, base_url=self.base_url)
         return parse_audiobook(book, provider_instance_id=self.instance_id, base_url=self.base_url)
 
@@ -448,7 +448,7 @@ class BookOrbitProvider(MusicProvider):
             raise MediaNotFoundError(f"Invalid BookOrbit book id {item_id}") from err
         try:
             manifest = await self._client.get_audiobook_manifest(book_id)
-        except Exception as err:
+        except (ClientError, TimeoutError) as err:
             _reraise_bookorbit_error(
                 err,
                 base_url=self.base_url,
@@ -758,8 +758,8 @@ class BookOrbitProvider(MusicProvider):
                 concurrency=PLAYLOG_SYNC_CONCURRENCY,
             )
             await self._save_playlog_progress_memory()
-        except Exception as err:
-            self.logger.warning("BookOrbit playlog sync failed: %s", err)
+        except Exception:
+            self.logger.warning("BookOrbit playlog sync failed", exc_info=True)
 
     async def _playlog_poll_loop(self) -> None:
         """Periodically refresh continue-listening progress from BookOrbit."""
@@ -771,8 +771,8 @@ class BookOrbitProvider(MusicProvider):
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
-                self.logger.debug("BookOrbit playlog poll failed: %s", err)
+            except Exception:
+                self.logger.debug("BookOrbit playlog poll failed", exc_info=True)
 
     def _commit_applied_mapping_details(self, skipped_ids: set[str]) -> None:
         """Record fingerprints for books that synced; keep prior values for failures."""
@@ -925,7 +925,7 @@ class BookOrbitProvider(MusicProvider):
             return await self._client.get_book(int(item_id))
         except ValueError as err:
             raise MediaNotFoundError(f"Invalid BookOrbit book id {item_id}") from err
-        except Exception as err:
+        except (ClientError, TimeoutError) as err:
             _reraise_bookorbit_error(
                 err,
                 base_url=self.base_url,
@@ -1131,7 +1131,7 @@ class BookOrbitProvider(MusicProvider):
         except BookOrbitIncompleteError as err:
             # Partial catalog/author lists must not drive sync deletions or bio clears.
             raise ProviderUnavailableError(str(err)) from err
-        except Exception as err:
+        except (ClientError, TimeoutError) as err:
             _reraise_bookorbit_error(err, base_url=self.base_url)
         self._catalog = catalog
         self._catalog_detail_failed_ids = failed_ids

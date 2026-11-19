@@ -99,7 +99,7 @@ async def run_setup(session: SetupSession) -> None:
         except LoginFailed as err:
             errors = {"base": err.translation_key or str(err)}
             continue
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any login error is shown in the form
             errors = {"base": str(err)}
             continue
         auth_file_path = os.path.join(session.mass.storage_path, f"audible_auth_{uuid4().hex}.json")

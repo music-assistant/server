@@ -124,7 +124,7 @@ class JWTHelper:
             )
             jti = payload.get("jti")
             return str(jti) if jti else None
-        except Exception:
+        except jwt.InvalidTokenError:
             return None
 
     @staticmethod

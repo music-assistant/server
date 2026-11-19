@@ -1158,3 +1158,71 @@ async def test_a_load_after_a_wake_nudges_a_speaker_that_stays_paused(
 
     assert client.player.group.play.await_count == (1 if expect_nudge else 0)
     assert player._woken_from_sleep is False
+
+
+async def _read_window(player: SonosPlayer, item_id: str) -> None:
+    """Let the speaker read its cloud queue window around the given id, as it does over HTTP."""
+    request = MagicMock()
+    request.query = {"itemId": item_id, "previousWindowSize": "9", "upcomingWindowSize": "10"}
+    await _make_cloud_queue()._handle_sonos_queue_itemwindow(player, request)
+
+
+async def test_the_next_item_of_the_window_the_speaker_read_is_received() -> None:
+    """An item the speaker read in its window is one it holds, not one it fetches cold."""
+    items = [_make_queue_item(f"track{i}") for i in range(3)]
+    player, _ = _make_player(items)
+
+    assert not player.has_received_next_item(items[1])
+    await _read_window(player, "track0@0")
+
+    assert player.has_received_next_item(items[1])
+
+
+async def test_an_item_added_after_the_speaker_read_its_window_is_not_received() -> None:
+    """A track that extends the queue counts only once the speaker read a window holding it."""
+    player, queues = _make_player([_make_queue_item("track0")])
+    await _read_window(player, "track0@0")
+    # autoplay extends a one-track start: the speaker is told to refresh, but holds back
+    queues.items.append(_make_queue_item("track1"))
+
+    assert not player.has_received_next_item(queues.items[1])
+    await _read_window(player, "track0@0")
+    assert player.has_received_next_item(queues.items[1])
+
+
+async def test_an_item_the_window_holds_at_another_position_is_not_received() -> None:
+    """The speaker holds its window by position, so an item that moved since is not held."""
+    player, queues = _make_player([_make_queue_item(f"track{i}") for i in range(4)])
+    await _read_window(player, "track0@0")
+    queues.items.insert(1, _make_queue_item("guest"))
+
+    # the window named track1 where the guest is now, and track2 where track1 is now
+    assert not player.has_received_next_item(queues.items[1])
+    assert not player.has_received_next_item(queues.items[2])
+
+
+async def test_a_window_read_before_the_current_load_is_not_received() -> None:
+    """A load starts the speaker over: only a window it read since then counts."""
+    items = [_make_queue_item(f"track{i}") for i in range(3)]
+    player, _ = _make_player(items)
+    await _read_window(player, "track0@0")
+    client = MagicMock()
+    client.player.is_passive = False
+    _loads_into_a_session(client.player.group)
+    player.client = client
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: False))
+        await player.play_media(
+            PlayerMedia(
+                uri="library://track/1",
+                media_type=MediaType.TRACK,
+                source_id=QUEUE_ID,
+                queue_item_id="track0",
+                queue_session_id="session-2",
+            )
+        )
+
+    assert not player.has_received_next_item(items[1])
+    await _read_window(player, player.wire_item_id("track0") or "")
+    assert player.has_received_next_item(items[1])

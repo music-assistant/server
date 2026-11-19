@@ -265,14 +265,12 @@ async def test_tool_errors(mass: MusicAssistant, admin_token: str) -> None:
 
 
 async def test_guest_refused_on_write_tool(mass: MusicAssistant) -> None:
-    """A guest may not use a tool that changes the library."""
+    """A guest may not use a tool that changes the library, which answers as unknown to them."""
     guest = await mass.webserver.auth.create_user(username="guest", role=UserRole.GUEST)
     token = await mass.webserver.auth.create_token(guest, "test")
     with patch.object(mass.music, "set_item_favorite", AsyncMock()) as set_favorite:
         response = await _post(mass, _call("add_favorite", {"uri": "library://track/1"}), token)
-    result = _body(response)["result"]
-    assert result["isError"]
-    assert "Not allowed" in result["content"][0]["text"]
+    assert _body(response)["error"]["message"] == "Unknown tool: add_favorite"
     set_favorite.assert_not_awaited()
 
 

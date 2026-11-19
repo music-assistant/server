@@ -12,7 +12,7 @@ import pytest
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, web
 
 from music_assistant.controllers.community_catalog import index as index_module
-from music_assistant.controllers.community_catalog.index import IndexClient, server_line
+from music_assistant.controllers.community_catalog.index import IndexClient, catalog_channel
 from music_assistant.controllers.community_catalog.models import CatalogState
 from music_assistant.controllers.community_catalog.store import CatalogStore
 from tests.controllers.community_catalog.conftest import catalog_index, serve
@@ -27,7 +27,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 @pytest.mark.parametrize(
-    ("version", "line"),
+    ("version", "channel"),
     [
         ("0.0.0", "nightly"),
         ("2.12.0.dev2026111403", "nightly"),
@@ -36,9 +36,9 @@ LOGGER = logging.getLogger(__name__)
         ("2.11.3", "2.11"),
     ],
 )
-def test_server_line(version: str, line: str) -> None:
-    """A server reads the index of its own line."""
-    assert server_line(version) == line
+def test_catalog_channel(version: str, channel: str) -> None:
+    """A server reads the index of its own channel."""
+    assert catalog_channel(version) == channel
 
 
 @pytest.fixture
@@ -93,7 +93,7 @@ async def test_unchanged_index_is_no_change(client: IndexClient, registry: Regis
         ("timeout", "no answer"),
         ("not_json", "Could not fetch"),
         ("other_schema", "the document has schema 2, this server reads 1"),
-        ("other_line", "the index is for line 2.11, this server reads nightly"),
+        ("other_channel", "the index is for channel 2.11, this server reads nightly"),
     ],
 )
 async def test_failed_fetch_keeps_the_copy(
@@ -120,8 +120,8 @@ async def test_failed_fetch_keeps_the_copy(
             registry.document = b"<html>maintenance</html>"
         case "other_schema":
             registry.document = catalog_index(schema=2)
-        case "other_line":
-            registry.document = catalog_index(line="2.11")
+        case "other_channel":
+            registry.document = catalog_index(channel="2.11")
 
     with caplog.at_level(logging.WARNING, logger=LOGGER.name):
         assert await client.fetch() is None
@@ -140,7 +140,7 @@ async def test_index_after_an_https_redirect(
 ) -> None:
     """An index the address redirects to over https is used."""
     async with serve(_moved_app(registry.url), tls.server) as root:
-        monkeypatch.setattr(index_module, "INDEX_URL", f"{root}/v1/{{line}}.json")
+        monkeypatch.setattr(index_module, "INDEX_URL", f"{root}/v1/{{channel}}.json")
 
         assert await client.fetch() is True
 
@@ -171,7 +171,7 @@ async def test_index_over_plain_http_is_refused(
         moved, target = tls.server, registry.http_url
 
     async with serve(_moved_app(target), moved) as root:
-        monkeypatch.setattr(index_module, "INDEX_URL", f"{root}/v1/{{line}}.json")
+        monkeypatch.setattr(index_module, "INDEX_URL", f"{root}/v1/{{channel}}.json")
         with caplog.at_level(logging.WARNING, logger=LOGGER.name):
             assert await client.fetch() is None
 
@@ -249,12 +249,12 @@ def _moved_app(target: str) -> web.Application:
     """
     Return an app that redirects each request for an index to the same index at another address.
 
-    :param target: The address of the index, with {line} for its line.
+    :param target: The address of the index, with {channel} for its channel.
     """
 
     async def moved(request: web.Request) -> web.StreamResponse:
-        raise web.HTTPMovedPermanently(target.format(line=request.match_info["line"]))
+        raise web.HTTPMovedPermanently(target.format(channel=request.match_info["channel"]))
 
     app = web.Application()
-    app.router.add_get("/v1/{line}.json", moved)
+    app.router.add_get("/v1/{channel}.json", moved)
     return app

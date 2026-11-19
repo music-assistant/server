@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+from aiosendspin.server import ClientConnectedEvent, ClientUpdatedEvent
+
 import music_assistant.providers.sendspin.provider as provider_module
 from music_assistant.constants import CONF_UNDERLYING_PLAYER_ID
 from music_assistant.providers.sendspin.provider import SendspinProvider
@@ -55,6 +57,7 @@ def _provider(
         ),
     )
     provider._client_event_versions = {}
+    provider._multi_channel_speakers = {}
     provider._client_event_task_counts = {}
     added: list[str] = []
     provider._handle_client_added = MagicMock(  # type: ignore[method-assign]
@@ -70,6 +73,60 @@ async def test_a_connected_client_without_a_protocol_is_added_again() -> None:
     await provider.discover_players()
 
     assert added == ["removed"]
+
+
+def _connect(
+    client_ids: list[str],
+    *,
+    attached: tuple[str, ...] = (),
+    announced: tuple[str, ...] = (),
+    hello_changed: bool = False,
+) -> list[str]:
+    """
+    Signal a connect of each given client and return the ids the provider adds.
+
+    :param client_ids: The clients that connect.
+    :param attached: Ids of the clients whose protocol is attached.
+    :param announced: Ids of the clients aiosendspin announced before.
+    :param hello_changed: Whether each client connects with a hello that differs from its last.
+    """
+    clients = [_client(client_id) for client_id in client_ids]
+    for client in clients:
+        client.connection_security = None
+    provider, _ = _provider(clients, attached=attached)
+    provider._unencrypted_clients = set()
+    provider._held_elsewhere = set()
+    provider._held_unapproved = set()
+    provider._held_paired = set()
+    provider._refused_here = {}
+    provider._hass_auto_pairer = MagicMock()
+    provider._local_auto_pairer = MagicMock()
+    provider._announced_clients = set(announced)
+    for client_id in client_ids:
+        provider.event_cb(provider.server_api, ClientConnectedEvent(client_id=client_id))
+        if hello_changed:
+            provider.event_cb(provider.server_api, ClientUpdatedEvent(client_id=client_id))
+    add_calls = cast("MagicMock", provider._handle_client_added).call_args_list
+    return [call.args[0] for call in add_calls if provider._is_current_client_event(*call.args)]
+
+
+async def test_a_reconnecting_client_without_a_protocol_is_added_again() -> None:
+    """A client whose player was removed while it was away is added on its next connect."""
+    added = _connect(
+        ["attached", "removed"], attached=("attached",), announced=("attached", "removed")
+    )
+
+    assert added == ["removed"]
+
+
+async def test_a_reconnect_with_a_changed_hello_still_adds_the_client() -> None:
+    """An update signaled right after the connect does not cancel the add it scheduled."""
+    assert _connect(["removed"], announced=("removed",), hello_changed=True) == ["removed"]
+
+
+async def test_a_first_connect_is_left_to_the_announcement() -> None:
+    """Aiosendspin announces a new client after its connect, which adds it once."""
+    assert _connect(["new"]) == []
 
 
 async def test_a_client_registered_in_process_is_added_again() -> None:
@@ -88,6 +145,16 @@ async def test_a_client_whose_event_is_being_handled_is_left_to_it() -> None:
     """A client still being added, updated or removed is not added a second time."""
     provider, added = _provider([_client("busy")])
     provider._client_event_versions["busy"] = 1
+
+    await provider.discover_players()
+
+    assert added == []
+
+
+async def test_a_speaker_of_a_multi_channel_player_is_left_to_that_player() -> None:
+    """A connected speaker of a multi-channel player gets no protocol of its own."""
+    provider, added = _provider([_client("speaker")])
+    provider._multi_channel_speakers["speaker"] = "sendspin_mc_set"
 
     await provider.discover_players()
 

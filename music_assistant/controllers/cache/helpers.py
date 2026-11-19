@@ -163,7 +163,7 @@ def use_cache(
                         result = await func(self, *args, **kwargs)
                         if cache_none or result is not None:
                             await _store_task(result)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - provider code, a failed refresh keeps serving stale data
                         LOGGER.exception(
                             "Background cache refresh failed for %s/%s",
                             provider_id,
@@ -201,7 +201,7 @@ def use_cache(
                 outcome: _FlightOutcome[R] = _FlightOutcome()
                 try:
                     outcome.result = await _fetch_and_store()
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - any error is handed back to every waiting caller
                     outcome.error = err
                 return outcome
 
@@ -226,7 +226,7 @@ def use_cache(
             # place (per-user podcast resume state, for one)
             try:
                 return deepcopy(cast("R", outcome.result))
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - any object may refuse to be copied
                 LOGGER.warning(
                     "Cannot copy the shared result for %s/%s, callers share one object: %s",
                     provider_id,
