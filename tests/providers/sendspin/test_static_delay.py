@@ -429,40 +429,115 @@ async def test_a_delay_of_another_carrier_is_refused_when_nothing_is_stored(
         await sendspin.set_player_static_delay(PROTOCOL_ID, 250, carrier_id=SQUEEZELITE_ID)
 
 
+def _accept_a_delay_late(mass: MusicAssistant, role: Mock) -> tuple[SendspinPlayer, AsyncMock]:
+    """
+    Let a registered player start accepting a static delay, as a late pairing does.
+
+    :param mass: The Music Assistant instance the player is attached to.
+    :param role: The player role of the player, which did not accept a delay so far.
+    :return: The player, and a stand-in for the reload the player controller does for a
+        protocol whose config changed. The stand-in player is too bare to be asked for
+        its entries, so the reload hands it the config it would get.
+    """
+    sendspin = _get_sendspin_provider(mass)
+    player = cast("SendspinPlayer", mass.players._protocols[PROTOCOL_ID])
+    player._player = Mock()
+    player.unsub_event_cb = None
+    role.state_supported_commands = [PlayerCommand.SET_STATIC_DELAY]
+    reloaded = cast(
+        "PlayerConfig",
+        PlayerConfig.parse(
+            [
+                ConfigEntry(
+                    key=CONF_SENDSPIN_STATIC_DELAY,
+                    type=ConfigEntryType.INTEGER,
+                    required=False,
+                    default_value=0,
+                    range=(MIN_SENDSPIN_STATIC_DELAY, MAX_SENDSPIN_STATIC_DELAY),
+                    immediate_apply=True,
+                )
+            ],
+            mass.config._get_raw_protocol_config(PROTOCOL_ID, sendspin.instance_id),
+        ),
+    )
+
+    async def _reload(_protocol_id: str, _changed_keys: set[str]) -> None:
+        player.set_config(reloaded)
+        await player.on_config_updated()
+
+    return player, AsyncMock(side_effect=_reload)
+
+
 @pytest.mark.parametrize("stored", [True, False])
-async def test_a_delay_reaches_a_player_that_accepted_one_only_after_it_registered(
+async def test_a_player_that_accepts_a_delay_late_reads_what_its_device_reported(
     mass: MusicAssistant, stored: bool
 ) -> None:
     """
     A client that is paired, or reports its commands, late has no entry for the delay.
 
-    Its config was loaded while its player role did not accept one, and a stored value
-    only reaches a config copy that has the entry - so the write would report success
-    while the device kept playing with the delay it had.
+    Its config was loaded while its player role did not accept one, so the delay its
+    device reported is kept aside and a read only sees the default. A calibration would
+    then skip taking that delay off and correct against the wrong value.
     """
     sendspin, role = _register_player(mass, supported=False, stored=stored)
-    role.state_supported_commands = [PlayerCommand.SET_STATIC_DELAY]
-    # what the config controller builds for the player now that it declares the entry;
-    # the stand-in is too bare to be asked for its entries
-    reloaded = PlayerConfig.parse(
-        [
-            ConfigEntry(
-                key=CONF_SENDSPIN_STATIC_DELAY,
-                type=ConfigEntryType.INTEGER,
-                required=False,
-                default_value=0,
-                range=(MIN_SENDSPIN_STATIC_DELAY, MAX_SENDSPIN_STATIC_DELAY),
-                immediate_apply=True,
-            )
-        ],
-        mass.config._get_raw_protocol_config(PROTOCOL_ID, sendspin.instance_id),
-    )
+    player, reload = _accept_a_delay_late(mass, role)
+    player._reported_static_delay = 180
 
-    with patch.object(mass.config, "get_protocol_config", AsyncMock(return_value=reloaded)):
-        await sendspin.set_player_static_delay(PROTOCOL_ID, 120)
+    with (
+        patch.object(mass.players, "on_protocol_config_change", reload),
+        patch.object(player, "_apply_preferred_format", AsyncMock()),
+    ):
+        assert await player.load_static_delay_entry() is True
+
+    assert sendspin.get_player_static_delay(PROTOCOL_ID) == 180
+    assert _pushed_delays(role) == [180]
+
+
+async def test_a_delay_reaches_a_player_that_accepted_one_only_after_it_registered(
+    mass: MusicAssistant,
+) -> None:
+    """A delay written once the entry is loaded is stored and pushed like any other."""
+    sendspin, role = _register_player(mass, supported=False)
+    player, reload = _accept_a_delay_late(mass, role)
+    with (
+        patch.object(mass.players, "on_protocol_config_change", reload),
+        patch.object(player, "_apply_preferred_format", AsyncMock()),
+    ):
+        await player.load_static_delay_entry()
+    role.reset_mock()
+
+    await sendspin.set_player_static_delay(PROTOCOL_ID, 120)
 
     assert _pushed_delays(role) == [120]
     assert sendspin.get_player_static_delay(PROTOCOL_ID) == 120
+
+
+async def test_a_delay_that_does_not_reach_the_config_is_not_reported_as_written(
+    mass: MusicAssistant,
+) -> None:
+    """A write to a player whose entry was never loaded raises, and pushes nothing."""
+    sendspin, role = _register_player(mass, supported=False)
+    role.state_supported_commands = [PlayerCommand.SET_STATIC_DELAY]
+
+    with pytest.raises(UnsupportedFeaturedException):
+        await sendspin.set_player_static_delay(PROTOCOL_ID, 120)
+
+    assert _pushed_delays(role) == []
+
+
+@pytest.mark.parametrize("supported", [True, False])
+async def test_the_config_is_only_loaded_again_for_a_missing_entry(
+    mass: MusicAssistant, supported: bool
+) -> None:
+    """A player that has the entry, or still accepts no delay, is left as it is."""
+    _sendspin, _role = _register_player(mass, supported=supported)
+    player = cast("SendspinPlayer", mass.players._protocols[PROTOCOL_ID])
+    player._player = Mock()
+
+    with patch.object(mass.players, "on_protocol_config_change", AsyncMock()) as reload:
+        assert await player.load_static_delay_entry() is False
+
+    reload.assert_not_awaited()
 
 
 async def test_a_delay_is_stored_for_an_output_whose_client_is_away(mass: MusicAssistant) -> None:

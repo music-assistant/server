@@ -6,6 +6,7 @@
   "description": "Experimental synchronization plugin built on the Sendspin protocol.",
   "codeowners": ["@chrisuthe"],
   "depends_on": "sendspin",
+  "provides": ["audio_source"],
   "requirements": [],
   "multi_instance": false,
   "builtin": false

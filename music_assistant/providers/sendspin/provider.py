@@ -977,11 +977,6 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 msg = f"Nothing is stored of player {protocol_id} to keep a static delay in"
                 raise PlayerUnavailableError(msg)
             return
-        if CONF_SENDSPIN_STATIC_DELAY not in player.config.values:
-            # The config was loaded while the player role did not accept a delay yet: a
-            # client that was paired, or reported its commands, after it registered. A
-            # stored value would never reach the config copy the push reads.
-            player.set_config(await self.mass.config.get_protocol_config(player))
         if delay_ms == self.get_player_static_delay(protocol_id):
             return
         self.logger.info("Applying static delay of %s ms to %s", delay_ms, player.name)
@@ -2220,7 +2215,11 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         if not isinstance(player, SendspinBasePlayer) or player.player is None:
             return
         # A trust change (de)activates roles; role instances are recreated on activation,
-        # so pushed config (preferred format, static delay) must be re-applied.
+        # so pushed config (preferred format, static delay) must be re-applied. A role
+        # that accepts a static delay only now has no entry for it in the config yet, and
+        # loading the config again applies it as well.
+        if isinstance(player, SendspinPlayer) and await player.load_static_delay_entry():
+            return
         await player.on_config_updated()
         player.update_state()
 
