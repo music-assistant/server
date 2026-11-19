@@ -1767,6 +1767,37 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue_data := self.queue_data_or_none(queue_id)) is not None:
             queue_data.halted_by_command = False
 
+    def hold_for_announcement(self, queue_id: str) -> None:
+        """
+        Mark a playing queue as interrupted by an announcement, at its resume position.
+
+        :param queue_id: The queue the announcement stopped.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        queue = queue_data.queue
+        if not (queue.active and queue.state == PlaybackState.PLAYING):
+            return
+        queue.elapsed_time = queue.resume_pos
+        queue.elapsed_time_last_updated = time.time()
+        queue.extra_attributes[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
+        self.signal_update(queue_id)
+
+    def release_after_announcement(self, queue_id: str) -> None:
+        """
+        Let a queue held for an announcement follow its player again.
+
+        :param queue_id: The queue of the player the announcement played on.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        if not queue_data.queue.extra_attributes.pop(ATTR_ANNOUNCEMENT_IN_PROGRESS, False):
+            return
+        # the player's updates were ignored during the clip
+        if (player := self.mass.players.get_player(queue_id)) is not None:
+            self.on_player_update(player, {})
+        self.signal_update(queue_id)
+
     def on_player_elapsed_time_corrected(self, player: Player) -> None:
         """Correct the queue's timing base if the player's real elapsed_time diverged."""
         queue_id = player.player_id

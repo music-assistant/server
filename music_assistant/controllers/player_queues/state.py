@@ -24,7 +24,11 @@ from music_assistant_models.media_items import (
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, MASS_LOGGER_NAME
+from music_assistant.constants import (
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    ATTR_PLAY_ACTION_IN_PROGRESS,
+    MASS_LOGGER_NAME,
+)
 from music_assistant.controllers.player_queues.constants import CACHE_FORMAT_VERSION
 from music_assistant.controllers.player_queues.helpers import has_dynamic_source
 
@@ -221,6 +225,8 @@ class PlayerQueueData:
         queue = PlayerQueue.from_dict(wire)
         # reset the play-action-in-progress flag on restore (MA may have been killed mid-action)
         queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
+        # and the hold of an announcement, which ended with the restart
+        queue.extra_attributes.pop(ATTR_ANNOUNCEMENT_IN_PROGRESS, None)
         queue.sources = [
             item
             for item in cls._deserialize_media(raw_sources, queue.queue_id, "queue source")
