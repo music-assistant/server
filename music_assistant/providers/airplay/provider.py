@@ -409,14 +409,13 @@ class AirPlayProvider(PlayerProvider):
                 await self.mass.players.unregister(protocol_id)
                 await self._setup_player(protocol_id, display_name, info)
                 return
-            carried_set = player.carries_set
             # update the latest discovery info for existing player
             player.set_discovery_info(info, display_name)
             # only control players can ever be dashboard endpoints
             if isinstance(player, AirPlayControlPlayer):
                 self.dashboards.reconcile(protocol_id)
-            if player.carries_set != carried_set:
-                await self._bridge_manager.evaluate_bridge(player)
+            # the record can give the device a set, take it away or change it
+            self._bridge_manager.update_endpoints(protocol_id)
             player.report_speakers()
             return
         await self._setup_player(protocol_id, display_name, info)
@@ -788,6 +787,7 @@ class AirPlayProvider(PlayerProvider):
         # whether the set needs a password depends on its speakers
         airplay_set.update_state()
         airplay_set.report_speakers()
+        self._bridge_manager.update_endpoints(airplay_set.protocol_id)
 
     @staticmethod
     async def _leave_session(speaker: AirPlaySpeaker, reason: str) -> None:

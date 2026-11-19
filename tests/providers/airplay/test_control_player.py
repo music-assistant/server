@@ -1664,6 +1664,20 @@ async def test_a_set_wakes_its_apple_tv_unless_it_plays_on_its_homepods_only(
     base_command.assert_awaited_once()
 
 
+async def test_a_bridged_set_on_its_homepods_only_stops_through_the_bridge() -> None:
+    """A stop reaches the Sendspin bridge that feeds the speakers, not the Apple TV's remote."""
+    player, speaker = _make_set_player(homepods_only=True)
+    speaker.stream = MagicMock(running=True, session=None)
+    bridge_manager = cast("MagicMock", player.provider).bridge_manager
+    bridge_manager.stop_streaming.return_value = True
+
+    with patch.object(player, "_device_for_feature", return_value=None) as remote:
+        await player.stop()
+
+    bridge_manager.stop_streaming.assert_called_once_with(player.protocol_id)
+    remote.assert_not_called()
+
+
 async def test_the_volume_of_a_set_is_not_the_volume_of_its_apple_tv() -> None:
     """The set's volume never goes to the Apple TV, nor does the Apple TV's volume come back."""
     player, _ = _make_set_player()

@@ -739,8 +739,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
     @property
     def _stream_active(self) -> bool:
         """Return whether Music Assistant is actively streaming to this device or its set."""
-        active = bool((stream := getattr(self, "stream", None)) and stream.running) or bool(
-            self.speakers and self.session
+        # also a stream of the Sendspin bridge, which plays in no session
+        active = any(
+            (stream := getattr(endpoint, "stream", None)) is not None and stream.running
+            for endpoint in self.session_endpoints
         )
         if active:
             self._stream_last_active = time.monotonic()
