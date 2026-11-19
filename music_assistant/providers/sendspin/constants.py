@@ -11,6 +11,8 @@ CONF_MULTI_CHANNEL_GROUP_ID = "multi_channel_group_id"
 CONF_SPEAKER_CLIENT_ID = "speaker_{n}_client_id"
 CONF_SPEAKER_NAME = "speaker_{n}_name"
 CONF_SPEAKER_CHANNEL = "speaker_{n}_channel"
+# The channel the user sets for a speaker, stored until the player takes it into its record.
+CONF_SPEAKER_CHANNEL_SETTING = "speaker_{n}_channel_setting"
 CONF_SPEAKER_OUTPUT_DELAY = "speaker_{n}_output_delay"
 CONF_SPEAKER_STATE = "speaker_{n}_state"
 

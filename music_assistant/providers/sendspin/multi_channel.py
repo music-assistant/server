@@ -24,11 +24,11 @@ from aiosendspin.server.roles.player.types import PlayerRoleProtocol
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ChannelLayout, ConfigEntryType, PlayerType, SpeakerChannel
 
-from music_assistant.constants import CONF_OUTPUT_CHANNELS
+from music_assistant.constants import CONF_OUTPUT_CHANNELS, CONF_PLAYER_PROTOCOLS
 
 from .constants import (
-    CONF_MULTI_CHANNEL_GROUP_ID,
     CONF_SPEAKER_CHANNEL,
+    CONF_SPEAKER_CHANNEL_SETTING,
     CONF_SPEAKER_CLIENT_ID,
     CONF_SPEAKER_NAME,
     CONF_SPEAKER_OUTPUT_DELAY,
@@ -304,20 +304,8 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
                 required=False,
                 hidden=True,
             ),
-            ConfigEntry(
-                key=CONF_MULTI_CHANNEL_GROUP_ID,
-                type=ConfigEntryType.STRING,
-                required=False,
-                hidden=True,
-            ),
         ]
-        channel_options = [
-            ConfigValueOption(channel.value)
-            for channel in LAYOUT_CHANNELS.get(
-                self._attr_channel_layout or ChannelLayout.UNKNOWN,
-                tuple(speaker.channel for speaker in self._speakers),
-            )
-        ]
+        channel_options = [ConfigValueOption(channel.value) for channel in self._layout_channels()]
         for speaker in self._speakers:
             number = speaker.number
             online = self._is_online(speaker.client_id)
@@ -330,22 +318,10 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
                         translation_key="speaker_online" if online else "speaker_offline",
                         translation_params=[speaker.name],
                     ),
+                    # the record has no entries, so a config save never changes it: a channel
+                    # comes in through a setting of its own
                     ConfigEntry(
-                        key=CONF_SPEAKER_CLIENT_ID.format(n=number),
-                        type=ConfigEntryType.STRING,
-                        required=False,
-                        hidden=True,
-                        translation_key="speaker_client_id",
-                    ),
-                    ConfigEntry(
-                        key=CONF_SPEAKER_NAME.format(n=number),
-                        type=ConfigEntryType.STRING,
-                        required=False,
-                        hidden=True,
-                        translation_key="speaker_name",
-                    ),
-                    ConfigEntry(
-                        key=CONF_SPEAKER_CHANNEL.format(n=number),
+                        key=CONF_SPEAKER_CHANNEL_SETTING.format(n=number),
                         type=ConfigEntryType.STRING,
                         default_value=speaker.channel.value,
                         options=channel_options,
@@ -369,6 +345,7 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
     async def on_config_updated(self) -> None:
         """Apply a changed channel or output delay of a speaker."""
         previous = {speaker.number: speaker.channel for speaker in self._speakers}
+        self._take_channel_settings()
         self._load_speakers()
         changed = [s for s in self._speakers if previous.get(s.number, s.channel) != s.channel]
         for speaker in changed:
@@ -443,6 +420,29 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         record = self.mass.config.get_protocol_record(self.protocol_id) or {}
         self._speakers = tuple(stored_speakers(record.get("values") or {}))
         self._attr_channel_layout = layout_of(speaker.channel for speaker in self._speakers)
+
+    def _layout_channels(self) -> tuple[SpeakerChannel, ...]:
+        """Return the channels the speakers of this player can play."""
+        return LAYOUT_CHANNELS.get(
+            self._attr_channel_layout or ChannelLayout.UNKNOWN,
+            tuple(speaker.channel for speaker in self._speakers),
+        )
+
+    def _take_channel_settings(self) -> None:
+        """Store the channel the user set for a speaker in the record of this player."""
+        values = (self.mass.config.get_protocol_record(self.protocol_id) or {}).get("values") or {}
+        channels = {channel.value for channel in self._layout_channels()}
+        for speaker in self._speakers:
+            key = CONF_SPEAKER_CHANNEL_SETTING.format(n=speaker.number)
+            if key not in values:
+                continue
+            channel = values[key]
+            # a setting that stayed would shadow the channel the record gets from a swap
+            self.mass.config.remove(f"{CONF_PLAYER_PROTOCOLS}/{self.protocol_id}/values/{key}")
+            if channel in channels:
+                self.mass.config.set_protocol_value(
+                    self.protocol_id, CONF_SPEAKER_CHANNEL.format(n=speaker.number), channel
+                )
 
     def _speaker_number(self, client_id: str) -> int | None:
         """Return the number of a speaker of this player in its record."""

@@ -711,11 +711,96 @@ async def test_a_channel_set_on_a_speaker_swaps_with_the_speaker_that_had_it(
     monkeypatch.setattr(mass.players, "on_player_dsp_change", restart)
     player, _, _ = await _compose(mass, sendspin)
 
-    await mass.config.save_player_config(player.player_id, {"speaker_1_channel": "front_right"})
+    await mass.config.save_player_config(
+        player.player_id, {"speaker_1_channel_setting": "front_right"}
+    )
 
     assert sendspin.speaker_output(LEFT)[1] == SpeakerChannel.FRONT_RIGHT
     assert sendspin.speaker_output(RIGHT)[1] == SpeakerChannel.FRONT_LEFT
     await _wait_for(lambda: restart.await_count == 1)
+
+
+@pytest.mark.parametrize(
+    "submitted",
+    [
+        pytest.param(
+            {"speaker_1_channel_setting": None, "speaker_2_channel_setting": None},
+            id="settings reset",
+        ),
+        pytest.param(
+            {"speaker_1_channel_setting": "", "speaker_2_channel_setting": ""}, id="settings blank"
+        ),
+        pytest.param({"speaker_1_channel_setting": "rear_left"}, id="no channel of the layout"),
+        pytest.param({"speaker_1_channel": None, "speaker_2_channel": None}, id="record reset"),
+        pytest.param({"speaker_1_channel": "", "speaker_2_channel": ""}, id="record blank"),
+    ],
+)
+async def test_a_config_save_without_a_channel_keeps_the_channels_of_a_set(
+    mass: MusicAssistant, submitted: dict[str, Any]
+) -> None:
+    """
+    A save that resets or blanks the channels of a set keeps them, and its layout with them.
+
+    The stored record keeps them, which the set plays again after a restart.
+    """
+    sendspin = _sendspin(mass)
+    player, _, _ = await _compose(mass, sendspin)
+    set_id = _set_of(sendspin, player).protocol_id
+
+    await mass.config.save_player_config(player.player_id, submitted)
+
+    values = (mass.config.get_protocol_record(set_id) or {})["values"]
+    channels = [speaker.channel for speaker in multi_channel.stored_speakers(values)]
+    assert channels == [SpeakerChannel.FRONT_LEFT, SpeakerChannel.FRONT_RIGHT]
+    assert multi_channel.layout_of(channels) == ChannelLayout.STEREO
+    assert player.channel_layout == ChannelLayout.STEREO
+    assert not [key for key in values if key.endswith("_channel_setting")]
+
+
+@pytest.mark.parametrize("blank", [None, ""])
+async def test_a_config_save_keeps_the_speakers_and_the_group_id_of_a_set(
+    mass: MusicAssistant, blank: str | None
+) -> None:
+    """A save that resets or blanks the client ids, names and group id of a set changes nothing."""
+    sendspin = _sendspin(mass)
+    player, _, _ = await _compose(mass, sendspin)
+    set_protocol = _set_of(sendspin, player)
+    stored = dict((mass.config.get_protocol_record(set_protocol.protocol_id) or {})["values"])
+
+    await mass.config.save_player_config(
+        player.player_id,
+        {
+            CONF_MULTI_CHANNEL_GROUP_ID: blank,
+            **{f"speaker_{n}_{field}": blank for n in (1, 2) for field in ("client_id", "name")},
+        },
+    )
+
+    assert (mass.config.get_protocol_record(set_protocol.protocol_id) or {})["values"] == stored
+    assert set_protocol.speaker_channel(LEFT) == SpeakerChannel.FRONT_LEFT
+    assert set_protocol.speaker_channel(RIGHT) == SpeakerChannel.FRONT_RIGHT
+    assert sendspin.multi_channel_player_of(LEFT) == set_protocol.protocol_id
+    assert sendspin.multi_channel_player_of(RIGHT) == set_protocol.protocol_id
+
+
+async def test_a_channel_the_other_speaker_takes_back_stays_with_it(mass: MusicAssistant) -> None:
+    """
+    A channel one speaker takes back from the other stays with it.
+
+    A later save of another setting of the set changes no channel.
+    """
+    sendspin = _sendspin(mass)
+    player, _, _ = await _compose(mass, sendspin)
+    await mass.config.save_player_config(
+        player.player_id, {"speaker_1_channel_setting": "front_right"}
+    )
+    await mass.config.save_player_config(
+        player.player_id, {"speaker_2_channel_setting": "front_right"}
+    )
+
+    await mass.config.save_player_config(player.player_id, {"speaker_1_output_delay": 120})
+
+    assert sendspin.speaker_output(LEFT)[1] == SpeakerChannel.FRONT_LEFT
+    assert sendspin.speaker_output(RIGHT)[1] == SpeakerChannel.FRONT_RIGHT
 
 
 @pytest.mark.parametrize(

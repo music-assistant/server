@@ -230,15 +230,6 @@
     "dynamic_pin_channel_display_speaker": {
       "label": "Enter the code the device shows on screen or speaks aloud"
     },
-    "multi_channel_group_id": {
-      "label": "Group ID"
-    },
-    "speaker_client_id": {
-      "label": "Client ID of the speaker"
-    },
-    "speaker_name": {
-      "label": "Name of the speaker"
-    },
     "speaker_online": {
       "label": "{0} is online."
     },

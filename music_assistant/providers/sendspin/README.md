@@ -385,6 +385,11 @@ its own (`players/create_multi_channel_player`, offered through
   Sendspin spec defines it) and per speaker its client id, name, channel and output delay
   (`speaker_<n>_*`). Combining removes the own Sendspin protocol of each speaker; a player that
   has no other protocol left goes with it.
+- Only the player writes its record. Its group id and the client id, name and channel of each
+  speaker have no config entries, so a config save keeps them as they are. A channel the user
+  sets arrives as `speaker_<n>_channel_setting`, which the player takes into its record, swapping
+  with the speaker that had that channel; a value that is no channel of the layout changes
+  nothing.
 - A speaker of a set is never a protocol. The provider knows the speakers of every stored set
   before its server starts and hands a speaker that connects to its set, so it does not matter
   whether the set or its speakers come first. The set takes its speakers into the Sendspin group
