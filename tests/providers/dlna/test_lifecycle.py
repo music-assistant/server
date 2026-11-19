@@ -267,3 +267,46 @@ async def test_a_stored_link_to_an_extra_sonos_zone_is_dropped(scenario: Scenari
 
     assert extra.player is not None
     assert extra.player.player_id != scenario.player_of(speaker)
+
+
+async def test_an_extra_sonos_zone_back_first_does_not_take_the_speaker(
+    scenario: Scenario,
+) -> None:
+    """
+    After an upgrade, the renderer of an extra zone that reconnects first leaves the speaker.
+
+    An earlier version linked it to the speaker's player. The speaker keeps its player, with
+    its settings, whichever of the two is back first.
+    """
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol(
+        f"{SONOS_UUID}01400",
+        "Patio",
+        identifiers={
+            IdentifierType.MAC_ADDRESS: MAC_ADDRESS,
+            IdentifierType.UUID: f"{SONOS_UUID}01400",
+        },
+    )
+    await scenario.register(speaker)
+    speaker_player = scenario.player_of(speaker)
+    extra_udn = f"uuid:{SONOS_UUID}01500_MR"
+    # as an earlier version linked it: neither side reported a zone
+    with patch(
+        "tests.providers.dlna.test_lifecycle.udn_identifiers",
+        lambda udn: [(IdentifierType.UUID, udn.removeprefix("uuid:").removesuffix("_MR"))],
+    ):
+        extra = await _attach_renderer(scenario, extra_udn)
+    assert extra.player is not None
+    assert extra.player.player_id == speaker_player
+
+    # the upgrade: the speaker reports its zone, and is back after the renderer
+    speaker._device.identifiers[IdentifierType.ZONE] = MAIN_ZONE
+    scenario.set_present(speaker.protocol_id, False)
+    await scenario.restart()
+    extra = await _attach_renderer(scenario, extra_udn)
+    scenario.set_present(speaker.protocol_id, True)
+    await scenario.register(scenario.protocol(speaker.protocol_id))
+
+    assert scenario.player_of(scenario.protocol(speaker.protocol_id)) == speaker_player
+    assert extra.player is not None
+    assert extra.player.player_id != speaker_player

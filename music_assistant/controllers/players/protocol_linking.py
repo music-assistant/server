@@ -37,6 +37,7 @@ from music_assistant.constants import (
     CONF_SESSION_ONLY,
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
+    MAIN_ZONE,
     NATIVE_PRIORITY,
 )
 from music_assistant.controllers.config.constants import GROUP_MEMBER_KEYS
@@ -397,7 +398,8 @@ class ProtocolLinkingMixin(_PlayerControllerBase):
 
         :param player_id: Id of the player.
         :param exclude_protocol_id: Id of a protocol of the player to leave out.
-        :param attached_only: Leave out what the protocols that are away reported.
+        :param attached_only: Leave out what the protocols that are away reported, but
+            the zone of an own protocol of the player.
         """
         parts: list[DeviceIdentity] = []
         domains: set[str] = set()
@@ -411,14 +413,29 @@ class ProtocolLinkingMixin(_PlayerControllerBase):
             stored = self.mass.config.get_protocol_record(protocol_id) or {}
             domain = str(stored.get("provider") or "").split("--", maxsplit=1)[0]
             domains.add(domain)
-            if attached_only:
-                continue
+            native = stored.get("role") in (ProtocolRole.NATIVE, ProtocolRole.CONTROL)
             values = stored.get("values") or {}
             identifiers = {
                 (IdentifierType(identifier_type), str(value))
                 for identifier_type, value in values.get(CONF_PROTOCOL_IDENTIFIERS) or ()
                 if identifier_type != IdentifierType.IP_ADDRESS
             }
+            if attached_only:
+                if native:
+                    # the zone of the player's own protocol still rules out the output of
+                    # another zone of its chassis while it is away; a version before zones
+                    # stored none for it, which is the main zone
+                    zones = {value for kind, value in identifiers if kind == IdentifierType.ZONE}
+                    parts.append(
+                        DeviceIdentity(
+                            identifiers=frozenset(
+                                (IdentifierType.ZONE, zone) for zone in zones or {MAIN_ZONE}
+                            ),
+                            domains=frozenset({domain}),
+                            native=True,
+                        )
+                    )
+                continue
             for mac_address in (values.get(CONF_CACHED_ARP_MAC), values.get(CONF_REPORTED_MAC)):
                 if mac_address:
                     identifiers.add((IdentifierType.MAC_ADDRESS, str(mac_address)))
@@ -426,7 +443,7 @@ class ProtocolLinkingMixin(_PlayerControllerBase):
                 DeviceIdentity(
                     identifiers=frozenset(identifiers),
                     domains=frozenset({domain}),
-                    native=stored.get("role") in (ProtocolRole.NATIVE, ProtocolRole.CONTROL),
+                    native=native,
                 )
             )
         if not attached_only:
