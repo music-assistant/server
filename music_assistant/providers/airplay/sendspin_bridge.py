@@ -294,9 +294,9 @@ class SendspinAirPlayBridge:
         # A transport per device the player plays on, by protocol id: the player itself, or
         # the speakers of its set and the device of the set, which joins after them unheard.
         self._transports: dict[str, _BridgeTransport] = {}
-        # Whether the device of a set is left out of the current stream after failing twice, or
-        # after it ended its session itself.
-        self._silent_member_left_out = False
+        # Protocol ids of the devices left out of the current stream: a speaker that could not
+        # join it late, and the device of a set after failing twice or ending its session itself.
+        self._left_out: set[str] = set()
         # Monotonic instant a speaker of the set last set up again, which resets the session of
         # the device of the set (None when none did).
         self._speaker_set_up_at: float | None = None
@@ -502,6 +502,7 @@ class SendspinAirPlayBridge:
             return
         added = self._sync_transports()
         for transport in added:
+            transport.joining_late = True
             transport.restart()
         if any(not transport.silent for transport in added):
             self._renew_silent_retry()
@@ -585,7 +586,7 @@ class SendspinAirPlayBridge:
         # teardown so the previous stream's still-connected CLI survives to be
         # reused via flush-refill instead of cold-restarting.
         self.mass.cancel_timer(self._teardown_timer_id)
-        self._silent_member_left_out = False
+        self._left_out.clear()
         self._sync_transports()
         # Bridge outlives config changes, so re-read the current timing values.
         self._refresh_bridge_timing()
@@ -929,9 +930,15 @@ class SendspinAirPlayBridge:
         :return: The transports that were added.
         """
         endpoints = list(self.airplay_player.endpoints)
-        if (member := self.airplay_player.silent_member) and not self._silent_member_left_out:
+        if member := self.airplay_player.silent_member:
             endpoints.append(member)
-        wanted = {endpoint.protocol_id: endpoint for endpoint in endpoints}
+        # a device that left the player gets a new chance when it comes back
+        self._left_out.intersection_update(endpoint.protocol_id for endpoint in endpoints)
+        wanted = {
+            endpoint.protocol_id: endpoint
+            for endpoint in endpoints
+            if endpoint.protocol_id not in self._left_out
+        }
         for protocol_id, transport in list(self._transports.items()):
             if wanted.get(protocol_id) is not transport.endpoint:
                 del self._transports[protocol_id]
@@ -950,15 +957,25 @@ class SendspinAirPlayBridge:
         Handle a transport that could not start or keep its stream.
 
         A speaker that fails ends the stream of its set: a set plays on all of its speakers
-        or not at all. The device of a set never stops its speakers: it is added once more
-        after a short wait, and left out of the stream when it fails again. One that ended its
-        session itself (another sender took it over, or it went to sleep) is left out at once,
-        unless a speaker of its set just set up again, which ends that session too.
+        or not at all. A speaker that comes back while its set plays and fails before it joins
+        is left out instead, until it comes back again. The device of a set never stops its
+        speakers: it is added once more after a short wait, and left out of the stream when it
+        fails again. One that ended its session itself (another sender took it over, or it went
+        to sleep) is left out at once, unless a speaker of its set just set up again, which ends
+        that session too.
 
         :param transport: The transport that failed.
         """
         if not transport.silent:
-            self._abandon_streaming()
+            if transport.joining_late:
+                self.logger.warning(
+                    "%s could not join, %s plays on without it",
+                    transport.endpoint.display_name,
+                    self.airplay_player.display_name,
+                )
+                self._leave_out(transport)
+            else:
+                self._abandon_streaming()
             return
         if (stream := transport.stream) is not None and stream.receiver_closed:
             set_up_at = self._speaker_set_up_at
@@ -985,11 +1002,11 @@ class SendspinAirPlayBridge:
 
     def _leave_out(self, transport: _BridgeTransport) -> None:
         """
-        Leave the device of a set out of the current stream.
+        Leave a device out of the current stream, until it leaves the player and comes back.
 
         :param transport: The transport of the device.
         """
-        self._silent_member_left_out = True
+        self._left_out.add(transport.endpoint.protocol_id)
         self._transports.pop(transport.endpoint.protocol_id, None)
         transport.release()
 
@@ -1160,6 +1177,8 @@ class _BridgeTransport:
         # stream, and the monotonic instant before which it does not start again.
         self.retried = False
         self.not_before = 0.0
+        # Whether the transport joins a stream that plays already and is not anchored yet.
+        self.joining_late = False
         self._airplay_stream: AirPlayStream | None = None
         # Shared-PTP decision the transport's current cli process was spawned with
         # (None when no process carries one). A warm reuse keeps the flag baked
@@ -1277,6 +1296,7 @@ class _BridgeTransport:
         self._last_transport_recovery = None
         self.retried = False
         self.not_before = 0.0
+        self.joining_late = False
 
     def reset_for_stream(self) -> None:
         """Release what the previous Sendspin stream left, except a stream to reuse warm."""
@@ -1782,6 +1802,7 @@ class _BridgeTransport:
         self._absorbing_shift = False
         self._anchor_settled = True
         self._started = True
+        self.joining_late = False
         # Replay what arrived while the anchor was being settled before yielding
         # to the loop, so the backlog stays ahead of whatever _on_audio_chunk
         # delivers next.

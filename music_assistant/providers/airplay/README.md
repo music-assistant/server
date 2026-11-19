@@ -222,7 +222,9 @@ pair), and the HomePods are fed directly as its speakers.
 - In a Sendspin group the bridge of the set feeds its speakers, each anchored on the Sendspin
   timeline as a join, and the Apple TV after them as in a session of its own: fed silence, sent no
   volume, added once more when it fails but not after it ended its session itself (unless a
-  speaker of the set just set up again, which ends it too), and never stopping its speakers.
+  speaker of the set just set up again, which ends it too), and never stopping its speakers. A
+  speaker that comes back while the set plays and cannot join is left out until it comes back
+  again, as in a native session.
 
 ### Protocol ID Format
 
@@ -787,7 +789,7 @@ The bridge consists of:
 
 The CLI accepts and discards audio once its process is gone, so a lost transport is only visible on the `AirPlayStream` itself. The bridge checks it on every chunk: the dead stream is released and a fresh one is cold-started and re-anchored on the group's live timeline, so the speaker rejoins where the rest of the group is playing.
 
-Giving up on a stream — a start that raised, a protocol that never became ready, or a transport that dropped again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of a recovery — takes the speaker out of the Sendspin session; for a set, any of its speakers giving up takes the whole set out, while its Apple TV only leaves the stream. Sendspin reports playback from the group's own state, and the protocol gives a player no way to report that it went silent, so a bridge that merely stopped feeding its speaker would hold the visible player on PLAYING for the rest of the stream. Leaving is what surfaces that silence: a shared group plays on without this speaker, a solo one stops.
+Giving up on a stream — a start that raised, a protocol that never became ready, or a transport that dropped again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of a recovery — takes the speaker out of the Sendspin session; for a set, any of its speakers giving up takes the whole set out, while its Apple TV, and a speaker that came back while the set played and never joined, only leave the stream. Sendspin reports playback from the group's own state, and the protocol gives a player no way to report that it went silent, so a bridge that merely stopped feeding its speaker would hold the visible player on PLAYING for the rest of the stream. Leaving is what surfaces that silence: a shared group plays on without this speaker, a solo one stops.
 
 Leaving a shared group schedules a bounded re-join through the ordinary `SendspinGroup.add_client`, on the delays in `BRIDGE_REJOIN_ATTEMPT_DELAYS`, so a speaker that was only briefly away comes back on its own. A bridge that gives up again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of being put back is left out for good — that is what keeps a device which cannot hold a connection from cycling in and out of the group, since re-joining re-runs the very start that just failed. The attempt is abandoned when the speaker has meanwhile been given a group or a stream of its own, is streaming outside the bridge, or the group it left no longer exists. A speaker missing from discovery is not re-joined but is looked for again on the next attempt, because a device that rebooted stays absent for a while after it starts answering. A solo bridge has nothing to re-join, since leaving is what stops it.
 

@@ -4420,6 +4420,89 @@ def test_a_room_follows_its_option_and_its_speakers_while_it_plays() -> None:
     assert all(transport._writer_task is not None for transport in added)
 
 
+def _homepod_back(bridge: SendspinAirPlayBridge, homepods: list[MagicMock]) -> _BridgeTransport:
+    """
+    Let the second HomePod of a room that plays leave it and come back; return its new transport.
+
+    :param bridge: The bridge of the room, which streams.
+    :param homepods: The two HomePods of the room.
+    """
+    apple_tv = cast("MagicMock", bridge.airplay_player)
+    apple_tv.endpoints = [homepods[0]]
+    bridge.update_endpoints()
+    apple_tv.endpoints = homepods
+    bridge.update_endpoints()
+    return bridge._transports[homepods[1].protocol_id]
+
+
+def test_a_homepod_back_while_its_room_plays_that_cannot_join_is_left_out() -> None:
+    """
+    A HomePod that comes back while its room plays and fails before it joins is left out.
+
+    The room plays on what is there until the HomePod comes back again. A speaker the stream
+    started with still ends it when it fails.
+    """
+    bridge, homepods, _ = _make_room_bridge(speakers=2)
+    bridge._is_streaming = True
+    back = _homepod_back(bridge, homepods)
+    back._airplay_stream_start_task = _make_completed_start_task(failed=True)
+
+    with (
+        patch.object(bridge, "_abandon_streaming", MagicMock()) as abandon,
+        patch.object(_BridgeTransport, "_start_protocol_from_chunk", MagicMock()),
+    ):
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 500_000))
+        abandon.assert_not_called()
+        assert homepods[1].protocol_id not in bridge._transports
+        bridge.update_endpoints()
+        assert homepods[1].protocol_id not in bridge._transports
+        # it gets a new chance when it comes back again
+        _homepod_back(bridge, homepods)
+        assert homepods[1].protocol_id in bridge._transports
+        first = bridge._transports[homepods[0].protocol_id]
+        first._airplay_stream_start_task = _make_completed_start_task(failed=True)
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 600_000))
+
+    abandon.assert_called_once_with()
+
+
+async def test_a_homepod_back_in_its_room_that_joined_ends_the_stream_when_it_fails() -> None:
+    """A HomePod that came back and joined the music of its room is one of its speakers again."""
+    bridge, homepods, _ = _make_room_bridge(speakers=2)
+    bridge._is_streaming = True
+    back = _homepod_back(bridge, homepods)
+    stream = _make_anchor_stream()
+    back._drop_until_us = bridge.sendspin_server.clock.now_us()
+    back._airplay_stream = stream
+    back._airplay_stream_start_task = asyncio.current_task()
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
+        return_value=UNIX_NOW_S,
+    ):
+        assert await back._anchor_stream(stream, warm=False) is True
+
+    with patch.object(bridge, "_abandon_streaming", MagicMock()) as abandon:
+        bridge._on_transport_failed(back)
+
+    abandon.assert_called_once_with()
+
+
+async def test_a_new_stream_of_a_room_starts_on_all_of_its_homepods() -> None:
+    """A new stream starts on every HomePod of a room again, and fails when one of them does."""
+    bridge, homepods, _ = _make_room_bridge(speakers=3)
+    bridge._is_streaming = True
+    back = _homepod_back(bridge, homepods)
+    with patch.object(bridge, "_abandon_streaming", MagicMock()) as abandon:
+        bridge._on_transport_failed(bridge._transports[homepods[2].protocol_id])
+        abandon.assert_not_called()
+
+        bridge._on_stream_start(MagicMock())
+        assert homepods[2].protocol_id in bridge._transports
+        bridge._on_transport_failed(back)
+
+    abandon.assert_called_once_with()
+
+
 def test_a_homepod_of_a_room_taken_over_by_another_sender_takes_the_room_along() -> None:
     """
     A HomePod another sender took over is left to that sender, and so is its room.
