@@ -7,7 +7,7 @@
   "codeowners": ["@sonic1200"],
   "depends_on": "sendspin",
   "requirements": ["lifx-entertainment==0.1.0"],
-  "documentation": "https://github.com/sonic1200/lifx-entertainment",
+  "documentation": "https://music-assistant.io/plugins/lifx-entertainment/",
   "multi_instance": true,
   "builtin": false,
   "icon": "lightbulb-group"
