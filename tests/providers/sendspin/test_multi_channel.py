@@ -1182,8 +1182,9 @@ async def test_a_speaker_away_when_its_set_is_taken_apart_stays_once_it_is_back(
     """
     A speaker that is away when its set is taken apart is a player of its own once it is back.
 
-    The server keeps a client a while after it drops off; one that comes back within that time
-    keeps its client, so nothing of its first connection removes it later.
+    It comes back by itself, also after the discovery that follows the removal. The server
+    keeps a client a while after it drops off; one that comes back within that time keeps its
+    client, so nothing of its first connection removes it later.
     """
     monkeypatch.setattr(sendspin_client_module, "CLIENT_CLEANUP_DELAY", 0.5)
     sendspin = _sendspin(mass)
@@ -1194,6 +1195,9 @@ async def test_a_speaker_away_when_its_set_is_taken_apart_stays_once_it_is_back(
     right_client.detach_connection(None)
 
     await mass.players.remove(player.player_id)
+    # the discovery that follows the removal runs while the speaker is still away
+    mass.cancel_timer(f"discover_players_{sendspin.instance_id}")
+    await sendspin.discover_players()
     await asyncio.sleep(0.1)
     if (client := cast("Any", sendspin.server_api.get_client(RIGHT))) is not None:
         # a connection within the cleanup delay takes the kept client back

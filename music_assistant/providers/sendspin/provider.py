@@ -461,7 +461,6 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         # speaker client id -> the protocol id of the multi-channel player it belongs to
         self._multi_channel_speakers: dict[str, str] = {}
         # speakers of a set taken apart while they were away, registered once they are back
-        self._released_speakers: set[str] = set()
         self._held_elsewhere = set()
         self._held_unapproved = set()
         self._held_paired = set()
@@ -582,8 +581,6 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 self._set_held_elsewhere(client_id, held=False)
                 self._unencrypted_clients.discard(client_id)
                 self._refresh_speaker(client_id)
-                # a new connection of it is a new client, which is added as such
-                self._released_speakers.discard(client_id)
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_removed(client_id, event_version))
             case ClientUpdatedEvent(client_id):
@@ -612,11 +609,6 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 self.mass.loop.call_soon(self._refresh_player_state, client_id)
                 self.mass.loop.call_soon(self._hass_auto_pairer.on_client_connected, client_id)
                 self.mass.loop.call_soon(self._local_auto_pairer.on_client_connected, client_id)
-                if client_id in self._released_speakers:
-                    # a client that reconnects within the cleanup delay is not added again
-                    self._released_speakers.discard(client_id)
-                    event_version = self._begin_client_event(client_id)
-                    self.mass.create_task(self._handle_client_added(client_id, event_version))
             case ClientDisconnectedEvent(client_id, goodbye_reason):
                 self._refresh_speaker(client_id)
                 self._set_held_elsewhere(
@@ -1057,15 +1049,8 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             if (client := self.server_api.get_client(client_id)) is None:
                 continue
             await client.ungroup()
-            if not client.is_connected:
-                self._released_speakers.add(client_id)
-                continue
-            if (
-                self.get_protocol(client_id) is None
-                and client_id not in self._client_event_versions
-            ):
-                event_version = self._begin_client_event(client_id)
-                self.mass.create_task(self._handle_client_added(client_id, event_version))
+            if client.is_connected:
+                self._add_client_without_protocol(client_id)
         self.logger.info("Multi-channel player %s removed", protocol_id)
 
     def get_multi_channel_candidates(self) -> list[str]:
@@ -1558,7 +1543,6 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self._client_event_versions.clear()
         self._virtual_players.clear()
         self._multi_channel_speakers.clear()
-        self._released_speakers.clear()
         self._bridge_waiters.clear()
 
     async def get_audio_sources(self) -> list[AudioSource]:
