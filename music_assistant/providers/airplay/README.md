@@ -198,11 +198,12 @@ pair), and the HomePods are fed directly as its speakers.
 - The speakers start the session of the set. The Apple TV joins it as a late joiner after all of
   them, as its session resets when its SETUP goes out before the one of a HomePod (measured), and
   in the background, so the music never waits for it. It is fed silence and sent no volume: it
-  only shows what plays and takes the commands of its remote. When its stream ends it is added
-  once more, and again whenever a speaker of its set joins late; it never stops or fails its
+  only shows what plays and takes the commands of its remote. When its stream ends, or it misses
+  a seek or a resume, it is added once more, and again whenever a speaker of its set joins late;
+  one that misses a pause joins again once the music plays again. It never stops or fails its
   speakers. A speaker that sets up resets the session of the Apple TV, which then reports another
-  sender (measured), so right after a speaker joined that report does not keep it out. Power and wake act on the Apple TV, as for a plain
-  Apple TV, which needs to be paired for this.
+  sender (measured), so right after a speaker joined that report does not keep it out. Power and
+  wake act on the Apple TV, as for a plain Apple TV, which needs to be paired for this.
 - The player option "Play on HomePods only" leaves the Apple TV out: no session to it, no
   wake and no power control (the players controller powers a player on before it plays), and
   no pairing needed.

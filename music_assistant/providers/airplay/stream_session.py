@@ -321,8 +321,10 @@ class AirPlayStreamSession:
                 raise PlayerCommandFailed("warm flush was not acknowledged")  # noqa: TRY301 - triggers cold restart fallback
             for player, ok in zip(members, flushed, strict=True):
                 if not ok:
-                    # the music goes on without a member that is not heard
-                    await self.remove_client(player, reason="warm flush was not acknowledged")
+                    # the music goes on without a member that is not heard, which is added once more
+                    await self.remove_silent_member(
+                        player, rejoin=True, reason="warm flush was not acknowledged"
+                    )
             for player in self.sync_clients:
                 stream = player.stream
                 assert stream
@@ -381,6 +383,8 @@ class AirPlayStreamSession:
             if not player.renders_audio:
                 # the music is parked whether or not a member that is not heard parks along
                 if not await self._command_silent_member(player, "ACTION=STANDBY"):
+                    # it joins again once the music plays again, as one that found none to join
+                    self._silent_member_joins.pop(player.protocol_id, None)
                     await self.remove_client(player, reason="standby command was not delivered")
                 continue
             stream = player.stream
@@ -1724,7 +1728,8 @@ class AirPlayStreamSession:
         """
         Anchor the members that are not heard on the instant the others start at.
 
-        A member that does not take its anchor leaves the session; the others play on.
+        A member that does not take its anchor leaves the session and is added once more; the
+        others play on.
 
         :param position_ms: Media position mapped to the first sample of the anchor.
         :param start_unix_ms: Audible-start instant of the other members in unix epoch ms.
@@ -1746,7 +1751,9 @@ class AirPlayStreamSession:
         )
         for (player, _), result in zip(members, results, strict=True):
             if isinstance(result, BaseException):
-                await self.remove_client(player, reason=f"start failed: {result!r}")
+                await self.remove_silent_member(
+                    player, rejoin=True, reason=f"start failed: {result!r}"
+                )
             else:
                 self._started_silent_members.add(player.protocol_id)
 
