@@ -99,6 +99,7 @@ def _connect(
     provider._held_paired = set()
     provider._refused_here = {}
     provider._hass_auto_pairer = MagicMock()
+    provider._local_auto_pairer = MagicMock()
     provider._announced_clients = set(announced)
     for client_id in client_ids:
         provider.event_cb(provider.server_api, ClientConnectedEvent(client_id=client_id))
