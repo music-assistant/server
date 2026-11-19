@@ -91,7 +91,6 @@ async def provider(scenario: Scenario) -> AirPlayProvider:
     provider._mrp_info_by_address = {}
     provider._speakers = {}
     provider._set_carriers = {}
-    provider._pair_roles = {}
     provider._pair_records = {}
     provider._pair_carriers = {}
     provider._announce_plans = {}
@@ -949,8 +948,10 @@ async def test_an_unpaired_room_is_set_up_to_play_on_its_homepods_only(
 
 
 # A stereo pair of HomePods without an Apple TV (ids, names and addresses made up): both carry
-# the id of the pair; the group id names the role of each only while nobody plays to it.
+# the id of the pair. While nobody plays to it the group id has its idle pair form, which tells
+# no role: once the pair settled, both HomePods read the same one.
 PAIR_ID = "7C1E5A20-3B4D-4F6A-9E8C-1D2F3A4B5C6D"
+PAIR_SHARED_ID = "B3C4D5E6-0000-4000-8000-0000000000AA"
 OUR_GROUP = "6D0A1F2B-3C4D-4E5F-8A9B-0C1D2E3F4A5B"
 FIRST_HOMEPOD_ID = "AA:BB:CC:00:33:01"
 FIRST_HOMEPOD_PROTOCOL_ID = "apaabbcc003301"
@@ -958,13 +959,17 @@ SECOND_PAIR_HOMEPOD_ID = "AA:BB:CC:00:33:02"
 SECOND_PAIR_HOMEPOD_PROTOCOL_ID = "apaabbcc003302"
 
 
-def _pair_homepod(device_id: str, role: int | None, *, playing: bool = False) -> AsyncServiceInfo:
+def _pair_homepod(
+    device_id: str, digit: int | None, *, playing: bool = False, settled: bool = False
+) -> AsyncServiceInfo:
     """
     Return the _airplay._tcp record of a HomePod of the stereo pair.
 
     :param device_id: The device id of the HomePod.
-    :param role: Its role in the pair, None for a HomePod outside the pair.
+    :param digit: The digit of its idle group id while the pair settles, None for a HomePod
+        outside the pair.
     :param playing: Whether a sender plays to the pair, which takes its group id.
+    :param settled: Whether the pair settled, so that both HomePods read the same group id.
     """
     properties = {
         "deviceid": device_id,
@@ -974,12 +979,11 @@ def _pair_homepod(device_id: str, role: int | None, *, playing: bool = False) ->
         "srcvers": "1005.13.2",
         "gid": f"5A1B2C3D-0000-4000-8000-{device_id.replace(':', '')}",
     }
-    if role is not None:
-        properties |= {
-            "tsid": PAIR_ID,
-            "gpn": "Loft",
-            "gid": OUR_GROUP if playing else f"{PAIR_ID}+{role}+{properties['gid']}",
-        }
+    if digit is not None:
+        idle = (
+            f"{PAIR_ID}+0+{PAIR_SHARED_ID}" if settled else f"{PAIR_ID}+{digit}+{properties['gid']}"
+        )
+        properties |= {"tsid": PAIR_ID, "gpn": "Loft", "gid": OUR_GROUP if playing else idle}
     return AsyncServiceInfo(
         AIRPLAY_DISCOVERY_TYPE,
         f"HomePod {device_id[-2:]}.{AIRPLAY_DISCOVERY_TYPE}",
@@ -1017,36 +1021,38 @@ async def test_a_stereo_pair_of_homepods_is_one_player_named_after_the_room(
 
 
 @pytest.mark.usefixtures("apple_controls")
-async def test_a_session_on_a_stereo_pair_changes_nothing_and_removes_nothing(
+async def test_a_pair_found_during_a_session_removes_nothing_until_its_records_are_idle(
     scenario: Scenario, provider: AirPlayProvider
 ) -> None:
     """
-    While a sender plays to the pair, its records tell no roles: what each HomePod is stays put.
+    A pair found while a sender plays to it is decided at once, but nothing is removed yet.
 
-    Both HomePods have players of their own, so the roles decide. The player the second HomePod
-    had before goes only on records that tell both roles.
+    Both HomePods have players of their own, so the one with the lowest id carries the pair.
+    The player the second HomePod had before goes only once both records are in their idle
+    pair form.
     """
     await _announce(scenario, provider, _pair_homepod(FIRST_HOMEPOD_ID, None))
     old_player_id = _player_of(
         await _announce(scenario, provider, _pair_homepod(SECOND_PAIR_HOMEPOD_ID, None))
     ).player_id
-    # the pair is found while a sender plays to it: neither record tells its role
+    # the pair is found while a sender plays to it: no group id has its idle pair form
     for device_id in (FIRST_HOMEPOD_ID, SECOND_PAIR_HOMEPOD_ID):
         await _announce(scenario, provider, _pair_homepod(device_id, 0, playing=True))
-    assert provider.get_player(SECOND_PAIR_HOMEPOD_PROTOCOL_ID) is not None
-    assert provider._speakers == {}
-    assert await scenario.player_config(old_player_id) is not None
-
-    await _announce(scenario, provider, _pair_homepod(FIRST_HOMEPOD_ID, 0))
-    await _announce(scenario, provider, _pair_homepod(SECOND_PAIR_HOMEPOD_ID, 1))
     pair = provider.get_player(FIRST_HOMEPOD_PROTOCOL_ID)
     assert pair is not None
+    assert provider.get_player(SECOND_PAIR_HOMEPOD_PROTOCOL_ID) is None
+    assert list(provider._speakers) == [SECOND_PAIR_HOMEPOD_PROTOCOL_ID]
+    assert await scenario.player_config(old_player_id) is not None
+
+    for device_id in (FIRST_HOMEPOD_ID, SECOND_PAIR_HOMEPOD_ID):
+        await _announce(scenario, provider, _pair_homepod(device_id, 0, settled=True))
+    assert provider.get_player(FIRST_HOMEPOD_PROTOCOL_ID) is pair
     assert await scenario.player_config(old_player_id) is None
     player_id = _player_of(pair).player_id
 
-    # a session afterwards keeps the roles, whatever its group id reads
-    for device_id, role in ((SECOND_PAIR_HOMEPOD_ID, 1), (FIRST_HOMEPOD_ID, 0)):
-        await _announce(scenario, provider, _pair_homepod(device_id, role, playing=True))
+    # a session afterwards changes nothing, whatever its group id reads
+    for device_id in (SECOND_PAIR_HOMEPOD_ID, FIRST_HOMEPOD_ID):
+        await _announce(scenario, provider, _pair_homepod(device_id, 0, playing=True))
     assert provider.get_player(FIRST_HOMEPOD_PROTOCOL_ID) is pair
     assert provider.get_player(SECOND_PAIR_HOMEPOD_PROTOCOL_ID) is None
     assert [speaker.protocol_id for speaker in pair.speakers] == [SECOND_PAIR_HOMEPOD_PROTOCOL_ID]
@@ -1073,14 +1079,14 @@ async def test_a_homepod_that_leaves_its_pair_is_found_as_a_new_player(
 
 @pytest.mark.usefixtures("apple_controls")
 @pytest.mark.parametrize("telling", [FIRST_HOMEPOD_ID, SECOND_PAIR_HOMEPOD_ID])
-async def test_a_pair_formed_again_during_a_session_removes_nothing_until_the_roles_show(
+async def test_a_pair_formed_again_during_a_session_removes_nothing_until_both_are_idle(
     scenario: Scenario, provider: AirPlayProvider, telling: str
 ) -> None:
     """
     Its player enabled while a sender plays to the pair, it takes its HomePod back at once.
 
-    The player that HomePod had meanwhile is only removed once both current records tell
-    the roles: one that does is not enough.
+    The player that HomePod had meanwhile is only removed once both current records are in
+    their idle pair form: one is not enough.
     """
     await _announce(scenario, provider, _pair_homepod(FIRST_HOMEPOD_ID, 0))
     await _announce(scenario, provider, _pair_homepod(SECOND_PAIR_HOMEPOD_ID, 1))
@@ -1139,7 +1145,7 @@ async def _form_pair(scenario: Scenario, provider: AirPlayProvider) -> str:
 async def _swap_roles(
     scenario: Scenario, provider: AirPlayProvider, *, first_homepod_first: bool
 ) -> None:
-    """Hand the provider the records of the pair with the roles of its HomePods swapped."""
+    """Hand the provider records of the pair with the digits of their group ids swapped."""
     records = [_pair_homepod(FIRST_HOMEPOD_ID, 1), _pair_homepod(SECOND_PAIR_HOMEPOD_ID, 0)]
     for record in records if first_homepod_first else reversed(records):
         await _announce(scenario, provider, record)
@@ -1263,9 +1269,9 @@ async def test_a_homepod_back_in_its_pair_in_the_other_role_loses_its_player_of_
     scenario: Scenario, provider: AirPlayProvider, first_homepod_first: bool
 ) -> None:
     """
-    A HomePod that left its pair and came back with the roles swapped loses the player it had.
+    A HomePod that left its pair and came back with the digits swapped loses the player it had.
 
-    The HomePod that carries the pair keeps it, whatever role its own record tells by then.
+    The HomePod that carries the pair keeps it, whatever its own record tells by then.
     """
     room_player_id = await _form_pair(scenario, provider)
     meanwhile = _player_of(
@@ -1296,7 +1302,6 @@ async def test_a_pair_whose_roles_swapped_across_a_restart_keeps_its_room(
     for kept in (
         provider._speakers,
         provider._set_carriers,
-        provider._pair_roles,
         provider._pair_records,
         provider._pair_carriers,
     ):
@@ -1319,7 +1324,7 @@ async def test_a_pair_of_which_one_homepod_had_a_player_is_carried_by_that_one(
     """
     The only HomePod of a pair with a player of its own carries the pair, and nothing is removed.
 
-    It is decided at once, whatever roles the records tell, also while a sender plays to the pair.
+    It is decided at once, whatever the group ids read, also while a sender plays to the pair.
     """
     known_player_id = _player_of(
         await _announce(scenario, provider, _pair_homepod(SECOND_PAIR_HOMEPOD_ID, None))
@@ -1346,8 +1351,8 @@ async def test_a_pair_formed_while_running_keeps_its_room_across_a_restart(
     Two HomePods that had players of their own and formed a pair keep its room after a restart.
 
     The room is still stored as the player it was before the pair formed, but only the HomePod
-    that carries the pair still has a stored player: it carries it again, whatever roles the
-    records tell, also when they tell none because a sender plays to the pair.
+    that carries the pair still has a stored player: it carries it again, whatever the group
+    ids read, also while a sender plays to the pair.
     """
     for device_id in (FIRST_HOMEPOD_ID, SECOND_PAIR_HOMEPOD_ID):
         await _announce(scenario, provider, _pair_homepod(device_id, None))
@@ -1364,7 +1369,6 @@ async def test_a_pair_formed_while_running_keeps_its_room_across_a_restart(
     for kept in (
         provider._speakers,
         provider._set_carriers,
-        provider._pair_roles,
         provider._pair_records,
         provider._pair_carriers,
     ):
@@ -1382,6 +1386,137 @@ async def test_a_pair_formed_while_running_keeps_its_room_across_a_restart(
     assert _player_of(pair).player_id == room_player_id
     assert provider.get_player(SECOND_PAIR_HOMEPOD_PROTOCOL_ID) is None
     assert await scenario.player_config(room_player_id) is not None
+
+
+def _settled_pair(*, first_homepod_first: bool) -> list[AsyncServiceInfo]:
+    """
+    Return the records of the settled pair, which both read the same group id.
+
+    :param first_homepod_first: Whether the record of the HomePod with the lowest id comes first.
+    """
+    records = [
+        _pair_homepod(FIRST_HOMEPOD_ID, 0, settled=True),
+        _pair_homepod(SECOND_PAIR_HOMEPOD_ID, 0, settled=True),
+    ]
+    return records if first_homepod_first else records[::-1]
+
+
+@pytest.mark.usefixtures("apple_controls")
+@pytest.mark.parametrize("first_homepod_first", [True, False])
+@pytest.mark.parametrize("stored", ["none", "both", "first", "second"])
+async def test_a_settled_pair_is_carried_by_its_only_stored_homepod_or_else_the_lowest_id(
+    scenario: Scenario, provider: AirPlayProvider, first_homepod_first: bool, stored: str
+) -> None:
+    """
+    The records of a settled pair tell no roles, yet the pair is one player.
+
+    The only HomePod with a stored player carries it. With none or both stored (an upgrade
+    from a server without pairs) the one with the lowest id does, and the player the other
+    one had is removed.
+    """
+    old_player_ids: dict[str, str] = {}
+    for device_id, protocol_id, which in (
+        (FIRST_HOMEPOD_ID, FIRST_HOMEPOD_PROTOCOL_ID, "first"),
+        (SECOND_PAIR_HOMEPOD_ID, SECOND_PAIR_HOMEPOD_PROTOCOL_ID, "second"),
+    ):
+        if stored in ("both", which):
+            homepod = await _announce(scenario, provider, _pair_homepod(device_id, None))
+            old_player_ids[protocol_id] = _player_of(homepod).player_id
+
+    for record in _settled_pair(first_homepod_first=first_homepod_first):
+        await _announce(scenario, provider, record)
+
+    carrier, speaker = (
+        (SECOND_PAIR_HOMEPOD_PROTOCOL_ID, FIRST_HOMEPOD_PROTOCOL_ID)
+        if stored == "second"
+        else (FIRST_HOMEPOD_PROTOCOL_ID, SECOND_PAIR_HOMEPOD_PROTOCOL_ID)
+    )
+    pair = provider.get_player(carrier)
+    assert pair is not None
+    assert [homepod.protocol_id for homepod in pair.speakers] == [speaker]
+    assert provider.get_player(speaker) is None
+    state = scenario.player(_player_of(pair).player_id)
+    assert state is not None
+    assert (state.type, state.channel_layout) == (PlayerType.MULTI_CHANNEL, ChannelLayout.STEREO)
+    if carrier in old_player_ids:
+        assert _player_of(pair).player_id == old_player_ids[carrier]
+    if speaker in old_player_ids:
+        assert await scenario.player_config(old_player_ids[speaker]) is None
+
+
+@pytest.mark.usefixtures("apple_controls")
+@pytest.mark.parametrize("first_homepod_first", [True, False])
+@pytest.mark.parametrize("stored", ["none", "both"])
+async def test_a_settled_pair_keeps_its_carrier_across_a_restart(
+    scenario: Scenario, provider: AirPlayProvider, first_homepod_first: bool, stored: str
+) -> None:
+    """After a restart the HomePod that carried the settled pair carries it again."""
+    if stored == "both":
+        for device_id in (FIRST_HOMEPOD_ID, SECOND_PAIR_HOMEPOD_ID):
+            await _announce(scenario, provider, _pair_homepod(device_id, None))
+    for record in _settled_pair(first_homepod_first=first_homepod_first):
+        await _announce(scenario, provider, record)
+    room_player_id = _player_of(provider.get_player(FIRST_HOMEPOD_PROTOCOL_ID)).player_id
+    # what a restarted provider knows: nothing about the pair
+    await scenario.mass.players.unregister(FIRST_HOMEPOD_PROTOCOL_ID)
+    await scenario.settle()
+    for kept in (
+        provider._speakers,
+        provider._set_carriers,
+        provider._pair_records,
+        provider._pair_carriers,
+    ):
+        kept.clear()
+
+    for record in _settled_pair(first_homepod_first=not first_homepod_first):
+        await _announce(scenario, provider, record)
+
+    pair = provider.get_player(FIRST_HOMEPOD_PROTOCOL_ID)
+    assert pair is not None
+    assert _player_of(pair).player_id == room_player_id
+    assert [speaker.protocol_id for speaker in pair.speakers] == [SECOND_PAIR_HOMEPOD_PROTOCOL_ID]
+    assert provider.get_player(SECOND_PAIR_HOMEPOD_PROTOCOL_ID) is None
+
+
+@pytest.mark.usefixtures("apple_controls")
+@pytest.mark.parametrize("first_homepod_first", [True, False])
+async def test_left_and_right_swapped_on_a_settled_pair_change_nothing(
+    scenario: Scenario, provider: AirPlayProvider, first_homepod_first: bool
+) -> None:
+    """A swap of left and right shows in no record of a settled pair, and changes nothing."""
+    for record in _settled_pair(first_homepod_first=first_homepod_first):
+        await _announce(scenario, provider, record)
+    pair = provider.get_player(FIRST_HOMEPOD_PROTOCOL_ID)
+    assert pair is not None
+    room_player_id = _player_of(pair).player_id
+
+    for record in _settled_pair(first_homepod_first=not first_homepod_first):
+        await _announce(scenario, provider, record)
+
+    assert provider.get_player(FIRST_HOMEPOD_PROTOCOL_ID) is pair
+    assert _player_of(pair).player_id == room_player_id
+    assert [speaker.protocol_id for speaker in pair.speakers] == [SECOND_PAIR_HOMEPOD_PROTOCOL_ID]
+    assert provider.get_player(SECOND_PAIR_HOMEPOD_PROTOCOL_ID) is None
+    assert provider._pair_carriers == {PAIR_ID: FIRST_HOMEPOD_PROTOCOL_ID}
+
+
+@pytest.mark.usefixtures("apple_controls")
+async def test_a_raop_record_whose_airplay_record_is_not_found_keeps_its_pair_waiting(
+    scenario: Scenario, provider: AirPlayProvider
+) -> None:
+    """A lookup that finds no AirPlay record for a HomePod's RAOP record is no goodbye."""
+    await _announce(scenario, provider, _pair_homepod(FIRST_HOMEPOD_ID, 0, settled=True))
+    # the fixture's lookup finds nothing, as when the AirPlay name differs from the RAOP one
+    raop = _homepod_raop(FIRST_HOMEPOD_ID)
+    await provider.on_mdns_service_state_change(raop.name, ServiceStateChange.Added, raop)
+    await scenario.settle()
+
+    await _announce(scenario, provider, _pair_homepod(SECOND_PAIR_HOMEPOD_ID, 0, settled=True))
+
+    pair = provider.get_player(FIRST_HOMEPOD_PROTOCOL_ID)
+    assert pair is not None
+    assert [speaker.protocol_id for speaker in pair.speakers] == [SECOND_PAIR_HOMEPOD_PROTOCOL_ID]
+    assert provider.get_player(SECOND_PAIR_HOMEPOD_PROTOCOL_ID) is None
 
 
 @pytest.mark.usefixtures("apple_controls")

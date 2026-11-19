@@ -495,7 +495,7 @@ class AirPlayPlayer(PlayerProtocol):
         """Return the place of this device in a set of devices that plays as one player, if any."""
         membership = parse_set_membership(self.airplay_discovery_info)
         if membership is not None and membership.kind == SetKind.STEREO_PAIR:
-            # which HomePod carries a pair is decided once, whatever roles later records tell
+            # the records of a pair tell no roles: which HomePod carries it is decided once
             position = cast("AirPlayProvider", self.provider).get_pair_position(
                 self.protocol_id, membership.set_id
             )
@@ -1252,9 +1252,8 @@ class AirPlayPlayer(PlayerProtocol):
             # the set is gone: a speaker in it once it is formed again is reported again
             self._reported_speaker_ids = set()
             return
-        # What both current records tell, never a role remembered from an earlier record. The
-        # records of a pair tell roles only while idle, and these can swap: which HomePod carries
-        # the pair is decided once.
+        # What both current records tell, never an earlier record: those of a pair only name it
+        # in their idle pair form, while nobody plays to it.
         if own.position is None:
             return
         provider = cast("AirPlayProvider", self.provider)

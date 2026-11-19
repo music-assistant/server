@@ -337,10 +337,8 @@ class AirPlayProvider(PlayerProvider):
         self._speakers: dict[str, AirPlaySpeaker] = {}
         # Protocol id of the device that carries each set seen, also of a disabled one
         self._set_carriers: dict[str, str] = {}
-        # The role in its stereo pair each HomePod last told, by protocol id: its record only
-        # tells it while nobody plays to the pair. The last record of each HomePod of a pair,
-        # and which one carries the pair, decided once and kept whatever later roles tell.
-        self._pair_roles: dict[str, int] = {}
+        # The last record of each HomePod of a stereo pair, by pair id, and which HomePod carries
+        # each pair: decided once and kept, as the records tell no roles.
         self._pair_records: dict[str, dict[str, AsyncServiceInfo]] = {}
         self._pair_carriers: dict[str, str] = {}
         # Shared audible instants for in-flight announcements, keyed by
@@ -584,13 +582,18 @@ class AirPlayProvider(PlayerProvider):
                 RAOP_DISCOVERY_TYPE, display_name, timeout=10.0
             )
 
-        if pair_id := self._note_pair_record(protocol_id, airplay_discovery_info):
+        # a lookup that found no record is no goodbye of the records of the device
+        if airplay_discovery_info and (
+            pair_id := self._note_pair_record(protocol_id, airplay_discovery_info)
+        ):
             await self._replay_pair_records(pair_id, protocol_id)
         if (
             membership := self._membership_of(protocol_id, airplay_discovery_info)
         ) and membership.position is None:
-            # a speaker of a stereo pair waits for a record that tells which one it is
-            self.logger.debug("Ignoring %s until it tells its role in its pair", display_name)
+            # a HomePod of a stereo pair waits until it is decided which one carries the pair
+            self.logger.debug(
+                "Ignoring %s until the other HomePod of its pair is seen", display_name
+            )
             return
         if airplay_discovery_info:
             model_discovery_info = airplay_discovery_info
@@ -808,7 +811,7 @@ class AirPlayProvider(PlayerProvider):
         self, protocol_id: str, discovery_info: AsyncServiceInfo | None
     ) -> SetMembership | None:
         """
-        Return the place of a device in a set, with the pair role it last told if this record does not.
+        Return the place of a device in a set; for a stereo pair, the place decided for it.
 
         :param protocol_id: Protocol id of the device.
         :param discovery_info: The mdns record of the device.
@@ -828,8 +831,8 @@ class AirPlayProvider(PlayerProvider):
 
         The HomePod whose player is the room of the pair keeps carrying it, and so does the only
         one of the two with a stored player: the player of the other is removed once the pair
-        formed. Without either, the roles decide once both HomePods told theirs. Return the id
-        of the pair when that was decided just now.
+        formed. Without either, the HomePod with the lowest protocol id carries it, once both
+        records are in. Return the id of the pair when that was decided just now.
 
         :param protocol_id: Protocol id of the device.
         :param discovery_info: The mdns record of the device.
@@ -852,24 +855,21 @@ class AirPlayProvider(PlayerProvider):
                 # a HomePod that left its pair carries it no more
                 if self._pair_carriers.get(other_id) == protocol_id:
                     del self._pair_carriers[other_id]
-        if membership is None or pair_id is None:
-            self._pair_roles.pop(protocol_id, None)
+        if pair_id is None:
             return None
-        if membership.position is not None:
-            self._pair_roles[protocol_id] = membership.position
         records = self._pair_records.setdefault(pair_id, {})
         records[protocol_id] = discovery_info
         if pair_id in self._pair_carriers:
             return None
-        roles = {device_id: self._pair_roles.get(device_id) for device_id in records}
         players = [device_id for device_id in records if self._has_stored_player(device_id)]
         if rooms := sorted(device_id for device_id in records if self.has_stored_room(device_id)):
             carrier = rooms[0]
         elif len(records) == 2 and len(players) == 1:
             # a room formed while the server ran is stored as the player it was until it attaches
             carrier = players[0]
-        elif sorted(roles.values(), key=str) == [0, 1]:
-            carrier = next(device_id for device_id, role in roles.items() if role == 0)
+        elif len(records) == 2:
+            # the records tell no roles; the lowest id makes the same choice at every start
+            carrier = min(records)
         else:
             return None
         self._pair_carriers[pair_id] = carrier

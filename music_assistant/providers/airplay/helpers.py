@@ -270,8 +270,9 @@ class SetMembership:
 
     # id of the set, shared by all of its devices
     set_id: str
-    # 0 for the device that carries the set, above 0 for one of its speakers; None for a
-    # speaker of a stereo pair whose record does not tell its role right now
+    # 0 for the device that carries the set, above 0 for one of its speakers. A record of a
+    # stereo pair tells no role: there it is the digit of the idle pair form of its group id,
+    # None while a sender plays to the pair
     position: int | None
     # number of devices in the set, the one that carries it included
     size: int
@@ -517,10 +518,11 @@ def _get_cli_binary_name(system: str, machine: str) -> str | None:
 
 def _parse_stereo_pair(discovery_info: AsyncServiceInfo) -> SetMembership | None:
     """
-    Return the place of a HomePod in a stereo pair, None outside one.
+    Return the membership of a HomePod in a stereo pair, None outside one.
 
-    Both speakers carry the id of the pair; the role of each is only in its group id, which
-    reads ``<pair id>+<role>+<device id>`` while nobody plays to the pair.
+    Both speakers carry the id of the pair. While nobody plays to the pair, the group id has
+    its idle pair form ``<pair id>+<digit>+<id>``, which tells no role: both HomePods of a
+    settled pair read the same one. The position only tells whether the record is in that form.
 
     :param discovery_info: The _airplay._tcp record of the device.
     """
