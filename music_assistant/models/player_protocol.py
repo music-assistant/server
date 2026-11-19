@@ -1068,7 +1068,9 @@ class PlayerProtocol(ABC):
         player implementation if the provider keeps something of its own about the
         device, such as an entry in its list of manually added devices. The players
         controller holds an object that is not attached only weakly, so a provider with
-        such a list keeps a reference to the object of every device on it.
+        such a list keeps a reference to the object of every device on it. What the
+        provider keeps about a device it holds no object for goes in
+        PlayerProvider.on_protocol_removed.
         """
         return
 

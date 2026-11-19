@@ -101,6 +101,18 @@ class PlayerProvider(Provider):
         implement this.
         """
 
+    async def on_protocol_removed(self, protocol_id: str) -> None:
+        """
+        Handle a protocol of this provider whose player was removed for good.
+
+        Called after the config of the protocol was deleted, also when this provider holds
+        no object for it, such as for a device that has not connected since the server started.
+        Override this to forget what the provider stores about the device outside the
+        config of the protocol.
+
+        :param protocol_id: ID of the removed protocol.
+        """
+
     @property
     def protocols(self) -> list[PlayerProtocol]:
         """

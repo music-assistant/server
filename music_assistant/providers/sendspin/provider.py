@@ -400,6 +400,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
     _held_paired: set[str]
     _refused_here: dict[str, GoodbyeReason]
     _unencrypted_clients: set[str]
+    _announced_clients: set[str]
     _unloading: bool
     _hass_available: bool
     _server_start_failed: bool
@@ -437,6 +438,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self._held_paired = set()
         self._refused_here = {}
         self._unencrypted_clients = set()
+        self._announced_clients = set()
         self._pin_sessions: dict[str, PinPairingSession] = {}
         self._pending_pairing_evictions: set[str] = set()
         self._running_pairing_evictions: set[asyncio.Task[None]] = set()
@@ -542,14 +544,19 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         """Event callback registered to the sendspin server."""
         match event:
             case ClientAddedEvent(client_id):
+                self._announced_clients.add(client_id)
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_added(client_id, event_version))
             case ClientRemovedEvent(client_id):
+                self._announced_clients.discard(client_id)
                 self._set_held_elsewhere(client_id, held=False)
                 self._unencrypted_clients.discard(client_id)
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_removed(client_id, event_version))
             case ClientUpdatedEvent(client_id):
+                # a client without a protocol is set up by its add, which reads the latest hello
+                if self.get_protocol(client_id) is None:
+                    return
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_updated(client_id, event_version))
             case ClientCredentialMismatchEvent(client_id):
@@ -563,6 +570,10 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 else:
                     self._unencrypted_clients.discard(client_id)
                 self._set_held_elsewhere(client_id, held=False)
+                # aiosendspin announces a client once while it keeps it, so a client whose
+                # player was removed meanwhile gets a new one here
+                if client_id in self._announced_clients:
+                    self._add_client_without_protocol(client_id)
                 # A reconnect within aiosendspin's cleanup delay reuses the player, and this
                 # event fires before the new connection's roles are attached.
                 self.mass.loop.call_soon(self._refresh_player_state, client_id)
@@ -597,15 +608,8 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         """
         for client in self.server_api.clients:
             client_id = client.client_id
-            if not (client.is_connected or self.server_api.is_external_player(client_id)):
-                continue
-            # a client whose add, update or removal is being handled is left to that
-            if self.get_protocol(client_id) is not None or client_id in self._client_event_versions:
-                continue
-            if not self.mass.players.wants_protocol(client_id):
-                continue
-            event_version = self._begin_client_event(client_id)
-            self.mass.create_task(self._handle_client_added(client_id, event_version))
+            if client.is_connected or self.server_api.is_external_player(client_id):
+                self._add_client_without_protocol(client_id)
         for client_id in self.mass.config.get_protocol_ids_of_provider(self.instance_id):
             underlying_id = self.mass.config.get_protocol_value(
                 client_id, CONF_UNDERLYING_PLAYER_ID
@@ -1118,6 +1122,16 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             await self.server_api.untrust_unpaired(client_id)
         await self._refresh_player(client_id)
 
+    async def on_protocol_removed(self, protocol_id: str) -> None:
+        """Drop the pairing and guest approval of a removed player's device."""
+        if await self.server_api.pairing_store.record_by_client_id(protocol_id) is not None:
+            await self._drop_pairing(protocol_id)
+            self.logger.info(
+                "Removed the pairing of client %s: its player was removed", protocol_id
+            )
+        await self.server_api.untrust_unpaired(protocol_id)
+        await self._refresh_player(protocol_id)
+
     async def pair_web_player(self, pairing_token: str) -> None:
         """
         Pair the built-in web player that minted the given pairing token.
@@ -1390,6 +1404,16 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             logging.getLogger("aiosendspin").setLevel(logging.DEBUG)
         else:
             logging.getLogger("aiosendspin").setLevel(self.logger.level + 10)
+
+    def _add_client_without_protocol(self, client_id: str) -> None:
+        """Add a client that has no protocol, unless its player does not want one."""
+        # a client whose add, update or removal is being handled is left to that
+        if self.get_protocol(client_id) is not None or client_id in self._client_event_versions:
+            return
+        if not self.mass.players.wants_protocol(client_id):
+            return
+        event_version = self._begin_client_event(client_id)
+        self.mass.create_task(self._handle_client_added(client_id, event_version))
 
     def _begin_client_event(self, client_id: str) -> int:
         """Increment version and in-flight task count for a client event."""
@@ -1813,6 +1837,14 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             self._running_pairing_evictions.add(task)
             task.add_done_callback(self._running_pairing_evictions.discard)
 
+    async def _drop_pairing(self, client_id: str) -> None:
+        """Drop the pairing of a client, and its own half too when it is connected."""
+        try:
+            await self.server_api.unpair(client_id)
+        except ValueError:
+            # Not connected: there is no client half to notify, drop only our record.
+            await self.server_api.pairing_store.remove_record(client_id)
+
     async def _evict_pairings_for_owner(self, owner: str) -> None:
         """Drop every pairing bound to ``owner``, unpairing connected clients in-band."""
         if self._unloading:
@@ -1823,11 +1855,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             current = await pairing_store.record_by_client_id(record.client_id)
             if current is None or current.owner != owner:
                 continue
-            try:
-                await self.server_api.unpair(record.client_id)
-            except ValueError:
-                # Not connected: there is no client half to notify, drop only our record.
-                await pairing_store.remove_record(record.client_id)
+            await self._drop_pairing(record.client_id)
             self.logger.info(
                 "Removed the pairing of client %s: its owner's access was revoked",
                 record.client_id,

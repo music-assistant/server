@@ -913,9 +913,13 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             if player is not None or stored is not None:
                 await self._drop_player(player_id, player)
             # a protocol found again during the awaits above belongs to another player now
-            self._delete_player_config(
-                player_id, set(self.mass.config.get_protocol_ids_of_player(player_id))
-            )
+            deleted_protocol_ids = set(self.mass.config.get_protocol_ids_of_player(player_id))
+            protocol_provider_ids = {
+                protocol_id: str(record.get("provider"))
+                for protocol_id in deleted_protocol_ids
+                if (record := self.mass.config.get_protocol_record(protocol_id))
+            }
+            self._delete_player_config(player_id, deleted_protocol_ids)
         finally:
             self._removing.discard(player_id)
         self.logger.info("Player removed: %s", player.name if player else player_id)
@@ -923,12 +927,21 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             if protocol.protocol_id in self._protocols or protocol.protocol_id in self._unattached:
                 # its device was found again meanwhile, so its provider still needs it
                 continue
+            # a protocol that only exists while connected has no record to name its provider
+            protocol_provider_ids.setdefault(protocol.protocol_id, protocol.provider_id)
             # the provider only cleans up what it keeps about the device itself.
             # Best-effort: the player is gone by now, whatever happens to that
             try:
                 await protocol.on_remove()
             except Exception:
                 self.logger.exception("Error removing protocol %s", protocol.protocol_id)
+        for protocol_id, provider_id in protocol_provider_ids.items():
+            if not isinstance(provider := self.mass.get_provider(provider_id), PlayerProvider):
+                continue
+            try:
+                await provider.on_protocol_removed(protocol_id)
+            except Exception:
+                self.logger.exception("Error removing protocol %s", protocol_id)
         if not rediscover or is_group:
             # a group is no device on the network: with its config gone there is nothing
             # left for its provider to find
