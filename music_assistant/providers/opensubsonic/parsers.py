@@ -414,14 +414,16 @@ def parse_album(
 
     album_type = _map_release_type(sonic_album)
 
-    if album_type is not None:
+    if (album_type is None or album_type == AlbumType.ALBUM) and (
+        sonic_album.is_compilation or various_artist_album
+    ):
+        album.album_type = AlbumType.COMPILATION
+    elif album_type is not None:
         album.album_type = album_type
     else:
         inferred_type = infer_album_type(name, version)
         if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
             album.album_type = inferred_type
-        elif sonic_album.is_compilation or various_artist_album:
-            album.album_type = AlbumType.COMPILATION
 
     return album
 
