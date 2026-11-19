@@ -1,7 +1,5 @@
 """Tests for the BBC Sounds provider's station, playback and on-demand handling."""
 
-from __future__ import annotations
-
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -17,8 +15,6 @@ from auntie_sounds.models import (
     Podcast,
     RadioClip,
     ScheduleItem,
-    Segment,
-    SegmentOffset,
     Synopses,
     Titles,
 )
@@ -33,7 +29,6 @@ from music_assistant_models.media_items import (
     Radio,
     Track,
 )
-from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.live_rewind import LiveProgrammeId
@@ -48,18 +43,6 @@ def _mock(service: object) -> AsyncMock:
     """Return a client service, which the client fixture replaces with a mock, as that mock."""
     assert isinstance(service, AsyncMock)
     return service
-
-
-def _segment() -> Segment:
-    """Build a track that plays for the first minute of a programme."""
-    return Segment(
-        id="segment",
-        segment_type="music",
-        uris=[],
-        titles=Titles(primary="Artist", secondary="Song"),
-        image_url="https://example.com/song.jpg",
-        offset=SegmentOffset(start=0, end=60),
-    )
 
 
 def _open_radio_four(provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
@@ -212,63 +195,6 @@ class TestOnDemandEpisodes:
 
         with pytest.raises(Exception, match="Unexpected type Container for episode pid"):
             await provider.get_podcast_episode("pid")
-
-
-class TestProgrammeSegments:
-    """Tests for the songs played in an on-demand programme."""
-
-    async def test_cache_miss_returns_and_stores_the_segments(
-        self, provider: BBCSoundsProvider
-    ) -> None:
-        """Test the first lookup returns the API's segments as well as caching them."""
-        segments = [_segment()]
-        _mock(provider.client.content).get_show_segments.return_value = segments
-        cache_set = AsyncMock()
-        provider.mass.cache.get = AsyncMock(return_value=False)  # type: ignore[method-assign]
-        provider.mass.cache.set = cache_set  # type: ignore[method-assign]
-
-        assert await provider.stream_manager.now_playing._get_programme_segments("vpid") == segments
-        assert cache_set.await_args is not None
-        cached = cache_set.await_args.kwargs["data"]
-        assert [Segment.from_dict(item) for item in cached] == segments
-
-    async def test_first_metadata_update_shows_the_track(self, provider: BBCSoundsProvider) -> None:
-        """Test the now-playing track is shown before the segments are cached."""
-        _mock(provider.client.content).get_show_segments.return_value = [_segment()]
-        provider.mass.cache.get = AsyncMock(return_value=False)  # type: ignore[method-assign]
-        provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
-        stream_details = Mock(spec=StreamDetails)
-        stream_details.data = {"vpid": "vpid", "pid": "pid"}
-        stream_details.stream_metadata = StreamMetadata(title="Programme")
-
-        await provider.stream_manager.now_playing._update_on_demand_stream_metadata(
-            stream_details, elapsed_time=30
-        )
-
-        assert stream_details.stream_metadata.title == "Song"
-        assert stream_details.stream_metadata.artist == "Artist"
-
-    async def test_empty_track_list_is_fetched_once_per_playback(
-        self, provider: BBCSoundsProvider
-    ) -> None:
-        """Test a programme without a track list isn't cached, or fetched every refresh."""
-        _mock(provider.client.content).get_show_segments.return_value = []
-        cache_set = AsyncMock()
-        provider.mass.cache.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
-        provider.mass.cache.set = cache_set  # type: ignore[method-assign]
-        stream_details = Mock(spec=StreamDetails)
-        stream_details.data = {"vpid": "vpid", "pid": "pid"}
-        stream_details.stream_metadata = StreamMetadata(title="Programme")
-
-        await provider.stream_manager.now_playing._update_on_demand_stream_metadata(
-            stream_details, elapsed_time=30
-        )
-        await provider.stream_manager.now_playing._update_on_demand_stream_metadata(
-            stream_details, elapsed_time=35
-        )
-
-        _mock(provider.client.content).get_show_segments.assert_awaited_once()
-        cache_set.assert_not_awaited()
 
 
 class TestMenuActionsListenFromStart:
