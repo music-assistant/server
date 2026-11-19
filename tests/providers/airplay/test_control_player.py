@@ -1706,6 +1706,30 @@ async def test_the_volume_of_a_set_is_not_the_volume_of_its_apple_tv() -> None:
     assert player.volume_muted is True
 
 
+async def test_the_volume_of_an_idle_pair_is_the_native_volume_of_its_homepod() -> None:
+    """
+    The HomePod that carries a stereo pair is a speaker of it: its native volume is the pair's.
+
+    As for a HomePod of its own, a volume goes to the device and one it reports comes back.
+    """
+    player = _make_control_player()
+    cast("MagicMock", player.airplay_discovery_info).decoded_properties.update(
+        {"tsid": "7C1E5A20", "gid": "7C1E5A20+0+AABBCC003301", "gpn": "Loft"}
+    )
+    cast("MagicMock", player.provider).get_pair_position.return_value = 0
+    cast("MagicMock", player.provider).get_set_speakers.return_value = [MagicMock(stream=None)]
+    assert player.carries_set is True
+    device = MagicMock()
+    device.audio.set_volume = AsyncMock()
+
+    with patch.object(player, "_device_for_feature", return_value=device):
+        await player.volume_set(30)
+    player._handle_volume_update("companion", 45)
+
+    device.audio.set_volume.assert_awaited_once_with(30)
+    assert player.volume_level == 45
+
+
 def test_the_state_of_a_set_follows_its_speakers_while_they_play() -> None:
     """While its speaker streams, the Apple TV going to standby or playing an app is ignored."""
     player, speaker = _make_set_player()

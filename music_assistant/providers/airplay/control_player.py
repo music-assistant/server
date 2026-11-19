@@ -216,7 +216,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             features.add(PlayerFeature.POWER)
         if (
             not self._stream_active
-            and not self.carries_set
+            and not self.carries_home_theater
             and not self._device_for_feature(FeatureName.SetVolume)
         ):
             features.discard(PlayerFeature.VOLUME_MUTE)
@@ -334,8 +334,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def volume_set(self, volume_level: int) -> None:
         """Set stream or native device volume."""
-        # the volume of a set is that of its speakers, never the one of its device
-        if self._stream_active or self.carries_set:
+        # the volume of a home theater set is that of its speakers, never the one of its Apple TV
+        if self._stream_active or self.carries_home_theater:
             await super().volume_set(volume_level)
             return
         device = self._device_for_feature(FeatureName.SetVolume)
@@ -347,7 +347,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def volume_mute(self, muted: bool) -> None:
         """Mute an active stream or native device volume."""
-        if self._stream_active or self.carries_set:
+        if self._stream_active or self.carries_home_theater:
             await super().volume_mute(muted)
             return
         device = self._device_for_feature(FeatureName.SetVolume)
@@ -1120,9 +1120,9 @@ class AirPlayControlPlayer(AirPlayPlayer):
         # silently stops reaching the device.
         if source == "mrp" and (self._companion_device is not None or self._uses_transient_mrp):
             return
-        # The native volume of a set's device is the one its own apps play at, which
-        # is not the level Music Assistant plays the set's speakers at.
-        if self.carries_set:
+        # The native volume of the Apple TV of a home theater set is the one its own apps
+        # play at, which is not the level Music Assistant plays the set's speakers at.
+        if self.carries_home_theater:
             return
         # While Music Assistant streams, volume_set drives the stream volume and
         # deliberately leaves the native device volume alone. The two are separate
