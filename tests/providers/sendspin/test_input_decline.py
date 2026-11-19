@@ -24,6 +24,7 @@ from music_assistant.providers.sendspin.constants import (
     SOURCE_INPUT_DISMISS,
 )
 from music_assistant.providers.sendspin.player import SendspinBasePlayer, SendspinVisualizerPlayer
+from music_assistant.providers.sendspin.sources import SendspinSources
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
@@ -65,6 +66,7 @@ def _sendspin(scenario: Scenario, approvals: Approvals) -> Any:
     provider.is_virtual_player = lambda _client_id: False
     provider.is_held_unapproved = lambda _client_id: False
     provider.pairing_config_snapshot = lambda _client_id: None
+    provider.sources = SendspinSources(provider)
 
     async def _set_trusted_unpaired(
         client_id: str, enabled: bool, *, allow_input: bool = False

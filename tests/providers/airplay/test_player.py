@@ -115,6 +115,45 @@ async def test_detached_protocol_leaves_the_stream_session_it_plays_in(
     assert airplay_player.stream is None
 
 
+def test_session_is_that_of_the_running_stream(airplay_player: AirPlayPlayer) -> None:
+    """The player plays in the session of its running stream, and in none once that stopped."""
+    session = MagicMock()
+    airplay_player.stream = MagicMock(running=True, session=session)
+    running = airplay_player.session
+    airplay_player.stream.running = False
+    stopped = airplay_player.session
+    airplay_player.stream = None
+    without_stream = airplay_player.session
+
+    assert (running, stopped, without_stream) == (session, None, None)
+
+
+async def test_stop_reaches_the_session_its_stopped_stream_was_part_of(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A stop ends the session the player led, also once its own stream stopped running."""
+    session = MagicMock(stop=AsyncMock())
+    airplay_player.stream = MagicMock(running=False, session=session)
+
+    with patch.object(AirPlayPlayer, "update_state"):
+        await airplay_player.stop()
+
+    session.stop.assert_awaited_once()
+
+
+def test_stream_settings_come_from_the_player_config(airplay_player: AirPlayPlayer) -> None:
+    """The sync offset, password and output plan a stream uses are those of the player itself."""
+    _configure_player(airplay_player, {CONF_SYNC_ADJUST: 120, CONF_PASSWORD: "s3cret"})
+
+    assert airplay_player.sync_offset_ms == -120
+    assert airplay_player.device_password == "s3cret"
+    assert airplay_player.output_plan_protocol_id == "test_player"
+
+    _configure_player(airplay_player, {})
+    assert airplay_player.sync_offset_ms == 0
+    assert airplay_player.device_password is None
+
+
 async def test_cold_restart_keeps_a_stream_published_while_it_was_stopping(
     airplay_player: AirPlayPlayer,
 ) -> None:

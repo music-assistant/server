@@ -120,7 +120,7 @@ class VersionChanger:
         :param auto_update: Whether automatic updates are on.
         """
         for domain, version in self.targets(include_updates=auto_update).items():
-            # targets only come from the index of this server's line
+            # targets only come from the index of this server's channel
             entry = self._gate.own_entry(domain)
             assert entry is not None
             requirements = {
@@ -147,7 +147,7 @@ class VersionChanger:
         use stays staged for the next start, and the running version keeps running.
 
         :param domain: The domain of the provider.
-        :param version: The version to change to, listed in the index of this server's line.
+        :param version: The version to change to, listed in the index of this server's channel.
         :raises InstallError: The version cannot be downloaded or is not what the catalog lists.
         :raises DependencyConflict: Its requirements clash with those of the server or of
             another community provider.
@@ -228,7 +228,7 @@ class VersionChanger:
         else:
             try:
                 await load_provider_module(self.mass.get_provider_manifest(domain))
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - importing provider code can raise anything
                 self.logger.warning(
                     "Community provider %s %s does not import: %s", domain, installed.version, err
                 )
@@ -284,7 +284,7 @@ class VersionChanger:
         nothing stays staged, so no version is pending; the live version is never touched.
 
         :param domain: The domain of the provider.
-        :param entry: The provider in the index of this server's line.
+        :param entry: The provider in the index of this server's channel.
         :param version: The version to stage.
         :param requirements: The requirements of the other community providers that load, by
             domain.
@@ -315,7 +315,7 @@ class VersionChanger:
         Make the staged version of an installed provider live, and record it as not verified.
 
         :param domain: The domain of the provider.
-        :param entry: The provider in the index of this server's line.
+        :param entry: The provider in the index of this server's channel.
         :param version: The staged version, listed in the entry.
         :raises InstallError: There is no staged version, or the folders cannot be renamed.
         :raises OSError: The state cannot be written.
@@ -367,12 +367,12 @@ class VersionChanger:
         )
         manifests = self._community_manifests()
         requirements = {name: m.requirements for name, m in manifests.items() if name != domain}
-        dependents = [
-            self._provider_folder(name)
+        dependents = {
+            name: self._provider_folder(name)
             for name, manifest in manifests.items()
             if manifest.depends_on == domain
-        ]
-        for name in (domain, *(folder.name for folder in dependents)):
+        }
+        for name in (domain, *dependents):
             await self._loader.stop(name)
         folder = self._installer.live_folder(domain)
         try:
@@ -393,7 +393,7 @@ class VersionChanger:
                 domain,
                 _REASONS[decision.verdict].format(decision.detail or ""),
             )
-        for dependent in dependents:
+        for dependent in dependents.values():
             await self._loader.register(dependent)
         self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
         if decision.verdict == Verdict.LOAD:
@@ -482,5 +482,4 @@ class VersionChanger:
         if domain in self._store.state.installed:
             return self._installer.live_folder(domain)
         # only these two locations hold community providers
-        assert self.mass.dev_providers_path is not None
-        return Path(self.mass.dev_providers_path, domain)
+        return Path(self._loader.dev_folders[domain])

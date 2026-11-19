@@ -46,9 +46,9 @@ if TYPE_CHECKING:
     from music_assistant_models.player import OutputProtocol
     from music_assistant_models.player_queue import PlayerQueue
 
+    from music_assistant.models.media_capabilities import AudioSourceMixin, SourceControlValue
     from music_assistant.models.player import PlayerMedia
     from music_assistant.models.player_protocol import PlayerProtocol
-    from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
     from .audio_sources import AudioSourceSession
     from .constants import PlayerLockPurpose
@@ -199,7 +199,12 @@ class _PlayerControllerBase(CoreController):
         if player := self._players.get(self.resolve_player_id(player_id)):
             if (not player.available or not player.enabled) and raise_unavailable:
                 msg = f"Player {player_id} is not available"
-                raise PlayerUnavailableError(msg)
+                raise PlayerUnavailableError(
+                    msg,
+                    translation_key="player_not_available",
+                    translation_owner=self.translation_owner,
+                    translation_args=[player.name],
+                )
             return player
         if raise_unavailable:
             msg = f"Player {player_id} is not available"
@@ -570,7 +575,12 @@ class _PlayerControllerBase(CoreController):
         assert player is not None  # for type checking
         if player.offline_by_power_control:
             msg = f"Player {player.name} is switched off"
-            raise PlayerUnavailableError(msg)
+            raise PlayerUnavailableError(
+                msg,
+                translation_key="player_switched_off",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
         return player
 
     def _get_player_with_redirect(self, player_id: str) -> Player:
@@ -786,7 +796,7 @@ class _PlayerControllerBase(CoreController):
         async def select_source(self, player_id: str, source: str | None) -> None: ...
         def _get_active_audio_source(
             self, player: Player
-        ) -> tuple[AudioSource, PluginProvider] | None: ...
+        ) -> tuple[AudioSource, AudioSourceMixin] | None: ...
         def _is_ma_managed_source(self, player: Player, source: str | None) -> bool: ...
         async def _notify_source_volume_change(self, player: Player, volume_level: int) -> None: ...
         def _resolve_command_target(self, player: Player, source_id: str | None) -> str: ...
@@ -819,6 +829,9 @@ class _PlayerControllerBase(CoreController):
         async def _power_on_members(
             self, owner: Player, member_ids: Iterable[str] | None = None
         ) -> set[str]: ...
+        def _members_to_power_on(
+            self, owner: Player, member_ids: Iterable[str] | None = None
+        ) -> list[Player]: ...
         def _cancel_power_on(self, player: Player) -> None: ...
         def _cancel_member_power_ons(self, *players: Player) -> None: ...
         # volume

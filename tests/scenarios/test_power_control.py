@@ -11,6 +11,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 
 from music_assistant.constants import (
+    ATTR_PLAY_ACTION_IN_PROGRESS,
     CONF_POWER_CONTROL_CUTS_POWER,
     CONF_POWER_ON_STARTUP_TIME,
     DEFAULT_POWER_ON_STARTUP_TIME,
@@ -132,8 +133,10 @@ async def test_a_speaker_whose_plug_cuts_its_power_is_off_while_the_plug_is_off(
         assert (state.available, state.powered) == (True, False)
         assert state.playback_state == PlaybackState.IDLE
         await players.cmd_volume_set(player_id, 30)
-        with pytest.raises(PlayerUnavailableError, match="is switched off"):
+        with pytest.raises(PlayerUnavailableError, match="is switched off") as error:
             await players.cmd_seek(player_id, 10)
+        assert error.value.translation_key == "player_switched_off"
+        assert error.value.translation_args == ["Den"]
         # the same once the power counts as cut
         await scenario.advance(EXTERNAL_POWER_OFF_STOP_DELAY)
         await scenario.idle()
@@ -184,6 +187,42 @@ async def test_a_play_switches_the_plug_on_and_waits_for_the_startup_time(
     assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
     assert (_starts(den), _starts(den_airplay)) == (1, 0)
     assert plug.commands == [True]
+    await _stop(scenario, player_id)
+
+
+async def test_the_play_button_shows_the_play_while_the_speaker_starts_up(
+    scenario: Scenario,
+) -> None:
+    """
+    The play button shows that a play is under way while the speaker starts up for it.
+
+    Den's plug, which cuts its power, is off, and Den holds the track it played before. The
+    play button is pressed: for the whole start-up time Den's queue shows that a play is in
+    progress, which makes the button spin in the app. Once Den plays, it shows that no more.
+    """
+    (den, den_airplay), plug, player_id = await _den(
+        scenario, ("sonos", "native"), ("airplay", "audio")
+    )
+    await scenario.play(player_id)
+    await _stop(scenario, player_id)
+    await _cut(scenario, plug, den, den_airplay)
+    queue = scenario.mass.player_queues.get(player_id)
+    assert queue is not None
+
+    press = await scenario.command(scenario.mass.players.cmd_play_pause(player_id))
+    await scenario.advance(5)
+    await _reach(scenario, den, den_airplay)
+    await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME - 6)
+
+    assert not press.done(), press.exception()
+    assert queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS) is True, (
+        "the queue does not show the play while Den starts up"
+    )
+    await scenario.advance(2)
+    await press
+    await scenario.idle()
+    assert _state(scenario, player_id).playback_state == PlaybackState.PLAYING
+    assert queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS) is False
     await _stop(scenario, player_id)
 
 
@@ -506,8 +545,10 @@ async def test_a_plug_switched_off_during_the_startup_ends_the_play_that_waits(
     await scenario.switch(plug, False)
 
     assert play.done()
-    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+    with pytest.raises(PlayerUnavailableError, match="is switched off") as error:
         await play
+    assert error.value.translation_key == "player_switched_off"
+    assert error.value.translation_args == ["Den"]
     state = _state(scenario, player_id)
     assert (state.available, state.powered) == (True, False)
     await scenario.advance(5)
@@ -588,7 +629,7 @@ async def test_a_change_of_the_power_setting_during_the_startup_ends_the_play_th
 
     Den's plug, which cuts its power, is off. A play switches it on and waits for the
     start-up time. The user switches the setting off, or picks another plug, which is off:
-    the play fails as switched off, and nothing is left of the start-up. With the setting
+    the play fails, as called off or as switched off, and nothing is left of the start-up. With the setting
     off, Den is a speaker on a plain switch that is on: a new play starts at once. With the
     other plug, a new play switches that plug on and waits for a whole start-up time.
 
@@ -610,7 +651,9 @@ async def test_a_change_of_the_power_setting_during_the_startup_ends_the_play_th
         await scenario.configure_player(player_id, power_control=other_plug.control_id)
 
     assert play.done()
-    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+    # the plug of the setting reads on, the other plug off
+    failure = "power on of player Den was called off" if other_plug is None else "is switched off"
+    with pytest.raises(PlayerUnavailableError, match=failure):
         await play
     assert den.commands == den_airplay.commands == []
     if other_plug is None:
@@ -641,7 +684,7 @@ async def test_protocols_told_of_a_power_cut_are_told_it_is_back_once_nothing_fo
     picks another plug, or the plug goes with its provider: nothing tells the protocols any
     more when the power is back, so they are told at once and reach Den by themselves
     again. The same when the setting is switched off while Den starts up for a play, which
-    fails as switched off.
+    fails as called off.
 
     :param change: What happens after the power was cut.
     """
@@ -669,7 +712,7 @@ async def test_protocols_told_of_a_power_cut_are_told_it_is_back_once_nothing_fo
 
     assert den.power_reports[1:] == den_airplay.power_reports[1:] == [("restored", changed_at)]
     if play is not None:
-        with pytest.raises(PlayerUnavailableError, match="is switched off"):
+        with pytest.raises(PlayerUnavailableError, match="power on of player Den was called off"):
             await play
     # told once: nothing follows the power of Den any more
     await scenario.advance(DEFAULT_POWER_ON_STARTUP_TIME + EXTERNAL_POWER_OFF_STOP_DELAY)
@@ -846,8 +889,10 @@ async def test_a_stop_while_the_plug_of_a_member_is_switched_on_loses_no_power_c
     stop = await scenario.command(scenario.mass.players.cmd_stop(group_id))
     await scenario.advance(2)
     await stop
-    with pytest.raises(PlayerUnavailableError, match="was called off"):
+    with pytest.raises(PlayerUnavailableError, match="was called off") as error:
         await play
+    assert error.value.translation_key == "player_stopped_during_startup"
+    assert error.value.translation_args == ["Downstairs"]
     if on_report == "after the stop":
         switched_on_at = scenario.mass.loop.time()
         await scenario.switch(plug, True)

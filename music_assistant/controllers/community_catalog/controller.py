@@ -482,7 +482,7 @@ class CommunityCatalogController(CoreController):
         :param installed: What was installed.
         :param folder_hash: The content hash of the live folder before.
         """
-        # evaluate only asks for this with an entry in the index of this server's line
+        # evaluate only asks for this with an entry in the index of this server's channel
         assert self._store.index is not None
         entry = self._store.index.providers[domain]
         self.logger.info("Installing community provider %s again: its files changed", domain)

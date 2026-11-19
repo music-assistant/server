@@ -800,7 +800,8 @@ class AlbumsController(MediaControllerBase[Album]):
         ]
         async with self.mass.music.database.deferred_commit():
             if release is not None:
-                await self._link_tracks_to_release(album, db_tracks, release)
+                merged = await self._link_tracks_to_release(album, db_tracks, release)
+                db_tracks = [x for x in db_tracks if x.item_id not in merged]
             if not link_providers:
                 return
             for domain, mapping in album_mappings.items():
@@ -1209,11 +1210,13 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def _link_tracks_to_release(
         self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease
-    ) -> None:
+    ) -> set[str]:
         """
         Fill the recording ids and ISRCs of a release in on the library tracks at its positions.
 
         The ISRCs the tracks have that their recordings lack are logged once per release.
+
+        :return: The ids of the library tracks merged away into another one.
         """
         by_position = {
             (medium.position, track.position): track
@@ -1227,7 +1230,10 @@ class AlbumsController(MediaControllerBase[Album]):
         }
         in_order = await self._release_tracks_in_order(album, db_tracks, release)
         missing_isrcs: dict[int, str] = {}
+        merged: set[str] = set()
         for db_track in db_tracks:
+            if db_track.item_id in merged:
+                continue
             if (release_track := in_order.get(db_track.item_id)) is None:
                 # a digital release stores its single disc as disc 0 or 1
                 release_track = by_position.get((db_track.disc_number or 1, db_track.track_number))
@@ -1248,6 +1254,7 @@ class AlbumsController(MediaControllerBase[Album]):
             if not changed and db_track.metadata.last_musicbrainz_lookup is not None:
                 continue
             db_track.metadata.last_musicbrainz_lookup = int(time())
+            merged |= await self.mass.music.tracks.merge_recording_duplicates(db_track)
             await self.mass.music.tracks.update_item_in_library(db_track.item_id, db_track)
         if missing_isrcs:
             log_once(
@@ -1265,6 +1272,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     }
                 ),
             )
+        return merged
 
     async def _release_tracks_in_order(
         self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease

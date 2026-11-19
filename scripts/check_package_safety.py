@@ -311,7 +311,7 @@ def get_pypi_metadata(package_name: str) -> dict[str, Any] | None:
         else:
             print(f"⚠️  Error fetching metadata for '{package_name}': {err}")
         return None
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - any fetch failure is reported for that package
         print(f"⚠️  Error fetching metadata for '{package_name}': {err}")
         return None
 

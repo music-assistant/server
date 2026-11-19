@@ -973,6 +973,7 @@ class MetadataEnrichmentMixin:
                 self.logger.debug("Track %s was not found on MusicBrainz", track.name)
             else:
                 fill_track_from_recording(track, recording)
+                await self.mass.music.tracks.merge_recording_duplicates(track)
                 if self.link_providers_via_musicbrainz:
                     await self.mass.music.tracks.link_musicbrainz_mappings(
                         track, relation_urls(recording.relations)

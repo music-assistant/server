@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -23,10 +24,14 @@ from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
 from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.controllers.music.media.tracks import TracksController
+from music_assistant.controllers.players import PlayerController
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.media_capabilities import AudioSourceMixin
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.provider import Provider
 from tests.common import set_music_source_access
 
 
@@ -763,14 +768,15 @@ async def test_browse_root_includes_non_music_providers() -> None:
     plugin_prov.domain = "plugin_a"
     plugin_prov.name = "Plugin A"
 
-    # browse queries get_providers_supporting_feature twice: once for BROWSE, once
-    # for AUDIO_SOURCE (to decide whether to inject the Live Inputs root entry).
+    # browse queries get_providers_supporting_feature for BROWSE; the audio source
+    # providers come from the players controller
     def _supports(feature: ProviderFeature) -> list[Mock]:
         if feature == ProviderFeature.BROWSE:
             return [music_prov, plugin_prov]
         return []
 
     mass.get_providers_supporting_feature.side_effect = _supports
+    mass.players.get_audio_source_providers.return_value = []
 
     controller = MusicController.__new__(MusicController)
     controller.mass = mass
@@ -843,13 +849,8 @@ def _audio_source_browse_controller() -> tuple[MusicController, PluginProvider, 
     unbound_plugin = _AudioSourcePlugin("vban", [_audio_source_item("vban", "input1")])
 
     mass = Mock()
-
-    def _supports(feature: ProviderFeature) -> list[PluginProvider]:
-        if feature == ProviderFeature.AUDIO_SOURCE:
-            return [bound_plugin, unbound_plugin]
-        return []
-
-    mass.get_providers_supporting_feature.side_effect = _supports
+    mass.get_providers_supporting_feature.return_value = []
+    mass.players.get_audio_source_providers.return_value = [bound_plugin, unbound_plugin]
     mass.get_provider.side_effect = lambda instance_id: {
         "connect": bound_plugin,
         "vban": unbound_plugin,
@@ -936,6 +937,56 @@ async def test_browse_bound_sources_honor_the_user_player_filter() -> None:
     # scoping to a player outside the filter yields no bound sources
     assert _audio_source_item("connect", "kitchen") not in hidden_scope
     assert _audio_source_item("vban", "input1") in hidden_scope
+
+
+class _LineInPlayerProvider(AudioSourceMixin, PlayerProvider):
+    """Player provider stub that delivers AudioSources of its own."""
+
+
+def _audio_source_provider[ProviderT: Provider](
+    provider_cls: type[ProviderT],
+    instance_id: str,
+    provider_type: ProviderType,
+    features: set[ProviderFeature],
+    available: bool = True,
+) -> ProviderT:
+    """Construct a provider of the given class with the given features."""
+    manifest = Mock(type=provider_type, domain=instance_id)
+    config = Mock(instance_id=instance_id)
+    config.name = instance_id
+    config.get_value.return_value = "GLOBAL"
+    provider = provider_cls(Mock(), manifest, config, features)
+    provider.available = available
+    return provider
+
+
+def test_audio_source_providers_span_provider_types() -> None:
+    """Every available provider delivering AudioSources is returned, whatever its type."""
+    plugin = _audio_source_provider(
+        PluginProvider, "connect", ProviderType.PLUGIN, {ProviderFeature.AUDIO_SOURCE}
+    )
+    player_provider = _audio_source_provider(
+        _LineInPlayerProvider, "sendspin", ProviderType.PLAYER, {ProviderFeature.AUDIO_SOURCE}
+    )
+    without_feature = _audio_source_provider(
+        _LineInPlayerProvider, "other", ProviderType.PLAYER, set()
+    )
+    unavailable = _audio_source_provider(
+        PluginProvider,
+        "vban",
+        ProviderType.PLUGIN,
+        {ProviderFeature.AUDIO_SOURCE},
+        available=False,
+    )
+    mass = Mock(spec=MusicAssistant)
+    mass.providers = [player_provider, without_feature, unavailable, plugin]
+    mass.get_providers_supporting_feature = partial(
+        MusicAssistant.get_providers_supporting_feature, mass
+    )
+    controller = PlayerController.__new__(PlayerController)
+    controller.mass = mass
+
+    assert controller.get_audio_source_providers() == [plugin, player_provider]
 
 
 async def test_global_search_includes_plugin_providers_with_search() -> None:

@@ -181,7 +181,7 @@ def test_the_event_and_the_hook_receive_the_same_report() -> None:
                 userid="user-1",
                 enqueued_media_items=[],
                 credited_albums=set(),
-                served_item_ids={"qi-1"},
+                served_item_ids={"qi-1": None},
             )
         },
         get_item=Mock(return_value=item),

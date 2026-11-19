@@ -38,6 +38,7 @@ async def test_leader_hands_session_to_first_player_after_a_visualizer(
     players = {"living": leader, "hue": MagicMock(spec=SendspinVisualizerPlayer)}
     players["badkamer"] = badkamer
     leader.provider.get_protocol.side_effect = lambda player_id, *_a, **_kw: players[player_id]
+    leader.provider.multi_channel_player_of.return_value = None
 
     await SendspinPlayer.set_members(leader, player_ids_to_remove=["living"])
 
@@ -51,6 +52,8 @@ async def test_audio_player_leads_a_group_where_a_visualizer_comes_first() -> No
     badkamer.protocol_id = "badkamer"
     badkamer._attr_group_members = []
     badkamer.playback_session.sync_members = AsyncMock()
+    badkamer.provider.multi_channel_player_of.return_value = None
+    badkamer.provider.is_silent_client.return_value = False
     group = badkamer.api.group
     group.clients = _clients("hue", "badkamer")
 

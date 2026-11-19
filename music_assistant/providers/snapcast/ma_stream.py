@@ -757,7 +757,7 @@ class SnapcastMAStream:
         for snap_group in self._provider._snapserver.groups:
             if snap_group.stream != self.snap_stream.identifier:
                 continue
-            self._logger.debug(f"Set stream of group {snap_group.name} to default.")
+            self._logger.debug("Set stream of group %s to default.", snap_group.name)
             await snap_group.set_stream("default")
 
         with suppress(KeyError, AttributeError):

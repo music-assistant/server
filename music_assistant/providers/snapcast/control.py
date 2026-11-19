@@ -108,7 +108,7 @@ class MusicAssistantControl:
         if cmd == "Control":
             command = request["params"]["command"]
             params = request["params"].get("params", {})
-            logger.debug(f"Control command: {command}, params: {params}")
+            logger.debug("Control command: %s, params: %s", command, params)
             if command == "next":
                 self.send_request("player_queues/next", queue_id=queue_id)
             elif command == "previous":
@@ -129,7 +129,7 @@ class MusicAssistantControl:
                 self.send_request("player_queues/skip", queue_id=queue_id, seconds=seek_offset)
         elif cmd == "SetProperty":
             properties = request["params"]
-            logger.debug(f"SetProperty: {properties}")
+            logger.debug("SetProperty: %s", properties)
             if "shuffle" in properties:
                 self.send_request(
                     "player_queues/shuffle",
@@ -190,7 +190,7 @@ class MusicAssistantControl:
             try:
                 self._connect_and_read()
             except (Exception, KeyboardInterrupt) as e:
-                logger.info(f"Exception in socket loop: {e!s}")
+                logger.info("Exception in socket loop: %s", e)
                 if not self._stopped:
                     sleep(2)
 
@@ -221,7 +221,7 @@ class MusicAssistantControl:
                 except TimeoutError:
                     continue
                 except OSError as e:
-                    logger.error(f"Socket error: {e}")
+                    logger.error("Socket error: %s", e)
                     break
         finally:
             if self._socket:
@@ -234,7 +234,7 @@ class MusicAssistantControl:
         try:
             data = json.loads(message)
         except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON: {e}")
+            logger.error("Invalid JSON: %s", e)
             return
 
         if data.get("event") == "shutdown":
@@ -331,7 +331,7 @@ class MusicAssistantControl:
             data = json.dumps(command_msg) + "\n"
             self._socket.sendall(data.encode())
         except OSError as e:
-            logger.error(f"Failed to send request: {e}")
+            logger.error("Failed to send request: %s", e)
             self._request_callbacks.pop(msg_id, None)
 
 
