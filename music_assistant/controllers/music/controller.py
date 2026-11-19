@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from contextlib import aclosing, suppress
 from copy import deepcopy
@@ -3452,7 +3451,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 provider=provider,
                 category=CACHE_CATEGORY_SEARCH_RESULTS,
             )
-        except (TypeError, ValueError, sqlite3.Error) as err:
+        except Exception as err:  # noqa: BLE001 - a failed cache write must not break the search
             self.logger.warning("Failed to cache search results for %s: %s", provider, str(err))
 
     def _get_covered_media_types(
