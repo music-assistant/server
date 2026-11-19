@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
-from music_assistant_models.errors import AudioError, MediaNotFoundError, QueueEmpty
+from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -129,7 +129,7 @@ def _provider(name: str) -> MagicMock:
 async def test_items_without_audio_in_a_row_stop_the_queue_at_the_first_of_them() -> None:
     """The queue stops and goes back to the first failed item, from its start and playable."""
     rig = _Rig()
-    # the next item path marks the items it could not load as unplayable
+    # a stream that got no audio marks its item as unplayable
     rig.item("b").available = False
     rig.item("c").available = False
     rig.queue_data.prev_state = CompareState(
@@ -213,19 +213,11 @@ async def test_an_empty_stream_of_a_failed_item_keeps_the_count() -> None:
     assert rig.fail("c") is True
 
 
-async def test_an_item_that_fails_in_two_paths_counts_once() -> None:
-    """The next item path and the stream of the same item count it once."""
+async def test_an_item_that_fails_twice_counts_once() -> None:
+    """An item whose stream reports its failure more than once counts once."""
     rig = _Rig()
 
-    async def _load_item(queue_item: QueueItem, **_kwargs: Any) -> None:
-        if queue_item.queue_item_id == "b":
-            raise AudioError("Timeout waiting for audio data")
-
-    rig.ctrl._load_item = AsyncMock(side_effect=_load_item)  # type: ignore[method-assign]
-
-    next_item = await rig.ctrl.load_next_queue_item(QUEUE_ID, "a")
-
-    assert next_item is rig.item("c")
+    assert rig.fail("b") is False
     assert rig.fail("b") is False
     assert rig.fail("d") is False
     assert list(rig.queue_data.failed_source_items) == ["b", "d"]
@@ -249,38 +241,21 @@ async def test_an_item_that_is_not_found_does_not_count() -> None:
     assert rig.tasks == {}
 
 
-async def test_the_next_item_path_stops_walking_when_the_queue_stops() -> None:
-    """Once the queue stops for its items, the items after them are left as they are."""
-    rig = _Rig()
-    load_item = AsyncMock(side_effect=AudioError("Timeout waiting for audio data"))
-    rig.ctrl._load_item = load_item  # type: ignore[method-assign]
-
-    with pytest.raises(QueueEmpty):
-        await rig.ctrl.load_next_queue_item(QUEUE_ID, "a")
-
-    assert load_item.await_count == SOURCE_FAILURE_LIMIT
-    assert rig.item("e").available is True
-    await rig.run_tasks()
-    rig.handle_stop.assert_awaited_once_with(QUEUE_ID)
-    assert rig.queue.current_item is rig.item("b")
-    assert all(rig.item(item_id).available for item_id in ("b", "c", "d"))
-
-
-async def test_a_next_item_that_fails_after_another_playback_took_over_is_not_counted() -> None:
-    """A next item of the playback that was replaced while it loaded does not count."""
+async def test_next_items_that_fail_to_load_do_not_count() -> None:
+    """The next items load while the current one still plays, which a stop would cut off."""
     rig = _Rig()
 
-    async def _load_item(*_args: Any, **_kwargs: Any) -> None:
-        rig.queue_data.session_id = "session-2"
-        raise AudioError("Timeout waiting for audio data")
+    async def _load_item(queue_item: QueueItem, **_kwargs: Any) -> None:
+        if queue_item.queue_item_id != "e":
+            raise AudioError("Timeout waiting for audio data")
 
-    rig.ctrl._load_item = _load_item  # type: ignore[method-assign]
+    rig.ctrl._load_item = AsyncMock(side_effect=_load_item)  # type: ignore[method-assign]
 
-    with pytest.raises(QueueEmpty):
-        await rig.ctrl.load_next_queue_item(QUEUE_ID, "a")
+    next_item = await rig.ctrl.load_next_queue_item(QUEUE_ID, "a")
 
+    assert next_item is rig.item("e")
     assert rig.queue_data.failed_source_items == {}
-    rig.handle_stop.assert_not_awaited()
+    assert rig.tasks == {}
 
 
 async def test_a_session_that_no_longer_plays_is_not_counted() -> None:
@@ -401,3 +376,19 @@ async def test_a_play_after_the_stop_fails_at_its_first_item_without_audio(
     assert rig.queue.current_item is rig.item(start_item_id)
     assert rig.queue.elapsed_time == 0
     assert all(rig.item(item_id).available for item_id in ("a", "b", "c", start_item_id))
+
+
+@pytest.mark.parametrize("start_item_id", ["b", "e"])
+async def test_a_play_after_the_stop_whose_stream_gets_no_audio_stays_on_its_item(
+    start_item_id: str,
+) -> None:
+    """A play that loads during the outage, but streams no audio, stops on the item it started."""
+    rig = _Rig()
+    await _stop_for_a_row(rig)
+    rig.queue_data.session_id = "session-2"
+
+    assert rig.fail(start_item_id, "session-2") is True
+    await rig.run_tasks()
+
+    assert rig.handle_stop.await_count == 2
+    assert rig.queue.current_item is rig.item(start_item_id)
