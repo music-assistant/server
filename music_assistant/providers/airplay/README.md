@@ -209,10 +209,11 @@ pair), and the HomePods are fed directly as its speakers.
   wake and no power control (the players controller powers a player on before it plays), and
   no pairing needed.
 - A set plays on all of its speakers or not at all: a speaker whose stream ends, or that stops
-  taking audio, stops its set, or takes it out of the group it plays in. A speaker that fails to
-  join a group that plays does so too, without a return to that group, as a start of the set
-  fails as a whole. A speaker that was away or not found yet when its set started is added to the
-  session once it is there.
+  taking audio, stops its set, or takes it out of the group it plays in. A set that joins a group
+  that plays and one of whose speakers fails to join does so too, without a return to that group,
+  as a start of the set fails as a whole. A speaker that was away or not found yet when its set
+  started is added to the session once it is there; if it cannot join then, the set plays on what
+  is there.
 - When the set protocol is attached and both current records name a speaker, the player that
   speaker had before is removed (`mass.players.remove_absorbed_players()`).
 - While the player of the Apple TV is disabled, its HomePods are players of their own. Without

@@ -775,7 +775,7 @@ class AirPlayProvider(PlayerProvider):
             and speaker not in session.sync_clients
             and any(endpoint in session.sync_clients for endpoint in airplay_set.endpoints)
         ):
-            self.mass.create_task(session.add_client(speaker))
+            self.mass.create_task(session.add_client(speaker, returning=True))
 
     def _on_set_speakers_changed(self, speaker: AirPlaySpeaker) -> None:
         """

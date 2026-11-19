@@ -795,7 +795,7 @@ async def test_a_homepod_that_is_back_joins_the_music_its_set_plays(
         scenario, provider, _homepod(2, device_id=SECOND_HOMEPOD_ID, address="192.168.1.62", size=3)
     )
 
-    session.add_client.assert_awaited_once_with(second)
+    session.add_client.assert_awaited_once_with(second, returning=True)
     # a record that only repeats what is known adds nothing
     await _announce(
         scenario, provider, _homepod(2, device_id=SECOND_HOMEPOD_ID, address="192.168.1.62", size=3)
@@ -819,7 +819,9 @@ async def test_a_homepod_seen_for_the_first_time_joins_the_music_its_set_plays(
         scenario, provider, _homepod(2, device_id=SECOND_HOMEPOD_ID, address="192.168.1.62", size=3)
     )
 
-    session.add_client.assert_awaited_once_with(provider._speakers[SECOND_HOMEPOD_PROTOCOL_ID])
+    session.add_client.assert_awaited_once_with(
+        provider._speakers[SECOND_HOMEPOD_PROTOCOL_ID], returning=True
+    )
 
 
 @pytest.mark.usefixtures("apple_controls")

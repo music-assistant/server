@@ -542,7 +542,9 @@ class AirPlayStreamSession:
         )
         await self.remove_silent_member(airplay_player, rejoin=not taken_over or reset)
 
-    async def add_client(self, airplay_player: AirPlayPlayer) -> None:  # noqa: PLR0915
+    async def add_client(  # noqa: PLR0915
+        self, airplay_player: AirPlayPlayer, *, returning: bool = False
+    ) -> None:
         """
         Add a sync client to the session as a late joiner.
 
@@ -564,6 +566,13 @@ class AirPlayStreamSession:
         keeps being fed meanwhile; all buffer and anchor math stays under the
         lock so ``seconds_streamed``, the ring buffer and the per-client skip
         counter stay consistent with the live feed.
+
+        A speaker of a set that cannot join takes its set along, as a start of the set fails
+        as a whole, unless it comes back into the session its set already plays in.
+
+        :param airplay_player: The player to add.
+        :param returning: Whether a speaker comes back into the session its set plays in: one
+            that cannot join is then only left out, and the set plays on what is there.
         """
         await self._resolve_late_joiner_ptp(airplay_player)
         async with self._lock:
@@ -592,7 +601,7 @@ class AirPlayStreamSession:
                 err,
             )
             await self.stop_client(airplay_player, reason="late joiner connection failed")
-            self._lose_set_speaker(airplay_player, rejoin=False)
+            self._join_failed(airplay_player, returning=returning)
             return
 
         pcm_sample_size = self._pcm_byte_rate
@@ -763,7 +772,7 @@ class AirPlayStreamSession:
                 err,
             )
             await self.stop_client(airplay_player, reason="late joiner start/prime failed")
-            self._lose_set_speaker(airplay_player, rejoin=False)
+            self._join_failed(airplay_player, returning=returning)
             return
 
         try:
@@ -827,7 +836,7 @@ class AirPlayStreamSession:
                         await self.stop_client(
                             airplay_player, reason="late joiner start/prime failed"
                         )
-                        self._lose_set_speaker(airplay_player, rejoin=False)
+                        self._join_failed(airplay_player, returning=returning)
                         return
 
                 if airplay_player not in self.sync_clients:
@@ -1664,6 +1673,17 @@ class AirPlayStreamSession:
                 )
             ):
                 self._schedule_silent_member_join(member)
+
+    def _join_failed(self, airplay_player: AirPlayPlayer, *, returning: bool) -> None:
+        """
+        Handle a late joiner that could not join.
+
+        :param airplay_player: The late joiner.
+        :param returning: Whether it came back into the session its set plays in.
+        """
+        # a set plays on what is there, but a set that joins plays on all of its speakers
+        if not returning:
+            self._lose_set_speaker(airplay_player, rejoin=False)
 
     def _lose_set_speaker(self, airplay_player: AirPlayPlayer, *, rejoin: bool) -> None:
         """
