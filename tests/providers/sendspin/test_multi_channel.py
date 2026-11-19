@@ -12,6 +12,7 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlaybackStateType, PlayerCommand
+from aiosendspin.noise.trust_store import TrustedUnpairedClient
 from aiosendspin.server import (
     ClientAddedEvent,
     ClientConnectedEvent,
@@ -44,6 +45,8 @@ from music_assistant.providers.sendspin.multi_channel import SendspinMultiChanne
 from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
 from music_assistant.providers.sendspin.player import _group_leader_id, _member_clients
 from music_assistant.providers.sendspin.provider import SendspinProvider
+
+from .test_pairing_eviction import _record
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -319,6 +322,56 @@ async def test_two_speakers_combine_into_one_multi_channel_player(mass: MusicAss
         "speaker_2_channel": "front_right",
         "speaker_2_output_delay": 0,
     }
+
+
+async def test_combining_and_taking_apart_keep_the_pairing_of_each_speaker(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A speaker keeps its pairing or its approval as a guest when it goes up in a set and back.
+
+    A speaker without either can no longer connect.
+    """
+    sendspin = _sendspin(mass)
+    store = sendspin.server_api.pairing_store
+    await _add_speaker(sendspin, LEFT, "Kitchen left")
+    await _add_speaker(sendspin, RIGHT, "Kitchen right")
+    left_record = _record(LEFT)
+    await store.store_record(left_record)
+    await store.add_trusted_unpaired(TrustedUnpairedClient(client_id=RIGHT))
+
+    player = await mass.players.create_multi_channel_player(
+        "sendspin",
+        "Kitchen",
+        {
+            _player_id(sendspin, LEFT): SpeakerChannel.FRONT_LEFT,
+            _player_id(sendspin, RIGHT): SpeakerChannel.FRONT_RIGHT,
+        },
+    )
+    await _wait_for(lambda: {LEFT, RIGHT} <= _group_client_ids(_set_of(sendspin, player)))
+
+    assert await store.record_by_client_id(LEFT) == left_record, (
+        "combining dropped the pairing of the left speaker"
+    )
+    assert await store.trusted_unpaired(RIGHT) is not None, (
+        "combining dropped the guest approval of the right speaker"
+    )
+
+    await mass.players.remove(player.player_id)
+    await _wait_for(
+        lambda: all(
+            (protocol := sendspin.get_protocol(client_id)) is not None
+            and protocol.player is not None
+            for client_id in (LEFT, RIGHT)
+        )
+    )
+
+    assert await store.record_by_client_id(LEFT) == left_record, (
+        "taking the set apart dropped the pairing of the left speaker"
+    )
+    assert await store.trusted_unpaired(RIGHT) is not None, (
+        "taking the set apart dropped the guest approval of the right speaker"
+    )
 
 
 @pytest.mark.parametrize(
