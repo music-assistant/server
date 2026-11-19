@@ -6,7 +6,7 @@
   "type": "music",
   "requirements": [],
   "codeowners": ["@yfhyou"],
-  "media_types": ["podcast"],
+  "provides": ["podcast"],
   "multi_instance": true,
   "stage": "stable"
 }
