@@ -1196,6 +1196,33 @@ async def test_the_bridges_follow_a_pair_that_forms_and_breaks_up(
 
 @pytest.mark.usefixtures("apple_controls")
 @pytest.mark.parametrize("first_homepod_first", [True, False])
+async def test_a_pair_broken_up_from_its_carrier_first_removes_the_player_of_meanwhile(
+    scenario: Scenario, provider: AirPlayProvider, first_homepod_first: bool
+) -> None:
+    """
+    A pair taken apart and formed again loses the player its second HomePod had in between.
+
+    Also when the record of its carrier left the pair first, and the second HomePod is back first.
+    """
+    room_player_id = await _form_pair(scenario, provider)
+    await _announce(scenario, provider, _pair_homepod(FIRST_HOMEPOD_ID, None))
+    meanwhile = _player_of(
+        await _announce(scenario, provider, _pair_homepod(SECOND_PAIR_HOMEPOD_ID, None))
+    ).player_id
+
+    records = [_pair_homepod(FIRST_HOMEPOD_ID, 0), _pair_homepod(SECOND_PAIR_HOMEPOD_ID, 1)]
+    for record in records if first_homepod_first else reversed(records):
+        await _announce(scenario, provider, record)
+
+    pair = provider.get_player(FIRST_HOMEPOD_PROTOCOL_ID)
+    assert pair is not None
+    assert _player_of(pair).player_id == room_player_id
+    assert provider.get_player(SECOND_PAIR_HOMEPOD_PROTOCOL_ID) is None
+    assert await scenario.player_config(meanwhile) is None
+
+
+@pytest.mark.usefixtures("apple_controls")
+@pytest.mark.parametrize("first_homepod_first", [True, False])
 async def test_a_homepod_back_in_its_pair_in_the_other_role_loses_its_player_of_meanwhile(
     scenario: Scenario, provider: AirPlayProvider, first_homepod_first: bool
 ) -> None:
