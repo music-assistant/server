@@ -319,6 +319,11 @@ class AirPlayStream:
         """Return boolean if the device connection has been established."""
         return self._connected.is_set()
 
+    @property
+    def receiver_closed(self) -> bool:
+        """Whether the receiver ended the session itself, e.g. when another sender took over."""
+        return self._receiver_closed
+
     async def connect(
         self,
         use_shared_ptp: bool | None = None,

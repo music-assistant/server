@@ -2043,7 +2043,11 @@ def test_unix_to_sendspin_instant_round_trips() -> None:
 
 
 def _make_kept_stream(
-    *, running: bool = True, connected: bool = True, ended_cleanly: bool = False
+    *,
+    running: bool = True,
+    connected: bool = True,
+    ended_cleanly: bool = False,
+    receiver_closed: bool = False,
 ) -> MagicMock:
     """
     Build a mock AirPlayStream reporting the given running/connected state.
@@ -2053,11 +2057,14 @@ def _make_kept_stream(
     :param ended_cleanly: Whether the binary reported the end of the stream
         itself. A real bool: a bare MagicMock reads as a clean end, which the
         loss check treats as no loss at all.
+    :param receiver_closed: Whether the receiver ended the session itself. A
+        real bool: a bare MagicMock reads as a takeover by another sender.
     """
     stream = MagicMock()
     stream.running = running
     stream.connected = connected
     stream.ended_cleanly = ended_cleanly
+    stream.receiver_closed = receiver_closed
     # A real float: the shift fold subtracts it from the applied baseline, which
     # a bare MagicMock cannot answer.
     stream.cumulative_shift_seconds = 0.0
@@ -2390,7 +2397,7 @@ def _make_completed_start_task(*, failed: bool = False) -> MagicMock:
 
 
 def _make_anchored_bridge(
-    *, running: bool, ended_cleanly: bool = False
+    *, running: bool, ended_cleanly: bool = False, receiver_closed: bool = False
 ) -> tuple[SendspinAirPlayBridge, MagicMock]:
     """
     Return a bridge anchored on a transport in the given running state, plus that transport.
@@ -2398,9 +2405,12 @@ def _make_anchored_bridge(
     :param running: Whether the cli process behind the transport is still alive.
     :param ended_cleanly: Whether the binary reported the end of the stream
         itself, which stops the transport without losing it.
+    :param receiver_closed: Whether the receiver ended the session itself.
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
-    stream = _make_kept_stream(running=running, ended_cleanly=ended_cleanly)
+    stream = _make_kept_stream(
+        running=running, ended_cleanly=ended_cleanly, receiver_closed=receiver_closed
+    )
     bridge._airplay_stream = stream
     bridge.airplay_player.stream = stream
     bridge._airplay_stream_start_task = _make_completed_start_task()
@@ -2516,6 +2526,25 @@ def test_a_stream_the_native_path_took_over_is_not_recovered() -> None:
 
     restart.assert_not_called()
     assert bridge._airplay_stream is stopped_stream
+
+
+def test_a_receiver_taken_over_by_another_sender_is_released_not_recovered() -> None:
+    """
+    A receiver another sender took over is left to that sender.
+
+    Recovering would take the receiver straight back from whoever took it over.
+    """
+    bridge, _ = _make_anchored_bridge(running=False, receiver_closed=True)
+
+    with (
+        patch.object(bridge, "_restart_transport", MagicMock()) as restart,
+        patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave,
+    ):
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 1_000_000))
+
+    restart.assert_not_called()
+    leave.assert_called_once_with(rejoin=False)
+    assert bridge._is_streaming is False
 
 
 def test_a_stream_the_binary_ended_itself_is_not_a_loss() -> None:

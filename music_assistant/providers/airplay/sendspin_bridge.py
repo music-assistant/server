@@ -1148,6 +1148,15 @@ class SendspinAirPlayBridge:
         self._release_streaming()
         self.mass.create_task(self._leave_sendspin_session())
 
+    def _yield_to_other_sender(self) -> None:
+        """Leave the receiver and the Sendspin session to the sender that took it over."""
+        self.logger.info(
+            "%s was taken over by another AirPlay sender, leaving the Sendspin session",
+            self.airplay_player.display_name,
+        )
+        self._release_streaming()
+        self.mass.create_task(self._leave_sendspin_session(rejoin=False))
+
     def _release_streaming(self) -> None:
         """Stop accepting chunks and hand the current transport to the cleanup path."""
         self._is_streaming = False
@@ -1373,8 +1382,12 @@ class SendspinAirPlayBridge:
                 self._abandon_streaming()
                 return
 
-        if self._transport_lost() and not self._recover_transport():
-            return
+        if self._transport_lost():
+            if self._airplay_stream is not None and self._airplay_stream.receiver_closed:
+                self._yield_to_other_sender()
+                return
+            if not self._recover_transport():
+                return
 
         if self._airplay_stream_start_task is None:
             # Provisionally anchor byte 0 to the instant Sendspin scheduled for the
