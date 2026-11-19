@@ -2057,7 +2057,7 @@ class AuthenticationManager:
                 prev_version = int(db_row["value"])
             else:
                 prev_version = DB_SCHEMA_VERSION
-        except KeyError, ValueError, sqlite3.Error:
+        except KeyError, TypeError, ValueError, sqlite3.Error:
             # settings table doesn't exist yet or other error
             prev_version = 0
 
