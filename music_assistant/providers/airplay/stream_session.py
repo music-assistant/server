@@ -321,7 +321,9 @@ class AirPlayStreamSession:
                 raise PlayerCommandFailed("warm flush was not acknowledged")  # noqa: TRY301 - triggers cold restart fallback
             for player, ok in zip(members, flushed, strict=True):
                 if not ok:
-                    # the music goes on without a member that is not heard, which is added once more
+                    # the music goes on without a member that is not heard, which is added once
+                    # more: each seek or resume it misses gives it a retry of its own
+                    self._silent_member_joins.pop(player.protocol_id, None)
                     await self.remove_silent_member(
                         player, rejoin=True, reason="warm flush was not acknowledged"
                     )
@@ -1759,6 +1761,8 @@ class AirPlayStreamSession:
         )
         for (player, _), result in zip(members, results, strict=True):
             if isinstance(result, BaseException):
+                # each start it misses gives it a retry of its own
+                self._silent_member_joins.pop(player.protocol_id, None)
                 await self.remove_silent_member(
                     player, rejoin=True, reason=f"start failed: {result!r}"
                 )
