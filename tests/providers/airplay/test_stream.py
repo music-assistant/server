@@ -4715,6 +4715,25 @@ async def test_unexpected_death_of_a_speaker_ends_the_session_of_its_set() -> No
 
 
 @pytest.mark.asyncio
+async def test_a_speaker_lost_without_a_rejoin_takes_its_set_out_of_its_group_for_good() -> None:
+    """A speaker of a set lost in a group leaves it with its set, without a return lined up."""
+    speaker = _make_player()
+    speaker.player = None
+    airplay_set = MagicMock(protocol_id="apset", synced_to="leader", group_members=[])
+    airplay_set.provider.get_protocol.return_value = MagicMock(group_members=["leader", "apset"])
+    speaker.owner = airplay_set
+    speaker.provider.mass.create_task = MagicMock()
+    stream = AirPlayStream(speaker)
+    stream.session = MagicMock()
+    stream._leave_group = MagicMock(return_value="leave-coro")  # type: ignore[method-assign]
+
+    assert stream.handle_stream_loss(rejoin=False) is False
+
+    speaker.provider.mass.create_task.assert_called_once_with("leave-coro")
+    airplay_set.schedule_group_rejoin.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("receiver_closed", [False, True])
 async def test_the_apple_tv_of_a_set_losing_its_stream_leaves_its_speakers_playing(
     receiver_closed: bool,

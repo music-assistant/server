@@ -3325,6 +3325,7 @@ async def test_a_speaker_of_a_set_dropped_for_its_writes_is_lost_as_when_its_str
     session, speaker, apple_tv = _make_set_session()
     second = MagicMock(protocol_id="apsecond", renders_audio=True, owner=apple_tv)
     second.stream = _stream_defaults(MagicMock(running=True, connected=True))
+    second.stream.session = session
     plain = _plain_speaker()
     plain.owner = plain
     session.sync_clients += [second, plain]
@@ -3341,7 +3342,7 @@ async def test_a_speaker_of_a_set_dropped_for_its_writes_is_lost_as_when_its_str
     with patch.object(session, "_cleanup_after_removal", new_callable=AsyncMock):
         assert await session._write_chunk_to_all_players(b"\0" * 4)
 
-    second.stream.handle_stream_loss.assert_called_once_with()
+    second.stream.handle_stream_loss.assert_called_once_with(rejoin=True)
     plain.stream.handle_stream_loss.assert_not_called()
     speaker.stream.handle_stream_loss.assert_not_called()
     assert session.sync_clients == [speaker]
@@ -3414,3 +3415,31 @@ async def test_an_apple_tv_that_misses_every_seek_comes_back_after_each(missed: 
             await _settle_silent_joins(session)
 
     assert add_client.await_args_list == [call(apple_tv), call(apple_tv)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing", ["connect", "start"])
+async def test_a_speaker_of_a_set_that_fails_its_late_join_takes_the_set_along(
+    failing: str,
+) -> None:
+    """
+    A speaker whose late join fails takes its set along, as a start of the set fails as a whole.
+
+    It is not lined up to join again: a start that failed is not tried again either.
+    """
+    session, _, apple_tv = _make_set_session()
+    second = MagicMock(protocol_id="apsecond", renders_audio=True, owner=apple_tv, sync_offset_ms=0)
+    second.protocol = StreamingProtocol.RAOP
+    stream = _late_join_stream(session)
+    stream.session = session
+    if failing == "connect":
+        stream.wait_for_connection = AsyncMock(side_effect=OSError("connection refused"))
+    else:
+        stream.start = AsyncMock(side_effect=OSError("START rejected"))
+
+    with patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client:
+        await session.add_client(second)
+
+    assert second not in session.sync_clients
+    stop_client.assert_awaited_once()
+    stream.handle_stream_loss.assert_called_once_with(rejoin=False)

@@ -592,6 +592,7 @@ class AirPlayStreamSession:
                 err,
             )
             await self.stop_client(airplay_player, reason="late joiner connection failed")
+            self._lose_set_speaker(airplay_player, rejoin=False)
             return
 
         pcm_sample_size = self._pcm_byte_rate
@@ -762,6 +763,7 @@ class AirPlayStreamSession:
                 err,
             )
             await self.stop_client(airplay_player, reason="late joiner start/prime failed")
+            self._lose_set_speaker(airplay_player, rejoin=False)
             return
 
         try:
@@ -825,6 +827,7 @@ class AirPlayStreamSession:
                         await self.stop_client(
                             airplay_player, reason="late joiner start/prime failed"
                         )
+                        self._lose_set_speaker(airplay_player, rejoin=False)
                         return
 
                 if airplay_player not in self.sync_clients:
@@ -1126,9 +1129,8 @@ class AirPlayStreamSession:
             if not player.renders_audio:
                 # the music goes on without a member that is not heard, which is added once more
                 self._rejoin_silent_member(player)
-            elif (owner := player.owner) is not None and owner is not player and player.stream:
-                # lost as when its stream dies: a set plays on all of its speakers or not at all
-                player.stream.handle_stream_loss()
+            else:
+                self._lose_set_speaker(player, rejoin=True)
         return has_running_clients
 
     async def _write_chunk_to_player(self, airplay_player: AirPlayPlayer, chunk: bytes) -> None:
@@ -1662,6 +1664,21 @@ class AirPlayStreamSession:
                 )
             ):
                 self._schedule_silent_member_join(member)
+
+    def _lose_set_speaker(self, airplay_player: AirPlayPlayer, *, rejoin: bool) -> None:
+        """
+        Take the set of a speaker that was lost along, as when the stream of a speaker dies.
+
+        A set plays on all of its speakers or not at all, so it also fails as a whole when
+        one of its speakers cannot join, as its start does.
+
+        :param airplay_player: The member that was lost.
+        :param rejoin: Whether the set may be lined up to join its group again.
+        """
+        if (owner := airplay_player.owner) is None or owner is airplay_player:
+            return
+        if (stream := airplay_player.stream) is not None and stream.session is self:
+            stream.handle_stream_loss(rejoin=rejoin)
 
     def _admit_silent_member(self, airplay_player: AirPlayPlayer) -> bool:
         """

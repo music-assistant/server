@@ -962,13 +962,14 @@ class AirPlayStream:
                     artwork_url, metadata_generation, artwork_render
                 )
 
-    def handle_stream_loss(self) -> bool:
+    def handle_stream_loss(self, *, rejoin: bool = True) -> bool:
         """
         Take the player of a stream that was lost out of its group, and line up its return.
 
         A speaker of a set takes its set along. A set that plays on its own stops: it plays on
         all of its speakers or not at all.
 
+        :param rejoin: Whether to line up its return, which a join that failed does not get.
         :return: Whether the player led its group, whose state the player controller settles.
         """
         player = self.player
@@ -1010,7 +1011,7 @@ class AirPlayStream:
             leader_player = owner.player if was_leader else None
         if leader_player is not None and owner.player is not None:
             self.mass.create_task(self._leave_group(leader_player, owner.player.player_id))
-        if rejoin_candidates and not self._receiver_closed:
+        if rejoin and rejoin_candidates and not self._receiver_closed:
             # the group (or its successor) may still be playing:
             # schedule bounded attempts to re-join it
             owner.schedule_group_rejoin(rejoin_candidates)
