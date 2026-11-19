@@ -68,7 +68,7 @@ async def request_ai_distractors(
     try:
         async with asyncio.timeout(timeout):
             return await engine.provider.ai_query(prompt, engine_id=engine.id)
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - AI provider code, distractors are optional
         LOGGER.debug(
             "Music Quiz AI distractor request failed via %s (%s)",
             engine.uid,

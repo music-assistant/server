@@ -243,7 +243,7 @@ class HueEntertainmentBridge:
                         "Cannot start entertainment for '%s': %s", self.target.name, err
                     )
                     return
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - any other failure is retried
                     self.logger.warning(
                         "Entertainment start attempt %d failed for '%s': %s",
                         attempt + 1,
@@ -444,7 +444,7 @@ class HueEntertainmentBridgeManager:
             bridge = HueEntertainmentBridge(self.provider, target, sendspin_server)
             try:
                 await bridge.start()
-            except Exception:
+            except Exception:  # noqa: BLE001 - one failing bridge must not stop the others
                 self.logger.warning("Failed to start bridge for '%s'", target.name)
                 with suppress(Exception):
                     await bridge.stop()

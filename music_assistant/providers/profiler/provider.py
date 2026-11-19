@@ -349,7 +349,7 @@ class ProfilerProvider(PluginProvider):
                     finalize_recorder_entry, self._proc, entry, csv_path
                 )
                 self._recorder_ring.append(entry)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failed sample must not stop the recorder
                 self.logger.debug("Flight recorder sample failed: %s", err)
 
     def _collect_recorder_entry(self) -> dict[str, Any]:
