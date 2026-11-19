@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import functools
 import logging
-from contextlib import asynccontextmanager
-from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.errors import RateLimited, ResourceTemporarilyUnavailable
@@ -20,42 +17,9 @@ from music_assistant.helpers.throttle_retry import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable
-
     from music_assistant.mass import MusicAssistant
 
 MB_BASE_URL = "https://musicbrainz-mirror.music-assistant.io/ws/2"
-
-_REFRESH_MB: ContextVar[bool] = ContextVar("refresh_musicbrainz", default=False)
-
-
-@asynccontextmanager
-async def refresh_musicbrainz() -> AsyncGenerator[None]:
-    """Bypass the MusicBrainz cache for every lookup made inside this block."""
-    token = _REFRESH_MB.set(True)
-    try:
-        yield
-    finally:
-        _REFRESH_MB.reset(token)
-
-
-def _refresh_when_asked(func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
-    """
-    Bypass the cache of a MusicBrainz lookup when inside :func:`refresh_musicbrainz`.
-
-    handle_refresh sets BYPASS_CACHE for the duration of the wrapped call. This is safe
-    because the wrapped function only does a plain HTTP request, with no calls to other
-    providers' cached methods on the stack. The fresh answer replaces the stored entry.
-    """
-
-    @functools.wraps(func)
-    async def wrapper(self: MusicBrainzAPIClient, /, endpoint: str, **kwargs: str) -> Any:
-        if not _REFRESH_MB.get():
-            return await func(self, endpoint, **kwargs)
-        async with self.mass.cache.handle_refresh(True):
-            return await func(self, endpoint, **kwargs)
-
-    return wrapper
 
 
 class MusicBrainzAPIClient:
@@ -69,15 +33,13 @@ class MusicBrainzAPIClient:
         self.mass = mass
         self.logger = logging.getLogger(__name__)
 
-    @_refresh_when_asked
     @use_cache(86400 * 30)  # Cache for 30 days
     @throttle_with_retries
     async def get_data(self, /, endpoint: str, **kwargs: str) -> Any:
         """
         Fetch data from the MusicBrainz API.
 
-        Results are cached for 30 days, and read past the cache inside
-        :func:`refresh_musicbrainz`.
+        Results are cached for 30 days.
 
         :param endpoint: API endpoint path (e.g. ``artist/123?inc=aliases``).
         :param kwargs: Additional query parameters forwarded as URL params.
