@@ -1532,9 +1532,7 @@ class AirPlayStream:
                         # the device of a set only shows what its speakers play: they play on
                         if (session := self.session) is not None:
                             self.mass.create_task(
-                                session.remove_silent_member(
-                                    player, rejoin=not self._receiver_closed
-                                )
+                                session.end_silent_member(player, taken_over=self._receiver_closed)
                             )
                         return
                     # Candidates for the automatic re-join: the leader this member

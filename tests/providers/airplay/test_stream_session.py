@@ -23,6 +23,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_LATE_JOIN_RING_MAX_BYTES,
     AIRPLAY_LATE_JOIN_RING_MIN_SECONDS,
     AIRPLAY_PCM_FORMAT,
+    AIRPLAY_SILENT_MEMBER_RESET_WINDOW,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     AIRPLAY_STALL_RESYNC_HOLDOFF,
     AIRPLAY_STALL_SETTLE_SECONDS,
@@ -3212,3 +3213,41 @@ async def test_the_apple_tv_of_a_pair_joins_the_speaker_that_plays_once_the_othe
         await _settle_silent_joins(session)
 
     add_client.assert_awaited_once_with(apple_tv)
+
+
+@pytest.mark.asyncio
+async def test_an_apple_tv_reset_by_a_speaker_that_joined_is_added_once_more() -> None:
+    """
+    A speaker that sets up resets the session of its Apple TV, which reports another sender.
+
+    Right after a speaker joined, the Apple TV is added once more all the same; another sender
+    taking it over later on is final.
+    """
+    session, speaker, apple_tv = _make_set_session()
+    session.sync_clients.append(apple_tv)
+    session._silent_member_joins[apple_tv.protocol_id] = 1
+
+    async def join(player: Any) -> None:
+        session.sync_clients.append(player)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.AIRPLAY_SILENT_MEMBER_REJOIN_DELAY",
+            0,
+        ),
+        patch(_SILENT_POLL, 0),
+        patch.object(session, "stop_client", new_callable=AsyncMock),
+        patch.object(session, "add_client", side_effect=join) as add_client,
+    ):
+        # the speaker heals back into the session the Apple TV plays in
+        session._join_silent_members(joined=speaker)
+        await session.end_silent_member(apple_tv, taken_over=True)
+        await _settle_silent_joins(session)
+        add_client.assert_awaited_once_with(apple_tv)
+
+        session._speaker_joined_at[apple_tv.protocol_id] -= AIRPLAY_SILENT_MEMBER_RESET_WINDOW
+        await session.end_silent_member(apple_tv, taken_over=True)
+        await _settle_silent_joins(session)
+
+    add_client.assert_awaited_once()
+    assert session.sync_clients == [speaker]

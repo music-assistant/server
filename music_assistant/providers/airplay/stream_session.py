@@ -30,6 +30,7 @@ from .constants import (
     AIRPLAY_SILENT_MEMBER_JOIN_POLL_INTERVAL,
     AIRPLAY_SILENT_MEMBER_JOIN_TIMEOUT,
     AIRPLAY_SILENT_MEMBER_REJOIN_DELAY,
+    AIRPLAY_SILENT_MEMBER_RESET_WINDOW,
     AIRPLAY_SILENT_MEMBER_TIMEOUT,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     AIRPLAY_STALL_RESYNC_HOLDOFF,
@@ -164,6 +165,8 @@ class AirPlayStreamSession:
         # most after it left. Its pending join, by player id.
         self._silent_member_joins: dict[str, int] = {}
         self._silent_member_tasks: dict[str, asyncio.Task[None]] = {}
+        # When a speaker of its set last joined, by player id of the member that is not heard.
+        self._speaker_joined_at: dict[str, float] = {}
         # The members that are not heard and were started since the last (re)start: before
         # its START a member backs up the feed like any other, which is no stall.
         self._started_silent_members: set[str] = set()
@@ -515,6 +518,23 @@ class AirPlayStreamSession:
         await self.remove_client(airplay_player, reason=reason)
         if rejoin:
             self._rejoin_silent_member(airplay_player)
+
+    async def end_silent_member(self, airplay_player: AirPlayPlayer, *, taken_over: bool) -> None:
+        """
+        Take a member that is not heard out of the session after its stream ended.
+
+        It is added once more, unless another sender took its device over. Right after a
+        speaker of its set joined, that report is the reset the join caused and no other sender.
+
+        :param airplay_player: The member whose stream ended.
+        :param taken_over: Whether its device reported that another sender took it over.
+        """
+        joined_at = self._speaker_joined_at.get(airplay_player.protocol_id)
+        reset = (
+            joined_at is not None
+            and time.monotonic() - joined_at < AIRPLAY_SILENT_MEMBER_RESET_WINDOW
+        )
+        await self.remove_silent_member(airplay_player, rejoin=not taken_over or reset)
 
     async def add_client(self, airplay_player: AirPlayPlayer) -> None:  # noqa: PLR0915
         """
@@ -1614,6 +1634,7 @@ class AirPlayStreamSession:
         """
         if joined and (owner := joined.owner) and (member := owner.silent_member):
             self._silent_member_joins.pop(member.protocol_id, None)
+            self._speaker_joined_at[member.protocol_id] = time.monotonic()
         for player in self._audible_clients:
             owner = player.owner
             member = owner.silent_member if owner else None

@@ -4722,13 +4722,13 @@ async def test_the_apple_tv_of_a_set_losing_its_stream_leaves_its_speakers_playi
     """
     The Apple TV of a set leaves the music alone: no ungroup, no re-join, no state.
 
-    It is added once more, unless it ended the session itself for another sender.
+    The session decides whether it is added once more: whether another sender took it over.
     """
     apple_tv = _make_player()
     apple_tv.renders_audio = False
     apple_tv.synced_to = "leader"
     session = MagicMock()
-    session.remove_silent_member = MagicMock(return_value="leave")
+    session.end_silent_member = MagicMock(return_value="leave")
     apple_tv.provider.mass.create_task = MagicMock()
 
     stream = AirPlayStream(apple_tv)
@@ -4748,7 +4748,7 @@ async def test_the_apple_tv_of_a_set_losing_its_stream_leaves_its_speakers_playi
     ):
         await stream._stderr_reader()
 
-    session.remove_silent_member.assert_called_once_with(apple_tv, rejoin=not receiver_closed)
+    session.end_silent_member.assert_called_once_with(apple_tv, taken_over=receiver_closed)
     apple_tv.provider.mass.create_task.assert_called_once_with("leave")
     stream._leave_group.assert_not_called()
     apple_tv.schedule_group_rejoin.assert_not_called()
