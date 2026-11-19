@@ -178,7 +178,7 @@
 # ---
 # name: test_parse_albums[no-artist.album]
   dict({
-    'album_type': 'unknown',
+    'album_type': 'album',
     'artists': list([
       dict({
         'artist_type': 'singer',
@@ -332,7 +332,7 @@
 # ---
 # name: test_parse_albums[no-artist.album].1
   dict({
-    'album_type': 'unknown',
+    'album_type': 'album',
     'artists': list([
       dict({
         'artist_type': 'singer',
@@ -486,7 +486,7 @@
 # ---
 # name: test_parse_albums[no-version.album]
   dict({
-    'album_type': 'unknown',
+    'album_type': 'album',
     'artists': list([
       dict({
         'available': True,
@@ -621,7 +621,7 @@
 # ---
 # name: test_parse_albums[no-version.album].1
   dict({
-    'album_type': 'unknown',
+    'album_type': 'album',
     'artists': list([
       dict({
         'available': True,
@@ -756,7 +756,7 @@
 # ---
 # name: test_parse_albums[spec.album]
   dict({
-    'album_type': 'unknown',
+    'album_type': 'album',
     'artists': list([
       dict({
         'available': True,
@@ -891,7 +891,7 @@
 # ---
 # name: test_parse_albums[spec.album].1
   dict({
-    'album_type': 'unknown',
+    'album_type': 'album',
     'artists': list([
       dict({
         'available': True,
@@ -2497,7 +2497,7 @@
 # name: test_parse_track[missing-items.track].1
   dict({
     'album': dict({
-      'album_type': 'unknown',
+      'album_type': 'album',
       'artists': list([
         dict({
           'available': True,
@@ -2968,7 +2968,7 @@
 # name: test_parse_track[navi-various.track].1
   dict({
     'album': dict({
-      'album_type': 'unknown',
+      'album_type': 'album',
       'artists': list([
         dict({
           'available': True,
@@ -3420,7 +3420,7 @@
 # name: test_parse_track[no-version.track].1
   dict({
     'album': dict({
-      'album_type': 'unknown',
+      'album_type': 'album',
       'artists': list([
         dict({
           'available': True,
@@ -3853,7 +3853,7 @@
 # name: test_parse_track[spec-child.track].1
   dict({
     'album': dict({
-      'album_type': 'unknown',
+      'album_type': 'album',
       'artists': list([
         dict({
           'available': True,
