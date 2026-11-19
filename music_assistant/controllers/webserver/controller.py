@@ -572,28 +572,27 @@ class WebserverController(CoreController):
         )
         self.provider_pages.drop_user(user_id)
 
-    def update_active_user_filters(
-        self,
-        user_id: str,
-        player_filter: list[str] | None = None,
-    ) -> None:
+    def update_active_user(self, user: User) -> None:
         """
-        Apply updated access filters to the live sessions of a user.
+        Apply the stored profile, preferences and player filter of a user to its live sessions.
 
-        Call this after the filters of a user were changed in the database, so the
-        change takes effect right away instead of only on the next connection.
+        Call this after the user was changed in the database, so the change takes effect
+        right away instead of only on the next connection. A changed role, or a disabled
+        user, instead needs `disconnect_websockets_for_user`.
 
-        :param user_id: ID of the user whose sessions must be updated.
-        :param player_filter: The new player filter, or None to leave it untouched.
+        :param user: The user as just read back from the database.
         """
         for client in list(self.clients):
-            user = client.authenticated_user
-            if user is None or user.user_id != user_id:
+            live_user = client.authenticated_user
+            if live_user is None or live_user.user_id != user.user_id:
                 continue
             # updated in place: the connection's context holds this very object
-            if player_filter is not None:
-                user.player_filter[:] = player_filter
-            self.logger.debug("Updated the access filters of a live session of %s", user.username)
+            live_user.username = user.username
+            live_user.display_name = user.display_name
+            live_user.avatar_url = user.avatar_url
+            live_user.preferences = dict(user.preferences)
+            live_user.player_filter[:] = user.player_filter
+            self.logger.debug("Updated a live session of %s", live_user.username)
 
     def set_sendspin_player_for_token(self, token: str, player_id: str) -> None:
         """
