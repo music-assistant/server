@@ -224,7 +224,7 @@ pair), and the HomePods are fed directly as its speakers.
   volume, added once more when it fails but not after it ended its session itself (unless a
   speaker of the set just set up again, which ends it too), and never stopping its speakers. A
   speaker that comes back while the set plays and cannot join is left out until it comes back
-  again, as in a native session.
+  again, and a set with no speaker left in the stream stops, as in a native session.
 
 ### Protocol ID Format
 

@@ -4466,6 +4466,36 @@ def test_a_homepod_back_while_its_room_plays_that_cannot_join_is_left_out() -> N
     abandon.assert_called_once_with()
 
 
+def test_a_room_whose_other_homepod_leaves_after_one_could_not_join_stops() -> None:
+    """A room has nothing heard to play on once its HomePod leaves and the other is left out."""
+    bridge, homepods, apple_tv = _make_room_bridge(speakers=2)
+    bridge._is_streaming = True
+    back = _homepod_back(bridge, homepods)
+
+    with patch.object(bridge, "_abandon_streaming", MagicMock()) as abandon:
+        bridge._on_transport_failed(back)
+        abandon.assert_not_called()
+        apple_tv.endpoints = [homepods[1]]
+        bridge.update_endpoints()
+
+    abandon.assert_called_once_with()
+
+
+def test_a_room_whose_only_homepod_left_cannot_join_stops() -> None:
+    """A room has nothing heard to play on once the only HomePod it has left cannot join."""
+    bridge, homepods, apple_tv = _make_room_bridge(speakers=2)
+    bridge._is_streaming = True
+    back = _homepod_back(bridge, homepods)
+
+    with patch.object(bridge, "_abandon_streaming", MagicMock()) as abandon:
+        apple_tv.endpoints = [homepods[1]]
+        bridge.update_endpoints()
+        abandon.assert_not_called()
+        bridge._on_transport_failed(back)
+
+    abandon.assert_called_once_with()
+
+
 async def test_a_homepod_back_in_its_room_that_joined_ends_the_stream_when_it_fails() -> None:
     """A HomePod that came back and joined the music of its room is one of its speakers again."""
     bridge, homepods, _ = _make_room_bridge(speakers=2)

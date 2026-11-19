@@ -494,13 +494,9 @@ class SendspinAirPlayBridge:
         if not self._is_streaming:
             # the next stream starts on the devices there are by then
             return
-        if not self.airplay_player.endpoints:
-            self.logger.info(
-                "The last speaker of %s left it, it stops playing", self.airplay_player.display_name
-            )
-            self._abandon_streaming()
-            return
         added = self._sync_transports()
+        if self._abandon_unheard():
+            return
         for transport in added:
             transport.joining_late = True
             transport.restart()
@@ -958,11 +954,11 @@ class SendspinAirPlayBridge:
 
         A speaker that fails ends the stream of its set: a set plays on all of its speakers
         or not at all. A speaker that comes back while its set plays and fails before it joins
-        is left out instead, until it comes back again. The device of a set never stops its
-        speakers: it is added once more after a short wait, and left out of the stream when it
-        fails again. One that ended its session itself (another sender took it over, or it went
-        to sleep) is left out at once, unless a speaker of its set just set up again, which ends
-        that session too.
+        is left out instead, until it comes back again; the set stops when no speaker is left in
+        the stream. The device of a set never stops its speakers: it is added once more after a
+        short wait, and left out of the stream when it fails again. One that ended its session
+        itself (another sender took it over, or it went to sleep) is left out at once, unless a
+        speaker of its set just set up again, which ends that session too.
 
         :param transport: The transport that failed.
         """
@@ -974,6 +970,7 @@ class SendspinAirPlayBridge:
                     self.airplay_player.display_name,
                 )
                 self._leave_out(transport)
+                self._abandon_unheard()
             else:
                 self._abandon_streaming()
             return
@@ -1009,6 +1006,21 @@ class SendspinAirPlayBridge:
         self._left_out.add(transport.endpoint.protocol_id)
         self._transports.pop(transport.endpoint.protocol_id, None)
         transport.release()
+
+    def _abandon_unheard(self) -> bool:
+        """
+        Give up on the stream when none of the devices left in it is heard.
+
+        :return: Whether the stream was given up on.
+        """
+        if any(not transport.silent for transport in self._transports.values()):
+            return False
+        self.logger.info(
+            "No speaker of %s is left in its stream, it stops playing",
+            self.airplay_player.display_name,
+        )
+        self._abandon_streaming()
+        return True
 
     def _renew_silent_retry(self) -> None:
         """Give the device of a set its retry back: a speaker that sets up again resets it."""
