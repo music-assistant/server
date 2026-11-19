@@ -44,8 +44,10 @@ def test_non_string_type_rejected() -> None:
     """A non-string type (list/dict) is reported instead of crashing the validator."""
     for bad_type in (["music"], {"type": "music"}):
         manifest = _valid_manifest()
-        manifest["type"] = bad_type
-        assert any("is not one of" in issue for issue in _validate(manifest, "demo"))
+        manifest.update(type=bad_type, provides=["radio"])
+        assert _validate(manifest, "demo") == [
+            f"type '{bad_type}' is not one of {sorted(VALID_TYPES)}"
+        ]
 
 
 def test_domain_must_match_folder() -> None:
@@ -153,6 +155,16 @@ def test_provides_breaking_the_rules_rejected() -> None:
     ]
     manifest.update(type="speaker", provides=["radio"])
     assert _validate(manifest, "demo") == [f"type 'speaker' is not one of {sorted(VALID_TYPES)}"]
+
+
+def test_top_level_media_types_rejected() -> None:
+    """A top-level media_types is reported with a pointer to provides; a menu action's is not."""
+    manifest = _valid_manifest()
+    manifest["media_types"] = ["radio"]
+    manifest["menu_actions"] = [_menu_action()]
+    assert _validate(manifest, "demo") == [
+        "'media_types' is not read by the server, use 'provides' instead"
+    ]
 
 
 def test_real_tree_is_clean() -> None:

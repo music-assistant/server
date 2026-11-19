@@ -7,8 +7,9 @@ omits one of them — or whose ``domain`` does not match its folder, whose ``typ
 provider type, or whose ``codeowners`` are malformed — only fails once the server tries to load the
 provider. This pre-commit/CI guard scans every provider manifest up front and prints each problem.
 
-A manifest must not contain ``tier``: the server sets it from where the provider loads. An optional
-``support_url`` must be an ``https`` URL with a host. Declared ``provides`` must be known
+A manifest must not contain ``tier``: the server sets it from where the provider loads. Nor a
+top-level ``media_types``: the server does not read it, the media types go in ``provides``. An
+optional ``support_url`` must be an ``https`` URL with a host. Declared ``provides`` must be known
 ``ProviderOffering`` values that fit the provider type, each listed once. Declared
 ``menu_actions``, ``mcp_tools`` and ``page`` must follow the rules the server applies when it
 reads a manifest
@@ -165,6 +166,8 @@ def _validate(data: dict[str, object], folder_name: str) -> list[str]:
         issues.extend(_validate_codeowners(data["codeowners"]))
     if "tier" in data:
         issues.append("'tier' is set by the server and must not be in the manifest")
+    if "media_types" in data:
+        issues.append("'media_types' is not read by the server, use 'provides' instead")
     if "support_url" in data and not _is_https_url(data["support_url"]):
         issues.append("'support_url' must be an https URL with a host")
     if "provides" in data:
@@ -198,7 +201,7 @@ def _validate_provides(provides: object, provider_type: object) -> list[str]:
     """
     if not isinstance(provides, list):
         return ["'provides' must be a list"]
-    check_fit = provider_type in VALID_TYPES
+    check_fit = isinstance(provider_type, str) and provider_type in VALID_TYPES
     allowed = OFFERINGS_BY_TYPE.get(str(provider_type), frozenset())
     issues: list[str] = []
     seen: set[str] = set()
