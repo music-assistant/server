@@ -962,6 +962,68 @@ class AirPlayStream:
                     artwork_url, metadata_generation, artwork_render
                 )
 
+    def handle_stream_loss(self) -> bool:
+        """
+        Take the player of a stream that was lost out of its group, and line up its return.
+
+        A speaker of a set takes its set along. A set that plays on its own stops: it plays on
+        all of its speakers or not at all.
+
+        :return: Whether the player led its group, whose state the player controller settles.
+        """
+        player = self.player
+        # a speaker of a set leaves and re-joins a group with its set
+        owner = player.owner or player
+        # Candidates for the automatic re-join: the leader this member
+        # was synced to (plus its other members, in case leadership
+        # transfers while the backoff runs), or - when this was the
+        # leader itself - the members that survive it. Captured before
+        # the ungroup below mutates the group state (create_task
+        # starts eagerly).
+        was_leader = bool(owner.group_members)
+        if owner.synced_to:
+            rejoin_candidates = [owner.synced_to]
+            if leader := owner.provider.get_protocol(owner.synced_to):
+                rejoin_candidates += [
+                    member_id
+                    for member_id in leader.group_members
+                    if member_id not in (owner.protocol_id, owner.synced_to)
+                ]
+        else:
+            rejoin_candidates = [m for m in owner.group_members if m != owner.protocol_id]
+        # Hand off to the player controller so it drops just this member, or
+        # transfers leadership to a healthy member, instead of dissolving the
+        # whole group over a single dead transport. A sync leader is left in
+        # its current state here on purpose: the controller only transfers
+        # leadership while the queue still looks active, and transfer_queue or
+        # dissolve sets the final state.
+        # The player leaves the group of its AirPlay sync leader only:
+        # cmd_ungroup acts on the player at the visible/group level, which can
+        # remove the member from its (sync)group - or, for a static member,
+        # release the whole group (HA unjoin semantics) - over one dead
+        # transport. The device fell out; its membership is intent that must
+        # survive, so only the leader's live session loses it.
+        if owner.synced_to:
+            sync_leader = owner.provider.get_protocol(owner.synced_to)
+            leader_player = sync_leader.player if sync_leader else None
+        else:
+            leader_player = owner.player if was_leader else None
+        if leader_player is not None and owner.player is not None:
+            self.mass.create_task(self._leave_group(leader_player, owner.player.player_id))
+        if rejoin_candidates and not self._receiver_closed:
+            # the group (or its successor) may still be playing:
+            # schedule bounded attempts to re-join it
+            owner.schedule_group_rejoin(rejoin_candidates)
+        if (
+            owner is not player
+            and not was_leader
+            and not owner.synced_to
+            and (session := self.session)
+        ):
+            # a set plays on all of its speakers or not at all
+            self.mass.create_task(session.stop())
+        return was_leader
+
     def _full_media_duration(self, metadata: PlayerMedia) -> int:
         """
         Return the media's full track duration in seconds.
@@ -1454,7 +1516,7 @@ class AirPlayStream:
             self.device_max_frames,
         )
 
-    async def _stderr_reader(self) -> None:  # noqa: PLR0915
+    async def _stderr_reader(self) -> None:
         """
         Monitor stderr for the running cliairplay process.
 
@@ -1514,8 +1576,6 @@ class AirPlayStream:
                             "superseded cliairplay process stopped for %s", player.display_name
                         )
                         return
-                    # a speaker of a set leaves and re-joins a group with its set
-                    owner = player.owner or player
                     if self._receiver_closed:
                         # Another sender took the receiver over: it leaves the group
                         # session like a failed member, but is not re-joined, which
@@ -1535,59 +1595,7 @@ class AirPlayStream:
                                 session.end_silent_member(player, taken_over=self._receiver_closed)
                             )
                         return
-                    # Candidates for the automatic re-join: the leader this member
-                    # was synced to (plus its other members, in case leadership
-                    # transfers while the backoff runs), or - when this was the
-                    # leader itself - the members that survive it. Captured before
-                    # the ungroup below mutates the group state (create_task
-                    # starts eagerly).
-                    was_leader = bool(owner.group_members)
-                    if owner.synced_to:
-                        rejoin_candidates = [owner.synced_to]
-                        if leader := owner.provider.get_protocol(owner.synced_to):
-                            rejoin_candidates += [
-                                member_id
-                                for member_id in leader.group_members
-                                if member_id not in (owner.protocol_id, owner.synced_to)
-                            ]
-                    else:
-                        rejoin_candidates = [
-                            m for m in owner.group_members if m != owner.protocol_id
-                        ]
-                    # Hand off to the player controller so it drops just this member, or
-                    # transfers leadership to a healthy member, instead of dissolving the
-                    # whole group over a single dead transport. A sync leader is left in
-                    # its current state here on purpose: the controller only transfers
-                    # leadership while the queue still looks active, and transfer_queue or
-                    # dissolve sets the final state.
-                    # The player leaves the group of its AirPlay sync leader only:
-                    # cmd_ungroup acts on the player at the visible/group level, which can
-                    # remove the member from its (sync)group - or, for a static member,
-                    # release the whole group (HA unjoin semantics) - over one dead
-                    # transport. The device fell out; its membership is intent that must
-                    # survive, so only the leader's live session loses it.
-                    if owner.synced_to:
-                        sync_leader = owner.provider.get_protocol(owner.synced_to)
-                        leader_player = sync_leader.player if sync_leader else None
-                    else:
-                        leader_player = owner.player if was_leader else None
-                    if leader_player is not None and owner.player is not None:
-                        self.mass.create_task(
-                            self._leave_group(leader_player, owner.player.player_id)
-                        )
-                    if rejoin_candidates and not self._receiver_closed:
-                        # the group (or its successor) may still be playing:
-                        # schedule bounded attempts to re-join it
-                        owner.schedule_group_rejoin(rejoin_candidates)
-                    if (
-                        owner is not player
-                        and not was_leader
-                        and not owner.synced_to
-                        and (session := self.session)
-                    ):
-                        # a set plays on all of its speakers or not at all
-                        self.mass.create_task(session.stop())
-                    if was_leader:
+                    if self.handle_stream_loss():
                         return
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             finally:

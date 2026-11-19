@@ -1119,7 +1119,15 @@ class AirPlayStreamSession:
                 self.mass.create_task(self._cleanup_after_removal(player, reason=removal_reason))
 
             removed = {player for player, _ in players_to_remove}
-            return any(x.renders_audio for x in sync_clients if x not in removed)
+            has_running_clients = any(x.renders_audio for x in sync_clients if x not in removed)
+        for player in removed:
+            if not player.renders_audio:
+                # the music goes on without a member that is not heard, which is added once more
+                self._rejoin_silent_member(player)
+            elif (owner := player.owner) is not None and owner is not player and player.stream:
+                # lost as when its stream dies: a set plays on all of its speakers or not at all
+                player.stream.handle_stream_loss()
+        return has_running_clients
 
     async def _write_chunk_to_player(self, airplay_player: AirPlayPlayer, chunk: bytes) -> None:
         """Write audio chunk to a player's ffmpeg process."""

@@ -3313,3 +3313,66 @@ async def test_an_apple_tv_that_misses_the_park_joins_again_once_the_music_plays
         await _settle_silent_joins(session)
 
     add_client.assert_awaited_once_with(apple_tv)
+
+
+@pytest.mark.asyncio
+async def test_a_speaker_of_a_set_dropped_for_its_writes_is_lost_as_when_its_stream_dies() -> None:
+    """
+    A speaker whose audio write failed is lost as when its stream dies: it takes its set along.
+
+    A set plays on all of its speakers or not at all. A player of its own is only dropped.
+    """
+    session, speaker, apple_tv = _make_set_session()
+    second = MagicMock(protocol_id="apsecond", renders_audio=True, owner=apple_tv)
+    second.stream = _stream_defaults(MagicMock(running=True, connected=True))
+    plain = _plain_speaker()
+    plain.owner = plain
+    session.sync_clients += [second, plain]
+
+    def ffmpeg(write: AsyncMock) -> MagicMock:
+        return MagicMock(closed=False, write=write, kill=AsyncMock())
+
+    session._player_ffmpeg = {
+        speaker.protocol_id: ffmpeg(AsyncMock()),
+        second.protocol_id: ffmpeg(AsyncMock(side_effect=OSError("broken pipe"))),
+        plain.protocol_id: ffmpeg(AsyncMock(side_effect=OSError("broken pipe"))),
+    }
+
+    with patch.object(session, "_cleanup_after_removal", new_callable=AsyncMock):
+        assert await session._write_chunk_to_all_players(b"\0" * 4)
+
+    second.stream.handle_stream_loss.assert_called_once_with()
+    plain.stream.handle_stream_loss.assert_not_called()
+    speaker.stream.handle_stream_loss.assert_not_called()
+    assert session.sync_clients == [speaker]
+
+
+@pytest.mark.asyncio
+async def test_an_apple_tv_dropped_for_its_writes_is_added_once_more() -> None:
+    """An Apple TV that stopped taking audio leaves the music playing and is added once more."""
+    session, speaker, apple_tv = _make_set_session()
+    session.sync_clients.append(apple_tv)
+    session._silent_member_joins[apple_tv.protocol_id] = 1
+    session._player_ffmpeg = {
+        speaker.protocol_id: MagicMock(closed=False, write=AsyncMock(), kill=AsyncMock()),
+        apple_tv.protocol_id: MagicMock(
+            closed=False, write=AsyncMock(side_effect=TimeoutError()), kill=AsyncMock()
+        ),
+    }
+
+    async def join(player: Any) -> None:
+        session.sync_clients.append(player)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.AIRPLAY_SILENT_MEMBER_REJOIN_DELAY",
+            0,
+        ),
+        patch(_SILENT_POLL, 0),
+        patch.object(session, "_cleanup_after_removal", new_callable=AsyncMock),
+        patch.object(session, "add_client", side_effect=join) as add_client,
+    ):
+        assert await session._write_chunk_to_all_players(b"\0" * 4)
+        await _settle_silent_joins(session)
+
+    add_client.assert_awaited_once_with(apple_tv)
