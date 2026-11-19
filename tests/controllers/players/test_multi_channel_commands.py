@@ -14,6 +14,8 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from tests.common import as_user
+
 if TYPE_CHECKING:
     from tests.scenarios.harness import FakePlayerProvider, Scenario
 
@@ -35,6 +37,9 @@ async def _speakers(
     if combines:
         sendspin._supported_features.add(ProviderFeature.CREATE_MULTI_CHANNEL_PLAYER)
     sendspin.create_multi_channel_player = AsyncMock(return_value=MagicMock())  # type: ignore[method-assign]
+    sendspin.get_multi_channel_candidates = MagicMock(  # type: ignore[method-assign]
+        return_value=["ss_kitchen", "ss_office"]
+    )
     kitchen = sendspin.protocol("ss_kitchen", "Kitchen", identifiers=KITCHEN)
     office = sendspin.protocol("ss_office", "Office", identifiers=OFFICE)
     await scenario.register(kitchen)
@@ -102,3 +107,48 @@ async def test_a_request_the_controller_can_not_pass_on_is_refused(
         await scenario.mass.players.create_multi_channel_player(provider, name, members)
 
     sendspin.create_multi_channel_player.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_the_candidates_are_the_players_of_the_protocols_their_provider_names(
+    scenario: Scenario,
+) -> None:
+    """The candidates of a provider are the players of the protocols it can combine."""
+    sendspin, kitchen_id, office_id = await _speakers(scenario)
+
+    candidates = scenario.mass.players.multi_channel_candidates(sendspin.instance_id)
+
+    assert candidates == [kitchen_id, office_id]
+
+
+async def test_the_candidates_leave_out_the_players_a_user_may_not_use(
+    scenario: Scenario,
+) -> None:
+    """A user limited to some players only gets those of them that can be combined."""
+    sendspin, kitchen_id, _ = await _speakers(scenario)
+
+    with as_user([kitchen_id]):
+        candidates = scenario.mass.players.multi_channel_candidates(sendspin.instance_id)
+
+    assert candidates == [kitchen_id]
+
+
+@pytest.mark.parametrize(
+    ("request_kind", "error"),
+    [
+        ("an unknown provider", ProviderUnavailableError),
+        ("a provider that can not combine speakers", UnsupportedFeaturedException),
+    ],
+)
+async def test_the_candidates_of_a_provider_that_can_not_combine_are_refused(
+    scenario: Scenario, request_kind: str, error: type[Exception]
+) -> None:
+    """Candidates are refused for a provider that is not there or can not combine speakers."""
+    sendspin, _, _ = await _speakers(
+        scenario, combines=request_kind != "a provider that can not combine speakers"
+    )
+    provider = "unknown" if request_kind == "an unknown provider" else sendspin.instance_id
+
+    with pytest.raises(error):
+        scenario.mass.players.multi_channel_candidates(provider)
+
+    sendspin.get_multi_channel_candidates.assert_not_called()  # type: ignore[attr-defined]

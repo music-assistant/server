@@ -106,6 +106,14 @@ class PlayerProvider(Provider):
         """
         raise NotImplementedError
 
+    def get_multi_channel_candidates(self) -> list[str]:
+        """
+        Return the ids of this provider's protocols that can be a speaker of a new multi-channel player.
+
+        Only called for providers that support the CREATE_MULTI_CHANNEL_PLAYER feature.
+        """
+        raise NotImplementedError
+
     async def discover_players(self) -> None:
         """
         Register every device this provider knows of that has no attached protocol.

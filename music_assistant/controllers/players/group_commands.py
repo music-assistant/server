@@ -258,13 +258,7 @@ class GroupCommandsMixin(_PlayerControllerBase):
         :param name: Name of the new player.
         :param members: The channel each speaker plays, by the player id of the speaker.
         """
-        if not (provider_instance := self.mass.get_provider(provider)):
-            raise ProviderUnavailableError(f"Provider {provider} not found")
-        provider_instance = cast("PlayerProvider", provider_instance)
-        if ProviderFeature.CREATE_MULTI_CHANNEL_PLAYER not in provider_instance.supported_features:
-            raise UnsupportedFeaturedException(
-                f"Provider {provider} does not support creating multi-channel players"
-            )
+        provider_instance = self._get_multi_channel_provider(provider)
         if not (name := name.strip()):
             raise InvalidDataError("A multi-channel player needs a name")
         speakers: dict[str, SpeakerChannel] = {}
@@ -287,6 +281,27 @@ class GroupCommandsMixin(_PlayerControllerBase):
                 raise InvalidDataError("Every speaker needs a channel of its own")
             speakers[protocol.protocol_id] = channel
         return await provider_instance.create_multi_channel_player(name, speakers)
+
+    @api_command("players/multi_channel_candidates", required_scope=Scope.PLAYERS_READ)
+    def multi_channel_candidates(self, provider: str) -> list[str]:
+        """
+        Return the players whose speaker can go up in a new multi-channel player.
+
+        :param provider: The provider (id) whose speakers to combine.
+        :return: The player ids, of the players the current user may use.
+        """
+        provider_instance = self._get_multi_channel_provider(provider)
+        current_user = get_current_user()
+        player_ids: list[str] = []
+        for protocol_id in provider_instance.get_multi_channel_candidates():
+            player = self.get_player_by_protocol(protocol_id)
+            if (
+                player is not None
+                and player.player_id not in player_ids
+                and has_player_access(current_user, player.player_id, player)
+            ):
+                player_ids.append(player.player_id)
+        return player_ids
 
     @api_command("players/remove_group_player", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_group_player(self, player_id: str) -> None:
@@ -455,6 +470,23 @@ class GroupCommandsMixin(_PlayerControllerBase):
                 await self.cmd_set_members(new_leader_id, player_ids_to_add=other_members)
             if was_playing:
                 await self.mass.player_queues.resume(new_leader_id)
+
+    def _get_multi_channel_provider(self, provider: str) -> PlayerProvider:
+        """
+        Return the provider that combines speakers into multi-channel players.
+
+        :param provider: The provider (id).
+        :raises ProviderUnavailableError: When the provider is not loaded.
+        :raises UnsupportedFeaturedException: When the provider can not combine speakers.
+        """
+        if not (provider_instance := self.mass.get_provider(provider)):
+            raise ProviderUnavailableError(f"Provider {provider} not found")
+        provider_instance = cast("PlayerProvider", provider_instance)
+        if ProviderFeature.CREATE_MULTI_CHANNEL_PLAYER not in provider_instance.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Provider {provider} does not support creating multi-channel players"
+            )
+        return provider_instance
 
     async def _release_group_session(self, group_id: str) -> None:
         """

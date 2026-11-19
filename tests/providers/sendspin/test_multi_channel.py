@@ -68,6 +68,8 @@ if TYPE_CHECKING:
 LEFT = "speaker-left"
 RIGHT = "speaker-right"
 DEN = "speaker-den"
+BRIDGE = "spb_a0b765001122"
+WEB = "browser-player"
 # a hardware MAC address, which ties the outputs of one device to one player
 SPEAKER_MAC = "a0:b7:65:00:11:22"
 SPEAKER_FORMAT = SupportedAudioFormat(
@@ -1251,6 +1253,118 @@ async def test_a_set_is_combined_through_the_websocket_api(mass: MusicAssistant)
     assert player is not None
     await _wait_for(lambda: {LEFT, RIGHT} <= _group_client_ids(_set_of(sendspin, player)))
     assert sendspin.speaker_output(RIGHT)[1] == SpeakerChannel.FRONT_RIGHT
+
+
+async def test_only_speakers_that_can_go_up_in_a_set_are_candidates(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A connected Sendspin speaker of its own is a candidate for a new set.
+
+    A bridge, a web player, a speaker that is away and a set itself are not, nor are the
+    speakers of a set.
+    """
+    sendspin = _sendspin(mass)
+    player, _, _ = await _compose(mass, sendspin)
+    await _add_speaker(sendspin, DEN, "Den")
+    await _add_speaker(sendspin, WEB, "Browser", manufacturer="Music Assistant")
+    airplay = await _add_airplay_output(mass, SPEAKER_MAC)
+    sendspin.register_bridge_underlying_protocol(BRIDGE, airplay.protocol_id)
+    await _add_speaker(sendspin, BRIDGE, "Kitchen left", as_player=False)
+    await _wait_for(
+        lambda: (
+            (protocol := sendspin.get_protocol(BRIDGE)) is not None and protocol.player is not None
+        )
+    )
+    plain = "speaker-plain"
+    await _add_speaker(sendspin, plain, "Office")
+    _go_away(sendspin, DEN)
+
+    candidates = sendspin.get_multi_channel_candidates()
+
+    assert candidates == [plain], {
+        "set": _set_of(sendspin, player).protocol_id in candidates,
+        "bridge": BRIDGE in candidates,
+        "web player": WEB in candidates,
+        "away": DEN in candidates,
+    }
+
+
+async def test_a_set_can_not_go_up_in_another_set(mass: MusicAssistant) -> None:
+    """A multi-channel player is refused as a speaker of another one, as no speaker at all."""
+    sendspin = _sendspin(mass)
+    player, _, _ = await _compose(mass, sendspin)
+    await _add_speaker(sendspin, DEN, "Den")
+
+    with pytest.raises(UnsupportedFeaturedException):
+        await mass.players.create_multi_channel_player(
+            "sendspin",
+            "Everywhere",
+            {
+                player.player_id: SpeakerChannel.FRONT_LEFT,
+                _player_id(sendspin, DEN): SpeakerChannel.FRONT_RIGHT,
+            },
+        )
+
+
+async def test_a_speaker_being_combined_is_no_candidate(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A speaker that a request is combining into a set is no candidate for another set."""
+    sendspin = _sendspin(mass)
+    await _add_speaker(sendspin, LEFT, "Kitchen left")
+    await _add_speaker(sendspin, RIGHT, "Kitchen right")
+    await _add_speaker(sendspin, DEN, "Den")
+    deferred: list[tuple[SendspinProvider, str, str, str]] = []
+    register_client = SendspinProvider._register_virtual_player_client
+
+    def _defer(
+        self: SendspinProvider,
+        player_id: str,
+        display_name: str,
+        product_name: str = "Virtual Player",
+    ) -> None:
+        deferred.append((self, player_id, display_name, product_name))
+
+    monkeypatch.setattr(SendspinProvider, "_register_virtual_player_client", _defer)
+    combining = asyncio.create_task(
+        mass.players.create_multi_channel_player(
+            "sendspin",
+            "Kitchen",
+            {
+                _player_id(sendspin, LEFT): SpeakerChannel.FRONT_LEFT,
+                _player_id(sendspin, RIGHT): SpeakerChannel.FRONT_RIGHT,
+            },
+        )
+    )
+    await _wait_for(lambda: bool(deferred))
+
+    assert sendspin.get_multi_channel_candidates() == [DEN]
+
+    monkeypatch.setattr(SendspinProvider, "_register_virtual_player_client", register_client)
+    for args in deferred:
+        register_client(*args)
+    await combining
+
+
+async def test_the_candidates_are_listed_through_the_websocket_api(mass: MusicAssistant) -> None:
+    """A client gets the players that can go up in a new set over the websocket API."""
+    sendspin = _sendspin(mass)
+    await _add_speaker(sendspin, LEFT, "Kitchen left")
+    await _add_speaker(sendspin, RIGHT, "Kitchen right")
+    user = await mass.webserver.auth.create_user(username="admin_user", role=UserRole.ADMIN)
+    token = await mass.webserver.auth.create_token(user, "test")
+
+    async with mass.http_session_no_ssl.ws_connect(
+        f"{mass.webserver.internal_base_url}/ws"
+    ) as client:
+        await client.receive_json(timeout=10)
+        assert "result" in await _send(client, "auth", token=token)
+        answer = await _send(client, "players/multi_channel_candidates", provider="sendspin")
+
+    assert sorted(answer["result"]) == sorted(
+        [_player_id(sendspin, LEFT), _player_id(sendspin, RIGHT)]
+    )
 
 
 async def _send(client: ClientWebSocketResponse, command: str, **args: Any) -> dict[str, Any]:

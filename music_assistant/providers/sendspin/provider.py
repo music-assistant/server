@@ -1067,6 +1067,14 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 self.mass.create_task(self._handle_client_added(client_id, event_version))
         self.logger.info("Multi-channel player %s removed", protocol_id)
 
+    def get_multi_channel_candidates(self) -> list[str]:
+        """Return the client ids of the speakers that can go up in a new multi-channel player."""
+        return [
+            protocol.protocol_id
+            for protocol in self.protocols
+            if self._multi_channel_refusal(protocol.protocol_id) is None
+        ]
+
     def multi_channel_player_of(self, client_id: str) -> str | None:
         """
         Return the protocol id of the multi-channel player a speaker belongs to.
@@ -2370,10 +2378,22 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         :raises UnsupportedFeaturedException: When the client is no Sendspin speaker of its own.
         :raises PlayerUnavailableError: When the speaker is not connected.
         """
+        if (refusal := self._multi_channel_refusal(client_id)) is not None:
+            raise refusal
+        return cast("SendspinPlayer", self.get_protocol(client_id))
+
+    def _multi_channel_refusal(
+        self, client_id: str
+    ) -> UnsupportedFeaturedException | PlayerUnavailableError | None:
+        """
+        Return why a client can not be a speaker of a new multi-channel player, None if it can.
+
+        :param client_id: The client id of the speaker.
+        """
         protocol = self.get_protocol(client_id)
         name = protocol.display_name if protocol is not None else client_id
         if client_id in self._multi_channel_speakers:
-            raise UnsupportedFeaturedException(
+            return UnsupportedFeaturedException(
                 f"{name} is part of a multi-channel player already",
                 translation_key="multi_channel_speaker_taken",
                 translation_owner=self.translation_owner,
@@ -2387,20 +2407,20 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             or protocol.session_only
             or not protocol.api.roles_by_family("player")
         ):
-            raise UnsupportedFeaturedException(
+            return UnsupportedFeaturedException(
                 f"{name} can not be a speaker of a multi-channel player",
                 translation_key="multi_channel_not_a_speaker",
                 translation_owner=self.translation_owner,
                 translation_args=[name],
             )
         if protocol.player is None or not protocol.api.is_connected or protocol.needs_setup:
-            raise PlayerUnavailableError(
+            return PlayerUnavailableError(
                 f"{name} is not available",
                 translation_key="multi_channel_speaker_unavailable",
                 translation_owner=self.translation_owner,
                 translation_args=[name],
             )
-        return protocol
+        return None
 
     def _restore_multi_channel_players(self) -> None:
         """Register the silent clients of the stored multi-channel players."""
