@@ -153,8 +153,10 @@ class SendspinSyncProvider(PluginProvider):
             can_next_previous=False,
             exclusive=True,
             allow_external_trigger=False,
-            # the track is generated locally, so MA can start it on demand
-            can_initiate=True,
+            # Not offered to browse or to a source list: a session starts the track
+            # itself, and one started on another queue would take the stream every
+            # measurement is timed against away from the session.
+            can_initiate=False,
         )
         # The track is one period generated once and then replayed verbatim:
         # re-synthesising per chunk would let the chirp spacing drift. Synthesis

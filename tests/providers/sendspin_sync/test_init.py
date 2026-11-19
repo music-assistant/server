@@ -76,12 +76,17 @@ def test_provider_declares_the_audio_source_feature() -> None:
     assert {ProviderFeature.AUDIO_SOURCE} == SUPPORTED_FEATURES
 
 
-async def test_the_calibration_source_can_be_started_by_music_assistant() -> None:
-    """The exposed AudioSource is playable on demand and offers no transport controls."""
+async def test_the_calibration_source_is_only_started_by_a_session() -> None:
+    """
+    The exposed AudioSource is offered nowhere a user could start it, and has no controls.
+
+    Started on another queue while a session runs, it would take the stream away from
+    the session and leave its speakers silent until the timeout.
+    """
     provider = await _setup_provider()
     (source,) = await provider.get_audio_sources()
     assert source.item_id == AUDIO_SOURCE_ID
-    assert source.can_initiate
+    assert not source.can_initiate
     assert source.exclusive
     assert not source.can_play_pause
     assert not source.can_seek
