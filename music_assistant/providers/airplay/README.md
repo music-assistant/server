@@ -234,8 +234,10 @@ stereo layout), the second is its speaker, and both are fed the whole stereo str
   (`gid` reads `<tsid>+<role>+<device id>`), and only while nobody plays to the pair: during a
   session it is the id of that session.
 - Which HomePod carries the pair is decided once and kept (in memory only), whatever roles later
-  records tell: the one whose stored player is the multi-channel room, or else the one with role
-  0, once both HomePods told their roles. Until then both are left alone.
+  records tell: the one whose stored player is the multi-channel room; else, with both records
+  seen, the only one that has a stored player at all (the player of the other is removed once
+  the pair formed, while the room stays stored as the player it was until it attaches again);
+  else the one with role 0, once both HomePods told their roles. Until then both are left alone.
 - The player the second HomePod had before is only removed when both current records tell
   their roles, whichever they are, never on a remembered one, and never when that player is a
   multi-channel room.

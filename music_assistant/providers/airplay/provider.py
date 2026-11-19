@@ -826,9 +826,10 @@ class AirPlayProvider(PlayerProvider):
         """
         Keep what a record of a HomePod tells about its stereo pair; decide who carries it.
 
-        The HomePod whose player is the room of the pair keeps carrying it. Without one, the
-        roles decide once both HomePods told theirs. Return the id of the pair when that was
-        decided just now.
+        The HomePod whose player is the room of the pair keeps carrying it, and so does the only
+        one of the two with a stored player: the player of the other is removed once the pair
+        formed. Without either, the roles decide once both HomePods told theirs. Return the id
+        of the pair when that was decided just now.
 
         :param protocol_id: Protocol id of the device.
         :param discovery_info: The mdns record of the device.
@@ -861,14 +862,30 @@ class AirPlayProvider(PlayerProvider):
         if pair_id in self._pair_carriers:
             return None
         roles = {device_id: self._pair_roles.get(device_id) for device_id in records}
+        players = [device_id for device_id in records if self._has_stored_player(device_id)]
         if rooms := sorted(device_id for device_id in records if self.has_stored_room(device_id)):
             carrier = rooms[0]
+        elif len(records) == 2 and len(players) == 1:
+            # a room formed while the server ran is stored as the player it was until it attaches
+            carrier = players[0]
         elif sorted(roles.values(), key=str) == [0, 1]:
             carrier = next(device_id for device_id, role in roles.items() if role == 0)
         else:
             return None
         self._pair_carriers[pair_id] = carrier
         return pair_id
+
+    def _has_stored_player(self, protocol_id: str) -> bool:
+        """
+        Return whether a device has a stored player.
+
+        :param protocol_id: Protocol id of the device.
+        """
+        record = self.mass.config.get_protocol_record(protocol_id) or {}
+        return bool(
+            (player_id := record.get("player_id"))
+            and self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+        )
 
     async def _handle_airplay_goodbye(self, name: str) -> None:
         """
