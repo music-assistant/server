@@ -126,6 +126,7 @@ class TitleRevealQuizType(QuizType):
             else []
         )
         accepted_answers = _accepted_answers(track, solution)
+        hints = hint_count(len(reveal_order), self.config.hint_speed)
         return MusicQuizRound(
             round_index=round_index,
             track_uri=track.uri,
@@ -133,11 +134,11 @@ class TitleRevealQuizType(QuizType):
             answer_state=HintTextRoundState(
                 solution=solution,
                 accepted_answers=accepted_answers,
-                allowed_typos=_typo_budget(accepted_answers, self.config.typo_tolerance),
-                reveal_order=reveal_order,
-                hint_fractions=build_hint_fractions(
-                    hint_count(len(reveal_order), self.config.hint_speed)
+                allowed_typos=_typo_budget(
+                    accepted_answers, len(reveal_order) - hints, self.config.typo_tolerance
                 ),
+                reveal_order=reveal_order,
+                hint_fractions=build_hint_fractions(hints),
                 artist_answers=artist_answers,
                 artist_label=track.artist_str if artist_answers else None,
             ),
@@ -186,7 +187,11 @@ def _accepted_answers(track: Track, solution: str) -> list[str]:
     ]
 
 
-def _typo_budget(accepted_answers: list[str], tolerance: TitleRevealTypoTolerance) -> int:
+def _typo_budget(
+    accepted_answers: list[str], hidden_letters: int, tolerance: TitleRevealTypoTolerance
+) -> int:
     """Return how many typos a guess may contain."""
     # the shortest answer sets the budget, a longer one's would let unrelated words match it
-    return allowed_typos(min(len(answer) for answer in accepted_answers), tolerance)
+    budget = allowed_typos(min(len(answer) for answer in accepted_answers), tolerance)
+    # typing only the uncovered letters must never be enough
+    return min(budget, hidden_letters - 1)

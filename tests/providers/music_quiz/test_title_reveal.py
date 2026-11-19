@@ -107,6 +107,27 @@ async def test_prepare_round_bases_the_typo_budget_on_the_shortest_answer() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hint_speed", list(TitleRevealHintSpeed))
+@pytest.mark.parametrize("typo_tolerance", list(TitleRevealTypoTolerance))
+async def test_prepare_round_keeps_the_typo_budget_below_the_hidden_letters(
+    hint_speed: TitleRevealHintSpeed, typo_tolerance: TitleRevealTypoTolerance
+) -> None:
+    """Never accept a guess of only the letters uncovered by the last hint."""
+    for letter_count in range(2, 61):
+        quiz_type = _quiz_type(
+            [_track("1", "a" * letter_count)],
+            hint_speed=hint_speed,
+            typo_tolerance=typo_tolerance,
+        )
+
+        state = (await quiz_type.prepare_round(0, [])).answer_state
+
+        assert isinstance(state, HintTextRoundState)
+        assert state.solution == "a" * letter_count
+        assert len(state.reveal_order) - len(state.hint_fractions) > state.allowed_typos
+
+
+@pytest.mark.asyncio
 async def test_prepare_round_skips_unguessable_and_repeated_titles() -> None:
     """Skip titles that are too short and songs already played in another version."""
     previous = await _quiz_type([_track("1", "Hey Jude")]).prepare_round(0, [])
