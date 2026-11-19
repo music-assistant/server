@@ -335,6 +335,20 @@ def _group_leader_id(clients: Iterable[SendspinClient]) -> str | None:
     return leader.client_id if leader else None
 
 
+def _member_clients(
+    provider: SendspinProvider, clients: Iterable[SendspinClient]
+) -> list[SendspinClient]:
+    """
+    Return the group clients that are members of their own.
+
+    The speakers of a multi-channel player are members through that player.
+
+    :param provider: The Sendspin provider.
+    :param clients: The clients of a group.
+    """
+    return [c for c in clients if provider.multi_channel_player_of(c.client_id) is None]
+
+
 if TYPE_CHECKING:
     from aiosendspin.models.core import ClientHelloPayload
     from aiosendspin.models.management import ManagementResultData, PairingMethodConfig
@@ -351,7 +365,6 @@ if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
     from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
     from music_assistant.providers.hass import HomeAssistantProvider
-    from music_assistant.providers.sendspin_source.provider import SendspinSourceProvider
 
     from .provider import PinPairingSession, SendspinProvider
 
@@ -427,14 +440,23 @@ class SendspinBasePlayer(PlayerProtocol):
                         self._on_group_stopped()
                 self.update_state()
             case GroupMemberAddedEvent(client_id=client_id):
-                is_group_leader = _group_leader_id(group.clients) == self.protocol_id
-                if is_group_leader and (
-                    not self._attr_group_members or self._attr_group_members[0] != self.protocol_id
+                # a speaker of a multi-channel player is a member through that player
+                if (
+                    cast("SendspinProvider", self.provider).multi_channel_player_of(client_id)
+                    is None
                 ):
-                    self._attr_group_members = [self.protocol_id, *self._attr_group_members]
-                if client_id not in self._attr_group_members:
-                    self._attr_group_members.append(client_id)
-                    self.update_state()
+                    members = _member_clients(
+                        cast("SendspinProvider", self.provider), group.clients
+                    )
+                    is_group_leader = _group_leader_id(members) == self.protocol_id
+                    if is_group_leader and (
+                        not self._attr_group_members
+                        or self._attr_group_members[0] != self.protocol_id
+                    ):
+                        self._attr_group_members = [self.protocol_id, *self._attr_group_members]
+                    if client_id not in self._attr_group_members:
+                        self._attr_group_members.append(client_id)
+                        self.update_state()
                 self._schedule_membership_sync(group)
             case GroupMemberRemovedEvent(client_id=client_id):
                 self.mass.create_task(self._handle_group_member_removed(group, client_id))
@@ -552,11 +574,8 @@ class SendspinBasePlayer(PlayerProtocol):
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
-        if source_provider := self.mass.get_provider("sendspin_source"):
-            # an input that is playing holds the source it was selected with
-            cast("SendspinSourceProvider", source_provider).on_client_config_updated(
-                self.protocol_id
-            )
+        # an input that is playing holds the source it was selected with
+        cast("SendspinProvider", self.provider).sources.on_client_config_updated(self.protocol_id)
 
     async def handle_config_action(self, action: str) -> list[ConfigEntry]:
         """Run an unpair/management/input action, then re-render the entries."""
@@ -969,8 +988,9 @@ class SendspinBasePlayer(PlayerProtocol):
         # Ignore stale events from a group we no longer belong to.
         if group is not self.api.group:
             return
-        followers = [c.client_id for c in group.clients if c.client_id != self.protocol_id]
-        is_leader = _group_leader_id(group.clients) == self.protocol_id
+        members = _member_clients(cast("SendspinProvider", self.provider), group.clients)
+        followers = [c.client_id for c in members if c.client_id != self.protocol_id]
+        is_leader = _group_leader_id(members) == self.protocol_id
         desired_group_members = [self.protocol_id, *followers] if is_leader else []
         if self._attr_group_members != desired_group_members:
             self._attr_group_members = desired_group_members
@@ -1925,19 +1945,7 @@ class SendspinPlayer(SendspinBasePlayer):
         pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
             self, start_streamdetails=start_streamdetails
         )
-        audio_format, codec = self._session_format(player_role, pcm_format.sample_rate)
-        if audio_format is not None and codec is not None:
-            return audio_format, codec
-        if (default := self._default_format(player_role)) is None:
-            return None
-        return (
-            SendspinAudioFormat(
-                sample_rate=default.sample_rate,
-                bit_depth=default.bit_depth,
-                channels=default.channels,
-            ),
-            default.codec,
-        )
+        return self._played_session_format(player_role, pcm_format.sample_rate)
 
     async def on_group_content_takeover(self) -> object:
         """Clear the protocol snapshot before a new content owner joins."""
@@ -1998,7 +2006,11 @@ class SendspinPlayer(SendspinBasePlayer):
                 and not self.playback_session.playback_task.done()
             ):
                 new_owner_id = _group_leader_id(
-                    c for c in self.api.group.clients if c.client_id != self.protocol_id
+                    c
+                    for c in _member_clients(
+                        cast("SendspinProvider", self.provider), self.api.group.clients
+                    )
+                    if c.client_id != self.protocol_id
                 )
                 new_owner = new_owner_id and self.provider.get_protocol(new_owner_id)
                 if isinstance(new_owner, SendspinPlayer):
@@ -2495,10 +2507,21 @@ class SendspinPlayer(SendspinBasePlayer):
         # Ignore stale events from a group we no longer belong to.
         if group is not self.api.group:
             return
-        followers = [c.client_id for c in group.clients if c.client_id != self.protocol_id]
-        is_leader = _group_leader_id(group.clients) == self.protocol_id
+        provider = cast("SendspinProvider", self.provider)
+        members = _member_clients(provider, group.clients)
+        followers = [c.client_id for c in members if c.client_id != self.protocol_id]
+        is_leader = _group_leader_id(members) == self.protocol_id
         desired_group_members = [self.protocol_id, *followers] if is_leader else []
-        desired_session_members = followers if is_leader else []
+        # the speakers of a multi-channel player play for it, which renders nothing itself
+        desired_session_members = (
+            [
+                c.client_id
+                for c in group.clients
+                if c.client_id != self.protocol_id and not provider.is_silent_client(c.client_id)
+            ]
+            if is_leader
+            else []
+        )
         if self._attr_group_members != desired_group_members:
             self._attr_group_members = desired_group_members
             self.update_state()
@@ -2632,6 +2655,30 @@ class SendspinPlayer(SendspinBasePlayer):
                 audio_format,
                 self.display_name,
             )
+
+    def _played_session_format(
+        self, player_role: PlayerRoleProtocol, session_sample_rate: int
+    ) -> tuple[SendspinAudioFormat, AudioCodec] | None:
+        """
+        Return the format and codec a client plays in a session at a sample rate.
+
+        :param player_role: The player role of the client.
+        :param session_sample_rate: The sample rate of the session.
+        :return: The format and codec, or None for a client that lists no format.
+        """
+        audio_format, codec = self._session_format(player_role, session_sample_rate)
+        if audio_format is not None and codec is not None:
+            return audio_format, codec
+        if (default := self._default_format(player_role)) is None:
+            return None
+        return (
+            SendspinAudioFormat(
+                sample_rate=default.sample_rate,
+                bit_depth=default.bit_depth,
+                channels=default.channels,
+            ),
+            default.codec,
+        )
 
     def _session_format(
         self, player_role: PlayerRoleProtocol, session_sample_rate: int | None
@@ -3350,7 +3397,7 @@ class SendspinPlayer(SendspinBasePlayer):
 
 
 class SendspinVisualizerPlayer(SendspinBasePlayer):
-    """A non-audio Sendspin player for visualizer/lighting devices."""
+    """A non-audio Sendspin player for display, visualizer, lighting and controller devices."""
 
     _attr_type = PlayerType.VISUALIZER
     # keep in line with SESSION_ONLY_DEFAULTS in controllers/config/player_split.py
@@ -3480,7 +3527,7 @@ class SendspinSourcePlayer(SendspinBasePlayer):
 
     Renders nothing and is never a playback or grouping target. It is listed as an
     audio input so its pairing, enabling and line-in autostart settings are easy to
-    reach. The sendspin_source plugin exposes the audio itself.
+    reach. The Sendspin provider exposes the audio itself, as a line-in source.
     """
 
     _attr_type = PlayerType.SOURCE

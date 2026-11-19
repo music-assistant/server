@@ -10,6 +10,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin
 
+from music_assistant.helpers.mcp_tools import matches_mcp_tool_type
+
 if TYPE_CHECKING:
     from music_assistant_models.auth import Scope
 
@@ -39,6 +41,7 @@ class MCPTool:
             "name": self.name,
             "description": self.description,
             "inputSchema": self.input_schema,
+            "annotations": {"readOnlyHint": all(scope.endswith(".read") for scope in self.scopes)},
         }
 
     async def call(self, mass: MusicAssistant, arguments: dict[str, Any]) -> Any:
@@ -58,7 +61,7 @@ class MCPTool:
             schema = properties[key]
             # null is only valid for an optional argument that defaults to null
             nullable = key not in self.input_schema["required"] and "default" not in schema
-            if not (value is None and nullable) and not _matches_schema(value, schema):
+            if not (value is None and nullable) and not matches_mcp_tool_type(value, schema):
                 raise ToolError(f"Invalid value for argument {key}: {value!r}")
         return await self.handler(mass, **arguments)
 
@@ -133,21 +136,3 @@ def _type_schema(hint: Any) -> dict[str, Any]:
     if origin is list:
         return {"type": "array", "items": _type_schema(get_args(hint)[0])}
     return {"type": _JSON_TYPES[hint]}
-
-
-def _matches_schema(value: Any, schema: dict[str, Any]) -> bool:
-    """Return whether a value matches the (simple) JSON schema of an argument."""
-    match schema["type"]:
-        case "string":
-            return isinstance(value, str) and value in schema.get("enum", [value])
-        case "boolean":
-            return isinstance(value, bool)
-        case "integer":
-            return isinstance(value, int) and not isinstance(value, bool)
-        case "number":
-            return isinstance(value, int | float) and not isinstance(value, bool)
-        case "array":
-            return isinstance(value, list) and all(
-                _matches_schema(entry, schema["items"]) for entry in value
-            )
-    return False

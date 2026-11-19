@@ -42,6 +42,8 @@ def _make_session(
 ) -> tuple[SetupSession, dict[str, Any]]:
     """Return a real setup session and the values collected by its finish handler."""
     mass = mock.Mock()
+    # a server without other provider configs, so no Soloist key to take over
+    mass.config.get.return_value = {}
     collected: dict[str, Any] = {}
 
     async def _default_finish(_session: SetupSession, submitted: dict[str, Any]) -> dict[str, str]:
@@ -174,6 +176,47 @@ async def test_new_setup_soloist_path() -> None:
         CONF_SOLOIST_CONSENT: True,
         CONF_API_KEY: _VALID_API_KEY,
     }
+
+
+async def test_new_setup_takes_over_a_soloist_key_set_up_elsewhere() -> None:
+    """A key from another Soloist setup skips the consent and key steps."""
+    session, collected = _make_session()
+    with (
+        mock.patch.object(spotify_flow, "verify_platform_supported"),
+        mock.patch.object(spotify_flow, "find_reusable_api_key", return_value=_VALID_API_KEY),
+    ):
+        task, _step = await _start_flow(session)
+        session.handle_submit({CONF_BACKEND: BACKEND_SOLOIST})
+        await _wait_finished(session)
+        await task
+
+    assert collected == {
+        CONF_BACKEND: BACKEND_SOLOIST,
+        CONF_SOLOIST_CONSENT: True,
+        CONF_API_KEY: _VALID_API_KEY,
+    }
+
+
+async def test_reconfigure_with_a_stored_key_takes_over_nothing() -> None:
+    """A stored key keeps the consent and key steps, whatever other setups hold."""
+    session, collected = _make_session(kind="reconfigure", setup_data=dict(_SOLOIST_SETUP_DATA))
+    with (
+        mock.patch.object(spotify_flow, "verify_platform_supported"),
+        mock.patch.object(
+            spotify_flow, "find_reusable_api_key", return_value="other-key-0123456789"
+        ) as find_key,
+    ):
+        task, _step = await _start_flow(session)
+        step = await _submit(session, {CONF_BACKEND: BACKEND_SOLOIST})
+        assert step.step_id == "soloist_terms"
+        step = await _submit(session, {CONF_SOLOIST_CONSENT: True})
+        assert step.step_id == "soloist_api_key"
+        session.handle_submit({CONF_API_KEY: ""})
+        await _wait_finished(session)
+        await task
+
+    find_key.assert_not_called()
+    assert collected[CONF_API_KEY] == _VALID_API_KEY
 
 
 async def test_api_key_never_echoed_on_published_step() -> None:

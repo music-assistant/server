@@ -51,7 +51,7 @@ from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
 
 from .announcements import AnnouncementsMixin
-from .audio_sources import AudioSourceMixin, AudioSourceSession
+from .audio_sources import AudioSourceSession, PlayerAudioSourcesMixin
 from .config_changes import ConfigChangesMixin
 from .group_commands import GroupCommandsMixin
 from .lifecycle import PlayerLifecycleMixin, _Attach
@@ -84,7 +84,7 @@ class PlayerController(
     PlayerLocksMixin,
     PlaybackMixin,
     OutputsMixin,
-    AudioSourceMixin,
+    PlayerAudioSourcesMixin,
     PowerMixin,
     VolumeMixin,
     GroupCommandsMixin,

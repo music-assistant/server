@@ -14,7 +14,13 @@ from music_assistant_models.enums import (
     ProviderSharing,
     ProviderType,
 )
-from music_assistant_models.media_items import ItemMapping, RecommendationFolder, UniqueList
+from music_assistant_models.media_items import (
+    Audiobook,
+    ItemMapping,
+    PodcastEpisode,
+    RecommendationFolder,
+    UniqueList,
+)
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
@@ -311,3 +317,115 @@ async def test_items_of_a_plugin_row_leave_out_hidden_sources(
     items = await mass.music.recommendations.get_recommendation_items("plugin_1", "row1")
 
     assert [item.item_id for item in items] == ["t1"]
+
+
+def _episode(item_id: str, fully_played: bool | None) -> PodcastEpisode:
+    """Create a podcast episode with the given played state."""
+    return PodcastEpisode(
+        item_id=item_id,
+        provider="fake_instance",
+        name=item_id,
+        provider_mappings=set(),
+        position=0,
+        podcast=ItemMapping.from_dict(
+            {
+                "item_id": "pod",
+                "provider": "fake_instance",
+                "media_type": MediaType.PODCAST.value,
+                "name": "Podcast",
+            }
+        ),
+        fully_played=fully_played,
+    )
+
+
+def _audiobook(item_id: str, fully_played: bool | None) -> Audiobook:
+    """Create an audiobook with the given played state."""
+    return Audiobook(
+        item_id=item_id,
+        provider="fake_instance",
+        name=item_id,
+        provider_mappings=set(),
+        fully_played=fully_played,
+    )
+
+
+def _mixed_items() -> list[MediaItemType]:
+    """Return played and unplayed episodes and audiobooks, plus a track."""
+    return [
+        _episode("ep_played", True),
+        _episode("ep_new", False),
+        _episode("ep_unknown", None),
+        _audiobook("book_played", True),
+        _audiobook("book_new", False),
+        create_track("fake_instance", "track_1"),
+    ]
+
+
+class _PlayedRowsProvider(_RowsProvider):
+    """A fake provider whose row lists played and unplayed episodes and audiobooks."""
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        return UniqueList(_mixed_items())
+
+
+_KEPT_WHEN_HIDING = ["ep_new", "ep_unknown", "book_new", "track_1"]
+
+
+async def test_items_external_row_keeps_played_by_default(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without hide_played an external row keeps fully played items."""
+    provider = _build(_PlayedRowsProvider)
+    monkeypatch.setattr(mass, "get_provider", lambda *_a, **_k: provider)
+    items = await mass.music.recommendations.get_recommendation_items("fake_instance", "row1")
+    assert [item.item_id for item in items] == [
+        "ep_played",
+        "ep_new",
+        "ep_unknown",
+        "book_played",
+        "book_new",
+        "track_1",
+    ]
+
+
+async def test_items_external_row_hides_played(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With hide_played an external row drops fully played episodes and audiobooks only."""
+    provider = _build(_PlayedRowsProvider)
+    monkeypatch.setattr(mass, "get_provider", lambda *_a, **_k: provider)
+    items = await mass.music.recommendations.get_recommendation_items(
+        "fake_instance", "row1", hide_played=True
+    )
+    assert [item.item_id for item in items] == _KEPT_WHEN_HIDING
+
+
+@pytest.mark.parametrize(
+    ("hide_played", "expected"),
+    [
+        (False, [item.item_id for item in _mixed_items()]),
+        (True, _KEPT_WHEN_HIDING),
+    ],
+)
+async def test_items_library_row_hide_played(
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    hide_played: bool,
+    expected: list[str],
+) -> None:
+    """A library row drops fully played episodes and audiobooks only when asked to."""
+    builtin_provider = mass.get_provider("recommendations")
+    assert builtin_provider is not None
+    assert isinstance(builtin_provider, LibraryRecommendationsProvider)
+    monkeypatch.setattr(
+        builtin_provider,
+        "get_recommendation_items",
+        AsyncMock(return_value=UniqueList(_mixed_items())),
+    )
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "latest_episodes", hide_played=hide_played
+    )
+    assert [item.item_id for item in items] == expected

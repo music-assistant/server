@@ -358,7 +358,7 @@ def parse_audiobook(audiobook_obj: dict[str, Any], provider: SpotifyProvider) ->
 
     if "duration_ms" in audiobook_obj:
         provider.logger.debug(
-            f"Found duration_ms in audiobook object: {audiobook_obj['duration_ms']}"
+            "Found duration_ms in audiobook object: %s", audiobook_obj["duration_ms"]
         )
         audiobook.duration = audiobook_obj["duration_ms"] // 1000
     else:

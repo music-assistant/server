@@ -143,6 +143,7 @@ class LibraryRecommendationsProvider(PluginProvider):
                 "Latest podcast episodes",
                 "latest_episodes",
                 "mdi-podcast",
+                supports_hide_played=True,
             ),
             _folder(
                 LibraryRowID.RANDOM_ARTISTS,
@@ -452,6 +453,7 @@ def _folder(
     translation_key: str,
     icon: str,
     enabled_by_default: bool = True,
+    supports_hide_played: bool = False,
 ) -> RecommendationFolder:
     """Create a recommendation folder metadata object."""
     return RecommendationFolder(
@@ -463,6 +465,7 @@ def _folder(
         enabled_by_default=enabled_by_default,
         uri=f"library://folder/{item_id.value}",
         supports_provider_filter=True,
+        supports_hide_played=supports_hide_played,
     )
 
 

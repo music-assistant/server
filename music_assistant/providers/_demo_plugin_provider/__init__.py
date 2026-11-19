@@ -26,7 +26,9 @@ but we also support that you specify a material design icon in the manifest.json
 
 Optional is a strings.json file with the texts of the provider in English, which are
 translated into the other languages. This demo keeps the label of its menu action there
-(menu_actions.<id>.label) and the message its menu action answers with (config_actions.<key>).
+(menu_actions.<id>.label), the message its menu action answers with (config_actions.<key>)
+and the label of its page (page.label). The descriptions of its tools for AI assistants
+(mcp_tools) are English only and stay in manifest.json.
 
 IMPORTANT NOTE:
 We strongly recommend developing on either macOS or Linux and start your development
@@ -38,9 +40,11 @@ See also our general DEVELOPMENT.md guide in the repository for more information
 
 from __future__ import annotations
 
+import html
 from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from aiohttp import web
 from music_assistant_models.config_entries import ConfigActionResult
 from music_assistant_models.enums import (
     ContentType,
@@ -59,7 +63,9 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.models.plugin import PluginProvider, SourceControlValue
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.models.media_capabilities import SourceControlValue
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -80,7 +86,7 @@ if TYPE_CHECKING:
 
 # stable id for the single AudioSource this demo provider exposes;
 # combined with the provider instance_id this forms the persistent browse/play uri
-# (e.g. `<instance_id>://audio_source/main`) listed under "Live Inputs". AudioSource
+# (e.g. `<instance_id>://audio_source/main`) listed when browsing this provider. AudioSource
 # items are not favoritable / library-backed in MA core today.
 AUDIO_SOURCE_ID = "main"
 
@@ -89,15 +95,12 @@ SUPPORTED_FEATURES = {
     # this constant should contain a set of provider-level features
     # that your provider supports or an empty set if none.
     # see the ProviderFeature enum for all available features.
-    # a feature your provider offers whatever its config belongs in the 'features' list of
-    # manifest.json instead: it is merged into the supported features automatically and the
-    # app uses it to decide where the provider is listed, also before it is loaded
-    # (a plugin with 'audio_source' is shown under Music sources).
-    # this demo declares 'AUDIO_SOURCE' in its manifest, which means the provider exposes
-    # a (live) audio source to Music Assistant.
-    # features that depend on the config of the instance are passed here at setup;
-    # this demo passes 'SCROBBLE' to demonstrate the concept, which means the provider
-    # receives a report of every media item that is played.
+    # this demo declares two of the plugin-specific features to demonstrate the concept:
+    # 'AUDIO_SOURCE' means the provider exposes a (live) audio source to Music Assistant
+    # and 'SCROBBLE' means it receives a report of every media item that is played.
+    # the 'provides' of manifest.json lists them as 'audio_source' and 'scrobble', for
+    # discovery only, before the provider is loaded; these features decide what it does.
+    ProviderFeature.AUDIO_SOURCE,
     ProviderFeature.SCROBBLE,
 }
 
@@ -199,14 +202,70 @@ class MyDemoPluginprovider(PluginProvider):
             translation_args=[item.name],
         )
 
+    async def handle_mcp_tool(
+        self, tool_id: str, arguments: dict[str, Any], player_id: str | None
+    ) -> dict[str, Any]:
+        """Run a tool for AI assistants this provider declares in its manifest."""
+        # OPTIONAL
+        # Implement when manifest.json declares "mcp_tools": tools that AI assistants, such as
+        # Home Assistant Assist, use through the MCP server of Music Assistant. A tool declares
+        # an "id", a "description", the "scope" a user needs, optionally an "input_schema" of
+        # its arguments, and "requires_player": true when it acts on a player. The server
+        # offers it as "<domain>__<id>", as read-only when its scope ends in ".read", and calls
+        # this method of the instance the user picked (the assistant gets an "instance"
+        # argument when the user may use several), so the provider registers nothing itself.
+        # The server already checked that the user may use this instance and holds the scope
+        # of the tool, that the arguments match the input schema (every declared one is in
+        # arguments: the passed value, else its default, else None), and, for a tool with
+        # "requires_player": true, that player_id is a player the user may use (it is None for
+        # any other tool).
+        # Return a dict of JSON values for the assistant to read: keep it short and refer to
+        # media items by their uri. Raise a MusicAssistantError to tell the assistant the tool
+        # failed, with a message it can read.
+        # Descriptions are English and are read by a language model: like the results, they
+        # only describe the tool and its outcome, never instruct the assistant otherwise.
+        if tool_id != "list_sources":
+            return await super().handle_mcp_tool(tool_id, arguments, player_id)
+        sources: list[dict[str, Any]] = []
+        for source in await self.get_audio_sources():
+            entry: dict[str, Any] = {
+                "uri": source.uri,
+                "name": source.name,
+                "in_use": self._in_use_by_player is not None,
+            }
+            if arguments["include_format"]:
+                audio_format = next(iter(source.provider_mappings)).audio_format
+                entry["audio_format"] = (
+                    f"{audio_format.content_type.value}, {audio_format.sample_rate} Hz, "
+                    f"{audio_format.bit_depth} bit, {audio_format.channels} channels"
+                )
+            sources.append(entry)
+        return {"sources": sources}
+
+    async def handle_page_request(self, request: web.Request, path: str) -> web.StreamResponse:
+        """Serve a request to the page of this provider instance."""
+        # OPTIONAL
+        # Implement when manifest.json declares a "page", such as a small web interface. The
+        # app lists it in its main menu, and opens it in a new tab behind a short-lived address
+        # for the user who chose it. The server calls this as that user (get_current_user())
+        # for every request to it, with the path after the page's root. The page runs
+        # sandboxed: it gets no token and can not reach the app, so it talks to the provider
+        # through relative urls to its own sub-paths.
+        user = get_current_user()
+        name = user.display_name or user.username if user else ""
+        return web.Response(
+            text=f"<!doctype html><p>Hello {html.escape(name)}, from the demo plugin.</p>",
+            content_type="text/html",
+        )
+
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return the AudioSources this plugin currently exposes."""
         # OPTIONAL
         # Will only be called if ProviderFeature.AUDIO_SOURCE is declared.
         #
         # Return one or more AudioSource MediaItems describing the live
-        # inputs this plugin offers. AudioSources show up under the global
-        # "Live Inputs" browse node and can be played on any player via
+        # inputs this plugin offers. AudioSources are listed when browsing this
+        # provider and can be played on any player via
         # the standard play_media flow. Capability flags (can_play_pause,
         # can_seek, can_next_previous) drive which control buttons the UI
         # surfaces and which commands the server proxies through to

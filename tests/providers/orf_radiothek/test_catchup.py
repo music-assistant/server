@@ -50,9 +50,7 @@ def _provider() -> RadiothekProvider:
     )
     mass = Mock()
     mass.cache = _FakeCache()
-    provider = RadiothekProvider(
-        mass, Mock(domain="orf_radiothek", features=set()), config, SUPPORTED_FEATURES
-    )
+    provider = RadiothekProvider(mass, Mock(domain="orf_radiothek"), config, SUPPORTED_FEATURES)
     provider._get_bundle = AsyncMock(return_value={})  # type: ignore[method-assign]
     provider._iter_orf_stations = Mock(  # type: ignore[method-assign]
         return_value=[OrfStation(id="oe1", name="Ö1", live_stream_url_template="")]

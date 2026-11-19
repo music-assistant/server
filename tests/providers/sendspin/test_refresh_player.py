@@ -9,10 +9,11 @@ from unittest.mock import Mock
 
 import pytest
 from aiosendspin.server import ClientConnectedEvent
-from music_assistant_models.enums import PlayerType
+from music_assistant_models.enums import PlayerFeature, PlayerType
 
 import music_assistant.providers.sendspin.player as player_module
 import music_assistant.providers.sendspin.provider as provider_module
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
@@ -25,6 +26,7 @@ from music_assistant.providers.sendspin.provider import SendspinProvider
 if TYPE_CHECKING:
     from aiosendspin.server import SendspinServer
     from aiosendspin.server.client import SendspinClient
+    from music_assistant_models.config_entries import ProviderConfig
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player_provider import PlayerProvider
@@ -44,11 +46,14 @@ def _make_provider(player: SendspinBasePlayer | None) -> SendspinProvider:
         "SendspinServer", SimpleNamespace(get_client=lambda _client_id: None)
     )
     provider._held_elsewhere = set()
+    provider._multi_channel_speakers = {}
     provider._held_unapproved = set()
     provider._held_paired = set()
     provider._refused_here = {}
     provider._unencrypted_clients = set()
+    provider._announced_clients = set()
     provider._hass_auto_pairer = Mock()
+    provider._local_auto_pairer = Mock()
     return provider
 
 
@@ -115,6 +120,13 @@ class _StubPlayer:
 
 
 def _class_selection_provider(monkeypatch: pytest.MonkeyPatch) -> SendspinProvider:
+    provider = _bare_class_selection_provider()
+    monkeypatch.setattr(provider_module, "SendspinPlayer", _StubPlayer)
+    monkeypatch.setattr(provider_module, "SendspinVisualizerPlayer", _StubPlayer)
+    return provider
+
+
+def _bare_class_selection_provider() -> SendspinProvider:
     provider = SendspinProvider.__new__(SendspinProvider)
     provider.mass = cast(
         "MusicAssistant",
@@ -128,8 +140,6 @@ def _class_selection_provider(monkeypatch: pytest.MonkeyPatch) -> SendspinProvid
     provider._bridge_player_types = {}
     provider._bridge_underlying_protocols = {}
     provider._bridge_static_delay_defaults = {}
-    monkeypatch.setattr(provider_module, "SendspinPlayer", _StubPlayer)
-    monkeypatch.setattr(provider_module, "SendspinVisualizerPlayer", _StubPlayer)
     return provider
 
 
@@ -149,6 +159,11 @@ def _client(negotiated_role_ids: list[str]) -> SendspinClient:
         (["player@v1", "metadata@v1"], None),
         (["metadata@v1"], PlayerType.DISPLAY),
         (["visualizer@v1"], PlayerType.VISUALIZER),
+        (["artwork@v1"], PlayerType.DISPLAY),
+        (["color@v1"], PlayerType.LIGHT),
+        (["controller@v1"], PlayerType.CONTROLLER),
+        (["controller@v1", "color@v1"], PlayerType.LIGHT),
+        (["controller@v1", "artwork@v1", "color@v1"], PlayerType.DISPLAY),
         ([], None),
     ],
 )
@@ -178,6 +193,34 @@ def test_create_player_uses_the_capture_only_class_for_source_only_clients(
     # A device that also plays keeps the full player class.
     combo = provider._create_player("c", _client(["source@v1", "player@v1"]), None)
     assert not isinstance(cast("object", combo), _StubSourcePlayer)
+
+
+@pytest.mark.parametrize("role_id", ["artwork@v1", "color@v1", "controller@v1"])
+def test_create_player_never_makes_an_audio_player_without_the_player_role(
+    monkeypatch: pytest.MonkeyPatch, role_id: str
+) -> None:
+    """A client without an audio sink is no playback target, so it can never lead a group."""
+
+    def _init_player(self: PlayerProtocol, provider: PlayerProvider, protocol_id: str) -> None:
+        self._provider = provider
+        self._protocol_id = protocol_id
+        self._player = None
+
+    provider = _bare_class_selection_provider()
+    provider.server_api = cast(
+        "SendspinServer", SimpleNamespace(get_client=lambda _client_id: _client([role_id]))
+    )
+    provider.config = cast("ProviderConfig", SimpleNamespace(instance_id="sendspin--test"))
+    provider.logger = Mock()
+    monkeypatch.setattr(PlayerProtocol, "__init__", _init_player)
+    monkeypatch.setattr(SendspinBasePlayer, "_refresh_client_info", Mock())
+    player = provider._create_player("c", _client([role_id]), None)
+    assert isinstance(player, SendspinVisualizerPlayer)
+    assert player.type not in PLAYBACK_TARGET_TYPES
+    assert PlayerFeature.PLAY_MEDIA not in player.supported_features
+    assert player.hidden_by_default is True
+    assert player.session_only is True
+    assert player.expose_to_ha_by_default is False
 
 
 def test_player_classes_declare_their_visibility() -> None:

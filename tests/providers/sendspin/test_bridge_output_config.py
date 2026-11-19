@@ -253,6 +253,7 @@ async def test_the_provider_listens_for_saved_player_configs(tmp_path: Path) -> 
         patch("aiosendspin.noise.trust_store.FileServerPairingStore.open", AsyncMock()),
         patch.object(provider_module, "_evict_stale_pairings", AsyncMock(return_value=(0, 0))),
         patch.object(provider_module, "SendspinServer", MagicMock()),
+        patch.object(provider_module, "is_port_in_use", AsyncMock(return_value=False)),
     ):
         await SendspinProvider.handle_async_init(provider)
 

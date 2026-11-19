@@ -180,9 +180,18 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         queue.items = len(self._queue_data[queue_id].items)
 
+        was_paused = queue.state == PlaybackState.PAUSED
         queue.state = (
             player.playback_state or PlaybackState.IDLE if queue.active else PlaybackState.IDLE
         )
+        if (
+            queue.state == PlaybackState.PAUSED
+            and not was_paused
+            and not queue_data.own_play_action
+        ):
+            # a paused queue hands its stream slot over instead of keeping one reserved; a play
+            # action of the queue still plays its track and keeps it
+            self._end_stream_slot_reservations(queue_id)
         # update current item/index from player report
         if not self._update_current_index_from_player(queue, player):
             return
@@ -492,7 +501,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         ):
             path_parts = protocol_player.current_media.uri[len(base_url) :].strip("/").split("/")
             # the path holds mode, session_id, queue_id, queue_item_id and player_id.fmt
-            if len(path_parts) >= 5:
+            # a stream of a superseded session, which a player can still report for a moment
+            # after a new load (e.g. after Next), says nothing about the current item
+            if len(path_parts) >= 5 and path_parts[1] == self._queue_data[queue_id].session_id:
                 current_item_id = path_parts[3]
                 if self.get_item(queue_id, current_item_id):
                     return current_item_id

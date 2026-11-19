@@ -47,6 +47,7 @@ from music_assistant_models.enums import (
     PlayerType,
     ProviderFeature,
     ProviderType,
+    SpeakerChannel,
     StreamType,
     VolumeNormalizationMode,
 )
@@ -271,6 +272,12 @@ _EXTINF_DURATION = re.compile(r"^#EXTINF:\s*(\d+(?:\.\d+)?)", re.MULTILINE)
 RADIO_MAX_FAILED_RESTARTS = 3
 RADIO_RESTART_MIN_PLAYTIME = 60
 RADIO_RESTART_DELAY = 1.0
+
+# The output channels that play the channel of a speaker of a multi-channel player.
+SPEAKER_CHANNEL_OUTPUT = {
+    SpeakerChannel.FRONT_LEFT: "left",
+    SpeakerChannel.FRONT_RIGHT: "right",
+}
 
 
 @dataclass
@@ -912,8 +919,21 @@ class StreamsAudio:
         # resolve the exact owning instance (even when flagged unavailable) so the
         # slot is charged to the account that issued the streamdetails
         provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+        # taken for the queue the audio is for, to which a slot kept for it is free
+        queue_id = slot_holder.queue_id if slot_holder is not None else streamdetails.queue_id
         stream_slot = (
-            provider.acquire_stream_slot(source_wait_timeout, slot_holder)
+            provider.acquire_stream_slot(
+                source_wait_timeout,
+                slot_holder,
+                queue_id=queue_id,
+                # asked when the slot goes back: the queue of the buffer may go on with the
+                # provider, and then finds the slot there for its next source
+                reserve=partial(
+                    self.mass.player_queues.keeps_stream_slot, slot_holder, streamdetails.provider
+                )
+                if slot_holder is not None
+                else None,
+            )
             if isinstance(provider, MusicProvider)
             else nullcontext()
         )
@@ -1366,6 +1386,7 @@ class StreamsAudio:
         queue_id: str | None = None,
         session_id: str | None = None,
         queue_item_id: str | None = None,
+        channel: SpeakerChannel | None = None,
     ) -> AudioOutputPlan:
         """
         Return executable filters and matching output details for a player.
@@ -1380,6 +1401,8 @@ class StreamsAudio:
         :param queue_id: Explicit queue identifier for the processing snapshot.
         :param session_id: Explicit queue session identifier for the processing snapshot.
         :param queue_item_id: Queue item for a single-item output path.
+        :param channel: The channel a speaker of the multi-channel player plays, in place
+            of the configured output channels.
         """
         filter_params: list[str | ComplexFilter] = []
         player = self.mass.players.get_output_protocol(protocol_id)
@@ -1432,7 +1455,11 @@ class StreamsAudio:
             if dsp.output_gain != 0:
                 filter_params.append(f"volume={dsp.output_gain}dB")
 
-        channel_value = self._get_output_channels(player, protocol_id)
+        channel_value = (
+            SPEAKER_CHANNEL_OUTPUT.get(channel, "stereo")
+            if channel is not None
+            else self._get_output_channels(player, protocol_id)
+        )
         source_channel = None
         channel_mix = ""
         # a single channel source is already the downmix and holds no FL/FR to select
@@ -1467,7 +1494,8 @@ class StreamsAudio:
                 output_gain=dsp.output_gain if dsp.enabled else 0.0,
                 preset_id=dsp.preset_id,
             ),
-            source_channel=source_channel,
+            # together the speakers of a multi-channel player play every channel
+            source_channel=source_channel if channel is None else None,
             output_format=output_format,
         )
         output_plan = AudioOutputPlan(
@@ -1915,6 +1943,10 @@ class StreamsAudio:
                     )
             except AudioError as err:
                 streamdetails.stream_error = True
+                # a prepared buffer that is gone, or a stream slot that is taken, is no failure
+                # of the source
+                if prepared_buffer is None and not isinstance(err, ProviderStreamLimitError):
+                    self.mass.player_queues.report_source_failure(queue_item, session_id)
                 if raise_on_error:
                     raise
                 logger.error(
@@ -2083,6 +2115,9 @@ class StreamsAudio:
                 # revoke availability when the stream never produced any audio
                 if bytes_received == 0 and not isinstance(err, ProviderStreamLimitError):
                     queue_item.available = False
+                # the source failed, as opposed to the reading of the audio it delivered
+                if audio_buffer.has_error and not isinstance(err, ProviderStreamLimitError):
+                    self.mass.player_queues.report_source_failure(queue_item, session_id)
                 if raise_on_error:
                     raise
                 logger.error(
@@ -3348,6 +3383,9 @@ class StreamsAudio:
                         queue_track.streamdetails.uri if queue_track.streamdetails else "unknown",
                         queue.display_name,
                     )
+                    if not queue_track.streamdetails.stream_error:
+                        # its source ended without audio; an error is reported where it occurred
+                        self.mass.player_queues.report_source_failure(queue_track, flow_session_id)
                     queue_track.streamdetails.stream_error = True
                     play_log_entry.seconds_streamed = 0
                     if last_fadeout_part:
@@ -3564,6 +3602,13 @@ class StreamsAudio:
                     next_sample_rate,
                 )
                 return False
+            if not self._player_has_next_item(protocol_id, flow_mode, next_item):
+                self.logger.debug(
+                    "Skipping the tail overlap of %s: the player has not received %s yet",
+                    queue_item.name,
+                    next_item.name,
+                )
+                return False
             return True
         if crossfade_mode == CrossfadeMode.DISABLED:
             return False
@@ -3602,6 +3647,13 @@ class StreamsAudio:
                 "with different sample rates (%s vs %s)",
                 sample_rate,
                 next_sample_rate,
+            )
+            return False
+
+        if not self._player_has_next_item(protocol_id, flow_mode, next_item):
+            self.logger.debug(
+                "Skipping crossfade: the player has not received %s as its next item yet",
+                next_item.name,
             )
             return False
 
@@ -3660,6 +3712,20 @@ class StreamsAudio:
         self._claim_item(claim, queue_item)
         return partial(self._claim_item, claim, None)
 
+    def claimed_items(self, queue_id: str) -> list[QueueItem]:
+        """
+        Return the items a stream of the given queue's playback session decided to play.
+
+        :param queue_id: The queue to look at.
+        """
+        return [
+            queue_item
+            for claim in self._item_claims
+            if (queue_item := claim.queue_item) is not None
+            and queue_item.queue_id == queue_id
+            and self._claim_holds(claim, queue_item)
+        ]
+
     def get_stream_providers(
         self, mapping: ProviderMapping, allowed: list[str] | None
     ) -> list[Provider]:
@@ -3670,6 +3736,48 @@ class StreamsAudio:
         :param allowed: Music sources the playback user may use, or None for all of them.
         """
         return self._get_mapping_providers(mapping, allowed)
+
+    def get_stream_candidates(
+        self,
+        provider_mappings: Iterable[ProviderMapping],
+        allowed: list[str] | None,
+        excluded_provider_instances: set[str] | None = None,
+    ) -> list[tuple[ProviderMapping, Provider]]:
+        """
+        Return the mappings of an item with the loaded providers that may stream them, unranked.
+
+        :param provider_mappings: Mappings attached to the media item.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        :param excluded_provider_instances: Provider instances to leave out, if any.
+        """
+        mappings = list(provider_mappings)
+        candidates: dict[tuple[str, str], tuple[ProviderMapping, Provider]] = {}
+        # an account that no longer finds an item id is no stand-in for it either
+        unavailable = {
+            (mapping.provider_instance, mapping.item_id)
+            for mapping in mappings
+            if not mapping.available
+        }
+        # best mapping first, so an account standing in for a sibling's item id is backed by
+        # the sibling's best mapping
+        for mapping in rank_provider_mappings(mappings):
+            if not mapping.available:
+                self.logger.debug("Skipping unavailable %s", mapping)
+                continue
+            for provider in self._get_mapping_providers(mapping, allowed):
+                if excluded_provider_instances and (
+                    provider.instance_id in excluded_provider_instances
+                ):
+                    continue
+                candidate_id = (provider.instance_id, mapping.item_id)
+                if candidate_id in unavailable:
+                    continue
+                # a sibling account only stands in for an item id when the item has no
+                # mapping of its own on that account
+                if candidate_id in candidates and provider.instance_id != mapping.provider_instance:
+                    continue
+                candidates[candidate_id] = (mapping, provider)
+        return list(candidates.values())
 
     def has_alternative_match_providers(
         self, media_item: Playlist | Album | Track, allowed: list[str] | None
@@ -4281,10 +4389,27 @@ class StreamsAudio:
             )
             if last_resort and not resumes:
                 # a realtime source keeps its slot until its item ends, so the budget would
-                # run out with nothing to show for it: refuse right away instead
+                # run out with nothing to show for it: refused as soon as one holds it instead
                 self.mass.player_queues.refuse_held_stream_slot(
                     streamdetails.provider, queue_item.queue_id
                 )
+                provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+                if isinstance(provider, MusicProvider) and self._stream_slot_undecided(
+                    provider, queue_item.queue_id
+                ):
+                    await provider.wait_for_stream_slot(
+                        remaining,
+                        queue_item.queue_id,
+                        partial(
+                            self._leaves_stream_slot_line,
+                            streamdetails.provider,
+                            queue_item.queue_id,
+                            stop_paused_queues,
+                        ),
+                        partial(self._wants_stream_slot, queue_item, consumer_connected),
+                    )
+                    # the slot is kept for the queue now, or a paused queue hands its slot over
+                    continue
             source_wait = remaining if last_resort else 0.0
             # record whose audio this is before it exists: a queue stop releases only the
             # buffers of the session it is tearing down, and details resolved by an earlier
@@ -4421,6 +4546,60 @@ class StreamsAudio:
         queue_data = self.mass.player_queues.queue_data_or_none(queue_item.queue_id)
         return queue_data.session_id if queue_data is not None else None
 
+    def _leaves_stream_slot_line(
+        self, provider_instance: str, queue_id: str, stop_paused_queues: bool
+    ) -> bool:
+        """
+        Return whether a start that waits for a slot takes a paused queue's slot over instead.
+
+        :param provider_instance: The provider instance a slot is needed on.
+        :param queue_id: The queue that needs the slot.
+        :param stop_paused_queues: Whether a paused queue may be stopped to hand its slot over.
+        :raises ProviderStreamLimitError: When another queue's realtime playback holds the slot.
+        """
+        self.mass.player_queues.refuse_held_stream_slot(provider_instance, queue_id)
+        return stop_paused_queues and self.mass.player_queues.has_paused_stream_slot_holder(
+            provider_instance, queue_id
+        )
+
+    def _wants_stream_slot(
+        self, queue_item: QueueItem, consumer_connected: Callable[[], bool] | None
+    ) -> bool:
+        """
+        Return whether a start that waited in line still wants the slot for its item.
+
+        :param queue_item: The queue item the slot is for.
+        :param consumer_connected: Reports whether the consumer of the audio is still
+            connected, or None when there is no consumer to lose.
+        """
+        if consumer_connected is not None and not consumer_connected():
+            return False
+        return self.mass.player_queues.wants_audio(queue_item)
+
+    def _stream_slot_undecided(self, provider: MusicProvider, queue_id: str) -> bool:
+        """
+        Return whether it is open if another queue's realtime playback keeps the only slot.
+
+        That is open while the slot is reserved for another queue, and while a realtime
+        source of another queue has the slot and no audio yet.
+
+        :param provider: The provider a slot is needed on.
+        :param queue_id: The queue that needs the slot.
+        """
+        # one realtime holder says nothing about the other slots of a larger budget
+        if provider.max_concurrent_streams != 1:
+            return False
+        if provider.has_available_stream_slot:
+            # no source is open: the next source of that queue takes the slot, or it lapses
+            return any(
+                reserved_for != queue_id for reserved_for in provider.stream_slot_reservations
+            )
+        # a source that has its slot and no audio yet can still fail and give it back
+        return any(
+            holder.is_realtime and holder.queue_id != queue_id and not holder.ready.is_set()
+            for holder in provider.stream_slot_holders
+        )
+
     async def _release_unneeded_sources(
         self, queue_item: QueueItem, provider_instance: str
     ) -> None:
@@ -4518,38 +4697,18 @@ class StreamsAudio:
         :param pinned: The (provider instance, item id) the item is to be played from, if any.
         :return: Ordered provider mapping candidates.
         """
-        mappings = list(provider_mappings)
-        candidates: dict[tuple[str, str], SourceCandidate] = {}
-        # an account that no longer finds an item id is no stand-in for it either
-        unavailable = {
-            (mapping.provider_instance, mapping.item_id)
-            for mapping in mappings
-            if not mapping.available
-        }
-        # best mapping first, so an account standing in for a sibling's item id is backed by
-        # the sibling's best mapping
-        for mapping in rank_provider_mappings(mappings):
-            if not mapping.available:
-                self.logger.debug("Skipping unavailable %s", mapping)
-                continue
-            for provider in self._get_mapping_providers(mapping, allowed):
-                if provider.instance_id in excluded_provider_instances:
-                    continue
-                candidate_id = (provider.instance_id, mapping.item_id)
-                if candidate_id in unavailable:
-                    continue
-                # a sibling account only stands in for an item id when the item has no
-                # mapping of its own on that account
-                if candidate_id in candidates and provider.instance_id != mapping.provider_instance:
-                    continue
-                candidates[candidate_id] = SourceCandidate(
-                    mapping=mapping,
-                    provider=provider,
-                    is_streaming=isinstance(provider, MusicProvider)
-                    and provider.is_streaming_provider,
-                )
+        candidates = [
+            SourceCandidate(
+                mapping=mapping,
+                provider=provider,
+                is_streaming=isinstance(provider, MusicProvider) and provider.is_streaming_provider,
+            )
+            for mapping, provider in self.get_stream_candidates(
+                provider_mappings, allowed, excluded_provider_instances
+            )
+        ]
         ranked = rank_stream_sources(
-            candidates.values(), pinned=pinned, preferred=preferred_providers, policy=policy
+            candidates, pinned=pinned, preferred=preferred_providers, policy=policy
         )
         if ranked and self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(
@@ -5450,6 +5609,23 @@ class StreamsAudio:
                 CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.default_value,
             )
         )
+
+    def _player_has_next_item(
+        self, protocol_id: str | None, flow_mode: bool, next_item: QueueItem
+    ) -> bool:
+        """
+        Return whether the player of the item streams holds the item after the boundary.
+
+        :param protocol_id: The protocol that plays the item streams; not needed for a flow
+            stream.
+        :param flow_mode: Whether the items play on one flow stream.
+        :param next_item: The queue item that plays after the boundary.
+        """
+        # a flow stream carries the next item itself
+        if flow_mode or protocol_id is None:
+            return True
+        protocol = self.mass.players.get_protocol(protocol_id)
+        return protocol is None or protocol.has_received_next_item(next_item)
 
     @staticmethod
     def _same_album(queue_item: QueueItem, next_item: QueueItem) -> bool:

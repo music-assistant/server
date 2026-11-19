@@ -1187,7 +1187,7 @@ async def _probe_source_format(
     # the probe opens the source just like the producer does, so it needs a slot as well
     provider = mass.get_provider(streamdetails.provider, return_unavailable=True)
     stream_slot = (
-        provider.acquire_stream_slot(source_wait_timeout)
+        provider.acquire_stream_slot(source_wait_timeout, queue_id=streamdetails.queue_id)
         if isinstance(provider, MusicProvider)
         else nullcontext()
     )

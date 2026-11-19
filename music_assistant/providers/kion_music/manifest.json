@@ -7,6 +7,7 @@
   "codeowners": [
     "@trudenboy"
   ],
+  "provides": ["artist", "album", "track", "playlist"],
   "credits": [
     "[yandex-music-api](https://github.com/MarshalX/yandex-music-api)"
   ],

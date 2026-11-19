@@ -946,8 +946,8 @@ def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() 
         "pull-requests": "read",
     }
     assert jobs["build_artifacts"]["permissions"] == {"contents": "write"}
-    assert workflow.count("actions/create-github-app-token@") == 5
-    assert workflow.count("outputs.installation-id") == 5
+    assert workflow.count("actions/create-github-app-token@") == 6
+    assert workflow.count("outputs.installation-id") == 6
     assert 'EXPECTED_APP_INSTALLATION_ID: "146062122"' in workflow
     assert set(re.findall(r"secrets\.([A-Z0-9_]+)", workflow)) == {
         "MUSIC_ASSISTANT_BOT_PRIVATE_KEY"
@@ -1150,6 +1150,25 @@ def test_release_workflow_publication_state_uses_release_ids() -> None:
     assert "tag_name" in publication_step
     assert "Release $VERSION resolves to tag $live_tag_name" in publication_step
     assert "Release $VERSION is neither a mutable draft nor immutable" in publication_step
+
+
+def test_release_workflow_docs_dispatch_never_fails_the_release() -> None:
+    """The docs site hears about beta and stable releases without risking the release."""
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    jobs = yaml.safe_load(workflow)["jobs"]
+    job = jobs["notify_docs"]
+
+    assert job["needs"] == ["resolve", "publish_release"]
+    assert job["if"] == "inputs.channel != 'nightly'"
+    assert job["permissions"] == {}
+    assert not any("notify_docs" in str(other.get("needs", "")) for other in jobs.values())
+    *guarded_steps, warning = job["steps"]
+    assert all(step["continue-on-error"] is True for step in guarded_steps)
+    assert guarded_steps[0]["with"]["repositories"] == "music-assistant.io"
+    assert "server-release" in guarded_steps[-1]["run"]
+    assert "repos/music-assistant/music-assistant.io/dispatches" in guarded_steps[-1]["run"]
+    assert warning["if"] == "steps.dispatch.outcome != 'success'"
+    assert "::warning" in warning["run"]
 
 
 def _api_asset(path: Path) -> dict[str, str | int]:

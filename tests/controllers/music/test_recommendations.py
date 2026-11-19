@@ -291,6 +291,13 @@ async def test_all_default_rows_advertise_provider_filter_support(mass: MusicAss
     assert all(f.supports_provider_filter for f in library_folders)
 
 
+async def test_only_latest_episodes_advertises_hide_played_support(mass: MusicAssistant) -> None:
+    """Of the default library rows, only Latest podcast episodes advertises supports_hide_played."""
+    folders = await mass.music.recommendations.get_recommendations()
+    library_folders = [f for f in folders if f.provider == "recommendations"]
+    assert [f.item_id for f in library_folders if f.supports_hide_played] == ["latest_episodes"]
+
+
 async def test_library_row_items_return_empty_for_explicit_empty_providers(
     mass: MusicAssistant,
 ) -> None:

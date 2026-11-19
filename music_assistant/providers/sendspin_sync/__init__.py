@@ -266,16 +266,16 @@ class SendspinSyncProvider(PluginProvider):
                 self._in_use_by_queue = None
 
     async def on_source_selected(
-        self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """React to the calibration AudioSource being selected for playback on a player."""
         if source_id != AUDIO_SOURCE_ID:
             return
-        self._in_use_by_queue = queue_id
+        self._in_use_by_queue = owner_player_id
         self._active_session_id = stream_session_id
 
     async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """React to MA tearing down the calibration AudioSource's stream from a queue."""
         if source_id != AUDIO_SOURCE_ID:
@@ -283,14 +283,14 @@ class SendspinSyncProvider(PluginProvider):
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
-        if self._in_use_by_queue == queue_id:
+        if self._in_use_by_queue == owner_player_id:
             self._in_use_by_queue = None
         # The stream carries the phase reference, so a calibration session can not
         # outlive it. It may end without us asking - every client disconnecting tears
         # the group's playback down - and the session must then restore the speakers
         # instead of sitting there believing it is still live.
         session = self._session
-        if session is not None and queue_id == session.queue_id and not session.stopped:
+        if session is not None and owner_player_id == session.queue_id and not session.stopped:
             self.logger.debug("Calibration stream ended externally, stopping the session")
             self.mass.create_task(self._stop_session(session), task_id=self._session_teardown_id)
 
@@ -707,7 +707,7 @@ class SendspinSyncProvider(PluginProvider):
                 await put_static_delay_back(
                     sendspin, StaticDelaySnapshot(protocol_id, delay_ms, carrier_id)
                 )
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one speaker may not keep the rest waiting
                 # deliberately broad: one speaker that can not take its delay back may
                 # not keep the provider from loading, nor the others from theirs
                 self.logger.warning(

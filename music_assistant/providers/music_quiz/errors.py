@@ -100,3 +100,19 @@ class MusicQuizInvalidAnswerError(InvalidDataError):
     error_code = 1011
     translation_key = "music_quiz_invalid_answer"
     translation_owner = TRANSLATION_OWNER
+
+
+class MusicQuizTooManyAttemptsError(InvalidDataError):
+    """Raised when a player used up the guesses allowed for a round."""
+
+    error_code = 1012
+    translation_key = "music_quiz_too_many_attempts"
+    translation_owner = TRANSLATION_OWNER
+
+
+class MusicQuizGuessTooFastError(InvalidDataError):
+    """Raised when a player guesses again before the minimum guess interval passed."""
+
+    error_code = 1013
+    translation_key = "music_quiz_guess_too_fast"
+    translation_owner = TRANSLATION_OWNER

@@ -40,7 +40,7 @@ def _gw_client(songs: list[dict[str, Any]]) -> Mock:
 
 def _build_provider(mass: MusicAssistant, instance_id: str = "deezer--sync") -> DeezerProvider:
     """Build a Deezer provider with real storage and stubbed remote responses."""
-    manifest = Mock(domain="deezer", type=ProviderType.MUSIC, features=set())
+    manifest = Mock(domain="deezer", type=ProviderType.MUSIC)
     config = Mock(instance_id=instance_id, name="Deezer", enabled=True)
     config.get_value.side_effect = lambda key, default=None: {
         "log_level": "GLOBAL",

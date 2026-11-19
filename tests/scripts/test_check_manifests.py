@@ -1,6 +1,12 @@
 """Tests for the provider manifest.json validator."""
 
-from scripts.check_manifests import PROVIDERS_PATH, _resolve_manifests, _validate, find_violations
+from scripts.check_manifests import (
+    PROVIDERS_PATH,
+    VALID_TYPES,
+    _resolve_manifests,
+    _validate,
+    find_violations,
+)
 
 
 def _valid_manifest() -> dict[str, object]:
@@ -38,8 +44,10 @@ def test_non_string_type_rejected() -> None:
     """A non-string type (list/dict) is reported instead of crashing the validator."""
     for bad_type in (["music"], {"type": "music"}):
         manifest = _valid_manifest()
-        manifest["type"] = bad_type
-        assert any("is not one of" in issue for issue in _validate(manifest, "demo"))
+        manifest.update(type=bad_type, provides=["radio"])
+        assert _validate(manifest, "demo") == [
+            f"type '{bad_type}' is not one of {sorted(VALID_TYPES)}"
+        ]
 
 
 def test_domain_must_match_folder() -> None:
@@ -115,26 +123,47 @@ def test_support_url_must_be_https() -> None:
         assert any("'support_url' must be" in issue for issue in _validate(manifest, "demo"))
 
 
-def test_valid_features_accepted() -> None:
-    """Declared features that are known ProviderFeature values produce no issues."""
+def test_valid_provides_accepted() -> None:
+    """Declared offerings that are known and fit the provider type produce no issues."""
     manifest = _valid_manifest()
-    manifest["features"] = ["audio_source", "scrobble"]
+    manifest["provides"] = ["radio", "podcast"]
     assert _validate(manifest, "demo") == []
-    manifest["features"] = []
+    manifest["provides"] = []
+    assert _validate(manifest, "demo") == []
+    manifest.update(type="plugin", provides=["audio_source", "scrobble"])
+    assert _validate(manifest, "demo") == []
+    manifest.update(type="player", provides=["audio_source"])
     assert _validate(manifest, "demo") == []
 
 
-def test_features_breaking_the_rules_rejected() -> None:
-    """Features that are not a list of known, unique ProviderFeature values are reported."""
+def test_provides_breaking_the_rules_rejected() -> None:
+    """Offerings that are not a list of known, unique values that fit the type are reported."""
     manifest = _valid_manifest()
-    manifest["features"] = "audio_source"
-    assert _validate(manifest, "demo") == ["'features' must be a list"]
-    manifest["features"] = ["audio_source", "teleport", "unknown", 1, "audio_source"]
+    manifest["provides"] = "radio"
+    assert _validate(manifest, "demo") == ["'provides' must be a list"]
+    manifest["provides"] = ["radio", "radios", "unknown", 1, "radio", "scrobble"]
     assert _validate(manifest, "demo") == [
-        "feature 'teleport' is not a known ProviderFeature",
-        "feature 'unknown' is not a known ProviderFeature",
-        "feature '1' is not a known ProviderFeature",
-        "feature 'audio_source' is listed more than once",
+        "offering 'radios' is not a known ProviderOffering",
+        "offering 'unknown' is not a known ProviderOffering",
+        "offering '1' is not a known ProviderOffering",
+        "offering 'radio' is listed more than once",
+        "offering 'scrobble' does not fit provider type 'music'",
+    ]
+    manifest.update(type="metadata", provides=["audio_source"])
+    assert _validate(manifest, "demo") == [
+        "offering 'audio_source' does not fit provider type 'metadata'"
+    ]
+    manifest.update(type="speaker", provides=["radio"])
+    assert _validate(manifest, "demo") == [f"type 'speaker' is not one of {sorted(VALID_TYPES)}"]
+
+
+def test_top_level_media_types_rejected() -> None:
+    """A top-level media_types is reported with a pointer to provides; a menu action's is not."""
+    manifest = _valid_manifest()
+    manifest["media_types"] = ["radio"]
+    manifest["menu_actions"] = [_menu_action()]
+    assert _validate(manifest, "demo") == [
+        "'media_types' is not read by the server, use 'provides' instead"
     ]
 
 
@@ -206,6 +235,17 @@ def test_menu_actions_breaking_the_rules_rejected() -> None:
         "menu action 'unknown_type': needs media_types from: album, artist, audiobook, "
         "playlist, podcast, podcast_episode, radio, track",
         "menu action 'twice': another menu action of this provider has the same id",
+    ]
+
+
+def test_page_checked() -> None:
+    """A valid page passes, and one that breaks the server's rules fails the check."""
+    manifest = _valid_manifest()
+    manifest["page"] = {"label": "Picture frame", "scope": "library.read", "icon": "mdi-image"}
+    assert _validate(manifest, "demo") == []
+    manifest["page"] = {"label": "Picture frame", "scope": "everything"}
+    assert _validate(manifest, "demo") == [
+        "page: needs a scope that Music Assistant knows, such as 'library.read'"
     ]
 
 

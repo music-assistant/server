@@ -1,7 +1,7 @@
 """
 Shared lifecycle management for Sendspin bridges.
 
-A Sendspin bridge exposes a protocol of another provider (AirPlay, squeezelite,
+A Sendspin bridge exposes a protocol of another provider (squeezelite, AirPlay,
 Chromecast) as an external Sendspin client, so the device can take part in Sendspin
 synchronized playback. The bridge is a derived transport: its Sendspin protocol
 rides on the protocol it bridges (its underlying protocol) and belongs to the
@@ -62,7 +62,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 # The providers whose bridges carry the Sendspin output of a player, the first choice first.
-BRIDGE_ORDER: tuple[str, ...] = ("airplay", "squeezelite", "chromecast")
+BRIDGE_ORDER: tuple[str, ...] = ("squeezelite", "airplay", "chromecast")
 
 # The players reported to have more than one stored Sendspin output, by those outputs.
 _REPORTED_OUTPUTS: set[tuple[str, ...]] = set()

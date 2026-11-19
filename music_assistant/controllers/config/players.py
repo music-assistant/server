@@ -87,11 +87,12 @@ from music_assistant.controllers.config.helpers import (
     _reject_encrypted_values,
     _with_translation_owner,
 )
+from music_assistant.helpers.action_result import without_insecure_open_url
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS, PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.util import validate_announcement_chime_url
+from music_assistant.models.media_capabilities import AudioSourceMixin
 from music_assistant.models.player import OWN_PROTOCOL_ROLES, get_device_name
-from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
@@ -259,7 +260,7 @@ class PlayerConfigMixin:
                     raw_conf["values"] = {}
                 raw_conf["values"].update(protocol_values)
             # ...and the (derived) values for the per-player plugin toggles
-            if plugin_values := self._get_plugin_provider_config_values(config_entries):
+            if plugin_values := self._get_audio_source_config_values(config_entries):
                 if "values" not in raw_conf:
                     raw_conf["values"] = {}
                 raw_conf["values"].update(plugin_values)
@@ -328,7 +329,7 @@ class PlayerConfigMixin:
         # plugin provider's own config
         player_entries = [
             *player_entries,
-            *self._create_plugin_provider_config_entries(player),
+            *self._create_audio_source_config_entries(player),
         ]
 
         player_entries_keys = {entry.key for entry in player_entries}
@@ -374,7 +375,7 @@ class PlayerConfigMixin:
         if isinstance(result, ConfigActionResult):
             # the strings belong to the provider that handled the action
             result.translation_owner = result.translation_owner or target.translation_owner
-            return result
+            return without_insecure_open_url(target.provider, result)
         # re-render the full player entries so injected protocol entries refresh
         return await self.get_player_config_entries(player_id)
 
@@ -953,7 +954,7 @@ class PlayerConfigMixin:
         """
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         values, outputs_changed = await self._update_output_protocol_config(values)
-        values = await self._update_plugin_provider_config(player_id, values)
+        values = await self._update_audio_source_config(player_id, values)
         existing_raw = self.get(conf_key) or {}
         existing_values = self._get_stored_player_values(player_id)
         if values.get(CONF_ICON) is None and CONF_ICON not in existing_values:
@@ -1863,26 +1864,26 @@ class PlayerConfigMixin:
             return None
         return f"provider.{str(provider).split('--', maxsplit=1)[0]}"
 
-    def _create_plugin_provider_config_entries(self, player: Player) -> list[ConfigEntry]:
+    def _create_audio_source_config_entries(self, player: Player) -> list[ConfigEntry]:
         """
-        Create the per-player plugin toggle entries for a player.
+        Create the per-player audio source provider toggle entries for a player.
 
-        Each loaded plugin that binds its AudioSources to individual players (e.g.
-        Spotify Connect) renders as a single boolean toggle whose value reflects
-        whether the player is in that plugin's connected players, also by the id of a
+        Each loaded audio source provider that binds its AudioSources to individual players
+        (e.g. Spotify Connect) renders as a single boolean toggle whose value reflects
+        whether the player is in that provider's connected players, also by the id of a
         player that was merged into it.
 
-        :param player: The player to create the plugin toggle entries for.
+        :param player: The player to create the audio source provider toggle entries for.
         """
-        # only players a plugin can offer as playback target get the toggles
+        # only players a provider can offer as playback target get the toggles
         if player.type not in PLAYBACK_TARGET_TYPES:
             return []
         entries: list[ConfigEntry] = []
-        plugin_providers = (
-            provider for provider in self.mass.providers if isinstance(provider, PluginProvider)
+        audio_source_providers = (
+            provider for provider in self.mass.providers if isinstance(provider, AudioSourceMixin)
         )
-        for provider in sorted(plugin_providers, key=lambda prov: prov.name.lower()):
-            # a player-bound plugin returns a list for any player id, unbound returns None
+        for provider in sorted(audio_source_providers, key=lambda prov: prov.name.lower()):
+            # a player-bound provider returns a list for any player id, unbound returns None
             if provider.get_player_audio_sources(player.player_id) is None:
                 continue
             connected_players = cast(
@@ -1896,7 +1897,7 @@ class PlayerConfigMixin:
                 ConfigEntry(
                     key=f"{provider.instance_id}{CONF_PLUGIN_KEY_SPLITTER}{CONF_ENABLED}",
                     type=ConfigEntryType.BOOLEAN,
-                    # the key is per-plugin (dynamic), so pin a static catalog key
+                    # the key is per-provider (dynamic), so pin a static catalog key
                     translation_key="plugin_enable",
                     translation_params=[provider.name],
                     value=any(
@@ -1910,21 +1911,21 @@ class PlayerConfigMixin:
             )
         return entries
 
-    def _get_plugin_provider_config_values(
+    def _get_audio_source_config_values(
         self, entries: list[ConfigEntry]
     ) -> dict[str, ConfigValueType]:
-        """Extract the plugin toggle values for given (parent) player entries."""
+        """Extract the audio source provider toggle values for given (parent) player entries."""
         return {
             entry.key: entry.value for entry in entries if CONF_PLUGIN_KEY_SPLITTER in entry.key
         }
 
-    async def _update_plugin_provider_config(
+    async def _update_audio_source_config(
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> dict[str, ConfigValueType]:
         """
-        Update the connected players of per-player plugins from submitted toggle values.
+        Update the connected players of per-player audio source providers from submitted values.
 
-        Returns the updated values dict with the plugin toggle entries removed.
+        Returns the updated values dict with the audio source provider toggle entries removed.
         """
         for key in [key for key in values if CONF_PLUGIN_KEY_SPLITTER in key]:
             enabled = bool(values.pop(key))
@@ -1942,8 +1943,8 @@ class PlayerConfigMixin:
                 connected_players = [*connected_players, player_id]
             else:
                 connected_players = [x for x in connected_players if resolve(x) != player_id]
-            # the plugin provider's config is the canonical store; updating it also
-            # reloads the plugin so it picks up the new player set
+            # the provider's config is the canonical store; updating it also
+            # reloads the provider so it picks up the new player set
             await self.mass.config._update_provider_config(
                 instance_id, {CONF_CONNECTED_PLAYERS: connected_players}
             )

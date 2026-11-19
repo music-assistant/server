@@ -2,7 +2,7 @@
 A rig for tests on who uses an audio source and who holds a provider's stream slot.
 
 It runs the real queue controller, the real streams audio side, real audio buffers and the
-provider's own slot semaphore over sources the test controls. Only the audio decoding, the
+provider's own stream slots over sources the test controls. Only the audio decoding, the
 crossfade mixer and the players are left out.
 """
 
@@ -449,6 +449,42 @@ class SlotRig:
         name = streamdetails.item_id.removeprefix("track-")
         self.opened[name] += 1
         return self.sources.get(name, realtime_capture)()
+
+
+def count_starts(rig: SlotRig, name: str) -> list[str]:
+    """
+    Record every time the source of the given track really starts to deliver.
+
+    :param rig: The rig whose source to watch.
+    :param name: Neutral name of the track.
+    :return: A list that gets the name for every start of the source.
+    """
+    started: list[str] = []
+    inner = rig.sources.get(name)
+
+    async def _source() -> AsyncGenerator[bytes]:
+        started.append(name)
+        async for chunk in (inner or partial(source, 3, 0, asyncio.Event()))():
+            yield chunk
+
+    rig.sources[name] = _source
+    return started
+
+
+def allow_commands(rig: SlotRig) -> None:
+    """Let the rig's queue take commands without players, users or settings behind it."""
+    rig.queues._check_player_permission = MagicMock()  # type: ignore[method-assign]
+    rig.queues._resolve_queue_id = lambda queue_id: queue_id  # type: ignore[method-assign]
+    rig.queues._resolve_default_toggles = MagicMock()  # type: ignore[method-assign]
+    rig.queues._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
+
+
+def allow_starts(rig: SlotRig) -> None:
+    """Let the rig's queue start a track without a player behind it."""
+    allow_commands(rig)
+    rig.queues.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
+    rig.mass.players.get_player.return_value.offline_by_power_control = False
+    rig.mass.players.play_media = AsyncMock()
 
 
 def install_mixer(

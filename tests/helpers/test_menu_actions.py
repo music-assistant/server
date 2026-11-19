@@ -7,12 +7,17 @@ from typing import Any
 import pytest
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType
-from music_assistant_models.provider import MAX_MENU_ACTION_LABEL_LENGTH, ProviderMenuAction
+from music_assistant_models.provider import (
+    MAX_MENU_ACTION_LABEL_LENGTH,
+    ProviderMenuAction,
+    ProviderPage,
+)
 
 from music_assistant.helpers.menu_actions import (
     MAX_MENU_ACTION_ICON_LENGTH,
     MAX_MENU_ACTIONS,
     read_menu_actions,
+    read_page,
 )
 
 TYPES_PROBLEM = (
@@ -194,3 +199,67 @@ def test_actions_beyond_the_limit_left_out() -> None:
         f"menu action 'action_{index}': a provider declares at most {MAX_MENU_ACTIONS} menu actions"
         for index in (MAX_MENU_ACTIONS, MAX_MENU_ACTIONS + 1)
     ]
+
+
+def _page(**overrides: Any) -> dict[str, Any]:
+    """Return a valid declared page, as in a manifest file, with the given fields changed."""
+    return {
+        "label": "Picture frame",
+        "scope": "library.write",
+        "icon": "mdi-image-frame",
+        **overrides,
+    }
+
+
+def test_valid_page_kept() -> None:
+    """A page that follows the rules is kept as declared, with or without an icon."""
+    without_icon = _page()
+    del without_icon["icon"]
+    assert read_page(_page()) == (
+        ProviderPage(label="Picture frame", scope=Scope.LIBRARY_WRITE, icon="mdi-image-frame"),
+        [],
+    )
+    assert read_page(without_icon) == (
+        ProviderPage(label="Picture frame", scope=Scope.LIBRARY_WRITE),
+        [],
+    )
+    assert read_page(None) == (None, [])
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Picture frame",
+        [_page()],
+        {"label": "Picture frame"},
+        _page(label=None),
+        _page(scope=3),
+        _page(icon=True),
+    ],
+)
+def test_page_of_wrong_type_left_out(raw: object) -> None:
+    """A page with a field of the wrong type is left out with its problem."""
+    assert read_page(raw) == (
+        None,
+        ["page: needs string label and scope, and optionally a string icon"],
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "problem"),
+    [
+        ({"label": ""}, "needs a label"),
+        ({"label": "x" * (MAX_MENU_ACTION_LABEL_LENGTH + 1)}, "needs a label"),
+        ({"label": "Picture\nframe"}, "needs a label"),
+        ({"label": "Picture\u202eframe"}, "needs a label"),
+        ({"scope": "library.everything"}, "needs a scope"),
+        ({"icon": "image-frame"}, "needs an icon"),
+        ({"icon": "mdi-" + "a" * (MAX_MENU_ACTION_ICON_LENGTH - 3)}, "needs an icon"),
+    ],
+)
+def test_page_breaking_a_rule_left_out(overrides: dict[str, Any], problem: str) -> None:
+    """A page that breaks a rule is left out with one problem naming it."""
+    page, problems = read_page(_page(**overrides))
+    assert page is None
+    assert len(problems) == 1
+    assert problems[0].startswith(f"page: {problem}")

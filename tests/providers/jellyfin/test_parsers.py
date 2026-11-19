@@ -28,6 +28,7 @@ from music_assistant.providers.jellyfin.parsers import (
     parse_album,
     parse_artist,
     parse_loudness,
+    parse_lyrics,
     parse_track,
 )
 
@@ -209,3 +210,30 @@ def test_audio_format_wav_container_not_treated_as_raw_pcm() -> None:
     assert result.sample_rate == 48000
     assert result.bit_depth == 24
     assert result.channels == 2
+
+
+def test_parse_lyrics_synced() -> None:
+    """Synced Jellyfin lyrics produce plain text and LRC."""
+    raw = {
+        "Metadata": {},
+        "Lyrics": [
+            {"Text": "First line", "Start": 12_340_000},
+            {"Text": "Second line", "Start": 654_500_000},
+        ],
+    }
+    plain, lrc = parse_lyrics(raw)
+    assert plain == "First line\nSecond line"
+    assert lrc == "[00:01.23]First line\n[01:05.45]Second line"
+
+
+def test_parse_lyrics_unsynced() -> None:
+    """Unsynced Jellyfin lyrics (no Start) produce plain text only."""
+    plain, lrc = parse_lyrics({"Lyrics": [{"Text": "One"}, {"Text": "Two"}]})
+    assert plain == "One\nTwo"
+    assert lrc is None
+
+
+def test_parse_lyrics_empty() -> None:
+    """A response without cues yields no lyrics."""
+    assert parse_lyrics({}) == (None, None)
+    assert parse_lyrics({"Lyrics": []}) == (None, None)

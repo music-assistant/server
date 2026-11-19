@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -41,6 +42,7 @@ from music_assistant.providers.sendspin.player import (
     SENDSPIN_FORMAT_AUTOMATIC,
     SendspinPlayer,
 )
+from music_assistant.providers.sendspin.provider import SendspinProvider
 from tests.common import MockProvider, attach_mock, mock_player_mass
 from tests.providers.sendspin.test_short_session_elapsed_anchor import _short_session
 
@@ -363,6 +365,22 @@ async def test_group_client_without_player_role_does_not_count() -> None:
     assert pcm_format.sample_rate == 48000
 
 
+async def test_a_client_that_renders_nothing_does_not_count() -> None:
+    """The silent client of a virtual or multi-channel player leaves the rate to its members."""
+    leader, _ = _player([FLAC_96K], player_id=PLAYER_ID)
+    member, _ = _player([FLAC_48K], player_id=MEMBER_ID)
+    _group(leader, member)
+    cast("MagicMock", leader.provider).is_silent_client.side_effect = lambda client_id: (
+        client_id == PLAYER_ID
+    )
+    session = _session(leader, sample_rate=96000)
+
+    pcm_format, _ = session._select_session_pcm_formats()
+
+    assert pcm_format.sample_rate == 48000
+    assert await session.get_session_sample_rate(session._start_streamdetails) == 48000  # type: ignore[arg-type]
+
+
 async def test_consecutive_44k_tracks_flow_without_restart() -> None:
     """A group of a 48 kHz leader and a 44.1 kHz member flows from one 44.1 kHz track to the next."""
     leader, _ = _player([FLAC_48K])
@@ -683,6 +701,11 @@ def _player(
     player._config.get_value.side_effect = lambda key, default=None: config_values.get(key, default)
     player._provider = MagicMock()
     player._provider.server_api.get_client.return_value = client
+    player._provider.is_silent_client.return_value = False
+    player._provider.multi_channel_player_of.return_value = None
+    player._provider.get_client_session_format = partial(
+        SendspinProvider.get_client_session_format, player._provider
+    )
     player._provider.get_protocol = lambda pid: player.mass.players.get_player(pid)
     player.mass = MagicMock()
     player.mass.streams.audio = audio
