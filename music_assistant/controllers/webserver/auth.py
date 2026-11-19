@@ -624,6 +624,7 @@ class AuthenticationManager:
         # Return updated user
         updated_user = await self.get_user(user.user_id)
         assert updated_user is not None  # User exists, so get_user must return it
+        self.webserver.update_active_user(updated_user)
         return updated_user
 
     async def update_user_preferences(
@@ -652,6 +653,7 @@ class AuthenticationManager:
         # Return updated user
         updated_user = await self.get_user(user.user_id)
         assert updated_user is not None  # User exists, so get_user must return it
+        self.webserver.update_active_user(updated_user)
         return updated_user
 
     async def update_provider_link(
@@ -1592,13 +1594,11 @@ class AuthenticationManager:
                 {"user_id": target_user.user_id},
                 {"player_filter": json_dumps(player_filter)},
             )
-            self.webserver.update_active_user_filters(
-                target_user.user_id, player_filter=player_filter
-            )
-        # Refresh target user to get updated filters
-        refreshed_user = await self.get_user(target_user.user_id)
-        if not refreshed_user:
-            raise InvalidDataError("Failed to refresh user after filter update")
+            # Refresh target user to get updated filters
+            refreshed_user = await self.get_user(target_user.user_id)
+            if not refreshed_user:
+                raise InvalidDataError("Failed to refresh user after filter update")
+            self.webserver.update_active_user(refreshed_user)
         return refreshed_user
 
     async def remove_from_user_filters(self, player_ids: Collection[str] = ()) -> None:
@@ -2536,7 +2536,8 @@ class AuthenticationManager:
                 )
                 # a session holds its own copy of the User object, so the live ones have to
                 # follow or they keep applying the filter that was just rewritten
-                self.webserver.update_active_user_filters(row["user_id"], player_filter=remaining)
+                if user := await self.get_user(row["user_id"]):
+                    self.webserver.update_active_user(user)
 
     async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
         """
