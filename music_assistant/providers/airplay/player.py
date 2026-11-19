@@ -1263,8 +1263,10 @@ class AirPlayPlayer(PlayerProtocol):
             for speaker in self.speakers
             if (membership := parse_set_membership(speaker.airplay_discovery_info))
             and membership.position is not None
-            # the room of a set is never taken for the old player of one of its speakers
-            and not provider.has_stored_room(speaker.protocol_id)
+            # the room of a pair is never taken for the old player of its other HomePod
+            and not (
+                own.kind == SetKind.STEREO_PAIR and provider.has_stored_room(speaker.protocol_id)
+            )
         }
         if added := speaker_ids - self._reported_speaker_ids:
             self.mass.create_task(

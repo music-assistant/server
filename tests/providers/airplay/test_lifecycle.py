@@ -1164,6 +1164,42 @@ async def test_a_pair_whose_roles_swap_keeps_its_room(
 
 
 @pytest.mark.usefixtures("apple_controls")
+async def test_a_pair_made_the_speakers_of_an_apple_tv_loses_its_room(
+    scenario: Scenario, provider: AirPlayProvider
+) -> None:
+    """
+    A HomePod pair made the speakers of an Apple TV is played by the room of the Apple TV.
+
+    The room the pair had is the old player of its first HomePod, and goes like that of any
+    speaker of the set.
+    """
+    pair_room_id = await _form_pair(scenario, provider)
+    assert scenario.mass.config.get(f"players/{pair_room_id}/player_type") == (
+        PlayerType.MULTI_CHANNEL
+    )
+
+    apple_tv = await _announce(scenario, provider, _apple_tv(size=3))
+    for position, device_id in enumerate((FIRST_HOMEPOD_ID, SECOND_PAIR_HOMEPOD_ID), start=1):
+        await _announce(
+            scenario,
+            provider,
+            _homepod(
+                position,
+                device_id=device_id,
+                address=f"192.168.1.{70 + int(device_id[-1])}",
+                size=3,
+            ),
+        )
+
+    assert apple_tv is not None
+    assert [speaker.protocol_id for speaker in apple_tv.speakers] == [
+        FIRST_HOMEPOD_PROTOCOL_ID,
+        SECOND_PAIR_HOMEPOD_PROTOCOL_ID,
+    ]
+    assert await scenario.player_config(pair_room_id) is None
+
+
+@pytest.mark.usefixtures("apple_controls")
 async def test_the_bridges_follow_a_pair_that_forms_and_breaks_up(
     scenario: Scenario, provider: AirPlayProvider
 ) -> None:
