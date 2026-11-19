@@ -119,9 +119,11 @@ class GeniusProvider(MetadataProvider):
             # clean song title to increase chance and accuracy of a result
             cleaned_title = clean_song_title(title)
             if cleaned_title != title:
-                self.logger.debug(f'Song title was cleaned: "{title}"  ->  "{cleaned_title}"')
+                self.logger.debug('Song title was cleaned: "%s"  ->  "%s"', title, cleaned_title)
 
-            self.logger.info(f"Searching lyrics for artist='{artist}' and title='{cleaned_title}'")
+            self.logger.info(
+                "Searching lyrics for artist='%s' and title='%s'", artist, cleaned_title
+            )
 
             # perform search
             song = self._search_song(artist, cleaned_title)
@@ -130,7 +132,7 @@ class GeniusProvider(MetadataProvider):
             if not song and " - " in cleaned_title:
                 # aggressively truncate title from the first hyphen
                 cleaned_title = cleaned_title.split(" - ", 1)[0]
-                self.logger.info(f"Second attempt, aggressively cleaned title='{cleaned_title}'")
+                self.logger.info("Second attempt, aggressively cleaned title='%s'", cleaned_title)
 
                 # perform search
                 song = self._search_song(artist, cleaned_title)
