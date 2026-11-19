@@ -51,6 +51,7 @@ def _make_provider(player: SendspinBasePlayer | None) -> SendspinProvider:
     provider._refused_here = {}
     provider._unencrypted_clients = set()
     provider._hass_auto_pairer = Mock()
+    provider._local_auto_pairer = Mock()
     return provider
 
 

@@ -113,6 +113,7 @@ from music_assistant.providers.sendspin.helpers import (
     error_alert,
     speaks_legacy_wire,
 )
+from music_assistant.providers.sendspin.local_pair import LocalAutoPairer
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
     SendspinPlayer,
@@ -447,6 +448,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self._hass_available = False
         self._server_start_failed = False
         self._hass_auto_pairer = HassAutoPairer(self)
+        self._local_auto_pairer = LocalAutoPairer(self)
         self.sources = SendspinSources(self)
         self.unregister_cbs = []
 
@@ -565,6 +567,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 # event fires before the new connection's roles are attached.
                 self.mass.loop.call_soon(self._refresh_player_state, client_id)
                 self.mass.loop.call_soon(self._hass_auto_pairer.on_client_connected, client_id)
+                self.mass.loop.call_soon(self._local_auto_pairer.on_client_connected, client_id)
             case ClientDisconnectedEvent(client_id, goodbye_reason):
                 self._set_held_elsewhere(
                     client_id,
@@ -1328,6 +1331,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self._management_sessions.clear()
         self._pairing_config_snapshots.clear()
         self._hass_auto_pairer.close()
+        self._local_auto_pairer.close()
         await self.sources.stop()
         if self._running_pairing_evictions:
             await asyncio.gather(*self._running_pairing_evictions, return_exceptions=True)
