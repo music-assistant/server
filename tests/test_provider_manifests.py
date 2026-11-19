@@ -241,15 +241,19 @@ async def test_provider_manifest_features_agree_with_its_code(domain: str) -> No
     """
     A built-in player or plugin provider's manifest agrees with its code on its main features.
 
-    It declares ai, tts, scrobble and audio_source exactly when its code offers the matching
-    feature in every config, and ai and tts only with a method that hands out its engines.
+    It declares ai, tts, scrobble and audio_source when its code offers the matching feature in
+    every config. It declares scrobble and audio_source only then, and ai and tts only with a
+    method that hands out its engines, as those can depend on the connected service.
     """
     manifest = await _parse_manifest(domain)
     provider_class = _provider_class(domain, _BASE_BY_TYPE[manifest.type])
     features = _features_in_every_config(domain, provider_class)
     for offering, (feature, methods) in _FEATURE_BY_OFFERING.items():
-        assert (offering in manifest.provides) == (feature in features), offering
-        if offering in manifest.provides and methods:
+        declared = offering in manifest.provides
+        assert declared or feature not in features, offering
+        if declared and not methods:
+            assert feature in features, offering
+        elif declared:
             assert provider_class is not None, offering
             assert any(
                 getattr(provider_class, method, None) is not getattr(PluginProvider, method)
