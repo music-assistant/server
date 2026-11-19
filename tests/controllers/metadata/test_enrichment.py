@@ -2550,7 +2550,6 @@ async def test_forced_link_does_not_force_the_work_after_the_lookup(kind: str) -
         "album": [
             music.albums.link_musicbrainz_mappings,
             music.albums.link_album_tracks,
-            musicbrainz.get_release_details,
         ],
         "track": [
             music.tracks.merge_recording_duplicates,
@@ -2558,12 +2557,13 @@ async def test_forced_link_does_not_force_the_work_after_the_lookup(kind: str) -
         ],
     }[kind]
     seen = _bypass_recorded(enrichment, *followers)
+    merged_lookup = _bypass_recorded(enrichment, musicbrainz.get_release_details)
 
     if kind == "artist":
         artist = _merged_artist({(ExternalID.MB_ARTIST, OTHER_MBID)})
         await enrichment._link_artist_to_musicbrainz(artist, force_refresh=True)
     elif kind == "album":
-        # a stored release that differs from the identified one is followed too
+        # a stored release that differs from the identified one is looked up again
         await enrichment._link_album_to_musicbrainz(
             _album({(ExternalID.MB_ALBUM, OTHER_MBID)}), force_refresh=True
         )
@@ -2571,6 +2571,8 @@ async def test_forced_link_does_not_force_the_work_after_the_lookup(kind: str) -
         await enrichment._link_track_to_musicbrainz(_track(), force_refresh=True)
 
     assert seen == [False] * len(followers)
+    # the lookup of a merged release is a MusicBrainz lookup too, so it is forced as well
+    assert merged_lookup == ([True] if kind == "album" else [])
 
 
 @pytest.mark.asyncio

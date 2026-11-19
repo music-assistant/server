@@ -939,7 +939,7 @@ class MetadataEnrichmentMixin:
                 self.logger.debug("Album %s was not found on MusicBrainz", album.name)
             else:
                 if album.mbid and album.mbid.casefold() != release.id.casefold():
-                    await self._follow_merged_release(musicbrainz, album, release.id)
+                    await self._follow_merged_release(musicbrainz, album, release.id, force_refresh)
                 urls = relation_urls(release.relations)
                 _fill_album_from_release(album, release, urls)
                 link_providers = self.link_providers_via_musicbrainz
@@ -1012,7 +1012,7 @@ class MetadataEnrichmentMixin:
         return False
 
     async def _follow_merged_release(
-        self, musicbrainz: MusicbrainzProvider, album: Album, release_id: str
+        self, musicbrainz: MusicbrainzProvider, album: Album, release_id: str, force_refresh: bool
     ) -> None:
         """
         Give an album the release its stored release was merged into on MusicBrainz.
@@ -1023,10 +1023,13 @@ class MetadataEnrichmentMixin:
         :param musicbrainz: The MusicBrainz provider.
         :param album: The library album, stored with the new id.
         :param release_id: The id of the release the album was identified as.
+        :param force_refresh: Whether to ask MusicBrainz again rather than read a cached answer.
         """
         try:
-            # the identify step looked the stored release up first, so this reads its answer again
-            stored = await musicbrainz.get_release_details(album.mbid or "")
+            # the identify step looked the stored release up first, so this reads its answer
+            # again, except on a forced refresh, whose fresh answer may not be cached yet
+            async with self.mass.cache.handle_refresh(force_refresh):
+                stored = await musicbrainz.get_release_details(album.mbid or "")
         except InvalidDataError:
             return
         await self._follow_merged_id(album, stored.id)
@@ -1160,7 +1163,7 @@ class MetadataEnrichmentMixin:
         ref_tracks: Sequence[Track],
         force_refresh: bool,
     ) -> IdentifiedArtist | None:
-        """Identify an artist on MusicBrainz, reading no cached answer when forced."""
+        """Identify an artist on MusicBrainz, asking again when the refresh is forced."""
         async with self.mass.cache.handle_refresh(force_refresh):
             return await musicbrainz.identify_artist(artist, ref_albums, ref_tracks)
 
