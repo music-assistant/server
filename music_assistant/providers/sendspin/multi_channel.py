@@ -136,9 +136,10 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         super().__init__(provider, protocol_id, initial_hello)
         self._attr_type = PlayerType.MULTI_CHANNEL
         self._speaker_listeners: dict[str, tuple[SendspinClient, Callable[[], None]]] = {}
-        # levels sent to a speaker that it has not reported back yet
+        # levels and delays sent to a speaker that it has not reported back yet
         self._sent_volumes: dict[str, list[int]] = {}
         self._sent_mutes: dict[str, list[bool]] = {}
+        self._sent_delays: dict[str, list[int]] = {}
         # speakers that connected again, which still report the state they kept
         self._joining: set[str] = set()
         self._take_lock = asyncio.Lock()
@@ -472,7 +473,12 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
             case VolumeChangedEvent(volume=volume, muted=muted):
                 self._take_speaker_level(client.client_id, volume, muted)
             case OutputDelayChangedEvent(output_delay_ms=delay_ms):
-                if (number := self._speaker_number(client.client_id)) is None:
+                client_id = client.client_id
+                if (
+                    (number := self._speaker_number(client_id)) is None
+                    or client_id in self._joining
+                    or _take_echo(self._sent_delays.setdefault(client_id, []), delay_ms)
+                ):
                     return
                 key = CONF_SPEAKER_OUTPUT_DELAY.format(n=number)
                 if self.mass.config.get_protocol_value(self.protocol_id, key) != delay_ms:
@@ -510,12 +516,22 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
     def _send_level(self, client_id: str, role: PlayerRoleProtocol) -> None:
         """Send the volume and mute of this player to a speaker that has another."""
         volume = self._attr_volume_level
-        if volume is not None and role.get_player_volume() not in (None, volume):
-            _remember(self._sent_volumes.setdefault(client_id, []), volume)
+        sent_volumes = self._sent_volumes.setdefault(client_id, [])
+        if (
+            volume is not None
+            and (reported_volume := role.get_player_volume()) is not None
+            and _last_known(sent_volumes, reported_volume) != volume
+        ):
+            _remember(sent_volumes, volume)
             role.set_player_volume(volume)
         muted = self._attr_volume_muted
-        if muted is not None and role.get_player_muted() not in (None, muted):
-            _remember(self._sent_mutes.setdefault(client_id, []), muted)
+        sent_mutes = self._sent_mutes.setdefault(client_id, [])
+        if (
+            muted is not None
+            and (reported_muted := role.get_player_muted()) is not None
+            and _last_known(sent_mutes, reported_muted) != muted
+        ):
+            _remember(sent_mutes, muted)
             role.set_player_mute(muted)
 
     def _send_output_delay(self, client_id: str, role: PlayerRoleProtocol) -> None:
@@ -527,7 +543,11 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
             CONF_SPEAKER_OUTPUT_DELAY.format(n=number),
             DEFAULT_SENDSPIN_STATIC_DELAY,
         )
-        if isinstance(delay_ms, int) and role.get_output_delay_ms() != delay_ms:
+        sent_delays = self._sent_delays.setdefault(client_id, [])
+        if isinstance(delay_ms, int) and _last_known(sent_delays, role.get_output_delay_ms()) != (
+            delay_ms
+        ):
+            _remember(sent_delays, delay_ms)
             role.set_output_delay(delay_ms)
 
     def _refresh_speaker_state(self) -> None:
@@ -555,6 +575,11 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
             )
         self._played_channels = played_channels
         self.update_state()
+
+
+def _last_known[T](sent: list[T], reported: T) -> T:
+    """Return the level a speaker has, counting the last one sent that it did not report yet."""
+    return sent[-1] if sent else reported
 
 
 def _remember[T](sent: list[T], value: T) -> None:

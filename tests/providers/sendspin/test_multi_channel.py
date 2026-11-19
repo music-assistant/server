@@ -18,6 +18,7 @@ from aiosendspin.server import (
     ClientUpdatedEvent,
 )
 from aiosendspin.server import client as sendspin_client_module
+from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
 from music_assistant_models.enums import (
     ChannelLayout,
     PlaybackState,
@@ -62,8 +63,13 @@ class _SpeakerRole(BridgePlayerRole):
     """The player role of a Sendspin speaker, with what a device declares in its state."""
 
     volume_commands: list[int]
-    # levels sent that the speaker reports once the test lets it, None for at once
+    mute_commands: list[bool]
+    delay_commands: list[int]
+    # levels and delays sent that the speaker reports once the test lets it, None for at once
     unreported: list[int] | None
+    unreported_delays: list[int] | None
+    # whether the speaker reports a mute it gets, which not every client does
+    reports_mute: bool
 
     @property
     def state_supported_commands(self) -> list[PlayerCommand]:
@@ -75,8 +81,22 @@ class _SpeakerRole(BridgePlayerRole):
         return cast("int", getattr(self, "output_delay_ms", 0))
 
     def set_output_delay(self, delay_ms: int) -> None:
-        """Take an output delay the server sends."""
+        """Take an output delay the server sends, and report it back."""
+        self.delay_commands.append(delay_ms)
+        if self.unreported_delays is None:
+            self.report_delay(delay_ms)
+        else:
+            self.unreported_delays.append(delay_ms)
+
+    def report_delay(self, delay_ms: int) -> None:
+        """Report an output delay, one the server sent or one set on the speaker itself."""
         self.output_delay_ms = delay_ms
+        self.emit_client_event(OutputDelayChangedEvent(output_delay_ms=delay_ms))
+
+    def report_next_delay(self) -> None:
+        """Report the oldest delay sent that the speaker did not report yet."""
+        assert self.unreported_delays
+        self.report_delay(self.unreported_delays.pop(0))
 
     def get_supported_formats(self) -> list[SupportedAudioFormat]:
         """Return the formats the speaker plays."""
@@ -95,6 +115,12 @@ class _SpeakerRole(BridgePlayerRole):
             super().set_player_volume(volume)
         else:
             self.unreported.append(volume)
+
+    def set_player_mute(self, muted: bool) -> None:
+        """Take a mute the server sends, and report it back if the speaker does."""
+        self.mute_commands.append(muted)
+        if self.reports_mute:
+            super().set_player_mute(muted)
 
     def report_next(self) -> None:
         """Report the oldest level sent that the speaker did not report yet."""
@@ -167,7 +193,11 @@ async def _add_speaker(
     role = cast("Any", client.roles_by_family("player")[0])
     role.__class__ = _SpeakerRole
     role.volume_commands = []
+    role.mute_commands = []
+    role.delay_commands = []
     role.unreported = None
+    role.unreported_delays = None
+    role.reports_mute = True
     role._volume = volume
     client._connection = _connection()
     client._connected = True
@@ -748,6 +778,81 @@ async def test_a_speaker_away_when_its_set_is_taken_apart_stays_once_it_is_back(
     await asyncio.sleep(0.8)
     assert sendspin.server_api.get_client(RIGHT) is not None
     assert sendspin.get_protocol(RIGHT) is not None
+
+
+async def test_a_level_sent_again_before_the_speaker_reports_is_not_dropped(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A level the set sends back before a speaker reported the one before reaches the speaker.
+
+    The late report of the level before leaves the set at its last level.
+    """
+    sendspin = _sendspin(mass)
+    player, left, right = await _compose(mass, sendspin)
+    right.unreported = []
+    left.volume_commands.clear()
+    right.volume_commands.clear()
+
+    await mass.players.cmd_volume_set(player.player_id, 50)
+    await mass.players.cmd_volume_set(player.player_id, 30)
+
+    assert right.volume_commands == [50, 30]
+    right.report_next()
+    right.report_next()
+    await asyncio.sleep(0.1)
+    assert (left.volume_commands, right.volume_commands) == ([50, 30], [50, 30])
+    assert mass.players.get_player(player.player_id).volume_level == 30  # type: ignore[union-attr]
+
+
+async def test_an_unmute_reaches_a_speaker_that_does_not_report_its_mute(
+    mass: MusicAssistant,
+) -> None:
+    """A speaker that never reports a mute it gets still gets the unmute after it."""
+    sendspin = _sendspin(mass)
+    player, left, right = await _compose(mass, sendspin)
+    right.reports_mute = False
+
+    await mass.players.cmd_volume_mute(player.player_id, True)
+    await mass.players.cmd_volume_mute(player.player_id, False)
+
+    assert (left.mute_commands, right.mute_commands) == ([True, False], [True, False])
+
+
+async def test_an_output_delay_sent_again_before_the_speaker_reports_is_not_dropped(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A delay set back before a speaker reported the one before reaches the speaker.
+
+    The late reports of the delays the set sent leave the delay that is set in place.
+    """
+    sendspin = _sendspin(mass)
+    player, _, right = await _compose(mass, sendspin)
+    right.unreported_delays = []
+    right.delay_commands.clear()
+
+    for delay_ms in (120, 0, 120):
+        await mass.config.save_player_config(player.player_id, {"speaker_2_output_delay": delay_ms})
+
+    assert right.delay_commands == [120, 0, 120]
+    set_id = _set_of(sendspin, player).protocol_id
+    right.report_next_delay()
+    right.report_next_delay()
+    assert mass.config.get_protocol_value(set_id, "speaker_2_output_delay") == 120
+    right.report_next_delay()
+    assert mass.config.get_protocol_value(set_id, "speaker_2_output_delay") == 120
+
+
+async def test_a_delay_a_speaker_reports_itself_is_stored_for_it(mass: MusicAssistant) -> None:
+    """An output delay set on a speaker itself is stored as the delay of that speaker."""
+    sendspin = _sendspin(mass)
+    player, left, _ = await _compose(mass, sendspin)
+
+    left.report_delay(250)
+
+    set_id = _set_of(sendspin, player).protocol_id
+    assert mass.config.get_protocol_value(set_id, "speaker_1_output_delay") == 250
 
 
 async def test_removing_a_disabled_set_gives_its_speakers_back(mass: MusicAssistant) -> None:
