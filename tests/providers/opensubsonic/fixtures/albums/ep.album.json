@@ -1,0 +1,57 @@
+{
+    "id": "ca3ded07f0d35ad0f1e8512b6dcf85e9",
+    "name": "EP-Test",
+    "artist": "EP-Test Artist",
+    "year": 2007,
+    "coverArt": "al-ca3ded07f0d35ad0f1e8512b6dcf85e9_640a93a8",
+    "starred": "2023-03-22T01:51:06Z",
+    "duration": 1954,
+    "playCount": 97,
+    "genre": "Hip-Hop",
+    "created": "2023-03-10T02:19:35.784818075Z",
+    "songCount": 8,
+    "played": "2023-03-28T00:45:13Z",
+    "userRating": 4,
+    "recordLabels": [
+        {
+            "name": "Sony"
+        }
+    ],
+    "musicBrainzId": "189002e7-3285-4e2e-92a3-7f6c30d407a2",
+    "genres": [
+        {
+            "name": "Rock"
+        }
+    ],
+    "displayArtist": "EP-Test Artist Display",
+    "releaseTypes": [
+        "EP"
+    ],
+    "moods": [
+        "slow",
+        "cool"
+    ],
+    "sortName": "EP-Test Album",
+    "originalReleaseDate": {
+        "year": 2021,
+        "month": 11,
+        "day": 19
+    },
+    "releaseDate": {
+        "year": 2021,
+        "month": 11,
+        "day": 19
+    },
+    "isCompilation": false,
+    "explicitStatus": "explicit",
+    "discTitles": [
+        {
+            "disc": 0,
+            "title": "Disc 0 title"
+        },
+        {
+            "disc": 2,
+            "title": "Disc 1 title"
+        }
+    ]
+}
