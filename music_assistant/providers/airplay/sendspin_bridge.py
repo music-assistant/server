@@ -494,6 +494,12 @@ class SendspinAirPlayBridge:
         if not self._is_streaming:
             # the next stream starts on the devices there are by then
             return
+        if not self.airplay_player.endpoints:
+            self.logger.info(
+                "The last speaker of %s left it, it stops playing", self.airplay_player.display_name
+            )
+            self._abandon_streaming()
+            return
         added = self._sync_transports()
         for transport in added:
             transport.restart()

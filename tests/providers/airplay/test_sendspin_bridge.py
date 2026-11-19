@@ -4448,6 +4448,25 @@ def test_a_homepod_of_a_room_taken_over_by_another_sender_takes_the_room_along()
     assert all(transport.is_idle for transport in bridge._transports.values())
 
 
+@pytest.mark.parametrize("speakers_left", [0, 1])
+def test_a_room_whose_last_speaker_leaves_while_it_plays_leaves_its_sendspin_session(
+    speakers_left: int,
+) -> None:
+    """
+    A room left without a speaker while it plays has nothing to play on, as at its start.
+
+    One that keeps a speaker plays on it.
+    """
+    bridge, homepods, apple_tv = _make_room_bridge(speakers=2)
+    bridge._is_streaming = True
+    apple_tv.endpoints = homepods[:speakers_left]
+
+    with patch.object(bridge, "_abandon_streaming", MagicMock()) as abandon:
+        bridge.update_endpoints()
+
+    assert abandon.call_count == (0 if speakers_left else 1)
+
+
 def test_a_room_without_a_speaker_on_the_network_leaves_its_sendspin_session() -> None:
     """A set none of whose speakers is there has nothing to play on, so it plays nothing."""
     bridge, _, apple_tv = _make_room_bridge()
