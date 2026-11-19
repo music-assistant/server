@@ -271,6 +271,7 @@ Sendspin players support:
 | `player.py` | Player implementation with playback, grouping, and metadata handling |
 | `playback.py` | Playback pipeline with DSP channel processing and timed frame commits |
 | `sources.py` | Line-in sources of source-role clients, with their clock bridge and autostart |
+| `multi_channel.py` | Multi-channel players combined from Sendspin speakers |
 | `__init__.py` | Provider setup and configuration |
 | `manifest.json` | Provider metadata |
 
@@ -282,7 +283,8 @@ Sendspin players support:
 
 ## Players
 
-Every Sendspin client is a protocol (`SendspinBasePlayer`) whose id is its client id.
+Every Sendspin client is a protocol (`SendspinBasePlayer`) whose id is its client id, except a
+speaker of a [multi-channel player](#multi-channel-players).
 
 - A web or app player, a virtual player, a display, a visualizer, a light, a controller and an audio source exist only while they are connected (`session_only`): each is the native protocol of a player of its own, whose player id is its client id. Nothing is stored for one until its config is changed.
 - Any other client is the native protocol of its player, unless that player has a protocol of its own from another provider: then it is an audio output of it. A client with a hardware MAC address that is seen for the first time joins the player of its device when there is one, as an audio output; it is the native protocol of a player of its own from its next connection on. A new client without one is the native protocol of a player of its own at once, as nothing else can tie it to a device.
@@ -371,6 +373,46 @@ is changed. A stored configuration (including the owner marker) is reused when
 the same owner recreates the same player id; it is deleted on
 `remove_virtual_player` or swept at startup once the owner provider no longer
 exists.
+
+## Multi-channel players
+
+A multi-channel player combines Sendspin speakers into one player, each speaker on a channel of
+its own (`players/create_multi_channel_player`, offered through
+`ProviderFeature.CREATE_MULTI_CHANNEL_PLAYER`).
+
+- The player is a silent server-side client, like a virtual player, with a stored protocol
+  `sendspin_mc_<group id>`. Its record holds the group id (32 random bytes in base64url, as the
+  Sendspin spec defines it) and per speaker its client id, name, channel and output delay
+  (`speaker_<n>_*`). Combining removes the own Sendspin protocol of each speaker; a player that
+  has no other protocol left goes with it.
+- Only the player writes its record. Its group id and the client id, name and channel of each
+  speaker have no config entries, so a config save keeps them as they are. Each speaker has
+  these entries:
+  - `speaker_<n>_state`: a label that says whether the speaker is online.
+  - `speaker_<n>_display_name`: a label with the name of the speaker.
+  - `speaker_<n>_channel_setting`: the channel the user sets, which the player takes into its
+    record, swapping with the speaker that had that channel; a value that is no channel of the
+    layout changes nothing.
+  - `speaker_<n>_output_delay`: the output delay of the speaker, which also follows a delay the
+    speaker reports itself.
+- A speaker of a set is never a protocol. The provider knows the speakers of every stored set
+  before its server starts and hands a speaker that connects to its set, so it does not matter
+  whether the set or its speakers come first. The set takes its speakers into the Sendspin group
+  it plays in, also when it joins another leader. Group members and leaders leave the speakers
+  out: a group lists the set.
+- The session of the leader gives each speaker a pipeline of its own: the DSP of the set, then
+  the channel of the speaker, while it is in the group of the set. While a speaker is away the
+  others play every channel; such a change starts the stream again, as a DSP change does. The
+  silent client gets no pipeline and does not count for the sample rate of the session.
+- A speaker is away while it is disconnected, and while it is out of the group of its set. One
+  that leaves by itself, as it is unavailable or went to a group of its own, comes back at the
+  next playback session; one that the group of another player takes (its switch) is taken back
+  at once.
+- One volume: a level set on the set goes to every speaker, and a level a speaker reports itself
+  goes to the others. A speaker that reports back a level the set sent changes nothing.
+- Taking a set apart is removing its player: its speakers register as clients of their own again,
+  one that is away once it connects again. A speaker belongs to one set; a second request for it
+  is refused.
 
 ## Related Documentation
 

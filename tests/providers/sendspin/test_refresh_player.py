@@ -46,6 +46,7 @@ def _make_provider(player: SendspinBasePlayer | None) -> SendspinProvider:
         "SendspinServer", SimpleNamespace(get_client=lambda _client_id: None)
     )
     provider._held_elsewhere = set()
+    provider._multi_channel_speakers = {}
     provider._held_unapproved = set()
     provider._held_paired = set()
     provider._refused_here = {}

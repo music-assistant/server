@@ -92,6 +92,7 @@ def _make_provider(
     provider._held_paired = set()
     provider._refused_here = {}
     provider._unencrypted_clients = set()
+    provider._multi_channel_speakers = {}
     refreshed: list[str] = []
 
     async def _record_refresh(client_id: str) -> None:

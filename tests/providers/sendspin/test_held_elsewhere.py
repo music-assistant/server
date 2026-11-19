@@ -101,6 +101,7 @@ def _make_provider(api: _HeldServerApi) -> tuple[SendspinProvider, Mock]:
     provider._hass_auto_pairer = Mock()
     provider._local_auto_pairer = Mock()
     provider._pending_pairing_evictions = set()
+    provider._multi_channel_speakers = {}
     return provider, player
 
 

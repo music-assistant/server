@@ -11,6 +11,8 @@ from music_assistant_models.errors import PlayerUnavailableError
 from .provider import Provider
 
 if TYPE_CHECKING:
+    from music_assistant_models.enums import SpeakerChannel
+
     from music_assistant.models.player import Player
     from music_assistant.models.player_protocol import PlayerProtocol
 
@@ -87,6 +89,28 @@ class PlayerProvider(Provider):
         :param name: Name of the group player
         :param members: List of player ids to add to the group
         :param dynamic: Whether the group is dynamic (members can change)
+        """
+        raise NotImplementedError
+
+    async def create_multi_channel_player(
+        self, name: str, speakers: dict[str, SpeakerChannel]
+    ) -> Player:
+        """
+        Combine speakers into one new multi-channel player.
+
+        Only called for providers that support the CREATE_MULTI_CHANNEL_PLAYER feature.
+
+        :param name: Name of the new player.
+        :param speakers: The channel each speaker plays, by the id of this provider's
+            protocol of that speaker.
+        """
+        raise NotImplementedError
+
+    def get_multi_channel_candidates(self) -> list[str]:
+        """
+        Return the ids of this provider's protocols that can be a speaker of a new multi-channel player.
+
+        Only called for providers that support the CREATE_MULTI_CHANNEL_PLAYER feature.
         """
         raise NotImplementedError
 
