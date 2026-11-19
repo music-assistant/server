@@ -175,6 +175,8 @@ class SetupSession:
         # i18n slug of the terminal FINISH step; the engine swaps in a variant when the
         # target warrants extra closing copy (e.g. a music provider's initial library import)
         self.finish_step_id = "finish"
+        # the (options) config values handed to finish(), which the engine stores on the target
+        self.finish_options: dict[str, ConfigValueType] = {}
         self._finish_handler = finish_handler
         self._translation_owner = f"provider.{context.domain}"
         self._callback_path = f"/setup_flow/callback/{flow_id}"
@@ -357,7 +359,11 @@ class SetupSession:
         self._publish_step(step)
         return await self._await_with_deadline(awaitable, expires_in)
 
-    async def finish(self, values: dict[str, ConfigValueType]) -> dict[str, str]:
+    async def finish(
+        self,
+        values: dict[str, ConfigValueType],
+        options: dict[str, ConfigValueType] | None = None,
+    ) -> dict[str, str]:
         """
         Complete the flow: persist the collected values and create/reload the target.
 
@@ -367,10 +373,14 @@ class SetupSession:
         (e.g. ``{"instance_id": ...}``) is returned.
 
         :param values: The values to persist as the target's setup_data.
+        :param options: Optional values for the target's (options) config entries, for a choice
+            its settings offer as well. Stored as given (unencrypted) and supported for
+            provider flows only.
         """
         if self.finished:
             msg = "Setup flow already finished"
             raise RuntimeError(msg)
+        self.finish_options = dict(options or {})
         result = await self._finish_handler(self, values)
         self.finished = True
         step = self._build_step(FlowStepType.FINISH, self.finish_step_id, result=result)
@@ -495,7 +505,7 @@ class SetupSession:
                         LOGGER.error("Ignoring non-object JSON setup flow callback body")
                 else:
                     params.update({key: str(val) for key, val in (await request.post()).items()})
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - an outside request body can fail to parse in many ways
                 LOGGER.error("Failed to parse setup flow callback body: %s", err)
         # encrypted config values are never accepted as callback params
         params = {key: val for key, val in params.items() if not val.startswith(ENCRYPT_SUFFIX)}

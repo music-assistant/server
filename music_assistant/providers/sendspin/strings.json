@@ -194,6 +194,10 @@
         "this_device": "This device"
       }
     },
+    "allow_audio_analysis": {
+      "label": "[%key:common::config_entries::allow_audio_analysis::label%]",
+      "description": "[%key:common::config_entries::allow_audio_analysis::description%]"
+    },
     "source_autostart_unavailable": {
       "label": "This device does not support automatically playing its line-in on a speaker."
     },
@@ -225,6 +229,26 @@
     },
     "dynamic_pin_channel_display_speaker": {
       "label": "Enter the code the device shows on screen or speaks aloud"
+    },
+    "speaker_display_name": {
+      "label": "Speaker"
+    },
+    "speaker_online": {
+      "label": "{0} is online."
+    },
+    "speaker_offline": {
+      "label": "{0} is offline. The other speakers play every channel until it is back."
+    },
+    "speaker_channel": {
+      "label": "Channel of {0}",
+      "options": {
+        "front_left": "Left",
+        "front_right": "Right"
+      }
+    },
+    "speaker_output_delay": {
+      "label": "Output delay of {0} (ms)",
+      "description": "Offset in milliseconds to keep this speaker in sync with the other speakers of this player. Increase if its audio plays too late."
     }
   },
   "setup_flow": {
@@ -298,6 +322,11 @@
     "pairing_error_no_pin_session": "The pairing attempt was interrupted. Please try again.",
     "pairing_error_token_invalid": "The pairing token is not valid. Make sure it was copied completely.",
     "pairing_error_token_mismatch": "The token was issued by a different device.",
-    "invalid_value": "Enter the complete pairing code."
+    "invalid_value": "Enter the complete pairing code.",
+    "no_audio": "{0} did not start streaming its input.",
+    "multi_channel_channels": "A multi-channel player needs one speaker on the left and one on the right.",
+    "multi_channel_not_a_speaker": "{0} can not be part of a multi-channel player.",
+    "multi_channel_speaker_unavailable": "{0} is not available. Switch it on and wait until it is connected.",
+    "multi_channel_speaker_taken": "{0} is part of a multi-channel player already."
   }
 }

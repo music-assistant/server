@@ -11,14 +11,17 @@ import contextlib
 import logging
 import pathlib
 from collections.abc import AsyncGenerator, Iterator
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
 import pytest
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
-from music_assistant.controllers.webserver import controller as webserver_controller
 from music_assistant.mass import MusicAssistant
+
+if TYPE_CHECKING:
+    from music_assistant.providers.sendspin.provider import SendspinProvider
 
 # the address a fixture's web and stream servers bind to, so a test run never listens
 # on the host's real interfaces
@@ -143,9 +146,8 @@ def use_ephemeral_server_ports() -> Iterator[None]:
         patch("music_assistant.controllers.webserver.controller.DEFAULT_SERVER_PORT", 0),
         patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", 0),
         # the Sendspin provider binds its own listener; on a fixed port, parallel test
-        # workers collide and the provider unloads itself mid-test
-        patch("music_assistant.providers.sendspin.provider.SENDSPIN_SERVER_PORT", 0),
-        patch("music_assistant.controllers.webserver.controller.SENDSPIN_SERVER_PORT", 0),
+        # workers collide and the provider can unload itself mid-test
+        patch("music_assistant.providers.sendspin.provider.DEFAULT_SERVER_PORT", 0),
         patch("music_assistant.controllers.webserver.controller.DEFAULT_HOST", LOOPBACK_IP),
         patch("music_assistant.controllers.streams.controller.DEFAULT_HOST", LOOPBACK_IP),
         # keep address detection off the host's real interfaces
@@ -188,13 +190,13 @@ def adopt_bound_sendspin_port(mass: MusicAssistant) -> None:
     """
     Point the server's own Sendspin clients at the port its listener actually bound.
 
-    Only meaningful inside ``use_ephemeral_server_ports``, whose patch of the URL
-    builder's port this replaces for the rest of the fixture's lifetime.
+    Only meaningful inside ``use_ephemeral_server_ports``, whose patched port 0
+    this replaces for the rest of the fixture's lifetime.
 
     :param mass: The booted server whose Sendspin listener is up.
     """
     if (port := bound_sendspin_port(mass)) is not None:
-        setattr(webserver_controller, "SENDSPIN_SERVER_PORT", port)  # noqa: B010
+        cast("SendspinProvider", mass.get_provider("sendspin")).server_port = port
 
 
 @contextlib.contextmanager

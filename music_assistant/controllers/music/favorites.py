@@ -23,7 +23,6 @@ from music_assistant_models.media_items import MediaItem
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_FAVORITES,
-    DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_PROVIDER_MAPPINGS,
 )
 from music_assistant.helpers.provider_access import (
@@ -198,45 +197,15 @@ class FavoritesStore:
         """
         Return which of the given tracks are in a genre the given user disliked.
 
-        A track is in the genres it is linked to itself, as in the track listing of a genre,
-        and a track without genres of its own is in those of every album it is on. One straight
-        from a music source is in the genres of its library track, so a track that is not in
-        the library is never in a disliked genre.
+        Which genres a track is in follows the genre controller's tracks_in_genres.
 
         :param user_id: The user whose disliked genres apply.
         :param tracks: The candidate tracks.
         :return: The (provider, item id) of every candidate in a disliked genre.
         """
-        if not tracks or not (genre_ids := await self.disliked_genre_ids(user_id)):
-            return set()
-        if not (candidates := await self._library_track_candidates(tracks)):
-            return set()
-        # look up only the links of the candidates: a big genre holds tens of thousands of tracks,
-        # so the album links are probed per candidate (EXISTS), never read for the whole genre
-        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-        own_links = (
-            f"SELECT media_id AS track_id FROM {gm} "
-            "WHERE genre_id IN :genre_ids AND media_type = :track AND media_id IN :track_ids"
+        return await self.mass.music.genres.tracks_in_genres(
+            await self.disliked_genre_ids(user_id), tracks
         )
-        album_links = (
-            f"SELECT at.track_id FROM {DB_TABLE_ALBUM_TRACKS} at "
-            "WHERE at.track_id IN :track_ids "
-            f"AND EXISTS (SELECT 1 FROM {gm} m WHERE m.genre_id IN :genre_ids "
-            "AND m.media_type = :album AND m.media_id = at.album_id) "
-            f"AND NOT EXISTS (SELECT 1 FROM {gm} own "
-            "WHERE own.media_id = at.track_id AND own.media_type = :track)"
-        )
-        rows = await self.mass.music.database.get_rows_from_query(
-            f"{own_links} UNION {album_links}",
-            {
-                "genre_ids": sorted(genre_ids),
-                "track": MediaType.TRACK.value,
-                "album": MediaType.ALBUM.value,
-                "track_ids": sorted(candidates),
-            },
-            limit=0,
-        )
-        return {key for row in rows for key in candidates[int(row["track_id"])]}
 
     async def move_item(self, media_type: MediaType, source_id: int, target_id: int) -> None:
         """
@@ -360,43 +329,6 @@ class FavoritesStore:
         if self._users is None or now - self._users[0] > USERS_TTL:
             self._users = (now, await self.mass.webserver.auth.list_users())
         return self._users[1]
-
-    async def _library_track_candidates(
-        self, tracks: Sequence[Track]
-    ) -> dict[int, builtins.set[tuple[str, str]]]:
-        """
-        Return the (provider, item id) of the given tracks by the id of their library track.
-
-        A track straight from a music source that is not in the library is left out.
-        """
-        candidates: dict[int, set[tuple[str, str]]] = {}
-        source_keys: dict[tuple[str, str], tuple[str, str]] = {}
-        for track in tracks:
-            key = (track.provider, track.item_id)
-            if track.provider == "library":
-                candidates.setdefault(int(track.item_id), set()).add(key)
-                continue
-            source_keys[key] = key
-            for mapping in track.provider_mappings:
-                source_keys[(mapping.provider_instance, mapping.item_id)] = key
-        if not source_keys:
-            return candidates
-        # the IN lists pair every instance with every item id, so match the exact pairs here
-        rows = await self.mass.music.database.get_rows_from_query(
-            "SELECT item_id, provider_instance, provider_item_id "
-            f"FROM {DB_TABLE_PROVIDER_MAPPINGS} WHERE media_type = :track "
-            "AND provider_instance IN :instances AND provider_item_id IN :item_ids",
-            {
-                "track": MediaType.TRACK.value,
-                "instances": sorted({instance for instance, _ in source_keys}),
-                "item_ids": sorted({item_id for _, item_id in source_keys}),
-            },
-            limit=0,
-        )
-        for row in rows:
-            if track_key := source_keys.get((row["provider_instance"], row["provider_item_id"])):
-                candidates.setdefault(int(row["item_id"]), set()).add(track_key)
-        return candidates
 
 
 async def with_user_favorites[ItemT: MediaItem](

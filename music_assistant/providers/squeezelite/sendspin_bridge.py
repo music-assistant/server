@@ -10,7 +10,9 @@ Every Sendspin stream is a session: one stream over HTTP that the player starts
 at an instant of its own clock, on silence. A player starts later than it is told, by
 an amount that differs from start to start: the bridge measures that from the first
 positions the player reports and corrects it in the silence, so the first audio is
-heard on the timeline. The sync loop holds it there from the positions the player
+heard on the timeline. A stream whose audio is already due at its start, such as a
+restart, gets that audio at once and has its start corrected in it. The sync loop holds
+it there from the positions the player
 reports, and once it has little left to correct the bridge keeps the stream seconds ahead
 of what the player plays, as far as Sendspin delivered its audio, so the player plays on
 through a stall of its network.
@@ -56,7 +58,6 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.helpers import (
     bridge_client_id_from_mac,
-    bridge_client_id_variants,
     holds_bridge_client,
 )
 
@@ -222,10 +223,6 @@ RECONNECT_REJOIN_WINDOW: float = 60.0
 
 # The cache category of what was learned about the start of a player, by protocol id.
 CACHE_CATEGORY_START_OFFSET = 2
-
-# Player state fields the bridge policy depends on: an AirPlay output that is switched on
-# denies the bridge, and the Sendspin output of another bridge does while it is there.
-_BRIDGE_POLICY_STATE_FIELDS: frozenset[str] = frozenset({"output_protocols"})
 
 
 def get_bridge_client_id(player: SqueezelitePlayer) -> str | None:
@@ -556,6 +553,25 @@ class SendspinSqueezeliteBridge:
         return self._session is not None
 
     @property
+    def position_in_track(self) -> float | None:
+        """
+        Return the position in the track the player plays or holds for the bridge, in seconds.
+
+        It is the position Music Assistant shows for its player: the elapsed time of the
+        player counts from the start of a stream of the bridge, which starts mid-track and
+        plays on from track to track. None while the player has nothing of the bridge.
+        """
+        if (player := self.protocol.player) is None or (media := player.current_media) is None:
+            return None
+        if self._session is not None:
+            return media.corrected_elapsed_time
+        if self._holds_bridge_track():
+            # a stopped group stays where it stopped, and corrected_elapsed_time runs on
+            # whatever the playback state is
+            return media.elapsed_time
+        return None
+
+    @property
     def shared_group(self) -> SendspinGroup | None:
         """Return the Sendspin group the bridge shares with other clients or is to return to."""
         if self._rejoin_group is not None:
@@ -566,7 +582,7 @@ class SendspinSqueezeliteBridge:
 
     async def start(self) -> None:
         """Register the squeezelite player as an external Sendspin client."""
-        bridge_client_id = get_bridge_client_id(self.protocol)
+        bridge_client_id = self.provider.bridge_manager.bridge_client_id(self.protocol)
         if not bridge_client_id:
             self.logger.warning(
                 "Cannot create Sendspin bridge for %s: no valid MAC address",
@@ -658,6 +674,8 @@ class SendspinSqueezeliteBridge:
         self._cancel_rejoin()
         if (session := self._session) is not None:
             self._close_session(session, stop_player=True)
+        else:
+            self._clear_stopped_track()
         if self.protocol.sendspin_bridge is self:
             self.protocol.sendspin_bridge = None
         if self._unsub_client_events is not None:
@@ -850,6 +868,9 @@ class SendspinSqueezeliteBridge:
             # nothing about the player there. A return of the bridge itself is noted once
             # the client is in its group.
             self._rejoined = False
+            # Sendspin ends the stream of a client before it moves it: what is left on the
+            # player is of the group it was in
+            self._clear_stopped_track()
 
     def _on_role_stream_start(self) -> None:
         """Start a session for a stream that begins without a stream start request."""
@@ -893,7 +914,8 @@ class SendspinSqueezeliteBridge:
             # nothing is left playing, or a new stream took the bridge over already
             return
         self.logger.debug("Explicit stop for %s", self.protocol.display_name)
-        self._close_session(session, stop_player=True)
+        # the player keeps the stopped track: its play key does nothing on an empty playlist
+        self._close_session(session, stop_player=True, keep_media=True)
 
     def _on_volume_change(self, volume: int) -> None:
         """Forward a volume change to the squeezelite player."""
@@ -925,7 +947,7 @@ class SendspinSqueezeliteBridge:
         """
         if (old := self._session) is not None:
             # no stop for the player: the stream request of the new session flushes it
-            self._close_session(old, replaced=True)
+            self._close_session(old, keep_media=True)
         if not self.protocol.available:
             self.logger.warning(
                 "Cannot start Sendspin stream for %s: player not available",
@@ -935,8 +957,8 @@ class SendspinSqueezeliteBridge:
         if self._clock.now_us() - self._clock_sampled_us > CLOCK_MAX_AGE_US:
             self._player_clock = PlayerClock()
         sync_adjust = self.protocol.config.get_value(CONF_SYNC_ADJUST, 0)
-        # A positive sync adjust plays earlier, as it does for the squeezelite protocol
-        # itself, where it is the time the player takes to make its audio heard.
+        # A positive sync adjust plays earlier: it is the time the player takes to make
+        # its audio heard.
         shift_us = -sync_adjust * 1000 if isinstance(sync_adjust, int) else 0
         if audio_format is None:
             audio_format = self._role_format()
@@ -957,14 +979,15 @@ class SendspinSqueezeliteBridge:
         ]
 
     def _close_session(
-        self, session: BridgeSession, *, stop_player: bool = False, replaced: bool = False
+        self, session: BridgeSession, *, stop_player: bool = False, keep_media: bool = False
     ) -> None:
         """
         End a session and let go of the player.
 
         :param session: The session to end.
         :param stop_player: Stop the player at once instead of leaving it to what follows.
-        :param replaced: Another session takes over: the player shows what plays on.
+        :param keep_media: Leave the track on the player: another session takes over, or
+            its group stopped.
         """
         session.close()
         if self._session is session:
@@ -973,10 +996,19 @@ class SendspinSqueezeliteBridge:
         if stop_player:
             # never a power or mute command: those switch the output of the player off
             self.mass.create_task(self._client.stop())
-        if not replaced:
+        if not keep_media:
             # a stop keeps the media that played: the player would go on showing the
             # track of a group it left
             self.mass.create_task(self._client.clear_media())
+
+    def _clear_stopped_track(self) -> None:
+        """Clear the track a stop of its group left on the player."""
+        if self._holds_bridge_track():
+            self.mass.create_task(self._client.clear_media())
+
+    def _holds_bridge_track(self) -> bool:
+        """Return whether the track on the player is that of a stream of the bridge."""
+        return (media := self._client.current_media) is not None and BRIDGE_STREAM_PATH in media.url
 
     def _bit_depth_limit(self) -> int | None:
         """
@@ -1024,7 +1056,7 @@ class SendspinSqueezeliteBridge:
             async with asyncio.timeout(CLOCK_TIMEOUT_SECONDS):
                 await session.clock_mapped.wait()
         try:
-            await self.protocol.release_native_playback()
+            self.protocol.release_native_playback()
             url = (
                 f"{self.mass.streams.base_url}{BRIDGE_STREAM_PATH}"
                 f"?player_id={self.protocol.protocol_id}&sid={session.session_id}"
@@ -1102,11 +1134,14 @@ class SendspinSqueezeliteBridge:
         session.start_us = start_us
         # the player starts a little later than it is told to, which was learned before
         session.command_us = start_us - offset_us
+        # audio that is due by the start leaves no silence to correct the start in: it
+        # goes out from the first write, and the start is corrected in it
+        session.aligning = session.first_audible_us > start_us
         session.loop = SyncLoop(
             session.sample_rate,
             session.frame_size,
             start_us,
-            start_jump_ms=ALIGN_JUMP_MS,
+            start_jump_ms=ALIGN_JUMP_MS if session.aligning else START_JUMP_MS,
             told_us=session.command_us,
         )
         # the preroll went out before the timeline was known: it holds frame 0 and on
@@ -1269,9 +1304,6 @@ class SendspinSqueezeliteBridge:
         sent_us = loop.frames_consumed * 1_000_000 // session.sample_rate
         left_out_ms = max(0, session.start_us + sent_us - session.first_audible_us) / 1000
         if (start_error_ms := loop.start_error_ms) is None:
-            # whatever it reports from here on is measured, so a start that is far off
-            # still restarts the stream
-            loop.lift_start_bound()
             self.logger.debug(
                 "%s did not show where it plays in time: its audio goes out with its start "
                 "not corrected, %.0f ms of it left out",
@@ -1346,6 +1378,13 @@ class SendspinSqueezeliteBridge:
             self._rejoined = False
         if (server_us := self._player_clock.to_server_us(status.jiffies)) is None:
             return
+        if (
+            loop.start_error_ms is None
+            and self._clock.now_us() - session.start_us > ALIGN_TIMEOUT_US
+        ):
+            # a start that is not measured in time: whatever it reports from here on is
+            # measured, so a start that is far off still restarts the stream
+            loop.lift_start_bound()
         start_reports = loop.start_reports
         report_ms = loop.on_report(
             server_us, status.elapsed_milliseconds, self._player_clock.generation
@@ -1618,9 +1657,6 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
         # protocol id -> the group the bridge of a disconnected player was in, and until
         # when (loop time) the bridge of its next connection returns to it
         self._groups_to_return_to: dict[str, tuple[SendspinGroup, float]] = {}
-        self._unsubs.append(
-            self.mass.players.subscribe_player_state_update(self._on_player_state_updated)
-        )
 
     async def setup_bridge(self, protocol: PlayerProtocol) -> None:
         """
@@ -1733,12 +1769,9 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
             )
         return offset_us
 
-    def is_bridgeable(self, protocol: PlayerProtocol) -> bool:
+    def qualifies(self, protocol: PlayerProtocol) -> bool:
         """
         Return whether a squeezelite player qualifies for a Sendspin bridge.
-
-        A bridge another provider registered for the device does not count, so the answer
-        tells another provider whether this bridge takes precedence over its own.
 
         :param protocol: The squeezelite protocol to evaluate.
         """
@@ -1750,12 +1783,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
         if squeezelite_player.client.device_type not in SQUEEZEBOX2_PLAYER_TYPES:
             return False
         # a bridge tool plays to a device of another protocol, which is bridged over that
-        if is_bridge_tool(squeezelite_player.client.device_model):
-            return False
-        # a device with AirPlay gets its Sendspin support over AirPlay, while the user has
-        # that switched on
-        player = protocol.player
-        return not (player and self._has_switched_on_output(player, "airplay"))
+        return not is_bridge_tool(squeezelite_player.client.device_model)
 
     async def _restore_start_offset(self, protocol_id: str) -> None:
         """
@@ -1773,8 +1801,8 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
         if isinstance(offset_us, int):
             self._start_offsets_us.setdefault(protocol_id, offset_us)
 
-    def _bridge_client_id(self, protocol: PlayerProtocol) -> str | None:
-        """Return the Sendspin client_id used to bridge a squeezelite player."""
+    def _own_client_id(self, protocol: PlayerProtocol) -> str | None:
+        """Return the Sendspin client_id a bridge gives the device of a squeezelite player."""
         return get_bridge_client_id(cast("SqueezelitePlayer", protocol))
 
     def _create_bridge(self, protocol: PlayerProtocol) -> SendspinSqueezeliteBridge:
@@ -1787,30 +1815,6 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
             sendspin_server,
         )
 
-    def _should_have_bridge(self, protocol: PlayerProtocol) -> bool:
-        """Return whether a squeezelite player should have a Sendspin bridge."""
-        bridge_client_id = self._bridge_client_id(protocol)
-        if bridge_client_id is None or not self.is_bridgeable(protocol):
-            return False
-        # Same deny before the AirPlay protocol joined the player: another bridge
-        # already registered a client for this device. A Cast bridge steps back for
-        # this one and its Sendspin output leaves the player, which evaluates it again.
-        return not self._has_foreign_bridge_client(protocol.protocol_id, bridge_client_id)
-
-    def _has_foreign_bridge_client(self, protocol_id: str, bridge_client_id: str) -> bool:
-        """
-        Return whether another bridge registered a Sendspin client for this device.
-
-        :param protocol_id: The id of the squeezelite protocol being evaluated.
-        :param bridge_client_id: The Sendspin client_id its bridge would use.
-        """
-        if protocol_id in self._bridges or not (sendspin_server := self.sendspin_server):
-            return False
-        return any(
-            sendspin_server.is_external_player(client_id)
-            for client_id in bridge_client_id_variants(bridge_client_id)
-        )
-
     def _on_player_state_updated(
         self, updated_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
@@ -1819,11 +1823,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
             for protocol_id in updated_player.attached_protocols:
                 if bridge := self._bridges.get(protocol_id):
                     bridge.update_name()
-        if not changed_values.keys() & _BRIDGE_POLICY_STATE_FIELDS:
-            return
-        for protocol in list(updated_player.attached_protocols.values()):
-            if protocol.provider is self.provider:
-                self.mass.create_task(self.evaluate_bridge(protocol))
+        super()._on_player_state_updated(updated_player, changed_values)
 
 
 def _supported_formats(protocol: SqueezelitePlayer) -> list[SupportedAudioFormat]:

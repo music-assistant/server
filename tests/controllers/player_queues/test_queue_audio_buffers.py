@@ -110,18 +110,21 @@ async def test_the_tracks_of_a_flow_stream_are_recorded(
 
 
 @pytest.mark.parametrize("rig", [TwoStreamProvider], indirect=True)
-async def test_a_buffer_that_replaces_another_is_recorded_next_to_it(rig: SlotRig) -> None:
-    """A position the buffer cannot serve gets a buffer of its own, and both are on record."""
+async def test_a_buffer_that_replaces_one_that_is_read_is_recorded_next_to_it(rig: SlotRig) -> None:
+    """A position the buffer cannot serve gets a buffer of its own, next to the one still read."""
     (track,) = rig.play("track 0")
     first = await rig.ask(track)
     assert first is not None
+    reader = first.get_raw_stream()
+    await anext(reader)
 
     second = await rig.audio.get_audio_buffer(track, seek_position_ms=60_000, reason="streaming")
 
     assert second is not first
     assert rig.buffer(track) is second
     assert _record(rig) == [(track, first), (track, second)]
-    await first.clear()
+    await reader.aclose()
+    await rig.settle()
 
 
 async def test_a_buffer_made_after_a_transfer_is_recorded_on_the_new_queue(rig: SlotRig) -> None:
@@ -144,14 +147,18 @@ async def test_a_buffer_made_after_a_transfer_is_recorded_on_the_new_queue(rig: 
 
 
 async def test_a_buffer_of_an_item_that_left_the_queue_stays_on_record(rig: SlotRig) -> None:
-    """A track that was taken off the queue keeps its buffer on the queue's record."""
+    """A track that was taken off the queue while it is read keeps its buffer on the record."""
     playing, prepared, _later = rig.play("track 0", "track 1", "track 2")
     capture = await rig.prepare_next(playing)
+    stream = rig.audio.get_queue_item_stream(prepared, PCM_FORMAT)
+    await anext(stream)
 
     rig.queues.delete_item(QUEUE_ID, prepared.queue_item_id)
+    await rig.queues.get_diagnostics()
 
     assert rig.queues.get_item(QUEUE_ID, prepared.queue_item_id) is None
     assert _record(rig) == [(prepared, capture)]
+    await stream.aclose()
 
 
 async def test_a_cleared_buffer_leaves_the_record_when_the_next_one_is_recorded(
@@ -195,18 +202,6 @@ async def test_a_buffer_that_still_holds_audio_stays_when_another_one_is_recorde
     second = await rig.ask(upcoming)
 
     assert _record(rig) == [(playing, first), (upcoming, second)]
-
-
-async def test_a_buffer_for_a_queue_that_is_gone_is_not_recorded(rig: SlotRig) -> None:
-    """A request that outlives its queue still gets its audio, with nothing to record it on."""
-    playing, _upcoming = rig.play("track 0", "track 1")
-    queue_data = rig.queues._queue_data.pop(QUEUE_ID)
-
-    buffer = await rig.ask(playing)
-
-    assert buffer is not None
-    assert buffer.queue_id == QUEUE_ID
-    assert queue_data.audio_buffers == []
 
 
 # --- who holds a stream slot

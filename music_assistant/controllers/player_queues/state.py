@@ -24,7 +24,11 @@ from music_assistant_models.media_items import (
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, MASS_LOGGER_NAME
+from music_assistant.constants import (
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    ATTR_PLAY_ACTION_IN_PROGRESS,
+    MASS_LOGGER_NAME,
+)
 from music_assistant.controllers.player_queues.constants import CACHE_FORMAT_VERSION
 from music_assistant.controllers.player_queues.helpers import has_dynamic_source
 
@@ -76,6 +80,9 @@ class PlayerQueueData:
     # runtime-only fields below; not persisted, reset to these defaults on restart
     prev_state: CompareState | None = None
     transitioning: bool = False
+    # the queue's own play action runs (a skip, a seek, a resume, a replace): it goes on to the
+    # track that action plays, though its player can still report a pause until that track plays
+    own_play_action: bool = False
     # a command (a pause, a stop) halted the playback of the queue's items and it has not played
     # since: the queue keeps its place, and its player going idle is not the end of the queue
     halted_by_command: bool = False
@@ -123,6 +130,9 @@ class PlayerQueueData:
     # cached copy of the queue that the stream server then refused), and nothing of it has played.
     # Maps each to the stream session that served it
     served_item_ids: dict[str, str | None] = field(default_factory=dict)
+    # queue_item_ids whose source failed to deliver audio since audio of an item last reached the
+    # player
+    failed_source_items: set[str] = field(default_factory=set)
     # the point an END_OF_ITEM/END_OF_CHAPTER sleep timer stops the queue at; while set, the
     # queue does not advance past that item on its own
     sleep_timer_target: SleepTimerTarget | None = None
@@ -215,6 +225,8 @@ class PlayerQueueData:
         queue = PlayerQueue.from_dict(wire)
         # reset the play-action-in-progress flag on restore (MA may have been killed mid-action)
         queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
+        # and the hold of an announcement, which ended with the restart
+        queue.extra_attributes.pop(ATTR_ANNOUNCEMENT_IN_PROGRESS, None)
         queue.sources = [
             item
             for item in cls._deserialize_media(raw_sources, queue.queue_id, "queue source")

@@ -228,7 +228,7 @@ class VersionChanger:
         else:
             try:
                 await load_provider_module(self.mass.get_provider_manifest(domain))
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - importing provider code can raise anything
                 self.logger.warning(
                     "Community provider %s %s does not import: %s", domain, installed.version, err
                 )
@@ -367,12 +367,12 @@ class VersionChanger:
         )
         manifests = self._community_manifests()
         requirements = {name: m.requirements for name, m in manifests.items() if name != domain}
-        dependents = [
-            self._provider_folder(name)
+        dependents = {
+            name: self._provider_folder(name)
             for name, manifest in manifests.items()
             if manifest.depends_on == domain
-        ]
-        for name in (domain, *(folder.name for folder in dependents)):
+        }
+        for name in (domain, *dependents):
             await self._loader.stop(name)
         folder = self._installer.live_folder(domain)
         try:
@@ -393,7 +393,7 @@ class VersionChanger:
                 domain,
                 _REASONS[decision.verdict].format(decision.detail or ""),
             )
-        for dependent in dependents:
+        for dependent in dependents.values():
             await self._loader.register(dependent)
         self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
         if decision.verdict == Verdict.LOAD:
@@ -482,5 +482,4 @@ class VersionChanger:
         if domain in self._store.state.installed:
             return self._installer.live_folder(domain)
         # only these two locations hold community providers
-        assert self.mass.dev_providers_path is not None
-        return Path(self.mass.dev_providers_path, domain)
+        return Path(self._loader.dev_folders[domain])

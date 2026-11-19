@@ -16,8 +16,8 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.audio_sources import (
-    AudioSourceMixin,
     AudioSourceSession,
+    PlayerAudioSourcesMixin,
 )
 from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 from music_assistant.models.music_provider import MusicProvider
@@ -45,7 +45,7 @@ def _audio_source(item_id: str = SOURCE_ID, *, can_seek: bool = False) -> AudioS
     )
 
 
-class _Controller(AudioSourceMixin):
+class _Controller(PlayerAudioSourcesMixin):
     """Minimal stand-in for the parts of PlayerController the mixin relies on."""
 
     def __init__(self, provider: object | None) -> None:
@@ -164,16 +164,16 @@ def test_source_unresolvable_when_the_feature_was_turned_off() -> None:
     assert ctrl.get_player_audio_source(PLAYER_ID) is None
 
 
-def test_source_unresolvable_when_the_provider_is_not_a_plugin() -> None:
+def test_source_unresolvable_when_the_provider_delivers_no_audio_sources() -> None:
     """
-    A non-PluginProvider behind the instance id is skipped.
+    A provider without the AudioSource contract behind the instance id is skipped.
 
     It declares the AUDIO_SOURCE feature so the feature guard cannot be what
     rejects it — only the isinstance check can.
     """
-    not_a_plugin = MagicMock(spec=MusicProvider)
-    not_a_plugin.supported_features = {ProviderFeature.AUDIO_SOURCE}
-    ctrl = _Controller(not_a_plugin)
+    not_a_source_provider = MagicMock(spec=MusicProvider)
+    not_a_source_provider.supported_features = {ProviderFeature.AUDIO_SOURCE}
+    ctrl = _Controller(not_a_source_provider)
     ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
 
     assert ctrl.get_player_audio_source(PLAYER_ID) is None
@@ -324,7 +324,7 @@ def test_mixin_is_attached_to_the_real_player_controller() -> None:
     mass.config.get_raw_core_config_value.return_value = "INFO"
     controller = PlayerController(mass)
 
-    assert isinstance(controller, AudioSourceMixin)
+    assert isinstance(controller, PlayerAudioSourcesMixin)
     assert controller._source_sessions == {}
     assert controller.get_audio_source_session("no-such-player") is None
 
@@ -361,7 +361,7 @@ def test_a_fallback_only_source_follows_a_changed_placeholder() -> None:
     """
     A source that never reports keeps taking its placeholder from the stream details.
 
-    vban_receiver and sendspin_source never call update_stream_metadata, so the
+    vban_receiver and sendspin never call update_stream_metadata, so the
     placeholder is all they have. Adopting one must not stop a later one landing:
     a VBAN reconnect from a different sender describes something else.
     """

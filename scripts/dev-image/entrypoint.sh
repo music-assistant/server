@@ -262,9 +262,10 @@ if [ -n "$provider_repo" ]; then
     provider_dir="/data/provider-repo"
     fetch_repo_ref "$provider_ref" "$provider_dir"
 
-    if ! ls "$provider_dir"/*/manifest.json >/dev/null 2>&1; then
+    if [ -z "$(provider_folders "$provider_dir")" ]; then
         echo ""
-        echo "ERROR: ${provider_ref%%@*} holds no provider folder (a folder with a manifest.json)."
+        echo "ERROR: ${provider_ref%%@*} holds no provider folder (a folder with a manifest.json,"
+        echo "       at the top of the repository or in providers/)."
         exit 1
     fi
 

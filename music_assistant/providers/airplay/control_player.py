@@ -206,13 +206,19 @@ class AirPlayControlPlayer(AirPlayPlayer):
         # POWER is advertised only when it can actually be served: a connected
         # control channel exposing power commands, or stored Companion
         # credentials (so the feature does not flap while (re)connecting).
-        if (
+        # A set that plays on its speakers only leaves its device off: the players
+        # controller powers a player on before it plays, which could switch the TV on.
+        if not self.homepods_only and (
             self.get_setup_value(CONF_COMPANION_CREDENTIALS)
             or self._device_for_power_feature(FeatureName.TurnOn)
             or self._device_for_power_feature(FeatureName.TurnOff)
         ):
             features.add(PlayerFeature.POWER)
-        if not self._stream_active and not self._device_for_feature(FeatureName.SetVolume):
+        if (
+            not self._stream_active
+            and not self.carries_set
+            and not self._device_for_feature(FeatureName.SetVolume)
+        ):
             features.discard(PlayerFeature.VOLUME_MUTE)
         return features
 
@@ -241,9 +247,12 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """
         collected: dict[str, ConfigValueType] = {}
         await self._run_streaming_pairing(session, collected)
+        # a set that plays on its HomePods only has no use for the controls of its Apple TV
         if (
-            self.companion_pairing_supported or self.mrp_pairing_supported
-        ) and await self._offer_optional_pairing(session, "control_offer"):
+            not self.homepods_only
+            and (self.companion_pairing_supported or self.mrp_pairing_supported)
+            and await self._offer_optional_pairing(session, "control_offer")
+        ):
             await self._run_companion_pairing(session, collected)
             await self._run_mrp_pairing(session, collected)
         await session.finish(collected)
@@ -270,7 +279,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def play(self) -> None:
         """Resume Music Assistant or external playback."""
-        await self._wake_for_playback()
+        await self._wake_before_play()
         if self._stream_active:
             await super().play()
             return
@@ -320,12 +329,13 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Wake the controlled device and start Music Assistant playback."""
-        await self._wake_for_playback()
+        await self._wake_before_play()
         await super().play_media(media)
 
     async def volume_set(self, volume_level: int) -> None:
         """Set stream or native device volume."""
-        if self._stream_active:
+        # the volume of a set is that of its speakers, never the one of its device
+        if self._stream_active or self.carries_set:
             await super().volume_set(volume_level)
             return
         device = self._device_for_feature(FeatureName.SetVolume)
@@ -337,7 +347,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def volume_mute(self, muted: bool) -> None:
         """Mute an active stream or native device volume."""
-        if self._stream_active:
+        if self._stream_active or self.carries_set:
             await super().volume_mute(muted)
             return
         device = self._device_for_feature(FeatureName.SetVolume)
@@ -728,8 +738,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     @property
     def _stream_active(self) -> bool:
-        """Return whether Music Assistant is actively streaming to this device."""
-        active = bool((stream := getattr(self, "stream", None)) and stream.running)
+        """Return whether Music Assistant is actively streaming to this device or its set."""
+        active = bool((stream := getattr(self, "stream", None)) and stream.running) or bool(
+            self.speakers and self.session
+        )
         if active:
             self._stream_last_active = time.monotonic()
         return active
@@ -841,6 +853,12 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._power_on_event.clear()
         await self._run_control_command(device.power.turn_on(), "wake")
         await self._wait_for_wake()
+
+    async def _wake_before_play(self) -> None:
+        """Wake the device before playback, unless its set plays on its HomePods only."""
+        # a set that plays on its speakers only has no session to wake its device for
+        if not self.homepods_only:
+            await self._wake_for_playback()
 
     async def _wait_for_wake(self) -> None:
         """Wait briefly for a pushed powered-on state."""
@@ -1099,6 +1117,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
         # skips the stream volume command entirely - so every later volume change
         # silently stops reaching the device.
         if source == "mrp" and (self._companion_device is not None or self._uses_transient_mrp):
+            return
+        # The native volume of a set's device is the one its own apps play at, which
+        # is not the level Music Assistant plays the set's speakers at.
+        if self.carries_set:
             return
         # While Music Assistant streams, volume_set drives the stream volume and
         # deliberately leaves the native device volume alone. The two are separate

@@ -224,6 +224,8 @@ class SonosPlayer(PlayerProtocol):
         # the AirPlay session on the speaker is Music Assistant's own; the speaker keeps
         # reporting it, paused, for a while after Music Assistant stopped streaming
         self._own_airplay_session = False
+        # the other speakers of this speaker's set, as last reported to the players controller
+        self._reported_bonded_ids: set[str] = set()
 
     @property
     def source_list(self) -> list[PlayerSource]:
@@ -355,6 +357,7 @@ class SonosPlayer(PlayerProtocol):
         if not self.connected and not self._marked_asleep:
             # the object attaches again after a detach closed its connection
             self.reconnect()
+        self._report_bonded_speakers()
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
@@ -1069,6 +1072,24 @@ class SonosPlayer(PlayerProtocol):
         )
         return window
 
+    def has_received_next_item(self, queue_item: QueueItem) -> bool:
+        """
+        Return whether the last cloud queue window the speaker read holds the given item.
+
+        Only the item at its own queue position, served for the current load, counts.
+
+        :param queue_item: The queue item that follows the one playing out.
+        """
+        # a refresh is only a nudge: after a load the speaker may not re-read its queue
+        # until it has fetched all audio of its window, and then fetches the next item cold
+        index = self.mass.player_queues.index_by_id(queue_item.queue_id, queue_item.queue_item_id)
+        if index is None or (wire_id := self._window_item_ids.get(index)) is None:
+            return False
+        return (
+            self.from_current_load(wire_id)
+            and self.bare_item_id(wire_id) == queue_item.queue_item_id
+        )
+
     async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
@@ -1222,6 +1243,7 @@ class SonosPlayer(PlayerProtocol):
         self._attr_type = (
             PlayerType.PLAYER if self._attr_channel_layout is None else PlayerType.MULTI_CHANNEL
         )
+        self._report_bonded_speakers()
         # guard against the race where a volume event arrives before aiosonos'
         # async_init has populated _volume_data (the accessors raise AttributeError
         # on None). The next event re-runs once the data is there.
@@ -2318,6 +2340,17 @@ class SonosPlayer(PlayerProtocol):
             surrounds=self.client.player.has_surrounds,
             subwoofer=self.client.player.has_subwoofer,
         )
+
+    def _report_bonded_speakers(self) -> None:
+        """Report the speakers newly bonded into this player's set, whose players are removed."""
+        if self.player is None or not self.connected:
+            return
+        bonded = set(self.client.player.bonded_player_ids)
+        if added := bonded - self._reported_bonded_ids:
+            self.mass.create_task(
+                self.mass.players.remove_absorbed_players(self.protocol_id, sorted(added))
+            )
+        self._reported_bonded_ids = bonded
 
     @property
     def _options_device(self) -> SonosDevice:

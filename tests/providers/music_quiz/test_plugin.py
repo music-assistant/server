@@ -32,7 +32,6 @@ from music_assistant_models.media_items import Playlist, ProviderMapping, Track
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.controllers.player_queues.state import QueueSnapshot
-from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
@@ -42,7 +41,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user as get_auth_current_user,
 )
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
-from music_assistant.helpers.plugin_engines import select_ai_engine
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz import (
@@ -64,10 +62,12 @@ from music_assistant.providers.music_quiz.errors import (
     MusicQuizNoGameError,
     MusicQuizNoPlaybackTargetError,
     MusicQuizUnknownPlayerError,
+    MusicQuizWrongPhaseError,
 )
 from music_assistant.providers.music_quiz.game import finish_game as finish_game_state
 from music_assistant.providers.music_quiz.game import get_current_round
 from music_assistant.providers.music_quiz.models import (
+    HintTextRoundState,
     MultipleChoiceRoundState,
     MultipleChoiceSuggestion,
     MusicQuizAnswerType,
@@ -294,6 +294,26 @@ def _make_text_trivia_round(
     return game_round
 
 
+def _make_title_reveal_round(
+    round_index: int,
+    _previous_rounds: list[MusicQuizRound],
+) -> MusicQuizRound:
+    """Return a deterministic Title Reveal round for "Hey Jude"."""
+    return MusicQuizRound(
+        round_index=round_index,
+        track_uri=f"library://track/title-{round_index}",
+        answer_label="The Beatles - Hey Jude",
+        answer_state=HintTextRoundState(
+            solution="Hey Jude",
+            accepted_answers=["heyjude"],
+            allowed_typos=1,
+            reveal_order=[0, 4, 1, 5, 2, 6, 7],
+            hint_fractions=[0.2, 0.4],
+        ),
+        duration=180.0,
+    )
+
+
 def _create_ai_plugin(instance_id: str = "ai--test") -> MagicMock:
     """Create a mock plugin provider exposing a single AI engine."""
     provider = MagicMock(spec=PluginProvider)
@@ -330,7 +350,7 @@ def _create_plugin(
     plugin._playback_session = None
     plugin._playback_lock = asyncio.Lock()
     plugin._next_round_task = None
-    plugin._warm_next_track_task = None
+    plugin._upcoming_track_task = None
     plugin._staged_item_id = None
     plugin._venue_snapshot = None
     plugin._quiz_item_id = None
@@ -371,7 +391,7 @@ def _create_plugin(
     plugin.mass.music.recency.snapshot = AsyncMock(return_value=RecencySnapshot(now=0))
     plugin.signal_provider_event = MagicMock()  # type: ignore[method-assign, misc]
     plugin._play_track = AsyncMock()  # type: ignore[method-assign]
-    plugin._warm_first_track = AsyncMock()  # type: ignore[method-assign]
+    plugin._stage_first_track = AsyncMock()  # type: ignore[method-assign]
     plugin._stop_playback = AsyncMock()  # type: ignore[method-assign]
     plugin._get_join_url = AsyncMock(return_value="http://ma/join")  # type: ignore[method-assign]
     return plugin
@@ -657,6 +677,30 @@ async def _create_started_trivia_game(
         result = await plugin.join_game(player_name)
         player_ids[player_name] = result["player_id"]
     await plugin.start_game()
+    return player_ids
+
+
+async def _create_started_title_reveal_game(
+    plugin: MusicQuizPlugin,
+    player_names: tuple[str, ...] = ("Alice", "Bob"),
+) -> dict[str, str]:
+    """Create and start a one-round Title Reveal game, returning name-to-player credentials."""
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.title_reveal."
+        "TitleRevealQuizType.prepare_round",
+        new=AsyncMock(side_effect=_make_title_reveal_round),
+    ):
+        await plugin.create_game(
+            quiz_type="title_reveal",
+            round_count=1,
+            source_uris=["library://playlist/1"],
+            name="Title Quiz",
+        )
+        player_ids: dict[str, str] = {}
+        for player_name in player_names:
+            result = await plugin.join_game(player_name)
+            player_ids[player_name] = result["player_id"]
+        await plugin.start_game()
     return player_ids
 
 
@@ -2029,11 +2073,24 @@ async def test_available_quiz_types_reflect_ai_engine_availability() -> None:
     providers = cast("MagicMock", plugin.mass.get_providers_supporting_feature)
 
     providers.return_value = []
-    assert await plugin.available_quiz_types() == ["guess_the_song", "music_timeline"]
+    assert await plugin.available_quiz_types() == [
+        "guess_the_song",
+        "music_timeline",
+        "title_reveal",
+    ]
     providers.return_value = [MagicMock()]
-    assert await plugin.available_quiz_types() == ["guess_the_song", "music_timeline"]
+    assert await plugin.available_quiz_types() == [
+        "guess_the_song",
+        "music_timeline",
+        "title_reveal",
+    ]
     providers.return_value = [_create_ai_plugin()]
-    assert await plugin.available_quiz_types() == ["guess_the_song", "music_timeline", "trivia"]
+    assert await plugin.available_quiz_types() == [
+        "guess_the_song",
+        "music_timeline",
+        "trivia",
+        "title_reveal",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -5853,7 +5910,7 @@ async def test_get_config_entries_reports_unavailable_ai(providers: list[object]
     assert ai_entry.default_value is False
     assert ai_entry.required is False
     assert ai_entry.read_only is True
-    assert entries[1].read_only is True
+    assert entries[1].hidden is True
     assert entries[2].type == ConfigEntryType.ALERT
 
 
@@ -5871,26 +5928,27 @@ async def test_get_config_entries_reports_available_ai() -> None:
     assert entries[0].read_only is False
     # the picker stays reachable with the distractor toggle off (Trivia always needs an engine)
     assert entries[1].depends_on is None
-    assert [option.value for option in entries[1].options] == ["ai--test/engine"]
+    assert [option.value for option in entries[1].options] == ["global", "ai--test/engine"]
 
 
 @pytest.mark.asyncio
-async def test_first_use_adopts_a_concrete_engine_selection() -> None:
-    """An instance without a stored selection adopts a concrete engine uid on first use."""
+async def test_a_game_keeps_the_default_engine_it_was_created_with() -> None:
+    """A game created while following the default engine runs on that engine's uid."""
     plugin = _create_plugin()
+    config_get_value = cast("MagicMock", plugin.config.get_value)
+    get_value = config_get_value.side_effect
+    config_get_value.side_effect = lambda key, default=None: (
+        "global" if key == CONF_AI_ENGINE else get_value(key, default)
+    )
     mass = cast("MagicMock", plugin.mass)
     mass.get_providers_supporting_feature.return_value = [_create_ai_plugin()]
-    mass.config.get_raw_provider_config_value.return_value = None
+    mass.config.get_raw_core_config_value.return_value = "ai--test/engine"
 
-    engine = await select_ai_engine(plugin, CONF_AI_ENGINE)
+    await plugin.create_game(source_uris=["library://playlist/1"])
 
-    assert engine is not None
-    assert engine.uid == "ai--test/engine"
-    assert mass.config.set_raw_provider_config_value.call_args.args == (
-        plugin.instance_id,
-        CONF_AI_ENGINE,
-        "ai--test/engine",
-    )
+    assert plugin._game is not None
+    assert plugin._game.config.ai_engine == "ai--test/engine"
+    mass.config.set_raw_provider_config_value.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -5951,8 +6009,8 @@ async def test_prefetch_round_starts_warm_task() -> None:
 
     await _create_started_game(plugin)
     await asyncio.sleep(0)
-    if plugin._warm_next_track_task is not None:
-        await plugin._warm_next_track_task
+    if plugin._upcoming_track_task is not None:
+        await plugin._upcoming_track_task
 
     assert warmed == ["library://track/1"]
 
@@ -5980,7 +6038,7 @@ async def test_warm_next_track_starts_before_the_lyrics_prefetch_completes() -> 
 
     await _create_started_game(plugin, player_names=(), round_count=2)
     await next_lyrics_started.wait()
-    warm_task = plugin._warm_next_track_task
+    warm_task = plugin._upcoming_track_task
     assert warm_task is not None
     await warm_task
     assert warmed == ["library://track/1"]
@@ -6010,7 +6068,7 @@ async def test_warm_next_track_gives_up_when_the_round_cannot_be_prepared() -> N
         enqueue_track = AsyncMock()
         plugin._enqueue_track = enqueue_track  # type: ignore[method-assign]
         await _create_started_game(plugin, player_names=(), round_count=2)
-        warm_task = plugin._warm_next_track_task
+        warm_task = plugin._upcoming_track_task
         next_round_task = plugin._next_round_task
         assert warm_task is not None
         assert next_round_task is not None
@@ -6160,20 +6218,20 @@ def _install_staging_target(
     queues.items = MagicMock(return_value=[staged_item])
     get_audio_buffer = AsyncMock()
     cast("MagicMock", plugin.mass.streams).audio.get_audio_buffer = get_audio_buffer
-    plugin._warm_first_track = (  # type: ignore[method-assign]
-        MusicQuizPlugin._warm_first_track.__get__(plugin, MusicQuizPlugin)
+    plugin._stage_first_track = (  # type: ignore[method-assign]
+        MusicQuizPlugin._stage_first_track.__get__(plugin, MusicQuizPlugin)
     )
     return staged_item, get_audio_buffer
 
 
 @pytest.mark.asyncio
-async def test_warm_first_track_stages_and_buffers_it_on_an_idle_target() -> None:
-    """The lobby replaces an idle queue with the first track and buffers its audio."""
+async def test_stage_first_track_stages_it_on_an_idle_target_without_buffering() -> None:
+    """The lobby replaces an idle queue with the first track and leaves its audio for the start."""
     plugin = _create_plugin()
-    staged_item, get_audio_buffer = _install_staging_target(plugin)
+    _, get_audio_buffer = _install_staging_target(plugin)
     queues = cast("MagicMock", plugin.mass.player_queues)
 
-    await plugin._warm_first_track("library://track/0")
+    await plugin._stage_first_track("library://track/0")
 
     queues.clear.assert_called_once_with("venue_player", skip_stop=True)
     # replace_next drops the autoplay seeds of what played before, like the old replace start
@@ -6181,14 +6239,8 @@ async def test_warm_first_track_stages_and_buffers_it_on_an_idle_target() -> Non
         "venue_player", "library://track/0", option=QueueOption.REPLACE_NEXT
     )
     assert plugin._staged_item_id == "item-staged"
-    # buffered like the queue's own speculative preparation: it gives up softly
-    get_audio_buffer.assert_awaited_once_with(
-        staged_item,
-        reason="prepare_next",
-        capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
-        allow_provider_match=False,
-        stop_paused_queues=False,
-    )
+    # a queue that is not playing gets no audio: the round fetches it when it starts
+    get_audio_buffer.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -6196,7 +6248,7 @@ async def test_warm_first_track_stages_and_buffers_it_on_an_idle_target() -> Non
     ("playback_state", "available"),
     [(PlaybackState.PLAYING, True), (PlaybackState.PAUSED, True), (PlaybackState.IDLE, False)],
 )
-async def test_warm_first_track_leaves_a_busy_target_alone(
+async def test_stage_first_track_leaves_a_busy_target_alone(
     playback_state: PlaybackState, available: bool
 ) -> None:
     """A venue that plays, pauses or is unavailable in the lobby is not taken over."""
@@ -6206,7 +6258,7 @@ async def test_warm_first_track_leaves_a_busy_target_alone(
     venue_player.available = available
     queues = cast("MagicMock", plugin.mass.player_queues)
 
-    await plugin._warm_first_track("library://track/0")
+    await plugin._stage_first_track("library://track/0")
 
     # no session either, or a lobby teardown would stop what the venue is playing
     cast("AsyncMock", plugin._get_playback_session).assert_not_awaited()
@@ -6218,32 +6270,30 @@ async def test_warm_first_track_leaves_a_busy_target_alone(
 
 
 @pytest.mark.asyncio
-async def test_warm_first_track_stages_on_the_remote_virtual_player() -> None:
+async def test_stage_first_track_stages_on_the_remote_virtual_player() -> None:
     """In remote mode the quiz's own virtual player takes the staged first track."""
     plugin = _create_plugin()
-    staged_item, get_audio_buffer = _install_staging_target(plugin, PlaybackState.PLAYING)
+    _, get_audio_buffer = _install_staging_target(plugin, PlaybackState.PLAYING)
     plugin._game = _fake_game(mode=SharedPlaybackMode.REMOTE, venue_player_id=None)
     cast("AsyncMock", plugin._get_playback_session).return_value.mode = SharedPlaybackMode.REMOTE
 
-    await plugin._warm_first_track("library://track/0")
+    await plugin._stage_first_track("library://track/0")
 
     # the virtual player's queue belongs to the quiz, so there is nothing to give back
     cast("MagicMock", plugin.mass.player_queues).snapshot.assert_not_called()
     assert plugin._venue_snapshot is None
     assert plugin._staged_item_id == "item-staged"
-    get_audio_buffer.assert_awaited_once()
-    assert get_audio_buffer.await_args is not None
-    assert get_audio_buffer.await_args.args == (staged_item,)
+    get_audio_buffer.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_warm_first_track_does_not_claim_an_item_it_did_not_queue() -> None:
+async def test_stage_first_track_does_not_claim_an_item_it_did_not_queue() -> None:
     """An item that is not the first round's track is never marked as staged."""
     plugin = _create_plugin()
     staged_item, get_audio_buffer = _install_staging_target(plugin)
     staged_item.uri = "library://track/other"
 
-    await plugin._warm_first_track("library://track/0")
+    await plugin._stage_first_track("library://track/0")
 
     assert plugin._staged_item_id is None
     # the cleared queue only holds what the staging put there, so it is still the quiz's
@@ -6252,7 +6302,7 @@ async def test_warm_first_track_does_not_claim_an_item_it_did_not_queue() -> Non
 
 
 @pytest.mark.asyncio
-async def test_warm_first_track_gives_up_when_the_track_cannot_be_queued() -> None:
+async def test_stage_first_track_gives_up_when_the_track_cannot_be_queued() -> None:
     """A track that cannot be queued is not staged and nothing is buffered."""
     plugin = _create_plugin()
     _, get_audio_buffer = _install_staging_target(plugin)
@@ -6260,45 +6310,33 @@ async def test_warm_first_track_gives_up_when_the_track_cannot_be_queued() -> No
     queues.play_media.side_effect = MediaNotFoundError("gone")
     queues.items.return_value = []
 
-    await plugin._warm_first_track("library://track/0")
+    await plugin._stage_first_track("library://track/0")
 
     assert plugin._staged_item_id is None
     get_audio_buffer.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_warm_first_track_keeps_the_staged_item_when_buffering_fails() -> None:
-    """A failed buffer is best effort: the staged track still starts the first round."""
+async def test_lobby_stages_the_first_track_again_on_replay() -> None:
+    """Opening the lobby stages the first round's track, and a replay stages its own."""
     plugin = _create_plugin()
-    _, get_audio_buffer = _install_staging_target(plugin)
-    get_audio_buffer.side_effect = AudioError("no slot")
-
-    await plugin._warm_first_track("library://track/0")
-
-    assert plugin._staged_item_id == "item-staged"
-
-
-@pytest.mark.asyncio
-async def test_lobby_warms_the_first_track_again_on_replay() -> None:
-    """Opening the lobby warms the first round's track, and a replay warms its own."""
-    plugin = _create_plugin()
-    warm_first_track = cast("AsyncMock", plugin._warm_first_track)
+    stage_first_track = cast("AsyncMock", plugin._stage_first_track)
 
     await plugin.create_game(round_count=1, source_uris=["library://playlist/1"])
-    assert plugin._warm_next_track_task is not None
-    await plugin._warm_next_track_task
-    warm_first_track.assert_awaited_once_with("library://track/0")
+    assert plugin._upcoming_track_task is not None
+    await plugin._upcoming_track_task
+    stage_first_track.assert_awaited_once_with("library://track/0")
 
     await plugin.start_game()
     await plugin.reset()
-    assert plugin._warm_next_track_task is not None
-    await plugin._warm_next_track_task
+    assert plugin._upcoming_track_task is not None
+    await plugin._upcoming_track_task
 
-    assert warm_first_track.await_count == 2
+    assert stage_first_track.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_lobby_does_not_warm_a_track_for_text_trivia() -> None:
+async def test_lobby_does_not_stage_a_track_for_text_trivia() -> None:
     """A quiz type that plays no track before answering stages nothing in the lobby."""
     plugin = _create_plugin()
     with (
@@ -6314,57 +6352,57 @@ async def test_lobby_does_not_warm_a_track_for_text_trivia() -> None:
             play_reveal_audio=False,
         )
 
-    assert plugin._warm_next_track_task is None
-    cast("AsyncMock", plugin._warm_first_track).assert_not_awaited()
+    assert plugin._upcoming_track_task is None
+    cast("AsyncMock", plugin._stage_first_track).assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_deleting_the_game_in_the_lobby_cancels_the_staging() -> None:
-    """A game deleted in the lobby stops warming its first track and drops the staged item."""
+    """A game deleted in the lobby stops staging its first track and drops the staged item."""
     plugin = _create_plugin()
     started = asyncio.Event()
 
-    async def _warm(track_uri: str) -> None:
+    async def _stage(track_uri: str) -> None:
         assert track_uri == "library://track/0"
         started.set()
         await asyncio.Event().wait()
 
-    plugin._warm_first_track = _warm  # type: ignore[method-assign]
+    plugin._stage_first_track = _stage  # type: ignore[method-assign]
     await plugin.create_game(round_count=1, source_uris=["library://playlist/1"])
     await started.wait()
-    warm_task = plugin._warm_next_track_task
-    assert warm_task is not None
+    staging_task = plugin._upcoming_track_task
+    assert staging_task is not None
     plugin._staged_item_id = "item-staged"
 
     await plugin.delete_game()
 
     with pytest.raises(asyncio.CancelledError):
-        await warm_task
+        await staging_task
     assert plugin._staged_item_id is None
 
 
 @pytest.mark.asyncio
-async def test_starting_the_game_ends_a_running_lobby_warm_up() -> None:
-    """A lobby warm-up that is still running when the game starts is cancelled after round one."""
+async def test_starting_the_game_ends_a_running_lobby_staging() -> None:
+    """A lobby staging that is still running when the game starts is cancelled after round one."""
     plugin = _create_plugin()
     started = asyncio.Event()
 
-    async def _warm(track_uri: str) -> None:
+    async def _stage(track_uri: str) -> None:
         assert track_uri == "library://track/0"
         started.set()
         await asyncio.Event().wait()
 
-    plugin._warm_first_track = _warm  # type: ignore[method-assign]
+    plugin._stage_first_track = _stage  # type: ignore[method-assign]
     await plugin.create_game(round_count=2, source_uris=["library://playlist/1"])
     await started.wait()
-    warm_task = plugin._warm_next_track_task
-    assert warm_task is not None
+    staging_task = plugin._upcoming_track_task
+    assert staging_task is not None
 
     await plugin.start_game()
 
     with pytest.raises(asyncio.CancelledError):
-        await warm_task
-    assert plugin._warm_next_track_task is not warm_task
+        await staging_task
+    assert plugin._upcoming_track_task is not staging_task
 
 
 @pytest.mark.asyncio
@@ -6640,7 +6678,7 @@ async def test_cancelling_the_prefetch_before_its_track_is_known_cancels_the_war
         plugin = _create_plugin()
         await _create_started_game(plugin, player_names=(), round_count=2)
         await prepare_started.wait()
-        warm_task = plugin._warm_next_track_task
+        warm_task = plugin._upcoming_track_task
         next_round_task = plugin._next_round_task
         assert warm_task is not None
         assert next_round_task is not None
@@ -6675,7 +6713,7 @@ async def test_lobby_staging_snapshots_the_venue_queue_before_taking_it_over() -
     snapshot = MagicMock(spec=QueueSnapshot)
     queues.snapshot = MagicMock(return_value=snapshot)
 
-    await plugin._warm_first_track("library://track/0")
+    await plugin._stage_first_track("library://track/0")
 
     queues.snapshot.assert_called_once_with("venue_player")
     assert [name for name, *_ in queues.mock_calls][:2] == ["snapshot", "clear"]
@@ -6693,8 +6731,8 @@ async def test_busy_venue_is_snapshotted_right_before_the_first_round_replaces_i
     cast("MagicMock", session).mode = SharedPlaybackMode.VENUE
     plugin._playback_session = session
     plugin._get_playback_session = AsyncMock(return_value=session)  # type: ignore[method-assign]
-    plugin._warm_first_track = (  # type: ignore[method-assign]
-        MusicQuizPlugin._warm_first_track.__get__(plugin, MusicQuizPlugin)
+    plugin._stage_first_track = (  # type: ignore[method-assign]
+        MusicQuizPlugin._stage_first_track.__get__(plugin, MusicQuizPlugin)
     )
     plugin._play_track = MusicQuizPlugin._play_track.__get__(  # type: ignore[method-assign]
         plugin, MusicQuizPlugin
@@ -6710,8 +6748,8 @@ async def test_busy_venue_is_snapshotted_right_before_the_first_round_replaces_i
     queues.snapshot = MagicMock(return_value=MagicMock(spec=QueueSnapshot))
 
     await plugin.create_game(round_count=2, source_uris=["library://playlist/1"])
-    assert plugin._warm_next_track_task is not None
-    await plugin._warm_next_track_task
+    assert plugin._upcoming_track_task is not None
+    await plugin._upcoming_track_task
     queues.snapshot.assert_not_called()
     await plugin.start_game()
 
@@ -6739,16 +6777,16 @@ async def test_mid_game_reset_keeps_the_snapshot_from_before_the_game() -> None:
     queues.snapshot = MagicMock(return_value=snapshot)
 
     await plugin.create_game(round_count=2, source_uris=["library://playlist/1"])
-    assert plugin._warm_next_track_task is not None
-    await plugin._warm_next_track_task
+    assert plugin._upcoming_track_task is not None
+    await plugin._upcoming_track_task
     plugin._quiz_item_id = None
     await plugin.start_game()
     queues.play_index.assert_awaited_once_with("venue_player", "item-staged")
     # the round started from the queue, which still holds the quiz's own item
     assert cast("str | None", plugin._quiz_item_id) == "item-staged"
     await plugin.reset()
-    assert plugin._warm_next_track_task is not None
-    await plugin._warm_next_track_task
+    assert plugin._upcoming_track_task is not None
+    await plugin._upcoming_track_task
 
     queues.snapshot.assert_called_once_with("venue_player")
     assert queues.clear.call_count == 2
@@ -6825,7 +6863,7 @@ async def test_venue_played_on_since_the_lobby_is_snapshotted_again_at_the_first
     lobby_snapshot = MagicMock(spec=QueueSnapshot)
     party_snapshot = MagicMock(spec=QueueSnapshot)
     queues.snapshot = MagicMock(side_effect=[lobby_snapshot, party_snapshot])
-    await plugin._warm_first_track("library://track/0")
+    await plugin._stage_first_track("library://track/0")
     assert plugin._venue_snapshot is lobby_snapshot
     # party music replaced the staged track on the venue while the lobby was open
     party_item = MagicMock()
@@ -6908,12 +6946,12 @@ async def test_moving_the_game_to_another_venue_restores_the_previous_one() -> N
     players.append(_make_venue_player("other_player", "Other Player"))
     staging = asyncio.Event()
 
-    async def _warm(track_uri: str) -> None:
+    async def _stage(track_uri: str) -> None:
         assert track_uri == "library://track/0"
         staging.set()
         await asyncio.Event().wait()
 
-    plugin._warm_first_track = _warm  # type: ignore[method-assign]
+    plugin._stage_first_track = _stage  # type: ignore[method-assign]
     await plugin.create_game(
         round_count=1,
         source_uris=["library://playlist/1"],
@@ -6921,12 +6959,14 @@ async def test_moving_the_game_to_another_venue_restores_the_previous_one() -> N
         venue_player_id="venue_player",
     )
     await staging.wait()
-    warm_task = plugin._warm_next_track_task
-    assert warm_task is not None
+    staging_task = plugin._upcoming_track_task
+    assert staging_task is not None
     snapshot = _held_venue_snapshot(plugin)
     queues = cast("MagicMock", plugin.mass.player_queues)
     staging_cancelled: list[bool] = []
-    queues.restore.side_effect = lambda *_args: staging_cancelled.append(warm_task.cancelling() > 0)
+    queues.restore.side_effect = lambda *_args: staging_cancelled.append(
+        staging_task.cancelling() > 0
+    )
 
     await plugin.create_game(
         round_count=1,
@@ -6938,3 +6978,157 @@ async def test_moving_the_game_to_another_venue_restores_the_previous_one() -> N
     queues.restore.assert_awaited_once_with("venue_player", snapshot)
     assert staging_cancelled == [True]
     assert plugin._venue_snapshot is None
+
+
+@pytest.mark.asyncio
+async def test_title_reveal_hides_the_title_until_hints_and_reveal() -> None:
+    """Broadcast only the uncovered letters, then the whole title after reveal."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_title_reveal_game(plugin)
+
+    public_round = _broadcast_states(plugin)[-1]["current_round"]
+    assert public_round["mask"] == [None, None, None, " ", None, None, None, None]
+    assert "solution" not in public_round
+    assert "Hey Jude" not in str(_broadcast_states(plugin))
+
+    delay, invoke_hint, round_index = _round_timer_call(plugin, plugin._hint_timer_id)
+    # the first hint lands at 20% of the audible part of the 30 second answer window
+    expected_delay = ASSUMED_AUDIO_START_LATENCY + 0.2 * (30 - ASSUMED_AUDIO_START_LATENCY)
+    assert delay == pytest.approx(expected_delay, abs=0.5)
+    await invoke_hint(round_index)
+
+    public_round = _broadcast_states(plugin)[-1]["current_round"]
+    assert public_round["mask"] == ["H", None, None, " ", None, None, None, None]
+    assert public_round["revealed_count"] == 1
+
+    await plugin.submit_answer(
+        player_ids["Alice"],
+        {"answer_type": "hint_text", "action": "guess_title", "text": "hey jud"},
+    )
+    await plugin.submit_answer(
+        player_ids["Bob"], {"answer_type": "hint_text", "action": "guess_title", "text": "Hey Joe"}
+    )
+    bob_state = await plugin.get_player_state(player_ids["Bob"])
+    assert bob_state["you"]["solved"] is False
+    assert bob_state["you"]["guesses"] == [{"text": "Hey Joe", "correct": False, "close": True}]
+    assert _phase(plugin) == MusicQuizPhase.ANSWERING
+    assert "Hey Jude" not in str(_broadcast_states(plugin))
+
+    with patch("time.time", return_value=time.time() + 1):
+        await plugin.submit_answer(
+            player_ids["Bob"],
+            {"answer_type": "hint_text", "action": "guess_title", "text": "Hey Jude"},
+        )
+
+    assert _phase(plugin) == MusicQuizPhase.REVEAL
+    revealed_state = _broadcast_states(plugin)[-1]
+    assert revealed_state["current_round"]["solution"] == "Hey Jude"
+    players = {player["name"]: player for player in revealed_state["players"]}
+    assert players["Alice"]["solved_rank"] == 1
+    assert players["Bob"]["solved_rank"] == 2
+    assert players["Alice"]["score"] >= players["Bob"]["score"] > 0
+    assert plugin._game is not None
+    assert plugin._game.config.hint_speed == "normal"
+    assert plugin._game.config.typo_tolerance == "normal"
+
+
+@pytest.mark.asyncio
+async def test_title_reveal_refuses_guesses_while_the_deadline_timer_is_pending() -> None:
+    """Refuse a guess after the deadline even before the deadline timer revealed the round."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_title_reveal_game(plugin)
+    delay, _invoke_deadline, _round_index = _round_timer_call(plugin, plugin._reveal_timer_id)
+    assert plugin._game is not None
+    started_at = plugin._game.rounds[0].started_at
+    assert started_at is not None
+
+    with (
+        patch("time.time", return_value=started_at + delay + 0.1),
+        pytest.raises(MusicQuizWrongPhaseError),
+    ):
+        await plugin.submit_answer(
+            player_ids["Alice"],
+            {"answer_type": "hint_text", "action": "guess_title", "text": "Hey Jude"},
+        )
+
+    assert _phase(plugin) == MusicQuizPhase.ANSWERING
+    assert plugin._game.players[player_ids["Alice"]].score == 0
+
+
+@pytest.mark.asyncio
+async def test_title_reveal_ignores_hints_that_fire_after_reveal() -> None:
+    """A hint timer that outlives its answering phase must not touch the revealed round."""
+    plugin = _create_plugin()
+    await _create_started_title_reveal_game(plugin)
+    _, invoke_hint, round_index = _round_timer_call(plugin, plugin._hint_timer_id)
+
+    await plugin.reveal()
+    broadcast_count = len(_broadcast_states(plugin))
+    await invoke_hint(round_index)
+
+    assert len(_broadcast_states(plugin)) == broadcast_count
+    assert plugin._game is not None
+    state = plugin._game.rounds[0].answer_state
+    assert isinstance(state, HintTextRoundState)
+    assert state.revealed_count == 0
+
+
+@pytest.mark.parametrize(
+    ("argument", "value"),
+    [("hint_speed", "turbo"), ("typo_tolerance", "anything")],
+)
+@pytest.mark.asyncio
+async def test_title_reveal_rejects_unknown_settings(argument: str, value: str) -> None:
+    """Reject unknown Title Reveal settings before a game is created."""
+    plugin = _create_plugin()
+
+    with pytest.raises(InvalidDataError):
+        await plugin.create_game(
+            quiz_type="title_reveal",
+            source_uris=["library://playlist/1"],
+            **cast("dict[str, Any]", {argument: value}),
+        )
+
+    assert plugin._game is None
+
+
+@pytest.mark.asyncio
+async def test_title_reveal_waits_for_the_artist_bonus_before_revealing() -> None:
+    """Keep the round open after every title is solved until the artist bonus is answered."""
+    plugin = _create_plugin()
+
+    def _artist_round(round_index: int, previous_rounds: list[MusicQuizRound]) -> MusicQuizRound:
+        game_round = _make_title_reveal_round(round_index, previous_rounds)
+        assert isinstance(game_round.answer_state, HintTextRoundState)
+        game_round.answer_state.artist_answers = ["The Beatles"]
+        game_round.answer_state.artist_label = "The Beatles"
+        return game_round
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.title_reveal."
+        "TitleRevealQuizType.prepare_round",
+        new=AsyncMock(side_effect=_artist_round),
+    ):
+        await plugin.create_game(
+            quiz_type="title_reveal",
+            round_count=1,
+            source_uris=["library://playlist/1"],
+            artist_bonus_mode="free_text",
+        )
+        player_id = (await plugin.join_game("Alice"))["player_id"]
+        await plugin.start_game()
+
+    await plugin.submit_answer(
+        player_id, {"answer_type": "hint_text", "action": "guess_title", "text": "Hey Jude"}
+    )
+    assert _phase(plugin) == MusicQuizPhase.ANSWERING
+    assert _broadcast_states(plugin)[-1]["current_round"]["artist_bonus"] is True
+
+    await plugin.submit_answer(
+        player_id, {"answer_type": "hint_text", "action": "guess_artist", "text": "Beatles"}
+    )
+    state = await plugin.get_player_state(player_id)
+
+    assert _phase(plugin) == MusicQuizPhase.REVEAL
+    assert state["you"]["artist_bonus"]["done"] is True
+    assert _broadcast_states(plugin)[-1]["artist_bonus_mode"] == "free_text"

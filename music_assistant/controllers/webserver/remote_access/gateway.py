@@ -32,7 +32,7 @@ from aiolibdatachannel import (
     install_python_logger,
 )
 
-from music_assistant.constants import MASS_LOGGER_NAME, SENDSPIN_SERVER_PORT, VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.live_announcements import LIVE_ANNOUNCEMENT_ROUTE
 
 if TYPE_CHECKING:
@@ -87,8 +87,6 @@ HTTP_PROXY_DROPPED_HEADERS: Final = frozenset(
         "content-length",
     }
 )
-
-DEFAULT_SENDSPIN_URL = f"ws://localhost:{SENDSPIN_SERVER_PORT}/sendspin"
 
 # Labels of the data channels the gateway routes, next to the client's own API channel
 CHANNEL_SENDSPIN = "sendspin"
@@ -179,7 +177,7 @@ class WebRTCGateway:
         key_pem: str,
         signaling_url: str = "wss://signaling.music-assistant.io/ws",
         local_ws_url: str = "ws://localhost:8095/ws",
-        sendspin_url: str = DEFAULT_SENDSPIN_URL,
+        sendspin_url_callback: Callable[[], str | None] | None = None,
         ice_servers: list[dict[str, Any]] | None = None,
         ice_servers_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
         set_sendspin_player_callback: Callable[[str, str], None] | None = None,
@@ -193,7 +191,8 @@ class WebRTCGateway:
         :param key_pem: Private key (PEM) matching the DTLS certificate.
         :param signaling_url: WebSocket URL of the signaling server.
         :param local_ws_url: Same-host WebSocket URL of the Music Assistant API to bridge to.
-        :param sendspin_url: Internal Sendspin WebSocket URL to bridge to.
+        :param sendspin_url_callback: Callback returning the internal Sendspin WebSocket URL
+            to bridge to, or None while no Sendspin server runs.
         :param ice_servers: List of ICE server configurations (used at registration time).
         :param ice_servers_callback: Optional callback to fetch fresh ICE servers for each session.
         :param set_sendspin_player_callback: Callback to set sendspin player for a session.
@@ -201,7 +200,7 @@ class WebRTCGateway:
         self.http_session = http_session
         self.signaling_url = signaling_url
         self.local_ws_url = local_ws_url
-        self.sendspin_url = sendspin_url
+        self._sendspin_url_callback = sendspin_url_callback
         self._remote_id = remote_id
         self._cert_pem = cert_pem
         self._key_pem = key_pem
@@ -213,10 +212,7 @@ class WebRTCGateway:
         # local WebSocket; the live announcement route sits on the same webserver as the
         # ma-api WebSocket. The http proxy is served in-process instead of bridged.
         self._channel_handlers: dict[str, _ChannelHandler] = {
-            CHANNEL_SENDSPIN: partial(
-                self._bridge_websocket,
-                target=_BridgeTarget(self.sendspin_url, self._try_extract_sendspin_client_id),
-            ),
+            CHANNEL_SENDSPIN: self._bridge_sendspin,
             CHANNEL_LIVE_ANNOUNCEMENT: partial(
                 self._bridge_websocket,
                 target=_BridgeTarget(_ws_url_for_path(self.local_ws_url, LIVE_ANNOUNCEMENT_ROUTE)),
@@ -998,6 +994,22 @@ class WebRTCGateway:
         # the local WS closed: the ma-api session is unusable, so tear it down instead of
         # leaving the client an open channel that silently drops messages
         self._schedule_close(session.session_id)
+
+    async def _bridge_sendspin(
+        self, session: WebRTCSession, served: _ServedChannel, channel: DataChannel
+    ) -> None:
+        """Bridge a Sendspin data channel to the Sendspin server."""
+        sendspin_url = self._sendspin_url_callback() if self._sendspin_url_callback else None
+        if sendspin_url is None:
+            self.logger.warning("No Sendspin server to connect session %s to", session.session_id)
+            await self._close_channel(session, served)
+            return
+        await self._bridge_websocket(
+            session,
+            served,
+            channel,
+            target=_BridgeTarget(sendspin_url, self._try_extract_sendspin_client_id),
+        )
 
     async def _bridge_websocket(
         self,

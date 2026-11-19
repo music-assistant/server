@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import logging
-from typing import TYPE_CHECKING, Any, TypeVar, final, overload
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, final, overload
 
 from music_assistant_models.config_entries import UI_ONLY, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, EventType
@@ -14,6 +14,7 @@ from music_assistant_models.errors import ActionUnavailable, UnsupportedFeatured
 from music_assistant.constants import CONF_LOG_LEVEL, CONF_PROVIDERS, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
+    from aiohttp import web
     from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.config_entries import (
         ConfigActionResult,
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.helpers.json import SerializableType
+    from music_assistant.helpers.plugin_engines import EngineSetting
     from music_assistant.mass import MusicAssistant
 
 # TypeVar for config value type inference
@@ -41,6 +43,9 @@ class Provider:
     # set to True in providers that capture a mass.streams address or port while loading,
     # to have them reloaded onto the new one when the streamserver network changes
     reload_on_streams_network_change: bool = False
+    # the AI engine settings of this provider, listed on the AI settings page; engine choices
+    # kept in the provider's own data (such as the voice of an AI Radio host) are not listed
+    engine_settings: ClassVar[tuple[EngineSetting, ...]] = ()
 
     def __init__(
         self,
@@ -116,6 +121,24 @@ class Provider:
         :param player_id: The player to act on for an action that requires a player, else None.
         """
         raise ActionUnavailable(f"Unknown menu action: {action_id}")
+
+    async def handle_page_request(self, request: web.Request, path: str) -> web.StreamResponse:
+        """
+        Serve a request to the page of this provider instance.
+
+        Override when the manifest declares a ``page``, such as a small web interface. The app
+        offers it in its main menu and opens it in a new tab, behind a short-lived address the
+        server hands out to the user who chose it. The server only calls this for a user who may
+        still use this instance and still holds the scope of the page, as that user
+        (``get_current_user()``). The page runs sandboxed in its own origin: it gets no token or
+        cookie and can not reach the app, so it calls its own sub-paths to talk to the provider.
+        Return any aiohttp response, a streamed or WebSocket response included; the server sets
+        the security headers itself and removes any cookie.
+
+        :param request: The request; read its method, query and body from it.
+        :param path: The part of the address after the page's root ("" for the root itself).
+        """
+        raise ActionUnavailable(f"Provider {self.instance_id} has no page")
 
     async def handle_mcp_tool(
         self, tool_id: str, arguments: dict[str, Any], player_id: str | None

@@ -187,13 +187,12 @@ from music_assistant.helpers.throttle_retry import (
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.media_capabilities import MediaCatalogMixin
+from music_assistant.models.media_capabilities import AudioSourceMixin, MediaCatalogMixin
 from music_assistant.models.music_provider import (
     LIBRARY_FEATURE_BY_MEDIA_TYPE,
     MusicProvider,
     NothingToSync,
 )
-from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.api import SortOptionInfo
@@ -1094,15 +1093,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # AudioSource providers surface at root like regular providers; a
             # provider with a single user-initiable source is promoted to that
             # source directly so it's playable in one tap.
-            audio_source_providers = self.mass.get_providers_supporting_feature(
-                ProviderFeature.AUDIO_SOURCE
-            )
-            for prov in self._apply_user_provider_filter(audio_source_providers):
-                if not isinstance(prov, PluginProvider):
-                    continue
+            for source_prov in self.mass.players.get_audio_source_providers():
                 initiable = [
                     source
-                    for source in await self._get_plugin_audio_sources(prov, player_id)
+                    for source in await self._get_provider_audio_sources(source_prov, player_id)
                     if source.can_initiate
                 ]
                 if not initiable:
@@ -1113,10 +1107,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     root_items.append(
                         BrowseFolder(
                             item_id="root",
-                            provider=prov.domain,
-                            path=f"{prov.instance_id}://",
-                            uri=f"{prov.instance_id}://",
-                            name=prov.name,
+                            provider=source_prov.domain,
+                            path=f"{source_prov.instance_id}://",
+                            uri=f"{source_prov.instance_id}://",
+                            name=source_prov.name,
                         )
                     )
             return _listed([], root_items)
@@ -1161,12 +1155,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         # AudioSource providers don't implement browse(); list their initiable sources directly
         if (
-            isinstance(browse_prov, PluginProvider)
+            isinstance(browse_prov, AudioSourceMixin)
             and ProviderFeature.AUDIO_SOURCE in browse_prov.supported_features
         ):
             initiable_items: list[MediaItemType | BrowseFolder] = [
                 source
-                for source in await self._get_plugin_audio_sources(browse_prov, player_id)
+                for source in await self._get_provider_audio_sources(browse_prov, player_id)
                 if source.can_initiate
             ]
             return _listed(prepend_items, initiable_items)
@@ -1621,10 +1615,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         if media_type == MediaType.AUDIO_SOURCE:
             # AudioSources are not library-backed; resolve them through the owning
-            # plugin provider's get_audio_sources() catalog. Returning the live
+            # provider's get_audio_sources() catalog. Returning the live
             # MediaItem lets play_media create a queue item the standard way.
             prov = self.mass.get_provider(provider_instance_id_or_domain)
-            if isinstance(prov, PluginProvider):
+            if isinstance(prov, AudioSourceMixin):
                 for source in await prov.get_audio_sources():
                     if source.item_id == item_id:
                         return source
@@ -3145,18 +3139,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         page.extend(items)
         return page
 
-    async def _get_plugin_audio_sources(
-        self, provider: PluginProvider, player_id: str | None
+    async def _get_provider_audio_sources(
+        self, provider: AudioSourceMixin, player_id: str | None
     ) -> list[AudioSource]:
         """
-        Return the AudioSources of a plugin to list, scoped to a player when given.
+        Return the AudioSources of a provider to list, scoped to a player when given.
 
-        Player-bound plugins yield only the sources bound to the given player;
+        Player-bound providers yield only the sources bound to the given player;
         without a player scope all their sources bound to a player the calling
-        user may see are yielded. Player-unbound plugins always yield all sources.
+        user may see are yielded. Player-unbound providers always yield all sources.
         """
         # probing with the (possibly empty) scope tells bound and unbound apart:
-        # a player-bound plugin returns a list for any player id, unbound returns None
+        # a player-bound provider returns a list for any player id, unbound returns None
         if provider.get_player_audio_sources(player_id or "") is None:
             return await provider.get_audio_sources()
         # bound sources honor the calling user's player access filter, so a
@@ -4546,13 +4540,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if item.provider == "library" and not item.provider_mappings:
             # a genre has no source of its own: it expands to source-filtered tracks
             return True
-        # plugin providers (such as smart_playlist and radio_playlist) carry no access
-        # record, so their items stay reachable for everyone
-        plugin_instances = {
-            prov.instance_id for prov in self.mass.providers if prov.type == ProviderType.PLUGIN
+        # only music sources carry an access record: items of any other provider (a plugin
+        # such as smart_playlist, the audio sources of a player provider) stay reachable
+        non_music_instances = {
+            prov.instance_id for prov in self.mass.providers if prov.type != ProviderType.MUSIC
         }
         if item.provider != "library":
-            if item.provider in plugin_instances:
+            if item.provider in non_music_instances:
                 return True
             # the builtin provider addresses its items by domain, its mapping holds the instance
             source = next(
@@ -4569,7 +4563,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 return False
             return playback_instance_for(self.mass, source, allowed) is not None
         return any(
-            mapping.provider_instance in plugin_instances
+            mapping.provider_instance in non_music_instances
             or playback_instance_for(self.mass, mapping.provider_instance, allowed) is not None
             for mapping in item.provider_mappings
         )

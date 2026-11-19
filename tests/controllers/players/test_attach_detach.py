@@ -660,6 +660,26 @@ async def test_removal_reaches_the_protocol_of_a_disabled_player(scenario: Scena
     assert _stored(scenario) == ([], [])
 
 
+async def test_removal_reaches_the_provider_of_a_session_only_protocol(
+    scenario: Scenario,
+) -> None:
+    """The provider of a protocol that only exists while connected learns of its removal."""
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol("sendspin_web_1", "Web Browser", session_only=True)
+    await scenario.register(browser)
+    removed: list[str] = []
+
+    async def _on_protocol_removed(protocol_id: str) -> None:
+        removed.append(protocol_id)
+
+    sendspin.on_protocol_removed = _on_protocol_removed  # type: ignore[method-assign]
+    scenario.set_present("sendspin_web_1", False)
+
+    await scenario.remove("sendspin_web_1")
+
+    assert removed == ["sendspin_web_1"]
+
+
 @pytest.mark.parametrize("away", ["detached", "switched_off"])
 async def test_removal_reaches_a_protocol_its_provider_still_holds(
     scenario: Scenario, away: str
@@ -1227,8 +1247,10 @@ async def test_remove_unavailable_is_refused_while_the_providers_find_their_devi
         await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
         await scenario.reload_provider(sonos)
 
-    with pytest.raises(ActionUnavailable):
+    with pytest.raises(ActionUnavailable) as error:
         await scenario.mass.players.remove_unavailable()
+    assert error.value.translation_key == "players_still_being_found"
+    assert error.value.translation_args == [REMOVE_UNAVAILABLE_GRACE]
     assert _stored(scenario) == ([player_id], ["RINCON_KITCHEN"])
 
     await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
