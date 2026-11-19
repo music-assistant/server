@@ -420,6 +420,27 @@ async def get_cli_binary() -> str:
     raise RuntimeError(msg)
 
 
+def get_protocol_id(device_id: str) -> str:
+    """
+    Return the protocol id of an AirPlay device.
+
+    :param device_id: The deviceid of its _airplay record, or the MAC address its RAOP
+        instance name starts with.
+    """
+    return f"ap{device_id.replace(':', '').lower()}"
+
+
+def is_airplay_record_of(discovery_info: AsyncServiceInfo, protocol_id: str) -> bool:
+    """
+    Return whether an _airplay record is advertised by the device with this protocol id.
+
+    :param discovery_info: The _airplay record.
+    :param protocol_id: The protocol id of the device.
+    """
+    device_id = discovery_info.decoded_properties.get("deviceid")
+    return device_id is not None and get_protocol_id(device_id) == protocol_id
+
+
 def player_id_to_mac_address(player_id: str) -> str:
     """Convert a player_id to a MAC address-like string."""
     # the player_id is the mac address prefixed with "ap"
