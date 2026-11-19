@@ -420,10 +420,10 @@ def parse_album(
         album.album_type = AlbumType.COMPILATION
     elif album_type is not None:
         album.album_type = album_type
-    else:
-        inferred_type = infer_album_type(name, version)
-        if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
-            album.album_type = inferred_type
+
+    inferred_type = infer_album_type(name, version)
+    if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
+        album.album_type = inferred_type
 
     return album
 
