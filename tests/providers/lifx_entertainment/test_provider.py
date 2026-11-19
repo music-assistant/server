@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator
 from copy import deepcopy
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
@@ -28,6 +28,7 @@ from lifx_entertainment import LifxDevice, ZoneSupport, discover_devices
 from lifx_entertainment.constants import MessageType
 from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
 from music_assistant_models.enums import FlowStepType, PlayerType, ProviderType
+from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import CONF_LOG_LEVEL, DEFAULT_PROVIDER_CONFIG_ENTRIES
@@ -141,6 +142,12 @@ def _make_mass(sendspin_server: SendspinServer, setup_data: dict[str, Any]) -> M
     return mass
 
 
+def _manifest() -> ProviderManifest:
+    return ProviderManifest.from_dict(
+        json.loads((_PROVIDER_DIR / "manifest.json").read_text(encoding="utf-8"))
+    )
+
+
 def _stored(fake: FakeLifxDevice, **kwargs: Any) -> dict[str, Any]:
     device = LifxDevice(
         fake.serial,
@@ -205,16 +212,12 @@ async def test_provider_streams_music_to_the_lights(
         ),
     }
     mass = _make_mass(sendspin_server, setup_data)
-    manifest = ProviderManifest.from_dict(
-        json.loads((_PROVIDER_DIR / "manifest.json").read_text(encoding="utf-8"))
-    )
     config = await _make_config(setup_data)
-    provider = LifxEntertainmentProvider(mass, manifest, config, set())
+    provider = LifxEntertainmentProvider(mass, _manifest(), config, set())
     original_bulb, original_zones = bulb.color, list(strip.zones)
 
-    await provider.loaded_in_mass()
+    await provider.handle_async_init()
     try:
-        assert provider.available
         # one light player for the "Living room" group, registered as a LIGHT player
         clients = [c for c in sendspin_server.clients if c.client_id.startswith("lifx-")]
         assert len(clients) == 1
@@ -381,3 +384,125 @@ async def test_other_change_reloads() -> None:
 
     bridge_manager.update_settings.assert_not_called()
     base_update.assert_awaited_once_with(config, changed_keys)
+
+
+class _FakeSession:
+    """Records the order of session starts and restorations; restoring takes a while."""
+
+    events: list[str]
+    restore_started: asyncio.Event
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        """Give the session the next number."""
+        self.index = sum(1 for e in self.events if e.endswith(":created"))
+        self.events.append(f"{self.index}:created")
+        self.is_streaming = False
+        self.transition_ms = 0
+
+    async def start(self) -> None:
+        """Snapshot the lights and start streaming."""
+        self.events.append(f"{self.index}:start")
+        self.is_streaming = True
+
+    async def aclose(self) -> None:
+        """Restore the lights, slowly."""
+        if not self.is_streaming:
+            return
+        self.events.append(f"{self.index}:restore")
+        self.restore_started.set()
+        await asyncio.sleep(0.2)
+        self.is_streaming = False
+        self.events.append(f"{self.index}:restored")
+
+    def send(self, _commands: list[Any]) -> None:
+        """Ignore frames."""
+
+
+async def test_restart_during_restoration_waits_for_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    A stream starting during the restoration waits for it to finish.
+
+    It neither cuts the restoration short nor snapshots half-restored lights.
+    """
+    from lifx_entertainment import EntertainmentArea, LightChannel  # noqa: PLC0415
+
+    monkeypatch.setattr(bridge_module, "_STOP_DEBOUNCE_S", 0.01)
+    monkeypatch.setattr(_FakeSession, "events", [], raising=False)
+    monkeypatch.setattr(_FakeSession, "restore_started", asyncio.Event(), raising=False)
+    monkeypatch.setattr(bridge_module, "EntertainmentSession", _FakeSession)
+
+    provider = MagicMock()
+    provider.mass.loop = asyncio.get_running_loop()
+    provider.mass.create_task = lambda coro, *_args, **_kwargs: asyncio.ensure_future(coro)
+    provider.instance_id = _INSTANCE_ID
+    provider.config = await _make_config()
+    provider.logger = logging.getLogger("test")
+    area = EntertainmentArea(
+        "area", "Room", channels=[LightChannel(channel_id=0, service_id="s", name="Bulb")]
+    )
+    bridge = bridge_module.LifxEntertainmentBridge(provider, MagicMock(), area)
+
+    bridge._on_stream_start()
+    await _wait_for(lambda: bridge._is_streaming)
+    bridge._on_stream_end()
+    await asyncio.wait_for(_FakeSession.restore_started.wait(), 5)
+    # the next track starts while the first session is still restoring the lights
+    bridge._on_stream_start()
+    await _wait_for(lambda: bridge._is_streaming)
+    await bridge.stop()
+
+    assert _FakeSession.events[:5] == [
+        "0:created",
+        "0:start",
+        "0:restore",
+        "0:restored",
+        "1:created",
+    ]
+    assert _FakeSession.events[5] == "1:start"
+
+
+class _FailingTransport:
+    """A LAN transport whose socket can not be opened."""
+
+    instances: ClassVar[list[_FailingTransport]] = []
+
+    def __init__(self) -> None:
+        """Track the instance."""
+        self.closed = False
+        self.instances.append(self)
+
+    async def open(self) -> None:
+        """Fail like a port already in use."""
+        raise OSError("address in use")
+
+    def close(self) -> None:
+        """Record the close."""
+        self.closed = True
+
+
+async def test_setup_fails_when_the_lan_socket_can_not_open(
+    monkeypatch: pytest.MonkeyPatch, sendspin_server: SendspinServer, bulb: FakeLifxDevice
+) -> None:
+    """A LAN failure is reported through setup, and the partial transport is closed."""
+    monkeypatch.setattr(provider_module, "LifxTransport", _FailingTransport)
+    setup_data = {CONF_DEVICES: json.dumps([_stored(bulb)])}
+    config = await _make_config(setup_data)
+    provider = LifxEntertainmentProvider(
+        _make_mass(sendspin_server, setup_data), _manifest(), config, set()
+    )
+
+    with pytest.raises(SetupFailedError):
+        await provider.handle_async_init()
+    assert _FailingTransport.instances[-1].closed
+    assert provider._transport is None
+
+
+async def test_setup_fails_without_lights(sendspin_server: SendspinServer) -> None:
+    """A provider with no lights stored fails its setup instead of loading inactive."""
+    config = await _make_config({})
+    provider = LifxEntertainmentProvider(
+        _make_mass(sendspin_server, {}), _manifest(), config, set()
+    )
+
+    with pytest.raises(SetupFailedError):
+        await provider.handle_async_init()

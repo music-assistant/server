@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from lifx_entertainment import (
     Grouping,
@@ -18,6 +18,7 @@ from lifx_entertainment import (
 )
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.models.plugin import PluginProvider
 
@@ -59,6 +60,7 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.providers.sendspin.provider import SendspinProvider
 
 LOGGER = logging.getLogger(__name__)
 
@@ -137,7 +139,7 @@ class LifxEntertainmentProvider(PluginProvider):
         """Return the LIFX LAN API client."""
         return self._api
 
-    async def loaded_in_mass(self) -> None:
+    async def handle_async_init(self) -> None:
         """Open the LAN transport, refresh the devices and set up a bridge per area."""
         # Reset a color mode that no longer exists, so the dropdown shows a valid option.
         stored_mode = self.config.get_value(CONF_COLOR_MODE)
@@ -146,10 +148,11 @@ class LifxEntertainmentProvider(PluginProvider):
 
         stored = parse_devices(self.get_setup_value(CONF_DEVICES))
         if not stored:
-            self.logger.warning("No LIFX lights configured, provider inactive")
-            self.available = False
-            return
+            raise SetupFailedError("No LIFX lights configured")
         self._devices = {d.serial: d for d in stored}
+        sendspin_provider = cast("SendspinProvider | None", self.mass.get_provider("sendspin"))
+        if sendspin_provider is None:
+            raise SetupFailedError("The Sendspin provider is not available")
 
         try:
             self._transport = LifxTransport()
@@ -166,12 +169,14 @@ class LifxEntertainmentProvider(PluginProvider):
                 len(areas),
                 ", ".join(f"{a.name} ({len(a.devices)} lights)" for a in areas),
             )
-            await self._bridge_manager.setup_bridges(areas)
-            self.available = True
-        except Exception as err:
-            self.logger.error("Failed to initialize LIFX lights: %s", err)
-            self.available = False
-            return
+            await self._bridge_manager.setup_bridges(sendspin_provider, areas)
+        except OSError as err:
+            # unload() is not called for a provider whose setup failed: clean up here.
+            await self.unload()
+            raise SetupFailedError(f"Failed to open the LIFX LAN connection: {err}") from err
+        except BaseException:
+            await self.unload()
+            raise
         self._rediscovery_task = self.mass.create_task(self._rediscovery_loop())
 
     async def unload(self, is_removed: bool = False) -> None:
