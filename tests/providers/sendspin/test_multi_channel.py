@@ -37,12 +37,13 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     InvalidDataError,
     PlayerUnavailableError,
+    SetupFailedError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_PROVIDERS
+from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PROVIDERS
 from music_assistant.models.player import PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.sendspin import multi_channel
@@ -565,6 +566,70 @@ async def test_taking_a_set_apart_gives_its_speakers_players_of_their_own(
     assert left_player.type == PlayerType.PLAYER
     # each in a group of its own again
     assert len(sendspin.get_protocol(LEFT).api.group.clients) == 1  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    ("failing_step", "error"),
+    [
+        pytest.param("wait", SetupFailedError, id="player of the set not registered in time"),
+        pytest.param("take", RuntimeError, id="taking the speakers fails after it took them"),
+    ],
+)
+async def test_combining_that_fails_gives_the_speakers_players_of_their_own(
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    failing_step: str,
+    error: type[Exception],
+) -> None:
+    """Combining speakers that fails on the way leaves no set, and each speaker its own player."""
+    sendspin = _sendspin(mass)
+    await _add_speaker(sendspin, LEFT, "Kitchen left")
+    await _add_speaker(sendspin, RIGHT, "Kitchen right")
+    speakers = {
+        _player_id(sendspin, LEFT): SpeakerChannel.FRONT_LEFT,
+        _player_id(sendspin, RIGHT): SpeakerChannel.FRONT_RIGHT,
+    }
+    wait_for_player = sendspin._wait_for_virtual_player
+
+    async def fail_on_the_way(protocol_id: str) -> Player:
+        if failing_step == "wait":
+            raise SetupFailedError(f"Virtual player {protocol_id} was not registered in time")
+        player = await wait_for_player(protocol_id)
+        set_protocol = cast("SendspinMultiChannelPlayer", sendspin.get_protocol(protocol_id))
+        take_speakers = set_protocol.take_speakers
+
+        async def take_then_fail(*, rejoin: bool = False) -> None:
+            await take_speakers(rejoin=rejoin)
+            # the speakers have no player of their own any longer
+            assert sendspin.get_protocol(LEFT) is None
+            assert sendspin.get_protocol(RIGHT) is None
+            raise RuntimeError("Taking the speakers failed")
+
+        monkeypatch.setattr(set_protocol, "take_speakers", take_then_fail)
+        return player
+
+    monkeypatch.setattr(sendspin, "_wait_for_virtual_player", fail_on_the_way)
+
+    with pytest.raises(error):
+        await mass.players.create_multi_channel_player("sendspin", "Kitchen", speakers)
+    # a registration of the set that is still under way ends first
+    await asyncio.sleep(0.3)
+
+    assert not [
+        protocol_id
+        for protocol_id in mass.config.get(CONF_PLAYER_PROTOCOLS) or {}
+        if protocol_id.startswith(MULTI_CHANNEL_ID_PREFIX)
+    ]
+    assert sendspin.multi_channel_player_of(LEFT) is None
+    assert sendspin.multi_channel_player_of(RIGHT) is None
+    await _wait_for(
+        lambda: all(
+            (protocol := sendspin.get_protocol(client_id)) is not None
+            and protocol.player is not None
+            and protocol.player.type == PlayerType.PLAYER
+            for client_id in (LEFT, RIGHT)
+        )
+    )
 
 
 async def test_a_speaker_that_is_away_leaves_every_channel_to_the_other(
