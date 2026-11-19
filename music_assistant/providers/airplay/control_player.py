@@ -1113,9 +1113,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Apply a pushed pyatv volume level."""
         # MRP volume is ignored when Companion owns volume, and always on a transient
         # tunnel: that only exposes the speaker's own volume, which Music Assistant
-        # never drives. Worse, a 0 from there latches a mute, and a muted player
-        # skips the stream volume command entirely - so every later volume change
-        # silently stops reaching the device.
+        # never drives.
         if source == "mrp" and (self._companion_device is not None or self._uses_transient_mrp):
             return
         # The native volume of a set's device is the one its own apps play at, which
@@ -1130,6 +1128,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
             return
         volume_level = max(0, min(100, round(volume)))
         if volume_level == 0:
+            # Only our own mute latches: a muted player skips the stream volume command and
+            # starts every stream silent, so a 0 the device reports itself (such as an Apple
+            # TV whose audio goes to the TV) must not mute it.
+            if source != "command":
+                return
             if self._volume_before_mute is None and self._attr_volume_level:
                 self._volume_before_mute = self._attr_volume_level
             mute_changed = self._attr_volume_muted is not True
