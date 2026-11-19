@@ -53,6 +53,7 @@ from music_assistant_models.player import PlayerMedia, PlayerOptionValueType
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
+    MAIN_ZONE,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
@@ -294,6 +295,10 @@ class SonosPlayer(PlayerProtocol):
             self.discovery_info["device"]["name"]
             or self.discovery_info["device"]["modelDisplayName"]
         )
+        # Sonos names the headphone zone of an Amp or soundbar after the room of the
+        # speaker itself, which would leave two players with the same name
+        if get_sonos_zone(self.protocol_id) not in (None, MAIN_ZONE):
+            self._attr_name = f"{self._attr_name} (Headphones)"
         self._attr_device_info.model = self.discovery_info["device"]["modelDisplayName"]
         self._attr_device_info.manufacturer = self._provider.manifest.name
         self._attr_can_group_with = {self._provider.instance_id}
