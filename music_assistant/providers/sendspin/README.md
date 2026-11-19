@@ -284,7 +284,7 @@ Sendspin players support:
 
 Every Sendspin client is a protocol (`SendspinBasePlayer`) whose id is its client id.
 
-- A web or app player, a virtual player, a display, a visualizer, a light and an audio source exist only while they are connected (`session_only`): each is the native protocol of a player of its own, whose player id is its client id. Nothing is stored for one until its config is changed.
+- A web or app player, a virtual player, a display, a visualizer, a light, a controller and an audio source exist only while they are connected (`session_only`): each is the native protocol of a player of its own, whose player id is its client id. Nothing is stored for one until its config is changed.
 - Any other client is the native protocol of its player, unless that player has a protocol of its own from another provider: then it is an audio output of it. A client with a hardware MAC address that is seen for the first time joins the player of its device when there is one, as an audio output; it is the native protocol of a player of its own from its next connection on. A new client without one is the native protocol of a player of its own at once, as nothing else can tie it to a device.
 - A client reports the MAC address it uses as client id or reports in its hello. A client whose id is not its MAC address also reports its id as an instance id, so several clients on one host stay separate players; a device whose client id changes from its MAC address to its key id keeps its player and settings.
 

@@ -48,6 +48,7 @@ from tests.common import MockProvider, attach_mock, mock_player_mass, use_player
         (PlayerType.PLAYER, "test", "Unknown", "Studio Monitor", "speaker"),
         (PlayerType.DISPLAY, "sendspin", "Unknown", "Unknown", "monitor"),
         (PlayerType.VISUALIZER, "sendspin", "Unknown", "Unknown", "monitor"),
+        (PlayerType.CONTROLLER, "sendspin", "Unknown", "Unknown", "monitor"),
         (PlayerType.LIGHT, "hue_entertainment", "Signify", "Hue", "sun"),
         (PlayerType.PLAYER, "test", "Unknown", "Unknown", "speaker"),
     ],
