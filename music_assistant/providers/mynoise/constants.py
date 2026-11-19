@@ -16,11 +16,6 @@ INDEX_URL: Final[str] = f"{WEBSITE_URL}/noiseMachines.php"
 AUTH_URL: Final[str] = f"{WEBSITE_URL}/authentication_script.php"
 AUTH_OK_PATH: Final[str] = "/authentication_OK.php"
 
-USER_AGENT: Final[str] = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0 Safari/537.36"
-)
-
 # config entry keys
 CONF_REFRESH_CATALOG: Final[str] = "refresh_catalog"
 CONF_PATRON_EMAIL: Final[str] = "patron_email"
@@ -33,17 +28,15 @@ CACHE_CATEGORY_MACHINE: Final[int] = 2
 
 # catalog refresh interval (30 days)
 CATALOG_REFRESH_INTERVAL: Final[int] = 3600 * 24 * 30
+# short expiry for the bundled-catalog fallback, so a broken/unreachable site
+# throttles retries without pinning the fallback in place for a month
+CATALOG_FALLBACK_REFRESH_INTERVAL: Final[int] = 3600
 # machine definition (layer files) cache interval (1 year, these are static)
 MACHINE_REFRESH_INTERVAL: Final[int] = 3600 * 24 * 365
 
 # audio file extension to request from the CDN (the site uses .ogg when the
 # browser supports it; mp3 is the universally supported fallback)
 AUDIO_EXTENSION: Final[str] = ".mp3"
-
-# subdirectory (under the provider cache dir) holding downloaded layer audio
-# files, so the endless ffmpeg mix loops local files instead of re-fetching
-# from the CDN on every loop pass
-AUDIO_CACHE_SUBDIR: Final[str] = "audio"
 
 # output format of the custom (mixed) stream
 OUTPUT_SAMPLE_RATE: Final[int] = 44100

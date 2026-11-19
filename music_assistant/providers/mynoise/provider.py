@@ -10,7 +10,9 @@ them through the WebAudio API with looping enabled and a mixer per band.
 This provider recreates that model server-side: the layer files are fetched
 from the myNoise CDN and looped/mixed on the fly by ffmpeg, producing one
 endless stream per machine - so a machine plays forever, just like in the
-browser, without any (re)download.
+browser. The layer files are staged in a private temp dir for the duration of
+playback (so the endless ffmpeg loop replays local data instead of re-fetching
+from the CDN on every pass) and deleted again when playback stops.
 
 myNoise grants lifetime privileged access to donors, validated by posting the
 donor email address (no password). Setting the optional 'Patron email' option
@@ -30,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import shutil
 import tempfile
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
@@ -67,13 +70,11 @@ from .catalog import (
     patron_login,
 )
 from .constants import (
-    AUDIO_CACHE_SUBDIR,
     AUDIO_EXTENSION,
     CONF_MASTER_GAIN_DB,
     CONF_PATRON_EMAIL,
     CONF_REFRESH_CATALOG,
     CONF_USE_VARIANT_B,
-    USER_AGENT,
     WEBSITE_URL,
 )
 from .streaming import pcm_output_format, resolve_layer_gains, stream_machine
@@ -95,8 +96,8 @@ SUPPORTED_FEATURES = {
 BROWSE_ROOT = "mynoise://root"
 
 
-def _write_layer_to_cache(path: str, data: bytes) -> None:
-    """Write layer bytes to the cache atomically (never leaves a truncated file)."""
+def _write_layer_to_file(path: str, data: bytes) -> None:
+    """Write layer bytes to the given path atomically (never leaves a truncated file)."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".part")
@@ -259,9 +260,6 @@ class MyNoiseProvider(MusicProvider):
         master_gain_db = float(self.get_config_value(CONF_MASTER_GAIN_DB, 0.0) or 0.0)
         use_variant_b = bool(self.get_config_value(CONF_USE_VARIANT_B, False))
         layer_gains = resolve_layer_gains(machine)
-        layer_sources = await self._resolve_layer_sources(
-            machine.layers, layer_gains, use_variant_b
-        )
 
         return StreamDetails(
             provider=self.instance_id,
@@ -277,9 +275,11 @@ class MyNoiseProvider(MusicProvider):
             data={
                 "machine_id": machine.machine_id,
                 "machine_name": machine.name,
-                # each layer's source is a cached local file (remote url as fallback),
-                # so the endless mix loops local data instead of hitting the CDN
-                "layers": [{"source": source} for source in layer_sources],
+                # both file variants travel to the streamer, which stages the
+                # selected one as a local file for the life of the playback
+                "layers": [
+                    {"url_a": layer.url_a, "url_b": layer.url_b} for layer in machine.layers
+                ],
                 "gains": layer_gains,
                 "master_gain_db": master_gain_db,
                 "use_variant_b": use_variant_b,
@@ -292,28 +292,40 @@ class MyNoiseProvider(MusicProvider):
         """Yield the endless looped+mixed audio for the machine."""
         data = streamdetails.data or {}
         layers = [
-            MachineLayer(
-                url_a=str(layer["source"]),
-                url_b=str(layer["source"]),
-            )
+            MachineLayer(url_a=str(layer["url_a"]), url_b=str(layer["url_b"]))
             for layer in data.get("layers", [])
         ]
         gains = [float(gain) for gain in data.get("gains", [])]
         if not layers or not gains:
             raise MediaNotFoundError("Invalid stream data for myNoise machine")
+        use_variant_b = bool(data.get("use_variant_b", False))
         machine = Machine(
             machine_id=str(data.get("machine_id", "mynoise")),
             name=str(data.get("machine_name", "myNoise")),
             layers=layers,
         )
-        async for chunk in stream_machine(
-            machine,
-            gains,
-            master_gain_db=float(data.get("master_gain_db", 0.0)),
-            use_variant_b=bool(data.get("use_variant_b", False)),
-            logger=self.logger,
-        ):
-            yield chunk
+        # stage the layer audio in a private temp dir (never in the persistent
+        # cache) so the endless ffmpeg loop replays local files without
+        # re-fetching from the CDN, while no copy of the sample library
+        # outlives playback: the dir is removed when the stream ends
+        staging_dir = await asyncio.to_thread(
+            tempfile.mkdtemp, prefix="mynoise-", dir=self.mass.runtime_path
+        )
+        try:
+            machine.layers = [
+                await self._stage_layer(layer, gain, use_variant_b, staging_dir)
+                for layer, gain in zip(layers, gains, strict=True)
+            ]
+            async for chunk in stream_machine(
+                machine,
+                gains,
+                master_gain_db=float(data.get("master_gain_db", 0.0)),
+                use_variant_b=use_variant_b,
+                logger=self.logger,
+            ):
+                yield chunk
+        finally:
+            await asyncio.to_thread(shutil.rmtree, staging_dir, ignore_errors=True)
 
     # --------------------------------------------------------------- images
 
@@ -332,8 +344,10 @@ class MyNoiseProvider(MusicProvider):
             try:
                 self._patron_logged_in = await patron_login(self.mass, email)
             except Exception:
+                # a transient failure (network hiccup) is not an answer from
+                # myNoise: stay anonymous for now but retry on the next call
                 self.logger.warning("myNoise patron login failed", exc_info=True)
-                self._patron_logged_in = False
+                return False
             if not self._patron_logged_in:
                 self.logger.warning(
                     "myNoise rejected the configured patron email; patron-only machines "
@@ -341,41 +355,29 @@ class MyNoiseProvider(MusicProvider):
                 )
         return self._patron_logged_in
 
-    async def _resolve_layer_sources(
-        self, layers: list[MachineLayer], gains: list[float], use_variant_b: bool
-    ) -> list[str]:
-        """Return a playable source per layer: a cached local file, or its url."""
-        # single-instance provider: instance_id always equals the domain, so only
-        # one folder is needed under the cache path
-        cache_dir = os.path.join(self.mass.cache_path, self.domain, AUDIO_CACHE_SUBDIR)
-        sources: list[str] = []
-        for layer, gain in zip(layers, gains, strict=True):
-            url = layer.url_b if use_variant_b else layer.url_a
-            if gain <= 0:
-                # muted layers are skipped by the mixer, so no need to download them
-                sources.append(url)
-                continue
-            sources.append(await self._cache_layer_file(url, cache_dir))
-        return sources
-
-    async def _cache_layer_file(self, url: str, cache_dir: str) -> str:
-        """Download a layer file into the provider cache, falling back to its url."""
+    async def _stage_layer(
+        self, layer: MachineLayer, gain: float, use_variant_b: bool, staging_dir: str
+    ) -> MachineLayer:
+        """Return the layer with its selected source downloaded into the staging dir."""
+        url = layer.url_b if use_variant_b else layer.url_a
+        if gain <= 0:
+            # muted layers are skipped by the mixer, so no need to download them
+            return layer
         digest = hashlib.sha1(url.encode()).hexdigest()[:16]
         ext = PurePath(urlparse(url).path).suffix or AUDIO_EXTENSION
-        path = os.path.join(cache_dir, f"{digest}{ext}")
-        if Path(path).is_file():
-            return path
+        path = os.path.join(staging_dir, f"{digest}{ext}")
         try:
-            async with self.mass.http_session.get(url, headers={"User-Agent": USER_AGENT}) as resp:
+            async with self.mass.http_session.get(url) as resp:
                 resp.raise_for_status()
-                data = await resp.read()
-            await asyncio.to_thread(_write_layer_to_cache, path, data)
+                content = await resp.read()
+            await asyncio.to_thread(_write_layer_to_file, path, content)
         except aiohttp.ClientError, TimeoutError, OSError:
             self.logger.warning(
-                "Failed to cache myNoise layer %s, streaming it remotely instead", url
+                "Failed to download myNoise layer %s, streaming it remotely instead", url
             )
-            return url
-        return path
+            return layer
+        # both variants point at the staged file: the A/B choice is already made
+        return MachineLayer(url_a=path, url_b=path, default_level=layer.default_level)
 
     def _radio_from_machine(self, machine: Machine) -> Radio:
         """Build a Radio media item for the given machine."""

@@ -19,6 +19,7 @@ from music_assistant.providers.mynoise.catalog import (
 )
 from music_assistant.providers.mynoise.constants import (
     CACHE_CATEGORY_MACHINE,
+    CATALOG_FALLBACK_REFRESH_INTERVAL,
     CDN_URL,
 )
 
@@ -192,6 +193,21 @@ async def test_fetch_catalog_falls_back_to_bundled() -> None:
     mass = _mass(http_response=_FakeResponse(error=aiohttp.ClientError("offline")))
     catalog = await fetch_catalog(mass)
     assert catalog.machines == bundled_catalog()[1]
+
+
+async def test_fetch_catalog_caches_bundled_fallback() -> None:
+    """The bundled fallback is cached briefly so a down site is not hammered."""
+    mass = _mass(http_response=_FakeResponse(error=aiohttp.ClientError("offline")))
+    await fetch_catalog(mass)
+    mass.cache.set.assert_awaited_once()
+    assert mass.cache.set.await_args.kwargs["expiration"] == CATALOG_FALLBACK_REFRESH_INTERVAL
+
+
+async def test_fetch_catalog_propagates_unexpected_errors() -> None:
+    """A bug (not a site/markup failure) is not masked by the bundled fallback."""
+    mass = _mass(http_response=_FakeResponse(error=ValueError("programming error")))
+    with pytest.raises(ValueError, match="programming error"):
+        await fetch_catalog(mass)
 
 
 async def test_fetch_catalog_prefers_stale_cache() -> None:

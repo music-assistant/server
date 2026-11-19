@@ -144,11 +144,12 @@ async def stream_machine(
                     break
                 yield chunk
         # process ended: this should not happen for an endless mix (the layers are
-        # cached local files) unless a remote fallback source dropped. Retry once,
-        # flipping to the alternate file variants for any remote fallback sources.
+        # staged local files) unless a remote fallback source dropped. Retry once,
+        # then fail loudly: returning normally here would make a broken stream
+        # look like the machine ended on purpose.
         if attempt >= 2:
-            return
-        use_variant_b = not use_variant_b
+            msg = f"myNoise stream for {machine.name} ended unexpectedly"
+            raise AudioError(msg)
         if logger:
             logger.warning("myNoise stream for %s ended unexpectedly, retrying", machine.name)
         await asyncio.sleep(1)

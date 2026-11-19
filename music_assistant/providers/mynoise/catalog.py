@@ -12,6 +12,7 @@ startup.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -20,6 +21,7 @@ from html import unescape
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+import aiohttp
 from music_assistant_models.errors import MediaNotFoundError
 
 from .constants import (
@@ -28,11 +30,11 @@ from .constants import (
     AUTH_URL,
     CACHE_CATEGORY_CATALOG,
     CACHE_CATEGORY_MACHINE,
+    CATALOG_FALLBACK_REFRESH_INTERVAL,
     CATALOG_REFRESH_INTERVAL,
     CDN_URL,
     INDEX_URL,
     MACHINE_REFRESH_INTERVAL,
-    USER_AGENT,
     WEBSITE_URL,
 )
 
@@ -222,7 +224,6 @@ async def patron_login(mass: MusicAssistant, email: str) -> bool:
     async with mass.http_session.post(
         AUTH_URL,
         data={"email": email, "pwd": ""},
-        headers={"User-Agent": USER_AGENT},
         allow_redirects=False,
     ) as response:
         location = response.headers.get("Location", "")
@@ -244,30 +245,38 @@ async def fetch_catalog(
     if cached and not force_refresh:
         return _catalog_from_dict(cached)
     try:
-        async with mass.http_session.get(INDEX_URL, headers={"User-Agent": USER_AGENT}) as response:
+        async with mass.http_session.get(INDEX_URL) as response:
             html = await response.text()
         categories, machines = parse_index_page(html, include_patron=patron)
         _require_machines(machines)
-        catalog = Catalog(categories, machines)
-        await mass.cache.set(
-            cache_key,
-            _catalog_to_dict(catalog),
-            provider="mynoise",
-            category=CACHE_CATEGORY_CATALOG,
-            expiration=CATALOG_REFRESH_INTERVAL,
-        )
-        return catalog
-    except Exception:
-        # fall back to the bundled catalog when the site is unreachable
+    except aiohttp.ClientError, TimeoutError, MediaNotFoundError:
+        # the site is unreachable or its markup changed: fall back, but cache the
+        # fallback too, so every search/browse/stream does not re-fetch the index
         mass.logger.warning(
             "Failed to refresh the myNoise catalog, using the bundled fallback",
             exc_info=True,
         )
-        fallback = Catalog(*bundled_catalog())
         if cached:
             # prefer a (possibly stale) online catalog over the bundled one
             return _catalog_from_dict(cached)
+        fallback = Catalog(*await asyncio.to_thread(bundled_catalog))
+        await mass.cache.set(
+            cache_key,
+            _catalog_to_dict(fallback),
+            provider="mynoise",
+            category=CACHE_CATEGORY_CATALOG,
+            expiration=CATALOG_FALLBACK_REFRESH_INTERVAL,
+        )
         return fallback
+    catalog = Catalog(categories, machines)
+    await mass.cache.set(
+        cache_key,
+        _catalog_to_dict(catalog),
+        provider="mynoise",
+        category=CACHE_CATEGORY_CATALOG,
+        expiration=CATALOG_REFRESH_INTERVAL,
+    )
+    return catalog
 
 
 def _catalog_to_dict(catalog: Catalog) -> dict[str, Any]:
@@ -320,7 +329,7 @@ async def fetch_machine_details(mass: MusicAssistant, machine: Machine) -> Machi
         machine.layers = [MachineLayer(**item) for item in cached]
         return machine
     url = f"{WEBSITE_URL}{machine.generator_path}"
-    async with mass.http_session.get(url, headers={"User-Agent": USER_AGENT}) as resp:
+    async with mass.http_session.get(url) as resp:
         html = await resp.text()
     cfg = parse_cfg_blob(html)
     if not cfg or not cfg.get("srcA"):

@@ -1,15 +1,21 @@
 """Tests for the myNoise ffmpeg mix helpers."""
 
+import asyncio
+from types import SimpleNamespace
+from typing import Self
+
 import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import AudioError
 
+from music_assistant.providers.mynoise import streaming as streaming_module
 from music_assistant.providers.mynoise.catalog import Machine, MachineLayer
 from music_assistant.providers.mynoise.constants import OUTPUT_SAMPLE_RATE
 from music_assistant.providers.mynoise.streaming import (
     build_ffmpeg_args,
     pcm_output_format,
     resolve_layer_gains,
+    stream_machine,
 )
 
 
@@ -117,3 +123,76 @@ def test_pcm_output_format() -> None:
         16,
         2,
     )
+
+
+# ------------------------------------------------------------ stream_machine
+
+
+class _FakeAsyncProcess:
+    """Stand-in for AsyncProcess whose ffmpeg ends after the given stdout chunks."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        async def _read(_size: int) -> bytes:
+            return chunks.pop(0) if chunks else b""
+
+        self.proc = SimpleNamespace(stdout=SimpleNamespace(read=_read))
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_args: object) -> bool:
+        return False
+
+
+async def _no_sleep(_seconds: float) -> None:
+    """Skip the retry backoff so the retry tests stay fast."""
+
+
+def _install_fake_processes(monkeypatch: pytest.MonkeyPatch, factory: object) -> None:
+    """Swap in the fake ffmpeg process (and drop the retry sleep)."""
+    monkeypatch.setattr(streaming_module, "AsyncProcess", factory)
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+
+
+async def test_stream_machine_raises_when_ffmpeg_keeps_ending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An endless mix that keeps dying must fail loudly, not end silently."""
+    calls: list[list[str]] = []
+
+    def _factory(args: list[str], **_kwargs: object) -> _FakeAsyncProcess:
+        calls.append(args)
+        return _FakeAsyncProcess([])
+
+    _install_fake_processes(monkeypatch, _factory)
+
+    with pytest.raises(AudioError):
+        async for _chunk in stream_machine(_machine(), [1.0, 1.0]):
+            pass
+
+    # retried once, then raised: a broken stream never looks like a normal end
+    assert len(calls) == 2
+    # the retry must not fake a fix by flipping to the B-variants
+    assert calls[0] == calls[1]
+
+
+async def test_stream_machine_retries_once_then_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single early exit is retried and the stream continues from the retry."""
+    attempts: list[list[bytes]] = [[], [b"pcm"]]
+
+    def _factory(_args: list[str], **_kwargs: object) -> _FakeAsyncProcess:
+        return _FakeAsyncProcess(attempts.pop(0))
+
+    _install_fake_processes(monkeypatch, _factory)
+
+    collected: list[bytes] = []
+    stream = stream_machine(_machine(), [1.0, 1.0])
+    try:
+        async for chunk in stream:
+            collected.append(chunk)
+            break
+    finally:
+        await stream.aclose()
+    assert collected == [b"pcm"]

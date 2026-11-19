@@ -1,14 +1,15 @@
 """Tests for the myNoise provider."""
 
 from pathlib import Path
-from typing import Self, cast
+from typing import TYPE_CHECKING, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import BrowseFolder
+from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.media_items import AudioFormat, BrowseFolder
+from music_assistant_models.streamdetails import StreamDetails
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.providers.mynoise import provider as provider_module
@@ -21,9 +22,11 @@ from music_assistant.providers.mynoise.catalog import (
 from music_assistant.providers.mynoise.constants import (
     CONF_PATRON_EMAIL,
     CONF_REFRESH_CATALOG,
-    CONF_USE_VARIANT_B,
 )
 from music_assistant.providers.mynoise.provider import BROWSE_ROOT, MyNoiseProvider
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 class _FakeResponse:
@@ -68,6 +71,7 @@ def _create_provider(tmp_path: Path) -> MyNoiseProvider:
         provider = MyNoiseProvider.__new__(MyNoiseProvider)
     provider.mass = MagicMock()
     provider.mass.cache_path = str(tmp_path)
+    provider.mass.runtime_path = str(tmp_path)
     provider.mass.cache.get = AsyncMock(return_value=None)
     provider.mass.cache.set = AsyncMock()
     provider.config = MagicMock()
@@ -218,15 +222,15 @@ def _machine_with_layers() -> Machine:
     )
 
 
-async def test_get_stream_details_caches_layers(
+async def test_get_stream_details_defers_downloads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Active layers are downloaded once and reused; muted layers are skipped."""
+    """Streamdetails carry both layer variants and trigger no download."""
     machine = _machine_with_layers()
     _patch_catalog(monkeypatch, Catalog([], {"JAPANGARDEN": machine}))
     monkeypatch.setattr(provider_module, "fetch_machine_details", AsyncMock(return_value=machine))
     provider = _create_provider(tmp_path)
-    session = _DownloadSession({"https://cdn/x1": b"LAYER1"})
+    session = _DownloadSession({})
     monkeypatch.setattr(provider.mass.http_session, "get", session.get)
 
     details = await provider.get_stream_details("JAPANGARDEN")
@@ -235,56 +239,134 @@ async def test_get_stream_details_caches_layers(
     assert details.duration is None
     assert details.is_realtime
     assert details.data["gains"] == [1.0, 0.0]
-    source_a = details.data["layers"][0]["source"]
-    assert Path(source_a).read_bytes() == b"LAYER1"
-    assert source_a.startswith(str(tmp_path))
-    # a muted layer is never downloaded: it keeps its remote url
-    assert details.data["layers"][1]["source"] == "https://cdn/x2"
-    assert session.calls == ["https://cdn/x1"]
-
-    # a second playback reuses the cached file instead of downloading again
-    await provider.get_stream_details("JAPANGARDEN")
-    assert session.calls == ["https://cdn/x1"]
-    # no leftover partial files
-    assert not list(tmp_path.rglob("*.part"))
+    assert details.data["layers"] == [
+        {"url_a": "https://cdn/x1", "url_b": "https://cdn/x1b"},
+        {"url_a": "https://cdn/x2", "url_b": "https://cdn/x2b"},
+    ]
+    assert session.calls == []
 
 
-async def test_get_stream_details_variant_b(
+def _stream_details(**overrides: object) -> StreamDetails:
+    data: dict[str, object] = {
+        "machine_id": "JAPANGARDEN",
+        "machine_name": "Japanese Garden",
+        "layers": [
+            {"url_a": "https://cdn/x1", "url_b": "https://cdn/x1b"},
+            {"url_a": "https://cdn/x2", "url_b": "https://cdn/x2b"},
+        ],
+        "gains": [1.0, 0.0],
+        "master_gain_db": 0.0,
+        "use_variant_b": False,
+    }
+    data.update(overrides)
+    return StreamDetails(
+        provider="mynoise",
+        item_id="JAPANGARDEN",
+        audio_format=AudioFormat(content_type=ContentType.PCM_S16LE),
+        data=data,
+    )
+
+
+class _FakeStream:
+    """Stand-in for stream_machine yielding fixed chunks."""
+
+    def __init__(self) -> None:
+        self.machines: list[Machine] = []
+        # the layer sources as they were during playback (staged files are
+        # removed again once the stream ends, so snapshot their content here)
+        self.sources: list[list[bytes | str]] = []
+
+    async def __call__(
+        self, machine: Machine, gains: list[float], **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        self.machines.append(machine)
+        snapshot: list[bytes | str] = []
+        for layer in machine.layers:
+            path = Path(layer.url_a)
+            snapshot.append(path.read_bytes() if path.is_file() else layer.url_a)
+        self.sources.append(snapshot)
+        yield b"chunk"
+
+
+async def test_get_audio_stream_stages_layers_for_playback_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With the B-variant option enabled, the alternate takes are downloaded."""
-    machine = _machine_with_layers()
-    _patch_catalog(monkeypatch, Catalog([], {"JAPANGARDEN": machine}))
-    monkeypatch.setattr(provider_module, "fetch_machine_details", AsyncMock(return_value=machine))
+    """Active layers are downloaded to a temp dir that is removed when playback ends."""
     provider = _create_provider(tmp_path)
-    monkeypatch.setattr(
-        provider,
-        "get_config_value",
-        lambda key, default=None: True if key == CONF_USE_VARIANT_B else default,
-    )
+    session = _DownloadSession({"https://cdn/x1": b"LAYER1"})
+    monkeypatch.setattr(provider.mass.http_session, "get", session.get)
+    fake_stream = _FakeStream()
+    monkeypatch.setattr(provider_module, "stream_machine", fake_stream)
+
+    chunks = [chunk async for chunk in provider.get_audio_stream(_stream_details())]
+    assert chunks == [b"chunk"]
+
+    # the active layer was downloaded once; the muted one kept its remote url
+    assert session.calls == ["https://cdn/x1"]
+    assert fake_stream.sources[0][0] == b"LAYER1"
+    assert Path(fake_stream.machines[0].layers[0].url_a).is_relative_to(tmp_path)
+    assert fake_stream.sources[0][1] == "https://cdn/x2"
+    # playback ended: the staged audio is gone, no copy survives the stream
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_get_audio_stream_stages_variant_b(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the B-variant option, the alternate take is the one downloaded."""
+    provider = _create_provider(tmp_path)
     session = _DownloadSession({"https://cdn/x1b": b"LAYER1B"})
     monkeypatch.setattr(provider.mass.http_session, "get", session.get)
+    fake_stream = _FakeStream()
+    monkeypatch.setattr(provider_module, "stream_machine", fake_stream)
 
-    details = await provider.get_stream_details("JAPANGARDEN")
-    assert Path(details.data["layers"][0]["source"]).read_bytes() == b"LAYER1B"
+    details = _stream_details(use_variant_b=True)
+    assert [chunk async for chunk in provider.get_audio_stream(details)] == [b"chunk"]
     assert session.calls == ["https://cdn/x1b"]
+    assert fake_stream.sources[0][0] == b"LAYER1B"
 
 
-async def test_get_stream_details_download_failure_falls_back(
+async def test_get_audio_stream_download_failure_falls_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failed layer download keeps the remote url so playback still works."""
-    machine = _machine_with_layers()
-    _patch_catalog(monkeypatch, Catalog([], {"JAPANGARDEN": machine}))
-    monkeypatch.setattr(provider_module, "fetch_machine_details", AsyncMock(return_value=machine))
     provider = _create_provider(tmp_path)
     session = _DownloadSession({}, error_urls=("https://cdn/x1",))
     monkeypatch.setattr(provider.mass.http_session, "get", session.get)
+    fake_stream = _FakeStream()
+    monkeypatch.setattr(provider_module, "stream_machine", fake_stream)
 
-    details = await provider.get_stream_details("JAPANGARDEN")
-    assert details.data["layers"][0]["source"] == "https://cdn/x1"
+    assert [chunk async for chunk in provider.get_audio_stream(_stream_details())] == [b"chunk"]
+    assert fake_stream.sources[0][0] == "https://cdn/x1"
     cast("MagicMock", provider.logger.warning).assert_called()
-    assert not list(tmp_path.rglob("*.part"))
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_get_audio_stream_cleans_up_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The staging dir is removed even when the mix fails mid-stream."""
+    provider = _create_provider(tmp_path)
+    session = _DownloadSession({"https://cdn/x1": b"LAYER1"})
+    monkeypatch.setattr(provider.mass.http_session, "get", session.get)
+
+    async def _boom(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
+        yield b"chunk"
+        raise AudioError("ffmpeg died")
+
+    monkeypatch.setattr(provider_module, "stream_machine", _boom)
+    with pytest.raises(AudioError):
+        [chunk async for chunk in provider.get_audio_stream(_stream_details())]
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_get_audio_stream_invalid_data(tmp_path: Path) -> None:
+    """Stream data without layers or gains raises MediaNotFoundError."""
+    provider = _create_provider(tmp_path)
+    with pytest.raises(MediaNotFoundError):
+        [chunk async for chunk in provider.get_audio_stream(_stream_details(layers=[]))]
+    with pytest.raises(MediaNotFoundError):
+        [chunk async for chunk in provider.get_audio_stream(_stream_details(gains=[]))]
 
 
 async def test_get_stream_details_unknown_machine(
@@ -365,6 +447,21 @@ async def test_patron_login_failure_stays_anonymous(
     await provider.handle_config_action(CONF_REFRESH_CATALOG)
     fetch_mock.assert_awaited_once_with(provider.mass, force_refresh=True, patron=False)
     cast("MagicMock", provider.logger.warning).assert_called()
+
+
+async def test_patron_transient_error_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A network hiccup during login is not latched: the next call retries."""
+    provider = _provider_with_patron_email(tmp_path, monkeypatch)
+    login = AsyncMock(side_effect=[aiohttp.ClientError("offline"), True])
+    monkeypatch.setattr(provider_module, "patron_login", login)
+
+    # the hiccup degrades to anonymous for this call only
+    assert not await provider._patron_enabled()
+    # the outcome was not cached: the next call authenticates again
+    assert await provider._patron_enabled()
+    assert login.await_count == 2
 
 
 async def test_get_config_entries_include_patron_email(tmp_path: Path) -> None:
