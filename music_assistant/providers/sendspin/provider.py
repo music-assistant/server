@@ -6,7 +6,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from ipaddress import ip_address
@@ -85,10 +85,14 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.helpers.virtual_player import cleanup_virtual_player
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.media_capabilities import AudioSourceMixin
 from music_assistant.models.player import OWN_PROTOCOL_ROLES
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.providers.sendspin.bridge_manager import evaluate_bridge_of
+from music_assistant.providers.sendspin.bridge_manager import (
+    evaluate_bridge_of,
+    evaluate_bridges_of_player,
+)
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
     BRIDGE_CHANNELS,
@@ -120,9 +124,10 @@ from music_assistant.providers.sendspin.security import (
     IDENTITY_FILENAME,
     get_or_create_server_identity,
 )
+from music_assistant.providers.sendspin.sources import SendspinSources
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Collection, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Collection, Sequence
 
     from aiosendspin.models.management import (
         ManagementResultData,
@@ -134,8 +139,11 @@ if TYPE_CHECKING:
     from aiosendspin.server.server import ExternalStreamStartRequest
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import MediaType
     from music_assistant_models.event import MassEvent
+    from music_assistant_models.media_items import AudioSource
     from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.webserver.auth import AuthenticationManager
     from music_assistant.providers.hass import HomeAssistantProvider
@@ -370,8 +378,8 @@ def _manual_client_url(address: str) -> str:
     )
 
 
-class SendspinProvider(PlayerProvider):
-    """Player Provider for Sendspin."""
+class SendspinProvider(AudioSourceMixin, PlayerProvider):
+    """Player Provider for Sendspin, which also delivers the line-ins of its clients."""
 
     reload_on_streams_network_change = True
     server_api: SendspinServer
@@ -380,6 +388,8 @@ class SendspinProvider(PlayerProvider):
     _bridge_identifiers: dict[str, dict[IdentifierType, str]]
     _bridge_underlying_protocols: dict[str, str]
     _bridge_holders: dict[str, str]
+    _bridge_waiters: dict[str, dict[str, Callable[[], None]]]
+    _bridge_locks: dict[str, asyncio.Lock]
     _bridge_static_delay_defaults: dict[str, int]
     _client_event_versions: dict[str, int]
     _client_event_task_counts: dict[str, int]
@@ -398,7 +408,9 @@ class SendspinProvider(PlayerProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize a new Sendspin player provider."""
-        super().__init__(mass, manifest, config, {ProviderFeature.SYNC_PLAYERS})
+        super().__init__(
+            mass, manifest, config, {ProviderFeature.SYNC_PLAYERS, ProviderFeature.AUDIO_SOURCE}
+        )
         # Handle config option for manual IP's. Read a default here: at construction the
         # config only carries the server defaults + stored raw values (the provider's typed
         # option entries are resolved and applied by the config controller right after this).
@@ -411,6 +423,10 @@ class SendspinProvider(PlayerProvider):
         self._bridge_underlying_protocols = {}
         # bridge client id -> the protocol whose bridge registered or claimed it last
         self._bridge_holders = {}
+        # bridge client id -> protocol id -> what to do once its holder lets it go
+        self._bridge_waiters = {}
+        # player id -> the lock its bridges hand its Sendspin output over under
+        self._bridge_locks = {}
         self._bridge_static_delay_defaults = {}
         self._bridge_player_types: dict[str, PlayerType] = {}
         self._client_event_versions = {}
@@ -433,6 +449,7 @@ class SendspinProvider(PlayerProvider):
         self._server_start_failed = False
         self._hass_auto_pairer = HassAutoPairer(self)
         self._local_auto_pairer = LocalAutoPairer(self)
+        self.sources = SendspinSources(self)
         self.unregister_cbs = []
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -505,6 +522,7 @@ class SendspinProvider(PlayerProvider):
             self.server_api.add_event_listener(self.event_cb),
             self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED),
             self.mass.subscribe(self._on_queue_updated, EventType.QUEUE_UPDATED),
+            self.mass.subscribe(self._on_player_config_updated, EventType.PLAYER_CONFIG_UPDATED),
         ]
         # seed the hass availability snapshot so the first (un)load is seen as a change
         hass = self.mass.get_provider("hass")
@@ -673,6 +691,54 @@ class SendspinProvider(PlayerProvider):
         """
         if self._bridge_holders.get(client_id) == protocol_id:
             del self._bridge_holders[client_id]
+            self.wake_bridge_waiters(client_id)
+
+    def wake_bridge_waiters(self, client_id: str) -> None:
+        """
+        Call back, once, the protocols that wait for a bridge client to be let go.
+
+        :param client_id: The bridge client id.
+        """
+        for callback in self._bridge_waiters.pop(client_id, {}).values():
+            callback()
+
+    def wait_for_bridge_client(
+        self, client_id: str, protocol_id: str, callback: Callable[[], None]
+    ) -> bool:
+        """
+        Call back once, when the bridge that holds a bridge client lets it go.
+
+        :param client_id: The bridge client id.
+        :param protocol_id: The id of the protocol that waits for it; a later wait of the same
+            protocol leaves this one in place.
+        :param callback: What to call.
+        :return: Whether the protocol did not wait for the client yet.
+        """
+        waiters = self._bridge_waiters.setdefault(client_id, {})
+        if protocol_id in waiters:
+            return False
+        waiters[protocol_id] = callback
+        return True
+
+    def stop_waiting_for_bridge_client(self, client_id: str, protocol_id: str) -> None:
+        """
+        Forget that a protocol waits for a bridge client.
+
+        :param client_id: The bridge client id.
+        :param protocol_id: The id of the protocol that waits for it.
+        """
+        if (waiters := self._bridge_waiters.get(client_id)) is not None:
+            waiters.pop(protocol_id, None)
+            if not waiters:
+                del self._bridge_waiters[client_id]
+
+    def bridge_lock(self, player_id: str) -> asyncio.Lock:
+        """
+        Return the lock under which the bridges of a player hand its Sendspin output over.
+
+        :param player_id: Id of the player.
+        """
+        return self._bridge_locks.setdefault(player_id, asyncio.Lock())
 
     def refresh_bridge_client(self, client_id: str) -> None:
         """
@@ -1212,6 +1278,7 @@ class SendspinProvider(PlayerProvider):
             self.mass.webserver.auth.subscribe_user_access_revoked(self._on_user_access_revoked)
         )
         await self._remove_orphan_virtual_player_configs()
+        self.sources.start()
         # Start server for handling incoming Sendspin connections from clients
         # and mDNS discovery of new clients
         try:
@@ -1265,6 +1332,7 @@ class SendspinProvider(PlayerProvider):
         self._pairing_config_snapshots.clear()
         self._hass_auto_pairer.close()
         self._local_auto_pairer.close()
+        await self.sources.stop()
         if self._running_pairing_evictions:
             await asyncio.gather(*self._running_pairing_evictions, return_exceptions=True)
         # Stop the Sendspin server. A failed start already cleaned up after itself,
@@ -1278,6 +1346,41 @@ class SendspinProvider(PlayerProvider):
         self._client_event_task_counts.clear()
         self._client_event_versions.clear()
         self._virtual_players.clear()
+        self._bridge_waiters.clear()
+
+    async def get_audio_sources(self) -> list[AudioSource]:
+        """Return the line-ins of the connected Sendspin clients and approved held ones."""
+        return await self.sources.get_audio_sources()
+
+    def get_player_input_sources(self, player_id: str) -> list[AudioSource]:
+        """Return the line-in of the Sendspin client of the given player."""
+        return self.sources.get_player_input_sources(player_id)
+
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Return the StreamDetails of a Sendspin line-in."""
+        return await self.sources.get_stream_details(item_id, media_type)
+
+    async def on_source_selected(
+        self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
+    ) -> None:
+        """Claim a Sendspin line-in and ask its client to start streaming."""
+        await self.sources.on_source_selected(
+            source_id, player_id, owner_player_id, stream_session_id
+        )
+
+    async def on_source_unselected(
+        self, source_id: str, owner_player_id: str, stream_session_id: str
+    ) -> None:
+        """Release a Sendspin line-in when its stream is torn down."""
+        await self.sources.on_source_unselected(source_id, owner_player_id, stream_session_id)
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """Return the PCM of a Sendspin line-in; a line-in can not seek."""
+        async with aclosing(self.sources.get_audio_stream(streamdetails)) as stream:
+            async for chunk in stream:
+                yield chunk
 
     def _set_aiosendspin_log_level(self) -> None:
         """Keep aiosendspin's (very chatty) logging quiet unless verbose logging is enabled."""
@@ -1373,7 +1476,8 @@ class SendspinProvider(PlayerProvider):
         Create the appropriate player class based on client roles.
 
         Priority: player role -> SendspinPlayer, metadata role -> DISPLAY,
-        visualizer role -> VISUALIZER, source role -> SendspinSourcePlayer.
+        visualizer role -> VISUALIZER, source role -> SendspinSourcePlayer,
+        artwork role -> DISPLAY, color role -> LIGHT, controller role -> DISPLAY.
         Bridge-registered type overrides the default.
         """
         extra_ids = self._bridge_identifiers.pop(client_id, None)
@@ -1424,6 +1528,15 @@ class SendspinProvider(PlayerProvider):
             # Capture-only device: a SendspinPlayer here would advertise playback it
             # cannot do. It registers as an audio input instead.
             player = SendspinSourcePlayer(self, client_id, initial_hello=initial_hello)
+        elif negotiated_families & {"artwork", "color", "controller"}:
+            # Without an audio sink it can follow a group but never play or lead one.
+            # A controller-only client has no type of its own and passes for a display.
+            colors_only = "color" in negotiated_families and "artwork" not in negotiated_families
+            viz_player = SendspinVisualizerPlayer(self, client_id, initial_hello=initial_hello)
+            viz_player._attr_type = bridge_player_type or (
+                PlayerType.LIGHT if colors_only else PlayerType.DISPLAY
+            )
+            player = viz_player
         else:
             audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
             if previous_player is not None:
@@ -2060,6 +2173,12 @@ class SendspinProvider(PlayerProvider):
         for player in self.protocols:
             if isinstance(player, SendspinPlayer):
                 player.on_queue_updated(queue_id)
+
+    async def _on_player_config_updated(self, event: MassEvent) -> None:
+        """Let the bridges of a player follow a saved config, such as an output switched off."""
+        if self._unloading or self.mass.closing or (player_id := event.object_id) is None:
+            return
+        await evaluate_bridges_of_player(self.mass, player_id)
 
     async def _remove_orphan_virtual_player_configs(self) -> None:
         """Delete stored configs of virtual players whose owner provider is gone."""

@@ -38,7 +38,6 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
     ProtocolRole,
-    ProviderFeature,
     SleepTimerMode,
 )
 from music_assistant_models.player import (
@@ -88,7 +87,6 @@ from music_assistant.models.player_state import (
     resolve_media_queue,
     resolve_synced_to,
 )
-from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -2605,11 +2603,9 @@ class Player:
         return tuple(groups)
 
     def _collect_standing_sources(self) -> tuple[AudioSource, ...]:
-        """Collect the audio sources plugins bound to the player or report as its inputs."""
+        """Collect the audio sources providers bound to the player or report as its inputs."""
         sources: list[AudioSource] = []
-        for prov in self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE):
-            if not isinstance(prov, PluginProvider):
-                continue
+        for prov in self.mass.players.get_audio_source_providers():
             sources += prov.get_player_audio_sources(self.player_id) or ()
             # a device's own inputs may be reported for one of its protocols
             for device_id in {self.player_id, *self._protocols}:

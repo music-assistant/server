@@ -194,6 +194,10 @@
         "this_device": "This device"
       }
     },
+    "allow_audio_analysis": {
+      "label": "[%key:common::config_entries::allow_audio_analysis::label%]",
+      "description": "[%key:common::config_entries::allow_audio_analysis::description%]"
+    },
     "source_autostart_unavailable": {
       "label": "This device does not support automatically playing its line-in on a speaker."
     },
@@ -298,6 +302,7 @@
     "pairing_error_no_pin_session": "The pairing attempt was interrupted. Please try again.",
     "pairing_error_token_invalid": "The pairing token is not valid. Make sure it was copied completely.",
     "pairing_error_token_mismatch": "The token was issued by a different device.",
-    "invalid_value": "Enter the complete pairing code."
+    "invalid_value": "Enter the complete pairing code.",
+    "no_audio": "{0} did not start streaming its input."
   }
 }

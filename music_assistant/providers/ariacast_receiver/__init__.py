@@ -32,7 +32,8 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from yarl import URL
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, WILDCARD_BIND_IPS
-from music_assistant.models.plugin import PluginProvider, SourceControlValue
+from music_assistant.models.media_capabilities import SourceControlValue
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -984,7 +985,7 @@ class AriaCastReceiver(PluginProvider):
                 self.logger.warning(
                     "Ignoring AriaCast discovery requests: the streamserver publish IP (%s) "
                     "is not an IPv4 address senders can reach. Set the publish IP in "
-                    "Settings --> System --> Streams.",
+                    "Settings --> System --> Network.",
                     publish_ip,
                 )
             return None

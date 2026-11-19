@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_AI_DEFAULT_ENGINES_MIGRATED,
     CONF_AIRPLAY_SYNC_ADJUST_SIGN_MIGRATED,
     CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
@@ -36,6 +37,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_stereo_pair_player_type,
     _migrate_unrenamed_player_names,
     migrate,
+    migrate_ai_default_engines,
     migrate_connected_player_plugins,
     migrate_provider_setup_data,
 )
@@ -1703,6 +1705,25 @@ async def test_migrate_removes_the_retired_builtin_provider_configs() -> None:
     assert data["providers"] == kept
 
 
+def test_migrate_removes_the_sendspin_source_plugin_config() -> None:
+    """The config of the retired Sendspin Source plugin goes, the one of Sendspin stays."""
+    data: dict[str, Any] = {
+        "providers": {
+            "sendspin_source": {
+                "domain": "sendspin_source",
+                "type": "plugin",
+                "values": {"target_latency": 800},
+            },
+            "sendspin": {"domain": "sendspin", "type": "player", "values": {}},
+        }
+    }
+    kept = deepcopy(data["providers"]["sendspin"])
+
+    assert _migrate_remove_retired_builtin_providers(data) is True
+    assert data["providers"] == {"sendspin": kept}
+    assert _migrate_remove_retired_builtin_providers(data) is False
+
+
 def test_migrate_remove_retired_builtin_providers_leaves_other_data_alone() -> None:
     """Settings without a retired provider config, or with malformed ones, are left as they are."""
     cases: list[dict[str, Any]] = [
@@ -1758,3 +1779,197 @@ def test_migrate_stereo_pair_player_type_survives_malformed_players() -> None:
         before = deepcopy(data)
         assert _migrate_stereo_pair_player_type(data) is False
         assert data == before
+
+
+def _ai_engines_data() -> dict[str, Any]:
+    """Return settings in the shape stored before the default AI engines existed."""
+    return {
+        "core": {
+            "players": {
+                "domain": "players",
+                "values": {"announce_tts_engine": "hass--1/tts.cloud"},
+            },
+        },
+        "providers": {
+            "hass--1": {"domain": "hass", "instance_id": "hass--1"},
+            "openai--1": {"domain": "openai_compatible", "instance_id": "openai--1"},
+            "ai_radio": {
+                "domain": "ai_radio",
+                "instance_id": "ai_radio",
+                "setup_data": {
+                    "ai_engine": ENCRYPT_SUFFIX + "hass--1/ai_task.a",
+                    "tts_engine": ENCRYPT_SUFFIX + "hass--1/tts.other",
+                    "weather_city": ENCRYPT_SUFFIX + "Amsterdam",
+                },
+            },
+            "smart_playlist": {
+                "domain": "smart_playlist",
+                "instance_id": "smart_playlist",
+                "values": {"ai_engine": "openai--1/gpt", "ai_descriptions": True},
+            },
+            "music_quiz": {
+                "domain": "music_quiz",
+                "instance_id": "music_quiz",
+                "values": {"ai_engine": "hass--1/ai_task.a"},
+            },
+            "playlist_metadata": {
+                "domain": "playlist_metadata",
+                "instance_id": "playlist_metadata",
+                "values": {
+                    "ai_text_engine": "openai--1/gpt",
+                    "ai_image_engine": "openai--1/image",
+                },
+            },
+        },
+    }
+
+
+def test_migrate_ai_default_engines_seeds_the_defaults() -> None:
+    """Each default is seeded from the picks and the picks equal to it follow it."""
+    data = _ai_engines_data()
+
+    assert migrate_ai_default_engines(data, _fake_decrypt) is True
+
+    assert data["core"]["ai"] == {
+        "domain": "ai",
+        "values": {
+            # two picks each: the AI Radio pick breaks the tie
+            "text_engine": "hass--1/ai_task.a",
+            "speech_engine": "hass--1/tts.cloud",
+            "image_engine": "openai--1/image",
+        },
+    }
+    providers = data["providers"]
+    assert data["core"]["players"]["values"] == {}
+    # a different pick stays the feature's own choice, still encrypted
+    assert providers["ai_radio"]["setup_data"] == {
+        "tts_engine": ENCRYPT_SUFFIX + "hass--1/tts.other",
+        "weather_city": ENCRYPT_SUFFIX + "Amsterdam",
+    }
+    assert providers["smart_playlist"]["values"] == {
+        "ai_engine": "openai--1/gpt",
+        "ai_descriptions": True,
+    }
+    assert providers["music_quiz"]["values"] == {}
+    assert providers["playlist_metadata"]["values"] == {"ai_text_engine": "openai--1/gpt"}
+    assert data[CONF_AI_DEFAULT_ENGINES_MIGRATED] is True
+
+
+def test_migrate_ai_default_engines_seeds_the_most_used_text_engine() -> None:
+    """The text engine most features picked becomes the default, whatever came first."""
+    data = _ai_engines_data()
+    data["providers"]["music_quiz"]["values"]["ai_engine"] = "openai--1/gpt"
+
+    migrate_ai_default_engines(data, _fake_decrypt)
+
+    assert data["core"]["ai"]["values"]["text_engine"] == "openai--1/gpt"
+    providers = data["providers"]
+    assert providers["ai_radio"]["setup_data"]["ai_engine"] == ENCRYPT_SUFFIX + "hass--1/ai_task.a"
+    assert "ai_engine" not in providers["smart_playlist"]["values"]
+    assert "ai_engine" not in providers["music_quiz"]["values"]
+    assert "ai_text_engine" not in providers["playlist_metadata"]["values"]
+
+
+def test_migrate_ai_default_engines_seeds_speech_from_ai_radio() -> None:
+    """Without an announcement engine the AI Radio speech engine becomes the default."""
+    data = _ai_engines_data()
+    del data["core"]["players"]
+
+    migrate_ai_default_engines(data, _fake_decrypt)
+
+    assert data["core"]["ai"]["values"]["speech_engine"] == "hass--1/tts.other"
+    assert "tts_engine" not in data["providers"]["ai_radio"]["setup_data"]
+
+
+def test_migrate_ai_default_engines_skips_engines_of_unusable_plugins() -> None:
+    """An engine whose plugin is removed or disabled is not seeded, and its picks stay."""
+    data = _ai_engines_data()
+    del data["providers"]["hass--1"]
+    data["providers"]["openai--1"]["enabled"] = False
+
+    migrate_ai_default_engines(data, _fake_decrypt)
+
+    assert "ai" not in data["core"]
+    assert data["core"]["players"]["values"] == {"announce_tts_engine": "hass--1/tts.cloud"}
+    assert data["providers"]["music_quiz"]["values"] == {"ai_engine": "hass--1/ai_task.a"}
+    assert data[CONF_AI_DEFAULT_ENGINES_MIGRATED] is True
+
+
+def test_migrate_ai_default_engines_keeps_a_stored_default() -> None:
+    """A default that is set already is kept, and the picks equal to it follow it."""
+    data = _ai_engines_data()
+    data["core"]["ai"] = {"domain": "ai", "values": {"text_engine": "openai--1/gpt"}}
+
+    migrate_ai_default_engines(data, _fake_decrypt)
+
+    ai_values = data["core"]["ai"]["values"]
+    assert ai_values["text_engine"] == "openai--1/gpt"
+    assert ai_values["speech_engine"] == "hass--1/tts.cloud"
+    providers = data["providers"]
+    assert "ai_engine" not in providers["smart_playlist"]["values"]
+    assert providers["music_quiz"]["values"] == {"ai_engine": "hass--1/ai_task.a"}
+    assert providers["ai_radio"]["setup_data"]["ai_engine"] == ENCRYPT_SUFFIX + "hass--1/ai_task.a"
+
+
+def test_migrate_ai_default_engines_skips_an_undecryptable_pick() -> None:
+    """A pick that can not be decrypted is neither seeded nor removed."""
+
+    def _failing_decrypt(value: str) -> str:
+        if "broken" in value:
+            raise InvalidDataError("Password decryption failed")
+        return value.removeprefix(ENCRYPT_SUFFIX)
+
+    data = _ai_engines_data()
+    data["providers"]["ai_radio"]["setup_data"]["ai_engine"] = ENCRYPT_SUFFIX + "broken"
+
+    assert migrate_ai_default_engines(data, _failing_decrypt) is True
+
+    assert data["providers"]["ai_radio"]["setup_data"]["ai_engine"] == ENCRYPT_SUFFIX + "broken"
+    # without the AI Radio pick, the Smart Playlists pick wins the tie
+    assert data["core"]["ai"]["values"]["text_engine"] == "openai--1/gpt"
+
+
+def test_migrate_ai_default_engines_runs_once() -> None:
+    """The marker is claimed without any pick, so later picks equal to a default are kept."""
+    data: dict[str, Any] = {}
+
+    assert migrate_ai_default_engines(data, _fake_decrypt) is True
+    assert data == {CONF_AI_DEFAULT_ENGINES_MIGRATED: True}
+
+    data.update(_ai_engines_data())
+    data["core"]["ai"] = {"domain": "ai", "values": {"text_engine": "openai--1/gpt"}}
+    before = deepcopy(data)
+    assert migrate_ai_default_engines(data, _fake_decrypt) is False
+    assert data == before
+
+
+def test_migrate_ai_default_engines_survives_malformed_data() -> None:
+    """Malformed blocks and values are skipped without raising."""
+    cases: list[dict[str, Any]] = [
+        {"core": "broken", "providers": "broken"},
+        {"core": {"players": "broken", "ai": "broken"}, "providers": {"x": "broken"}},
+        {
+            "core": {"players": {"values": {"announce_tts_engine": 5}}, "ai": {"values": []}},
+            "providers": {
+                "hass--1": {"domain": "hass"},
+                "smart_playlist": {"domain": "smart_playlist", "values": "broken"},
+                "music_quiz": {"domain": "music_quiz", "values": {"ai_engine": "no-separator"}},
+                "ai_radio": {"domain": "ai_radio", "setup_data": {"ai_engine": None}},
+            },
+        },
+    ]
+    for data in cases:
+        assert migrate_ai_default_engines(data, _fake_decrypt) is True
+        assert data[CONF_AI_DEFAULT_ENGINES_MIGRATED] is True
+    assert cases[2]["providers"]["music_quiz"]["values"] == {"ai_engine": "no-separator"}
+
+
+def test_migrate_ai_default_engines_repairs_a_stored_block_without_domain() -> None:
+    """A seeded block always carries its domain, so it parses as a core config."""
+    data = _ai_engines_data()
+    data["core"]["ai"] = {"values": "broken"}
+
+    migrate_ai_default_engines(data, _fake_decrypt)
+
+    assert data["core"]["ai"]["domain"] == "ai"
+    assert data["core"]["ai"]["values"]["text_engine"] == "hass--1/ai_task.a"

@@ -19,7 +19,10 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat, AudioSource
 
-from music_assistant.controllers.players.audio_sources import AudioSourceMixin, AudioSourceSession
+from music_assistant.controllers.players.audio_sources import (
+    AudioSourceSession,
+    PlayerAudioSourcesMixin,
+)
 from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.models.player import PlayerMedia
@@ -40,7 +43,7 @@ def _session(player_id: str = OWNER_ID) -> AudioSourceSession:
     )
 
 
-class _SessionStore(AudioSourceMixin):
+class _SessionStore(PlayerAudioSourcesMixin):
     """Real session bookkeeping for the mocked player controller."""
 
     def __init__(self) -> None:

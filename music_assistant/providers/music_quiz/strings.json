@@ -56,6 +56,10 @@
     "music_quiz_unknown_quiz_type": "This quiz type is not available.",
     "music_quiz_unknown_player": "This Music Quiz player is not in the game.",
     "music_quiz_unknown_suggestion": "This answer option is not available.",
-    "music_quiz_invalid_answer": "This answer is not valid for the current game."
+    "music_quiz_invalid_answer": "This answer is not valid for the current game.",
+    "music_quiz_too_many_attempts": "You used all your guesses for this round.",
+    "music_quiz_guess_too_fast": "Please wait a moment before guessing again.",
+    "music_quiz_invalid_hint_speed": "The selected hint speed is not valid.",
+    "music_quiz_invalid_typo_tolerance": "The selected typo tolerance is not valid."
   }
 }

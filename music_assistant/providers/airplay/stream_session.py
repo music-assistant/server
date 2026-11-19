@@ -36,7 +36,7 @@ from .constants import (
     ClockReadiness,
     StreamingProtocol,
 )
-from .helpers import cli_clock_time, get_final_output_format, get_sync_offset_ms
+from .helpers import cli_clock_time, get_final_output_format
 from .stream import AirPlayStream
 
 if TYPE_CHECKING:
@@ -649,7 +649,7 @@ class AirPlayStreamSession:
                 )
             requested_at, fed_pos_due = map_to(anchor_at, committed=False)[:2]
             start_unix_ms = int(requested_at * 1000)
-            adjust_ms = get_sync_offset_ms(airplay_player.config)
+            adjust_ms = airplay_player.sync_offset_ms
             position_ms = int(((self.media.elapsed_time or 0) + fed_pos_due) * 1000)
 
         try:
@@ -1235,7 +1235,7 @@ class AirPlayStreamSession:
             stream = player.stream
             if stream is None or stream.warm_lead_ms <= 0:
                 continue
-            adjust_ms = get_sync_offset_ms(player.config)
+            adjust_ms = player.sync_offset_ms
             member_requirement = max(member_requirement, stream.warm_lead_ms - min(0, adjust_ms))
         if member_requirement > 0:
             anchor = max(
@@ -1246,7 +1246,7 @@ class AirPlayStreamSession:
             stream = player.stream
             if stream is None or stream.flushed_head_unix_ms <= 0:
                 continue
-            adjust_ms = get_sync_offset_ms(player.config)
+            adjust_ms = player.sync_offset_ms
             # The member's commanded instant is anchor + adjust; it must clear
             # the member's frozen head with margin for the command round-trip.
             anchor = max(
@@ -1395,7 +1395,7 @@ class AirPlayStreamSession:
                     stream = player.stream
                     if stream is None:
                         continue
-                    adjust_ms = get_sync_offset_ms(player.config)
+                    adjust_ms = player.sync_offset_ms
                     member_tasks.append(
                         (
                             adjust_ms,
@@ -1537,7 +1537,7 @@ class AirPlayStreamSession:
             await ffmpeg.close()
         handoff_format = stream.pcm_format
         output_plan = self.mass.streams.audio.get_player_output_plan(
-            player.protocol_id,
+            player.output_plan_protocol_id,
             input_format=self.pcm_format,
             output_format=get_final_output_format(handoff_format),
             handoff_format=handoff_format,

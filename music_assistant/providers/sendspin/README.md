@@ -10,11 +10,76 @@ Sendspin enables:
 - **Real-time metadata** including artwork, track info, and playback state
 - **Bidirectional control** allowing clients to control playback
 
-## Source clients
+## Line-in sources
 
-This provider owns Sendspin client connections and output players. The separate
-[Sendspin Source](../sendspin_source/README.md) plugin exposes audio captured by
-source-role clients through Music Assistant's AudioSource interface.
+Besides its players, this provider delivers the inputs of Sendspin clients that
+implement the [source role](https://github.com/Sendspin-Protocol/spec) (line-in,
+turntable preamp, microphone, Bluetooth receiver) as Music Assistant audio
+sources, playable on any player or group. `SendspinSources` in `sources.py`
+implements them on the provider's own client connections.
+
+### How it works
+
+Every connected Sendspin client whose negotiated roles include the `source`
+family shows up as one AudioSource under Live Inputs. The source role only
+activates on paired connections, so an unpaired device never appears here.
+
+When a user plays a source, the provider sends the client a
+`server/command: start`. The client announces its native stream format,
+streams timestamped encoded audio up to the server, and the Sendspin server
+library decodes it back to PCM. The provider feeds that PCM into a clock
+bridge (`aiosendspin.audio.AsrcSourceBridge`) and serves Music Assistant a
+steady stream in the source's own format.
+
+### Design notes
+
+- **Output format.** A source's native format is only known once the
+  client starts streaming, so the stream details wait for its first audio
+  (falling back to 48 kHz / 24-bit / stereo when none arrives). The bridge
+  keeps converting to that declared format when the source later restarts
+  in another one, so the stream never changes format mid-play.
+- **Clock bridge.** The client's capture clock (its ADC) and the consuming
+  player's clock drift relative to each other, and capture timestamps can be
+  gappy. The bridge holds a target latency of 500 ms and folds drift
+  correction into a phase-continuous variable-rate resample (soxr).
+- **Silence-hold.** A real line-in goes silent when unplugged, it does not
+  stop. The stream mirrors that: when source audio stops flowing (stream
+  end, disconnect, client unavailable) it keeps playing silence rather
+  than ending. After the source timeout, the stream ends. This intentionally
+  differs from providers like Spotify Connect, which end the stream immediately
+  on pause: those have an upstream transport state to mirror, a line-in does not.
+- **Reconnect recovery.** A reconnect clears the client's start request, so the
+  provider re-sends it. The existing Music Assistant stream remains open with
+  silence and resumes live audio after the client reconnects and rebuilds its
+  latency buffer, provided audio returns before the source timeout. Audio
+  captured during the disconnect is lost. Recovery is scoped to reconnects: a
+  client that reports itself unavailable also has its start request cleared, but
+  announces nothing when it returns, so that stream runs out the source timeout
+  instead.
+- **Server-initiated streaming only.** Per the Sendspin spec, a source client
+  must not stream until the server asks. Streaming starts on source selection
+  and stops on unselection, so no bandwidth is spent while nobody listens.
+
+### Autostart
+
+Clients that advertise the `line_sense` feature report whether a signal is
+present on their input. Per the spec the server decides what to do with that,
+and this provider turns it into playback: pick a target under the device's own
+settings and the source starts there when a signal appears, and stops again
+after the signal has been gone for a minute. The target list covers everything
+that renders audio, groups and multi-channel players included, and a device
+that is a player itself defaults to playing its own line-in.
+
+Only transitions act, and the first report after a connect is recorded
+without acting, so a restart with the needle already down starts nothing. A
+source that is already streaming is never re-targeted, so moving it by hand
+survives the next transition. Autostop also closes a gap that exists without
+line-sense: a client keeps streaming silence after a record ends, so the
+no-audio timeout never fires and the queue would otherwise sit
+playing silence indefinitely.
+
+Devices without `line_sense` have no trigger to offer, so they get no setting
+and stay manual.
 
 ## Architecture
 
@@ -205,6 +270,7 @@ Sendspin players support:
 | `provider.py` | Main provider class, handles WebRTC signaling and server lifecycle |
 | `player.py` | Player implementation with playback, grouping, and metadata handling |
 | `playback.py` | Playback pipeline with DSP channel processing and timed frame commits |
+| `sources.py` | Line-in sources of source-role clients, with their clock bridge and autostart |
 | `__init__.py` | Provider setup and configuration |
 | `manifest.json` | Provider metadata |
 
@@ -237,11 +303,19 @@ External players are registered programmatically via `server_api.register_extern
 
 A client whose record says it rides on another protocol is that bridge again when it connects before its bridge is set up, as the Sendspin Cast receiver app does after a restart: it is no browser player of its own then, although it reports as one.
 
-The bridge managers (`SendspinBridgeManagerBase` in `bridge_manager.py`, subclassed by the AirPlay, squeezelite and Chromecast bridges) keep a bridge for as long as the protocol it bridges is attached and its Sendspin output is switched on. The interface they offer the bridged providers takes the protocol id of the bridged protocol.
+The bridge managers (`SendspinBridgeManagerBase` in `bridge_manager.py`, subclassed by the AirPlay, squeezelite and Chromecast bridges) keep a bridge for the protocol that carries the Sendspin output of its player, for as long as that protocol is attached and the output is switched on. The interface they offer the bridged providers takes the protocol id of the bridged protocol.
 
-A device gets one Sendspin output, carried by the first of its bridges in the order AirPlay, squeezelite, Chromecast. A protocol the user switched off as an output, or whose provider is disabled, lets the next bridge take the output over. An AirPlay protocol that is merely away keeps its place, while a squeezelite protocol that is away leaves the output to Chromecast until it returns. The managers settle this when the outputs of the player change, so a protocol switched on or off while its device is away on it takes effect at the next change of those outputs or at a restart.
+A player has one Sendspin output, however many of its protocols can be bridged: one stored record with one switch and one set of settings. The record names its carrier, the protocol whose bridge registers the output, and keeps its client id for good. A bridge registers under the id of the record of its player; only a player without one gets a record, under an id of the device of the bridge that creates it. The player is what ties the bridges of one device together, because its protocols do not all report the same MAC address, or the same form of it.
 
-Bridges that share a client id (their protocols report the same MAC address) share one output and its record. Its static delay is kept per bridge: at a take-over the delay set for the bridge before is put aside in the record (`sendspin_bridge_static_delays`, by protocol id), and the one set while the new bridge carried the output before comes back; without one, the default of the new bridge applies.
+A device has one output also while its protocols sit on two players: a bridge gets no output of its own while another player has the client id it would register under, in either form of the MAC address of the device, as a stored output or as the client of its bridge. It takes the id once that player lets go of it, such as when that player is removed for good. A player removed while none of its protocols is loaded (its device away since the start) wakes nobody: the other player takes the id at its next evaluation, such as when one of its protocols reconnects. Two players that each have an output of the device stored keep both; whichever bridge registers first has the device while it holds the client, and the other waits for it. Unlinking the protocol that carries the output from its player moves the record along, as every protocol riding on it moves.
+
+Which protocol carries the output is decided in one place (`select_carrier`): the first in `BRIDGE_ORDER` (squeezelite, AirPlay, Chromecast) that holds it. A protocol the user has switched on holds the output when its manager says it qualifies while it is attached, and when it is the stored carrier while it is away or its provider still loads. So a speaker that is merely off keeps its place, while a protocol the user switched off, or whose provider is disabled, lets the next one take the output over. A protocol that never carried the output holds no place while it is away, because whether it qualifies is only known with its device there.
+
+A hand-over never removes or creates the record. Under a lock per player, one step without a suspension lets the record follow its carrier (the carrier it names, the static delay of that carrier and what Chromecast asks for, below); then the bridge of the carrier before stops and the bridge of the new one registers under the same client id. The static delay is kept per carrier: the delay set for the carrier before is put aside in the record (`sendspin_bridge_static_delays`, by protocol id), and the one set while the new carrier had the output before comes back; without one, the default of the new bridge applies.
+
+Sendspin over Chromecast is experimental. Chromecast leaves an output it carries switched off until the user switched it on once while Chromecast carried it (`sendspin_cast_opt_in`), and stores its warning with it (`protocol_experimental_note`). What it switched off is marked as its default (`protocol_off_by_default`), which tells that apart from an output its user switched off: AirPlay and squeezelite switch a default on when they take the output over, and leave an output its user switched off as it is. A save that switches an output drops the mark. An unchanged output switch submitted with a settings form leaves the carrier's default alone.
+
+The bridges of a player are evaluated when one of its bridged protocols attaches or detaches, when its outputs change, when a provider loads or unloads, when its Sendspin output is switched and when a config of the player is saved.
 
 ### Implemented Bridges
 

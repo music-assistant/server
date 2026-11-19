@@ -43,7 +43,8 @@ from music_assistant.helpers.config_entries import (
     resolve_publish_name,
 )
 from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
-from music_assistant.models.plugin import PluginProvider, SourceControlValue
+from music_assistant.models.media_capabilities import SourceControlValue
+from music_assistant.models.plugin import PluginProvider
 
 from .base import (
     AUDIO_QUALITY_LOSSLESS,

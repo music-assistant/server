@@ -703,7 +703,7 @@ AirPlay players can be bridged to the Sendspin protocol, enabling cross-protocol
 
 ### How It Works
 
-When the Sendspin provider is enabled, each AirPlay player is automatically registered as an external Sendspin client:
+When the Sendspin provider is enabled, an AirPlay player is registered as an external Sendspin client while its AirPlay connection carries the Sendspin output of its player (a squeezelite connection of the same speaker comes first; see the bridge section of the Sendspin README):
 
 1. **Registration**: The bridge registers the AirPlay player with the Sendspin server using the device's MAC address as the `client_id`
 2. **Protocol Linking**: The bridge's Sendspin protocol rides on the AirPlay protocol, so the player controller attaches it to the player the AirPlay protocol belongs to

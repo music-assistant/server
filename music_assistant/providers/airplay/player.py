@@ -74,6 +74,7 @@ from .helpers import (
     default_buffer_depth,
     default_hires_enabled,
     get_decoded_property,
+    get_sync_offset_ms,
     is_apple_device,
     is_macos_device,
     parse_airplay_features,
@@ -399,9 +400,32 @@ class AirPlayPlayer(PlayerProtocol):
         # dropped from the session (write failures) or never make it in (a refused
         # late join) while still being listed as part of the group, and without a
         # session there is nobody to render with at all
-        if self.stream and self.stream.running and self.stream.session:
-            return [x.protocol_id for x in self.stream.session.sync_clients]
+        if session := self.session:
+            return [x.protocol_id for x in session.sync_clients]
         return []
+
+    @property
+    def session(self) -> AirPlayStreamSession | None:
+        """Return the stream session that carries this player's playback, None without one."""
+        if self.stream and self.stream.running:
+            return self.stream.session
+        return None
+
+    @property
+    def sync_offset_ms(self) -> int:
+        """Return how much later than the group this player is commanded to play, in ms."""
+        return get_sync_offset_ms(self.config)
+
+    @property
+    def device_password(self) -> str | None:
+        """Return the password to connect to the device with, None without one."""
+        password = self.config.get_value(CONF_PASSWORD)
+        return str(password) if password else None
+
+    @property
+    def output_plan_protocol_id(self) -> str:
+        """Return the id of the protocol whose output settings (such as DSP) apply to its audio."""
+        return self.protocol_id
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -547,7 +571,7 @@ class AirPlayPlayer(PlayerProtocol):
 
     async def play(self) -> None:
         """Handle PLAY (unpause) command on the player."""
-        session = self.stream.session if self.stream and self.stream.running else None
+        session = self.session
         if self.group_members or self.synced_to or (session and session.parked):
             # Grouped pause parks the whole session (standby); unpausing one
             # member cannot restart the group in sync, and a parked member is
@@ -581,12 +605,7 @@ class AirPlayPlayer(PlayerProtocol):
             # member stalls but keeps its connection (and remote control), and
             # the queue's resume flushes and re-anchors over the live
             # connections — the same coordinated warm restart as seek/next.
-            if (
-                self.stream
-                and self.stream.running
-                and self.stream.session
-                and await self.stream.session.standby()
-            ):
+            if (session := self.session) and await session.standby():
                 return
             # Some member no longer has a live connection: full stop and let
             # the queue controller resume from the saved position.
@@ -621,21 +640,18 @@ class AirPlayPlayer(PlayerProtocol):
             try:
                 # Warm path: a live, compatible session absorbs the new media via a
                 # flush-refill in place (seek/next never pays the reconnect cost).
-                if (
-                    self.stream
-                    and self.stream.running
-                    and self.stream.session
-                    and self.stream.session.can_replace(sync_clients, session_pcm_format)
+                if (session := self.session) and session.can_replace(
+                    sync_clients, session_pcm_format
                 ):
                     audio_source = self.mass.streams.get_stream(
                         media, session_pcm_format, self.protocol_id
                     )
-                    if await self.stream.session.replace(audio_source, media):
+                    if await session.replace(audio_source, media):
                         # A seek changes no media identity, so the identity-driven
                         # metadata callback stays silent and receivers would show
                         # a stale Now Playing position; nudge every member once
                         # the queue position has settled.
-                        for member in self.stream.session.sync_clients:
+                        for member in session.sync_clients:
                             self.mass.call_later(
                                 1,
                                 member.on_player_media_updated,
@@ -648,8 +664,8 @@ class AirPlayPlayer(PlayerProtocol):
                 # publication is left in place: the new session's _start_client
                 # stops and replaces whatever is published under the spawn lock, so
                 # that teardown stays the only place a publication is dropped.
-                if self.stream and self.stream.running and self.stream.session:
-                    await self.stream.session.stop()
+                if session := self.session:
+                    await session.stop()
 
                 # select audio source
                 audio_source = self.mass.streams.get_stream(
@@ -722,11 +738,7 @@ class AirPlayPlayer(PlayerProtocol):
                 # nothing to do
                 return
 
-            stream_session = (
-                self.stream.session
-                if self.stream and self.stream.running and self.stream.session
-                else None
-            )
+            stream_session = self.session
             # handle removals first
             if player_ids_to_remove:
                 if self.protocol_id in player_ids_to_remove:
@@ -796,12 +808,9 @@ class AirPlayPlayer(PlayerProtocol):
                         # Stop the paused stream to avoid a deadlock situation
                         await child_player_to_add.stream.stop()
                     if (
-                        child_player_to_add.stream
-                        and child_player_to_add.stream.running
-                        and child_player_to_add.stream.session
-                        and child_player_to_add.stream.session != stream_session
-                    ):
-                        await child_player_to_add.stream.session.remove_client(
+                        child_session := child_player_to_add.session
+                    ) and child_session != stream_session:
+                        await child_session.remove_client(
                             child_player_to_add, reason="moving to different session"
                         )
 
@@ -1002,7 +1011,8 @@ class AirPlayPlayer(PlayerProtocol):
         """Handle logic when the player config is updated."""
         await super().on_config_updated()
         prov = cast("AirPlayProvider", self.provider)
-        await prov.bridge_manager.evaluate_bridge(self)
+        # not awaited: the attach of this protocol does not wait for its Sendspin bridge
+        self.mass.create_task(prov.bridge_manager.evaluate_bridge(self))
 
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""
@@ -1010,8 +1020,8 @@ class AirPlayPlayer(PlayerProtocol):
         self.cancel_group_rejoin()
         if self.stream:
             # remove this player from the stream session if it is running
-            if self.stream.running and self.stream.session:
-                await self.stream.session.remove_client(self, reason="player unloaded")
+            if session := self.session:
+                await session.remove_client(self, reason="player unloaded")
             self.stream = None
 
     async def on_remove(self) -> None:
@@ -1473,11 +1483,7 @@ class AirPlayPlayer(PlayerProtocol):
             # When the sync membership survived the stream loss (a static group,
             # where membership is configuration), only the running session needs
             # healing; a group command would no-op on the existing membership.
-            heal_session = (
-                target.stream.session
-                if self.protocol_id in target.group_members and target.stream is not None
-                else None
-            )
+            heal_session = target.session if self.protocol_id in target.group_members else None
             try:
                 if heal_session is not None:
                     await heal_session.add_client(self)
@@ -1502,12 +1508,7 @@ class AirPlayPlayer(PlayerProtocol):
             # A late-join can also fail without raising (the player then holds
             # group membership without a live stream), so verify the session
             # actually carries this player before declaring success.
-            if (
-                self.stream
-                and self.stream.running
-                and self.stream.session
-                and self in self.stream.session.sync_clients
-            ):
+            if (session := self.session) and self in session.sync_clients:
                 self.logger.info(
                     "Automatically re-joined %s to the group of %s after stream loss",
                     self.display_name,
@@ -1560,7 +1561,7 @@ class AirPlayPlayer(PlayerProtocol):
             # session has no live timeline to anchor against
             if candidate.playback_state != PlaybackState.PLAYING:
                 continue
-            if not (candidate.stream and candidate.stream.running and candidate.stream.session):
+            if candidate.session is None:
                 continue
             return candidate
         return None

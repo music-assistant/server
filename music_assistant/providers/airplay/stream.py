@@ -21,7 +21,7 @@ from uuid import uuid4
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.constants import CONF_PASSWORD, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.helpers.images import _extract_imageproxy_id, get_image_thumb_path
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
@@ -318,6 +318,11 @@ class AirPlayStream:
     def connected(self) -> bool:
         """Return boolean if the device connection has been established."""
         return self._connected.is_set()
+
+    @property
+    def receiver_closed(self) -> bool:
+        """Whether the receiver ended the session itself, e.g. when another sender took over."""
+        return self._receiver_closed
 
     async def connect(
         self,
@@ -1181,8 +1186,8 @@ class AirPlayStream:
             args += ["--secret", auth_secret]
 
         # Device password
-        if password := self.player.config.get_value(CONF_PASSWORD):
-            args += ["--password", str(password)]
+        if password := self.player.device_password:
+            args += ["--password", password]
 
         # Shared PTP daemon clock (multi-room sync for native AP2 streams). The
         # decision is made once per session and passed in, so every native AP2
@@ -1933,7 +1938,7 @@ class AirPlayStream:
         target_protocol = self.player.protocol_override or self.player.protocol
         if target_protocol != StreamingProtocol.AIRPLAY2 or not self.player.password_required:
             return
-        if self.player.config.get_value(CONF_PASSWORD):
+        if self.player.device_password:
             return
         # stored credentials keep the binary's pair-verify leg viable, and its own
         # failure report guides the user when that leg is rejected after all

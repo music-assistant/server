@@ -21,6 +21,7 @@ import pytest
 from music_assistant_models.enums import ImageType
 from music_assistant_models.errors import (
     ActionUnavailable,
+    InvalidDataError,
     MediaNotFoundError,
     ProviderUnavailableError,
     RateLimited,
@@ -104,11 +105,11 @@ async def provider(tmp_path: Path) -> AsyncGenerator[PlaylistMetadataProvider]:
     await provider.loaded_in_mass()
     with (
         patch(
-            "music_assistant.providers.playlist_metadata.ai.select_image_engine",
+            "music_assistant.providers.playlist_metadata.ai.resolve_image_engine_setting",
             AsyncMock(return_value=provider.test_engine),  # type: ignore[attr-defined]
         ),
         patch(
-            "music_assistant.providers.playlist_metadata.ai.select_ai_engine",
+            "music_assistant.providers.playlist_metadata.ai.resolve_ai_engine_setting",
             AsyncMock(return_value=provider.test_text_engine),  # type: ignore[attr-defined]
         ),
     ):
@@ -429,7 +430,7 @@ async def test_a_failed_generation_keeps_the_previous_cover(
     await _metadata(provider, playlist)
     first = playlist.image
     provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
-        side_effect=RuntimeError("quota exceeded")
+        side_effect=InvalidDataError("engine rejected the request")
     )
     playlist.name = "Renamed"
 
@@ -502,11 +503,11 @@ async def test_without_an_image_engine_nothing_is_generated(tmp_path: Path) -> N
     await provider.loaded_in_mass()
     with (
         patch(
-            "music_assistant.providers.playlist_metadata.ai.select_image_engine",
+            "music_assistant.providers.playlist_metadata.ai.resolve_image_engine_setting",
             AsyncMock(return_value=None),
         ),
         patch(
-            "music_assistant.providers.playlist_metadata.ai.select_ai_engine",
+            "music_assistant.providers.playlist_metadata.ai.resolve_ai_engine_setting",
             AsyncMock(return_value=None),
         ),
     ):
@@ -616,7 +617,7 @@ async def test_a_failing_cover_backs_off_and_then_gives_up(
 ) -> None:
     """Each failure waits longer before the next try; after the last one it stops trying."""
     provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
-        side_effect=RuntimeError("content policy")
+        side_effect=InvalidDataError("content policy")
     )
     playlist = _smart_playlist()
     start = time.time()
@@ -771,9 +772,9 @@ async def test_preview_leaves_the_description_out_when_descriptions_are_off(
 async def test_the_cover_key_names_the_text_engine_picked_for_the_concept(
     provider: PlaylistMetadataProvider,
 ) -> None:
-    """The key holds the engine the concept is written with, also before one was picked."""
+    """The key holds the engine the concept is written with, also when it follows the default."""
     _set_config(provider, **{CONF_USE_PROMPT_ENGINE: True, CONF_DESCRIPTIONS: False})
-    # nothing picked yet: the stored selection is empty until an engine is adopted
+    # nothing picked: the setting follows the default engine
     provider.config.get_value.side_effect = (  # type: ignore[attr-defined]
         lambda key, default=None: (
             None if key == CONF_TEXT_ENGINE else provider._test_config.get(key, default)  # type: ignore[attr-defined]
@@ -801,13 +802,60 @@ async def test_a_missing_concept_engine_keeps_the_current_cover(
     cover = playlist.image
 
     with patch(
-        "music_assistant.providers.playlist_metadata.ai.select_ai_engine",
+        "music_assistant.providers.playlist_metadata.ai.resolve_ai_engine_setting",
         AsyncMock(return_value=None),
     ):
         await _metadata(provider, playlist)
 
     assert playlist.image == cover
     assert _engine_calls(provider) == 1
+
+
+async def test_a_missing_default_concept_engine_keeps_the_current_cover(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """While the default text engine is away, a cover following it is kept as well."""
+    _set_config(
+        provider,
+        **{CONF_USE_PROMPT_ENGINE: True, CONF_DESCRIPTIONS: False, CONF_TEXT_ENGINE: "global"},
+    )
+    playlist = _smart_playlist()
+    await _metadata(provider, playlist)
+    cover = playlist.image
+    _mass(provider).config.get_raw_core_config_value = MagicMock(
+        return_value="openai_compatible--test/gone"
+    )
+
+    with patch(
+        "music_assistant.providers.playlist_metadata.ai.resolve_ai_engine_setting",
+        AsyncMock(return_value=None),
+    ):
+        await _metadata(provider, playlist)
+
+    assert playlist.image == cover
+    assert _engine_calls(provider) == 1
+
+
+async def test_without_any_text_engine_the_cover_uses_the_default_concept(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """Following the default before any text engine exists, covers are still generated."""
+    _set_config(
+        provider,
+        **{CONF_USE_PROMPT_ENGINE: True, CONF_DESCRIPTIONS: False, CONF_TEXT_ENGINE: "global"},
+    )
+    _mass(provider).config.get_raw_core_config_value = MagicMock(return_value=None)
+    playlist = _smart_playlist()
+
+    with patch(
+        "music_assistant.providers.playlist_metadata.ai.resolve_ai_engine_setting",
+        AsyncMock(return_value=None),
+    ):
+        await _metadata(provider, playlist)
+
+    assert _engine_calls(provider) == 1
+    assert _text_calls(provider) == 0
+    assert playlist.image is not None
 
 
 async def test_preview_asks_for_the_visual_concept_once(
@@ -1822,7 +1870,7 @@ async def test_preview_without_a_description(provider: PlaylistMetadataProvider)
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
     _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["bold"]})
     provider.test_text_engine.provider.ai_query = AsyncMock(  # type: ignore[attr-defined]
-        side_effect=RuntimeError("text engine down")
+        side_effect=InvalidDataError("engine rejected the request")
     )
 
     with _no_engine_pickers():
@@ -1977,6 +2025,8 @@ def _make_provider(tmp_path: Path) -> PlaylistMetadataProvider:
     mass.call_later = MagicMock()
     mass.cache = _FakeCache()
     mass.music.playlists.iter_tracks = MagicMock(side_effect=lambda *_: _async_iter([]))
+    mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    mass.music.artists.library_items = AsyncMock(return_value=[])
     smart_playlist_provider = MagicMock()
     smart_playlist_provider.domain = "smart_playlist"
     smart_playlist_provider.get_smart_playlist_rules = AsyncMock(return_value=SMART_RULES)

@@ -22,6 +22,7 @@ from music_assistant_models.errors import InsufficientPermissions, MediaNotFound
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    AudioSource,
     Genre,
     Playlist,
     ProviderMapping,
@@ -185,6 +186,7 @@ async def test_browse_root_honors_admin_music_sources(mock_get_user: Mock) -> No
     mass.get_providers_supporting_feature.side_effect = lambda feature: (
         [music_a, music_b] if feature == ProviderFeature.BROWSE else []
     )
+    mass.players.get_audio_source_providers.return_value = []
 
     controller = MusicController.__new__(MusicController)
     controller.mass = mass
@@ -505,6 +507,28 @@ def test_check_item_playable_keeps_plugin_items_reachable() -> None:
     item = Track(item_id="42", provider="smart_playlist", name="Track", provider_mappings=set())
 
     controller.check_item_playable_for_user(item, _user(USER_B))
+
+
+def test_check_item_playable_keeps_audio_sources_of_a_player_provider_reachable() -> None:
+    """Only music sources carry an access record, so a player provider's sources stay playable."""
+    player_provider = _make_prov("sendspin", ProviderType.PLAYER, {ProviderFeature.AUDIO_SOURCE})
+    controller = _controller_with_sources(
+        {PROV_A: _private(USER_A), PROV_B: _private(USER_B)}, providers=[player_provider]
+    )
+    source = AudioSource(
+        item_id="line_in",
+        provider="sendspin",
+        name="Line-in",
+        provider_mappings={
+            ProviderMapping(
+                item_id="line_in", provider_domain="sendspin", provider_instance="sendspin"
+            )
+        },
+    )
+
+    controller.check_item_playable_for_user(source, _user(USER_A))
+    with pytest.raises(MediaNotFoundError):
+        controller.check_item_playable_for_user(_library_track(PROV_B), _user(USER_A))
 
 
 def test_check_item_playable_for_anonymous_playback() -> None:

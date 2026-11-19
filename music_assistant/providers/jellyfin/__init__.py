@@ -14,6 +14,7 @@ from aiohttp import ClientError, ClientResponseError
 from aiojellyfin import DEFAULT_FIELDS, Connection, ItemType, NotFound, authenticate_by_name
 from aiojellyfin import MediaLibrary as JellyMediaLibrary
 from aiojellyfin import Track as JellyTrack
+from aiojellyfin.session import NotFound as SessionNotFound
 from aiojellyfin.session import SessionConfiguration
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError, ProviderUnavailableError
@@ -43,6 +44,7 @@ from music_assistant.providers.jellyfin.parsers import (
     parse_album,
     parse_artist,
     parse_loudness,
+    parse_lyrics,
     parse_playlist,
     parse_track,
     set_api_key,
@@ -86,6 +88,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.LYRICS,
 }
 
 
@@ -454,10 +457,19 @@ class JellyfinProvider(MusicProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         try:
-            track = await self._client.get_track(prov_track_id)
+            jellyfin_track = await self._client.get_track(prov_track_id)
         except NotFound:
             raise MediaNotFoundError(f"Item {prov_track_id} not found")
-        return parse_track(self.logger, self.instance_id, self._client, track)
+        track = parse_track(self.logger, self.instance_id, self._client, jellyfin_track)
+        try:
+            raw = await self._client._session.get_json(f"/Audio/{prov_track_id}/Lyrics", params={})
+        except SessionNotFound:
+            return track
+        except ClientError as err:
+            self.logger.debug("Could not fetch lyrics for %s: %s", prov_track_id, err)
+            return track
+        track.metadata.lyrics, track.metadata.lrc_lyrics = parse_lyrics(raw)
+        return track
 
     @use_cache(60 * 15)  # Cache for 15 minutes
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:

@@ -201,7 +201,9 @@ clients) is that of its own protocol, else the one stored for it. A player is ne
 `PROTOCOL`, and a `STEREO_PAIR` reads as `MULTI_CHANNEL`. A multi-channel player is one set of
 speakers that belong together (a stereo pair, a home theater set) and acts like a single speaker:
 it joins groups, leads a sync session and counts with its own level in the group volume. Its own
-protocol reports the layout of its speakers (`channel_layout`: stereo, 2.1, 5.1, ...).
+protocol reports the layout of its speakers (`channel_layout`: stereo, 2.1, 5.1, ...). That
+protocol, of the primary speaker, delivers the set. The other speakers of the set have no player:
+their provider reports them, and their old players are removed (see [Lifecycle](#lifecycle)).
 
 What a protocol is for its device is its role (`ProtocolRole`):
 - `NATIVE`: the vendor's own control plane (Sonos, Bluesound, an Apple device over AirPlay, ...).
@@ -399,6 +401,7 @@ The lifecycle of players and protocols lives in [lifecycle.py](lifecycle.py).
 | A device goes away, or its provider unloads (`unregister`) | The protocol is detached and `on_detach()` runs. The player stays, unavailable while no other protocol is, and keeps its queue; the queue only stops when this protocol was the one that played. A player that only exists while connected and has no record goes with its last protocol, unless its queue has items: then it gets its record first (as `keep_player` gives it) and stays. |
 | A provider forgets a device (`remove_protocol`) | The protocol record goes, and so do the protocols that ride on it. An output or control choice of the player that names it falls back to its default. The player goes for good when no protocol record of it is left. |
 | The user removes a player | The player goes for good, with its protocol records, DSP and queue settings, saved queue, group memberships and user filter entries; `PLAYER_REMOVED` is sent once, also for a disabled player, which is not live. Every protocol gets `on_remove()`, also one whose player is not live. A device still on the network comes back as a new player. |
+| A provider reports the other speakers of a set (`remove_absorbed_players`) | Their players are removed for good, as when the user removes them, except that their providers are not asked to look for their devices again; a speaker that leaves its set later is found again as a new player. The ids of another provider, of the set's own player and of a group are skipped, and a report while the server shuts down removes nothing. |
 | The user removes what is unavailable | Every player that no protocol reaches goes for good, once its providers are loaded and had time to find their devices again. While only players remain whose providers still need that time, the request is refused, also as a dry run. |
 | The user disables a player | It is powered off (or stopped, without a power control), its protocols are detached and the player leaves the registry with a last `PLAYER_UPDATED` that says it is disabled and unavailable, whatever its power control, followed by the `PLAYER_CONFIG_UPDATED` of the save; it is not removed. Its config, its id and its saved queue stay. |
 | The user enables a player | It is created from its record, unavailable until a protocol attaches. |
@@ -411,7 +414,8 @@ config it stored for it. A failing attach is rolled back the same way.
 
 The controller asks providers to look for their devices again a few seconds later
 (`provider.schedule_discovery()`) when a device may be found again: after a player is enabled,
-after a player that is not a group is removed, and when a protocol that is not attached moves to
+after a player that is not a group is removed (not after the removal of the other speakers of a
+set), and when a protocol that is not attached moves to
 another player (in a merge, or when it is taken off its player) or is switched on again as an
 output.
 
@@ -711,10 +715,12 @@ and still waits for another one, holds that off.
   level. A group announcement goes to the
   members when they can start it together. An announcement holds the player (and its group) for as
   long as it plays.
-- **Audio sources** ([audio_sources.py](audio_sources.py)): a live source of a plugin (an
-  `AudioSource`, such as Spotify Connect) plays on a player independently of its queue. The
-  controller keeps the session per player and passes the transport commands for it to the plugin
-  that owns it; the queue keeps its items and goes inactive meanwhile.
+- **Audio sources** ([audio_sources.py](audio_sources.py)): a live source of a provider (an
+  `AudioSource`, such as Spotify Connect) plays on a player independently of its queue. Any
+  provider type can deliver them by mixing in `AudioSourceMixin`
+  (`music_assistant/models/media_capabilities.py`). The controller keeps the session per player
+  and passes the transport commands for it to the provider that owns it; the queue keeps its
+  items and goes inactive meanwhile.
 - **An app from outside**: an app Music Assistant did not start can play on an audio protocol of the
   player, such as a stream cast from a phone to its Chromecast receiver. The player shows it unless
   an audio protocol is its active output, its own protocol plays (a paused player keeps its place
@@ -920,6 +926,14 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
 6. Ask `mass.players.wants_protocol(protocol_id)` before setting up a connection for a device.
    Pass the protocol object too when a client can connect either as a device or as a player of its
    own: whether the stored config applies depends on that.
+7. A protocol that delivers a set of speakers (a stereo pair, a home theater set) reports the other
+   speakers of the set with `mass.players.remove_absorbed_players(protocol_id, protocol_ids)`,
+   which removes their players for good. As that can not be undone, the provider must be sure that
+   the set itself names each of them as one of its speakers at this moment: the list comes from
+   what the speakers report, never from a speaker that is silent, from a timeout or from a list
+   that is incomplete. It names only protocol ids of the provider itself, and the provider
+   registers no protocol for a speaker while its set names it. A protocol of another provider that
+   still finds such a speaker gets a new player, which the user removes.
 
 **Important Notes:**
 - **Always validate MAC addresses** using `is_valid_mac_address()` before adding them

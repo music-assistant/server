@@ -1434,7 +1434,7 @@ for more details.
                 )
                 if mp is not None:
                     await self._client.remove_my_media_progress(media_progress_id=mp.id_)
-                    self.logger.debug(f"Removed media progress of {media_type.value}.")
+                    self.logger.debug("Removed media progress of %s.", media_type.value)
                 return
 
             duration = media_item.duration
@@ -1444,7 +1444,7 @@ for more details.
             # a session sync can't mark the item finished
             if not updated or fully_played:
                 self.logger.debug(
-                    f"Updating media progress of {media_type.value}, title {media_item.name}."
+                    "Updating media progress of %s, title %s.", media_type.value, media_item.name
                 )
                 await self._client.update_my_media_progress(
                     item_id=abs_podcast_id,
@@ -1472,7 +1472,7 @@ for more details.
                 mp = await self._client.get_my_media_progress(item_id=prov_item_id)
                 if mp is not None:
                     await self._client.remove_my_media_progress(media_progress_id=mp.id_)
-                    self.logger.debug(f"Removed media progress of {media_type.value}.")
+                    self.logger.debug("Removed media progress of %s.", media_type.value)
                 return
 
             duration = media_item.duration
@@ -1480,7 +1480,9 @@ for more details.
             if session_helper := self.sessions.get(prov_item_id):
                 updated = await _update_by_session(session_helper=session_helper, duration=duration)
             if not updated or fully_played:
-                self.logger.debug(f"Updating {media_type.value} named {media_item.name} progress")
+                self.logger.debug(
+                    "Updating %s named %s progress", media_type.value, media_item.name
+                )
                 await self._client.update_my_media_progress(
                     item_id=prov_item_id,
                     duration_seconds=duration,
@@ -1855,7 +1857,7 @@ for more details.
         if progress.library_item_id not in known_ids:
             return
 
-        self.logger.debug(f"Updated progress of item {progress.library_item_id} via socket.")
+        self.logger.debug("Updated progress of item %s via socket.", progress.library_item_id)
 
         if progress.episode_id is None:
             await self._update_playlog_book(progress)
@@ -2073,7 +2075,7 @@ for more details.
                 await self._update_playlog_book(progress)
             else:
                 await self._update_playlog_episode(progress)
-        self.logger.debug(f"Updated {__updated_items} from full playlog.")
+        self.logger.debug("Updated %s from full playlog.", __updated_items)
 
         # Get MA's known progresses of ABS.
         # In ABS the user may discard a progress, which removes the progress completely.

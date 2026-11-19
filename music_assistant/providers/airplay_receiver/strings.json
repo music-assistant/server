@@ -2,7 +2,7 @@
   "config_entries": {
     "connected_players": {
       "label": "[%key:common::config_entries::connected_players::label%]",
-      "description": "The Music Assistant players to expose via AirPlay. Every selected player is advertised as its own AirPlay receiver; audio streamed to it plays on that player. Leave empty to keep the plugin idle."
+      "description": "The Music Assistant players to expose via AirPlay. Every selected player is advertised as its own AirPlay receiver; audio streamed to it plays on that player. Leave empty to keep the AirPlay receiver idle."
     },
     "publish_name_template": {
       "label": "[%key:common::config_entries::publish_name_template::label%]",

@@ -221,7 +221,11 @@ class _Setup:
         data.queue.current_index = 0
         data.queue.current_item = item
         self.holder_buffer = await AudioBuffer.get_buffer(
-            self.mass, item.streamdetails, wait_ready=True, source_wait_timeout=0
+            self.mass,
+            item.streamdetails,
+            wait_ready=True,
+            source_wait_timeout=0,
+            on_created=functools.partial(self.queues.register_audio_buffer, item),
         )
         assert not self.provider.has_available_stream_slot
 

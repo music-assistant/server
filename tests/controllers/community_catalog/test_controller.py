@@ -26,6 +26,7 @@ from music_assistant.controllers.community_catalog.dependencies import Dependenc
 from music_assistant.controllers.community_catalog.gate import _REASONS, Verdict
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
 from music_assistant.helpers.util import purge_provider_modules
+from music_assistant.mass import _PROVIDER_FOLDERS
 from music_assistant.testing import full_mass_context
 from tests.controllers.community_catalog.conftest import (
     ADDED,
@@ -72,6 +73,7 @@ def catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     monkeypatch.setattr(dependencies, "_UV_INDEX_ARGS", ["--no-index", "--find-links", str(wheels)])
     monkeypatch.setattr(sys, "path", list(sys.path))
     original_path = list(providers_package.__path__)
+    monkeypatch.setattr(_PROVIDER_FOLDERS, "_folders", {})
     yield tmp_path / "data" / "community_providers"
     providers_package.__path__[:] = original_path
     _forget_imports(tmp_path)
@@ -225,14 +227,14 @@ async def test_no_longer_listed(tmp_path: Path, registry: Registry, github: GitH
         await _assert_not_loaded(mass, DOMAIN, CommunityProviderState.UNAVAILABLE, reason)
 
 
-async def test_copy_of_another_line(
+async def test_copy_of_another_channel(
     tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
 ) -> None:
-    """With only a copy of another line the provider loads, nothing is offered, a block applies."""
+    """With only a copy of another channel the provider loads, nothing is offered, a block applies."""
     await _install(tmp_path, registry, github)
     registry.status = 503
     kept = json.loads((catalog / "index.json").read_bytes())
-    kept["server_line"] = "2.11"
+    kept["channel"] = "2.11"
     kept["providers"]["other_one"] = _publish(github, "other_one")
     (catalog / "index.json").write_text(json.dumps(kept))
 
@@ -270,6 +272,32 @@ async def test_no_kept_copy(
             CommunityProviderState.UNAVAILABLE,
             _REASONS[Verdict.CATALOG_UNREACHABLE],
         )
+
+
+async def test_kept_copy_without_channel(
+    tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
+) -> None:
+    """A kept copy without a channel reads as no copy, until the next start that fetches the index."""
+    await _install(tmp_path, registry, github)
+    kept = json.loads((catalog / "index.json").read_bytes())
+    kept["server_line"] = kept.pop("channel")
+    (catalog / "index.json").write_text(json.dumps(kept))
+    registry.status = 503
+
+    async with _server(tmp_path) as mass:
+        await _assert_not_loaded(
+            mass,
+            DOMAIN,
+            CommunityProviderState.UNAVAILABLE,
+            _REASONS[Verdict.CATALOG_UNREACHABLE],
+        )
+
+    registry.status = 200
+    async with _server(tmp_path) as mass:
+        _assert_loaded(mass, catalog, DOMAIN)
+    # without a readable copy the server fetches the whole index, not only a change
+    assert registry.requests[-1] == ("nightly", None)
+    assert json.loads((catalog / "index.json").read_bytes())["channel"] == "nightly"
 
 
 @pytest.mark.parametrize(
@@ -792,10 +820,10 @@ def _provider_files(
 
 
 def _index(providers: dict[str, Any]) -> dict[str, Any]:
-    """Return an index of the line of a server run from source."""
+    """Return an index of the channel of a server run from source."""
     return {
         "schema": 1,
-        "server_line": "nightly",
+        "channel": "nightly",
         "generated": "2026-11-14T08:00:00Z",
         "providers": providers,
     }

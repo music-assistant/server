@@ -3,15 +3,15 @@ Fail when a provider leaves the server without the community catalog taking its 
 
 A provider that moves out of the server is listed in ``MOVED_PROVIDER_DOMAINS``: a server that has
 it set up installs it from the community catalog after the upgrade. That only works when its folder
-is gone and the index of every server line the change reaches offers a version that passed.
+is gone and the index of every channel of the community catalog the change reaches offers a version that passed.
 
 Without arguments (pre-commit) it checks, offline, that no moved provider still has a manifest.
 
 In CI it also reads the changed files of a pull request from stdin, one per line as the GitHub API
 lists them: status, path and the previous path of a renamed file, separated by tabs. When the
 change removes a provider or changes the moved list, it asks the community catalog: a provider
-that moves must be offered with a version that passed on nightly, beta and the line of the next
-beta (for a pull request into ``stable``: the line of its next release), and a removed provider
+that moves must be offered with a version that passed on nightly, beta and the channel of the next
+beta (for a pull request into ``stable``: the channel of its next release), and a removed provider
 the catalog expects to move must be in the moved list. Only then does it use the network, and a
 lookup that fails fails the check.
 
@@ -43,7 +43,7 @@ PROVIDERS_FOLDER = "music_assistant/providers"
 MOVED_FILE = "music_assistant/controllers/community_catalog/constants.py"
 MOVED_NAME = "MOVED_PROVIDER_DOMAINS"
 # the index a server reads (controllers/community_catalog/index.py)
-INDEX_URL = "https://catalog.music-assistant.io/v1/{line}.json"
+INDEX_URL = "https://catalog.music-assistant.io/v1/{channel}.json"
 RESERVED_URL = (
     "https://raw.githubusercontent.com/music-assistant/community-catalog/main/reserved_domains.json"
 )
@@ -160,20 +160,20 @@ def online_problems(
             for domain in sorted(dropped & moving)
         ]
     if moving_now := sorted((removed & head_moved) | (head_moved - base_moved)):
-        for line in lines_for(base_branch):
-            problems += _index_problems(line, moving_now)
+        for channel in channels_for(base_branch):
+            problems += _index_problems(channel, moving_now)
     return problems
 
 
-def lines_for(base_branch: str) -> list[str]:
+def channels_for(base_branch: str) -> list[str]:
     """
-    Return the server lines a change to a branch reaches.
+    Return the channels of the community catalog a change to a branch reaches.
 
     :param base_branch: The branch the change goes into.
     :raises LookupFailedError: The tags of the server repository could not be read.
     """
-    line = next_release_line(base_branch, _server_tags())
-    return [line] if base_branch == "stable" else ["nightly", "beta", line]
+    release = next_release_line(base_branch, _server_tags())
+    return [release] if base_branch == "stable" else ["nightly", "beta", release]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -201,21 +201,22 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if problems else 0
 
 
-def _index_problems(line: str, domains: Iterable[str]) -> list[str]:
+def _index_problems(channel: str, domains: Iterable[str]) -> list[str]:
     """
-    Return the domains the index of a server line does not offer with a version that passed.
+    Return the domains the index of a channel does not offer with a version that passed.
 
-    :param line: The server line.
+    :param channel: The channel of the community catalog.
     :param domains: The domains that move.
     :raises LookupFailedError: The index exists but could not be fetched.
     """
     try:
-        index: dict[str, Any] = json.loads(_fetch(INDEX_URL.format(line=line)))
+        index: dict[str, Any] = json.loads(_fetch(INDEX_URL.format(channel=channel)))
     except NotFoundError:
-        return [f"the community catalog has no index for the server line {line} yet"]
+        return [f"the community catalog has no index for the {_channel_name(channel)} channel yet"]
     providers = index.get("providers", {})
     return [
-        f"{domain}: the community catalog index of {line} offers no version that passed"
+        f"{domain}: the community catalog index of the {_channel_name(channel)} channel "
+        "offers no version that passed"
         for domain in domains
         if not (
             (entry := providers.get(domain))
@@ -223,6 +224,15 @@ def _index_problems(line: str, domains: Iterable[str]) -> list[str]:
             and entry.get("latest") is not None
         )
     ]
+
+
+def _channel_name(channel: str) -> str:
+    """
+    Return a channel as a contributor reads it: nightly, beta or stable <major>.<minor>.
+
+    :param channel: The channel of the community catalog.
+    """
+    return f"stable {channel}" if channel[:1].isdigit() else channel
 
 
 def _server_tags() -> list[str]:
