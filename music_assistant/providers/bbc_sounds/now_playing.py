@@ -65,15 +65,6 @@ def _segment_to_metadata(now_playing: Segment) -> StreamMetadata:
     return StreamMetadata(title=title, artist=artist, image_url=image_url)
 
 
-def _is_first_image_lookup(stream_details: StreamDetails, segment: Segment) -> bool:
-    """Record a segment's image lookup, returning False if this stream has already tried it."""
-    image_lookups: set[str] = stream_details.data.setdefault("image_lookups", set())
-    if segment.id in image_lookups:
-        return False
-    image_lookups.add(segment.id)
-    return True
-
-
 class NowPlayingManager:
     """Manages the now-playing/segment/live stream metadata."""
 
