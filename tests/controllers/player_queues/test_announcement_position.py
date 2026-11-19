@@ -12,7 +12,7 @@ import asyncio
 import time
 from types import SimpleNamespace
 from typing import Any, NamedTuple, cast
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, call
 
 import pytest
 from music_assistant_models.enums import (
@@ -26,7 +26,10 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
+from music_assistant.constants import (
+    ATTR_ANNOUNCEMENT_HELD_QUEUE,
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
+)
 from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import CompareState
 from music_assistant.controllers.player_queues.state import PlayerQueueData, SleepTimerTarget
@@ -238,6 +241,86 @@ async def test_the_announcement_holds_a_playing_queue_at_the_position_its_stop_s
     assert _queue_updates(ctrl.mass)[-1] == _Update(PlaybackState.PLAYING, SAVED_POSITION, True)
 
 
+async def test_the_hold_is_published_to_the_player_before_its_device_reports_the_stop() -> None:
+    """The player is told about the held queue, so it keeps playing across the device's stop."""
+    queue = _queue()
+    player = _player()
+    ctrl = _controller(queue, player)
+
+    await _prepare(_announcements(ctrl), player, PlaybackState.PLAYING)
+
+    assert player.extra_data[ATTR_ANNOUNCEMENT_HELD_QUEUE] == QUEUE_ID
+    player.update_state.assert_called_with(force_update=True)
+
+
+async def test_the_player_is_marked_as_held_before_the_queue_is_stopped() -> None:
+    """The stop of the device is never published, not even when it is reported at once."""
+    queue = _queue()
+    player = _player()
+    ctrl = _controller(queue, player)
+    marked_during_stop: list[object] = []
+
+    async def _stop(*_args: Any) -> None:
+        marked_during_stop.append(player.extra_data.get(ATTR_ANNOUNCEMENT_HELD_QUEUE))
+
+    ctrl._handle_stop = _stop  # type: ignore[assignment]
+
+    await _prepare(_announcements(ctrl), player, PlaybackState.PLAYING)
+
+    assert marked_during_stop == [QUEUE_ID]
+    assert player.extra_data[ATTR_ANNOUNCEMENT_HELD_QUEUE] == QUEUE_ID
+
+
+async def test_a_queue_that_cannot_be_held_takes_the_early_mark_back() -> None:
+    """A queue that is not playing any more is not held, so the player follows its device."""
+    queue = _queue(PlaybackState.IDLE)
+    player = _player()
+    ctrl = _controller(queue, player)
+    ctrl._handle_stop = AsyncMock()  # type: ignore[method-assign]
+
+    await _prepare(_announcements(ctrl), player, PlaybackState.PLAYING)
+
+    assert ATTR_ANNOUNCEMENT_HELD_QUEUE not in player.extra_data
+    player.update_state.assert_called_with(force_update=True)
+
+
+async def test_a_failing_publish_still_releases_the_queue() -> None:
+    """The release does not depend on the publish before it."""
+    player = _player(announcement=False)
+    ctrl = _controller(_queue(), player)
+    ctrl.release_after_announcement = Mock()  # type: ignore[method-assign]
+    announcements = _fallback_announcements(ctrl)
+    announcements._handle_play_media = AsyncMock(  # type: ignore[method-assign]
+        side_effect=PlayerCommandFailed("unreachable")
+    )
+    # the first publish follows the hold, the second one the release
+    player.update_state = Mock(side_effect=[None, RuntimeError("publish failed")])
+
+    with pytest.raises(PlayerCommandFailed):
+        await announcements._run_announcement(player, _announce_data(), None)
+
+    ctrl.release_after_announcement.assert_called_once_with(QUEUE_ID)
+    ctrl.mass.streams.announcement_renderer.unregister.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+async def test_the_player_is_told_when_the_announcement_releases_its_queue() -> None:
+    """The player stops keeping its playing state once the queue is released."""
+    queue = _queue()
+    player = _player(announcement=False)
+    ctrl = _controller(queue, player)
+    announcements = _fallback_announcements(ctrl)
+    announcements._handle_play_media = AsyncMock(  # type: ignore[method-assign]
+        side_effect=PlayerCommandFailed("unreachable")
+    )
+
+    with pytest.raises(PlayerCommandFailed):
+        await announcements._run_announcement(player, _announce_data(), None)
+
+    assert ATTR_ANNOUNCEMENT_HELD_QUEUE not in player.extra_data
+    # once for the hold and once for the release
+    assert player.update_state.call_args_list == [call(force_update=True)] * 2
+
+
 async def test_the_announcement_does_not_hold_a_queue_the_user_paused() -> None:
     """A paused queue keeps its own position and carries no marker."""
     queue = _queue(PlaybackState.PAUSED)
@@ -310,9 +393,9 @@ async def test_a_pause_during_the_clip_keeps_the_saved_resume_position() -> None
     ctrl = _controller(queue, player)
     ctrl._resolve_queue_id = Mock(return_value=QUEUE_ID)  # type: ignore[method-assign]
     ctrl._check_player_permission = Mock()  # type: ignore[method-assign]
-    ctrl.mass.cancel_timer = Mock()
-    ctrl.mass.players._handle_cmd_pause = AsyncMock()
-    ctrl.mass.players._cancel_member_power_ons = Mock()
+    ctrl.mass.cancel_timer = Mock()  # type: ignore[method-assign]
+    ctrl.mass.players._handle_cmd_pause = AsyncMock()  # type: ignore[method-assign]
+    ctrl.mass.players._cancel_member_power_ons = Mock()  # type: ignore[method-assign]
     player.offline_by_power_control = False
     ctrl.hold_for_announcement(QUEUE_ID)
     # seven seconds of the clip have passed
@@ -399,7 +482,7 @@ async def test_a_failing_release_neither_hides_the_announcement_error_nor_skips_
     with pytest.raises(PlayerCommandFailed):
         await announcements._run_announcement(player, _announce_data(), None)
 
-    ctrl.mass.streams.announcement_renderer.unregister.assert_awaited_once()
+    ctrl.mass.streams.announcement_renderer.unregister.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 def test_the_sleep_timer_estimate_stands_still_for_the_length_of_the_clip() -> None:
@@ -468,7 +551,7 @@ async def test_the_queue_that_the_restore_played_again_is_left_to_its_player() -
 
     async def _resume(*_args: Any) -> None:
         # what the restore's play_index does once the item loaded
-        ctrl.on_player_update.reset_mock()
+        ctrl.on_player_update.reset_mock()  # type: ignore[attr-defined]
         player.playback_state = PlaybackState.PLAYING
         ctrl._queue_data[QUEUE_ID].announcement_position = None
 
@@ -527,7 +610,7 @@ def test_clearing_the_queue_ends_the_hold_of_the_position() -> None:
     queue.resume_pos = SAVED_POSITION
     ctrl = _controller(queue, _player())
     ctrl.hold_for_announcement(QUEUE_ID)
-    ctrl.mass.streams.audio_processing.clear = Mock()
+    ctrl.mass.streams.audio_processing.clear = Mock()  # type: ignore[method-assign]
     ctrl.store_sources = Mock()  # type: ignore[method-assign]
     ctrl.is_smart_shuffle_active = Mock(return_value=False)  # type: ignore[method-assign]
 
