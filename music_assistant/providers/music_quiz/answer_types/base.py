@@ -68,6 +68,35 @@ class QuizAnswerType(ABC):
         :param submitted_at: Server timestamp of the submission.
         """
 
+    def open_round(
+        self,
+        state: QuizRoundAnswerState,
+        audio_started_at: float,
+        deadline: float,
+    ) -> list[float]:
+        """
+        Open a started round and return the timestamps at which its hints are due.
+
+        :param state: Answer state of the round that started.
+        :param audio_started_at: Expected timestamp at which the round's track became audible.
+        :param deadline: Timestamp at which the round stops accepting answers.
+        """
+        return []
+
+    def reveal_hint(
+        self,
+        state: QuizRoundAnswerState,
+        hint_index: int,
+    ) -> bool:
+        """
+        Reveal one scheduled hint of an answering round.
+
+        :param state: Current round answer state.
+        :param hint_index: Index of the hint in the list returned by open_round.
+        :return: Whether the state changed.
+        """
+        return False
+
     @abstractmethod
     def remove_player(self, state: QuizRoundAnswerState, player_id: str) -> None:
         """
