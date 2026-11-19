@@ -1237,11 +1237,7 @@ class AlbumsController(MediaControllerBase[Album]):
             if (release_track := in_order.get(db_track.item_id)) is None:
                 # a digital release stores its single disc as disc 0 or 1
                 release_track = by_position.get((db_track.disc_number or 1, db_track.track_number))
-                if (
-                    release_track is None
-                    or release_track.recording is None
-                    or not _recording_matches_track(release_track.recording, db_track)
-                ):
+                if release_track is None or not _recording_matches_track(release_track, db_track):
                     continue
             if (recording := release_track.recording) is None:
                 continue
@@ -1983,13 +1979,16 @@ def _recording_isrcs(recording: MusicBrainzRecording) -> set[str]:
     }
 
 
-def _recording_matches_track(recording: MusicBrainzRecording, track: Track) -> bool:
-    """Return whether a release's recording is the given library track, by title and length."""
-    if not compare_strings(recording.title, track.name, strict=False):
+def _recording_matches_track(release_track: MusicBrainzTrack, track: Track) -> bool:
+    """Return whether a release track's recording is the given library track, by title or ISRC."""
+    recording = release_track.recording
+    if recording is None or _lengths_agree(release_track, track) is False:
         return False
-    if recording.length is None or not track.duration:
-        return True
-    return abs(recording.length / 1000 - track.duration) <= _TRACK_DURATION_TOLERANCE
+    # a streaming title may name only the movement ("I. Allegro con brio") where MusicBrainz
+    # names the work as well, so a shared ISRC identifies the recording too
+    return compare_strings(recording.title, track.name, strict=False) or bool(
+        _recording_isrcs(recording) & _isrcs(track)
+    )
 
 
 async def _linked_albums(release: MusicBrainzRelease) -> set[tuple[str, str]]:
