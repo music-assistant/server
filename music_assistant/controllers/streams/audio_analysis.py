@@ -1471,7 +1471,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
             try:
                 streamdetails = await music_prov.get_stream_details(item_id, MediaType.TRACK)
-            except Exception as err:  # noqa: BLE001 - provider code, the candidate is skipped
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # Provider method with an open-ended failure surface; any failure
                 # just skips this scan candidate.
                 self.logger.debug("Skipping %s: stream details failed: %s", item_id, err)
@@ -1823,7 +1823,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                     audio_format=audio_format,
                 ):
                     provider_ids.add(provider.instance_id)
-            except Exception as err:  # noqa: BLE001 - provider code, the other providers go on
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # provider.start_analysis is provider-implemented; skip the one that
                 # fails to start and keep the rest of the session going.
                 self.logger.warning(
@@ -2021,7 +2021,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                     "Provider %s failed analysis for %s: %s", prov_id, session_key, err.reason
                 )
                 return prov_id, (err.reason, err.retry_at)
-            except Exception as err:  # noqa: BLE001 - provider code, the failing provider is dropped
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # process_pcm_chunk is implemented by the provider (torch/numpy/ffmpeg), so evict
                 # the provider that fails on a chunk rather than crashing the session.
                 self.logger.warning("Error processing PCM chunk on provider %s: %s", prov_id, err)

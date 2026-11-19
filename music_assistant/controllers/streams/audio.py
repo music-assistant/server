@@ -639,7 +639,7 @@ class _IncomingFadePrefetcher:
             # the target is kept clear of the track's end, so running out here means the
             # source gave up early and the flow stream is better off opening it again
             self._failed = True
-        except Exception as err:  # noqa: BLE001 - the flow stream opens the track itself instead
+        except Exception as err:  # noqa: BLE001 - see the comment below
             # the flow stream opens the track itself rather than inheriting a dead stream
             self._failed = True
             self._audio.logger.warning("Failed to prefetch the incoming fade-in: %s", err)
@@ -4470,7 +4470,7 @@ class StreamsAudio:
                                 preferred,
                                 "all known sources are at their stream limit",
                             )
-                        except Exception as err:  # noqa: BLE001 - best effort, the blocking wait follows
+                        except Exception as err:  # noqa: BLE001 - see the comment below
                             # discovery is best-effort: any failure falls back to the
                             # final blocking wait instead of replacing the typed error
                             self.logger.warning(

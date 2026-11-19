@@ -466,8 +466,8 @@ class _GroupRun:
             return
         try:
             await call
-        except Exception:  # noqa: BLE001 - provider code, the step decides how a failure counts
-            self.players.logger.warning(step.message, *step.args)
+        except Exception as err:  # noqa: BLE001 - provider code, the step decides how a failure counts
+            self.players.logger.warning("%s: %s", step.message % step.args, err)
             self.left_out = step.failure == Failure.LEAVE_OUT
 
     async def _detach(self, step: Detach) -> None:

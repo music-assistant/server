@@ -190,7 +190,7 @@ class SmartFadesMixer:
                 ),
             )
             trailing_silence_bytes = max(0, len(fade_out_data) - retained_bytes)
-        except Exception as err:  # noqa: BLE001 - a failed measurement must not kill the stream
+        except Exception as err:  # noqa: BLE001 - see the comment below
             # a failed measurement degrades to the old late-boundary bookkeeping
             # instead of killing the stream
             self.logger.warning("Measuring trailing silence failed: %s", err)

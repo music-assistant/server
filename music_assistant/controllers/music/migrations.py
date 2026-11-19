@@ -259,7 +259,7 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
                 f"CREATE UNIQUE INDEX {DB_TABLE_LEGACY_PLAYLOG}_unique_idx "
                 f"ON {DB_TABLE_LEGACY_PLAYLOG}(item_id,provider,media_type,userid)"
             )
-        except Exception as err:  # noqa: BLE001 - a failed migration resets the library
+        except Exception as err:  # noqa: BLE001 - must not fail the migration, which resets the library
             # If we can't create the index due to duplicate entries, log and continue
             logger.warning("Could not create unique index on playlog: %s", err)
 
@@ -1337,7 +1337,7 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
         await database.commit()
         try:
             await mass.music.genres.restore_default_genres(full_restore=False)
-        except Exception as err:  # noqa: BLE001 - a failed migration resets the library
+        except Exception as err:  # noqa: BLE001 - must not fail the migration, which resets the library
             logger.warning("Could not seed default podcast/audiobook genres: %s", err)
 
     if prev_version <= 65:
@@ -1476,7 +1476,7 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
     # always clear the cache after a db migration; a failure here must not reset the library
     try:
         await mass.cache.clear()
-    except Exception as err:  # noqa: BLE001 - a failed migration resets the library
+    except Exception as err:  # noqa: BLE001 - must not fail the migration, which resets the library
         logger.warning("Could not clear the cache after the migration: %s", err)
 
 
@@ -1772,7 +1772,7 @@ async def _move_audio_analysis_out(
             f"ATTACH DATABASE :path AS {_AUDIO_ANALYSIS_SCHEMA}", {"path": db_path}
         )
     # a failed library migration resets library.db, so nothing here may raise
-    except Exception as err:  # noqa: BLE001 - a failed migration resets the library
+    except Exception as err:  # noqa: BLE001 - must not fail the migration, which resets the library
         logger.error(
             "Could not open %s (%s); audio analysis stays in library.db", AA_DB_FILENAME, err
         )
@@ -1786,7 +1786,7 @@ async def _move_audio_analysis_out(
             await _move_audio_analysis_table(
                 database, logger, DB_TABLE_AUDIO_ANALYSIS_FAILURES, _FAILURE_COLUMNS
             )
-    except Exception as err:  # noqa: BLE001 - a failed migration resets the library
+    except Exception as err:  # noqa: BLE001 - must not fail the migration, which resets the library
         logger.error(
             "Could not move audio analysis to %s (%s); the remaining rows stay in library.db",
             AA_DB_FILENAME,
