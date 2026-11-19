@@ -459,6 +459,8 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self._virtual_players = {}
         # speaker client id -> the protocol id of the multi-channel player it belongs to
         self._multi_channel_speakers: dict[str, str] = {}
+        # speakers of a set taken apart while they were away, registered once they are back
+        self._released_speakers: set[str] = set()
         self._held_elsewhere = set()
         self._held_unapproved = set()
         self._held_paired = set()
@@ -551,6 +553,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED),
             self.mass.subscribe(self._on_queue_updated, EventType.QUEUE_UPDATED),
             self.mass.subscribe(self._on_player_config_updated, EventType.PLAYER_CONFIG_UPDATED),
+            self.mass.subscribe(self._on_player_removed, EventType.PLAYER_REMOVED),
         ]
         # seed the hass availability snapshot so the first (un)load is seen as a change
         hass = self.mass.get_provider("hass")
@@ -578,6 +581,8 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 self._set_held_elsewhere(client_id, held=False)
                 self._unencrypted_clients.discard(client_id)
                 self._refresh_speaker(client_id)
+                # a new connection of it is a new client, which is added as such
+                self._released_speakers.discard(client_id)
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_removed(client_id, event_version))
             case ClientUpdatedEvent(client_id):
@@ -606,6 +611,11 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 self.mass.loop.call_soon(self._refresh_player_state, client_id)
                 self.mass.loop.call_soon(self._hass_auto_pairer.on_client_connected, client_id)
                 self.mass.loop.call_soon(self._local_auto_pairer.on_client_connected, client_id)
+                if client_id in self._released_speakers:
+                    # a client that reconnects within the cleanup delay is not added again
+                    self._released_speakers.discard(client_id)
+                    event_version = self._begin_client_event(client_id)
+                    self.mass.create_task(self._handle_client_added(client_id, event_version))
             case ClientDisconnectedEvent(client_id, goodbye_reason):
                 self._refresh_speaker(client_id)
                 self._set_held_elsewhere(
@@ -1045,11 +1055,10 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         for client_id in speaker_ids:
             if (client := self.server_api.get_client(client_id)) is None:
                 continue
-            if not client.is_connected:
-                # only a new connection registers a client that is kept while it is away
-                await self.server_api.remove_client(client_id)
-                continue
             await client.ungroup()
+            if not client.is_connected:
+                self._released_speakers.add(client_id)
+                continue
             if (
                 self.get_protocol(client_id) is None
                 and client_id not in self._client_event_versions
@@ -1512,6 +1521,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self._client_event_versions.clear()
         self._virtual_players.clear()
         self._multi_channel_speakers.clear()
+        self._released_speakers.clear()
         self._bridge_waiters.clear()
 
     async def get_audio_sources(self) -> list[AudioSource]:
@@ -2137,6 +2147,9 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                         "Skipping stale add event for %s after HA enrichment", client_id
                     )
                     return
+                if client_id in self._multi_channel_speakers:
+                    # it went up in a multi-channel player meanwhile
+                    return
                 await self.mass.players.register(player)
             finally:
                 if (
@@ -2247,6 +2260,9 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale update event for %s after refresh", client_id)
                 return
+            if client_id in self._multi_channel_speakers:
+                # it went up in a multi-channel player meanwhile
+                return
             if was_session_only != existing_player.session_only:
                 # whether it is a player of its own while connected is fixed at attach
                 existing_player._attr_underlying_protocol_id = None
@@ -2353,6 +2369,13 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         """
         protocol = self.get_protocol(client_id)
         name = protocol.display_name if protocol is not None else client_id
+        if client_id in self._multi_channel_speakers:
+            raise UnsupportedFeaturedException(
+                f"{name} is part of a multi-channel player already",
+                translation_key="multi_channel_speaker_taken",
+                translation_owner=self.translation_owner,
+                translation_args=[name],
+            )
         # a bridge rides on another protocol of its device, a web player is a session
         if (
             not isinstance(protocol, SendspinPlayer)
@@ -2431,6 +2454,14 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         if self._unloading or self.mass.closing or (player_id := event.object_id) is None:
             return
         await evaluate_bridges_of_player(self.mass, player_id)
+
+    async def _on_player_removed(self, event: MassEvent) -> None:
+        """Let the speakers go of a multi-channel player that is removed for good."""
+        # a set that is disabled has no protocol object, so its removal reaches no on_remove
+        for protocol_id in set(self._multi_channel_speakers.values()):
+            record = self.mass.config.get_protocol_record(protocol_id)
+            if record is None or record.get("player_id") == event.object_id:
+                await self.release_multi_channel_player(protocol_id)
 
     async def _remove_orphan_virtual_player_configs(self) -> None:
         """Delete stored configs of virtual players whose owner provider is gone."""

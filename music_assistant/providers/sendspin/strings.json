@@ -332,6 +332,7 @@
     "no_audio": "{0} did not start streaming its input.",
     "multi_channel_channels": "A multi-channel player needs one speaker on the left and one on the right.",
     "multi_channel_not_a_speaker": "{0} can not be part of a multi-channel player.",
-    "multi_channel_speaker_unavailable": "{0} is not available. Switch it on and wait until it is connected."
+    "multi_channel_speaker_unavailable": "{0} is not available. Switch it on and wait until it is connected.",
+    "multi_channel_speaker_taken": "{0} is part of a multi-channel player already."
   }
 }

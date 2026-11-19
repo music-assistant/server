@@ -2662,6 +2662,7 @@
   "provider.sendspin.errors.invalid_value": "Enter the complete pairing code.",
   "provider.sendspin.errors.multi_channel_channels": "A multi-channel player needs one speaker on the left and one on the right.",
   "provider.sendspin.errors.multi_channel_not_a_speaker": "{0} can not be part of a multi-channel player.",
+  "provider.sendspin.errors.multi_channel_speaker_taken": "{0} is part of a multi-channel player already.",
   "provider.sendspin.errors.multi_channel_speaker_unavailable": "{0} is not available. Switch it on and wait until it is connected.",
   "provider.sendspin.errors.no_audio": "{0} did not start streaming its input.",
   "provider.sendspin.errors.pairing_error_aborted": "The device aborted the pairing attempt.",

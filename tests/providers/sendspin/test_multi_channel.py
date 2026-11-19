@@ -11,7 +11,13 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
-from aiosendspin.server import ClientConnectedEvent, ClientDisconnectedEvent
+from aiosendspin.server import (
+    ClientAddedEvent,
+    ClientConnectedEvent,
+    ClientDisconnectedEvent,
+    ClientUpdatedEvent,
+)
+from aiosendspin.server import client as sendspin_client_module
 from music_assistant_models.enums import (
     ChannelLayout,
     PlaybackState,
@@ -657,3 +663,150 @@ async def test_a_set_plays_in_a_universal_group(
     await _wait_for(lambda: set_protocol.protocol_id in started and DEN in started)
     assert started[set_protocol.protocol_id].custom_data == {"ugp_player_id": group.player_id}
     assert {LEFT, RIGHT} <= _group_client_ids(set_protocol)
+
+
+async def test_a_speaker_being_combined_can_not_go_up_in_a_second_set(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second request for a speaker that a first request is combining is refused."""
+    sendspin = _sendspin(mass)
+    await _add_speaker(sendspin, LEFT, "Kitchen left")
+    await _add_speaker(sendspin, RIGHT, "Kitchen right")
+    await _add_speaker(sendspin, DEN, "Den")
+    left_id, right_id, den_id = (_player_id(sendspin, c) for c in (LEFT, RIGHT, DEN))
+    # the first request waits for the client of its set
+    deferred: list[tuple[SendspinProvider, str, str, str]] = []
+    register_client = SendspinProvider._register_virtual_player_client
+
+    def _defer(
+        self: SendspinProvider,
+        player_id: str,
+        display_name: str,
+        product_name: str = "Virtual Player",
+    ) -> None:
+        deferred.append((self, player_id, display_name, product_name))
+
+    monkeypatch.setattr(SendspinProvider, "_register_virtual_player_client", _defer)
+    first = asyncio.create_task(
+        mass.players.create_multi_channel_player(
+            "sendspin",
+            "Kitchen",
+            {left_id: SpeakerChannel.FRONT_LEFT, right_id: SpeakerChannel.FRONT_RIGHT},
+        )
+    )
+    await _wait_for(lambda: bool(deferred))
+
+    with pytest.raises(UnsupportedFeaturedException):
+        await mass.players.create_multi_channel_player(
+            "sendspin",
+            "Den pair",
+            {left_id: SpeakerChannel.FRONT_LEFT, den_id: SpeakerChannel.FRONT_RIGHT},
+        )
+
+    monkeypatch.setattr(SendspinProvider, "_register_virtual_player_client", register_client)
+    for args in deferred:
+        register_client(*args)
+    player = await first
+    await _wait_for(lambda: {LEFT, RIGHT} <= _group_client_ids(_set_of(sendspin, player)))
+    assert sendspin.multi_channel_player_of(DEN) is None
+    assert mass.players.get_player(den_id) is not None
+
+
+async def test_a_speaker_away_when_its_set_is_taken_apart_stays_once_it_is_back(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A speaker that is away when its set is taken apart is a player of its own once it is back.
+
+    The server keeps a client a while after it drops off; one that comes back within that time
+    keeps its client, so nothing of its first connection removes it later.
+    """
+    monkeypatch.setattr(sendspin_client_module, "CLIENT_CLEANUP_DELAY", 0.5)
+    sendspin = _sendspin(mass)
+    player, _, _ = await _compose(mass, sendspin)
+    right_client = cast("Any", sendspin.server_api.get_client(RIGHT))
+    # a speaker on the network, which the server keeps for a while after it drops off
+    sendspin.server_api._external_stream_start_cbs.pop(RIGHT)
+    right_client.detach_connection(None)
+
+    await mass.players.remove(player.player_id)
+    await asyncio.sleep(0.1)
+    if (client := cast("Any", sendspin.server_api.get_client(RIGHT))) is not None:
+        # a connection within the cleanup delay takes the kept client back
+        client._cancel_cleanup()
+        client._connection = _connection()
+        client._connected = True
+        sendspin.event_cb(sendspin.server_api, ClientConnectedEvent(RIGHT))
+    else:
+        await _add_speaker(sendspin, RIGHT, "Kitchen right", as_player=False)
+
+    await _wait_for(
+        lambda: (
+            (protocol := sendspin.get_protocol(RIGHT)) is not None and protocol.player is not None
+        )
+    )
+    await asyncio.sleep(0.8)
+    assert sendspin.server_api.get_client(RIGHT) is not None
+    assert sendspin.get_protocol(RIGHT) is not None
+
+
+async def test_removing_a_disabled_set_gives_its_speakers_back(mass: MusicAssistant) -> None:
+    """The speakers of a set that is disabled are players of their own once it is removed."""
+    sendspin = _sendspin(mass)
+    player, _, _ = await _compose(mass, sendspin)
+    instance_id = sendspin.instance_id
+    await mass.config.save_player_config(player.player_id, {"enabled": False})
+    await mass.unload_provider(instance_id)
+    await mass.load_provider(instance_id)
+    sendspin = _sendspin(mass)
+    await _add_speaker(sendspin, LEFT, "Kitchen left", as_player=False)
+    await _add_speaker(sendspin, RIGHT, "Kitchen right", as_player=False)
+    await asyncio.sleep(0.2)
+    assert sendspin.get_protocol(LEFT) is None
+
+    await mass.players.remove(player.player_id)
+
+    await _wait_for(
+        lambda: all(
+            (protocol := sendspin.get_protocol(client_id)) is not None
+            and protocol.player is not None
+            for client_id in (LEFT, RIGHT)
+        )
+    )
+
+
+@pytest.mark.parametrize("event", ["added", "updated"])
+async def test_a_speaker_combined_while_its_client_is_handled_stays_in_its_set(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, event: str
+) -> None:
+    """A speaker that goes up in a set while a new connection of it is handled is no player."""
+    sendspin = _sendspin(mass)
+    await _add_speaker(sendspin, LEFT, "Kitchen left")
+    await _add_speaker(sendspin, RIGHT, "Kitchen right")
+    left_id, right_id = _player_id(sendspin, LEFT), _player_id(sendspin, RIGHT)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def _slow_enrichment(players: list[Any]) -> None:
+        if any(player.protocol_id == LEFT for player in players):
+            entered.set()
+            await release.wait()
+
+    monkeypatch.setattr(sendspin, "_apply_hass_esphome_enrichment", _slow_enrichment)
+    sendspin.event_cb(
+        sendspin.server_api,
+        ClientAddedEvent(LEFT) if event == "added" else ClientUpdatedEvent(LEFT),
+    )
+    await asyncio.wait_for(entered.wait(), 5)
+    player = await mass.players.create_multi_channel_player(
+        "sendspin",
+        "Kitchen",
+        {left_id: SpeakerChannel.FRONT_LEFT, right_id: SpeakerChannel.FRONT_RIGHT},
+    )
+    set_protocol = _set_of(sendspin, player)
+    await _wait_for(lambda: {LEFT, RIGHT} <= _group_client_ids(set_protocol))
+
+    release.set()
+    await asyncio.sleep(0.2)
+
+    assert sendspin.get_protocol(LEFT) is None
+    assert mass.config.get_protocol_record(LEFT) is None
