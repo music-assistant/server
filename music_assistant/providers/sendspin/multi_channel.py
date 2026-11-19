@@ -221,6 +221,10 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         else:
             self._joining.discard(client_id)
             self.mass.cancel_timer(f"sendspin_mc_join_{client_id}")
+            # what was sent over the connection that ended may never have arrived
+            self._sent_volumes.pop(client_id, None)
+            self._sent_mutes.pop(client_id, None)
+            self._sent_delays.pop(client_id, None)
             if client is None:
                 self._stop_listening(client_id)
                 self._left.discard(client_id)

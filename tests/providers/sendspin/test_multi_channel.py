@@ -848,6 +848,34 @@ async def test_an_output_delay_sent_again_before_the_speaker_reports_is_not_drop
     assert mass.config.get_protocol_value(set_id, "speaker_2_output_delay") == 120
 
 
+async def test_a_speaker_that_drops_off_before_it_reports_gets_the_state_again(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A speaker that drops off before it reports what the set sent gets it again once it is back.
+
+    What was sent over the connection that ended may never have arrived.
+    """
+    sendspin = _sendspin(mass)
+    player, _, right = await _compose(mass, sendspin)
+    right.unreported = []
+    right.unreported_delays = []
+    right.reports_mute = False
+    right.volume_commands.clear()
+    right.delay_commands.clear()
+    await mass.players.cmd_volume_set(player.player_id, 50)
+    await mass.players.cmd_volume_mute(player.player_id, True)
+    await mass.config.save_player_config(player.player_id, {"speaker_2_output_delay": 120})
+
+    _go_away(sendspin, RIGHT)
+    _come_back(sendspin, RIGHT)
+
+    await _wait_for(lambda: len(right.volume_commands) == 2)
+    assert right.volume_commands == [50, 50]
+    assert right.mute_commands == [True, True]
+    assert right.delay_commands == [120, 120]
+
+
 async def test_a_delay_a_speaker_reports_itself_is_stored_for_it(mass: MusicAssistant) -> None:
     """An output delay set on a speaker itself is stored as the delay of that speaker."""
     sendspin = _sendspin(mass)
