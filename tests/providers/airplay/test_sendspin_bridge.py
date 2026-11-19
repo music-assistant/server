@@ -33,6 +33,7 @@ tests are deterministic and independent of the host wall-clock:
 
 import asyncio
 from collections.abc import Coroutine
+from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -42,6 +43,7 @@ from aiosendspin.clock import ManualClock
 from aiosendspin.server.roles import AudioChunk
 from music_assistant_models.enums import IdentifierType, PlaybackState
 
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_CLOCK_READY_LEAD_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
@@ -2538,13 +2540,78 @@ def test_a_receiver_taken_over_by_another_sender_is_released_not_recovered() -> 
 
     with (
         patch.object(bridge, "_restart_transport", MagicMock()) as restart,
-        patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave,
+        patch.object(bridge, "_leave_group_or_session", MagicMock()) as leave,
     ):
         bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 1_000_000))
 
     restart.assert_not_called()
-    leave.assert_called_once_with(rejoin=False)
+    leave.assert_called_once_with()
     assert bridge._is_streaming is False
+
+
+def _make_taken_over_bridge(
+    *, synced_to: str | None = None, group_members: list[str] | None = None
+) -> tuple[SendspinAirPlayBridge, MagicMock]:
+    """
+    Return a bridge whose Sendspin client is in the given group state, plus the players mock.
+
+    :param synced_to: The Sendspin protocol id of the leader the client follows.
+    :param group_members: The members of the group the client leads.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._bridge_client_id = "ss_bridge_client"
+    cast("MagicMock", bridge.airplay_player).player.player_id = "own_player"
+    bridge_client = MagicMock(synced_to=synced_to, group_members=group_members or [])
+    players = cast("MagicMock", bridge.mass).players
+    players.get_protocol = MagicMock(return_value=bridge_client)
+    players.get_player_by_protocol = MagicMock(return_value=MagicMock(player_id="leader_player"))
+    players.get_player_lock = MagicMock(return_value=nullcontext())
+    players._handle_set_members = AsyncMock()
+    return bridge, players
+
+
+async def test_a_taken_over_group_member_leaves_through_the_controller() -> None:
+    """A member is taken out of its leader's group, so the rest of the group plays on."""
+    bridge, players = _make_taken_over_bridge(synced_to="ss_leader_client")
+
+    with patch.object(bridge, "_leave_sendspin_session", AsyncMock()) as leave:
+        await bridge._leave_group_or_session()
+
+    players.get_player_by_protocol.assert_called_once_with("ss_leader_client")
+    players.get_player_lock.assert_called_once_with("leader_player", PlayerLockPurpose.PLAYBACK)
+    players._handle_set_members.assert_awaited_once_with(
+        players.get_player_by_protocol.return_value, player_ids_to_remove=["own_player"]
+    )
+    leave.assert_not_called()
+
+
+async def test_a_taken_over_group_leader_leaves_its_own_group_through_the_controller() -> None:
+    """A leader leaves through the controller, which hands the group to a remaining member."""
+    bridge, players = _make_taken_over_bridge(
+        group_members=["ss_bridge_client", "ss_member_client"]
+    )
+
+    with patch.object(bridge, "_leave_sendspin_session", AsyncMock()) as leave:
+        await bridge._leave_group_or_session()
+
+    own_player = bridge.airplay_player.player
+    players.get_player_lock.assert_called_once_with("own_player", PlayerLockPurpose.PLAYBACK)
+    players._handle_set_members.assert_awaited_once_with(
+        own_player, player_ids_to_remove=["own_player"]
+    )
+    leave.assert_not_called()
+
+
+async def test_a_taken_over_solo_speaker_ends_its_own_session() -> None:
+    """A speaker playing alone leaves its Sendspin session, which is what stops it."""
+    # a Sendspin client that plays alone lists itself as its only group member
+    bridge, players = _make_taken_over_bridge(group_members=["ss_bridge_client"])
+
+    with patch.object(bridge, "_leave_sendspin_session", AsyncMock()) as leave:
+        await bridge._leave_group_or_session()
+
+    leave.assert_awaited_once_with(rejoin=False)
+    players._handle_set_members.assert_not_called()
 
 
 def test_a_stream_the_binary_ended_itself_is_not_a_loss() -> None:

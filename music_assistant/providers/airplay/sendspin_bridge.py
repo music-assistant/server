@@ -29,6 +29,7 @@ from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFo
 from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType, PlaybackState
 
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -1149,13 +1150,32 @@ class SendspinAirPlayBridge:
         self.mass.create_task(self._leave_sendspin_session())
 
     def _yield_to_other_sender(self) -> None:
-        """Leave the receiver and the Sendspin session to the sender that took it over."""
+        """Leave the receiver to the sender that took it over, and the group it played in."""
         self.logger.info(
             "%s was taken over by another AirPlay sender, leaving the Sendspin session",
             self.airplay_player.display_name,
         )
         self._release_streaming()
-        self.mass.create_task(self._leave_sendspin_session(rejoin=False))
+        self.mass.create_task(self._leave_group_or_session())
+
+    async def _leave_group_or_session(self) -> None:
+        """Take the speaker out of its group, or end its own session when it plays alone."""
+        players = self.mass.players
+        player = self.airplay_player.player
+        leader: Player | None = None
+        if self.bridge_client_id and (bridge_client := players.get_protocol(self.bridge_client_id)):
+            if bridge_client.synced_to:
+                leader = players.get_player_by_protocol(bridge_client.synced_to)
+            elif len(bridge_client.group_members) > 1:
+                # a client that plays alone lists itself as its only member
+                leader = player
+        if leader is None or player is None:
+            await self._leave_sendspin_session(rejoin=False)
+            return
+        # Leaving the Sendspin group directly ends a leader's session for every member.
+        # The controller hands the queue to a remaining member instead.
+        async with players.get_player_lock(leader.player_id, PlayerLockPurpose.PLAYBACK):
+            await players._handle_set_members(leader, player_ids_to_remove=[player.player_id])
 
     def _release_streaming(self) -> None:
         """Stop accepting chunks and hand the current transport to the cleanup path."""
