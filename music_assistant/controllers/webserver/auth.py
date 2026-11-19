@@ -274,7 +274,7 @@ class AuthenticationManager:
             return None
         except pyjwt.InvalidTokenError:
             self.logger.debug("Token is not a valid JWT, trying legacy hash lookup")
-        except Exception as err:  # noqa: BLE001 - any failure falls back to the legacy token lookup
+        except ValueError as err:
             self.logger.debug("Error decoding JWT token: %s, trying legacy hash lookup", err)
 
         # Fallback to legacy hash-based token lookup
