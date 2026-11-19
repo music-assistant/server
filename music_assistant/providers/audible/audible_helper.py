@@ -297,7 +297,7 @@ class AudibleHelper:
             if cached_book is not None:
                 return self._parse_audiobook(cached_book)
             return self._parse_audiobook(audiobook_data)
-        except Exception as exc:
+        except (MediaNotFoundError, AttributeError, KeyError, TypeError, ValueError) as exc:
             self.provider.report_skipped_sync_item(MediaType.AUDIOBOOK, asin or None, exc)
             return None
 
@@ -382,7 +382,7 @@ class AudibleHelper:
                 duration = int(sum(chapter.get("length_ms", 0) for chapter in chapters_data) / 1000)
                 if duration > 0:
                     book.duration = duration
-            except Exception as exc:
+            except (AttributeError, TypeError) as exc:
                 self.logger.warning(
                     "Error calculating duration from chapters for %s: %s", asin, exc
                 )
@@ -410,7 +410,7 @@ class AudibleHelper:
             if chapters:
                 try:
                     duration = int(sum(chapter.get("length_ms", 0) for chapter in chapters) / 1000)
-                except Exception as exc:
+                except (AttributeError, TypeError) as exc:
                     self.logger.warning("Error calculating duration for ASIN %s: %s", asin, exc)
 
         try:
@@ -524,7 +524,7 @@ class AudibleHelper:
                     provider=self.provider_instance,
                     category=CACHE_CATEGORY_CHAPTERS,
                 )
-            except Exception as exc:
+            except (ProviderUnavailableError, RateLimited, AttributeError) as exc:
                 self.logger.error("Error fetching chapters for ASIN %s: %s", asin, exc)
                 chapters_data = []
 
@@ -640,7 +640,7 @@ class AudibleHelper:
             self.logger.error(
                 "Connection error while reporting position for ASIN %s: %s", asin, exc
             )
-        except Exception as exc:
+        except (audible.exceptions.RequestError, RetriesExhausted, RateLimited, ValueError) as exc:
             self.logger.error("Unexpected error reporting position for ASIN %s: %s", asin, exc)
 
     async def get_audible_resume_position(self, asin: str) -> tuple[bool, int, datetime | None]:
@@ -829,7 +829,7 @@ class AudibleHelper:
             if cached_podcast is not None:
                 return self._parse_podcast(cached_podcast)
             return self._parse_podcast(podcast_data)
-        except Exception as exc:
+        except (MediaNotFoundError, AttributeError, KeyError, TypeError, ValueError) as exc:
             self.provider.report_skipped_sync_item(MediaType.PODCAST, asin or None, exc)
             return None
 

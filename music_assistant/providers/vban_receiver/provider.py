@@ -218,7 +218,7 @@ class VBANReceiverProvider(PluginProvider):
             if self._udp_socket_fut:
                 try:
                     await self._udp_socket_fut
-                except Exception as err:
+                except OSError as err:
                     self.logger.debug("Error while closing UDP transport: %s", err)
                 else:
                     self.logger.debug("Closed UDP transport")
