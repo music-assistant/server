@@ -1695,7 +1695,12 @@ class AirPlayStreamSession:
         :param airplay_player: The member that was lost.
         :param rejoin: Whether the set may be lined up to join its group again.
         """
-        if (owner := airplay_player.owner) is None or owner is airplay_player:
+        # the Apple TV of a set never takes its set along; the HomePod that carries a pair is
+        # one of its speakers
+        owner = airplay_player.owner
+        if not airplay_player.renders_audio or (
+            (owner is None or owner is airplay_player) and not airplay_player.speakers
+        ):
             return
         if (stream := airplay_player.stream) is not None and stream.session is self:
             stream.handle_stream_loss(rejoin=rejoin)
