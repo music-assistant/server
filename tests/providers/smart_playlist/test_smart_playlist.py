@@ -2996,6 +2996,40 @@ async def test_load_malformed_rules_logs_failure(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_rules",
+    [None, {"genre_ids": ["abc"]}],
+    ids=["not-an-object", "invalid-rule-value"],
+)
+async def test_load_rules_skips_invalid_entry(
+    tmp_path: Any, caplog: pytest.LogCaptureFixture, invalid_rules: Any
+) -> None:
+    """Keep valid playlists on either side of an invalid entry."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    rules = SmartPlaylistRules(favorites_only=True)
+    await write_json(
+        str(tmp_path / "smart_playlists" / RULES_FILENAME),
+        {
+            "first": {"rules": rules.to_dict()},
+            "broken": {"rules": invalid_rules, "name": "Broken", "ai_description": "Discard me"},
+            "last": {
+                "rules": rules.to_dict(),
+                "name": "Keep me",
+                "ai_description": "Keep this too",
+            },
+        },
+    )
+
+    await plugin._load_rules_from_disk()
+
+    assert plugin._rules_store == {"first": rules, "last": rules}
+    assert plugin._names_store == {"first": "first", "last": "Keep me"}
+    assert plugin._descriptions_store == {"last": "Keep this too"}
+    assert any("broken" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_load_rules_from_disk_drops_an_unusable_description(tmp_path: Any) -> None:
     """Only a short, textual persisted description is adopted on load."""
     plugin = _make_ai_plugin(tmp_path)

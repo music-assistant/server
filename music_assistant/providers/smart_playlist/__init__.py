@@ -1596,31 +1596,39 @@ class SmartPlaylistProvider(PluginProvider):
         )
 
     async def _load_rules_from_disk(self) -> None:
-        """Load all persisted rules from the rules directory."""
+        """Load valid persisted rules, skipping malformed playlist entries."""
         rules_file = os.path.join(self._rules_dir, RULES_FILENAME)
         if not await asyncio.to_thread(os.path.isfile, rules_file):
             return
         try:
             data = await read_json(rules_file)
-            if not isinstance(data, dict):
-                self.logger.warning("Failed to load smart playlist rules: expected a JSON object")
-                return
-            for playlist_id, entry in data.items():
-                if not isinstance(entry, dict) or not isinstance(entry.get("rules"), dict):
-                    self.logger.warning("Invalid rules for smart playlist %s", playlist_id)
-                    return
-                self._rules_store[playlist_id] = SmartPlaylistRules.from_dict(entry["rules"])
-                self._names_store[playlist_id] = entry.get("name", str(playlist_id))
-                # a description persisted before the size cap existed is dropped here too
-                description = entry.get("ai_description")
-                if (
-                    isinstance(description, str)
-                    and description
-                    and len(description.encode("utf-8")) <= MAX_AI_DESCRIPTION_BYTES
-                ):
-                    self._descriptions_store[playlist_id] = description
-        except (OSError, JSONDecodeError, UnicodeDecodeError, InvalidDataError) as exc:
+        except (OSError, JSONDecodeError, UnicodeDecodeError) as exc:
             self.logger.warning("Failed to load smart playlist rules: %s", exc)
+            return
+        if not isinstance(data, dict):
+            self.logger.warning("Failed to load smart playlist rules: expected a JSON object")
+            return
+        # Saving rewrites the entire file from memory, so a single bad entry must not
+        # prevent later valid playlists from being loaded.
+        for playlist_id, entry in data.items():
+            if not isinstance(entry, dict) or not isinstance(entry.get("rules"), dict):
+                self.logger.warning("Invalid rules for smart playlist %s", playlist_id)
+                continue
+            try:
+                rules = SmartPlaylistRules.from_dict(entry["rules"])
+            except InvalidDataError as exc:
+                self.logger.warning("Invalid rules for smart playlist %s: %s", playlist_id, exc)
+                continue
+            self._rules_store[playlist_id] = rules
+            self._names_store[playlist_id] = entry.get("name", str(playlist_id))
+            # a description persisted before the size cap existed is dropped here too
+            description = entry.get("ai_description")
+            if (
+                isinstance(description, str)
+                and description
+                and len(description.encode("utf-8")) <= MAX_AI_DESCRIPTION_BYTES
+            ):
+                self._descriptions_store[playlist_id] = description
 
     async def _save_rules(self, playlist_id: str, rules: SmartPlaylistRules) -> None:
         """Persist rules to disk and update in-memory store."""
