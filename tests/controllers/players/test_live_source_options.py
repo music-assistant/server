@@ -13,8 +13,8 @@ from music_assistant_models.enums import RepeatMode
 from music_assistant_models.media_items import AudioSource
 
 from music_assistant.controllers.players.audio_sources import (
-    AudioSourceMixin,
     AudioSourceSession,
+    PlayerAudioSourcesMixin,
 )
 from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 
@@ -23,7 +23,7 @@ SOURCE_ID = "main"
 INSTANCE_ID = "spotify_connect--test"
 
 
-class _Controller(AudioSourceMixin):
+class _Controller(PlayerAudioSourcesMixin):
     """Minimal stand-in for the parts of PlayerController the mixin relies on."""
 
     def __init__(self) -> None:

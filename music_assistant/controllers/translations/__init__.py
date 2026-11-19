@@ -168,7 +168,7 @@ class TranslationController(CoreController):
         except FileNotFoundError:
             # a provider without texts
             return
-        except Exception as err:
+        except (OSError, ValueError, TypeError) as err:
             self.logger.warning("Failed to load the texts of provider %s: %s", domain, err)
             return
         self.unload_provider_strings(domain)
@@ -244,7 +244,7 @@ class TranslationController(CoreController):
             return {}
         try:
             data = await load_json_dict(path)
-        except Exception as err:
+        except (OSError, ValueError, TypeError) as err:
             self.logger.warning("Failed to load translations file %s: %s", path, err)
             return {}
         return {key: value for key, value in data.items() if isinstance(value, str)}

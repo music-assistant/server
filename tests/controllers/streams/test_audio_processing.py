@@ -34,6 +34,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlayerType,
     ProtocolRole,
+    SpeakerChannel,
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import (
@@ -57,6 +58,15 @@ from music_assistant.controllers.streams.audio_processing import (
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.helpers.dsp import ComplexFilter
 from tests.common import MockProtocol, MockProvider, attach_mock, mock_player_mass
+
+
+def _bare_buffer(**attributes: Any) -> SimpleNamespace:
+    """
+    Build a bare stand-in for the buffer of an item that a flow stream plays.
+
+    :param attributes: What the test reads from or sets on the buffer.
+    """
+    return SimpleNamespace(release_if_unneeded=lambda: None, **attributes)
 
 
 def _format(
@@ -979,6 +989,36 @@ def test_player_output_plan_feeds_every_output_channel() -> None:
     assert plan.output_details.source_channel == AudioChannel.ALL
 
 
+@pytest.mark.parametrize(
+    ("channel", "pan"),
+    [
+        (SpeakerChannel.FRONT_LEFT, "pan=stereo|c0=FL|c1=FL"),
+        (SpeakerChannel.FRONT_RIGHT, "pan=stereo|c0=FR|c1=FR"),
+    ],
+)
+def test_player_output_plan_plays_the_channel_of_a_speaker(
+    channel: SpeakerChannel, pan: str
+) -> None:
+    """
+    A speaker of a multi-channel player plays its own channel, after the DSP of that player.
+
+    The configured output channels do not apply, and the player as a whole plays every
+    channel.
+    """
+    mass = MagicMock()
+    mass.players.get_output_protocol.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=True, input_gain=-2.0)
+    mass.config.get_protocol_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan("set-1", audio_format, audio_format, channel=channel)
+
+    assert plan.filter_params == ["volume=-2.0dB", pan]
+    assert plan.dsp_config_id == "set-1"
+    assert plan.output_details.source_channel is None
+
+
 def test_player_output_plan_skips_channel_selection_for_mono_source() -> None:
     """A single channel source has no channels to select, so it is left untouched."""
     mass = MagicMock()
@@ -1770,7 +1810,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         seek_position=0,
         seconds_streamed=0,
         duration=120,
-        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        buffer=_bare_buffer(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         is_realtime=False,
     )
     first_item = SimpleNamespace(
@@ -1787,7 +1827,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
     skipped_ready.set()
     skipped_streamdetails = SimpleNamespace(
         audio_format=pcm_format,
-        buffer=SimpleNamespace(
+        buffer=_bare_buffer(
             has_error=False,
             is_valid=lambda *_args: True,
             duration_available=16,
@@ -1893,7 +1933,7 @@ async def test_flow_ends_unfinished_when_its_source_is_released(
     pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
     streamdetails = SimpleNamespace(
         audio_format=pcm_format,
-        buffer=SimpleNamespace(cancelled=source_cancelled and not detached),
+        buffer=_bare_buffer(cancelled=source_cancelled and not detached),
         fade_in=False,
         stream_error=False,
         tail_overlap=None,
@@ -2246,6 +2286,7 @@ def _native_stream_handler_context(
     controller = cast("Any", object.__new__(StreamsController))
     controller._open_item_streams = {}
     controller._ended_item_streams = {}
+    controller._flow_bytes_sent = {}
     controller.mass = mass
     controller.audio = audio
     controller.logger = MagicMock()

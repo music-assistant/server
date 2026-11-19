@@ -243,6 +243,14 @@ def _make_engine_provider(
     mass.config.get_provider_setup_value.side_effect = lambda _instance_id, key, default=None: (
         stored.get(key, default)
     )
+    # the default engines, stored by the AI core module
+    defaults: dict[str, Any] = {}
+    mass.config.get_raw_core_config_value.side_effect = lambda _domain, key, default=None: (
+        defaults.get(key, default)
+    )
+    mass.config.set_raw_core_config_value.side_effect = lambda _domain, key, value: (
+        defaults.__setitem__(key, value)
+    )
     provider.mass = cast("Any", mass)
     provider.logger = logging.getLogger("test.ai_radio")
     provider._dj_queues = {}
@@ -277,16 +285,45 @@ def _make_engine_plugin(instance_id: str, ai_ids: list[str], tts_ids: list[str])
     return plugin
 
 
-async def test_wait_for_engines_seeds_a_concrete_selection() -> None:
-    """An instance without a stored selection adopts concrete engines and waits for nothing."""
+def _default_engines(provider: AIRadioProvider) -> tuple[Any, Any]:
+    """Return the stored default text and speech engine."""
+    config = provider.mass.config
+    return (
+        config.get_raw_core_config_value("ai", "text_engine"),
+        config.get_raw_core_config_value("ai", "speech_engine"),
+    )
+
+
+async def test_wait_for_engines_follows_the_default_engines() -> None:
+    """An instance without a selection of its own runs on the defaults and waits for nothing."""
     provider, subscribers, stored = _make_engine_provider(
         [_make_engine_plugin("p1", ["ai"], ["tts"])]
     )
 
     await provider._wait_for_engines()
 
-    assert stored == {CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"}
+    assert stored == {}
+    assert _default_engines(provider) == ("p1/ai", "p1/tts")
     assert subscribers == []
+
+
+async def test_wait_for_engines_rejects_a_default_engine_that_disappeared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A default that no longer exists is never substituted by another engine."""
+    provider, _, _ = _make_engine_provider(
+        [_make_engine_plugin("p1", ["ai"], ["tts"])],
+        setup_values={CONF_AI_ENGINE: "global"},
+    )
+    provider.mass.config.set_raw_core_config_value("ai", "text_engine", "p1/gone")
+    monkeypatch.setattr(ai_radio_provider, "ENGINE_DISCOVERY_TIMEOUT", 0.05)
+
+    with pytest.raises(SetupFailedError) as error:
+        async with asyncio.timeout(1):
+            await provider._wait_for_engines()
+
+    assert error.value.translation_key == "ai_radio_no_ai_engine"
+    assert _default_engines(provider)[0] == "p1/gone"
 
 
 async def test_wait_for_engines_keeps_an_existing_selection() -> None:
@@ -345,7 +382,8 @@ async def test_wait_for_engines_resumes_when_a_supplier_loads_later() -> None:
 
     await task
 
-    assert stored == {CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"}
+    assert stored == {}
+    assert _default_engines(provider) == ("p1/ai", "p1/tts")
     assert subscribers == []
 
 

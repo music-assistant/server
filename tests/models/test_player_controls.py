@@ -25,6 +25,7 @@ from music_assistant_models.player_control import PlayerControl
 from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_POWER_CONTROL,
+    CONF_POWER_CONTROL_CUTS_POWER,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_VOLUME_CONTROL,
 )
@@ -47,11 +48,11 @@ def mock_mass() -> MagicMock:
 
 
 def _make_config_side_effect(
-    overrides: dict[str, str | None],
+    overrides: dict[str, str | bool | None],
 ) -> Any:
     """Create a side_effect for get_player_value."""
 
-    def _side_effect(_pid: str, key: str, *_args: Any) -> str | None:
+    def _side_effect(_pid: str, key: str, *_args: Any) -> str | bool | None:
         return overrides.get(key)
 
     return _side_effect
@@ -225,10 +226,18 @@ class TestPowerControlAutoSelect:
 
 
 class TestOfflineByPowerControl:
-    """A player switched off at its external power control is reported as available and off."""
+    """A player is off, or starting up, at an external power control that cuts its power."""
 
-    def _smart_plug(self, mock_mass: MagicMock, power_state: bool) -> None:
-        """Make an external control the power control of every player."""
+    def _smart_plug(
+        self, mock_mass: MagicMock, power_state: bool, cuts_power: bool = True
+    ) -> PlayerControl:
+        """
+        Make an external control the power control of every player.
+
+        :param power_state: Whether the control is switched on.
+        :param cuts_power: Whether the players are set to have their power cut by it.
+        :return: The control.
+        """
         control = PlayerControl(
             id="switch.smart_plug",
             provider="hass",
@@ -237,88 +246,64 @@ class TestOfflineByPowerControl:
             power_state=power_state,
         )
         mock_mass.config.get_player_value = MagicMock(
-            side_effect=_make_config_side_effect({CONF_POWER_CONTROL: control.id})
+            side_effect=_make_config_side_effect(
+                {CONF_POWER_CONTROL: control.id, CONF_POWER_CONTROL_CUTS_POWER: cuts_power}
+            )
         )
         mock_mass.players.get_player_control = MagicMock(
             side_effect=lambda control_id: control if control_id == control.id else None
         )
+        return control
 
-    def _offline_player(
+    def _player_on_a_plug(
         self,
         mock_mass: MagicMock,
         power_state: bool,
+        reachable: bool = False,
+        cuts_power: bool = True,
         player_type: PlayerType = PlayerType.PLAYER,
     ) -> Player:
-        """Create an unreachable player whose power control is an external control."""
-        self._smart_plug(mock_mass, power_state)
+        """
+        Create a player whose power control is an external control.
+
+        :param power_state: Whether the control is switched on.
+        :param reachable: Whether the own protocol of the player reaches its device.
+        :param cuts_power: Whether the player is set to have its power cut by the control.
+        :param player_type: The type of the player.
+        """
+        self._smart_plug(mock_mass, power_state, cuts_power)
         player = _create_player(mock_mass)
         _own(player)._attr_type = player_type
-        _own(player)._attr_available = False
+        _own(player)._attr_available = reachable
         player._cache.clear()
         player.set_initialized()
         player.update_state(signal_event=False)
         return player
 
     def _with_receiver(self, mock_mass: MagicMock, player: Player) -> None:
-        """Attach an audio protocol that still reaches the device of an unreachable player."""
+        """Attach an audio protocol that still reaches the device of a player."""
         _create_protocol(mock_mass, "airplay_1", {PlayerFeature.PLAY_MEDIA})
         _link_protocols(player, [_make_protocol_link("airplay_1", "airplay")])
         player.refresh_state(signal_event=False)
 
-    def test_control_off_reports_available_and_off(self, mock_mass: MagicMock) -> None:
-        """An unreachable device whose control is off is available, so it can be powered on."""
-        player = self._offline_player(mock_mass, power_state=False)
+    @pytest.mark.parametrize("reachable", [False, True], ids=["unreachable", "reachable"])
+    def test_control_off_reports_available_and_off(
+        self, mock_mass: MagicMock, reachable: bool
+    ) -> None:
+        """A player whose control is off is available and off, whatever its protocol reads."""
+        player = self._player_on_a_plug(mock_mass, power_state=False, reachable=reachable)
 
+        assert player.power_control_cuts_power is True
         assert player.offline_by_power_control is True
+        assert player.available_for_playback is False
         assert player.available is True
         assert player.powered is False
-
-    def test_control_on_reports_unavailable(self, mock_mass: MagicMock) -> None:
-        """An unreachable device whose control is on is a real fault: unavailable."""
-        player = self._offline_player(mock_mass, power_state=True)
-
-        assert player.offline_by_power_control is False
-        assert player.available is False
-
-    def test_power_on_in_progress_keeps_it_available(self, mock_mass: MagicMock) -> None:
-        """While Music Assistant powers it on, the booting device stays available."""
-        player = self._offline_player(mock_mass, power_state=True)
-        player.set_power_on_in_progress(True)
-        player.refresh_state(signal_event=False)
-
-        assert player.offline_by_power_control is True
-        assert player.available is True
-        assert player.powered is True
-
-    def test_a_called_off_power_on_shows_at_the_next_state_calculation(
-        self, mock_mass: MagicMock
-    ) -> None:
-        """A power on that is called off changes the player's state at its next update."""
-        player = self._offline_player(mock_mass, power_state=True)
-        player.set_power_on_in_progress(True)
-        player.update_state(signal_event=False)
-        assert player.available is True
-
-        player.set_power_on_in_progress(False)
-        player.update_state(signal_event=False)
-
-        assert player.offline_by_power_control is False
-        assert player.available is False
-
-    def test_reachable_device_is_not_offline(self, mock_mass: MagicMock) -> None:
-        """A device that is online is never offline by its power control."""
-        player = self._offline_player(mock_mass, power_state=False)
-        _own(player)._attr_available = True
-        player.update_state(signal_event=False)
-
-        assert player.offline_by_power_control is False
-        assert player.available is True
 
     def test_another_protocol_that_reads_available_does_not_tell(
         self, mock_mass: MagicMock
     ) -> None:
-        """A device its own protocol does not reach is switched off, whatever another one reads."""
-        player = self._offline_player(mock_mass, power_state=False)
+        """A player whose control is off is off, whatever a receiver of it reads."""
+        player = self._player_on_a_plug(mock_mass, power_state=False)
         self._with_receiver(mock_mass, player)
 
         assert player._reachable is True
@@ -327,115 +312,107 @@ class TestOfflineByPowerControl:
         assert player.available is True
         assert player.powered is False
 
-    def test_power_on_waits_for_the_protocol_that_reports_for_the_device(
+    def test_control_on_reports_unavailable(self, mock_mass: MagicMock) -> None:
+        """An unreachable device whose control is on is a real fault: unavailable."""
+        player = self._player_on_a_plug(mock_mass, power_state=True)
+
+        assert player.offline_by_power_control is False
+        assert player.available is False
+
+    @pytest.mark.parametrize("reachable", [False, True], ids=["unreachable", "reachable"])
+    def test_starting_up_keeps_it_available_and_not_playable(
+        self, mock_mass: MagicMock, reachable: bool
+    ) -> None:
+        """A player that starts up is available and on, and can not be played to yet."""
+        player = self._player_on_a_plug(mock_mass, power_state=True, reachable=reachable)
+        player.set_startup_ends_at(1030.0)
+        player.update_state(signal_event=False)
+
+        assert player.startup_ends_at == 1030.0
+        assert player.offline_by_power_control is True
+        assert player.available_for_playback is False
+        assert player.available is True
+        assert player.powered is True
+
+    def test_the_end_of_the_startup_shows_at_the_next_state_calculation(
         self, mock_mass: MagicMock
     ) -> None:
-        """A device that is powered on is offline until its own protocol reaches it again."""
-        player = self._offline_player(mock_mass, power_state=True)
-        self._with_receiver(mock_mass, player)
-        player.set_power_on_in_progress(True)
+        """A start-up time that is over changes the player's state at its next update."""
+        player = self._player_on_a_plug(mock_mass, power_state=True)
+        player.set_startup_ends_at(1030.0)
         player.update_state(signal_event=False)
-        assert (player.offline_by_power_control, player.available_for_playback) == (True, False)
+        assert player.available is True
 
-        _own(player)._attr_available = True
+        player.set_startup_ends_at(None)
         player.update_state(signal_event=False)
 
-        assert (player.offline_by_power_control, player.available_for_playback) == (False, True)
+        assert player.offline_by_power_control is False
+        assert player.available is False
 
     def test_player_whose_control_is_on_plays_through_another_protocol(
         self, mock_mass: MagicMock
     ) -> None:
-        """With its control on and no power on waiting, a player plays through what reaches it."""
-        player = self._offline_player(mock_mass, power_state=True)
+        """With its control on and no start-up time running, a player plays through what reaches it."""
+        player = self._player_on_a_plug(mock_mass, power_state=True)
         self._with_receiver(mock_mass, player)
 
         assert player.offline_by_power_control is False
         assert player.available_for_playback is True
         assert player.available is True
 
-    @pytest.mark.parametrize(
-        ("reaching", "offline"),
-        [("airplay", False), ("chromecast", True)],
-        ids=["most_preferred_reaches", "only_another_reaches"],
-    )
-    def test_most_preferred_audio_protocol_tells_without_an_own_protocol(
-        self, mock_mass: MagicMock, reaching: str, offline: bool
+    @pytest.mark.parametrize("reachable", [False, True], ids=["unreachable", "reachable"])
+    def test_a_control_that_does_not_cut_the_power_is_a_plain_switch(
+        self, mock_mass: MagicMock, reachable: bool
     ) -> None:
-        """Without an own protocol, the most preferred audio protocol reports for the device."""
-        self._smart_plug(mock_mass, power_state=False)
-        # attached in the other order: the preference of the domains decides
-        player, cast = attach_mock(
-            MockProvider("chromecast", mass=mock_mass), "cast_1", role=ProtocolRole.AUDIO
+        """Without the setting, a player is there as long as its protocols reach it."""
+        player = self._player_on_a_plug(
+            mock_mass, power_state=False, reachable=reachable, cuts_power=False
         )
-        _, airplay = attach_mock(
-            MockProvider("airplay", mass=mock_mass),
-            "airplay_1",
-            role=ProtocolRole.AUDIO,
-            player=player,
-        )
-        cast._attr_available = reaching == "chromecast"
-        airplay._attr_available = reaching == "airplay"
-        player.refresh_state(signal_event=False)
+        player.set_startup_ends_at(1030.0)
+        player.update_state(signal_event=False)
 
-        assert player.device_protocol is airplay
-        assert player.offline_by_power_control is offline
-        assert player.available_for_playback is not offline
-        assert player.available is True
-
-    @pytest.mark.parametrize(
-        ("control_reaches", "renderer_reaches"),
-        [(False, True), (True, False)],
-        ids=["own_protocol_away", "renderer_away"],
-    )
-    def test_control_protocol_and_a_renderer_both_have_to_reach_the_device(
-        self, mock_mass: MagicMock, control_reaches: bool, renderer_reaches: bool
-    ) -> None:
-        """A device whose own protocol only controls is there while a renderer reaches it too."""
-        self._smart_plug(mock_mass, power_state=False)
-        player, control = attach_mock(
-            MockProvider("wiim", mass=mock_mass), "linkplay_1", role=ProtocolRole.CONTROL
-        )
-        _, renderer = attach_mock(
-            MockProvider("dlna", mass=mock_mass), "dlna_1", role=ProtocolRole.AUDIO, player=player
-        )
-        control._attr_available = control_reaches
-        renderer._attr_available = renderer_reaches
-        player.refresh_state(signal_event=False)
-
-        assert player.device_protocol is control
-        assert player.offline_by_power_control is True
-        assert player.available_for_playback is False
-        assert player.available is True
+        assert player.power_control_cuts_power is False
+        assert player.offline_by_power_control is False
+        assert player.available_for_playback is reachable
+        assert player.available is reachable
+        assert player.powered is False
 
     def test_group_players_are_left_out(self, mock_mass: MagicMock) -> None:
         """A group player keeps reporting its own availability."""
-        player = self._offline_player(mock_mass, power_state=False, player_type=PlayerType.GROUP)
+        player = self._player_on_a_plug(mock_mass, power_state=False, player_type=PlayerType.GROUP)
 
+        assert player.power_control_cuts_power is False
         assert player.offline_by_power_control is False
         assert player.available is False
 
     def test_native_power_control_reports_unavailable(self, mock_mass: MagicMock) -> None:
-        """Without an external power control an unreachable device stays unavailable."""
+        """Without an external power control the setting counts for nothing."""
+        mock_mass.config.get_player_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_POWER_CONTROL_CUTS_POWER: True})
+        )
         player = _create_player(mock_mass, features={PlayerFeature.POWER})
         _own(player)._attr_available = False
         player.set_initialized()
         player.update_state(signal_event=False)
 
         assert player._power_control == PLAYER_CONTROL_NATIVE
+        assert player.power_control_cuts_power is False
         assert player.offline_by_power_control is False
         assert player.available is False
 
     def test_device_cut_off_mid_song_reports_idle(self, mock_mass: MagicMock) -> None:
         """A device that lost power while playing plays nothing, whatever it last reported."""
-        player = self._offline_player(mock_mass, power_state=False)
+        control = self._smart_plug(mock_mass, power_state=False)
+        player = _create_player(mock_mass)
         _own(player)._attr_playback_state = PlaybackState.PLAYING
+        player.set_initialized()
         player.update_state(signal_event=False)
 
         assert player.playback_state == PlaybackState.IDLE
 
-        # once it is back, it reports its own state again
-        _own(player)._attr_available = True
-        player.update_state(signal_event=False)
+        # once its power is back, it reports its own state again
+        control.power_state = True
+        player.refresh_state(signal_event=False)
         state_when_back = player.state
         assert state_when_back.playback_state == PlaybackState.PLAYING
 

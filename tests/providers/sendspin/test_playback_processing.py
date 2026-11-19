@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 from music_assistant_models.audio_processing import (
@@ -10,7 +10,7 @@ from music_assistant_models.audio_processing import (
     AudioOutputDetails,
 )
 from music_assistant_models.dsp import DSPConfig
-from music_assistant_models.enums import ContentType, IdentifierType
+from music_assistant_models.enums import ContentType, IdentifierType, SpeakerChannel
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_OUTPUT_CHANNELS
@@ -25,11 +25,19 @@ if TYPE_CHECKING:
 DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
 
 
+def _leader(**kwargs: Any) -> MagicMock:
+    """Return a mocked leader whose provider holds no virtual or multi-channel players."""
+    leader = MagicMock(protocol_id="leader", **kwargs)
+    leader.provider.is_silent_client.return_value = False
+    leader.provider.speaker_output.side_effect = lambda client_id: (client_id, None)
+    return leader
+
+
 def test_empty_plan_does_not_require_transform(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A plan without filters keeps the member on the shared Sendspin channel."""
-    player = MagicMock(protocol_id="leader")
+    player = _leader()
     player.mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
     player.mass.config.get_protocol_value.return_value = "stereo"
     pcm_format = AudioFormat(
@@ -70,7 +78,7 @@ def test_a_member_takes_the_dsp_settings_of_its_player(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The DSP settings of a member are those of the player its protocol belongs to."""
-    player = MagicMock(protocol_id="leader")
+    player = _leader()
     player.mass.players.get_player_by_protocol.side_effect = lambda protocol_id: (
         MagicMock(player_id="pl_member") if protocol_id == "member" else None
     )
@@ -91,6 +99,52 @@ def test_a_member_takes_the_dsp_settings_of_its_player(
     player.mass.config.get_player_dsp_config.assert_called_once_with("pl_member")
 
 
+def test_a_client_that_renders_nothing_takes_the_audio_as_it_is() -> None:
+    """The silent client of a virtual or multi-channel player gets no processing of its own."""
+    player = _leader()
+    player.provider.is_silent_client.side_effect = lambda client_id: client_id == "leader"
+    player.mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=True)
+    session = SendspinPlaybackSession(player)
+
+    config = session._read_pipeline_config("leader")
+
+    assert not config.requires_transform
+    player.mass.streams.audio.get_player_output_plan.assert_not_called()
+
+
+def test_a_speaker_of_a_set_plays_with_the_settings_of_the_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A speaker of a multi-channel player plays with the DSP of that player, on its channel."""
+    player = _leader()
+    player.provider.speaker_output.side_effect = lambda client_id: (
+        ("sendspin_mc_set", SpeakerChannel.FRONT_LEFT) if client_id == "left" else (client_id, None)
+    )
+    player.mass.players.get_player_by_protocol.side_effect = lambda protocol_id: (
+        MagicMock(player_id="pl_set") if protocol_id == "sendspin_mc_set" else None
+    )
+    player.mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=True)
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32, channels=2
+    )
+    player.mass.streams.audio.get_player_output_plan.side_effect = RuntimeError("no plan")
+    session = SendspinPlaybackSession(player)
+    session._pcm_format = pcm_format
+    monkeypatch.setattr(session, "_get_member_output_format", lambda _player_id: pcm_format)
+
+    config = session._read_pipeline_config("left")
+
+    assert config.requires_transform
+    player.mass.config.get_player_dsp_config.assert_called_once_with("pl_set")
+    player.mass.streams.audio.get_player_output_plan.assert_called_once_with(
+        "sendspin_mc_set",
+        pcm_format,
+        pcm_format,
+        handoff_format=pcm_format,
+        channel=SpeakerChannel.FRONT_LEFT,
+    )
+
+
 async def test_a_bridged_member_follows_the_output_channels_of_the_output_it_rides_on(
     scenario: Scenario, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -106,7 +160,7 @@ async def test_a_bridged_member_follows_the_output_channels_of_the_output_it_rid
     pcm_format = AudioFormat(
         content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32, channels=2
     )
-    session = SendspinPlaybackSession(MagicMock(protocol_id="leader", mass=scenario.mass))
+    session = SendspinPlaybackSession(_leader(mass=scenario.mass))
     session._pcm_format = pcm_format
     monkeypatch.setattr(session, "_get_member_output_format", lambda _player_id: pcm_format)
 

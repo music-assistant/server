@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderTier
 
 from music_assistant.constants import PROVIDER_LOAD_CONCURRENCY
+from music_assistant.controllers.community_catalog.constants import (
+    PROVIDER_FOLDER,
+    PROVIDERS_FOLDER,
+)
 from music_assistant.controllers.community_catalog.dependencies import (
     DependenciesUnavailable,
     DependencyConflict,
@@ -19,7 +23,6 @@ from music_assistant.helpers.util import TaskManager, purge_provider_modules
 
 if TYPE_CHECKING:
     import logging
-    from pathlib import Path
 
     from music_assistant_models.provider import ProviderManifest
 
@@ -54,6 +57,8 @@ class ProviderLoader:
         self._store = store
         self._dependencies = dependencies
         self._decisions = decisions
+        # the folder of each provider of the dev folder that may load, by domain
+        self.dev_folders: dict[str, str] = {}
 
     async def load_providers(self, providers: dict[str, ProviderManifest]) -> tuple[set[str], bool]:
         """
@@ -94,7 +99,6 @@ class ProviderLoader:
 
         :param provider_path: The folder of the provider.
         """
-        self.mass.add_provider_location(os.path.dirname(provider_path))
         manifest = await self.mass.register_provider_manifest(
             str(provider_path), ProviderTier.COMMUNITY
         )
@@ -146,34 +150,54 @@ class ProviderLoader:
                 "Not loading the providers in %s: the server does not run in dev mode", location
             )
             return {}
-        return await self._read_dev_providers(location)
+        providers = await self._read_dev_providers(location)
+        self.dev_folders = {manifest.domain: path for path, manifest in providers.items()}
+        return providers
 
     async def _read_dev_providers(self, location: str) -> dict[str, ProviderManifest]:
         """
         Return the manifests of the providers in a local folder that may load, by provider folder.
 
-        :param location: The folder that holds the provider folders.
+        :param location: The folder that holds the providers, laid out as a repository of them.
         """
         taken = {manifest.domain for manifest in self.mass.get_provider_manifests()}
         taken.update(self._store.state.installed)
         providers: dict[str, ProviderManifest] = {}
-        for name in sorted(await asyncio.to_thread(os.listdir, location)):
-            provider_path = os.path.join(location, name)
-            manifest_path = os.path.join(provider_path, "manifest.json")
-            if name.startswith(".") or not await asyncio.to_thread(os.path.isfile, manifest_path):
-                continue
+        for folder in await asyncio.to_thread(_provider_folders, Path(location)):
+            provider_path = str(folder)
             try:
-                manifest = (await read_manifest_file(manifest_path))[0]
-            except Exception as err:
+                manifest = (await read_manifest_file(str(folder / "manifest.json")))[0]
+            except (OSError, ValueError, LookupError) as err:
                 reason = f"its manifest is invalid: {err}"
             else:
-                # registering refuses these too, but only after the requirements are installed
-                if manifest.domain != name:
+                top_level = folder.parent == Path(location)
+                # registering refuses a domain that is taken too, but only after the
+                # requirements are installed
+                if folder.name != manifest.domain and not (
+                    top_level and folder.name == PROVIDER_FOLDER
+                ):
                     reason = f"the folder is not named after its domain {manifest.domain}"
                 elif manifest.domain in taken:
                     reason = f"the server already has a provider named {manifest.domain}"
                 else:
+                    taken.add(manifest.domain)
                     providers[provider_path] = manifest
                     continue
             self.logger.warning("Not loading the provider in %s: %s", provider_path, reason)
         return providers
+
+
+def _provider_folders(location: Path) -> list[Path]:
+    """
+    Return the folders with a manifest in a folder laid out as a repository of providers (blocking).
+
+    :param location: The folder, which holds providers at its top level and in ``providers``.
+    """
+    folders: list[Path] = []
+    for parent in (location, location / PROVIDERS_FOLDER):
+        if not parent.is_dir():
+            continue
+        for folder in sorted(parent.iterdir()):
+            if not folder.name.startswith(".") and (folder / "manifest.json").is_file():
+                folders.append(folder)
+    return folders

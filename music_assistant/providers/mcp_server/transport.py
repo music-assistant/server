@@ -25,10 +25,13 @@ from .auth import (
     impersonate_home_assistant_user,
     is_request_from_home_assistant,
 )
+from .provider_tools import get_provider_tools
 from .registry import TOOLS, ToolError
 from .tools import INSTRUCTIONS
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
+
     from music_assistant.mass import MusicAssistant
 
     from .registry import MCPTool
@@ -144,7 +147,7 @@ class MCPTransport:
                 return _result_response(message_id, {})
             case "tools/list":
                 return _result_response(
-                    message_id, {"tools": [tool.to_dict() for tool in TOOLS.values()]}
+                    message_id, {"tools": [tool.to_dict() for tool in self._tools().values()]}
                 )
             case "tools/call":
                 return await self._call_tool(message_id, params, protocol_version)
@@ -167,7 +170,7 @@ class MCPTransport:
     ) -> web.Response:
         """Run the tool of a tools/call request and return its result."""
         name = params.get("name")
-        tool = TOOLS.get(name) if isinstance(name, str) else None
+        tool = self._tools().get(name) if isinstance(name, str) else None
         arguments = params.get("arguments") or {}
         if tool is None:
             return _error_response(message_id, INVALID_PARAMS, f"Unknown tool: {name}")
@@ -177,23 +180,33 @@ class MCPTransport:
             await impersonate_home_assistant_user(self.mass, params)
             self._check_scopes(tool)
             result = await tool.call(self.mass, arguments)
+            text = json_dumps(result)
         except (ToolError, MusicAssistantError) as err:
             return _tool_error_response(message_id, str(err) or type(err).__name__)
         except Exception:
             LOGGER.exception("Error running MCP tool %s", tool.name)
             return _tool_error_response(message_id, "Internal error")
         tool_result: dict[str, Any] = {
-            "content": [{"type": "text", "text": json_dumps(result)}],
+            "content": [{"type": "text", "text": text}],
             "isError": False,
         }
         if protocol_version >= STRUCTURED_CONTENT_VERSION:
             tool_result["structuredContent"] = result
         return _result_response(message_id, tool_result)
 
+    def _tools(self) -> dict[str, MCPTool]:
+        """Return the tools the authenticated user holds the scopes of, by name."""
+        tools = dict(TOOLS)
+        for tool in get_provider_tools(self.mass):
+            # a provider tool never takes the place of a builtin one
+            tools.setdefault(tool.name, tool)
+        user = current_user.get()
+        return {name: tool for name, tool in tools.items() if _holds_scopes(user, tool)}
+
     def _check_scopes(self, tool: MCPTool) -> None:
         """Raise when the authenticated or the impersonated user may not use the tool."""
         for user in (current_user.get(), get_current_user()):
-            if user is None or not all(has_scope(user, scope) for scope in tool.scopes):
+            if not _holds_scopes(user, tool):
                 scopes = ", ".join(tool.scopes)
                 raise ToolError(f"Not allowed: the {tool.name} tool requires the {scopes} scope")
 
@@ -214,6 +227,11 @@ class MCPTransport:
             return URL(origin).origin() in {url.origin() for url in allowed if url.absolute}
         except ValueError:
             return False
+
+
+def _holds_scopes(user: User | None, tool: MCPTool) -> bool:
+    """Return whether a user holds every scope a tool needs."""
+    return user is not None and all(has_scope(user, scope) for scope in tool.scopes)
 
 
 def _accepts_json(accept: str) -> bool:

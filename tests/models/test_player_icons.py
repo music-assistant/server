@@ -18,7 +18,7 @@ from tests.common import MockProvider, attach_mock, mock_player_mass, use_player
     ("player_type", "provider_domain", "manufacturer", "model", "expected"),
     [
         (PlayerType.GROUP, "sonos", "Sonos", "Arc", "speakers"),
-        (PlayerType.STEREO_PAIR, "test", "Unknown", "Unknown", "speakers"),
+        (PlayerType.MULTI_CHANNEL, "test", "Unknown", "Unknown", "speakers"),
         (PlayerType.PLAYER, "sonos", "Unknown", "Unknown", "sonos"),
         (PlayerType.PLAYER, "hass_players", "Sonos", "Era 100", "sonos"),
         (PlayerType.PLAYER, "wiim", "Linkplay", "Unknown", "wiim"),
@@ -48,6 +48,7 @@ from tests.common import MockProvider, attach_mock, mock_player_mass, use_player
         (PlayerType.PLAYER, "test", "Unknown", "Studio Monitor", "speaker"),
         (PlayerType.DISPLAY, "sendspin", "Unknown", "Unknown", "monitor"),
         (PlayerType.VISUALIZER, "sendspin", "Unknown", "Unknown", "monitor"),
+        (PlayerType.CONTROLLER, "sendspin", "Unknown", "Unknown", "monitor"),
         (PlayerType.LIGHT, "hue_entertainment", "Signify", "Hue", "sun"),
         (PlayerType.PLAYER, "test", "Unknown", "Unknown", "speaker"),
     ],

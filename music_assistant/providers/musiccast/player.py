@@ -897,7 +897,7 @@ class MusicCastPlayer(PlayerProtocol):
             if str(capability.id) != option_key:
                 continue
             if not isinstance(capability, MCBinarySetter | MCNumberSetter | MCOptionSetter):
-                self.logger.error(f"Option {capability.name} is read only!")
+                self.logger.error("Option %s is read only!", capability.name)
                 return
             if isinstance(capability, MCBinarySetter):
                 await capability.set(bool(option_value))
@@ -906,8 +906,10 @@ class MusicCastPlayer(PlayerProtocol):
                 max_value = capability.value_range.maximum
                 if not min_value <= int(option_value) <= max_value:
                     self.logger.error(
-                        f"Option {capability.name} has numeric range of"
-                        f"{min_value} <= value <= {max_value}"
+                        "Option %s has numeric range of %s <= value <= %s",
+                        capability.name,
+                        min_value,
+                        max_value,
                     )
                     return
                 await capability.set(int(option_value))
@@ -917,7 +919,7 @@ class MusicCastPlayer(PlayerProtocol):
                 with suppress(ValueError):
                     _option_value = int(_option_value)
                 if _option_value not in capability.options:
-                    self.logger.error(f"Option {_option_value} is not allowed for {option_key}")
+                    self.logger.error("Option %s is not allowed for %s", _option_value, option_key)
                     return
                 await capability.set(_option_value)
             break

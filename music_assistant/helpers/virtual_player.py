@@ -45,6 +45,6 @@ async def cleanup_virtual_player(
             # half torn down for the next attempt to trip over
             await remove(player_id)
             return
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider teardown can fail in any way, it is retried
             last_error = err
     logger.warning(failure_message, player_id, last_error)

@@ -24,7 +24,9 @@ from .base import _PlayerControllerBase
 class SleepTimerMixin(_PlayerControllerBase):
     """Mixin class providing the sleep timer for PlayerController."""
 
-    @api_command("players/sleep_timer/get", required_scope=Scope.PLAYERS_READ)
+    @api_command(
+        "players/sleep_timer/get", required_scope=Scope.PLAYERS_READ, allow_impersonation=True
+    )
     def get_sleep_timer(self, player_id: str) -> float | None:
         """
         Return the active sleep timer expiry timestamp for the player.
@@ -36,7 +38,9 @@ class SleepTimerMixin(_PlayerControllerBase):
         player = self._get_sleep_timer_player(player_id)
         return player.sleep_timer_expires_at
 
-    @api_command("players/sleep_timer/set", required_scope=Scope.PLAYERS_CONTROL)
+    @api_command(
+        "players/sleep_timer/set", required_scope=Scope.PLAYERS_CONTROL, allow_impersonation=True
+    )
     def set_sleep_timer(
         self,
         player_id: str,
@@ -85,7 +89,9 @@ class SleepTimerMixin(_PlayerControllerBase):
         )
         return expires_at
 
-    @api_command("players/sleep_timer/clear", required_scope=Scope.PLAYERS_CONTROL)
+    @api_command(
+        "players/sleep_timer/clear", required_scope=Scope.PLAYERS_CONTROL, allow_impersonation=True
+    )
     def clear_sleep_timer(self, player_id: str) -> None:
         """
         Clear the active sleep timer for the player.

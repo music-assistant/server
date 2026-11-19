@@ -109,7 +109,7 @@ CATEGORY_CLICK_ACTIONS = "click_actions"
 CATEGORY_SMART_SHUFFLE = "smart_shuffle"
 CATEGORY_AUTOPLAY = "autoplay"
 CATEGORY_CROSSFADE = "crossfade"
-CATEGORY_AUDIO = "audio"
+CATEGORY_VOLUME_NORMALIZATION = "volume_normalization"
 CATEGORY_PLAYBACK = "playback"
 
 
@@ -380,13 +380,9 @@ def _autoplay_entries(
     mass: MusicAssistant, playlist_options: list[ConfigValueOption] | None, *, per_queue: bool
 ) -> list[ConfigEntry]:
     """Autoplay entries: the global on/off default, mode select and its playlist companion."""
-    similar_available = any(
-        ProviderFeature.SIMILAR_TRACKS in provider.supported_features
-        for provider in mass.music.providers
-    )
-    similar_artists_available = any(
-        ProviderFeature.SIMILAR_ARTISTS in provider.supported_features
-        for provider in mass.music.providers
+    similar_available = bool(mass.get_providers_supporting_feature(ProviderFeature.SIMILAR_TRACKS))
+    similar_artists_available = bool(
+        mass.get_providers_supporting_feature(ProviderFeature.SIMILAR_ARTISTS)
     )
     mode_options = [
         ConfigValueOption(AutoplayMode.AUTO.value),
@@ -492,7 +488,7 @@ def _volume_normalization_entry(*, per_queue: bool) -> ConfigEntry:
     # a per-queue change restarts playback so the (re)baked gain filter applies right away
     return _onoff_entry(
         CONF_VOLUME_NORMALIZATION,
-        CATEGORY_AUDIO,
+        CATEGORY_VOLUME_NORMALIZATION,
         per_queue=per_queue,
         global_default=CONF_VALUE_ENABLED,
         reload_on_change=True,

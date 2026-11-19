@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, Final, Literal, TypedDict
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature, ProviderType
 
-from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.constants import (
+    CONF_AI,
+    CONF_DEFAULT_IMAGE_ENGINE,
+    CONF_DEFAULT_SPEECH_ENGINE,
+    CONF_DEFAULT_TEXT_ENGINE,
+    CONF_VALUE_GLOBAL,
+    CONFIGURABLE_CORE_CONTROLLERS,
+    MASS_LOGGER_NAME,
+)
 from music_assistant.models.plugin import (
     AIEngine,
     ImageEngine,
@@ -18,14 +28,84 @@ from music_assistant.models.plugin import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Callable, Coroutine, Mapping, Sequence
 
     from music_assistant_models.config_entries import ConfigValueType
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models.provider import Provider
+    from music_assistant.models.core_controller import CoreController
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.plugin_engines")
+
+
+class EngineKind(StrEnum):
+    """The kinds of engine: text (AIEngine), speech (TTSEngine) and image (ImageEngine)."""
+
+    TEXT = "text"
+    SPEECH = "speech"
+    IMAGE = "image"
+
+
+@dataclass(frozen=True)
+class EngineSetting:
+    """
+    An engine setting of a core module or provider, as listed on the AI settings page.
+
+    :param kind: The kind of engine the setting selects.
+    :param key: The config key holding the setting.
+    :param in_setup_data: The setting is stored in the provider's setup data, set through its
+        setup/reconfigure flow, instead of in its options.
+    """
+
+    kind: EngineKind
+    key: str
+    in_setup_data: bool = False
+
+
+class EngineInfo(TypedDict):
+    """An available engine."""
+
+    uid: str
+    # the engine name, prefixed with the name of the plugin it comes from
+    name: str
+    kind: EngineKind
+    # the instance id of the plugin providing the engine
+    provider: str
+
+
+class EngineUsage(TypedDict):
+    """An engine setting of a core module or loaded provider, with the engine it selects."""
+
+    owner_type: Literal["core", "provider"]
+    # the core module domain or provider instance id
+    owner: str
+    domain: str
+    # the provider instance name or the core module name
+    name: str
+    key: str
+    kind: EngineKind
+    in_setup_data: bool
+    # the setting follows the default engine of its kind instead of picking one itself
+    follows_default: bool
+    # the uid of the selected engine, None when it selects no available engine
+    engine: str | None
+
+
+# the AI core module config key holding the default engine of each kind
+_DEFAULT_ENGINE_KEYS: Final[dict[EngineKind, str]] = {
+    EngineKind.TEXT: CONF_DEFAULT_TEXT_ENGINE,
+    EngineKind.SPEECH: CONF_DEFAULT_SPEECH_ENGINE,
+    EngineKind.IMAGE: CONF_DEFAULT_IMAGE_ENGINE,
+}
+# the alert texts do not depend on what a picker is used for, so every owner shares
+# one source string per alert instead of authoring its own copy
+_UNAVAILABLE_TRANSLATION_KEYS: Final[dict[EngineKind, str]] = {
+    EngineKind.TEXT: "ai_engine_unavailable",
+    EngineKind.SPEECH: "tts_engine_unavailable",
+    EngineKind.IMAGE: "image_engine_unavailable",
+}
+_DEFAULT_UNAVAILABLE_TRANSLATION_KEY: Final[str] = "default_engine_unavailable"
+_SELECTED_UNAVAILABLE_TRANSLATION_KEY: Final[str] = "selected_engine_unavailable"
 
 
 async def get_ai_engines(mass: MusicAssistant) -> list[AIEngine]:
@@ -73,6 +153,103 @@ def engine_display_name(engine: PluginEngine) -> str:
     return f"{engine.provider.name} | {engine.name}"
 
 
+async def list_engines(mass: MusicAssistant, kind: EngineKind | None = None) -> list[EngineInfo]:
+    """
+    Return the available engines of a kind, or of all kinds, in a stable order.
+
+    :param mass: The Music Assistant instance to query.
+    :param kind: The kind of engine to return, or None for all kinds (text, speech, then image).
+    """
+    result: list[EngineInfo] = []
+    for engine_kind in (kind,) if kind else tuple(EngineKind):
+        result.extend(
+            EngineInfo(
+                uid=engine.uid,
+                name=engine_display_name(engine),
+                kind=engine_kind,
+                provider=engine.provider.instance_id,
+            )
+            for engine in await _get_engines(mass, engine_kind)
+        )
+    return result
+
+
+async def list_engine_usage(mass: MusicAssistant) -> list[EngineUsage]:
+    """
+    Return the engine settings of the core modules and loaded providers, with their engines.
+
+    The core modules come first, then the providers by name. Only the declared settings are
+    listed: an engine a feature picks within its own data, such as the voice of an AI Radio
+    host, is not.
+
+    :param mass: The Music Assistant instance to query.
+    """
+    engines = {kind: await _get_engines(mass, kind) for kind in EngineKind}
+    result: list[EngineUsage] = []
+    for domain in CONFIGURABLE_CORE_CONTROLLERS:
+        controller: CoreController = getattr(mass, domain)
+        for setting in controller.engine_settings:
+            result.append(
+                _engine_usage(
+                    mass,
+                    engines,
+                    setting,
+                    mass.config.get_raw_core_config_value(domain, setting.key),
+                    owner_type="core",
+                    owner=domain,
+                    domain=domain,
+                    name=controller.manifest.name,
+                )
+            )
+    for provider in sorted(mass.get_providers(), key=lambda provider: provider.name.casefold()):
+        for setting in provider.engine_settings:
+            value = (
+                mass.config.get_provider_setup_value(provider.instance_id, setting.key)
+                if setting.in_setup_data
+                else mass.config.get_raw_provider_config_value(provider.instance_id, setting.key)
+            )
+            result.append(
+                _engine_usage(
+                    mass,
+                    engines,
+                    setting,
+                    value,
+                    owner_type="provider",
+                    owner=provider.instance_id,
+                    domain=provider.domain,
+                    name=provider.name,
+                )
+            )
+    return result
+
+
+async def get_default_engine(mass: MusicAssistant, kind: EngineKind) -> PluginEngine | None:
+    """
+    Return the default engine of a kind, adopting the first available one when none is set.
+
+    A default that was set is honoured or, when that engine no longer exists, reported as
+    missing - another engine is never substituted for it.
+
+    :param mass: The Music Assistant instance to query.
+    :param kind: The kind of engine to return the default of.
+    """
+    return _default_engine(mass, kind, await _get_engines(mass, kind))
+
+
+def has_engine_choice(mass: MusicAssistant, kind: EngineKind, value: ConfigValueType) -> bool:
+    """
+    Return whether a stored feature setting chooses an engine at all.
+
+    That is an explicit engine, or the default engine while one is set. A setting that
+    follows the default before any default was set chooses none.
+
+    :param mass: The Music Assistant instance to query.
+    :param kind: The kind of engine the setting selects.
+    :param value: The stored setting, as passed to the ``resolve_*_engine_setting`` helpers.
+    """
+    return not _follows_default(value) or bool(_stored_default(mass, kind))
+
+
 async def resolve_ai_engine(mass: MusicAssistant, selected: str | None) -> AIEngine | None:
     """
     Return the AI engine for a configured selection.
@@ -106,82 +283,46 @@ async def resolve_image_engine(mass: MusicAssistant, selected: str | None) -> Im
     return _resolve(await get_image_engines(mass), selected)
 
 
-async def select_ai_engine(
-    provider: Provider, key: str, *, in_setup_data: bool = False
+async def resolve_ai_engine_setting(
+    mass: MusicAssistant, value: ConfigValueType
 ) -> AIEngine | None:
     """
-    Return the provider's AI engine, adopting the first available one when it has none yet.
-
-    A selection that was made explicitly is honoured or, when that engine no longer exists,
-    reported as missing - another engine is never substituted for it.
-
-    :param provider: The provider whose selection to read and, if unset, persist.
-    :param key: The config key holding the selected engine uid.
-    :param in_setup_data: Store in (and read from) the provider's setup_data instead of its
-        regular config values.
-    """
-    return _select_provider_engine(
-        provider, key, await get_ai_engines(provider.mass), in_setup_data=in_setup_data
-    )
-
-
-async def select_tts_engine(
-    provider: Provider, key: str, *, in_setup_data: bool = False
-) -> TTSEngine | None:
-    """
-    Return the provider's TTS engine, adopting the first available one when it has none yet.
-
-    A selection that was made explicitly is honoured or, when that engine no longer exists,
-    reported as missing - another engine is never substituted for it.
-
-    :param provider: The provider whose selection to read and, if unset, persist.
-    :param key: The config key holding the selected engine uid.
-    :param in_setup_data: Store in (and read from) the provider's setup_data instead of its
-        regular config values.
-    """
-    return _select_provider_engine(
-        provider, key, await get_tts_engines(provider.mass), in_setup_data=in_setup_data
-    )
-
-
-async def select_image_engine(
-    provider: Provider, key: str, *, in_setup_data: bool = False
-) -> ImageEngine | None:
-    """
-    Return the provider's image engine, adopting the first available one when it has none yet.
-
-    A selection that was made explicitly is honoured or, when that engine no longer exists,
-    reported as missing - another engine is never substituted for it.
-
-    :param provider: The provider whose selection to read and, if unset, persist.
-    :param key: The config key holding the selected engine uid.
-    :param in_setup_data: Store in (and read from) the provider's setup_data instead of its
-        regular config values.
-    """
-    return _select_provider_engine(
-        provider, key, await get_image_engines(provider.mass), in_setup_data=in_setup_data
-    )
-
-
-async def select_core_tts_engine(mass: MusicAssistant, domain: str, key: str) -> TTSEngine | None:
-    """
-    Return a core controller's TTS engine, adopting the first available one when it has none yet.
-
-    A selection that was made explicitly is honoured or, when that engine no longer exists,
-    reported as missing - another engine is never substituted for it.
+    Return the AI engine a stored feature setting selects.
 
     :param mass: The Music Assistant instance to query.
-    :param domain: The domain of the core controller whose selection to read and, if unset, persist.
-    :param key: The config key holding the selected engine uid.
+    :param value: The stored setting: an engine uid, or unset/empty/"global" to follow the
+        default AI engine. Returns None when the selected engine is not available - another
+        engine is never substituted for it.
     """
-    config = mass.config
-    return _select_engine(
-        await get_tts_engines(mass),
-        config.get_raw_core_config_value(domain, key),
-        lambda uid: config.set_raw_core_config_value(domain, key, uid),
-        domain,
-        key,
-    )
+    return _resolve_setting(mass, EngineKind.TEXT, await get_ai_engines(mass), value)
+
+
+async def resolve_tts_engine_setting(
+    mass: MusicAssistant, value: ConfigValueType
+) -> TTSEngine | None:
+    """
+    Return the TTS engine a stored feature setting selects.
+
+    :param mass: The Music Assistant instance to query.
+    :param value: The stored setting: an engine uid, or unset/empty/"global" to follow the
+        default TTS engine. Returns None when the selected engine is not available - another
+        engine is never substituted for it.
+    """
+    return _resolve_setting(mass, EngineKind.SPEECH, await get_tts_engines(mass), value)
+
+
+async def resolve_image_engine_setting(
+    mass: MusicAssistant, value: ConfigValueType
+) -> ImageEngine | None:
+    """
+    Return the image generation engine a stored feature setting selects.
+
+    :param mass: The Music Assistant instance to query.
+    :param value: The stored setting: an engine uid, or unset/empty/"global" to follow the
+        default image engine. Returns None when the selected engine is not available - another
+        engine is never substituted for it.
+    """
+    return _resolve_setting(mass, EngineKind.IMAGE, await get_image_engines(mass), value)
 
 
 async def create_ai_engine_config_entries(
@@ -192,24 +333,21 @@ async def create_ai_engine_config_entries(
     category: str = "features",
 ) -> tuple[ConfigEntry, ...]:
     """
-    Return the config entries letting the user pick an AI engine.
+    Return the config entries letting the user pick an AI engine for a feature.
 
-    Adds a second (alert) entry with key ``<key>_unavailable`` when no engine is available.
+    The picker follows the default AI engine unless the user picks one. Adds an alert entry
+    with key ``<key>_unavailable`` when no engine is available, and one with key
+    ``<key>_default_unavailable`` when the default engine is not.
 
     :param mass: The Music Assistant instance to query.
-    :param key: The config entry key holding the selected engine uid.
+    :param key: The config entry key holding the setting, see resolve_ai_engine_setting.
     :param depends_on: Optional key of the entry this picker should be shown for.
     :param required: Reject a submission that leaves the picker empty. Only for setup flows;
         an options entry must stay optional so a provider with no selection still loads.
     :param category: The settings category to show the entries under.
     """
-    return _create_engine_config_entries(
-        await get_ai_engines(mass),
-        key,
-        depends_on,
-        required,
-        category,
-        unavailable_translation_key="ai_engine_unavailable",
+    return _create_feature_engine_config_entries(
+        mass, EngineKind.TEXT, await get_ai_engines(mass), key, depends_on, required, category
     )
 
 
@@ -221,24 +359,21 @@ async def create_tts_engine_config_entries(
     category: str = "features",
 ) -> tuple[ConfigEntry, ...]:
     """
-    Return the config entries letting the user pick a TTS engine.
+    Return the config entries letting the user pick a TTS engine for a feature.
 
-    Adds a second (alert) entry with key ``<key>_unavailable`` when no engine is available.
+    The picker follows the default TTS engine unless the user picks one. Adds an alert entry
+    with key ``<key>_unavailable`` when no engine is available, and one with key
+    ``<key>_default_unavailable`` when the default engine is not.
 
     :param mass: The Music Assistant instance to query.
-    :param key: The config entry key holding the selected engine uid.
+    :param key: The config entry key holding the setting, see resolve_tts_engine_setting.
     :param depends_on: Optional key of the entry this picker should be shown for.
     :param required: Reject a submission that leaves the picker empty. Only for setup flows;
         an options entry must stay optional so a provider with no selection still loads.
     :param category: The settings category to show the entries under.
     """
-    return _create_engine_config_entries(
-        await get_tts_engines(mass),
-        key,
-        depends_on,
-        required,
-        category,
-        unavailable_translation_key="tts_engine_unavailable",
+    return _create_feature_engine_config_entries(
+        mass, EngineKind.SPEECH, await get_tts_engines(mass), key, depends_on, required, category
     )
 
 
@@ -251,12 +386,14 @@ async def create_image_engine_config_entries(
     depends_on_value: ConfigValueType | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """
-    Return the config entries letting the user pick an image generation engine.
+    Return the config entries letting the user pick an image generation engine for a feature.
 
-    Adds a second (alert) entry with key ``<key>_unavailable`` when no engine is available.
+    The picker follows the default image engine unless the user picks one. Adds an alert
+    entry with key ``<key>_unavailable`` when no engine is available, and one with key
+    ``<key>_default_unavailable`` when the default engine is not.
 
     :param mass: The Music Assistant instance to query.
-    :param key: The config entry key holding the selected engine uid.
+    :param key: The config entry key holding the setting, see resolve_image_engine_setting.
     :param depends_on: Optional key of the entry this picker should be shown for.
     :param depends_on_value: Optional value of the depends_on entry this picker is shown for,
         instead of for any set value.
@@ -264,14 +401,48 @@ async def create_image_engine_config_entries(
         an options entry must stay optional so a provider with no selection still loads.
     :param category: The settings category to show the entries under.
     """
-    return _create_engine_config_entries(
+    return _create_feature_engine_config_entries(
+        mass,
+        EngineKind.IMAGE,
         await get_image_engines(mass),
         key,
         depends_on,
         required,
         category,
-        unavailable_translation_key="image_engine_unavailable",
         depends_on_value=depends_on_value,
+    )
+
+
+async def create_default_engine_config_entries(
+    mass: MusicAssistant, kind: EngineKind
+) -> tuple[ConfigEntry, ...]:
+    """
+    Return the config entries letting the user pick the default engine of a kind.
+
+    When no default is set yet, the first available engine is adopted as the default.
+    Adds an alert entry with key ``<key>_unavailable`` when no engine is available, and one
+    with key ``<key>_default_unavailable`` when the selected default is not.
+
+    :param mass: The Music Assistant instance to query.
+    :param kind: The kind of engine to pick the default of.
+    """
+    engines = await _get_engines(mass, kind)
+    default = _default_engine(mass, kind, engines)
+    picker = ConfigEntry(
+        key=_DEFAULT_ENGINE_KEYS[kind],
+        type=ConfigEntryType.STRING,
+        # every kind with engines keeps a default, while a kind without any still saves
+        required=bool(engines),
+        options=_engine_options(engines),
+        category="generic",
+        hidden=not engines,
+    )
+    missing_value = _stored_default(mass, kind) if engines and default is None else None
+    return (
+        picker,
+        *_engine_alerts(
+            kind, picker, engines, missing_value, _SELECTED_UNAVAILABLE_TRANSLATION_KEY
+        ),
     )
 
 
@@ -287,7 +458,7 @@ async def _collect_engines[EngineT: PluginEngine](
             continue
         try:
             engines = await fetch(provider)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failing plugin must not stop the others
             LOGGER.warning(
                 "Could not retrieve %s engines from %s: %s",
                 feature,
@@ -299,87 +470,162 @@ async def _collect_engines[EngineT: PluginEngine](
     return result
 
 
-def _resolve[EngineT: PluginEngine](engines: list[EngineT], selected: str | None) -> EngineT | None:
+async def _get_engines(mass: MusicAssistant, kind: EngineKind) -> Sequence[PluginEngine]:
+    """Return the available engines of a kind."""
+    if kind == EngineKind.TEXT:
+        return await get_ai_engines(mass)
+    if kind == EngineKind.SPEECH:
+        return await get_tts_engines(mass)
+    return await get_image_engines(mass)
+
+
+def _resolve[EngineT: PluginEngine](
+    engines: Sequence[EngineT], selected: str | None
+) -> EngineT | None:
     """Return the available engine matching a configured selection, if any."""
     if not selected:
         return None
     return next((engine for engine in engines if engine.uid == selected), None)
 
 
-def _select_engine[EngineT: PluginEngine](
-    engines: list[EngineT],
-    stored: ConfigValueType,
-    persist: Callable[[str], None],
-    owner: str,
-    key: str,
+def _resolve_setting[EngineT: PluginEngine](
+    mass: MusicAssistant, kind: EngineKind, engines: Sequence[EngineT], value: ConfigValueType
 ) -> EngineT | None:
-    """Return the stored engine, or persist and return the first available one."""
-    if isinstance(stored, str) and stored:
+    """Return the engine a stored feature setting selects: its own pick or the default."""
+    if _follows_default(value):
+        return _default_engine(mass, kind, engines)
+    return _resolve(engines, value if isinstance(value, str) else None)
+
+
+def _engine_usage(
+    mass: MusicAssistant,
+    engines: Mapping[EngineKind, Sequence[PluginEngine]],
+    setting: EngineSetting,
+    value: ConfigValueType,
+    *,
+    owner_type: Literal["core", "provider"],
+    owner: str,
+    domain: str,
+    name: str,
+) -> EngineUsage:
+    """Return the usage of an engine setting of an owner, given its stored value."""
+    engine = _resolve_setting(mass, setting.kind, engines[setting.kind], value)
+    return EngineUsage(
+        owner_type=owner_type,
+        owner=owner,
+        domain=domain,
+        name=name,
+        key=setting.key,
+        kind=setting.kind,
+        in_setup_data=setting.in_setup_data,
+        follows_default=_follows_default(value),
+        engine=engine.uid if engine else None,
+    )
+
+
+def _follows_default(value: ConfigValueType) -> bool:
+    """Return whether a stored feature setting follows the default engine of its kind."""
+    return value in (None, "", CONF_VALUE_GLOBAL)
+
+
+def _stored_default(mass: MusicAssistant, kind: EngineKind) -> str | None:
+    """Return the uid stored as the default engine of a kind, if any."""
+    stored = mass.config.get_raw_core_config_value(CONF_AI, _DEFAULT_ENGINE_KEYS[kind])
+    return stored if isinstance(stored, str) and stored else None
+
+
+def _default_engine[EngineT: PluginEngine](
+    mass: MusicAssistant, kind: EngineKind, engines: Sequence[EngineT]
+) -> EngineT | None:
+    """Return the default engine of a kind out of the given engines, adopting one if unset."""
+    if (stored := _stored_default(mass, kind)) is not None:
         return _resolve(engines, stored)
     if not engines:
         return None
     engine = engines[0]
-    persist(engine.uid)
-    LOGGER.debug("Selected engine %s as %s for %s", engine.uid, key, owner)
+    mass.config.set_raw_core_config_value(CONF_AI, _DEFAULT_ENGINE_KEYS[kind], engine.uid)
+    LOGGER.debug("Adopted engine %s as the default %s engine", engine.uid, kind)
     return engine
 
 
-def _select_provider_engine[EngineT: PluginEngine](
-    provider: Provider,
-    key: str,
-    engines: list[EngineT],
-    *,
-    in_setup_data: bool,
-) -> EngineT | None:
-    """Return the provider's stored engine, or persist and return the first available one."""
-    config = provider.mass.config
-    stored = (
-        config.get_provider_setup_value(provider.instance_id, key)
-        if in_setup_data
-        else config.get_raw_provider_config_value(provider.instance_id, key)
-    )
-    persist = provider._update_setup_data if in_setup_data else provider._update_config_value
-    return _select_engine(engines, stored, lambda uid: persist(key, uid), provider.instance_id, key)
+def _engine_options(engines: Sequence[PluginEngine]) -> list[ConfigValueOption]:
+    """Return a picker option for each of the given engines."""
+    return [ConfigValueOption(engine.uid, title=engine_display_name(engine)) for engine in engines]
 
 
-def _create_engine_config_entries(
-    engines: list[AIEngine] | list[TTSEngine] | list[ImageEngine],
+def _create_feature_engine_config_entries(
+    mass: MusicAssistant,
+    kind: EngineKind,
+    engines: Sequence[PluginEngine],
     key: str,
     depends_on: str | None,
-    required: bool = False,
-    category: str = "features",
-    *,
-    unavailable_translation_key: str,
+    required: bool,
+    category: str,
     depends_on_value: ConfigValueType | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Build the picker (and unavailable alert) config entries for the given engines."""
-    entry = ConfigEntry(
+    """Build a feature's engine picker, following the default engine unless one is picked."""
+    default = _default_engine(mass, kind, engines)
+    picker = ConfigEntry(
         key=key,
         type=ConfigEntryType.STRING,
         required=required,
-        # a concrete default would make the seeded selection equal to it and therefore
-        # not persisted (to_raw only stores values differing from the default)
-        default_value=None,
+        default_value=CONF_VALUE_GLOBAL,
         options=[
-            ConfigValueOption(engine.uid, title=engine_display_name(engine)) for engine in engines
+            # no options.global string exists on purpose: a translation would replace this title
+            ConfigValueOption(
+                CONF_VALUE_GLOBAL,
+                title=engine_display_name(default) if default else _stored_default(mass, kind),
+            ),
+            *_engine_options(engines),
         ],
         depends_on=depends_on,
         depends_on_value=depends_on_value,
         category=category,
-        read_only=not engines,
+        hidden=not engines,
     )
-    if engines:
-        return (entry,)
+    missing_value = CONF_VALUE_GLOBAL if engines and default is None else None
     return (
-        entry,
+        picker,
+        *_engine_alerts(kind, picker, engines, missing_value, _DEFAULT_UNAVAILABLE_TRANSLATION_KEY),
+    )
+
+
+def _engine_alerts(
+    kind: EngineKind,
+    picker: ConfigEntry,
+    engines: Sequence[PluginEngine],
+    missing_value: str | None,
+    missing_translation_key: str,
+) -> tuple[ConfigEntry, ...]:
+    """
+    Return the alert for an engine picker when no engine, or the engine it selects, is available.
+
+    :param kind: The kind of engine the picker selects.
+    :param picker: The picker entry.
+    :param engines: The available engines of the kind.
+    :param missing_value: The picker value selecting an engine that is not available, if any.
+    :param missing_translation_key: The source string of the alert for missing_value.
+    """
+    if not engines:
+        return (
+            ConfigEntry(
+                key=f"{picker.key}_unavailable",
+                type=ConfigEntryType.ALERT,
+                depends_on=picker.depends_on,
+                depends_on_value=picker.depends_on_value,
+                category=picker.category,
+                translation_key=_UNAVAILABLE_TRANSLATION_KEYS[kind],
+            ),
+        )
+    if missing_value is None:
+        return ()
+    return (
         ConfigEntry(
-            key=f"{key}_unavailable",
+            key=f"{picker.key}_default_unavailable",
             type=ConfigEntryType.ALERT,
-            depends_on=depends_on,
-            depends_on_value=depends_on_value,
-            category=category,
-            # the alert text does not depend on what the picker is used for, so every
-            # caller shares one source string instead of authoring its own copy
-            translation_key=unavailable_translation_key,
+            depends_on=picker.key,
+            depends_on_value=missing_value,
+            category=picker.category,
+            translation_key=missing_translation_key,
         ),
     )

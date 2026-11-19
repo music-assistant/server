@@ -77,15 +77,35 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
       self._sessions[session_id]. Access it in process_pcm_chunk and _finalize.
     - Increment analysis_version when your algorithm changes significantly.
       The base class uses this to skip re-analysis of already-analyzed tracks.
+    - media_types declares the media types the provider is offered. This template does
+      not set it, so it keeps the default: tracks only. The comment below
+      analysis_version explains it.
     - If you have other conditions that determine whether to skip an analysis,
       implement them in _start_analysis and return False to reject the session.
     - Return AudioAnalysisData from _finalize; the base class persists it.
+    - To report what plays in a live source or on a radio station (for example a recognised
+      song), call self.report_stream_metadata(session_id, StreamMetadata(...)). Players show
+      it while the source or station reports nothing itself, a station's report once the
+      listener reaches the audio it was recognised in, until replaced or the session ends;
+      it is never stored. On a False return stop recognising for that session: the stream
+      has metadata of its own, or the session is gone.
+    - A recogniser must return quickly from process_pcm_chunk: copy the audio into a small
+      ring buffer and run the recognition in a task of its own, throttled (for example one
+      sample every 30 to 60 seconds, none after a False). Declare MediaType.RADIO (and
+      AUDIO_SOURCE if wanted) and return None from _finalize, so nothing is stored.
     """
 
     # Increment this when your analysis algorithm changes significantly.
     # The controller compares this against the stored version to decide
     # whether to re-analyze a track.
     analysis_version: int = 1
+
+    # The media types this provider is offered, as a frozenset of MediaType (for example
+    # frozenset({MediaType.TRACK, MediaType.PODCAST_EPISODE})). Without it the provider gets
+    # tracks only. Declare MediaType.AUDIO_SOURCE to follow a live source, such as a line-in or
+    # turntable, while it plays: it is offered only a source that allows analysis
+    # (AudioSource.allow_audio_analysis), gets its audio in realtime with no finalize, and
+    # nothing of such a session is stored.
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """

@@ -47,7 +47,8 @@ if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.media_items import Album, Playlist, Track
     from music_assistant_models.queue_item import QueueItem
-    from music_assistant_models.streamdetails import StreamDetails
+
+    from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 
 
 class StreamFeederMixin(_PlayerQueuesBase):
@@ -225,8 +226,8 @@ class StreamFeederMixin(_PlayerQueuesBase):
         # one realtime holder says nothing about the other slots of a larger budget
         if provider is None or provider.max_concurrent_streams != 1:
             return
-        for holder_id, details in self._held_stream_slots(provider, queue_id):
-            if not details.is_realtime or self._is_paused(holder_id):
+        for holder_id, holder in self._held_stream_slots(provider, queue_id):
+            if not holder.is_realtime or self._is_paused(holder_id):
                 continue
             # a player outside the caller's filter stays out of sight: the refusal then
             # reads like any other capacity error
@@ -592,7 +593,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
         if (provider := self._full_provider(provider_instance)) is None:
             return None
         user = get_current_user()
-        for holder_id, _details in self._held_stream_slots(provider, queue_id):
+        for holder_id, _holder in self._held_stream_slots(provider, queue_id):
             if not self._is_paused(holder_id):
                 continue
             # the starting user only takes the slot of a player they may control
@@ -613,31 +614,30 @@ class StreamFeederMixin(_PlayerQueuesBase):
 
     def _held_stream_slots(
         self, provider: MusicProvider, queue_id: str
-    ) -> Iterator[tuple[str, StreamDetails]]:
+    ) -> Iterator[tuple[str, AudioBuffer]]:
         """
         Yield the queues other than the given one that hold a slot of the given provider.
 
         :param provider: The provider instance whose slots are all taken.
         :param queue_id: The queue that needs a slot.
-        :return: Pairs of the holding queue and the stream details whose buffer holds the slot.
+        :return: Pairs of the holding queue and the buffer whose source holds the slot.
         """
-        for holder_id, queue_data in self._queue_data.items():
+        for holder in provider.stream_slot_holders:
+            holder_id = holder.queue_id
+            # a source that has its slot and no audio yet can still fail and give it back,
+            # and one that is being given up only holds it until it has stopped
+            if (
+                holder_id is None
+                or holder_id == queue_id
+                or not holder.ready.is_set()
+                or holder.cancelled
+            ):
+                continue
             # a stop only releases the audio of a session, so a queue without one has
             # nothing to hand over
-            if holder_id == queue_id or queue_data.session_id is None:
-                continue
-            for item in queue_data.items:
-                # a buffer holds its provider's slot from its first audio until its source
-                # stops producing; one that is not ready yet can still be waiting for a
-                # slot itself
-                if (
-                    (details := item.streamdetails) is not None
-                    and details.provider == provider.instance_id
-                    and details.buffer is not None
-                    and details.buffer.is_buffering
-                    and details.buffer.ready.is_set()
-                ):
-                    yield holder_id, details
+            queue_data = self._queue_data.get(holder_id)
+            if queue_data is not None and queue_data.session_id is not None:
+                yield holder_id, holder
 
     def _is_paused(self, queue_id: str) -> bool:
         """Return whether the queue is paused and its player confirms it is paused on it."""
@@ -646,6 +646,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
         return (
             queue_data is not None
             and queue_data.queue.state == PlaybackState.PAUSED
+            # a queue in the middle of its own play action does not count as paused: its
+            # player reports the pause until the new track plays
+            and not queue_data.own_play_action
             and player is not None
             and player.playback_state == PlaybackState.PAUSED
             and player.active_source == queue_id

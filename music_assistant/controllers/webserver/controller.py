@@ -110,6 +110,7 @@ from .helpers.auth_middleware import (
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
 from .helpers.login_flow import AuthTransport, RedirectTarget
+from .provider_pages import PROVIDER_PAGE_ROUTE, ProviderPageManager
 from .remote_access import RemoteAccessManager
 from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
@@ -229,6 +230,7 @@ class WebserverController(CoreController):
         self.auth = AuthenticationManager(self)
         self.remote_access = RemoteAccessManager(self)
         self._sendspin_proxy = SendspinProxyHandler(self)
+        self.provider_pages = ProviderPageManager(self)
         # the first-time setup makes exactly one admin, however many attempts arrive at once
         self._setup_lock = asyncio.Lock()
         # Preview tokens keyed on the token in the URL, value is
@@ -329,10 +331,15 @@ class WebserverController(CoreController):
         if action == CONF_ACTION_VERIFY_SSL:
             # the certificate/key are read from the stored config, so they must be saved
             # before verifying - the action no longer receives the (unsaved) form values
-            cert_info = await verify_ssl_certificate(
-                str(self.get_config_value(CONF_SSL_CERTIFICATE, "")),
-                str(self.get_config_value(CONF_SSL_PRIVATE_KEY, "")),
-            )
+            certificate = str(self.get_config_value(CONF_SSL_CERTIFICATE) or "")
+            private_key = str(self.get_config_value(CONF_SSL_PRIVATE_KEY) or "")
+            if not certificate or not private_key:
+                raise InvalidDataError(
+                    "Save the certificate and private key first, then press Verify",
+                    translation_key="ssl_not_saved",
+                    translation_owner=self.translation_owner,
+                )
+            cert_info = await verify_ssl_certificate(certificate, private_key)
             if not cert_info.is_valid:
                 # a result only ever reports success, so an unusable certificate must raise
                 raise InvalidDataError(
@@ -417,6 +424,14 @@ class WebserverController(CoreController):
         routes.append(("POST", "/setup", self._handle_setup))
         # add sendspin proxy route (authenticated WebSocket proxy to internal sendspin server)
         routes.append(("GET", "/sendspin", self._sendspin_proxy.handle_sendspin_proxy))
+        # pages providers serve, behind a short-lived address (see provider_pages.py)
+        routes.append(
+            (
+                "*",
+                f"/{PROVIDER_PAGE_ROUTE}/{{session}}/{{tail:.*}}",
+                self.provider_pages.handle_request,
+            )
+        )
         await self.auth.setup()
         # start the webserver
         if self.mass.running_as_hass_addon:
@@ -460,6 +475,7 @@ class WebserverController(CoreController):
             # Add mass object to app for use by the auth helpers
             app_state={"mass": self.mass},
             ssl_context=ssl_context,
+            response_prepare_hooks=[self.provider_pages.on_response_prepare],
         )
         # adopt what the server actually bound to: a configured port of 0 is only resolved
         # by the OS at bind time and an unavailable bind IP falls back to all interfaces
@@ -490,7 +506,7 @@ class WebserverController(CoreController):
                 "Webserver available on: %s\n"
                 "\n"
                 "If this address is incorrect, see the documentation on how to configure\n"
-                "the Webserver in Settings --> System --> Webserver\n"
+                "the Webserver in Settings --> System --> Network\n"
                 "\n"
                 "################################################################################\n",
                 base_url,
@@ -503,8 +519,7 @@ class WebserverController(CoreController):
             # config parsing already dropped the invalid stored value; clear the stored
             # value too, so the setting reads back as empty and this warns only once
             self.logger.warning(
-                "External URL %r in the webserver settings is not a public http(s) URL, "
-                "clearing it",
+                "External URL %r in the network settings is not a public http(s) URL, clearing it",
                 raw_external_url,
             )
             self.mass.config.set_raw_core_config_value(self.domain, CONF_EXTERNAL_URL, None)
@@ -520,6 +535,7 @@ class WebserverController(CoreController):
         for client in set(self.clients):
             await client.disconnect()
         await self._server.close()
+        self.provider_pages.close()
         await self.auth.close()
 
     def register_websocket_client(self, client: WebsocketClientHandler) -> None:
@@ -540,7 +556,10 @@ class WebserverController(CoreController):
 
     def disconnect_websockets_for_user(self, user_id: str) -> None:
         """
-        Disconnect all WebSocket clients of the given user.
+        Disconnect all WebSocket clients of the given user, and drop its provider page addresses.
+
+        Call this whenever the access of the user changes, so that nothing it opened before goes
+        on with the access it had.
 
         :param user_id: Id of the user whose sessions must be closed.
         """
@@ -551,6 +570,7 @@ class WebserverController(CoreController):
             ),
             "user action",
         )
+        self.provider_pages.drop_user(user_id)
 
     def update_active_user_filters(
         self,
@@ -736,6 +756,7 @@ class WebserverController(CoreController):
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
                 hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
+                category="account_access",
                 requires_reload=False,
             ),
             ConfigEntry(
@@ -1351,6 +1372,21 @@ class WebserverController(CoreController):
             code = request.query.get("code")
             state = request.query.get("state")
             provider_id = request.query.get("provider_id")
+
+            if error := request.query.get("error"):
+                if state:
+                    self.auth.pending_logins.pop(state)
+                self.logger.warning("Sign-in not completed, provider returned: %r", error[:100])
+                error_html = """
+                <html>
+                <body>
+                    <h1>Authentication Failed</h1>
+                    <p>The sign-in was cancelled or refused</p>
+                    <a href="/login">Back to Login</a>
+                </body>
+                </html>
+                """
+                return web.Response(text=error_html, content_type="text/html", status=400)
 
             if not code or not state or not provider_id:
                 return web.Response(status=400, text="code, state, and provider_id required")

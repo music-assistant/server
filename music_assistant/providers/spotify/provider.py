@@ -66,7 +66,6 @@ from music_assistant.helpers.external_ids import (
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.playlists import validate_playlist_block_move
 from music_assistant.helpers.throttle_retry import (
-    MAX_WAIT_TIME,
     RequestPriority,
     ThrottlerManager,
     current_priority,
@@ -205,6 +204,7 @@ class SpotifyProvider(MusicProvider):
         # global session (heavy rate limited) and developer session (custom client id)
         self._global_session = self._create_session(
             "global",
+            "shared client",
             app_var("spotify_client_id"),
             self.login,
             self._clear_auth_info_global,
@@ -213,12 +213,13 @@ class SpotifyProvider(MusicProvider):
         )
         self._dev_session = self._create_session(
             "dev",
+            "custom Client ID",
             str(self.get_setup_value(CONF_CLIENT_ID) or ""),
             self.login_dev,
             self._clear_auth_info_dev,
             rate_limit=30,
             period=30,
-            fallback_for_playback=True,
+            has_fallback=True,
         )
 
         # playback authorization is independent of the Web API tokens
@@ -379,6 +380,8 @@ class SpotifyProvider(MusicProvider):
                 else None
             ),
             "dev_session_active": self.dev_session_active,
+            "global_session_rate_limit": self._global_session.get_diagnostics(),
+            "dev_session_rate_limit": self._dev_session.get_diagnostics(),
             "playback_backend": str(self.get_setup_value(CONF_PLAYBACK_BACKEND) or "librespot"),
             "audiobooks_supported": self._audiobooks_supported,
             **(await self.backend.get_diagnostics() if hasattr(self, "backend") else {}),
@@ -665,7 +668,7 @@ class SpotifyProvider(MusicProvider):
             except MediaNotFoundError:
                 raise NotImplementedError("Episode not found on Spotify")
             except (ResourceTemporarilyUnavailable, RetriesExhausted, aiohttp.ClientError) as e:
-                self.logger.debug(f"Error fetching episode {item_id}: {e}")
+                self.logger.debug("Error fetching episode %s: %s", item_id, e)
                 raise NotImplementedError("Unable to fetch episode data from Spotify")
 
             if (
@@ -724,7 +727,7 @@ class SpotifyProvider(MusicProvider):
                 RetriesExhausted,
                 aiohttp.ClientError,
             ) as e:
-                self.logger.debug(f"Failed to get audiobook resume position for {item_id}: {e}")
+                self.logger.debug("Failed to get audiobook resume position for %s: %s", item_id, e)
                 raise NotImplementedError("Unable to get audiobook resume position from Spotify")
 
         else:
@@ -757,8 +760,11 @@ class SpotifyProvider(MusicProvider):
                 completion_percentage = 0
 
             self.logger.debug(
-                f"Episode played: {prov_item_id} at {safe_position}s "
-                f"({completion_percentage:.1f}%, fully_played: {fully_played})"
+                "Episode played: %s at %ss (%.1f%%, fully_played: %s)",
+                prov_item_id,
+                safe_position,
+                completion_percentage,
+                fully_played,
             )
 
             # Note: No API exists to sync playback position back to Spotify for episodes
@@ -776,8 +782,11 @@ class SpotifyProvider(MusicProvider):
                 completion_percentage = 0
 
             self.logger.debug(
-                f"Audiobook played: {prov_item_id} at {safe_position}s "
-                f"({completion_percentage:.1f}%, fully_played: {fully_played})"
+                "Audiobook played: %s at %ss (%.1f%%, fully_played: %s)",
+                prov_item_id,
+                safe_position,
+                completion_percentage,
+                fully_played,
             )
 
             # No API exists to sync playback position back to Spotify for audiobooks:
@@ -1744,7 +1753,7 @@ class SpotifyProvider(MusicProvider):
                 audiobook.duration = int(total_duration_seconds)
 
         except (MediaNotFoundError, ResourceTemporarilyUnavailable, ProviderUnavailableError) as e:
-            self.logger.warning(f"Failed to get chapters for audiobook {audiobook.item_id}: {e}")
+            self.logger.warning("Failed to get chapters for audiobook %s: %s", audiobook.item_id, e)
 
     @use_cache(43200)  # 12 hours - balances freshness with performance
     async def _get_podcast_episodes_data(self, prov_podcast_id: str) -> list[dict[str, Any]]:
@@ -2000,58 +2009,64 @@ class SpotifyProvider(MusicProvider):
         cooldown = self._dev_session.throttler.cooldown_remaining
         priority = current_priority()
         # background work stays on the custom Client ID, so it never eats into the budget
-        # of the shared client. A user action waits out a short limit, playback does not
-        # wait for a limit at all and takes the shared client as soon as there is one.
-        if priority is RequestPriority.LOW or cooldown <= (
-            0 if priority is RequestPriority.HIGH else MAX_WAIT_TIME
-        ):
+        # of the shared client. User actions and playback do not wait for a limit at all
+        # and take the shared client as soon as there is one.
+        if priority is RequestPriority.LOW or cooldown <= 0:
             return self._dev_session
         if (now := time.monotonic()) >= self._dev_fallback_logged_until:
             self._dev_fallback_logged_until = now + cooldown
             self.logger.info(
-                "Spotify limits the custom Client ID for another %d minutes, "
+                "Spotify limits the custom Client ID for another %d seconds, "
                 "user actions use the shared client meanwhile",
-                math.ceil(cooldown / 60),
+                math.ceil(cooldown),
             )
         return self._global_session
 
     def _create_session(
         self,
         name: str,
+        label: str,
         client_id: str,
         get_auth: Callable[[], Awaitable[dict[str, Any]]],
         on_unauthorized: Callable[[], None],
         rate_limit: int,
         period: float,
-        fallback_for_playback: bool = False,
+        has_fallback: bool = False,
     ) -> SpotifySession:
         """
         Return a session of this instance on its stored throttler, created on first use.
 
         :param name: Name of the session.
+        :param label: Readable name of the Spotify app of the session, for logging.
         :param client_id: The Spotify app the session speaks for.
         :param get_auth: Returns a valid access token of the session.
         :param on_unauthorized: Drops the cached access token of the session.
         :param rate_limit: Number of requests the session may make per period.
         :param period: Length of the period in seconds.
-        :param fallback_for_playback: Whether another session serves playback while this one
-            is rate limited.
+        :param has_fallback: Whether another session serves user actions and playback while
+            this one is rate limited.
         """
         # entries of apps this instance spoke for before stay until the instance is removed:
         # a failed reconfiguration rolls the setup back to the previous app, limit included
         throttler = _THROTTLERS.setdefault(
             (self.instance_id, name, client_id),
-            ThrottlerManager(rate_limit=rate_limit, period=period),
+            ThrottlerManager(
+                rate_limit=rate_limit,
+                period=period,
+                # a request the other session serves meanwhile does not wait out a cooldown
+                foreground_waits_out_cooldown=not has_fallback,
+            ),
         )
         throttler.set_rate_limit(rate_limit=rate_limit, period=period)
         return SpotifySession(
             self.mass,
             self.logger,
             name,
+            label,
             throttler,
             get_auth,
             on_unauthorized,
-            fallback_for_playback=fallback_for_playback,
+            has_fallback=has_fallback,
         )
 
     def _stored_account(self) -> dict[str, Any] | None:

@@ -590,6 +590,20 @@ def test_interface_name_for_ip_no_match() -> None:
         assert util.interface_name_for_ip("10.0.0.1") is None
 
 
+def test_interface_name_for_ip_matches_any_ipv6_notation() -> None:
+    """An IPv6 address written in a non-canonical notation still resolves to its interface."""
+    adapters = [
+        _make_mock_adapter("eth0", ipv6_addrs=[("2001:db8::10", 0, 2)]),
+    ]
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+        assert util.interface_name_for_ip("2001:DB8:0:0::10") == "eth0"
+
+
+def test_interface_name_for_ip_rejects_a_non_ip_value() -> None:
+    """A value that is not an IP address returns None."""
+    assert util.interface_name_for_ip("not-an-ip") is None
+
+
 @pytest.mark.parametrize("capability", ["DEFAULT", "NO AVX"])
 def test_ml_inference_probe_rejects_no_avx2(capability: str) -> None:
     """A no-AVX2 CPU is rejected before any kernel runs (safe to check in-process)."""

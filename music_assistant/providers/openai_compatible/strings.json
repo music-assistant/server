@@ -40,7 +40,11 @@
     },
     "connection": {
       "title": "Connection details",
-      "description": "Once connected, choose the models you want to use in the provider settings."
+      "description": "Next, you pick the models you want to use."
+    },
+    "models": {
+      "title": "Choose the models",
+      "description": "Pick the models from the list the service offers. When the service does not list its models, type their names instead."
     }
   },
   "errors": {

@@ -106,6 +106,7 @@ class _Household:
         player._protocol_id = player_id
         player._attr_name = player_id
         player.connected = True
+        player._airplay_rejoin_members = set()
         player.client = self._client(player_id)
         player.update_attributes = MagicMock()  # type: ignore[method-assign]
         player.update_state = MagicMock()  # type: ignore[method-assign, misc]
@@ -345,6 +346,89 @@ async def test_a_reconnect_during_a_refresh_does_not_fail_the_removal() -> None:
     assert home.leader.client.player.group_members == [LEADER]
     assert home.players[OTHER].synced_to is None
     assert home.member.synced_to == LEADER
+
+
+def _leave_on_own(home: _Household, player_id: str, groups: dict[str, Any]) -> AsyncMock:
+    """Let a speaker answer getGroups with the given household once it formed a group of its own."""
+
+    async def _create_group(*_args: object) -> dict[str, Any]:
+        home.answer_groups(player_id, groups)
+        return {"_objectType": "groupInfo"}
+
+    create_group = cast("AsyncMock", home.apis[player_id].groups.create_group)
+    create_group.side_effect = _create_group
+    return create_group
+
+
+@pytest.mark.asyncio
+async def test_a_member_the_leader_did_not_remove_leaves_through_its_own_connection() -> None:
+    """A leader that has not registered a re-added member answers without removing it."""
+    home = _Household()
+    # the leader answers with a group without the member, the member still reports it
+    home.answer_groups(MEMBER, SYNCED)
+    create_group = _leave_on_own(home, MEMBER, LEFT)
+
+    await home.leader.set_members(player_ids_to_remove=[MEMBER])
+    await asyncio.sleep(0)
+
+    create_group.assert_awaited_once_with(HOUSEHOLD, [MEMBER], None)
+    assert home.member.synced_to is None
+    assert home.leader.client.player.group_members == [LEADER, OTHER]
+
+
+@pytest.mark.asyncio
+async def test_a_member_that_reports_its_own_group_makes_no_extra_call() -> None:
+    """A member that already left, as the leader answered, is not asked to leave again."""
+    home = _Household()
+    home.answer_groups(MEMBER, LEFT)
+
+    await home.leader.set_members(player_ids_to_remove=[MEMBER])
+
+    home.apis[MEMBER].groups.create_group.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["error", "no_answer", "connection_closed"])
+async def test_a_member_that_cannot_leave_on_its_own_does_not_fail_the_removal(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """The member's own attempt costs the removal no more than the bound, and no failure."""
+    home = _Household()
+    home.answer_groups(MEMBER, SYNCED)
+    create_group = cast("AsyncMock", home.apis[MEMBER].groups.create_group)
+    create_group.side_effect = {
+        "error": OSError("Cannot write to closing transport"),
+        "no_answer": _never_answers,
+        # a reconnect cancels the replies the connection still waited on
+        "connection_closed": asyncio.CancelledError(),
+    }[failure]
+    clock = _FrozenClock(monkeypatch)
+
+    removal = _remove(home, MEMBER)
+    await clock.advance(player_module.GROUPS_REFRESH_TIMEOUT)
+
+    assert removal.done()
+    await removal
+    create_group.assert_awaited_once()
+    assert home.member.synced_to == LEADER
+
+
+@pytest.mark.asyncio
+async def test_each_removed_member_is_checked_on_its_own() -> None:
+    """Only the member that still reports the group leaves through its own connection."""
+    home = _Household()
+    home.next_groups = BOTH_LEFT
+    home.answer_groups(MEMBER, SYNCED)
+    member_leaves = _leave_on_own(home, MEMBER, BOTH_LEFT)
+    home.answer_groups(OTHER, BOTH_LEFT)
+
+    await home.leader.set_members(player_ids_to_remove=[MEMBER, OTHER])
+    await asyncio.sleep(0)
+
+    member_leaves.assert_awaited_once_with(HOUSEHOLD, [MEMBER], None)
+    home.apis[OTHER].groups.create_group.assert_not_awaited()
+    assert home.member.synced_to is None
+    assert home.players[OTHER].synced_to is None
 
 
 @pytest.mark.asyncio

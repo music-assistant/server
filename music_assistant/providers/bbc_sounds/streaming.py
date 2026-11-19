@@ -143,13 +143,12 @@ class StreamManager:
         stream_details.data = {
             "vpid": episode.id,
             "pid": episode.pid,
-            "episode_title": stream_details.stream_title,
             "episode_metadata": stream_details.stream_metadata,
         }
         stream_details.stream_metadata_update_callback = (
-            self.now_playing._update_on_demand_stream_metadata
+            self.now_playing.update_on_demand_stream_metadata
         )
-        stream_details.stream_metadata_update_interval = Constants.NOW_PLAYING_REFRESH_TIME
+        stream_details.stream_metadata_update_interval = Constants.LISTEN_BACK_REFRESH_TIME
         return stream_details
 
     def _stream_error(self, item_id: str, media_type: MediaType) -> MusicAssistantError:
@@ -220,6 +219,8 @@ class StreamManager:
             # keep these details, and the buffer seeks are checked against, for the whole
             # programme; the live playlist URLs carry no expiring token
             expiration=max(600, programme_id.end - int(datetime.utc_timestamp()) + 600),
+            stream_metadata_update_callback=self.now_playing.update_live_programme_metadata,
+            stream_metadata_update_interval=Constants.NOW_PLAYING_REFRESH_TIME,
         )
 
     async def _continue_with_station(

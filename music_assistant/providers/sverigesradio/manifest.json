@@ -5,6 +5,7 @@
   "name": "Sveriges Radio",
   "description": "Listen to Sweden’s public service radio — live national and local channels.",
   "codeowners": ["@romany"],
+  "provides": ["radio"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/sveriges-radio/"
 }

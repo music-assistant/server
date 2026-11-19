@@ -1,11 +1,14 @@
 """Unit tests for the Apple Music media manager."""
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.media_items import Track
 
+from music_assistant.constants import DB_TABLE_CACHE
+from music_assistant.mass import MusicAssistant
 from music_assistant.providers.apple_music import media
 from music_assistant.providers.apple_music.api_client import AppleMusicAPIClient
 from music_assistant.providers.apple_music.library import AppleMusicLibraryManager
@@ -267,3 +270,55 @@ async def test_get_track_offers_a_purchase_apple_still_sells(
 
     assert _availability([track]) == {"i.sold": True}
     assert _purchase_lookups(get_data) == [SOLD]
+
+
+@pytest.mark.parametrize("marker_moves", [True, False], ids=["marker moves", "marker stays"])
+async def test_a_forgotten_playlist_is_read_anew(
+    mass_minimal: MusicAssistant, marker_moves: bool
+) -> None:
+    """A forgotten playlist is read anew, also while Apple still reports its old marker."""
+    await mass_minimal.cache._setup_database()
+    playlist: dict[str, Any] = {"songs": ["i.1"], "marker": "2026-11-01", "marker_reads": 0}
+
+    async def _get_data(endpoint: str, **_kwargs: Any) -> dict[str, Any]:
+        if endpoint.endswith("/tracks"):
+            return {"data": [_library_song(song) for song in playlist["songs"]]}
+        playlist["marker_reads"] += 1
+        return {"data": [{"id": "p.1", "attributes": {"lastModifiedDate": playlist["marker"]}}]}
+
+    provider = MagicMock()
+    provider.mass = mass_minimal
+    provider.instance_id = "apple_music_test"
+    provider.domain = "apple_music"
+    provider.api_client.get_data = AsyncMock(side_effect=_get_data)
+    provider.library_manager.mark_purchases_on_sale = AsyncMock()
+    manager = AppleMusicMediaManager(provider)
+
+    async def _listed() -> list[str]:
+        return [track.item_id for track in await manager.get_playlist_tracks("p.1")]
+
+    assert await _listed() == ["i.1"]
+    # the change marker and the first page
+    await _wait_for_kept(mass_minimal, "apple_music_test", 2)
+    playlist["songs"].append("i.2")
+    if marker_moves:
+        playlist["marker"] = "2026-11-02"
+    assert await _listed() == ["i.1"]
+    await manager.forget_playlist_tracks("p.1")
+    assert await _listed() == ["i.1", "i.2"]
+    # the pages read anew are kept under the marker as it is now
+    assert playlist["marker_reads"] == 2
+
+
+async def _wait_for_kept(mass: MusicAssistant, provider_id: str, count: int) -> None:
+    """Wait until the given number of results is kept in the cache for a provider."""
+    assert mass.cache.database is not None
+    query = f"SELECT key FROM {DB_TABLE_CACHE} WHERE provider = :provider"
+    for _ in range(200):
+        if (
+            await mass.cache.database.get_count_from_query(query, {"provider": provider_id})
+            == count
+        ):
+            return
+        await asyncio.sleep(0.01)
+    pytest.fail(f"{count} results were never kept for {provider_id}")

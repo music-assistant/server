@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import functools
 from collections.abc import Awaitable, Callable, Coroutine
+from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, overload
 
 from music_assistant_models.enums import PlaybackState, PlayerType
@@ -20,7 +21,11 @@ from music_assistant_models.errors import (
     PlayerUnavailableError,
 )
 
-from music_assistant.controllers.players.constants import PlayerLockPurpose, SwitchedOffAction
+from music_assistant.controllers.players.constants import (
+    POWER_ON_REPORT_TIMEOUT,
+    PlayerLockPurpose,
+    SwitchedOffAction,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
@@ -112,11 +117,13 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](  
         plays.
     """  # noqa: D401
 
-    def decorator(
+    def decorator(  # noqa: PLR0915
         fn: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]],
     ) -> Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]:
         @functools.wraps(fn)
-        async def wrapper(self: PlayerControllerT, /, *args: P.args, **kwargs: P.kwargs) -> None:
+        async def wrapper(  # noqa: PLR0915
+            self: PlayerControllerT, /, *args: P.args, **kwargs: P.kwargs
+        ) -> None:
             """Log and handle_player_command commands to players."""
             player_id = kwargs.get("player_id") or args[0]
             assert isinstance(player_id, str)  # for type checking
@@ -155,7 +162,12 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](  
             is_switched_off = player.offline_by_power_control
             if is_switched_off and switched_off == SwitchedOffAction.REFUSE:
                 msg = f"Player {player.name} is switched off"
-                raise PlayerUnavailableError(msg)
+                raise PlayerUnavailableError(
+                    msg,
+                    translation_key="player_switched_off",
+                    translation_owner=self.translation_owner,
+                    translation_args=[player.name],
+                )
             if switched_off == SwitchedOffAction.CANCEL_POWER_ON:
                 self._cancel_member_power_ons(player, self._resolve_playback_owner(player))
             if is_switched_off and switched_off in (
@@ -173,26 +185,33 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](  
 
             try:
                 target = self._resolve_playback_owner(player) if to_playback_owner else player
-                if is_switched_off and switched_off == SwitchedOffAction.POWER_ON:
-                    await self._power_on_switched_off_player(player.player_id)
-                elif (
-                    switched_off == SwitchedOffAction.POWER_ON
-                    and target.type == PlayerType.GROUP
-                    and not (
-                        ignored_while_playing and target.playback_state == PlaybackState.PLAYING
-                    )
-                ):
-                    # the start takes the place of a step (next, previous) within the queue
-                    # the group plays that has not played yet
-                    self.mass.player_queues._drop_pending_step(
-                        target.active_source or target.player_id
-                    )
-                    await self._power_on_members(target)
-                if lock:
-                    async with self.get_player_lock(player.player_id, lock):
+                # the queue the target plays, which shows the start from the start of the
+                # power on while it does not play
+                queue_id = target.active_source or target.player_id
+                with ExitStack() as showing:
+                    if is_switched_off and switched_off == SwitchedOffAction.POWER_ON:
+                        showing.enter_context(self.mass.player_queues._show_play_action(queue_id))
+                        await self._power_on_switched_off_player(player.player_id)
+                    elif (
+                        switched_off == SwitchedOffAction.POWER_ON
+                        and target.type == PlayerType.GROUP
+                        and not (
+                            ignored_while_playing and target.playback_state == PlaybackState.PLAYING
+                        )
+                    ):
+                        # the start takes the place of a step (next, previous) within the queue
+                        # the group plays that has not played yet
+                        self.mass.player_queues._drop_pending_step(queue_id)
+                        if self._members_to_power_on(target):
+                            showing.enter_context(
+                                self.mass.player_queues._show_play_action(queue_id)
+                            )
+                        await self._power_on_members(target)
+                    if lock:
+                        async with self.get_player_lock(player.player_id, lock):
+                            await fn(self, *args, **kwargs)
+                    else:
                         await fn(self, *args, **kwargs)
-                else:
-                    await fn(self, *args, **kwargs)
             except MusicAssistantError:
                 # A typed error already carries its own error code and translation
                 # (e.g. "this device needs a password"); re-wrapping it here would
@@ -213,7 +232,7 @@ async def wait_for_power_on(
     logger: logging.Logger,
     player: Player,
     player_control: PlayerControl | None = None,
-    timeout: float = 5.0,
+    timeout: float = POWER_ON_REPORT_TIMEOUT,
 ) -> None:
     """
     Wait for a player (or player control) to report powered on after a power on command.

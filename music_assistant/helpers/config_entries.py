@@ -30,7 +30,7 @@ PUBLISH_NAME_TEMPLATES = (
 # clients are never offered as a playback target.
 PLAYBACK_TARGET_TYPES = {
     PlayerType.PLAYER,
-    PlayerType.STEREO_PAIR,
+    PlayerType.MULTI_CHANNEL,
     PlayerType.GROUP,
 }
 

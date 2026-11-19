@@ -58,6 +58,13 @@ def _make_session_data() -> tuple[LoudnessSessionData, MagicMock]:
     return session_data, streamdetails
 
 
+def test_offered_every_media_type_playback_analyses() -> None:
+    """Loudness is measured for every media type the playback buffer hands to analysis."""
+    assert LoudnessAnalysisProvider.media_types == frozenset(
+        {MediaType.TRACK, MediaType.RADIO, MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE}
+    )
+
+
 @pytest.mark.asyncio
 async def test_finalize_returns_analysis_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """_finalize must return AudioAnalysisData with the parsed metrics when analysis succeeds."""

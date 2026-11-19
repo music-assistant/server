@@ -219,7 +219,12 @@ class VolumeMixin(_PlayerControllerBase):
 
         mute_control = player.mute_control
         if mute_control == PLAYER_CONTROL_NONE:
-            raise UnsupportedFeaturedException(f"Player {player.name} does not support muting")
+            raise UnsupportedFeaturedException(
+                f"Player {player.name} does not support muting",
+                translation_key="player_cannot_mute",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
 
         # Set mute lock for players in a group
         # This prevents auto-unmute when group volume changes
@@ -416,7 +421,7 @@ class VolumeMixin(_PlayerControllerBase):
         # member that has not confirmed the previous nudge yet
         base: int | None = None
         for child_player in self.iter_group_members(
-            group_player, only_powered=True, exclude_self=group_player.type != PlayerType.PLAYER
+            group_player, only_powered=True, exclude_self=group_player.type == PlayerType.GROUP
         ):
             if child_player.volume_control == PLAYER_CONTROL_NONE:
                 continue
@@ -533,7 +538,10 @@ class VolumeMixin(_PlayerControllerBase):
         # player has no volume support at all
         if player.volume_control == PLAYER_CONTROL_NONE:
             raise UnsupportedFeaturedException(
-                f"Player {player.name} does not support volume control"
+                f"Player {player.name} does not support volume control",
+                translation_key="player_no_volume_control",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
             )
         # handle external player control
         if player_control := self._controls.get(player.volume_control):
@@ -671,7 +679,12 @@ class VolumeMixin(_PlayerControllerBase):
             return
 
         # the configured control disappeared after the mute control was resolved
-        raise UnsupportedFeaturedException(f"Player {player.name} does not support muting")
+        raise UnsupportedFeaturedException(
+            f"Player {player.name} does not support muting",
+            translation_key="player_cannot_mute",
+            translation_owner=self.translation_owner,
+            translation_args=[player.name],
+        )
 
     async def _hand_over_volume(
         self, player: Player, volume_control: str | None, mute_control: str | None
