@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import logging
 import secrets
+import sqlite3
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from datetime import datetime, timedelta
@@ -273,7 +274,7 @@ class AuthenticationManager:
             return None
         except pyjwt.InvalidTokenError:
             self.logger.debug("Token is not a valid JWT, trying legacy hash lookup")
-        except Exception as err:
+        except ValueError as err:
             self.logger.debug("Error decoding JWT token: %s, trying legacy hash lookup", err)
 
         # Fallback to legacy hash-based token lookup
@@ -2056,7 +2057,7 @@ class AuthenticationManager:
                 prev_version = int(db_row["value"])
             else:
                 prev_version = DB_SCHEMA_VERSION
-        except KeyError, ValueError, Exception:
+        except KeyError, TypeError, ValueError, sqlite3.Error:
             # settings table doesn't exist yet or other error
             prev_version = 0
 
@@ -2475,7 +2476,7 @@ class AuthenticationManager:
             await self.database.commit()
             if total > 0:
                 self.logger.info("Cleaned up %d row(s) of deleted user(s)", total)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - optional hygiene, see the comment above
             self.logger.warning("Failed to clean up rows of deleted users: %s", err)
 
     async def _rewrite_user_filters(
@@ -2555,7 +2556,7 @@ class AuthenticationManager:
             )
             await self.mass.music.database.commit()
             self.logger.info("Migrated existing playlog entries to first user: %s", user_id)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - best effort, must not block creating the first user
             self.logger.warning("Failed to migrate playlog entries: %s", err)
 
     async def _update_profile_password(

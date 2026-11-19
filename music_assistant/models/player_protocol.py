@@ -1052,7 +1052,7 @@ class PlayerProtocol(ABC):
         for callback in callbacks:
             try:
                 callback()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one failing callback must not stop the others
                 self.logger.error(
                     "Error calling on_detach callback for protocol %s: %s",
                     self.protocol_id,

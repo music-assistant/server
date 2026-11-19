@@ -228,7 +228,7 @@ class VersionChanger:
         else:
             try:
                 await load_provider_module(self.mass.get_provider_manifest(domain))
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - importing provider code can raise anything
                 self.logger.warning(
                     "Community provider %s %s does not import: %s", domain, installed.version, err
                 )
