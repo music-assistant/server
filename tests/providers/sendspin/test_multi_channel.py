@@ -22,10 +22,14 @@ from aiosendspin.server import (
 from aiosendspin.server import client as sendspin_client_module
 from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
 from music_assistant_models.auth import UserRole
+from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import (
     ChannelLayout,
+    IdentifierType,
     PlaybackState,
     PlayerType,
+    ProtocolRole,
+    ProviderType,
     SpeakerChannel,
 )
 from music_assistant_models.errors import (
@@ -34,7 +38,9 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.sendspin import multi_channel
 from music_assistant.providers.sendspin.bridge_role import BRIDGE_ROLE_ID, BridgePlayerRole
 from music_assistant.providers.sendspin.constants import (
@@ -45,6 +51,7 @@ from music_assistant.providers.sendspin.multi_channel import SendspinMultiChanne
 from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
 from music_assistant.providers.sendspin.player import _group_leader_id, _member_clients
 from music_assistant.providers.sendspin.provider import SendspinProvider
+from tests.common import MockProtocol
 
 from .test_pairing_eviction import _record
 
@@ -56,10 +63,13 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
+    from music_assistant.models.player_protocol import PlayerProtocol
 
 LEFT = "speaker-left"
 RIGHT = "speaker-right"
 DEN = "speaker-den"
+# a hardware MAC address, which ties the outputs of one device to one player
+SPEAKER_MAC = "a0:b7:65:00:11:22"
 SPEAKER_FORMAT = SupportedAudioFormat(
     codec=AudioCodec.FLAC, channels=2, sample_rate=48000, bit_depth=24
 )
@@ -172,6 +182,7 @@ async def _add_speaker(
     *,
     volume: int = 40,
     manufacturer: str = "Acme",
+    mac_address: str | None = None,
     as_player: bool = True,
 ) -> _SpeakerRole:
     """
@@ -181,6 +192,7 @@ async def _add_speaker(
     :param name: The name it reports.
     :param volume: The volume it is at.
     :param manufacturer: The manufacturer it reports.
+    :param mac_address: The MAC address it reports.
     :param as_player: Wait until it is a player of its own.
     """
     hello = ClientHelloPayload(
@@ -188,7 +200,9 @@ async def _add_speaker(
         name=name,
         version=1,
         supported_roles=[BRIDGE_ROLE_ID],
-        device_info=SendspinDeviceInfo(product_name="Speaker", manufacturer=manufacturer),
+        device_info=SendspinDeviceInfo(
+            product_name="Speaker", manufacturer=manufacturer, mac_address=mac_address
+        ),
         player_support=ClientHelloPlayerSupport(
             supported_formats=[SPEAKER_FORMAT], buffer_capacity=1_000
         ),
@@ -218,6 +232,40 @@ async def _add_speaker(
             )
         )
     return cast("_SpeakerRole", role)
+
+
+async def _add_airplay_output(mass: MusicAssistant, mac_address: str) -> PlayerProtocol:
+    """
+    Let an AirPlay receiver of a speaker register, as another output of its device.
+
+    :param mass: The server.
+    :param mac_address: The MAC address of the device.
+    """
+    instance_id = "airplay--speaker"
+    mass.config.set(
+        f"{CONF_PROVIDERS}/{instance_id}",
+        {"type": "player", "domain": "airplay", "instance_id": instance_id, "enabled": True},
+    )
+    config = ProviderConfig(
+        values={},
+        type=ProviderType.PLAYER,
+        domain="airplay",
+        instance_id=instance_id,
+        name="AirPlay",
+    )
+    provider = PlayerProvider(mass, mass.get_provider_manifest("airplay"), config)
+    provider.available = True
+    mass._providers[instance_id] = provider
+    protocol = MockProtocol(
+        cast("Any", provider),
+        "ap_kitchen_left",
+        "Kitchen left",
+        role=ProtocolRole.AUDIO,
+        identifiers={IdentifierType.MAC_ADDRESS: mac_address},
+    )
+    await mass.players.register(protocol)
+    await _wait_for(lambda: protocol.player is not None and protocol.player.initialized.is_set())
+    return protocol
 
 
 def _go_away(sendspin: SendspinProvider, client_id: str) -> None:
@@ -372,6 +420,58 @@ async def test_combining_and_taking_apart_keep_the_pairing_of_each_speaker(
     assert await store.trusted_unpaired(RIGHT) is not None, (
         "taking the set apart dropped the guest approval of the right speaker"
     )
+
+
+async def test_a_speaker_with_another_output_keeps_its_player_with_that_output(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A speaker whose player has another output keeps that player when it goes up in a set.
+
+    Only its Sendspin output moves into the set, and it comes back to the same player when
+    the set is taken apart.
+    """
+    sendspin = _sendspin(mass)
+    airplay = await _add_airplay_output(mass, SPEAKER_MAC)
+    await _add_speaker(sendspin, LEFT, "Kitchen left", mac_address=SPEAKER_MAC)
+    await _add_speaker(sendspin, RIGHT, "Kitchen right")
+    await _wait_for(
+        lambda: (
+            (protocol := sendspin.get_protocol(LEFT)) is not None
+            and protocol.player is airplay.player
+        )
+    )
+    assert airplay.player is not None
+    left_player_id = airplay.player.player_id
+
+    player = await mass.players.create_multi_channel_player(
+        "sendspin",
+        "Kitchen",
+        {
+            left_player_id: SpeakerChannel.FRONT_LEFT,
+            _player_id(sendspin, RIGHT): SpeakerChannel.FRONT_RIGHT,
+        },
+    )
+    await _wait_for(lambda: {LEFT, RIGHT} <= _group_client_ids(_set_of(sendspin, player)))
+
+    left_player = mass.players.get_player(left_player_id)
+    assert left_player is not None, "the player of the speaker went with its Sendspin output"
+    assert set(left_player.attached_protocols) == {airplay.protocol_id}
+
+    await mass.players.remove(player.player_id)
+    await _wait_for(
+        lambda: (
+            (protocol := sendspin.get_protocol(LEFT)) is not None and protocol.player is not None
+        )
+    )
+
+    protocol = sendspin.get_protocol(LEFT)
+    assert protocol is not None
+    assert protocol.player is not None
+    assert protocol.player.player_id == left_player_id, (
+        "the Sendspin output came back as a player of its own"
+    )
+    assert set(protocol.player.attached_protocols) == {airplay.protocol_id, LEFT}
 
 
 @pytest.mark.parametrize(
