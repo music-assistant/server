@@ -202,7 +202,7 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
                     await self.mass.players.remove_protocol(speaker.client_id)
             for speaker in self._speakers:
                 await self._take_speaker(speaker.client_id, rejoin=rejoin)
-        self._on_speakers_changed()
+        self._on_speakers_changed(restart=not rejoin)
 
     def on_speaker_changed(self, client_id: str) -> None:
         """
@@ -627,11 +627,19 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
                 set.intersection(*(set(role.state_supported_commands) for role in roles))
             )
 
-    def _on_speakers_changed(self, *, channels_changed: bool = False) -> None:
-        """Publish a change of the speakers, and play the channels they play now."""
+    def _on_speakers_changed(self, *, channels_changed: bool = False, restart: bool = True) -> None:
+        """
+        Publish a change of the speakers, and play the channels they play now.
+
+        :param channels_changed: Whether the channel of a speaker changed.
+        :param restart: Start a running stream again for other channels; False for a session
+            that starts, which plays the channels of now already.
+        """
         self._refresh_speaker_state()
         played_channels = self._current_channels()
-        if (channels_changed or played_channels != self._played_channels) and (
+        if not restart:
+            self.mass.cancel_timer(f"sendspin_mc_channels_{self.protocol_id}")
+        elif (channels_changed or played_channels != self._played_channels) and (
             self.player is not None
         ):
             # the speakers of a running stream play other channels from a new stream

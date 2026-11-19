@@ -587,6 +587,36 @@ async def test_a_speaker_that_is_away_leaves_every_channel_to_the_other(
     assert mass.players.get_player(player.player_id).volume_level == 30  # type: ignore[union-attr]
 
 
+async def test_a_speaker_that_rejoins_as_a_session_starts_does_not_restart_it(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A speaker that comes back as a playback session starts plays in it without a restart.
+
+    The session plays the channels of the speakers as they are when it starts, so a restart
+    that was pending for a change before it is dropped as well.
+    """
+    monkeypatch.setattr(multi_channel, "CHANNEL_CHANGE_DEBOUNCE", 0.5)
+    sendspin = _sendspin(mass)
+    restart = AsyncMock()
+    monkeypatch.setattr(mass.players, "on_player_dsp_change", restart)
+    player, _, _ = await _compose(mass, sendspin)
+    set_protocol = _set_of(sendspin, player)
+    left_client = sendspin.server_api.get_client(LEFT)
+    assert left_client is not None
+    await left_client.handle_availability_change(False)
+    await left_client.handle_availability_change(True)
+    await asyncio.sleep(0.2)
+
+    await set_protocol.playback_session._follow_session_sample_rate(
+        [client.client_id for client in set_protocol.api.group.clients]
+    )
+
+    assert LEFT in _group_client_ids(set_protocol)
+    await asyncio.sleep(0.8)
+    restart.assert_not_awaited()
+
+
 async def test_both_speakers_away_make_the_set_unavailable(mass: MusicAssistant) -> None:
     """A set with none of its speakers connected is unavailable."""
     sendspin = _sendspin(mass)
