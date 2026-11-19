@@ -1935,19 +1935,7 @@ class SendspinPlayer(SendspinBasePlayer):
         pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
             self, start_streamdetails=start_streamdetails
         )
-        audio_format, codec = self._session_format(player_role, pcm_format.sample_rate)
-        if audio_format is not None and codec is not None:
-            return audio_format, codec
-        if (default := self._default_format(player_role)) is None:
-            return None
-        return (
-            SendspinAudioFormat(
-                sample_rate=default.sample_rate,
-                bit_depth=default.bit_depth,
-                channels=default.channels,
-            ),
-            default.codec,
-        )
+        return self._played_session_format(player_role, pcm_format.sample_rate)
 
     async def on_group_content_takeover(self) -> object:
         """Clear the protocol snapshot before a new content owner joins."""
@@ -2659,6 +2647,30 @@ class SendspinPlayer(SendspinBasePlayer):
                 audio_format,
                 self.display_name,
             )
+
+    def _played_session_format(
+        self, player_role: PlayerRoleProtocol, session_sample_rate: int
+    ) -> tuple[SendspinAudioFormat, AudioCodec] | None:
+        """
+        Return the format and codec a client plays in a session at a sample rate.
+
+        :param player_role: The player role of the client.
+        :param session_sample_rate: The sample rate of the session.
+        :return: The format and codec, or None for a client that lists no format.
+        """
+        audio_format, codec = self._session_format(player_role, session_sample_rate)
+        if audio_format is not None and codec is not None:
+            return audio_format, codec
+        if (default := self._default_format(player_role)) is None:
+            return None
+        return (
+            SendspinAudioFormat(
+                sample_rate=default.sample_rate,
+                bit_depth=default.bit_depth,
+                channels=default.channels,
+            ),
+            default.codec,
+        )
 
     def _session_format(
         self, player_role: PlayerRoleProtocol, session_sample_rate: int | None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -41,6 +42,7 @@ from music_assistant.providers.sendspin.player import (
     SENDSPIN_FORMAT_AUTOMATIC,
     SendspinPlayer,
 )
+from music_assistant.providers.sendspin.provider import SendspinProvider
 from tests.common import MockProvider, attach_mock, mock_player_mass
 from tests.providers.sendspin.test_short_session_elapsed_anchor import _short_session
 
@@ -701,6 +703,9 @@ def _player(
     player._provider.server_api.get_client.return_value = client
     player._provider.is_silent_client.return_value = False
     player._provider.multi_channel_player_of.return_value = None
+    player._provider.get_client_session_format = partial(
+        SendspinProvider.get_client_session_format, player._provider
+    )
     player._provider.get_protocol = lambda pid: player.mass.players.get_player(pid)
     player.mass = MagicMock()
     player.mass.streams.audio = audio

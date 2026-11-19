@@ -448,18 +448,13 @@ class SendspinPlaybackSession:
 
         :param start_streamdetails: Stream details of the first item of the session.
         """
-        from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
-
         provider = cast("SendspinProvider", self.player.provider)
         member_rates: list[int] = []
         for client in self.player.api.group.clients:
             if provider.is_silent_client(client.client_id):
                 continue
-            player = provider.get_protocol(client.client_id)
-            session_format = (
-                await player.get_session_format(start_streamdetails)
-                if isinstance(player, SendspinPlayer)
-                else None
+            session_format = await provider.get_client_session_format(
+                client.client_id, start_streamdetails
             )
             if session_format is not None:
                 member_rates.append(_counted_sample_rate(_to_audio_format(*session_format)))

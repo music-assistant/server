@@ -25,7 +25,9 @@ from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import (
     ChannelLayout,
+    ContentType,
     IdentifierType,
+    MediaType,
     PlaybackState,
     PlayerType,
     ProtocolRole,
@@ -37,6 +39,8 @@ from music_assistant_models.errors import (
     PlayerUnavailableError,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.models.player import PlayerMedia
@@ -75,11 +79,14 @@ SPEAKER_MAC = "a0:b7:65:00:11:22"
 SPEAKER_FORMAT = SupportedAudioFormat(
     codec=AudioCodec.FLAC, channels=2, sample_rate=48000, bit_depth=24
 )
+FLAC_44K = SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=44100, bit_depth=16)
+FLAC_96K = SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=96000, bit_depth=24)
 
 
 class _SpeakerRole(BridgePlayerRole):
     """The player role of a Sendspin speaker, with what a device declares in its state."""
 
+    formats: list[SupportedAudioFormat]
     volume_commands: list[int]
     mute_commands: list[bool]
     delay_commands: list[int]
@@ -118,7 +125,7 @@ class _SpeakerRole(BridgePlayerRole):
 
     def get_supported_formats(self) -> list[SupportedAudioFormat]:
         """Return the formats the speaker plays."""
-        return [SPEAKER_FORMAT]
+        return self.formats
 
     def set_preferred_format(
         self, audio_format: SendspinAudioFormat | None, codec: AudioCodec | None = None
@@ -214,6 +221,7 @@ async def _add_speaker(
     )
     role = cast("Any", client.roles_by_family("player")[0])
     role.__class__ = _SpeakerRole
+    role.formats = [SPEAKER_FORMAT]
     role.volume_commands = []
     role.mute_commands = []
     role.delay_commands = []
@@ -268,6 +276,19 @@ async def _add_airplay_output(mass: MusicAssistant, mac_address: str) -> PlayerP
     await mass.players.register(protocol)
     await _wait_for(lambda: protocol.player is not None and protocol.player.initialized.is_set())
     return protocol
+
+
+def _track(sample_rate: int) -> StreamDetails:
+    """Return the stream details of a track at a sample rate."""
+    return StreamDetails(
+        provider="test",
+        item_id=str(sample_rate),
+        audio_format=AudioFormat(
+            content_type=ContentType.FLAC, sample_rate=sample_rate, bit_depth=16
+        ),
+        media_type=MediaType.TRACK,
+        duration=300,
+    )
 
 
 def _go_away(sendspin: SendspinProvider, client_id: str) -> None:
@@ -695,6 +716,30 @@ async def test_a_channel_set_on_a_speaker_swaps_with_the_speaker_that_had_it(
     assert sendspin.speaker_output(LEFT)[1] == SpeakerChannel.FRONT_RIGHT
     assert sendspin.speaker_output(RIGHT)[1] == SpeakerChannel.FRONT_LEFT
     await _wait_for(lambda: restart.await_count == 1)
+
+
+@pytest.mark.parametrize(
+    ("formats", "predicted_rate"),
+    [
+        pytest.param([FLAC_44K, FLAC_96K], 96000, id="speakers that play 96 kHz"),
+        pytest.param([FLAC_44K], 44100, id="speakers that play 44.1 kHz only"),
+    ],
+)
+async def test_a_set_steps_up_to_the_sample_rate_of_a_track_its_speakers_play(
+    mass: MusicAssistant, formats: list[SupportedAudioFormat], predicted_rate: int
+) -> None:
+    """
+    A set that plays 44.1 kHz picks 96 kHz for a 96 kHz track when its speakers play it.
+
+    A regular player does the same, and the flow stream starts again at the higher rate.
+    """
+    sendspin = _sendspin(mass)
+    player, left, right = await _compose(mass, sendspin)
+    left.formats = right.formats = formats
+    session = _set_of(sendspin, player).playback_session
+
+    assert await session.get_session_sample_rate(_track(44100)) == 44100
+    assert await session.get_session_sample_rate(_track(96000)) == predicted_rate
 
 
 async def test_an_output_delay_goes_to_its_speaker_and_back(mass: MusicAssistant) -> None:

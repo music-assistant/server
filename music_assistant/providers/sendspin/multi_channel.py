@@ -40,8 +40,10 @@ from .player import SendspinPlayer
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from aiosendspin.models import AudioCodec
     from aiosendspin.models.core import ClientHelloPayload
     from aiosendspin.server import ClientEvent, SendspinGroup
+    from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
     from aiosendspin.server.client import SendspinClient
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -270,6 +272,26 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         )
         for _, role in self._speaker_roles():
             role.set_preferred_format(*self._session_format(role, self._session_sample_rate))
+
+    async def get_speaker_session_format(
+        self, client_id: str, start_streamdetails: StreamDetails
+    ) -> tuple[SendspinAudioFormat, AudioCodec] | None:
+        """
+        Return the Sendspin format and codec a speaker plays in a session starting with an item.
+
+        The speakers follow the sample rate this player picks for the session.
+
+        :param client_id: The client id of the speaker.
+        :param start_streamdetails: Stream details of the first item of the session.
+        :return: The format and codec, or None for a speaker that does not play with this player.
+        """
+        role = next((r for speaker_id, r in self._speaker_roles() if speaker_id == client_id), None)
+        if role is None:
+            return None
+        pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
+            self, start_streamdetails=start_streamdetails
+        )
+        return self._played_session_format(role, pcm_format.sample_rate)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return the config entries of this player: one set per speaker."""

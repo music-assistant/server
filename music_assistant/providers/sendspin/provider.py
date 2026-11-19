@@ -154,6 +154,7 @@ if TYPE_CHECKING:
         ManagementSetPairingConfigPayload,
     )
     from aiosendspin.noise.trust_store import ServerPairingStore
+    from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
     from aiosendspin.server.client import SendspinClient
     from aiosendspin.server.connection import SendspinConnection
     from aiosendspin.server.server import ExternalStreamStartRequest
@@ -1074,6 +1075,31 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             for protocol in self.protocols
             if self._multi_channel_refusal(protocol.protocol_id) is None
         ]
+
+    async def get_client_session_format(
+        self, client_id: str, start_streamdetails: StreamDetails
+    ) -> tuple[SendspinAudioFormat, AudioCodec] | None:
+        """
+        Return the Sendspin format and codec a client plays in a session starting with an item.
+
+        A speaker of a multi-channel player follows the sample rate of that player.
+
+        :param client_id: The client id.
+        :param start_streamdetails: Stream details of the first item of the session.
+        :return: The format and codec, or None when the format of the client does not follow
+            the session.
+        """
+        if (protocol_id := self.multi_channel_player_of(client_id)) is not None:
+            set_player = self.get_protocol(protocol_id)
+            if isinstance(set_player, SendspinMultiChannelPlayer) and set_player.plays_with(
+                client_id
+            ):
+                return await set_player.get_speaker_session_format(client_id, start_streamdetails)
+            return None
+        player = self.get_protocol(client_id)
+        if isinstance(player, SendspinPlayer):
+            return await player.get_session_format(start_streamdetails)
+        return None
 
     def multi_channel_player_of(self, client_id: str) -> str | None:
         """
