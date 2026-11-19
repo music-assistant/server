@@ -704,7 +704,7 @@ class SendspinChromecastBridge:
                 "Timed out launching Sendspin Cast App on %s",
                 self.cast_player.display_name,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - library code, a failed launch is only logged
             self.logger.error(
                 "Failed to launch Sendspin Cast App on %s: %s",
                 self.cast_player.display_name,
@@ -737,7 +737,7 @@ class SendspinChromecastBridge:
             try:
                 await self._send_sendspin_config()
                 return
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failed attempt is retried
                 if attempt < max_attempts - 1:
                     self.logger.debug(
                         "Config send attempt %d/%d failed for %s: %s, retrying...",

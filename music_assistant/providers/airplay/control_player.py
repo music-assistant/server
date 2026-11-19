@@ -1429,6 +1429,6 @@ async def _close_abandoned_pairing(task: asyncio.Task[PairingHandler]) -> None:
     """Close a pairing session that started after its caller was cancelled."""
     try:
         pairing = await task
-    except Exception:
+    except Exception:  # noqa: BLE001 - a failed pairing start leaves nothing to close
         return
     await pairing.close()

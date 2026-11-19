@@ -639,7 +639,7 @@ class _IncomingFadePrefetcher:
             # the target is kept clear of the track's end, so running out here means the
             # source gave up early and the flow stream is better off opening it again
             self._failed = True
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the flow stream opens the track itself instead
             # the flow stream opens the track itself rather than inheriting a dead stream
             self._failed = True
             self._audio.logger.warning("Failed to prefetch the incoming fade-in: %s", err)
@@ -695,7 +695,7 @@ class _SourceAnalysisTap:
             self._session_key = audio_analysis.start_source_analysis(
                 source_session, stream_session_id, streamdetails, pcm_format
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - analysis must never break playback
             self._log_failure(err)
 
     def feed(self, chunk: bytes) -> None:
@@ -704,7 +704,7 @@ class _SourceAnalysisTap:
             return
         try:
             self._audio_analysis.feed_source_analysis(self._session_key, chunk)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - analysis must never break playback
             self._log_failure(err)
             self.stop()
 
@@ -715,7 +715,7 @@ class _SourceAnalysisTap:
             return
         try:
             self._audio_analysis.stop_source_analysis(session_key)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - analysis must never break playback
             self._log_failure(err)
 
     def _log_failure(self, err: Exception) -> None:
@@ -4470,7 +4470,7 @@ class StreamsAudio:
                                 preferred,
                                 "all known sources are at their stream limit",
                             )
-                        except Exception as err:
+                        except Exception as err:  # noqa: BLE001 - best effort, the blocking wait follows
                             # discovery is best-effort: any failure falls back to the
                             # final blocking wait instead of replacing the typed error
                             self.logger.warning(
@@ -4887,7 +4887,7 @@ class StreamsAudio:
                         found = await self.mass.music.tracks.match_provider(
                             media_item, provider, strict=True, ref_albums=ref_albums
                         )
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001 - one failing provider must not end the search
                         self.logger.debug("Searching a match on %s failed: %s", provider.name, err)
                         continue
                     if not found and library_track:
@@ -6458,7 +6458,7 @@ class StreamsAudio:
                     substream = await self.get_hls_substream(streamdetails.path)
                     media_playlist_url = substream.path
                     streamdetails.data["hls_media_playlist_url"] = media_playlist_url
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - metadata polling must never break playback
                     self.logger.warning(
                         "Failed to resolve HLS substream for metadata monitoring: %s", err
                     )
@@ -6525,7 +6525,7 @@ class StreamsAudio:
                         image_url=image_url,
                     )
 
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - metadata polling must never break playback
             self.logger.debug("Error fetching HLS metadata: %s", err)
 
     @staticmethod
@@ -6560,7 +6560,7 @@ class StreamsAudio:
                 streamdetails = await stream_prov.get_stream_details(
                     mapping.item_id, MediaType.SOUND_EFFECT
                 )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, playback goes on without the overlay
             self.logger.warning(
                 "Audio overlay source %s is unavailable (%s) - continuing without overlay",
                 mapping.uri,

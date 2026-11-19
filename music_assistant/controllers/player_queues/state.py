@@ -245,7 +245,7 @@ class PlayerQueueData:
         for item_data in items_data:
             try:
                 items.append(QueueItem.from_cache(item_data))
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one unreadable item must not drop the queue
                 LOGGER.warning("Skipping unreadable queue item for %s: %s", queue.queue_id, err)
         # keep the wire-facing count consistent with the items actually restored (some may have been
         # skipped above), so refill / "running low" logic reads the right number
@@ -272,7 +272,7 @@ class PlayerQueueData:
                 continue
             try:
                 result.append(media_from_dict(x))
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one unreadable item must not drop the queue
                 LOGGER.warning("Skipping unreadable %s for %s: %s", label, queue_id, err)
         return result
 

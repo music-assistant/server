@@ -314,7 +314,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 try:
                     async with asyncio.timeout(QUEUE_SHUTDOWN_STOP_TIMEOUT):
                         await self.stop(queue.queue_id)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - one queue that fails to stop must not block shutdown
                     self.logger.warning("Failed to stop queue %s - %s", queue.queue_id, err)
         # flush any pending (debounced) state writes so the latest queue survives shutdown/update;
         # a save that already started is cancelled too, so its older state can't land last
@@ -1700,7 +1700,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     default=[],
                 )
                 queue_data = PlayerQueueData.from_cache(prev_state, prev_items)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a broken saved queue must not block the player
             self.logger.warning(
                 "Failed to restore the queue(items) for %s - %s",
                 player.name,
@@ -2732,7 +2732,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     persistent=True,
                 )
                 queue_data.items_cache_dirty = False
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failed save must not stop the others on shutdown
             self.logger.warning("Failed to persist the queue for %s - %s", queue_id, err)
 
     def _has_player_permission(self, queue_id: str) -> bool:

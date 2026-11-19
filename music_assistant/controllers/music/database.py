@@ -287,7 +287,7 @@ class MusicDatabaseSetupMixin:
                 )
                 await self._database.vacuum()
                 self.logger.debug("Compacting database done")
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - compaction is optional and must not block startup
             self.logger.warning("Database vacuum failed: %s", str(err))
 
     async def _reset_database(self) -> None:

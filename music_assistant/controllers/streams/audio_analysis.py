@@ -1471,7 +1471,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
             try:
                 streamdetails = await music_prov.get_stream_details(item_id, MediaType.TRACK)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - provider code, the candidate is skipped
                 # Provider method with an open-ended failure surface; any failure
                 # just skips this scan candidate.
                 self.logger.debug("Skipping %s: stream details failed: %s", item_id, err)
@@ -1570,7 +1570,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 BACKGROUND_SCAN_TASK_ID,
                 f"Timed out after {timeout_seconds}s: {session_key}",
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the background scan must go on with the next item
             self.logger.warning("Background analysis failed for %s: %s", session_key, err)
             self._cancel_providers(session_key)
             self.mass.tasks.add_task_failure(
@@ -1823,7 +1823,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                     audio_format=audio_format,
                 ):
                     provider_ids.add(provider.instance_id)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - provider code, the other providers go on
                 # provider.start_analysis is provider-implemented; skip the one that
                 # fails to start and keep the rest of the session going.
                 self.logger.warning(
@@ -1962,7 +1962,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 continue
             try:
                 await provider.unload_idle_models()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - provider code, the other providers go on
                 self.logger.warning("Failed to unload models for %s: %s", provider.name, err)
 
     async def _distribute_chunk(
@@ -2021,7 +2021,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                     "Provider %s failed analysis for %s: %s", prov_id, session_key, err.reason
                 )
                 return prov_id, (err.reason, err.retry_at)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - provider code, the failing provider is dropped
                 # process_pcm_chunk is implemented by the provider (torch/numpy/ffmpeg), so evict
                 # the provider that fails on a chunk rather than crashing the session.
                 self.logger.warning("Error processing PCM chunk on provider %s: %s", prov_id, err)
@@ -2083,7 +2083,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                         cursor,
                     )
                     break
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - the source's own error ends only the analysis
                     self.logger.debug("Analysis read failed for %s: %s", session_key, err)
                     break
                 await self._distribute_chunk(
@@ -2147,7 +2147,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                         skipped_seconds += audio_buffer.first_buffered_chunk - radio.cursor
                         radio.cursor = audio_buffer.first_buffered_chunk
                         continue
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - the source's own error ends only the analysis
                     self.logger.debug("Analysis read failed for %s: %s", session_key, err)
                 else:
                     await self._distribute_chunk(session_key, chunk)
@@ -2225,7 +2225,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                         await asyncio.wait_for(
                             provider.cancel(session_key), LIVE_SOURCE_CANCEL_TIMEOUT_SECONDS
                         )
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001 - provider code, cleanup must reach every provider
                         self.logger.warning(
                             "Failed to cancel analysis on provider %s: %s",
                             provider.name,

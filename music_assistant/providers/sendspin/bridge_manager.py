@@ -313,7 +313,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             try:
                 bridge = self._create_bridge(protocol)
                 await bridge.start()
-            except Exception:
+            except Exception:  # noqa: BLE001 - a failed bridge is cleaned up whatever went wrong
                 self.logger.warning("Failed to start Sendspin bridge for %s", protocol.display_name)
                 if bridge is not None:
                     if bridge.is_registered:

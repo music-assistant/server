@@ -1463,7 +1463,7 @@ class SendspinPlaybackSession:
                 channel=channel,
             )
             filter_params = tuple(output_plan.filter_params)
-        except Exception:
+        except Exception:  # noqa: BLE001 - any failure means no dedicated dsp channel
             filter_params = ()
             output_plan = None
         # a ComplexFilter (e.g. convolution) is never a plain string, so it always counts

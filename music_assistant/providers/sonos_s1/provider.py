@@ -199,7 +199,7 @@ class SonosPlayerProvider(PlayerProvider):
             # Register with Music Assistant
             await sonos_player.setup()
 
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failing player must not stop discovery
             self.logger.error("Error setting up Sonos player %s: %s", protocol_id, err)
 
     async def _discover_household_ids(self, prefer_s1: bool = True) -> list[str]:

@@ -352,7 +352,7 @@ class AirPlayStreamSession:
             self._join_silent_members()
         except asyncio.CancelledError:
             raise
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any failure falls back to a cold restart
             self.prov.logger.warning(
                 "Warm replacement failed (%r); falling back to a cold restart", err
             )
@@ -393,7 +393,7 @@ class AirPlayStreamSession:
             assert stream
             try:
                 command_delivered = await stream.send_cli_command("ACTION=STANDBY")
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - any failure falls back to a cold restart
                 self.prov.logger.warning(
                     "Could not park AirPlay player %s: %s", player.protocol_id, err
                 )
@@ -594,7 +594,7 @@ class AirPlayStreamSession:
         except asyncio.CancelledError:
             await self.stop_client(airplay_player, reason="late joiner start cancelled")
             raise
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failing late joiner must not stop the group
             self.prov.logger.warning(
                 "Late joiner %s: failed to connect pipeline: %s",
                 airplay_player.protocol_id,
@@ -765,7 +765,7 @@ class AirPlayStreamSession:
         except asyncio.CancelledError:
             await self.stop_client(airplay_player, reason="late joiner start cancelled")
             raise
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failing late joiner must not stop the group
             self.prov.logger.warning(
                 "Late joiner %s: failed to start/prime pipeline: %r",
                 airplay_player.protocol_id,
@@ -827,7 +827,7 @@ class AirPlayStreamSession:
                 if prime:
                     try:
                         await self._write_chunk_to_player(airplay_player, prime)
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001 - a failing late joiner must not stop the group
                         self.prov.logger.warning(
                             "Late joiner %s: failed to start/prime pipeline: %r",
                             airplay_player.protocol_id,

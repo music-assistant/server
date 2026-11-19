@@ -355,7 +355,7 @@ class AirPlayStream:
         except BaseException:
             try:
                 await self._cleanup_failed_start()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - cleanup must not hide the start error
                 self.player.logger.warning("Failed to clean up cliairplay startup: %s", err)
             raise
 
@@ -1801,7 +1801,7 @@ class AirPlayStream:
                 image_format="JPEG",
                 flatten_transparency=True,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - artwork is optional, playback goes on without it
             self.player.logger.debug("Could not prepare artwork: %s", err)
             return None
 
@@ -1903,7 +1903,7 @@ class AirPlayStream:
                 await stdout_reader_task
             except asyncio.CancelledError:
                 pass
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - cleanup must not abort, the kill below still runs
                 self.player.logger.debug("cliairplay stdout reader cleanup failed: %s", err)
         try:
             if self._cli_proc and not self._cli_proc.closed:
