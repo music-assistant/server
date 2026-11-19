@@ -142,6 +142,13 @@ PREVIEW_TOKEN_TTL = 60
 # Ceiling on live preview tokens. LIBRARY_READ is a guest scope, so minting is reachable by
 # every signed-in client; the cap keeps a chatty or hostile one from growing the store.
 MAX_PREVIEW_TOKENS = 500
+# The public setup endpoint creates the first admin for whoever reaches it first, so it only
+# stays open for a short while after the server starts.
+SETUP_WINDOW_MINUTES = 15
+SETUP_TIMED_OUT_MESSAGE = (
+    f"Setup was not completed within {SETUP_WINDOW_MINUTES} minutes of Music Assistant "
+    "starting. Restart Music Assistant to try again."
+)
 
 
 def _get_publish_addresses(
@@ -233,6 +240,7 @@ class WebserverController(CoreController):
         self.provider_pages = ProviderPageManager(self)
         # the first-time setup makes exactly one admin, however many attempts arrive at once
         self._setup_lock = asyncio.Lock()
+        self._setup_deadline = time.monotonic() + SETUP_WINDOW_MINUTES * 60
         # Preview tokens keyed on the token in the URL, value is
         # (provider instance id or domain, item id, monotonic expiry).
         self._preview_tokens: dict[str, tuple[str, str, float]] = {}
@@ -481,12 +489,7 @@ class WebserverController(CoreController):
         base_url = self.base_url
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
-        if not self.auth.has_users and self.mass.running_as_hass_addon:
-            self.logger.warning(
-                "Music Assistant is running in setup mode. Please complete the setup by "
-                "opening Music Assistant from the Home Assistant sidebar."
-            )
-        elif not self.auth.has_users:
+        if not self.auth.has_users:
             self.logger.warning(
                 "\n\n################################################################################\n"
                 "###                           SETUP REQUIRED                                 ###\n"
@@ -497,8 +500,12 @@ class WebserverController(CoreController):
                 "\n"
                 "    %s/setup\n"
                 "\n"
+                "The setup page stays open for %s minutes. If it times out,\n"
+                "restart Music Assistant to try again.\n"
+                "\n"
                 "################################################################################\n",
                 base_url,
+                SETUP_WINDOW_MINUTES,
             )
         else:
             self.logger.info(
@@ -1144,13 +1151,6 @@ class WebserverController(CoreController):
         html_content = html_content.replace("{{ERROR_MESSAGE}}", html.escape(error_message))
         return web.Response(text=html_content, content_type="text/html", status=status)
 
-    async def _render_hass_app_setup_page(self) -> web.Response:
-        """Render the page that sends the user to the Home Assistant sidebar to finish setup."""
-        return await self._render_error_page(
-            "Music Assistant has not been set up yet. Please complete the setup by opening "
-            "Music Assistant from the Home Assistant sidebar."
-        )
-
     async def _handle_index(self, request: web.Request) -> web.StreamResponse:
         """Handle request for index page (Vue frontend)."""
         is_ingress_request = is_request_from_ingress_proxy(request)
@@ -1170,8 +1170,6 @@ class WebserverController(CoreController):
             # frontend (which will take care of onboarding)
 
         if not self.auth.has_users and not is_ingress_request:
-            if self.mass.running_as_hass_addon:
-                return await self._render_hass_app_setup_page()
             # non ingress request and no users yet, redirect to setup; the query
             # travels along as sent, so a reload keeps a client's return_url and device_name
             query = request.rel_url.raw_query_string
@@ -1184,8 +1182,6 @@ class WebserverController(CoreController):
     async def _handle_login_page(self, request: web.Request) -> web.Response:
         """Handle request for login page (external client OAuth callback scenario)."""
         if not self.auth.has_users:
-            if self.mass.running_as_hass_addon:
-                return await self._render_hass_app_setup_page()
             # not yet onboarded (no first admin user exists), redirect to setup with the
             # client's hand-back, re-encoded so a return url with a query of its own survives
             hand_back = {
@@ -1483,28 +1479,25 @@ class WebserverController(CoreController):
             # this should not happen, but guard anyways
             return await self._render_error_page("Setup has already been completed.")
 
-        if self.mass.running_as_hass_addon:
-            return await self._render_hass_app_setup_page()
+        if not self._setup_window_open():
+            return await self._render_error_page(SETUP_TIMED_OUT_MESSAGE)
 
         # the frontend recognizes the setup page by its path and opens the setup
         # wizard on the account step, so serve the app itself here
         return await self._server.serve_static(self._index_path, request)
 
     async def _handle_setup(self, request: web.Request) -> web.Response:
-        """Handle first-time setup request to create admin user (standalone only)."""
-        if self.mass.running_as_hass_addon:
-            # the HA app is onboarded through Ingress only, where the HA admin becomes
-            # the first admin; the public port is reachable by the whole network
-            return web.json_response(
-                {"success": False, "error": "Setup is done from the Home Assistant sidebar"},
-                status=403,
-            )
-
+        """Handle first-time setup request to create admin user (non-ingress only)."""
         if self.auth.has_users:
             # a conflict tells the frontend the admin exists, so it offers the sign-in
             # instead of another attempt
             return web.json_response(
                 {"success": False, "error": "Setup already completed"}, status=409
+            )
+
+        if not self._setup_window_open():
+            return web.json_response(
+                {"success": False, "error": SETUP_TIMED_OUT_MESSAGE}, status=403
             )
 
         if not request.can_read_body:
@@ -1622,6 +1615,10 @@ class WebserverController(CoreController):
             return await provider.create_user_with_password(
                 username, password, role=UserRole.ADMIN, display_name=display_name
             )
+
+    def _setup_window_open(self) -> bool:
+        """Return whether the first-time setup still accepts the first admin."""
+        return time.monotonic() < self._setup_deadline
 
     def _resolve_preview_token(self, token: str) -> tuple[str, str] | None:
         """Return the provider and item a preview token grants, or None when it is not valid."""
