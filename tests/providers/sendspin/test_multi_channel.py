@@ -569,6 +569,53 @@ async def test_taking_a_set_apart_gives_its_speakers_players_of_their_own(
     assert len(sendspin.get_protocol(LEFT).api.group.clients) == 1  # type: ignore[union-attr]
 
 
+async def test_removing_the_player_a_speaker_keeps_for_another_output_leaves_it_in_its_set(
+    mass: MusicAssistant,
+) -> None:
+    """
+    Removing the player a speaker of a set keeps for another output leaves the speaker in its set.
+
+    It keeps its pairing, also after the discovery that follows the removal.
+    """
+    sendspin = _sendspin(mass)
+    store = sendspin.server_api.pairing_store
+    airplay = await _add_airplay_output(mass, SPEAKER_MAC)
+    await _add_speaker(sendspin, LEFT, "Kitchen left", mac_address=SPEAKER_MAC)
+    await _add_speaker(sendspin, RIGHT, "Kitchen right")
+    await _wait_for(
+        lambda: (
+            (protocol := sendspin.get_protocol(LEFT)) is not None
+            and protocol.player is airplay.player
+        )
+    )
+    assert airplay.player is not None
+    left_player_id = airplay.player.player_id
+    left_record = _record(LEFT)
+    await store.store_record(left_record)
+    player = await mass.players.create_multi_channel_player(
+        "sendspin",
+        "Kitchen",
+        {
+            left_player_id: SpeakerChannel.FRONT_LEFT,
+            _player_id(sendspin, RIGHT): SpeakerChannel.FRONT_RIGHT,
+        },
+    )
+    set_protocol = _set_of(sendspin, player)
+    await _wait_for(lambda: {LEFT, RIGHT} <= _group_client_ids(set_protocol))
+
+    await mass.players.remove(left_player_id)
+    mass.cancel_timer(f"discover_players_{sendspin.instance_id}")
+    await sendspin.discover_players()
+    await asyncio.sleep(0.1)
+
+    assert mass.players.get_player(left_player_id) is None
+    assert await store.record_by_client_id(LEFT) == left_record
+    assert sendspin.get_protocol(LEFT) is None
+    assert sendspin.multi_channel_player_of(LEFT) == set_protocol.protocol_id
+    assert set_protocol.speaker_channel(LEFT) == SpeakerChannel.FRONT_LEFT
+    assert LEFT in _group_client_ids(set_protocol)
+
+
 @pytest.mark.parametrize(
     ("failing_step", "error"),
     [
