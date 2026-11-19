@@ -37,10 +37,11 @@ each of them in turn. It is driven through the API:
 
 | Command | Scope | Purpose |
 | --- | --- | --- |
-| `sendspin_sync/eligible_players` | `players.read` | The speakers a session can run against, and whether MA can write each one's delay |
+| `sendspin_sync/eligible_players` | `players.read` | The speakers a session can run against, whether MA can write each one's delay, and whether it is silent |
 | `sendspin_sync/session` | `players.read` | State of the running session, or `null` |
 | `sendspin_sync/start_session` | `config.players.write` | Take the given speakers over and start the track |
 | `sendspin_sync/solo_player` | `config.players.write` | Make one member of the session audible |
+| `sendspin_sync/keep_alive` | `config.players.write` | Say the client driving the session is still there |
 | `sendspin_sync/apply_measurements` | `config.players.write` | Turn the measured offsets into static delays and apply the ones MA can write |
 | `sendspin_sync/stop_session` | `config.players.write` | End the session and restore every speaker |
 
@@ -57,7 +58,9 @@ measurements already banked. Isolation mutes the other members and issues no mut
 command against the speaker being measured — clients that stop feeding their DAC
 while muted shift their timing on resume, which is exactly the number being
 measured. A speaker that an earlier `solo_player` had silenced is brought back
-first, before the others go down.
+first, before the others go down. A member that is still there and could not be
+silenced fails the solo: a reading taken with two speakers audible is wrong with
+nothing to show it. One that has dropped off is not heard, and does not.
 
 That ordering is the longest settling window a single call can give, and it is
 only as long as the mute commands that follow it. **The probe consuming this
@@ -74,15 +77,27 @@ Because the session never claims a mute or a zero volume the user set themselves
 a speaker that is already silent could be soloed but never heard — so
 `start_session` refuses one outright rather than hand back a session with a
 member that yields no measurement. `force` does not cover that; it only covers a
-speaker that is playing or paused.
+speaker that is playing or paused. `eligible_players` reports such a speaker as
+`silent`, so a client can say so where the user picks, before a start is refused.
 
 A session snapshots mute, volume, group membership, power and playback for
 everything it takes over, and restores all of it when it ends — including when it
 ends by exception, by the stream dying underneath it, by provider unload, or by
 the inactivity timeout that stops a phone that walked away from leaving a house
 muted. Each speaker's restore steps are attempted independently, so one that has
-disconnected can not leave the others silent or grouped. Grouping powers a
-speaker on, so one that was off is switched back off rather than resumed.
+disconnected can not leave the others silent or grouped. Every member leaves the
+calibration group before any is put back, so one that was synced to another can
+rejoin it. Grouping powers a speaker on, so one that was off is switched back off
+rather than resumed.
+
+The inactivity timeout is three minutes, and a client pushes it back with
+`keep_alive` a few times within that: a phone that walked out of range for a moment
+keeps its run, and one that has gone gives the speakers back soon. `solo_player`
+and `apply_measurements` push it back as well.
+
+A stop can itself be cut short: a server going down cancels the task it runs in.
+The session keeps track of what it has already put back, so the stop that follows
+— the plugin's unload — finishes it instead of finding it done.
 
 ### Measuring from zero
 
@@ -118,8 +133,24 @@ music sounds wrong. It runs on every exit path the rest of the snapshot covers.
 **An applied correction supersedes it:** a member `apply_measurements` wrote to
 keeps its new delay, because that value was computed to replace exactly the one
 the restore would put back. Only members left unmeasured, or whose write failed,
-go back to what they had. A member that vanished mid-session cannot be written to
-at all, so its delay is logged by value for the user to set by hand.
+go back to what they had.
+
+Two things can keep a delay from going back to a speaker, and neither leaves it at
+zero:
+
+- **The speaker is not there.** It dropped off mid-session, or its client no longer
+  accepts a delay. The delay goes into what is stored of its Sendspin output
+  (`store_player_static_delay`), which is what the client is given when it
+  registers again. Nothing is stored of a browser tab or an app that has gone, and
+  that one lost the zero along with everything else.
+- **The server went down.** The zero is stored with the speaker, and the delay it
+  replaced would only be in memory. So the plugin stores every delay a session
+  still owes among its own values, before the zero is written and at once rather
+  than with the next save of the config, and puts them back when it loads.
+
+A delay that still could not be put back is logged by value for the user to set by
+hand, as is a speaker left at volume zero because it was away when the session
+ended.
 
 ### Which player a session holds
 
@@ -164,6 +195,12 @@ the user switches the carrying protocol off. Two things follow:
 - `apply_measurements` refuses a member whose carrier is no longer the one it was
   measured over (`player_output_changed`): the measurement describes the path before,
   and the session has to be run again.
+
+What is stored of an output moves to its next carrier in one step, ahead of the client
+that registers for it. For that moment the client that is there still plays over the
+carrier before. The Sendspin provider therefore takes the carrier from what is stored:
+a delay named for the carrier before is put aside for it, and one that names no carrier
+is refused until the hand-over is done.
 
 Only the carrier in use is calibrated. The delay of another carrier of the same
 speaker stays what it was until a session measures the speaker while that one carries
@@ -255,10 +292,12 @@ Those speakers are measured anyway. `eligible_players` returns them with
 `adjustable: false`, and `apply_measurements` splits its result accordingly:
 
 ```
-{"applied": {player_id: delay_ms}, "manual": {player_id: delay_ms}}
+{"applied": {player_id: delay_ms}, "previous": {player_id: delay_ms}, "manual": {player_id: delay_ms}}
 ```
 
-`applied` is what was written through the Sendspin provider. `manual` is the
+`applied` is what was written through the Sendspin provider, and `previous` is the
+delay each of those speakers carried before the session, which is what to set it
+back to in order to undo the correction. `manual` is the
 delay resolved for each speaker MA could not write to, for the user to apply on
 the device itself — by setting `static_delay_adjustable: true` and re-running, by
 putting the value into `initial_static_delay` in the YAML, or on the delay control

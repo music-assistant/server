@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 from contextlib import aclosing
 from typing import cast
@@ -33,6 +34,7 @@ from music_assistant.helpers.shared_playback import SENDSPIN_DOMAIN
 from music_assistant.providers import sendspin_sync
 from music_assistant.providers.sendspin_sync import (
     AUDIO_SOURCE_ID,
+    CONF_OWED_STATIC_DELAYS,
     SESSION_TIMEOUT_SECONDS,
     SUPPORTED_FEATURES,
     SendspinSyncProvider,
@@ -195,6 +197,7 @@ async def test_api_commands_are_registered_and_released_on_unload() -> None:
         "sendspin_sync/session",
         "sendspin_sync/start_session",
         "sendspin_sync/solo_player",
+        "sendspin_sync/keep_alive",
         "sendspin_sync/apply_measurements",
         "sendspin_sync/stop_session",
     ]
@@ -229,6 +232,7 @@ async def test_session_commands_need_more_than_a_guest_scope() -> None:
         "sendspin_sync/session": Scope.PLAYERS_READ,
         "sendspin_sync/start_session": Scope.CONFIG_PLAYERS_WRITE,
         "sendspin_sync/solo_player": Scope.CONFIG_PLAYERS_WRITE,
+        "sendspin_sync/keep_alive": Scope.CONFIG_PLAYERS_WRITE,
         "sendspin_sync/apply_measurements": Scope.CONFIG_PLAYERS_WRITE,
         "sendspin_sync/stop_session": Scope.CONFIG_PLAYERS_WRITE,
     }
@@ -471,6 +475,126 @@ async def test_the_timeout_cancels_the_session_it_was_armed_for() -> None:
 
     session.stop.assert_awaited_once()
     assert await provider.get_session() is None
+
+
+async def test_a_keep_alive_rearms_the_inactivity_timeout_and_nothing_else() -> None:
+    """A client that is still there says so without touching a speaker."""
+    provider = await _setup_provider()
+    mass = _mock_mass(provider)
+    session = _stub_session()
+
+    with patch.object(CalibrationSession, "create", AsyncMock(return_value=session)):
+        await provider.start_session(["player"])
+    await provider.keep_alive()
+
+    assert len(mass.call_later.call_args_list) == 2
+    session.solo.assert_not_awaited()
+
+
+async def test_a_keep_alive_without_a_session_is_refused() -> None:
+    """A client learns its session is gone from the keep-alive it sends."""
+    provider = await _setup_provider()
+
+    with pytest.raises(ActionUnavailable):
+        await provider.keep_alive()
+
+    _mock_mass(provider).call_later.assert_not_called()
+
+
+async def test_a_teardown_queued_for_an_earlier_session_leaves_the_next_one_alone() -> None:
+    """A teardown waits for the lock, and the session it was meant for may be gone by then."""
+    provider = await _setup_provider()
+    earlier = await _run_session(provider, ["player"])
+    await provider.stop_session()
+    current = await _run_session(provider, ["player"])
+
+    await provider._stop_session(earlier)
+
+    current.stop.assert_not_awaited()
+    assert provider._session is current
+
+
+async def test_a_start_that_is_cancelled_leaves_its_session_for_the_unload_to_finish() -> None:
+    """
+    A server going down cancels a start, and the stop that follows it, in one go.
+
+    The session stays registered until it is torn down, so the unload still finds it.
+    """
+    provider = await _setup_provider()
+    session = _stub_session()
+    session.begin = AsyncMock(side_effect=asyncio.CancelledError)
+    session.stop = AsyncMock(side_effect=[asyncio.CancelledError, None])
+
+    with (
+        patch.object(CalibrationSession, "create", AsyncMock(return_value=session)),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await provider.start_session(["player"])
+    await provider.unload()
+
+    assert session.stop.await_count == 2
+
+
+async def test_the_delays_a_session_takes_off_are_stored_until_they_are_back() -> None:
+    """
+    A server that goes down mid-session may not come back with speakers at zero.
+
+    The zero is stored with each speaker and the delay it replaced is only in memory, so
+    the plugin stores what it owes at once and clears it when the session has put it back.
+    """
+    provider = await _setup_provider()
+    _stub_sendspin(provider, {"a": 250, "b": 0})
+    stored = _mock_mass(provider).config.set_raw_provider_config_value
+
+    await _run_real_session(provider, ["a", "b"])
+    assert stored.call_args.args == (
+        provider.instance_id,
+        CONF_OWED_STATIC_DELAYS,
+        '[["a", 250, null]]',
+    )
+    assert stored.call_args.kwargs == {"immediate": True}
+
+    await provider.stop_session()
+    assert stored.call_args.args[2] == "[]"
+
+
+async def test_delays_left_off_by_a_server_that_went_down_are_put_back_on_load() -> None:
+    """A speaker that is already there gets its delay back, for the carrier it came off."""
+    provider = await _setup_provider()
+    delays_ms = {"a": 0}
+    sendspin = _stub_sendspin(provider, delays_ms)
+    config = _mock_mass(provider).config
+    config.get_raw_provider_config_value = MagicMock(return_value='[["a", 250, "a_airplay"]]')
+
+    await provider.loaded_in_mass()
+
+    sendspin.set_player_static_delay.assert_awaited_once_with("a", 250, carrier_id="a_airplay")
+    assert config.set_raw_provider_config_value.call_args.args[2] == "[]"
+
+
+async def test_a_speaker_that_is_not_back_yet_gets_its_delay_in_what_is_stored_of_it() -> None:
+    """After a restart the plugin loads before most speakers have connected."""
+    provider = await _setup_provider()
+    sendspin = _stub_sendspin(provider, {})
+    sendspin.set_player_static_delay = AsyncMock(side_effect=PlayerUnavailableError("a"))
+    _mock_mass(provider).config.get_raw_provider_config_value = MagicMock(
+        return_value='[["a", 250, null]]'
+    )
+
+    await provider.loaded_in_mass()
+
+    sendspin.store_player_static_delay.assert_called_once_with("a", 250, carrier_id=None)
+
+
+async def test_eligible_players_reports_which_speakers_are_silent() -> None:
+    """A muted speaker is one a session refuses, so a client says so before the start."""
+    provider = await _setup_provider()
+    _stub_sendspin(provider, {"loud": 0, "muted": 0})
+    _mock_mass(provider).players.get_player("muted").state.volume_muted = True
+
+    offered = await provider.get_eligible_players()
+
+    assert [(p.player_id, p.silent) for p in offered] == [("loud", False), ("muted", True)]
 
 
 async def test_a_stream_that_never_starts_releases_the_session() -> None:
@@ -891,6 +1015,8 @@ async def test_a_full_cycle_leaves_the_measured_speakers_on_their_correction() -
     await provider.stop_session()
 
     assert result.applied == {"a": 0, "b": 45}
+    # what each speaker carried before the session, which is what undoes the correction
+    assert result.previous == {"a": 250, "b": 0}
     assert delays_ms == {"a": 0, "b": 45}
 
 
@@ -995,6 +1121,7 @@ def _stub_session(player_ids: list[str] | None = None) -> MagicMock:
     session.begin = AsyncMock()
     session.solo = AsyncMock()
     session.stop = AsyncMock()
+    session.static_delay_before = MagicMock(return_value=None)
     return session
 
 

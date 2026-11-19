@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, cast
-from unittest.mock import MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from aiosendspin.models.types import PlayerCommand
@@ -96,6 +96,8 @@ def _register_player(
     role.state_supported_commands = [PlayerCommand.SET_STATIC_DELAY] if supported else []
     player = object.__new__(_StaticDelayPlayer)
     player.mass = mass
+    player._provider = sendspin
+    player._cache = {}
     player.logger = logging.getLogger("test.sendspin")
     player._protocol_id = PROTOCOL_ID
     player._player = None
@@ -379,3 +381,125 @@ async def test_a_delay_put_aside_is_back_once_its_carrier_has_the_output(
     values = _stored_values(mass)
     assert values[CONF_SENDSPIN_STATIC_DELAY] == 320
     assert values[CONF_SENDSPIN_BRIDGE_STATIC_DELAYS] == {AIRPLAY_ID: 40}
+
+
+async def test_a_delay_written_during_a_hand_over_lands_on_the_carrier_it_names(
+    mass: MusicAssistant,
+) -> None:
+    """
+    What is stored of an output moves to its next carrier ahead of the client.
+
+    Until the client of the next carrier registers, the one that is there still plays
+    over the carrier before. A delay named for that carrier is put aside for it, and
+    the delay stored for the next carrier is left alone.
+    """
+    sendspin, role = _register_player(mass, carrier_id=AIRPLAY_ID)
+    await sendspin.set_player_static_delay(PROTOCOL_ID, 40)
+    await sendspin.set_player_static_delay(PROTOCOL_ID, 320, carrier_id=SQUEEZELITE_ID)
+    hand_static_delay_over(mass, PROTOCOL_ID, SQUEEZELITE_ID)
+    role.reset_mock()
+
+    assert sendspin.get_player_static_delay_carrier(PROTOCOL_ID) == SQUEEZELITE_ID
+    await sendspin.set_player_static_delay(PROTOCOL_ID, 250, carrier_id=AIRPLAY_ID)
+
+    values = _stored_values(mass)
+    assert values[CONF_SENDSPIN_STATIC_DELAY] == 320
+    assert values[CONF_SENDSPIN_BRIDGE_STATIC_DELAYS] == {AIRPLAY_ID: 250}
+    assert _pushed_delays(role) == []
+
+
+async def test_a_delay_of_no_named_carrier_is_refused_during_a_hand_over(
+    mass: MusicAssistant,
+) -> None:
+    """Whatever carries the output now is not one carrier while it is handed over."""
+    sendspin, _role = _register_player(mass, carrier_id=AIRPLAY_ID)
+    hand_static_delay_over(mass, PROTOCOL_ID, SQUEEZELITE_ID)
+
+    with pytest.raises(PlayerUnavailableError):
+        await sendspin.set_player_static_delay(PROTOCOL_ID, 250)
+
+
+async def test_a_delay_of_another_carrier_is_refused_when_nothing_is_stored(
+    mass: MusicAssistant,
+) -> None:
+    """A delay that can not be kept anywhere is not reported as kept."""
+    sendspin, _role = _register_player(mass, carrier_id=AIRPLAY_ID, stored=False)
+
+    with pytest.raises(PlayerUnavailableError):
+        await sendspin.set_player_static_delay(PROTOCOL_ID, 250, carrier_id=SQUEEZELITE_ID)
+
+
+@pytest.mark.parametrize("stored", [True, False])
+async def test_a_delay_reaches_a_player_that_accepted_one_only_after_it_registered(
+    mass: MusicAssistant, stored: bool
+) -> None:
+    """
+    A client that is paired, or reports its commands, late has no entry for the delay.
+
+    Its config was loaded while its player role did not accept one, and a stored value
+    only reaches a config copy that has the entry - so the write would report success
+    while the device kept playing with the delay it had.
+    """
+    sendspin, role = _register_player(mass, supported=False, stored=stored)
+    role.state_supported_commands = [PlayerCommand.SET_STATIC_DELAY]
+    # what the config controller builds for the player now that it declares the entry;
+    # the stand-in is too bare to be asked for its entries
+    reloaded = PlayerConfig.parse(
+        [
+            ConfigEntry(
+                key=CONF_SENDSPIN_STATIC_DELAY,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=0,
+                range=(MIN_SENDSPIN_STATIC_DELAY, MAX_SENDSPIN_STATIC_DELAY),
+                immediate_apply=True,
+            )
+        ],
+        mass.config._get_raw_protocol_config(PROTOCOL_ID, sendspin.instance_id),
+    )
+
+    with patch.object(mass.config, "get_protocol_config", AsyncMock(return_value=reloaded)):
+        await sendspin.set_player_static_delay(PROTOCOL_ID, 120)
+
+    assert _pushed_delays(role) == [120]
+    assert sendspin.get_player_static_delay(PROTOCOL_ID) == 120
+
+
+async def test_a_delay_is_stored_for_an_output_whose_client_is_away(mass: MusicAssistant) -> None:
+    """A speaker that dropped off gets its delay once it registers again."""
+    sendspin, role = _register_player(mass)
+    del mass.players._protocols[PROTOCOL_ID]
+
+    assert sendspin.store_player_static_delay(PROTOCOL_ID, 250) is True
+
+    assert _stored_values(mass)[CONF_SENDSPIN_STATIC_DELAY] == 250
+    assert _pushed_delays(role) == []
+
+
+async def test_a_delay_stored_for_another_carrier_is_put_aside(mass: MusicAssistant) -> None:
+    """The delay of a carrier the output has left waits for when it carries it again."""
+    sendspin, _role = _register_player(mass, carrier_id=AIRPLAY_ID)
+    await sendspin.set_player_static_delay(PROTOCOL_ID, 40)
+    del mass.players._protocols[PROTOCOL_ID]
+
+    assert sendspin.store_player_static_delay(PROTOCOL_ID, 250, carrier_id=SQUEEZELITE_ID) is True
+
+    values = _stored_values(mass)
+    assert values[CONF_SENDSPIN_STATIC_DELAY] == 40
+    assert values[CONF_SENDSPIN_BRIDGE_STATIC_DELAYS] == {SQUEEZELITE_ID: 250}
+
+
+async def test_nothing_is_stored_for_an_output_nothing_is_stored_of(mass: MusicAssistant) -> None:
+    """A browser tab that closed keeps no delay, so there is none to put back."""
+    sendspin, _role = _register_player(mass, stored=False)
+    del mass.players._protocols[PROTOCOL_ID]
+
+    assert sendspin.store_player_static_delay(PROTOCOL_ID, 250) is False
+
+
+async def test_a_delay_out_of_range_is_not_stored(mass: MusicAssistant) -> None:
+    """The stored path refuses what the pushed one does."""
+    sendspin, _role = _register_player(mass)
+
+    with pytest.raises(InvalidDataError):
+        sendspin.store_player_static_delay(PROTOCOL_ID, MAX_SENDSPIN_STATIC_DELAY + 1)

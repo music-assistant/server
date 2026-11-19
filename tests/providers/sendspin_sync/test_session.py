@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -27,7 +28,9 @@ from music_assistant.providers.sendspin_sync.session import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable, Mapping
+
+    from music_assistant.providers.sendspin_sync.session import StaticDelaySnapshot
 
 ANCHOR_ID = "virtual_calibration"
 
@@ -627,7 +630,8 @@ async def test_stop_restores_the_remaining_delays_when_one_write_fails() -> None
         static_delays_ms={"a": 250, "b": 20},
     )
     session = await _start(mass, ["a", "b"])
-    _fail_for(_sendspin(mass).set_player_static_delay, "a", PlayerUnavailableError("gone"))
+    # not a client that is merely away, whose delay goes into what is stored of it
+    _fail_for(_sendspin(mass).set_player_static_delay, "a", RuntimeError("no answer"))
 
     await session.stop()
 
@@ -662,28 +666,225 @@ async def test_a_member_is_measured_over_the_carrier_it_started_on() -> None:
     assert session.is_measured_over("a", "a_squeezelite") is False
 
 
-async def test_a_member_that_vanished_is_named_rather_than_left_at_zero_in_silence() -> None:
+async def test_a_member_that_vanished_gets_its_delay_back_in_what_is_stored_of_it() -> None:
     """
-    A speaker that went away mid-session is reported with the delay it should get back.
+    A speaker that went away mid-session does not come back measuring from zero.
 
-    The zero is persisted in its config, so it stays advanced by nothing until something
-    sets it again - and the user has no reason to suspect it.
+    The zero is persisted in its config, so it would stay advanced by nothing until
+    something set it again - and the user has no reason to suspect it. Its client is
+    not there to take the delay, so it goes into what is stored of the speaker.
     """
-    logger = MagicMock()
     mass = _make_mass(
         _make_player("a"),
         _make_player("b"),
         static_delays_ms={"a": 250, "b": 20},
     )
-    session = await _start(mass, ["a", "b"], logger=logger)
+    session = await _start(mass, ["a", "b"])
     _vanish(mass, "a")
+    _sendspin(mass).away.add("a")
 
     await session.stop()
 
-    assert _static_delays(mass) == {"a": 0, "b": 20}
+    assert _static_delays(mass) == {"a": 250, "b": 20}
+    _sendspin(mass).store_player_static_delay.assert_called_once_with("a", 250, carrier_id=None)
+
+
+async def test_a_delay_that_could_not_go_back_at_all_is_named() -> None:
+    """A speaker left at zero is reported with the delay it should carry."""
+    logger = MagicMock()
+    mass = _make_mass(_make_player("a"), static_delays_ms={"a": 250})
+    session = await _start(mass, ["a"], logger=logger)
+    delays_ms = _static_delays(mass)
+    mass.get_provider = MagicMock(return_value=None)
+
+    await session.stop()
+
+    assert delays_ms == {"a": 0}
     assert any(call.args[1:] == ("a", 250) for call in logger.warning.call_args_list), (
         logger.warning.call_args_list
     )
+
+
+async def test_a_vanished_member_nothing_is_stored_of_is_owed_nothing() -> None:
+    """
+    A browser tab that closed mid-session took its zero with it.
+
+    Nothing is stored of such an output, so there is no delay left at zero to warn about.
+    """
+    logger = MagicMock()
+    mass = _make_mass(_make_player("a"), static_delays_ms={"a": 250})
+    session = await _start(mass, ["a"], logger=logger)
+    _vanish(mass, "a")
+    _sendspin(mass).away.add("a")
+    _sendspin(mass).unstored.add("a")
+
+    await session.stop()
+
+    assert not any("static delay" in call.args[0] for call in logger.warning.call_args_list)
+
+
+async def test_the_owner_is_told_which_delays_are_still_owed() -> None:
+    """
+    Every delay taken off is reported before the zero is written, and again once it is back.
+
+    The delays are only held in memory, and the zero in their place is stored with the
+    speaker, so the owner has to know about one before a server can go down over it.
+    """
+    owed_at_each_write: list[dict[str, int]] = []
+    reported: list[dict[str, int]] = []
+    mass = _make_mass(_make_player("a"), _make_player("b"), static_delays_ms={"a": 250})
+    writes = _sendspin(mass).set_player_static_delay
+    written = writes.side_effect
+
+    async def _write(player_id: str, delay_ms: int, **kwargs: object) -> None:
+        owed_at_each_write.append(dict(reported[-1]) if reported else {})
+        await written(player_id, delay_ms, **kwargs)
+
+    writes.side_effect = _write
+
+    session = await _start(
+        mass,
+        ["a", "b"],
+        on_owed_delays_changed=lambda owed: reported.append(
+            {player_id: snapshot.delay_ms for player_id, snapshot in owed.items()}
+        ),
+    )
+    assert reported[-1] == {"a": 250}
+    await session.stop()
+
+    # the zero of 'a' was written with its delay already reported, and so was its restore
+    assert owed_at_each_write == [{"a": 250}, {"a": 250}]
+    assert reported[-1] == {}
+
+
+async def test_a_stop_that_was_cancelled_is_finished_by_the_next_one() -> None:
+    """
+    A server going down cancels the task a stop runs in, and the unload stops it again.
+
+    The second stop picks up where the first was cut short, so no speaker stays silent
+    or at zero, and nothing that was already put back is put back twice.
+    """
+    mass = _make_mass(
+        _make_player("a", playback_state=PlaybackState.PLAYING),
+        _make_player("b"),
+        static_delays_ms={"a": 250, "b": 20},
+    )
+    shared = _make_shared_session()
+    session = await _start(mass, ["a", "b"], force=True, shared=shared)
+    mass.players.cmd_volume_mute.side_effect = _cancel_once_for(
+        mass.players.cmd_volume_mute.side_effect, "b"
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await session.stop()
+    assert _silenced(mass) == {"b"}
+
+    await session.stop()
+
+    assert _silenced(mass) == set()
+    assert _static_delays(mass) == {"a": 250, "b": 20}
+    mass.players.cmd_resume.assert_awaited_once()
+    shared.close.assert_awaited_once()
+
+
+async def test_a_start_that_is_cancelled_gives_back_what_it_had_taken() -> None:
+    """Nothing else owns the speakers of a session that never finished starting."""
+    mass = _make_mass(
+        _make_player("a"),
+        _make_player("b"),
+        static_delays_ms={"a": 250, "b": 20},
+    )
+    shared = _make_shared_session()
+    _fail_for(shared.add_guest_listener, "b", cast("Exception", asyncio.CancelledError()))
+
+    with pytest.raises(asyncio.CancelledError):
+        await _start(mass, ["a", "b"], shared=shared)
+
+    assert _silenced(mass) == set()
+    assert _static_delays(mass) == {"a": 250, "b": 20}
+    # 'b' was cut short while joining, so it is released in case it had
+    assert {call.args[0] for call in shared.remove_guest_listener.await_args_list} == {"a", "b"}
+
+
+async def test_every_member_leaves_the_group_before_any_is_put_back() -> None:
+    """
+    A member that was synced to another one can only rejoin it once that one is out.
+
+    Restored in the order they were taken, the follower would otherwise ask its leader
+    to take it back while the leader still sits in the calibration group.
+    """
+    mass = _make_mass(_make_player("b", synced_to="a"), _make_player("a"))
+    shared = _make_shared_session()
+    order: list[str] = []
+    shared.remove_guest_listener.side_effect = lambda player_id: order.append(f"out:{player_id}")
+    mass.players.cmd_set_members.side_effect = lambda leader_id, **_kwargs: order.append(
+        f"join:{leader_id}"
+    )
+    session = await _start(mass, ["b", "a"], shared=shared)
+
+    await session.stop()
+
+    assert order == ["out:b", "out:a", "join:a"]
+
+
+async def test_a_solo_fails_when_another_member_stays_audible() -> None:
+    """
+    A reading taken with two speakers audible is wrong with nothing to show it.
+
+    The target is up, so the session says so, but the caller is told the others are not
+    all down instead of being handed a solo to measure in.
+    """
+    mass = _make_mass(_make_player("a"), _make_player("b"))
+    session = await _start(mass, ["a", "b"])
+    await session.solo("a")
+    original = mass.players.cmd_volume_mute.side_effect
+
+    async def _mute(player_id: str, muted: bool) -> None:
+        if player_id == "a" and muted:
+            raise PlayerUnavailableError("no answer")
+        await original(player_id, muted)
+
+    mass.players.cmd_volume_mute.side_effect = _mute
+
+    with pytest.raises(ActionUnavailable, match="silenced"):
+        await session.solo("b")
+
+    assert session.soloed_player_id == "b"
+
+
+async def test_a_solo_goes_ahead_when_another_member_has_gone() -> None:
+    """A speaker that dropped off can not be silenced, and is not heard either."""
+    mass = _make_mass(_make_player("a"), _make_player("b"), _make_player("c"))
+    session = await _start(mass, ["a", "b", "c"])
+    await session.solo("a")
+    _vanish(mass, "a")
+
+    await session.solo("b")
+
+    assert session.soloed_player_id == "b"
+
+
+async def test_a_solo_of_a_member_that_has_gone_fails() -> None:
+    """A speaker that is not there yields no measurement, so its solo may not succeed."""
+    mass = _make_mass(_make_player("a"), _make_player("b"))
+    session = await _start(mass, ["a", "b"])
+    _vanish(mass, "b")
+
+    with pytest.raises(PlayerUnavailableError):
+        await session.solo("b")
+
+
+async def test_a_member_that_took_no_delay_at_the_start_is_not_held_to_a_carrier() -> None:
+    """
+    Nothing was taken off such a member, so no carrier is on record for it.
+
+    A client that starts accepting a delay mid-session is corrected from the delay it
+    carries, and is not told its output changed.
+    """
+    mass = _make_mass(_make_speaker("a", client_id="a_client"), non_adjustable={"a_client"})
+    session = await _start(mass, ["a"])
+
+    assert session.is_measured_over("a", "a_airplay") is True
 
 
 async def test_a_correction_that_was_applied_survives_the_restore() -> None:
@@ -1021,6 +1222,7 @@ async def _start(
     force: bool = False,
     shared: MagicMock | None = None,
     logger: MagicMock | None = None,
+    on_owed_delays_changed: Callable[[Mapping[str, StaticDelaySnapshot]], None] | None = None,
 ) -> CalibrationSession:
     """
     Return a started, streaming session anchored on a stubbed shared playback session.
@@ -1030,6 +1232,7 @@ async def _start(
     :param force: Take over players that are busy playing.
     :param shared: Anchor stub to use, so a caller can inspect it after a failed start.
     :param logger: Logger stub to use, so a caller can inspect what the session reported.
+    :param on_owed_delays_changed: Told which static delays the session still owes.
     """
     with patch(
         "music_assistant.providers.sendspin_sync.session.SharedPlaybackSession"
@@ -1042,6 +1245,7 @@ async def _start(
             "sendspin_sync--test",
             player_ids,
             force=force,
+            on_owed_delays_changed=on_owed_delays_changed,
         )
     await session.begin(MagicMock())
     return session
@@ -1079,6 +1283,24 @@ def _fail_for(mock: AsyncMock, player_id: str, error: Exception) -> None:
             await original(target_id, *args, **kwargs)
 
     mock.side_effect = _side_effect
+
+
+def _cancel_once_for(original: Any, player_id: str) -> Any:
+    """
+    Return a player command that is cancelled the first time it is sent to one player.
+
+    :param original: The stubbed command to wrap.
+    :param player_id: The player whose first command is cut short.
+    """
+    pending = [player_id]
+
+    async def _side_effect(target_id: str, *args: object) -> None:
+        if target_id in pending:
+            pending.remove(target_id)
+            raise asyncio.CancelledError
+        await original(target_id, *args)
+
+    return _side_effect
 
 
 def _make_shared_session() -> MagicMock:
@@ -1229,12 +1451,28 @@ def _make_mass(
             raise UnsupportedFeaturedException(player_id)
         return delays_ms.get(player_id, 0)
 
+    away: set[str] = set()
+    unstored: set[str] = set()
+
     async def _set_delay(player_id: str, delay_ms: int, **_kwargs: object) -> None:
+        if player_id in away:
+            raise PlayerUnavailableError(player_id)
         if player_id in refused:
             raise UnsupportedFeaturedException(player_id)
         delays_ms[player_id] = delay_ms
 
+    def _store_delay(player_id: str, delay_ms: int, **_kwargs: object) -> bool:
+        if player_id in unstored:
+            return False
+        delays_ms[player_id] = delay_ms
+        return True
+
     sendspin = MagicMock()
+    # Sendspin outputs whose client is gone, so a delay can only go into what is stored
+    # of them, and those nothing is stored of
+    sendspin.away = away
+    sendspin.unstored = unstored
+    sendspin.store_player_static_delay = MagicMock(side_effect=_store_delay)
     sendspin.is_virtual_player = MagicMock(return_value=False)
     sendspin.supports_player_static_delay = MagicMock(side_effect=lambda p: p not in refused)
     sendspin.get_player_static_delay = MagicMock(side_effect=_get_delay)

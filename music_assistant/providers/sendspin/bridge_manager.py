@@ -177,29 +177,53 @@ def hand_static_delay_over(mass: MusicAssistant, client_id: str, carrier_id: str
         mass.config.set(f"{CONF_PLAYER_PROTOCOLS}/{client_id}/values", values)
 
 
-def set_static_delay_aside(
-    mass: MusicAssistant, client_id: str, carrier_id: str, delay_ms: int
-) -> None:
+def stored_carrier_of(mass: MusicAssistant, client_id: str) -> str | None:
     """
-    Store the static delay of a protocol that does not carry a stored Sendspin output now.
+    Return the id of the protocol a stored Sendspin output names as its carrier.
 
-    The delay is back as the delay of the output once that protocol carries it again.
-    Nothing happens for an output that is not stored.
+    What is stored moves to another carrier in one step, ahead of the client that
+    registers for it, so this names the carrier the stored static delay belongs to.
 
     :param mass: The Music Assistant instance.
     :param client_id: The client id of the output.
-    :param carrier_id: Id of the protocol the delay belongs to.
+    :return: The id of the carrier, None for an output that is not stored or names none.
+    """
+    record = mass.config.get_protocol_record(client_id) or {}
+    carrier_id = (record.get("values") or {}).get(CONF_UNDERLYING_PLAYER_ID)
+    return carrier_id if isinstance(carrier_id, str) else None
+
+
+def store_static_delay(
+    mass: MusicAssistant, client_id: str, carrier_id: str | None, delay_ms: int
+) -> bool:
+    """
+    Store the static delay of a stored Sendspin output, for the protocol it belongs to.
+
+    Nothing is pushed to a device. The delay of the protocol that carries the output is
+    what a client is given once it registers; the delay of another protocol is put aside
+    and is back as the delay of the output once that protocol carries it again.
+
+    :param mass: The Music Assistant instance.
+    :param client_id: The client id of the output.
+    :param carrier_id: Id of the protocol the delay belongs to, None for the delay of
+        whatever carries the output.
     :param delay_ms: The static delay to keep for it, in milliseconds.
+    :return: Whether the delay is stored, which it is not for an output that is not stored.
     """
     if (record := mass.config.get_protocol_record(client_id)) is None:
-        return
+        return False
+    current_id = stored_carrier_of(mass, client_id)
+    if carrier_id is None or current_id is None or current_id == carrier_id:
+        # also the config copy a registered client holds, which its next push reads
+        mass.config.set_protocol_value(client_id, CONF_SENDSPIN_STATIC_DELAY, delay_ms)
+        return True
     values = dict(record.get("values") or {})
     set_aside = dict(values.get(CONF_SENDSPIN_BRIDGE_STATIC_DELAYS) or {})
-    if set_aside.get(carrier_id) == delay_ms:
-        return
-    set_aside[carrier_id] = delay_ms
-    values[CONF_SENDSPIN_BRIDGE_STATIC_DELAYS] = set_aside
-    mass.config.set(f"{CONF_PLAYER_PROTOCOLS}/{client_id}/values", values)
+    if set_aside.get(carrier_id) != delay_ms:
+        set_aside[carrier_id] = delay_ms
+        values[CONF_SENDSPIN_BRIDGE_STATIC_DELAYS] = set_aside
+        mass.config.set(f"{CONF_PLAYER_PROTOCOLS}/{client_id}/values", values)
+    return True
 
 
 async def evaluate_bridge_of(mass: MusicAssistant, protocol_id: str) -> None:

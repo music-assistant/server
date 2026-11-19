@@ -97,7 +97,8 @@ from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.sendspin.bridge_manager import (
     evaluate_bridge_of,
     evaluate_bridges_of_player,
-    set_static_delay_aside,
+    store_static_delay,
+    stored_carrier_of,
 )
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
@@ -809,7 +810,7 @@ class SendspinProvider(PlayerProvider):
         :raises UnsupportedFeaturedException: The protocol is not a Sendspin player, or its
             player role does not accept a static delay.
         """
-        return self._static_delay_player(protocol_id).underlying_protocol_id
+        return self._static_delay_carrier(self._static_delay_player(protocol_id))
 
     def get_player_static_delay(self, protocol_id: str) -> int:
         """
@@ -840,6 +841,28 @@ class SendspinProvider(PlayerProvider):
             player.config.get_value(CONF_SENDSPIN_STATIC_DELAY, player.static_delay_default_ms),
         )
 
+    def store_player_static_delay(
+        self, protocol_id: str, delay_ms: int, *, carrier_id: str | None = None
+    ) -> bool:
+        """
+        Store the static delay of a Sendspin output that is not there to take it.
+
+        For a caller that owes an output a delay while its client is away, or does not
+        accept one right now: the value is stored for the protocol it belongs to and is
+        what the client is given once it registers again. Nothing is pushed.
+
+        :param protocol_id: Id of the Sendspin protocol the delay belongs to.
+        :param delay_ms: Delay to keep, in whole milliseconds, within 0-5000 inclusive.
+        :param carrier_id: Id of the protocol that carried the output when the delay was
+            read, None for a Sendspin client of its own.
+        :raises InvalidDataError: delay_ms falls outside the supported range.
+        :return: Whether the delay is stored. Nothing is stored of an output that only
+            exists while its device is connected, and such an output keeps no delay once
+            it is gone, so there is nothing to put back for it either.
+        """
+        self._check_static_delay_range(protocol_id, delay_ms)
+        return store_static_delay(self.mass, protocol_id, carrier_id, delay_ms)
+
     async def set_player_static_delay(
         self, protocol_id: str, delay_ms: int, *, carrier_id: str | None = None
     ) -> None:
@@ -867,27 +890,36 @@ class SendspinProvider(PlayerProvider):
             whose output may have been handed over since the delay was read. A delay of
             a protocol that does not carry the output now is put aside for when it does
             again, and nothing is pushed. None for the delay of whatever carries it now.
-        :raises PlayerUnavailableError: No available protocol with this id exists.
+        :raises PlayerUnavailableError: No available protocol with this id exists, the
+            output is being handed over to another protocol and no carrier was named, or
+            nothing is stored of the output to keep the delay of another carrier in.
         :raises UnsupportedFeaturedException: The protocol is not a Sendspin player, or its
             player role does not accept a static delay.
         :raises InvalidDataError: delay_ms falls outside the supported range.
         """
         player = self._static_delay_player(protocol_id)
-        if not MIN_SENDSPIN_STATIC_DELAY <= delay_ms <= MAX_SENDSPIN_STATIC_DELAY:
-            msg = (
-                f"Static delay {delay_ms} ms for player {protocol_id} is outside the supported "
-                f"range of {MIN_SENDSPIN_STATIC_DELAY}-{MAX_SENDSPIN_STATIC_DELAY} ms"
-            )
-            raise InvalidDataError(msg)
-        if carrier_id is not None and carrier_id != player.underlying_protocol_id:
+        self._check_static_delay_range(protocol_id, delay_ms)
+        current_carrier_id = self._static_delay_carrier(player)
+        # What is stored of an output moves to its next carrier ahead of the client that
+        # registers for it. Until then this client still plays over the carrier before,
+        # with the delay of that one in the config copy it holds.
+        handing_over = current_carrier_id != player.underlying_protocol_id
+        if handing_over and carrier_id is None:
+            msg = f"Player {protocol_id} is being handed over to another protocol"
+            raise PlayerUnavailableError(msg)
+        if carrier_id is not None and (handing_over or carrier_id != current_carrier_id):
             self.logger.info(
-                "Keeping static delay of %s ms of %s for when %s carries it again",
-                delay_ms,
-                player.name,
-                carrier_id,
+                "Keeping static delay of %s ms of %s for %s", delay_ms, player.name, carrier_id
             )
-            set_static_delay_aside(self.mass, protocol_id, carrier_id, delay_ms)
+            if not store_static_delay(self.mass, protocol_id, carrier_id, delay_ms):
+                msg = f"Nothing is stored of player {protocol_id} to keep a static delay in"
+                raise PlayerUnavailableError(msg)
             return
+        if CONF_SENDSPIN_STATIC_DELAY not in player.config.values:
+            # The config was loaded while the player role did not accept a delay yet: a
+            # client that was paired, or reported its commands, after it registered. A
+            # stored value would never reach the config copy the push reads.
+            player.set_config(await self.mass.config.get_protocol_config(player))
         if delay_ms == self.get_player_static_delay(protocol_id):
             return
         self.logger.info("Applying static delay of %s ms to %s", delay_ms, player.name)
@@ -895,6 +927,9 @@ class SendspinProvider(PlayerProvider):
         # also updates the config copy the push reads, then the push. Not a config save,
         # which needs a stored config and so refuses a browser tab or an app.
         self.mass.config.set_protocol_value(protocol_id, CONF_SENDSPIN_STATIC_DELAY, delay_ms)
+        if delay_ms != self.get_player_static_delay(protocol_id):
+            msg = f"Static delay of {delay_ms} ms did not reach the config of player {protocol_id}"
+            raise UnsupportedFeaturedException(msg)
         await player._apply_static_delay()
 
     def register_bridge_player_type(self, client_id: str, player_type: PlayerType) -> None:
@@ -1489,6 +1524,35 @@ class SendspinProvider(PlayerProvider):
             msg = f"Player {protocol_id} does not accept a Sendspin static delay"
             raise UnsupportedFeaturedException(msg)
         return player
+
+    def _static_delay_carrier(self, player: SendspinPlayer) -> str | None:
+        """
+        Return the id of the protocol the stored static delay of an output belongs to.
+
+        That is the carrier what is stored of the output names, which moves ahead of the
+        client during a hand-over. None for a Sendspin client of its own.
+
+        :param player: The Sendspin player of the output.
+        """
+        if (live_carrier_id := player.underlying_protocol_id) is None:
+            return None
+        return stored_carrier_of(self.mass, player.protocol_id) or live_carrier_id
+
+    @staticmethod
+    def _check_static_delay_range(protocol_id: str, delay_ms: int) -> None:
+        """
+        Raise when a static delay falls outside the range Sendspin carries.
+
+        :param protocol_id: Id of the Sendspin protocol the delay is for.
+        :param delay_ms: The delay to check, in milliseconds.
+        :raises InvalidDataError: delay_ms falls outside the supported range.
+        """
+        if not MIN_SENDSPIN_STATIC_DELAY <= delay_ms <= MAX_SENDSPIN_STATIC_DELAY:
+            msg = (
+                f"Static delay {delay_ms} ms for player {protocol_id} is outside the supported "
+                f"range of {MIN_SENDSPIN_STATIC_DELAY}-{MAX_SENDSPIN_STATIC_DELAY} ms"
+            )
+            raise InvalidDataError(msg)
 
     def _set_aiosendspin_log_level(self) -> None:
         """Keep aiosendspin's (very chatty) logging quiet unless verbose logging is enabled."""

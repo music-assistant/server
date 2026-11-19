@@ -36,6 +36,7 @@ latency would not be comparable to the members'.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 from math import isfinite
@@ -62,7 +63,7 @@ from music_assistant.providers.sendspin.constants import MAX_SENDSPIN_STATIC_DEL
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Coroutine, Mapping
+    from collections.abc import Callable, Coroutine, Mapping
 
     from music_assistant_models.media_items import AudioSource
     from music_assistant_models.player import PlayerMedia
@@ -112,6 +113,9 @@ class CalibrationPlayer(DataClassDictMixin):
     # this at pick time, so a user learns which speakers they will have to correct by
     # hand before walking the house rather than when the result comes back.
     adjustable: bool
+    # whether the speaker is muted or turned all the way down, which start_session
+    # refuses: a client says so on the speaker instead of offering one that can not start
+    silent: bool
 
 
 @dataclass
@@ -127,6 +131,9 @@ class CalibrationResult(DataClassDictMixin):
     """
 
     applied: dict[str, int]
+    # the delay each of those speakers carried before the session, which is what to set
+    # it back to by hand to undo the correction
+    previous: dict[str, int]
     # the delay resolved for each speaker MA can not write to, for the user to set on
     # the device itself - by opting its client into an adjustable delay and re-running,
     # or by adding the value to its firmware configuration
@@ -191,6 +198,7 @@ class CalibrationSession:
         translation_owner: str,
         shared_session: SharedPlaybackSession,
         snapshots: dict[str, PlayerSnapshot],
+        on_owed_delays_changed: Callable[[Mapping[str, StaticDelaySnapshot]], None] | None = None,
     ) -> None:
         """Initialize the session. Use the :meth:`create` factory instead."""
         self.mass = mass
@@ -198,6 +206,13 @@ class CalibrationSession:
         self.translation_owner = translation_owner
         self._shared_session = shared_session
         self._snapshots = snapshots
+        self._on_owed_delays_changed = on_owed_delays_changed
+        # members a stop has already released from the group, and those it has put back
+        # in full: a stop that was cancelled part-way is picked up where it was left
+        self._released: set[str] = set()
+        self._restored: set[str] = set()
+        self._anchor_closed = False
+        self._torn_down = False
         self._silenced: dict[str, SilenceMethod] = {}
         # what this session zeroed and still owes back, by member id. Both records at
         # once, like _silenced: an entry means the delay was taken off and not yet put
@@ -206,6 +221,8 @@ class CalibrationSession:
         # the protocol that carried the output of each member MA can write a delay to
         # when the session took it, by member id: what the member is measured over
         self._measured_carriers: dict[str, str | None] = {}
+        # the delay each of those members carried when the session took it, zero or not
+        self._delays_before: dict[str, int] = {}
         self._soloed_player_id: str | None = None
         self._stopped = False
 
@@ -218,6 +235,7 @@ class CalibrationSession:
         owner_instance_id: str,
         player_ids: list[str],
         force: bool = False,
+        on_owed_delays_changed: Callable[[Mapping[str, StaticDelaySnapshot]], None] | None = None,
     ) -> CalibrationSession:
         """
         Commandeer the given players and group them onto a fresh calibration anchor.
@@ -235,6 +253,10 @@ class CalibrationSession:
         :param player_ids: The speakers to calibrate, in the order given, as the user
             sees them - not the Sendspin protocols they play through.
         :param force: Take over players that are busy playing the user's own content.
+        :param on_owed_delays_changed: Called with every static delay the session has
+            taken off and not put back yet, each time that set changes. The delays are
+            only held in memory otherwise, so an owner keeps them somewhere that survives
+            a server that goes down mid-session.
         :raises InvalidDataError: If no players were given, or the same player twice.
         :raises PlayerUnavailableError: If a given player is unknown or unavailable.
         :raises UnsupportedFeaturedException: If a given player does not render over
@@ -268,10 +290,15 @@ class CalibrationSession:
         )
         # the session only owns what it managed to group and zero, so a failure halfway
         # restores those players and leaves the untouched ones alone
-        session = cls(mass, logger, translation_owner, shared_session, {})
+        session = cls(mass, logger, translation_owner, shared_session, {}, on_owed_delays_changed)
         try:
             for player in players:
-                await shared_session.add_guest_listener(player.player_id)
+                try:
+                    await shared_session.add_guest_listener(player.player_id)
+                except asyncio.CancelledError:
+                    # cut short, so it may have joined all the same: released either way
+                    session._snapshots[player.player_id] = snapshots[player.player_id]
+                    raise
                 session._snapshots[player.player_id] = snapshots[player.player_id]
                 # taken out of the mix as it joins, so the track begin() starts is
                 # inaudible from its first chirp rather than from the first solo. After
@@ -279,7 +306,9 @@ class CalibrationSession:
                 # group volume change once the player is already in the group.
                 await session._silence_member(player)
                 await session._zero_static_delay(sendspin, player)
-        except Exception:
+        except BaseException:
+            # also a cancellation, e.g. the server going down while the session starts:
+            # nothing else owns these players yet, so nothing else would put them back
             await session.stop()
             raise
         return session
@@ -382,10 +411,25 @@ class CalibrationSession:
                 translation_owner=self.translation_owner,
             )
         await self._unsilence(player_id)
-        for other_id in self._snapshots:
-            if other_id != player_id:
-                await self._silence(other_id)
         self._soloed_player_id = player_id
+        audible: list[str] = []
+        for other_id in self._snapshots:
+            if other_id == player_id:
+                continue
+            await self._silence(other_id)
+            other = self.mass.players.get_player(other_id)
+            # one that has gone can not be silenced, and is not heard either
+            if other_id not in self._silenced and other is not None and other.state.available:
+                audible.append(other.state.name)
+        if audible:
+            # a reading taken now would be of more than one speaker, with nothing to show it
+            names = ", ".join(audible)
+            raise ActionUnavailable(
+                f"Player {names} could not be silenced for calibration",
+                translation_key="player_not_silenced",
+                translation_args=[names],
+                translation_owner=self.translation_owner,
+            )
 
     def is_measured_over(self, player_id: str, carrier_id: str | None) -> bool:
         """
@@ -396,11 +440,27 @@ class CalibrationSession:
         correction for another, so a member whose output was handed over mid-session
         has to be measured again.
 
+        A member that did not accept a static delay when the session took it has no
+        carrier on record. Nothing was taken off it, so the delay it carries now is part
+        of what was measured and it is treated as still carried by the same protocol.
+
         :param player_id: The session member to check.
         :param carrier_id: Id of the protocol that carries the member's output now, None
             for a Sendspin client of its own.
         """
-        return self._measured_carriers.get(player_id) == carrier_id
+        if player_id not in self._measured_carriers:
+            return True
+        return self._measured_carriers[player_id] == carrier_id
+
+    def static_delay_before(self, player_id: str) -> int | None:
+        """
+        Return the static delay a member carried when the session took it.
+
+        :param player_id: The session member to look up.
+        :return: The delay in milliseconds, None for a member that did not accept a
+            static delay at that point.
+        """
+        return self._delays_before.get(player_id)
 
     def keep_applied_static_delay(self, player_id: str) -> None:
         """
@@ -415,7 +475,8 @@ class CalibrationSession:
 
         :param player_id: The session member whose new delay must survive teardown.
         """
-        self._zeroed_delays.pop(player_id, None)
+        if self._zeroed_delays.pop(player_id, None) is not None:
+            self._report_owed_delays()
 
     async def stop(self) -> None:
         """
@@ -424,9 +485,10 @@ class CalibrationSession:
         Each restore step is logged rather than raised on failure, so one player
         that has meanwhile disconnected can not strand the rest muted or grouped,
         and the restore runs even when stopping the stream fails. Safe to call on
-        an already stopped session.
+        an already stopped session, and a stop that was cancelled part-way - a server
+        going down cancels the task it runs in - is finished by the next call.
         """
-        if self._stopped:
+        if self._torn_down:
             return
         # Set before anything is torn down: stopping the stream fires
         # on_source_unselected, whose session teardown guards on this flag to avoid
@@ -442,6 +504,7 @@ class CalibrationSession:
                 await self._restore_players()
             finally:
                 await self._close_shared_session()
+        self._torn_down = True
 
     async def _stop_calibration_stream(self) -> None:
         """Stop the calibration track on the anchor's queue."""
@@ -459,16 +522,42 @@ class CalibrationSession:
 
     async def _restore_players(self) -> None:
         """Put delay, volume, mute, group membership, power and playback back as found."""
+        # Every member leaves the calibration group before any of them is put back: a
+        # member that was synced to another one can only rejoin it once that one is out.
         for snapshot in self._snapshots.values():
-            await self._restore_player(snapshot)
+            if snapshot.player_id not in self._released:
+                await self._release_player(snapshot)
+                self._released.add(snapshot.player_id)
+        for snapshot in self._snapshots.values():
+            if snapshot.player_id not in self._restored:
+                await self._restore_player(snapshot)
+                self._restored.add(snapshot.player_id)
         self._report_stranded_static_delays()
+
+    async def _release_player(self, snapshot: PlayerSnapshot) -> None:
+        """
+        Give a commandeered player its static delay back and take it out of the group.
+
+        The delay goes first: releasing a player from the group can take its Sendspin
+        client offline. A player that has gone gets it back in what is stored of it, so
+        it does not come back measuring from zero.
+        """
+        name = self._name_of(snapshot.player_id)
+        await self._restore_step(
+            name, "restore the static delay", self._restore_static_delay(snapshot.player_id)
+        )
+        player = self.mass.players.get_player(snapshot.player_id)
+        if player is not None and player.state.available:
+            await self._restore_step(
+                name, "release from the calibration group", self._ungroup(player)
+            )
 
     async def _restore_player(self, snapshot: PlayerSnapshot) -> None:
         """
-        Put a single commandeered player back the way it was found.
+        Put a single released player back the way it was found.
 
         Every step is attempted independently: they all reach into the player
-        provider, and a speaker that fails to leave the group must still have its
+        provider, and a speaker that fails to rejoin its group must still have its
         volume and mute put back rather than be left silent.
         """
         player = self.mass.players.get_player(snapshot.player_id)
@@ -477,34 +566,37 @@ class CalibrationSession:
                 "Can not restore player %s after calibration: it is no longer available",
                 snapshot.player_id,
             )
+            if self._silenced.get(snapshot.player_id) == SilenceMethod.VOLUME:
+                # a volume can not be set on a player that is away, and nothing else
+                # will: say what it was, as for a static delay that could not go back
+                self.logger.warning(
+                    "Player %s is left at volume 0 after calibration; set it back to %s by hand",
+                    snapshot.player_id,
+                    snapshot.volume_level,
+                )
             self._release_stale_mute_lock(player)
             return
-        # ahead of the steps below: releasing a player from the group and putting its
-        # power back can take its Sendspin client offline, and the delay can not be
-        # written to a client that is no longer there
+        name = player.state.name
         await self._restore_step(
-            player, "restore the static delay", self._restore_static_delay(snapshot.player_id)
+            name, "restore the volume", self._restore_volume_and_mute(player, snapshot)
         )
         await self._restore_step(
-            player, "release from the calibration group", self._ungroup(player)
+            name, "restore the grouping", self._restore_grouping(player, snapshot)
         )
         await self._restore_step(
-            player, "restore the volume", self._restore_volume_and_mute(player, snapshot)
-        )
-        await self._restore_step(
-            player, "restore the grouping", self._restore_grouping(player, snapshot)
-        )
-        await self._restore_step(
-            player, "restore playback", self._restore_power_and_playback(player, snapshot)
+            name, "restore playback", self._restore_power_and_playback(player, snapshot)
         )
 
-    async def _restore_step(
-        self, player: Player, what: str, step: Coroutine[Any, Any, None]
-    ) -> None:
+    def _name_of(self, player_id: str) -> str:
+        """Return the name of a member for a log message, its id once it has gone."""
+        player = self.mass.players.get_player(player_id)
+        return player.state.name if player is not None else player_id
+
+    async def _restore_step(self, name: str, what: str, step: Coroutine[Any, Any, None]) -> None:
         """
         Run one restore step, logging rather than raising when it fails.
 
-        :param player: The player being restored, for the log message.
+        :param name: The name of the player being restored, for the log message.
         :param what: What the step was trying to do, for the log message.
         :param step: The step to run.
         """
@@ -515,7 +607,7 @@ class CalibrationSession:
             # provider, which is free to surface anything its client library raises,
             # and one failure may not strand the rest of the restore.
             # CancelledError is a BaseException and still propagates.
-            self.logger.warning("Could not %s for player %s: %s", what, player.state.name, err)
+            self.logger.warning("Could not %s for player %s: %s", what, name, err)
 
     async def _zero_static_delay(self, sendspin: SendspinProvider, player: Player) -> None:
         """
@@ -545,13 +637,24 @@ class CalibrationSession:
         carrier_id = sendspin.get_player_static_delay_carrier(protocol.protocol_id)
         self._measured_carriers[player.player_id] = carrier_id
         delay_ms = sendspin.get_player_static_delay(protocol.protocol_id)
+        self._delays_before[player.player_id] = delay_ms
         if delay_ms == 0:
             return
-        await sendspin.set_player_static_delay(protocol.protocol_id, 0)
-        # recorded only once the write landed, so a failed one leaves nothing to undo
+        # Recorded, and reported to the owner, ahead of the write: a zero is stored with
+        # the player, and a server that goes down between the two would leave it with
+        # nothing that knows what to put back. Putting back a delay that was never
+        # taken off writes the value the player already has.
         self._zeroed_delays[player.player_id] = StaticDelaySnapshot(
             protocol.protocol_id, delay_ms, carrier_id
         )
+        self._report_owed_delays()
+        try:
+            await sendspin.set_player_static_delay(protocol.protocol_id, 0)
+        except Exception:
+            # a write that did not land leaves nothing to undo
+            del self._zeroed_delays[player.player_id]
+            self._report_owed_delays()
+            raise
 
     async def _restore_static_delay(self, player_id: str) -> None:
         """
@@ -570,22 +673,25 @@ class CalibrationSession:
         # for as long as it takes to walk a house, and the Sendspin provider that carries
         # the delay may have reloaded in the meantime
         sendspin = _require_sendspin(self.mass, self.translation_owner)
-        # named by its carrier: a bridged speaker whose output another protocol took
-        # over since gets the delay back for the carrier it came off, not for the new one
-        await sendspin.set_player_static_delay(
-            zeroed.sendspin_protocol_id, zeroed.delay_ms, carrier_id=zeroed.carrier_id
-        )
+        await put_static_delay_back(sendspin, zeroed)
         # dropped only once the value is back, so anything that raised above is still
         # owed and gets named by the sweep at the end of the restore
         del self._zeroed_delays[player_id]
+        self._report_owed_delays()
+
+    def _report_owed_delays(self) -> None:
+        """Tell the owner of the session which static delays it still has to put back."""
+        if self._on_owed_delays_changed is not None:
+            self._on_owed_delays_changed(self._zeroed_delays)
 
     def _report_stranded_static_delays(self) -> None:
         """
         Warn about every static delay this session zeroed and could not put back.
 
-        Zeroing is persisted in the player's config, so a speaker that has meanwhile gone
-        stays at zero until something sets it again - and a user has no reason to suspect
-        it. Naming the value it should carry is all a finished session can still do.
+        Zeroing is persisted in the player's config, so a speaker it could not be undone
+        for stays at zero until something sets it again - and a user has no reason to
+        suspect it. The owner of the session still holds what is owed and tries again
+        when it loads; until then, naming the value is all a finished session can do.
         """
         for player_id, zeroed in self._zeroed_delays.items():
             self.logger.warning(
@@ -614,9 +720,10 @@ class CalibrationSession:
                 await self.mass.players.cmd_volume_set(player.player_id, snapshot.volume_level)
             elif method == SilenceMethod.MUTE:
                 await self.mass.players.cmd_volume_mute(player.player_id, snapshot.volume_muted)
-        except Exception:
+        except BaseException:
             # keep the record so the eventual stop still tries to undo this, even
-            # though the solo or restore that got here treats it as a failure
+            # though the solo or restore that got here treats it as a failure. Also
+            # for a cancellation, which the stop after it has to pick up from.
             self._silenced[player.player_id] = method
             raise
 
@@ -660,7 +767,10 @@ class CalibrationSession:
         )
 
     async def _close_shared_session(self) -> None:
-        """Remove the hidden anchor player and its queue."""
+        """Remove the hidden anchor player and its queue, once."""
+        if self._anchor_closed:
+            return
+        self._anchor_closed = True
         try:
             await self._shared_session.close()
         except Exception as err:
@@ -752,9 +862,50 @@ class CalibrationSession:
         isolated while it is still silent.
         """
         player = self.mass.players.get_player(player_id)
-        if player is None:
-            return
+        if player is None or not player.state.available:
+            name = self._name_of(player_id)
+            raise PlayerUnavailableError(
+                f"Player {name} is not available",
+                translation_key="player_unavailable",
+                translation_args=[name],
+                translation_owner=self.translation_owner,
+            )
         await self._restore_volume_and_mute(player, self._snapshots[player_id])
+
+
+async def put_static_delay_back(sendspin: SendspinProvider, owed: StaticDelaySnapshot) -> None:
+    """
+    Give a Sendspin output back a static delay a calibration session took off it.
+
+    Named by its carrier: a bridged speaker whose output another protocol took over
+    since gets the delay back for the carrier it came off, not for the new one.
+
+    An output that is not there to take it - its speaker dropped off, or its server went
+    down mid-session - gets the delay back in what is stored of it, which is what it is
+    given once it registers again. Nothing is stored of an output that only exists while
+    its device is connected; that one lost the zero along with everything else, so there
+    is nothing left to put back.
+
+    :param sendspin: The Sendspin provider the delay is written through.
+    :param owed: The delay to put back, and where.
+    """
+    try:
+        await sendspin.set_player_static_delay(
+            owed.sendspin_protocol_id, owed.delay_ms, carrier_id=owed.carrier_id
+        )
+    except PlayerUnavailableError, UnsupportedFeaturedException:
+        sendspin.store_player_static_delay(
+            owed.sendspin_protocol_id, owed.delay_ms, carrier_id=owed.carrier_id
+        )
+
+
+def is_silent(player: Player) -> bool:
+    """
+    Return whether the given player is muted or turned all the way down.
+
+    :param player: The player to check.
+    """
+    return bool(player.state.volume_muted) or player.state.volume_level == 0
 
 
 def resolve_sendspin_protocol(player: Player) -> PlayerProtocol | None:
@@ -911,10 +1062,12 @@ def _validate_player(mass: MusicAssistant, player_id: str, translation_owner: st
     """Return the player with the given id, if it can take part in a calibration session."""
     player = mass.players.get_player(player_id)
     if player is None or not player.state.available:
+        # named as the user knows it, which only a player that is gone altogether is not
+        name = player.state.name if player is not None else player_id
         raise PlayerUnavailableError(
-            f"Player {player_id} is not available",
+            f"Player {name} is not available",
             translation_key="player_unavailable",
-            translation_args=[player_id],
+            translation_args=[name],
             translation_owner=translation_owner,
         )
     if not is_eligible(mass, player):
@@ -934,7 +1087,7 @@ def _reject_silent_players(players: list[Player], translation_owner: str) -> Non
     A session refuses to claim a mute or a zero volume the user set themselves, so a
     speaker that starts out silent could be soloed but never actually heard.
     """
-    silent = [p for p in players if p.state.volume_muted or p.state.volume_level == 0]
+    silent = [p for p in players if is_silent(p)]
     if not silent:
         return
     names = ", ".join(p.state.name for p in silent)

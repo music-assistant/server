@@ -16,6 +16,7 @@ itself.
 from __future__ import annotations
 
 import asyncio
+import json
 from itertools import cycle
 from typing import TYPE_CHECKING, cast
 
@@ -47,14 +48,17 @@ from .session import (
     CalibrationResult,
     CalibrationSession,
     CalibrationSessionState,
+    StaticDelaySnapshot,
     is_busy,
     is_eligible,
+    is_silent,
+    put_static_delay_back,
     resolve_sendspin_protocol,
     resolve_static_delays,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable
+    from collections.abc import AsyncGenerator, Callable, Mapping
 
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
@@ -71,9 +75,15 @@ SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 AUDIO_SOURCE_ID = "calibration"
 
 # A session holds a user's speakers muted and regrouped, so it may never outlive
-# the phone that is driving it. The timeout is generous enough to walk a large
-# house and is re-armed on every solo.
-SESSION_TIMEOUT_SECONDS = 900
+# the phone that is driving it. A client says it is still there with keep_alive, a
+# few times within this window, so a phone that walked out of range for a moment
+# does not lose the run and one that has gone gives the speakers back soon.
+SESSION_TIMEOUT_SECONDS = 180
+
+# Key of the static delays a session took off and has not put back yet, among the
+# stored values of this provider. They are only held in memory otherwise, and the
+# zero in their place is stored with each speaker.
+CONF_OWED_STATIC_DELAYS = "owed_static_delays"
 
 
 async def setup(
@@ -159,6 +169,8 @@ class SendspinSyncProvider(PluginProvider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
+        # ahead of the commands, so no session can start over delays still owed
+        await self._put_owed_static_delays_back()
         api_handlers = (
             ("sendspin_sync/eligible_players", self.get_eligible_players, Scope.PLAYERS_READ),
             ("sendspin_sync/session", self.get_session, Scope.PLAYERS_READ),
@@ -172,6 +184,7 @@ class SendspinSyncProvider(PluginProvider):
             # caller's scopes.
             ("sendspin_sync/start_session", self.start_session, Scope.CONFIG_PLAYERS_WRITE),
             ("sendspin_sync/solo_player", self.solo_player, Scope.CONFIG_PLAYERS_WRITE),
+            ("sendspin_sync/keep_alive", self.keep_alive, Scope.CONFIG_PLAYERS_WRITE),
             (
                 "sendspin_sync/apply_measurements",
                 self.apply_measurements,
@@ -279,7 +292,7 @@ class SendspinSyncProvider(PluginProvider):
         session = self._session
         if session is not None and queue_id == session.queue_id and not session.stopped:
             self.logger.debug("Calibration stream ended externally, stopping the session")
-            self.mass.create_task(self._stop_session(), task_id=self._session_teardown_id)
+            self.mass.create_task(self._stop_session(session), task_id=self._session_teardown_id)
 
     async def get_eligible_players(self) -> list[CalibrationPlayer]:
         """
@@ -314,6 +327,7 @@ class SendspinSyncProvider(PluginProvider):
                     # asked of the speaker's Sendspin side, which is the only object
                     # that carries a static delay
                     adjustable=sendspin.supports_player_static_delay(protocol.protocol_id),
+                    silent=is_silent(player),
                 )
             )
         return offered
@@ -369,6 +383,7 @@ class SendspinSyncProvider(PluginProvider):
                 owner_instance_id=self.instance_id,
                 player_ids=player_ids,
                 force=force,
+                on_owed_delays_changed=self._store_owed_static_delays,
             )
             # Registered before the stream starts: starting it fires the source
             # lifecycle hooks, and on_source_unselected can only tear the session
@@ -377,10 +392,12 @@ class SendspinSyncProvider(PluginProvider):
             self._arm_session_timeout()
             try:
                 await session.begin(self._audio_source)
-            except Exception:
-                self._session = None
+            except BaseException:
+                # also a cancellation: the session stays registered until it is torn
+                # down, so an unload that follows can finish a stop that was cut short
                 self._cancel_session_timeout()
                 await session.stop()
+                self._session = None
                 raise
             return session.state
 
@@ -404,9 +421,30 @@ class SendspinSyncProvider(PluginProvider):
                     translation_key="no_session",
                     translation_owner=self.translation_owner,
                 )
-            await self._session.solo(player_id)
+            # ahead of the solo: one that fails part-way leaves a session that is still
+            # being driven, by a client that is told what went wrong
             self._arm_session_timeout()
+            await self._session.solo(player_id)
             return self._session.state
+
+    async def keep_alive(self) -> CalibrationSessionState:
+        """
+        Say that the client driving the running session is still there.
+
+        A session gives the speakers back when nothing has driven it for a while, and
+        this is the command a client sends in between: it changes nothing else.
+
+        :raises ActionUnavailable: If no calibration session is running.
+        :return: The state of the session.
+        """
+        if self._session is None or self._session.stopped:
+            raise ActionUnavailable(
+                "No calibration session is running",
+                translation_key="no_session",
+                translation_owner=self.translation_owner,
+            )
+        self._arm_session_timeout()
+        return self._session.state
 
     async def apply_measurements(self, offsets_ms: dict[str, float]) -> CalibrationResult:
         """
@@ -475,7 +513,7 @@ class SendspinSyncProvider(PluginProvider):
                 for player_id, target in delay_targets.items()
             }
             delays_ms = resolve_static_delays(offsets_ms, current_delays_ms, self.translation_owner)
-            result = CalibrationResult(applied={}, manual={})
+            result = CalibrationResult(applied={}, previous={}, manual={})
             # Saving these mid-session does not disturb the measurement: the static delay
             # config entry is immediate_apply and carries no requires_reload, so the
             # config controller pushes it straight to the client instead of restarting
@@ -490,6 +528,12 @@ class SendspinSyncProvider(PluginProvider):
                 # supersede the session's restore. See keep_applied_static_delay.
                 self._session.keep_applied_static_delay(player_id)
                 result.applied[player_id] = delay_ms
+                # a member that only started accepting a delay mid-session had nothing
+                # taken off, so what it carried going into this apply is what it had
+                before_ms = self._session.static_delay_before(player_id)
+                result.previous[player_id] = (
+                    current_delays_ms[player_id] if before_ms is None else before_ms
+                )
             self._arm_session_timeout()
             return result
 
@@ -551,10 +595,11 @@ class SendspinSyncProvider(PluginProvider):
                 else None
             )
             if protocol is None:
+                name = player.state.name if player is not None else player_id
                 raise PlayerUnavailableError(
-                    f"Player {player_id} is not available",
+                    f"Player {name} is not available",
                     translation_key="player_unavailable",
-                    translation_args=[player_id],
+                    translation_args=[name],
                     translation_owner=self.translation_owner,
                 )
             if not sendspin.supports_player_static_delay(protocol.protocol_id):
@@ -590,22 +635,88 @@ class SendspinSyncProvider(PluginProvider):
 
     async def _handle_session_timeout(self) -> None:
         """Tear down a session that has not been driven for a while."""
-        if self._session is None:
+        if (session := self._session) is None:
             return
         self.logger.warning(
             "Calibration session timed out after %s seconds without activity, restoring players",
             SESSION_TIMEOUT_SECONDS,
         )
-        await self._stop_session()
+        await self._stop_session(session)
 
-    async def _stop_session(self) -> None:
-        """Stop and clear the running session, if any."""
-        self._cancel_session_timeout()
+    async def _stop_session(self, session: CalibrationSession | None = None) -> None:
+        """
+        Stop and clear the running session, if any.
+
+        :param session: The session to stop, None for whichever one is running. A
+            teardown that was queued for one session waits for the lock, and may not
+            stop the session that was started in the meantime.
+        """
         async with self._session_lock:
-            if self._session is None:
+            if self._session is None or session not in (None, self._session):
                 return
+            self._cancel_session_timeout()
             await self._session.stop()
             self._session = None
+
+    def _store_owed_static_delays(self, owed: Mapping[str, StaticDelaySnapshot]) -> None:
+        """
+        Keep the static delays the running session still has to put back.
+
+        Stored at once, not with the next save of the config: a server that goes down in
+        between would come back with speakers at zero and nothing that knows their delay.
+
+        :param owed: The delay taken off each member, by member id.
+        """
+        entries = [
+            [snapshot.sendspin_protocol_id, snapshot.delay_ms, snapshot.carrier_id]
+            for snapshot in owed.values()
+        ]
+        try:
+            self.mass.config.set_raw_provider_config_value(
+                self.instance_id, CONF_OWED_STATIC_DELAYS, json.dumps(entries), immediate=True
+            )
+        except KeyError:
+            # the provider is being removed, and its stored config went first
+            self.logger.debug("No stored config left to keep the owed static delays in")
+
+    async def _put_owed_static_delays_back(self) -> None:
+        """
+        Put back the static delays a session that never got to stop left at zero.
+
+        A session takes the delays off for as long as it measures, and a server that
+        went down mid-session - or a speaker whose provider was gone when it stopped -
+        leaves them off. Each is written to what is stored of its speaker, and to the
+        speaker itself when it is already there.
+        """
+        stored = self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_OWED_STATIC_DELAYS
+        )
+        if not isinstance(stored, str) or not (entries := json.loads(stored)):
+            return
+        sendspin = cast("SendspinProvider | None", self.mass.get_provider(SENDSPIN_DOMAIN))
+        if sendspin is None:
+            # kept for the next load: this provider only loads once Sendspin has
+            return
+        for protocol_id, delay_ms, carrier_id in entries:
+            self.logger.warning(
+                "Putting back the static delay of %s ms a calibration left off %s",
+                delay_ms,
+                protocol_id,
+            )
+            try:
+                await put_static_delay_back(
+                    sendspin, StaticDelaySnapshot(protocol_id, delay_ms, carrier_id)
+                )
+            except Exception as err:
+                # deliberately broad: one speaker that can not take its delay back may
+                # not keep the provider from loading, nor the others from theirs
+                self.logger.warning(
+                    "Could not put the static delay of %s back; set it to %s ms by hand: %s",
+                    protocol_id,
+                    delay_ms,
+                    err,
+                )
+        self._store_owed_static_delays({})
 
     @property
     def _session_timeout_id(self) -> str:
