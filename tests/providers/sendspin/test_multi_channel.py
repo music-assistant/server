@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 from aiosendspin.models.core import ClientHelloPayload
@@ -19,6 +20,7 @@ from aiosendspin.server import (
 )
 from aiosendspin.server import client as sendspin_client_module
 from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
+from music_assistant_models.auth import UserRole
 from music_assistant_models.enums import (
     ChannelLayout,
     PlaybackState,
@@ -46,6 +48,7 @@ from music_assistant.providers.sendspin.provider import SendspinProvider
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from aiohttp import ClientWebSocketResponse
     from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 
     from music_assistant.mass import MusicAssistant
@@ -978,3 +981,83 @@ async def test_a_speaker_combined_while_its_client_is_handled_stays_in_its_set(
 
     assert sendspin.get_protocol(LEFT) is None
     assert mass.config.get_protocol_record(LEFT) is None
+
+
+async def test_a_set_that_leaves_its_group_while_playing_hands_the_playback_to_the_other_player(
+    mass: MusicAssistant,
+) -> None:
+    """A set that leads a playing group and leaves it hands its playback to the other player."""
+    sendspin = _sendspin(mass)
+    player, _, _ = await _compose(mass, sendspin)
+    await _add_speaker(sendspin, DEN, "Den")
+    den_player_id = _player_id(sendspin, DEN)
+    set_protocol = _set_of(sendspin, player)
+    den = cast("Any", sendspin.get_protocol(DEN))
+    await _wait_for(
+        lambda: den_player_id in mass.players.get_player(player.player_id).can_group_with  # type: ignore[union-attr]
+    )
+    await mass.players.cmd_set_members(player.player_id, player_ids_to_add=[den_player_id])
+    await _wait_for(lambda: DEN in set_protocol.playback_session._members)
+    session = set_protocol.playback_session
+    session.playback_task = asyncio.create_task(asyncio.sleep(30))
+    try:
+        await set_protocol.set_members(player_ids_to_remove=[set_protocol.protocol_id])
+
+        assert den.playback_session is session
+        assert session.player is den
+        await _wait_for(
+            lambda: _group_client_ids(set_protocol) == {set_protocol.protocol_id, LEFT, RIGHT}
+        )
+        assert [client.client_id for client in den.api.group.clients] == [DEN]
+    finally:
+        session.playback_task.cancel()
+
+
+async def test_a_set_is_combined_through_the_websocket_api(mass: MusicAssistant) -> None:
+    """A client combines speakers over the websocket API, naming each channel by its name."""
+    sendspin = _sendspin(mass)
+    await _add_speaker(sendspin, LEFT, "Kitchen left")
+    await _add_speaker(sendspin, RIGHT, "Kitchen right")
+    user = await mass.webserver.auth.create_user(username="admin_user", role=UserRole.ADMIN)
+    token = await mass.webserver.auth.create_token(user, "test")
+
+    async with mass.http_session_no_ssl.ws_connect(
+        f"{mass.webserver.internal_base_url}/ws"
+    ) as client:
+        await client.receive_json(timeout=10)
+        assert "result" in await _send(client, "auth", token=token)
+        answer = await _send(
+            client,
+            "players/create_multi_channel_player",
+            provider="sendspin",
+            name="Kitchen",
+            members={
+                _player_id(sendspin, LEFT): "front_left",
+                _player_id(sendspin, RIGHT): "front_right",
+            },
+        )
+
+    assert (answer["result"]["type"], answer["result"]["channel_layout"]) == (
+        "multi_channel",
+        "stereo",
+    )
+    player = mass.players.get_player(answer["result"]["player_id"])
+    assert player is not None
+    await _wait_for(lambda: {LEFT, RIGHT} <= _group_client_ids(_set_of(sendspin, player)))
+    assert sendspin.speaker_output(RIGHT)[1] == SpeakerChannel.FRONT_RIGHT
+
+
+async def _send(client: ClientWebSocketResponse, command: str, **args: Any) -> dict[str, Any]:
+    """
+    Send a command over the websocket API and return the answer to it.
+
+    :param client: The connected client.
+    :param command: The command.
+    :param args: Its arguments.
+    """
+    message_id = uuid4().hex
+    await client.send_json({"message_id": message_id, "command": command, "args": args})
+    while True:
+        message: dict[str, Any] = await client.receive_json(timeout=10)
+        if message.get("message_id") == message_id:
+            return message
