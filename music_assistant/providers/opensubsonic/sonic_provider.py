@@ -22,6 +22,7 @@ from music_assistant_models.errors import (
     ActionUnavailable,
     LoginFailed,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderPermissionDenied,
     UnsupportedFeaturedException,
 )
@@ -348,7 +349,12 @@ class OpenSonicProvider(MusicProvider):
         return folder.items
 
     async def resolve_image(self, path: str) -> bytes | Any:
-        """Return the image."""
+        """
+        Return cover artwork, or None if the server does not have it.
+
+        :param path: The cover art ID on the server.
+        :raises MusicAssistantError: If the server rejects the cover art request.
+        """
         self.logger.debug("Requesting cover art for '%s'", path)
 
         try:
@@ -357,6 +363,9 @@ class OpenSonicProvider(MusicProvider):
         except DataNotFoundError:
             self.logger.warning("Unable to locate a cover image for %s", path)
             return None
+        except SonicError as err:
+            msg = f"Open Subsonic could not retrieve cover art {path}"
+            raise MusicAssistantError(msg) from err
 
     def accepts_stored_image_path(self, path: str) -> bool:
         """

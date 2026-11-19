@@ -651,8 +651,10 @@ class SyncGroupPlayer(PlayerProtocol):
                 # the member or it would sit in _attr_group_members, reported as part
                 # of the group, without ever actually being synced.
                 self.logger.debug(
-                    f"Cannot add {member.name} to group {self.display_name} since it's "
-                    f"not compatible with the (current) sync leader"
+                    "Cannot add %s to group %s since it's "
+                    "not compatible with the (current) sync leader",
+                    member.name,
+                    self.display_name,
                 )
                 continue
             if member_id not in members:

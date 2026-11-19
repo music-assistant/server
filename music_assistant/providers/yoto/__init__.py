@@ -500,7 +500,9 @@ class YotoProvider(MusicProvider):
                 total_duration += chapter_duration
             else:
                 self.logger.warning(
-                    f"Audiobook {card_id} has a chapter {chapter.title} with no track data, or zero duration - skipping"
+                    "Audiobook %s has a chapter %s with no track data, or zero duration - skipping",
+                    card_id,
+                    chapter.title,
                 )
 
         return Audiobook(
@@ -657,7 +659,7 @@ class YotoProvider(MusicProvider):
                     ),
                 )
             else:
-                self.logger.warning(f"No tracks found for radio station {station.key}")
+                self.logger.warning("No tracks found for radio station %s", station.key)
 
     async def _refresh_hook(self, token: YotoToken) -> None:
         """Store updated refresh token."""
