@@ -363,12 +363,8 @@ async def test_the_role_follows_the_device_model(
 
     assert player.role == role
     assert (PlayerFeature.POWER in player.supported_features) is powered_by_client
-    if powered_by_client:
-        client.stop.assert_awaited_once()
-        client.power.assert_not_awaited()
-    else:
-        client.power.assert_awaited_once_with(False)
-        client.stop.assert_not_awaited()
+    client.stop.assert_awaited_once()
+    client.power.assert_not_awaited()
 
 
 def _connected_player(device_model: str = "SqueezeLite") -> tuple[SqueezelitePlayer, MagicMock]:

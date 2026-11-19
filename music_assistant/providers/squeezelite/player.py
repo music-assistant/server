@@ -103,7 +103,7 @@ class SqueezelitePlayer(PlayerProtocol):
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
         }
-        # Audio protocols are powered on/off with the stream and expose no power
+        # Audio protocols are powered on with the stream and expose no power
         # control; full players get native power support (slimproto power can e.g.
         # drive a GPIO/script wired to an amplifier).
         if is_protocol_only_device(client.device_model):
@@ -208,10 +208,9 @@ class SqueezelitePlayer(PlayerProtocol):
         if (bridge := self.sendspin_bridge) is not None:
             # a stream of the Sendspin bridge ends with the stop below
             bridge.stop_streaming()
-        if self.role == ProtocolRole.AUDIO:
-            await self.client.power(False)
-        else:
-            await self.client.stop()
+        # like LMS, a stop leaves the output on: a WiiM answers a power off with a pause
+        # request a few seconds later, which pauses whatever was started in between
+        await self.client.stop()
         self.update_state()
 
     async def play(self) -> None:
