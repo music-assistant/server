@@ -1928,6 +1928,10 @@ class StreamsAudio:
                     )
             except AudioError as err:
                 streamdetails.stream_error = True
+                # a prepared buffer that is gone, or a stream slot that is taken, is no failure
+                # of the source
+                if prepared_buffer is None and not isinstance(err, ProviderStreamLimitError):
+                    self.mass.player_queues.report_source_failure(queue_item, session_id)
                 if raise_on_error:
                     raise
                 logger.error(
@@ -2096,6 +2100,9 @@ class StreamsAudio:
                 # revoke availability when the stream never produced any audio
                 if bytes_received == 0 and not isinstance(err, ProviderStreamLimitError):
                     queue_item.available = False
+                # the source failed, as opposed to the reading of the audio it delivered
+                if audio_buffer.has_error and not isinstance(err, ProviderStreamLimitError):
+                    self.mass.player_queues.report_source_failure(queue_item, session_id)
                 if raise_on_error:
                     raise
                 logger.error(
@@ -3361,6 +3368,9 @@ class StreamsAudio:
                         queue_track.streamdetails.uri if queue_track.streamdetails else "unknown",
                         queue.display_name,
                     )
+                    if not queue_track.streamdetails.stream_error:
+                        # its source ended without audio; an error is reported where it occurred
+                        self.mass.player_queues.report_source_failure(queue_track, flow_session_id)
                     queue_track.streamdetails.stream_error = True
                     play_log_entry.seconds_streamed = 0
                     if last_fadeout_part:
