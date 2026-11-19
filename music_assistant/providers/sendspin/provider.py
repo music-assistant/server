@@ -76,7 +76,6 @@ from music_assistant.constants import (
     CONF_PLAYER_PROTOCOLS,
     CONF_PROVIDERS,
     CONF_UNDERLYING_PLAYER_ID,
-    SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -89,7 +88,9 @@ from music_assistant.helpers.guest_access import (
 from music_assistant.helpers.util import (
     format_ip_for_url,
     is_locally_administered_mac,
+    is_port_in_use,
     is_valid_mac_address,
+    select_free_port,
 )
 from music_assistant.helpers.virtual_player import cleanup_virtual_player
 from music_assistant.mass import MusicAssistant
@@ -117,6 +118,7 @@ from music_assistant.providers.sendspin.constants import (
     CONF_SPEAKER_NAME,
     CONF_SPEAKER_OUTPUT_DELAY,
     CONF_VIRTUAL_PLAYER_OWNER,
+    DEFAULT_SERVER_PORT,
     MULTI_CHANNEL_ID_PREFIX,
     VIRTUAL_PLAYER_ID_PREFIX,
 )
@@ -431,6 +433,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
     _unloading: bool
     _hass_available: bool
     _server_start_failed: bool
+    server_port: int
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -477,6 +480,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self._unloading = False
         self._hass_available = False
         self._server_start_failed = False
+        self.server_port = DEFAULT_SERVER_PORT
         self._hass_auto_pairer = HassAutoPairer(self)
         self._local_auto_pairer = LocalAutoPairer(self)
         self.sources = SendspinSources(self)
@@ -560,6 +564,24 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self._hass_available = hass is not None and hass.available
         if self._hass_available:
             self._hass_auto_pairer.subscribe()
+        # pick the port before the provider is registered, so every URL built for this
+        # server names it. Clients find the server over mDNS, which announces this port.
+        bind_ip = self.mass.streams.bind_ip
+        if await is_port_in_use(DEFAULT_SERVER_PORT, bind_ip):
+            try:
+                port = await select_free_port(
+                    DEFAULT_SENDSPIN_CLIENT_PORT + 1, DEFAULT_SERVER_PORT + 100, bind_ip
+                )
+            except OSError:
+                # a bad bind address fails every probe, and the bind itself reports why
+                self.logger.debug("No free port found, binding the default Sendspin port")
+            else:
+                self.server_port = port
+                self.logger.warning(
+                    "Port %d is in use, starting the Sendspin server on port %d instead",
+                    DEFAULT_SERVER_PORT,
+                    port,
+                )
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
@@ -1479,7 +1501,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         # and mDNS discovery of new clients
         try:
             await self.server_api.start_server(
-                port=SENDSPIN_SERVER_PORT,
+                port=self.server_port,
                 host=self.mass.streams.bind_ip,
                 advertise_addresses=[self.mass.streams.publish_ip],
             )
@@ -1489,7 +1511,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             # so surface this as a provider error the user can see
             self.unload_with_error(
                 SetupFailedError(
-                    f"Could not start the Sendspin server on port {SENDSPIN_SERVER_PORT}: {err}"
+                    f"Could not start the Sendspin server on port {self.server_port}: {err}"
                 )
             )
             return

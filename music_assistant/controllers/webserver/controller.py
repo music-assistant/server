@@ -66,7 +66,6 @@ from music_assistant.constants import (
     DEFAULT_HOST,
     INGRESS_SERVER_PORT,
     RESOURCES_DIR,
-    SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
     WILDCARD_BIND_IPS,
 )
@@ -124,6 +123,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.api import APICommandHandler
+    from music_assistant.providers.sendspin.provider import SendspinProvider
 
 DEFAULT_SERVER_PORT = 8095
 CONF_BASE_URL = "base_url"
@@ -308,14 +308,17 @@ class WebserverController(CoreController):
         return self.base_url
 
     @property
-    def internal_sendspin_url(self) -> str:
-        """Return the URL to reach the in-process Sendspin server from this host."""
+    def internal_sendspin_url(self) -> str | None:
+        """Return the URL to reach the in-process Sendspin server from this host, while it is loaded."""
+        sendspin = cast("SendspinProvider | None", self.mass.get_provider("sendspin"))
+        if sendspin is None:
+            return None
         # the advertised address is not necessarily dialable here (e.g. a container or
         # NAT setup), so derive the address from what the Sendspin server actually binds to
         connect_ip = _get_internal_connect_ip(
             self.mass.streams.bind_ip, str(self.mass.streams.publish_ip)
         )
-        return f"ws://{format_ip_for_url(connect_ip)}:{SENDSPIN_SERVER_PORT}/sendspin"
+        return f"ws://{format_ip_for_url(connect_ip)}:{sendspin.server_port}/sendspin"
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""

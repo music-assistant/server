@@ -113,6 +113,8 @@ Hardware devices and local clients can connect directly to the Sendspin server:
 ws://<ma-server-ip>:8927/sendspin
 ```
 
+When 8927 is taken, the server uses the next free port and announces it over mDNS.
+
 This is suitable for:
 - Hardware players on the local network
 - Native apps with direct network access

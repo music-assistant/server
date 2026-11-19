@@ -1,6 +1,6 @@
 """Tests for the URL used to reach the in-process Sendspin server."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -38,5 +38,26 @@ def test_url_follows_the_bind_address(
     """Verify the URL resolves to an address that exists on this host."""
     mock_mass.streams.bind_ip = bind_ip
     mock_mass.streams.publish_ip = publish_ip
+    mock_mass.get_provider.return_value = Mock(server_port=8927)
 
     assert webserver.internal_sendspin_url == expected
+
+
+def test_url_uses_the_port_sendspin_listens_on(
+    webserver: WebserverController, mock_mass: MagicMock
+) -> None:
+    """Verify the URL names the port the Sendspin server listens on."""
+    mock_mass.streams.bind_ip = "0.0.0.0"
+    mock_mass.streams.publish_ip = "192.168.1.5"
+    mock_mass.get_provider.return_value = Mock(server_port=9027)
+
+    assert webserver.internal_sendspin_url == "ws://127.0.0.1:9027/sendspin"
+
+
+def test_no_url_without_the_sendspin_provider(
+    webserver: WebserverController, mock_mass: MagicMock
+) -> None:
+    """Verify there is no URL while the Sendspin provider is not loaded."""
+    mock_mass.get_provider.return_value = None
+
+    assert webserver.internal_sendspin_url is None
