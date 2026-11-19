@@ -221,7 +221,8 @@ pair), and the HomePods are fed directly as its speakers.
   speakers.
 - In a Sendspin group the bridge of the set feeds its speakers, each anchored on the Sendspin
   timeline as a join, and the Apple TV after them as in a session of its own: fed silence, sent no
-  volume, added once more when it fails, and never stopping its speakers.
+  volume, added once more when it fails but not after it ended its session itself (unless a
+  speaker of the set just set up again, which ends it too), and never stopping its speakers.
 
 ### Protocol ID Format
 

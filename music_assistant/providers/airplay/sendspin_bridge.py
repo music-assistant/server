@@ -51,6 +51,7 @@ from .constants import (
     AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_SILENT_MEMBER_REJOIN_DELAY,
+    AIRPLAY_SILENT_MEMBER_RESET_WINDOW,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     StreamingProtocol,
 )
@@ -293,8 +294,12 @@ class SendspinAirPlayBridge:
         # A transport per device the player plays on, by protocol id: the player itself, or
         # the speakers of its set and the device of the set, which joins after them unheard.
         self._transports: dict[str, _BridgeTransport] = {}
-        # Whether the device of a set is left out of the current stream after failing twice.
+        # Whether the device of a set is left out of the current stream after failing twice, or
+        # after it ended its session itself.
         self._silent_member_left_out = False
+        # Monotonic instant a speaker of the set last set up again, which resets the session of
+        # the device of the set (None when none did).
+        self._speaker_set_up_at: float | None = None
         self._rejoin_task: asyncio.Task[None] | None = None
         # Monotonic instant the bridge was last put back into the group a give-up
         # took it out of (None when never). Giving up again this soon after means
@@ -940,32 +945,57 @@ class SendspinAirPlayBridge:
 
         A speaker that fails ends the stream of its set: a set plays on all of its speakers
         or not at all. The device of a set never stops its speakers: it is added once more
-        after a short wait, and left out of the stream when it fails again.
+        after a short wait, and left out of the stream when it fails again. One that ended its
+        session itself (another sender took it over, or it went to sleep) is left out at once,
+        unless a speaker of its set just set up again, which ends that session too.
 
         :param transport: The transport that failed.
         """
         if not transport.silent:
             self._abandon_streaming()
             return
+        if (stream := transport.stream) is not None and stream.receiver_closed:
+            set_up_at = self._speaker_set_up_at
+            if set_up_at is None or (
+                time.monotonic() - set_up_at >= AIRPLAY_SILENT_MEMBER_RESET_WINDOW
+            ):
+                self.logger.info(
+                    "%s ended its session, its speakers play on without it",
+                    transport.endpoint.display_name,
+                )
+                self._leave_out(transport)
+                return
         if transport.retried:
             self.logger.warning(
                 "%s failed again, its speakers play on without it",
                 transport.endpoint.display_name,
             )
-            self._silent_member_left_out = True
-            self._transports.pop(transport.endpoint.protocol_id, None)
-            transport.release()
+            self._leave_out(transport)
             return
         transport.retried = True
         transport.restart()
         # a session to an Apple TV that reset stays up when opened some seconds later (measured)
         transport.not_before = time.monotonic() + AIRPLAY_SILENT_MEMBER_REJOIN_DELAY
 
+    def _leave_out(self, transport: _BridgeTransport) -> None:
+        """
+        Leave the device of a set out of the current stream.
+
+        :param transport: The transport of the device.
+        """
+        self._silent_member_left_out = True
+        self._transports.pop(transport.endpoint.protocol_id, None)
+        transport.release()
+
     def _renew_silent_retry(self) -> None:
         """Give the device of a set its retry back: a speaker that sets up again resets it."""
-        for transport in self._transports.values():
-            if transport.silent:
-                transport.retried = False
+        if not (
+            silent := [transport for transport in self._transports.values() if transport.silent]
+        ):
+            return
+        self._speaker_set_up_at = time.monotonic()
+        for transport in silent:
+            transport.retried = False
 
 
 class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):

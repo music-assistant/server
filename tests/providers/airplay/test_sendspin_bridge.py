@@ -32,6 +32,7 @@ tests are deterministic and independent of the host wall-clock:
 """
 
 import asyncio
+import time
 from collections.abc import Coroutine
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -48,6 +49,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_CLOCK_READY_LEAD_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_SILENT_MEMBER_REJOIN_DELAY,
+    AIRPLAY_SILENT_MEMBER_RESET_WINDOW,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     ClockReadiness,
     StreamingProtocol,
@@ -4352,6 +4354,42 @@ def test_a_speaker_of_a_room_that_sets_up_again_gives_the_apple_tv_its_retry_bac
     assert speaker._recover_transport() is True
 
     assert silent.retried is False
+
+
+@pytest.mark.parametrize(
+    ("speaker_set_up_ago", "added_once_more"),
+    [(None, False), (1.0, True), (AIRPLAY_SILENT_MEMBER_RESET_WINDOW + 1, False)],
+)
+def test_an_apple_tv_that_ended_its_session_itself_is_not_taken_back(
+    speaker_set_up_ago: float | None, added_once_more: bool
+) -> None:
+    """
+    An Apple TV taken over by another sender, or put to sleep, is left out of the stream.
+
+    Right after a speaker of its room set up again, that end is the reset the speaker caused, and
+    the Apple TV is added once more.
+    """
+    bridge, _, apple_tv = _make_room_bridge()
+    silent = bridge._transports[apple_tv.protocol_id]
+    stream = _make_kept_stream(running=False, receiver_closed=True)
+    silent._airplay_stream = stream
+    apple_tv.stream = stream
+    silent._airplay_stream_start_task = _make_completed_start_task()
+    silent._started = True
+    if speaker_set_up_ago is not None:
+        bridge._renew_silent_retry()
+        bridge._speaker_set_up_at = time.monotonic() - speaker_set_up_ago
+
+    with (
+        patch.object(bridge, "_abandon_streaming", MagicMock()) as abandon,
+        patch.object(_BridgeTransport, "_start_protocol_from_chunk", MagicMock()),
+    ):
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 1_000_000))
+
+    abandon.assert_not_called()
+    assert (apple_tv.protocol_id in bridge._transports) is added_once_more
+    bridge.update_endpoints()
+    assert (apple_tv.protocol_id in bridge._transports) is added_once_more
 
 
 def test_a_room_that_plays_on_its_homepods_only_has_no_apple_tv_leg() -> None:
