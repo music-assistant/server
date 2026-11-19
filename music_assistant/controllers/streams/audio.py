@@ -3602,6 +3602,13 @@ class StreamsAudio:
                     next_sample_rate,
                 )
                 return False
+            if not self._player_has_next_item(protocol_id, flow_mode, next_item):
+                self.logger.debug(
+                    "Skipping the tail overlap of %s: the player has not received %s yet",
+                    queue_item.name,
+                    next_item.name,
+                )
+                return False
             return True
         if crossfade_mode == CrossfadeMode.DISABLED:
             return False
@@ -3640,6 +3647,13 @@ class StreamsAudio:
                 "with different sample rates (%s vs %s)",
                 sample_rate,
                 next_sample_rate,
+            )
+            return False
+
+        if not self._player_has_next_item(protocol_id, flow_mode, next_item):
+            self.logger.debug(
+                "Skipping crossfade: the player has not received %s as its next item yet",
+                next_item.name,
             )
             return False
 
@@ -5595,6 +5609,23 @@ class StreamsAudio:
                 CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.default_value,
             )
         )
+
+    def _player_has_next_item(
+        self, protocol_id: str | None, flow_mode: bool, next_item: QueueItem
+    ) -> bool:
+        """
+        Return whether the player of the item streams holds the item after the boundary.
+
+        :param protocol_id: The protocol that plays the item streams; not needed for a flow
+            stream.
+        :param flow_mode: Whether the items play on one flow stream.
+        :param next_item: The queue item that plays after the boundary.
+        """
+        # a flow stream carries the next item itself
+        if flow_mode or protocol_id is None:
+            return True
+        protocol = self.mass.players.get_protocol(protocol_id)
+        return protocol is None or protocol.has_received_next_item(next_item)
 
     @staticmethod
     def _same_album(queue_item: QueueItem, next_item: QueueItem) -> bool:
