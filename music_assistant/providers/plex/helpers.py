@@ -292,6 +292,8 @@ async def get_section_info(
     :param local_server_port: Port of the Plex server.
     :param local_server_verify_cert: Whether to verify SSL certificate.
     :param instance_id: Provider instance ID to use for cache isolation.
+    :raises PlexServerAccessError: The signed-in account has no verified access to the server.
+    :raises requests.ConnectionError: The server could not be reached.
     """
     cache_key = "plex_section_info"
     cache_provider = instance_id or local_server_ip
@@ -314,7 +316,7 @@ async def get_section_info(
                 local_server_port,
                 err,
             )
-            return []
+            raise
 
     def _get_section_info() -> list[PlexSectionInfo]:
         plex_server: PlexServer
@@ -331,7 +333,7 @@ async def get_section_info(
                 local_server_port,
                 err,
             )
-            return []
+            raise
         results: list[PlexSectionInfo] = []
         for media_section in cast("list[PlexLibrarySection]", plex_server.library.sections()):
             if media_section.type != PlexMusicSection.TYPE:

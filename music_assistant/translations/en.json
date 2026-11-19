@@ -2415,6 +2415,7 @@
   "provider.plex.config_entries.stream_quality.options.original": "Original",
   "provider.plex.config_entries.sync_on_library_change.description": "Start a sync as soon as Plex finishes scanning new or changed music into this library, instead of waiting for the next scheduled sync.",
   "provider.plex.config_entries.sync_on_library_change.label": "Sync when the Plex library changes",
+  "provider.plex.errors.cannot_connect": "Could not connect to the Plex server. Check the address and port, and that SSL (HTTPS) matches the secure connections setting of your Plex server. With SSL (HTTPS) on and an IP address as the server address, also turn off Verify certificate.",
   "provider.plex.errors.no_libraries": "No compatible libraries were found on this Plex server.",
   "provider.plex.errors.server_access_denied": "The Plex account you signed in with has no verified access to this Plex server. Check that the server is shared with this account, then sign in again.",
   "provider.plex.manifest.description": "Stream your personal music, podcasts, and radio via your Plex media server.",

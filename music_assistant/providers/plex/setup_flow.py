@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import requests
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from plexapi.myplex import MyPlexPinLogin
@@ -83,6 +84,9 @@ async def run_setup(session: SetupSession) -> None:
             # never fall back to the plain account token: the server could then treat a
             # user it is shared with as its owner
             errors = {"base": "server_access_denied"}
+            continue
+        except requests.exceptions.ConnectionError:
+            errors = {"base": "cannot_connect"}
             continue
         if not sections:
             errors = {"base": "no_libraries"}
