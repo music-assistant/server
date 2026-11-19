@@ -184,7 +184,7 @@ async def test_fetch_catalog_refreshes_and_caches() -> None:
     """A cache miss scrapes the index page and stores the result."""
     mass = _mass(http_response=_FakeResponse(html=INDEX_HTML))
     catalog = await fetch_catalog(mass)
-    assert set(catalog.machines) == {"JAPANGARDEN", "RAIN"}
+    assert set(catalog.machines) == {"JAPANGARDEN", "RAIN", "MAGIC_ONE"}
     mass.cache.set.assert_awaited_once()
 
 
@@ -220,12 +220,12 @@ async def test_fetch_catalog_prefers_stale_cache() -> None:
     assert set(catalog.machines) == {"ONE"}
 
 
-async def test_fetch_catalog_patron_includes_magic_in_own_cache() -> None:
-    """The patron catalog keeps MAGIC machines and caches under a separate key."""
+async def test_fetch_catalog_includes_patron_machines() -> None:
+    """The patron-only MAGIC machines are part of the (login-required) catalog."""
     mass = _mass(http_response=_FakeResponse(html=INDEX_HTML))
-    catalog = await fetch_catalog(mass, patron=True)
+    catalog = await fetch_catalog(mass)
     assert "MAGIC_ONE" in catalog.machines
-    assert mass.cache.set.await_args.args[0] == "catalog_patron"
+    assert mass.cache.set.await_args.args[0] == "catalog"
 
 
 # ------------------------------------------------------------- patron_login

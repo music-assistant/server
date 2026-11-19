@@ -15,8 +15,9 @@ playback (so the endless ffmpeg loop replays local data instead of re-fetching
 from the CDN on every pass) and deleted again when playback stops.
 
 myNoise grants lifetime privileged access to donors, validated by posting the
-donor email address (no password). Setting the optional 'Patron email' option
-logs in with that address and also unlocks the patron-only 'Magic' machines.
+donor email address (no password). This provider requires that access: the
+setup flow collects the email address of a myNoise donation, verifies it with
+myNoise, and no machine (patron-only or free) is offered until it is accepted.
 
 No official API exists, so the catalog is scraped from the public index page
 (with a bundled fallback) and each machine's layer files are parsed from the
@@ -47,7 +48,12 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import (
+    AuthenticationFailed,
+    AuthenticationRequired,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
@@ -129,12 +135,6 @@ class MyNoiseProvider(MusicProvider):
                 action="refresh_catalog",
             ),
             ConfigEntry(
-                key=CONF_PATRON_EMAIL,
-                type=ConfigEntryType.STRING,
-                value=self.get_config_value(CONF_PATRON_EMAIL, ""),
-                required=False,
-            ),
-            ConfigEntry(
                 key=CONF_MASTER_GAIN_DB,
                 type=ConfigEntryType.FLOAT,
                 default_value=0.0,
@@ -156,8 +156,10 @@ class MyNoiseProvider(MusicProvider):
             await super().handle_config_action(action)
             return
         # retry the patron login too, so a corrected email takes effect here
+        # (and a rejected one surfaces as an error on the options page)
         self._patron_logged_in = None
-        await fetch_catalog(self.mass, force_refresh=True, patron=await self._patron_enabled())
+        await self._require_patron()
+        await fetch_catalog(self.mass, force_refresh=True)
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -180,7 +182,8 @@ class MyNoiseProvider(MusicProvider):
         """Search the myNoise machine catalog by name."""
         if MediaType.RADIO not in media_types:
             return SearchResults()
-        catalog = await fetch_catalog(self.mass, patron=await self._patron_enabled())
+        await self._require_patron()
+        catalog = await fetch_catalog(self.mass)
         query = search_query.casefold()
         results = [
             self._radio_from_machine(machine)
@@ -195,7 +198,8 @@ class MyNoiseProvider(MusicProvider):
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio (noise machine) details by id."""
-        catalog = await fetch_catalog(self.mass, patron=await self._patron_enabled())
+        await self._require_patron()
+        catalog = await fetch_catalog(self.mass)
         machine = catalog.machines.get(prov_radio_id)
         if not machine:
             raise MediaNotFoundError(f"Unknown myNoise machine: {prov_radio_id}")
@@ -205,7 +209,8 @@ class MyNoiseProvider(MusicProvider):
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse the myNoise catalog: categories and their machines."""
-        catalog = await fetch_catalog(self.mass, patron=await self._patron_enabled())
+        await self._require_patron()
+        catalog = await fetch_catalog(self.mass)
         path_no_schema = path.split("://", 1)[1] if "://" in path else path
         parts = [part for part in path_no_schema.split("/") if part]
         # strip generic leading segments (mynoise://, root, libraries, radios)
@@ -249,7 +254,8 @@ class MyNoiseProvider(MusicProvider):
         self, item_id: str, media_type: MediaType = MediaType.RADIO
     ) -> StreamDetails:
         """Return streamdetails for the given machine: an endless custom mix."""
-        catalog = await fetch_catalog(self.mass, patron=await self._patron_enabled())
+        await self._require_patron()
+        catalog = await fetch_catalog(self.mass)
         machine = catalog.machines.get(item_id)
         if not machine:
             raise MediaNotFoundError(f"Unknown myNoise machine: {item_id}")
@@ -335,25 +341,41 @@ class MyNoiseProvider(MusicProvider):
 
     # -------------------------------------------------------------- helpers
 
-    async def _patron_enabled(self) -> bool:
-        """Return True when a patron email is configured and the login succeeded."""
-        email = str(self.get_config_value(CONF_PATRON_EMAIL, "") or "").strip()
+    async def _require_patron(self) -> None:
+        """
+        Raise unless the configured patron email has been accepted by myNoise.
+
+        myNoise content is licensed "FOR PERSONAL USE ONLY" to its donors, so
+        nothing (free machines included) is offered before the patron login
+        succeeded. A rejected email is cached until the refresh action retries
+        it; a transient failure is not cached and is retried on the next call.
+        """
+        email = str(self.get_setup_value(CONF_PATRON_EMAIL, "") or "").strip()
         if not email:
-            return False
+            raise AuthenticationRequired(
+                "myNoise requires the email address of your donation "
+                "(re-run the provider setup and enter the 'Patron email')"
+            )
         if self._patron_logged_in is None:
             try:
                 self._patron_logged_in = await patron_login(self.mass, email)
-            except Exception:
+            except Exception as err:
                 # a transient failure (network hiccup) is not an answer from
-                # myNoise: stay anonymous for now but retry on the next call
+                # myNoise: do not latch it, retry on the next call
                 self.logger.warning("myNoise patron login failed", exc_info=True)
-                return False
+                raise ProviderUnavailableError(
+                    "Could not reach myNoise to verify the patron email"
+                ) from err
             if not self._patron_logged_in:
                 self.logger.warning(
-                    "myNoise rejected the configured patron email; patron-only machines "
-                    "stay locked (the email must match the one of your donation)"
+                    "myNoise rejected the configured patron email (the email must "
+                    "match the one of your donation)"
                 )
-        return self._patron_logged_in
+        if not self._patron_logged_in:
+            raise AuthenticationFailed(
+                "myNoise rejected the configured patron email: the machines require "
+                "a myNoise donation and the email must match the one of your donation"
+            )
 
     async def _stage_layer(
         self, layer: MachineLayer, gain: float, use_variant_b: bool, staging_dir: str

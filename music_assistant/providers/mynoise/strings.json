@@ -7,7 +7,7 @@
     },
     "patron_email": {
       "label": "Patron email",
-      "description": "Email address associated with your myNoise donation. Fill in to unlock the patron-only Magic machines. Leave empty to use the free catalog only."
+      "description": "Email address associated with your myNoise donation. Required: myNoise grants access to its machines (free ones included) only to donors, so setup verifies this address with myNoise before the provider is created. It must match the email of your donation."
     },
     "master_gain_db": {
       "label": "Master gain (dB)",

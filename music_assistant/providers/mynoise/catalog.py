@@ -230,15 +230,15 @@ async def patron_login(mass: MusicAssistant, email: str) -> bool:
         return urlparse(location).path == AUTH_OK_PATH
 
 
-async def fetch_catalog(
-    mass: MusicAssistant, force_refresh: bool = False, patron: bool = False
-) -> Catalog:
-    """Return the machine catalog, refreshing from the website when needed."""
-    # keep patron and anonymous catalogs apart so MAGIC machines never leak
-    # into (or disappear from) the wrong view
-    cache_key = "catalog_patron" if patron else "catalog"
+async def fetch_catalog(mass: MusicAssistant, force_refresh: bool = False) -> Catalog:
+    """
+    Return the machine catalog, refreshing from the website when needed.
+
+    The provider only serves content to authenticated patrons, so the patron
+    ('Magic') machines are always part of the catalog here.
+    """
     cached = await mass.cache.get(
-        cache_key,
+        "catalog",
         provider="mynoise",
         category=CACHE_CATEGORY_CATALOG,
     )
@@ -247,7 +247,7 @@ async def fetch_catalog(
     try:
         async with mass.http_session.get(INDEX_URL) as response:
             html = await response.text()
-        categories, machines = parse_index_page(html, include_patron=patron)
+        categories, machines = parse_index_page(html, include_patron=True)
         _require_machines(machines)
     except aiohttp.ClientError, TimeoutError, MediaNotFoundError:
         # the site is unreachable or its markup changed: fall back, but cache the
@@ -261,7 +261,7 @@ async def fetch_catalog(
             return _catalog_from_dict(cached)
         fallback = Catalog(*await asyncio.to_thread(bundled_catalog))
         await mass.cache.set(
-            cache_key,
+            "catalog",
             _catalog_to_dict(fallback),
             provider="mynoise",
             category=CACHE_CATEGORY_CATALOG,
@@ -270,7 +270,7 @@ async def fetch_catalog(
         return fallback
     catalog = Catalog(categories, machines)
     await mass.cache.set(
-        cache_key,
+        "catalog",
         _catalog_to_dict(catalog),
         provider="mynoise",
         category=CACHE_CATEGORY_CATALOG,

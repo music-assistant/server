@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.errors import (
+    AudioError,
+    AuthenticationFailed,
+    AuthenticationRequired,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import AudioFormat, BrowseFolder
 from music_assistant_models.streamdetails import StreamDetails
 from music_assistant_models.unique_list import UniqueList
@@ -66,7 +72,7 @@ class _DownloadSession:
 
 
 def _create_provider(tmp_path: Path) -> MyNoiseProvider:
-    """Create a MyNoiseProvider with mocked dependencies."""
+    """Create a patron-authenticated MyNoiseProvider with mocked dependencies."""
     with patch.object(MyNoiseProvider, "__init__", lambda *_a, **_kw: None):
         provider = MyNoiseProvider.__new__(MyNoiseProvider)
     provider.mass = MagicMock()
@@ -76,12 +82,16 @@ def _create_provider(tmp_path: Path) -> MyNoiseProvider:
     provider.mass.cache.set = AsyncMock()
     provider.config = MagicMock()
     provider.config.instance_id = "mynoise"
-    # no declared config values: get_config_value's fallback resolves to the default
     provider.config.values = {}
     provider.config.get_value = lambda _key, default=None: default
+    # the setup flow collected the patron email: get_setup_value reads setup_data
+    provider.mass.config.get = MagicMock(return_value={CONF_PATRON_EMAIL: "me@example.com"})
+    provider.mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)
     provider.manifest = MagicMock()
     provider.manifest.domain = "mynoise"
     provider.logger = MagicMock()
+    # pretend the patron login already succeeded; login tests reset this
+    provider._patron_logged_in = True
     return provider
 
 
@@ -398,29 +408,24 @@ async def test_handle_config_action_refreshes_catalog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The refresh action forces a catalog re-download."""
+    monkeypatch.setattr(provider_module, "patron_login", AsyncMock(return_value=True))
     fetch_mock = AsyncMock()
     monkeypatch.setattr(provider_module, "fetch_catalog", fetch_mock)
     provider = _create_provider(tmp_path)
     await provider.handle_config_action(CONF_REFRESH_CATALOG)
-    fetch_mock.assert_awaited_once_with(provider.mass, force_refresh=True, patron=False)
+    fetch_mock.assert_awaited_once_with(provider.mass, force_refresh=True)
 
 
-def _provider_with_patron_email(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> MyNoiseProvider:
-    """Create a provider configured with a patron email."""
+def _provider_without_login(tmp_path: Path) -> MyNoiseProvider:
+    """Create a provider with a patron email configured but no login attempt yet."""
     provider = _create_provider(tmp_path)
-    monkeypatch.setattr(
-        provider,
-        "get_config_value",
-        lambda key, default=None: "me@example.com" if key == CONF_PATRON_EMAIL else default,
-    )
+    provider._patron_logged_in = None
     return provider
 
 
-async def test_patron_email_unlocks_patron_catalog(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A configured patron email logs in once and requests the patron catalog."""
-    provider = _provider_with_patron_email(tmp_path, monkeypatch)
+async def test_patron_email_logs_in_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A configured patron email logs in once and the outcome is cached."""
+    provider = _provider_without_login(tmp_path)
     login = AsyncMock(return_value=True)
     monkeypatch.setattr(provider_module, "patron_login", login)
     fetch_mock = AsyncMock()
@@ -428,47 +433,71 @@ async def test_patron_email_unlocks_patron_catalog(
 
     await provider.handle_config_action(CONF_REFRESH_CATALOG)
     login.assert_awaited_once_with(provider.mass, "me@example.com")
-    fetch_mock.assert_awaited_once_with(provider.mass, force_refresh=True, patron=True)
+    fetch_mock.assert_awaited_once_with(provider.mass, force_refresh=True)
 
     # the login outcome is cached: browsing does not re-authenticate
-    await provider._patron_enabled()
+    await provider._require_patron()
     login.assert_awaited_once()
 
 
-async def test_patron_login_failure_stays_anonymous(
+async def test_patron_email_rejected_locks_the_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A rejected patron email warns and keeps the anonymous catalog."""
-    provider = _provider_with_patron_email(tmp_path, monkeypatch)
-    monkeypatch.setattr(provider_module, "patron_login", AsyncMock(return_value=False))
+    """A rejected patron email fails loudly and stays locked until a refresh."""
+    provider = _provider_without_login(tmp_path)
+    login = AsyncMock(return_value=False)
+    monkeypatch.setattr(provider_module, "patron_login", login)
     fetch_mock = AsyncMock()
     monkeypatch.setattr(provider_module, "fetch_catalog", fetch_mock)
 
-    await provider.handle_config_action(CONF_REFRESH_CATALOG)
-    fetch_mock.assert_awaited_once_with(provider.mass, force_refresh=True, patron=False)
+    with pytest.raises(AuthenticationFailed):
+        await provider.handle_config_action(CONF_REFRESH_CATALOG)
+    fetch_mock.assert_not_awaited()
     cast("MagicMock", provider.logger.warning).assert_called()
+
+    # the rejection is cached: no re-authentication on subsequent calls
+    with pytest.raises(AuthenticationFailed):
+        await provider.search("garden", [MediaType.RADIO])
+    login.assert_awaited_once()
 
 
 async def test_patron_transient_error_retries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A network hiccup during login is not latched: the next call retries."""
-    provider = _provider_with_patron_email(tmp_path, monkeypatch)
+    provider = _provider_without_login(tmp_path)
     login = AsyncMock(side_effect=[aiohttp.ClientError("offline"), True])
     monkeypatch.setattr(provider_module, "patron_login", login)
 
-    # the hiccup degrades to anonymous for this call only
-    assert not await provider._patron_enabled()
-    # the outcome was not cached: the next call authenticates again
-    assert await provider._patron_enabled()
+    # the hiccup fails the call but is not cached as an answer from myNoise
+    with pytest.raises(ProviderUnavailableError):
+        await provider._require_patron()
+    await provider._require_patron()
     assert login.await_count == 2
 
 
-async def test_get_config_entries_include_patron_email(tmp_path: Path) -> None:
-    """The options expose a patron email field next to the other settings."""
+async def test_no_machines_without_patron_email(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a configured patron email, nothing is offered."""
+    provider = _create_provider(tmp_path)
+    # the setup flow never collected an email: setup_data is empty
+    monkeypatch.setattr(provider.mass.config, "get", MagicMock(return_value={}))
+    with pytest.raises(AuthenticationRequired):
+        await provider.search("garden", [MediaType.RADIO])
+    with pytest.raises(AuthenticationRequired):
+        await provider.browse(BROWSE_ROOT)
+    with pytest.raises(AuthenticationRequired):
+        await provider.get_radio("JAPANGARDEN")
+    with pytest.raises(AuthenticationRequired):
+        await provider.get_stream_details("JAPANGARDEN")
+
+
+async def test_patron_email_is_a_setup_value_not_an_option(tmp_path: Path) -> None:
+    """The patron email is collected by the setup flow, not the options page."""
     provider = _create_provider(tmp_path)
     entries = await provider.get_config_entries()
-    assert CONF_PATRON_EMAIL in [entry.key for entry in entries]
+    assert CONF_PATRON_EMAIL not in [entry.key for entry in entries]
 
 
 def test_supported_features() -> None:

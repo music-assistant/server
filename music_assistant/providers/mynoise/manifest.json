@@ -8,6 +8,7 @@
   "codeowners": [
     "@eyecreate"
   ],
+  "credits": ["Please support myNoise and [donate](https://mynoise.net/donate.php)"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/mynoise",
   "multi_instance": false,
