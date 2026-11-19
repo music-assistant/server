@@ -58,6 +58,7 @@ def _remote_command_player(bridge_target: str | None) -> tuple[AirPlayProvider, 
     airplay_player.protocol_id = "apc43875e9e53a"
     airplay_player.player.player_id = "plc43875e9e53a"
     airplay_player.playback_state = PlaybackState.PLAYING
+    airplay_player.owner = airplay_player
     return prov, airplay_player
 
 
@@ -163,6 +164,7 @@ def _ptp_provider() -> AirPlayProvider:
     prov.logger = logging.getLogger("test.airplay.provider")
     prov._ptp_daemon = None
     prov._ptp_daemon_ready = None
+    prov._speakers = {}
     return prov
 
 
@@ -1236,3 +1238,16 @@ def test_a_failed_compat_pin_reset_is_retried_on_the_next_load() -> None:
         prov._reset_auto_pinned_compat_modes()
 
     config.set_raw_provider_config_value.assert_not_called()
+
+
+def test_a_remote_command_of_a_speaker_controls_its_set() -> None:
+    """A command a HomePod of a set reports acts on the player of the set."""
+    prov, airplay_set = _remote_command_player(None)
+    speaker = MagicMock(owner=airplay_set)
+    speaker.player = None
+
+    prov.handle_remote_command(speaker, AirPlayRemoteCommand.PAUSE)
+
+    bridge_manager = cast("MagicMock", prov._bridge_manager)
+    bridge_manager.get_transport_command_target.assert_called_once_with("apc43875e9e53a")
+    cast("MagicMock", prov.mass).players.cmd_pause.assert_called_once_with("plc43875e9e53a")

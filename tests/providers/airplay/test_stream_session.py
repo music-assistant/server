@@ -1,11 +1,12 @@
 """Unit tests for AirPlay stream session late-join logic."""
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import AsyncGenerator
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState
@@ -21,6 +22,8 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS,
     AIRPLAY_LATE_JOIN_RING_MAX_BYTES,
     AIRPLAY_LATE_JOIN_RING_MIN_SECONDS,
+    AIRPLAY_PCM_FORMAT,
+    AIRPLAY_SILENT_MEMBER_RESET_WINDOW,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     AIRPLAY_STALL_RESYNC_HOLDOFF,
     AIRPLAY_STALL_SETTLE_SECONDS,
@@ -2539,12 +2542,14 @@ def _make_group_session(*shifts: float) -> AirPlayStreamSession:
     session = _make_session(time.time() - 60, 60.0)
     leader: Any = session.sync_clients[0]
     leader.display_name = "Leader"
+    leader.owner = leader
     leader.player.player_id = "leader_player"
     leader.player.synced_to = None
     for index in range(1, len(shifts)):
         member = MagicMock()
         member.protocol_id = f"member_{index}"
         member.display_name = f"Member {index}"
+        member.owner = member
         member.player.player_id = f"member_{index}_player"
         member.player.synced_to = "leader_player"
         member.stream = _stream_defaults(MagicMock())
@@ -2677,3 +2682,786 @@ async def test_late_joiner_counts_its_shift_from_the_group_timeline() -> None:
     session._check_member_shifts()
 
     mass.players.cmd_resume.assert_not_called()
+
+
+def test_a_stall_of_the_speakers_of_a_set_restarts_the_set() -> None:
+    """Speakers of one set that came out of a stall apart restart the player of their set."""
+    session = _make_group_session(1.758, 0.0)
+    airplay_set = MagicMock()
+    airplay_set.player.player_id = "set_player"
+    airplay_set.player.synced_to = None
+    for speaker in session.sync_clients:
+        cast("MagicMock", speaker).owner = airplay_set
+    mass: Any = session.mass
+
+    session._check_member_shifts()
+
+    mass.players.cmd_resume.assert_called_once_with("set_player")
+
+
+# --- The Apple TV of a set: a member that is not heard ---
+
+
+def _make_set_session() -> tuple[AirPlayStreamSession, Any, Any]:
+    """
+    Create a playing session of the speaker of a set, with the Apple TV of the set.
+
+    :return: The session, its speaker and the Apple TV, which is not in the session yet.
+    """
+    session = _make_session(time.time(), 0)
+    speaker: Any = session.sync_clients[0]
+    speaker.protocol_id = "apspeaker"
+    speaker.renders_audio = True
+    speaker.stream.flush = AsyncMock(return_value=True)
+    speaker.stream.send_cli_command = AsyncMock(return_value=True)
+    apple_tv = MagicMock(protocol_id="apappletv", renders_audio=False, sync_offset_ms=0)
+    apple_tv.protocol = StreamingProtocol.AIRPLAY2
+    apple_tv.endpoints = [speaker]
+    apple_tv.silent_member = apple_tv
+    apple_tv.stream = _stream_defaults(MagicMock(running=True, connected=True))
+    apple_tv.stream.flush = AsyncMock(return_value=True)
+    apple_tv.stream.send_cli_command = AsyncMock(return_value=True)
+    speaker.owner = apple_tv
+    mass: Any = session.mass
+    mass.create_task = lambda coro: asyncio.get_running_loop().create_task(coro)
+    return session, speaker, apple_tv
+
+
+async def _settle_silent_joins(session: AirPlayStreamSession) -> None:
+    """Let the joins of the members that are not heard run."""
+    for _ in range(5):
+        await asyncio.sleep(0)
+    for task in list(session._silent_member_tasks.values()):
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+_SILENT_POLL = (
+    "music_assistant.providers.airplay.stream_session.AIRPLAY_SILENT_MEMBER_JOIN_POLL_INTERVAL"
+)
+_SILENT_TIMEOUT = (
+    "music_assistant.providers.airplay.stream_session.AIRPLAY_SILENT_MEMBER_JOIN_TIMEOUT"
+)
+
+
+@pytest.mark.asyncio
+async def test_the_apple_tv_of_a_set_joins_once_its_speakers_play() -> None:
+    """
+    The start of a set holds its speakers; the Apple TV joins as a late joiner once they play.
+
+    An Apple TV whose SETUP goes out before the one of its HomePod resets its session.
+    """
+    session, speaker, apple_tv = _make_set_session()
+    speaker.playback_state = PlaybackState.IDLE
+    order: list[str] = []
+    speaker.stream.start = AsyncMock(
+        side_effect=lambda *_args: order.append("speaker start") or 0  # type: ignore[func-returns-value]
+    )
+    speaker.stream.wait_for_connection = AsyncMock()
+
+    async def join(player: Any) -> None:
+        order.append(f"join {player.protocol_id}")
+        session.sync_clients.append(player)
+
+    with (
+        patch(_SILENT_POLL, 0),
+        patch.object(session, "_start_client", new_callable=AsyncMock),
+        patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "add_client", side_effect=join) as add_client,
+    ):
+        await session.start(MagicMock())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        # started, but not playing yet: there is no timeline to join
+        assert order == ["speaker start"]
+        speaker.playback_state = PlaybackState.PLAYING
+        await _settle_silent_joins(session)
+
+    assert order == ["speaker start", "join apappletv"]
+    add_client.assert_awaited_once_with(apple_tv)
+
+
+@pytest.mark.asyncio
+async def test_an_apple_tv_that_found_no_music_to_join_joins_at_the_next_warm_start() -> None:
+    """A set paused before it played takes its Apple TV along when it resumes."""
+    session, speaker, apple_tv = _make_set_session()
+    speaker.playback_state = PlaybackState.PAUSED
+    speaker.stream.wait_audio_present = AsyncMock(return_value=True)
+
+    async def join(player: Any) -> None:
+        session.sync_clients.append(player)
+
+    with (
+        patch(_SILENT_POLL, 0),
+        patch(_SILENT_TIMEOUT, 0),
+        patch.object(session, "add_client", side_effect=join) as add_client,
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+    ):
+        session._join_silent_members()
+        await _settle_silent_joins(session)
+        add_client.assert_not_awaited()
+
+        speaker.playback_state = PlaybackState.PLAYING
+        assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
+        await _settle_silent_joins(session)
+
+    add_client.assert_awaited_once_with(apple_tv)
+
+
+@pytest.mark.asyncio
+async def test_an_apple_tv_that_fails_to_join_is_added_once_more_and_never_fails_the_set() -> None:
+    """The music plays on whatever the Apple TV does: it is added once more, then left out."""
+    session, speaker, apple_tv = _make_set_session()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.AIRPLAY_SILENT_MEMBER_REJOIN_DELAY",
+            0,
+        ),
+        patch.object(session, "add_client", new_callable=AsyncMock) as add_client,
+        patch.object(session, "stop", new_callable=AsyncMock) as stop,
+    ):
+        session._join_silent_members()
+        await _settle_silent_joins(session)
+        await _settle_silent_joins(session)
+
+    assert add_client.await_args_list == [call(apple_tv), call(apple_tv)]
+    stop.assert_not_awaited()
+    assert session.sync_clients == [speaker]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rejoin", [True, False])
+async def test_an_apple_tv_whose_stream_ended_leaves_the_music_playing(rejoin: bool) -> None:
+    """An Apple TV that lost its stream leaves; it is added once more unless it was ended."""
+    session, speaker, apple_tv = _make_set_session()
+    session.sync_clients.append(apple_tv)
+    session._silent_member_joins[apple_tv.protocol_id] = 1
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.AIRPLAY_SILENT_MEMBER_REJOIN_DELAY",
+            0,
+        ),
+        patch.object(session, "stop_client", new_callable=AsyncMock),
+        patch.object(session, "add_client", new_callable=AsyncMock) as add_client,
+        patch.object(session, "stop", new_callable=AsyncMock) as stop,
+    ):
+        await session.remove_silent_member(apple_tv, rejoin=rejoin)
+        await _settle_silent_joins(session)
+
+    assert session.sync_clients == [speaker]
+    stop.assert_not_awaited()
+    assert add_client.await_count == (1 if rejoin else 0)
+
+
+@pytest.mark.asyncio
+async def test_a_session_with_only_the_apple_tv_left_ends() -> None:
+    """Once its last speaker left, the session of a set ends: nothing of it is heard any more."""
+    session, speaker, apple_tv = _make_set_session()
+    session.sync_clients.append(apple_tv)
+
+    with (
+        patch.object(session, "stop_client", new_callable=AsyncMock),
+        patch.object(session, "stop", new_callable=AsyncMock) as stop,
+    ):
+        await session.remove_client(speaker)
+
+    stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_seek_and_resume_of_a_set_go_on_without_its_apple_tv() -> None:
+    """
+    A missing or failing Apple TV never sends a seek, next or resume of its set the cold way.
+
+    It is not waited for either: its START follows the instant its speakers start at.
+    """
+    session, speaker, apple_tv = _make_set_session()
+    # missing from the session: the speakers alone still replace warm
+    assert session.can_replace([speaker], session.pcm_format)
+    session.sync_clients.append(apple_tv)
+    assert session.can_replace([speaker], session.pcm_format)
+    apple_tv.stream.wait_audio_present = AsyncMock(return_value=False)
+    apple_tv.stream.start = AsyncMock(side_effect=lambda at, _pos: at + 5000)
+    speaker.stream.wait_audio_present = AsyncMock(return_value=True)
+
+    with (
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "stop_client", new_callable=AsyncMock),
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
+    ):
+        assert await session.replace(MagicMock(), MagicMock(elapsed_time=10))
+        # the speaker plays alone after the next one, whose flush the Apple TV fails
+        apple_tv.stream.flush = AsyncMock(return_value=False)
+        assert await session.replace(MagicMock(), MagicMock(elapsed_time=20))
+
+    speaker.stream.start.assert_any_await(100_000 + AIRPLAY_START_LEAD_MS, 10_000)
+    assert speaker.stream.start.await_count == 2
+    apple_tv.stream.start.assert_awaited_once_with(100_000 + AIRPLAY_START_LEAD_MS, 10_000)
+    assert session.sync_clients == [speaker]
+
+
+@pytest.mark.asyncio
+async def test_a_set_parks_without_an_apple_tv_that_does_not_answer() -> None:
+    """A pause of a set parks its speakers, whatever its Apple TV does."""
+    session, speaker, apple_tv = _make_set_session()
+    session.sync_clients.append(apple_tv)
+    apple_tv.stream.send_cli_command = AsyncMock(return_value=False)
+
+    with patch.object(session, "stop_client", new_callable=AsyncMock):
+        assert await session.standby()
+
+    speaker.stream.send_cli_command.assert_awaited_once_with("ACTION=STANDBY")
+    assert session.sync_clients == [speaker]
+
+
+@pytest.mark.asyncio
+async def test_the_apple_tv_of_a_set_is_fed_silence() -> None:
+    """What the Apple TV is fed is zeroed and leaves out the output settings of the set."""
+    session, speaker, apple_tv = _make_set_session()
+    mass: Any = session.mass
+    mass.streams.audio.get_player_output_plan.return_value = MagicMock(filter_params=["dsp"])
+    for player in (speaker, apple_tv):
+        player.output_plan_protocol_id = "apappletv"
+        player.stream.pcm_format = AIRPLAY_PCM_FORMAT
+        player.stream._cli_proc.proc.stdin.transport.get_extra_info.return_value.fileno.return_value = 9
+
+    with patch("music_assistant.providers.airplay.stream_session.FFMpeg") as ffmpeg_cls:
+        ffmpeg_cls.return_value.start = AsyncMock()
+        for player in (speaker, apple_tv):
+            await session._start_player_ffmpeg(player, MagicMock(), player.stream)
+
+    filters = [kwargs["filter_params"] for _, kwargs in ffmpeg_cls.call_args_list]
+    assert filters == [["dsp"], ["volume=0"]]
+
+
+_SILENT_BOUND = "music_assistant.providers.airplay.stream_session.AIRPLAY_SILENT_MEMBER_TIMEOUT"
+
+
+async def _never(*_args: Any, **_kwargs: Any) -> Any:
+    """Never answer, as an Apple TV that hangs does."""
+    await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_an_apple_tv_that_takes_no_audio_never_holds_the_speakers_for_long() -> None:
+    """The speakers are fed while the Apple TV does not take its audio; it leaves the session."""
+    session, speaker, apple_tv = _make_set_session()
+    session.sync_clients.append(apple_tv)
+    session._started_silent_members.add(apple_tv.protocol_id)
+    speaker_ffmpeg = MagicMock(closed=False, write=AsyncMock())
+    session._player_ffmpeg = {
+        speaker.protocol_id: speaker_ffmpeg,
+        apple_tv.protocol_id: MagicMock(closed=False, write=AsyncMock(side_effect=_never)),
+    }
+
+    with (
+        patch(_SILENT_BOUND, 0.05),
+        patch.object(session, "_cleanup_after_removal", new_callable=AsyncMock),
+    ):
+        assert await asyncio.wait_for(session._write_chunk_to_all_players(b"\0" * 4), 1.0)
+
+    speaker_ffmpeg.write.assert_awaited_once()
+    assert session.sync_clients == [speaker]
+
+
+@pytest.mark.asyncio
+async def test_seek_and_pause_of_a_set_never_wait_long_on_an_apple_tv_that_does_not_answer() -> (
+    None
+):
+    """An Apple TV that answers neither its flush, its START nor its park is left behind."""
+    session, speaker, apple_tv = _make_set_session()
+    session.sync_clients.append(apple_tv)
+    speaker.stream.wait_audio_present = AsyncMock(return_value=True)
+    for step in ("flush", "start", "send_cli_command"):
+        setattr(apple_tv.stream, step, AsyncMock(side_effect=_never))
+
+    with (
+        patch(_SILENT_BOUND, 0.05),
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "stop_client", new_callable=AsyncMock),
+    ):
+        # once for the flush it does not answer, once for its START
+        assert await asyncio.wait_for(session.replace(MagicMock(), MagicMock(elapsed_time=0)), 1)
+        assert session.sync_clients == [speaker]
+        apple_tv.stream.flush = AsyncMock(return_value=True)
+        session.sync_clients.append(apple_tv)
+        assert await asyncio.wait_for(session.replace(MagicMock(), MagicMock(elapsed_time=0)), 1)
+        assert session.sync_clients == [speaker]
+        session.sync_clients.append(apple_tv)
+        assert await asyncio.wait_for(session.standby(), 1)
+
+    assert speaker.stream.start.await_count == 2
+    speaker.stream.send_cli_command.assert_awaited_once_with("ACTION=STANDBY")
+    assert session.sync_clients == [speaker]
+
+
+@pytest.mark.asyncio
+async def test_an_apple_tv_left_out_while_it_joins_never_ends_up_in_the_session() -> None:
+    """Switched to play on the HomePods only while the Apple TV joins, the join is called off."""
+    session, speaker, apple_tv = _make_set_session()
+    joining = asyncio.Event()
+
+    async def join(player: Any) -> None:
+        joining.set()
+        await asyncio.sleep(0.05)
+        session.sync_clients.append(player)
+
+    with (
+        patch(_SILENT_POLL, 0),
+        patch.object(session, "add_client", side_effect=join),
+        patch.object(session, "stop_client", new_callable=AsyncMock),
+    ):
+        session._join_silent_members()
+        await asyncio.wait_for(joining.wait(), 1)
+        apple_tv.silent_member = None
+        await session.remove_silent_member(apple_tv, rejoin=False, reason="left out")
+        await asyncio.sleep(0.1)
+
+    assert session.sync_clients == [speaker]
+
+
+@pytest.mark.asyncio
+async def test_an_apple_tv_that_waits_for_its_start_is_not_taken_for_a_stalled_one() -> None:
+    """
+    In a seek or a resume the Apple TV backs up the feed until it is started, like any member.
+
+    It is not dropped for that while the speakers start; once started, a write it does not take
+    in time is a stall.
+    """
+    session, speaker, apple_tv = _make_set_session()
+    session.sync_clients.append(apple_tv)
+    # started in the cycle before this seek
+    session._started_silent_members.add(apple_tv.protocol_id)
+    speaker.stream.wait_audio_present = AsyncMock(return_value=True)
+
+    async def backed_up(*_args: Any) -> None:
+        await asyncio.sleep(0.2)
+
+    def wire_ffmpegs() -> None:
+        session._player_ffmpeg = {
+            speaker.protocol_id: MagicMock(closed=False, write=AsyncMock(), kill=AsyncMock()),
+            apple_tv.protocol_id: MagicMock(
+                closed=False, write=AsyncMock(side_effect=backed_up), kill=AsyncMock()
+            ),
+        }
+
+    async def speaker_start(at: int, *_args: Any) -> int:
+        # the feed runs while the speakers start, the Apple TV not started yet
+        wire_ffmpegs()
+        assert await session._write_chunk_to_all_players(b"\0" * 4)
+        return at
+
+    speaker.stream.start = AsyncMock(side_effect=speaker_start)
+
+    with (
+        patch(_SILENT_BOUND, 0.05),
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "_cleanup_after_removal", new_callable=AsyncMock),
+    ):
+        assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
+        assert apple_tv in session.sync_clients
+        assert apple_tv.protocol_id in session._started_silent_members
+        wire_ffmpegs()
+        assert await session._write_chunk_to_all_players(b"\0" * 4)
+
+    assert session.sync_clients == [speaker]
+
+
+def _late_join_stream(session: AirPlayStreamSession) -> MagicMock:
+    """Let a late join in the session connect a stream mock, and return it."""
+    session._shared_ptp_resolved = True
+    stream = _stream_defaults(MagicMock(running=True, connected=True))
+    stream.wait_for_connection = AsyncMock()
+
+    async def start_client(player: Any, _use_shared_ptp: bool) -> None:
+        player.stream = stream
+
+    session._start_client = AsyncMock(side_effect=start_client)  # type: ignore[method-assign]
+    return stream
+
+
+def _plain_speaker() -> MagicMock:
+    """Return a playing member of a session that is no speaker of a set."""
+    plain = MagicMock(
+        protocol_id="applain", renders_audio=True, playback_state=PlaybackState.PLAYING, owner=None
+    )
+    plain.stream.accepts_audio = True
+    plain.stream.cumulative_shift_seconds = 0.0
+    return plain
+
+
+@pytest.mark.asyncio
+async def test_a_join_cancelled_while_it_waits_for_the_feed_stops_the_apple_tv() -> None:
+    """A join called off while it waits to map its anchor stops what it started."""
+    session, _, apple_tv = _make_set_session()
+    stream = _late_join_stream(session)
+
+    async def take_the_lock(**_kwargs: Any) -> tuple[ClockReadiness, int]:
+        # the feed holds the lock: the join waits for it after its connect
+        await session._lock.acquire()
+        return ClockReadiness.UNREPORTED, 0
+
+    stream.wait_clock_ready = AsyncMock(side_effect=take_the_lock)
+
+    with patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client:
+        join = asyncio.create_task(session.add_client(apple_tv))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert session._lock.locked()
+        join.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await join
+        session._lock.release()
+
+    stop_client.assert_awaited_once_with(apple_tv, reason="late joiner start cancelled")
+
+
+@pytest.mark.asyncio
+async def test_an_apple_tv_whose_room_left_while_it_joined_stays_out() -> None:
+    """The Apple TV does not end up in a session its room left while it joined."""
+    session, speaker, apple_tv = _make_set_session()
+    stream = _late_join_stream(session)
+
+    async def room_leaves(at: int, *_args: Any, **_kwargs: Any) -> int:
+        # the room left the group of a plain speaker, which plays on
+        session.sync_clients.append(_plain_speaker())
+        session.sync_clients.remove(speaker)
+        return at
+
+    stream.start = AsyncMock(side_effect=room_leaves)
+
+    with patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client:
+        await session.add_client(apple_tv)
+
+    assert apple_tv not in session.sync_clients
+    stop_client.assert_awaited_once_with(apple_tv, reason="set left during late join")
+
+
+@pytest.mark.asyncio
+async def test_an_apple_tv_joins_again_with_its_room_that_joins_a_group_again() -> None:
+    """The Apple TV that left a group with its room is taken along when the room is back."""
+    session, speaker, apple_tv = _make_set_session()
+    # the Apple TV joined the group with its room, and left it with the room
+    session.sync_clients = [_plain_speaker()]
+    session._silent_member_joins[apple_tv.protocol_id] = 1
+    _late_join_stream(session)
+
+    async def join(player: Any) -> None:
+        session.sync_clients.append(player)
+
+    with patch(_SILENT_POLL, 0):
+        await session.add_client(speaker)
+        with patch.object(session, "add_client", side_effect=join) as add_client:
+            await _settle_silent_joins(session)
+
+    add_client.assert_awaited_once_with(apple_tv)
+
+
+@pytest.mark.asyncio
+async def test_the_apple_tv_of_a_pair_joins_once_both_of_its_speakers_play() -> None:
+    """
+    The Apple TV of a set whose speakers join one after the other waits for the last one.
+
+    An Apple TV whose SETUP goes out before the one of a speaker resets its session.
+    """
+    session, speaker, apple_tv = _make_set_session()
+    second = MagicMock(protocol_id="apsecond", renders_audio=True)
+    apple_tv.endpoints = [speaker, second]
+    joined: list[Any] = []
+
+    async def join(player: Any) -> None:
+        joined.append(player)
+        session.sync_clients.append(player)
+
+    with patch(_SILENT_POLL, 0), patch.object(session, "add_client", side_effect=join):
+        session._join_silent_members()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert joined == []
+        session.sync_clients.append(second)
+        await _settle_silent_joins(session)
+
+    assert joined == [apple_tv]
+
+
+@pytest.mark.asyncio
+async def test_the_apple_tv_of_a_pair_joins_the_speaker_that_plays_once_the_other_stays_out() -> (
+    None
+):
+    """A speaker that does not join keeps the Apple TV of its set out for a bounded time only."""
+    session, speaker, apple_tv = _make_set_session()
+    apple_tv.endpoints = [speaker, MagicMock(protocol_id="apsecond", renders_audio=True)]
+
+    async def join(player: Any) -> None:
+        session.sync_clients.append(player)
+
+    with (
+        patch(_SILENT_POLL, 0),
+        patch(_SILENT_TIMEOUT, 0),
+        patch.object(session, "add_client", side_effect=join) as add_client,
+    ):
+        session._join_silent_members()
+        await _settle_silent_joins(session)
+
+    add_client.assert_awaited_once_with(apple_tv)
+
+
+@pytest.mark.asyncio
+async def test_an_apple_tv_reset_by_a_speaker_that_joined_is_added_once_more() -> None:
+    """
+    A speaker that sets up resets the session of its Apple TV, which reports another sender.
+
+    Right after a speaker joined, the Apple TV is added once more all the same; another sender
+    taking it over later on is final.
+    """
+    session, speaker, apple_tv = _make_set_session()
+    session.sync_clients.append(apple_tv)
+    session._silent_member_joins[apple_tv.protocol_id] = 1
+
+    async def join(player: Any) -> None:
+        session.sync_clients.append(player)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.AIRPLAY_SILENT_MEMBER_REJOIN_DELAY",
+            0,
+        ),
+        patch(_SILENT_POLL, 0),
+        patch.object(session, "stop_client", new_callable=AsyncMock),
+        patch.object(session, "add_client", side_effect=join) as add_client,
+    ):
+        # the speaker heals back into the session the Apple TV plays in
+        session._join_silent_members(joined=speaker)
+        await session.end_silent_member(apple_tv, taken_over=True)
+        await _settle_silent_joins(session)
+        add_client.assert_awaited_once_with(apple_tv)
+
+        session._speaker_joined_at[apple_tv.protocol_id] -= AIRPLAY_SILENT_MEMBER_RESET_WINDOW
+        await session.end_silent_member(apple_tv, taken_over=True)
+        await _settle_silent_joins(session)
+
+    add_client.assert_awaited_once()
+    assert session.sync_clients == [speaker]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missed", ["flush", "start"])
+async def test_an_apple_tv_that_misses_a_flush_or_its_start_is_added_once_more(missed: str) -> None:
+    """An Apple TV left behind by a seek, next or resume of its set is added once more after it."""
+    session, speaker, apple_tv = _make_set_session()
+    session.sync_clients.append(apple_tv)
+    # it joined the session once already
+    session._silent_member_joins[apple_tv.protocol_id] = 1
+    speaker.stream.wait_audio_present = AsyncMock(return_value=True)
+    if missed == "flush":
+        apple_tv.stream.flush = AsyncMock(return_value=False)
+    else:
+        apple_tv.stream.start = AsyncMock(side_effect=_never)
+
+    async def join(player: Any) -> None:
+        session.sync_clients.append(player)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.AIRPLAY_SILENT_MEMBER_REJOIN_DELAY",
+            0,
+        ),
+        patch(_SILENT_BOUND, 0.05),
+        patch(_SILENT_POLL, 0),
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "stop_client", new_callable=AsyncMock),
+        patch.object(session, "add_client", side_effect=join) as add_client,
+    ):
+        assert await asyncio.wait_for(session.replace(MagicMock(), MagicMock(elapsed_time=0)), 1)
+        await _settle_silent_joins(session)
+
+    add_client.assert_awaited_once_with(apple_tv)
+
+
+@pytest.mark.asyncio
+async def test_an_apple_tv_that_misses_the_park_joins_again_once_the_music_plays_again() -> None:
+    """An Apple TV that does not park along is out while its set is paused, and back after."""
+    session, speaker, apple_tv = _make_set_session()
+    session.sync_clients.append(apple_tv)
+    session._silent_member_joins[apple_tv.protocol_id] = 1
+    apple_tv.stream.send_cli_command = AsyncMock(return_value=False)
+    speaker.stream.wait_audio_present = AsyncMock(return_value=True)
+
+    async def join(player: Any) -> None:
+        session.sync_clients.append(player)
+
+    with (
+        patch(_SILENT_POLL, 0),
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "stop_client", new_callable=AsyncMock),
+        patch.object(session, "add_client", side_effect=join) as add_client,
+    ):
+        assert await session.standby()
+        assert session.sync_clients == [speaker]
+        assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
+        await _settle_silent_joins(session)
+
+    add_client.assert_awaited_once_with(apple_tv)
+
+
+@pytest.mark.asyncio
+async def test_a_speaker_of_a_set_dropped_for_its_writes_is_lost_as_when_its_stream_dies() -> None:
+    """
+    A speaker whose audio write failed is lost as when its stream dies: it takes its set along.
+
+    A set plays on all of its speakers or not at all. A player of its own is only dropped.
+    """
+    session, speaker, apple_tv = _make_set_session()
+    second = MagicMock(protocol_id="apsecond", renders_audio=True, owner=apple_tv)
+    second.stream = _stream_defaults(MagicMock(running=True, connected=True))
+    second.stream.session = session
+    plain = _plain_speaker()
+    plain.owner = plain
+    session.sync_clients += [second, plain]
+
+    def ffmpeg(write: AsyncMock) -> MagicMock:
+        return MagicMock(closed=False, write=write, kill=AsyncMock())
+
+    session._player_ffmpeg = {
+        speaker.protocol_id: ffmpeg(AsyncMock()),
+        second.protocol_id: ffmpeg(AsyncMock(side_effect=OSError("broken pipe"))),
+        plain.protocol_id: ffmpeg(AsyncMock(side_effect=OSError("broken pipe"))),
+    }
+
+    with patch.object(session, "_cleanup_after_removal", new_callable=AsyncMock):
+        assert await session._write_chunk_to_all_players(b"\0" * 4)
+
+    second.stream.handle_stream_loss.assert_called_once_with(rejoin=True)
+    plain.stream.handle_stream_loss.assert_not_called()
+    speaker.stream.handle_stream_loss.assert_not_called()
+    assert session.sync_clients == [speaker]
+
+
+@pytest.mark.asyncio
+async def test_an_apple_tv_dropped_for_its_writes_is_added_once_more() -> None:
+    """An Apple TV that stopped taking audio leaves the music playing and is added once more."""
+    session, speaker, apple_tv = _make_set_session()
+    session.sync_clients.append(apple_tv)
+    session._silent_member_joins[apple_tv.protocol_id] = 1
+    session._player_ffmpeg = {
+        speaker.protocol_id: MagicMock(closed=False, write=AsyncMock(), kill=AsyncMock()),
+        apple_tv.protocol_id: MagicMock(
+            closed=False, write=AsyncMock(side_effect=TimeoutError()), kill=AsyncMock()
+        ),
+    }
+
+    async def join(player: Any) -> None:
+        session.sync_clients.append(player)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.AIRPLAY_SILENT_MEMBER_REJOIN_DELAY",
+            0,
+        ),
+        patch(_SILENT_POLL, 0),
+        patch.object(session, "_cleanup_after_removal", new_callable=AsyncMock),
+        patch.object(session, "add_client", side_effect=join) as add_client,
+    ):
+        assert await session._write_chunk_to_all_players(b"\0" * 4)
+        await _settle_silent_joins(session)
+
+    add_client.assert_awaited_once_with(apple_tv)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missed", ["flush", "start"])
+async def test_an_apple_tv_that_misses_every_seek_comes_back_after_each(missed: str) -> None:
+    """Each seek, next or resume the Apple TV misses gives it a retry of its own."""
+    session, speaker, apple_tv = _make_set_session()
+    session.sync_clients.append(apple_tv)
+    # it joined the session once already
+    session._silent_member_joins[apple_tv.protocol_id] = 1
+    speaker.stream.wait_audio_present = AsyncMock(return_value=True)
+    if missed == "flush":
+        apple_tv.stream.flush = AsyncMock(return_value=False)
+    else:
+        apple_tv.stream.start = AsyncMock(side_effect=_never)
+
+    async def join(player: Any) -> None:
+        session.sync_clients.append(player)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.AIRPLAY_SILENT_MEMBER_REJOIN_DELAY",
+            0,
+        ),
+        patch(_SILENT_BOUND, 0.05),
+        patch(_SILENT_POLL, 0),
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "stop_client", new_callable=AsyncMock),
+        patch.object(session, "add_client", side_effect=join) as add_client,
+    ):
+        for _ in range(2):
+            assert await asyncio.wait_for(
+                session.replace(MagicMock(), MagicMock(elapsed_time=0)), 1
+            )
+            await _settle_silent_joins(session)
+
+    assert add_client.await_args_list == [call(apple_tv), call(apple_tv)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing", ["connect", "start"])
+async def test_a_speaker_of_a_set_that_fails_its_late_join_takes_the_set_along(
+    failing: str,
+) -> None:
+    """
+    A speaker whose late join fails takes its set along, as a start of the set fails as a whole.
+
+    It is not lined up to join again: a start that failed is not tried again either.
+    """
+    session, _, apple_tv = _make_set_session()
+    second = MagicMock(protocol_id="apsecond", renders_audio=True, owner=apple_tv, sync_offset_ms=0)
+    second.protocol = StreamingProtocol.RAOP
+    stream = _late_join_stream(session)
+    stream.session = session
+    if failing == "connect":
+        stream.wait_for_connection = AsyncMock(side_effect=OSError("connection refused"))
+    else:
+        stream.start = AsyncMock(side_effect=OSError("START rejected"))
+
+    with patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client:
+        await session.add_client(second)
+
+    assert second not in session.sync_clients
+    stop_client.assert_awaited_once()
+    stream.handle_stream_loss.assert_called_once_with(rejoin=False)
+
+
+@pytest.mark.asyncio
+async def test_a_speaker_back_in_the_music_of_its_set_that_fails_to_join_is_only_left_out() -> None:
+    """
+    A speaker that comes back while its set plays and cannot join leaves the set playing.
+
+    The set plays on what is there, as when the speaker was not on the network.
+    """
+    session, speaker, apple_tv = _make_set_session()
+    second = MagicMock(protocol_id="apsecond", renders_audio=True, owner=apple_tv, sync_offset_ms=0)
+    second.protocol = StreamingProtocol.RAOP
+    stream = _late_join_stream(session)
+    stream.session = session
+    stream.wait_for_connection = AsyncMock(side_effect=OSError("connection refused"))
+
+    with patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client:
+        await session.add_client(second, returning=True)
+
+    stop_client.assert_awaited_once()
+    stream.handle_stream_loss.assert_not_called()
+    assert session.sync_clients == [speaker]

@@ -485,3 +485,35 @@ async def test_airplay_switched_on_while_the_cast_bridge_stops_carries_the_outpu
 
     assert device.manager_of(device.cast).get_bridge(CAST_ID) is None
     assert device.state() == ("airplay", CAST_CLIENT, "airplay", "on")
+
+
+@pytest.mark.parametrize("at_start", [False, True])
+async def test_an_airplay_player_that_plays_a_set_keeps_its_output_stored(at_start: bool) -> None:
+    """
+    An Apple TV that becomes the player of a home theater set has no bridge, also later on.
+
+    The Sendspin output of its player stays stored, whether the set is found while the bridge
+    runs or before the protocol attaches.
+    """
+    device = _device(squeezelite=False)
+    if at_start:
+        device.store_output(AIRPLAY_CLIENT, AIRPLAY_ID)
+        output = dict(device.output())
+        device.airplay.carries_set = True
+        await device.attach(device.airplay)
+    else:
+        await _bridged(device, "airplay")
+        output = dict(device.output())
+        device.airplay.carries_set = True
+        await device.manager_of(device.airplay).evaluate_bridge(device.airplay)
+        await device.settle()
+
+    assert device.manager_of(device.airplay).get_bridge(AIRPLAY_ID) is None
+    assert device.output() == output
+    assert device.rides_on(AIRPLAY_CLIENT) == AIRPLAY_ID
+
+    device.airplay.carries_set = False
+    await device.manager_of(device.airplay).evaluate_bridge(device.airplay)
+    await device.settle()
+
+    assert device.state() == ("airplay", AIRPLAY_CLIENT, "airplay", "on")

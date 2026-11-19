@@ -1823,6 +1823,14 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
         """Return whether an AirPlay player qualifies for a Sendspin bridge."""
         return get_bridge_client_id(cast("AirPlayPlayer", player)) is not None
 
+    def _lifecycle_allows_bridge(self, protocol: PlayerProtocol) -> bool:
+        """Return whether the current state allows a bridge, which a set has none of."""
+        # a set plays on its speakers, which the bridge does not feed; the Sendspin output
+        # of its player stays stored meanwhile
+        if cast("AirPlayPlayer", protocol).carries_set:
+            return False
+        return super()._lifecycle_allows_bridge(protocol)
+
     def _own_client_id(self, player: PlayerProtocol) -> str | None:
         """Return the Sendspin client_id a bridge gives the device of an AirPlay player."""
         return get_bridge_client_id(cast("AirPlayPlayer", player))
