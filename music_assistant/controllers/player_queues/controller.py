@@ -1193,10 +1193,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         - queue_id: queue_id of the queue to handle the command.
         """
-        # a press during an announcement pauses the clip, as it does while the queue plays
-        if (queue := self.get(queue_id)) and (
-            queue.state == PlaybackState.PLAYING or self._announcement_in_progress(queue_id)
-        ):
+        if (queue := self.get(queue_id)) and queue.state == PlaybackState.PLAYING:
             await self.pause(queue_id)
             return
         await self.play(queue_id)
@@ -1428,9 +1425,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # index (or the first item) below instead of failing on the missing item
             resume_item = None
         queue_player = self.mass.players.get_player(queue_id)
-        # Queue can still be parked during an announce.
+        # Queue can still look PLAYING during announce.
         # Don't trust the wall clock — use the parked resume_pos instead.
-        announcement_in_progress = self._announcement_in_progress(queue_id)
+        announcement_in_progress = bool(
+            queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        )
         if queue.state == PlaybackState.PLAYING and not announcement_in_progress:
             # resume requested while already playing,
             # use current position as resume position
@@ -1767,6 +1766,37 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         if (queue_data := self.queue_data_or_none(queue_id)) is not None:
             queue_data.halted_by_command = False
+
+    def hold_for_announcement(self, queue_id: str) -> None:
+        """
+        Mark a playing queue as interrupted by an announcement, at its resume position.
+
+        :param queue_id: The queue the announcement stopped.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        queue = queue_data.queue
+        if not (queue.active and queue.state == PlaybackState.PLAYING):
+            return
+        queue.elapsed_time = queue.resume_pos
+        queue.elapsed_time_last_updated = time.time()
+        queue.extra_attributes[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
+        self.signal_update(queue_id)
+
+    def release_after_announcement(self, queue_id: str) -> None:
+        """
+        Let a queue held for an announcement follow its player again.
+
+        :param queue_id: The queue of the player the announcement played on.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        if not queue_data.queue.extra_attributes.pop(ATTR_ANNOUNCEMENT_IN_PROGRESS, False):
+            return
+        # the player's updates were ignored during the clip
+        if (player := self.mass.players.get_player(queue_id)) is not None:
+            self.on_player_update(player, {})
+        self.signal_update(queue_id)
 
     def on_player_elapsed_time_corrected(self, player: Player) -> None:
         """Correct the queue's timing base if the player's real elapsed_time diverged."""
@@ -2825,8 +2855,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         # a stop ends what a sleep timer waited for, except the one of an announcement, which
         # resumes the queue afterwards
-        announcement_in_progress = self._announcement_in_progress(queue_id)
-        if not announcement_in_progress:
+        queue_player = self.mass.players.get_player(queue_id)
+        if not (queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)):
             self._clear_sleep_timer(queue_id)
         self._cancel_pending_playback(queue_id)
         if not (queue_data := self._queue_data.get(queue_id)):
@@ -2835,7 +2865,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         halts_playback = False
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
-                # what the queue resumes from, and what an announcement's park reports
                 queue.resume_pos = int(queue.corrected_elapsed_time)
             if (
                 queue.state != PlaybackState.IDLE
@@ -2874,42 +2903,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # owns none of what is here, and taking it down would hit playback that
                 # started while this stop was still waiting on the device
                 self._end_session(queue_data, session_id)
-        if announcement_in_progress:
-            # hold the reported position still for the length of the clip
-            self._park_for_announcement(queue_id)
-
-    def _park_for_announcement(self, queue_id: str) -> None:
-        """
-        Park a queue at the position an announcement resumes it from.
-
-        Only the stop an announcement asks for gets here.
-
-        :param queue_id: Queue the announcement interrupted.
-        """
-        if (queue_data := self._queue_data.get(queue_id)) is None:
-            return
-        queue = queue_data.queue
-        if not (queue.active and queue.state == PlaybackState.PLAYING):
-            return
-        # the stop saved where the item was; the wall clock has run on with the device stop,
-        # and at the start of an item it lands far ahead
-        queue.elapsed_time = queue.resume_pos
-        queue.elapsed_time_last_updated = time.time()
-        queue.state = PlaybackState.PAUSED
-        # the next update compares against this and publishes that the queue plays on
-        if queue_data.prev_state is not None:
-            queue_data.prev_state["state"] = PlaybackState.PAUSED
-            queue_data.prev_state["elapsed_time"] = int(queue.elapsed_time)
-        self.signal_update(queue_id)
-
-    def _announcement_in_progress(self, queue_id: str) -> bool:
-        """
-        Return whether an announcement plays on the player of the queue.
-
-        :param queue_id: The queue whose player is asked.
-        """
-        player = self.mass.players.get_player(queue_id)
-        return bool(player and player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS))
 
     def _end_session(self, queue_data: PlayerQueueData, session_id: str) -> None:
         """
@@ -3511,13 +3504,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         player = self.mass.players.get_player(queue_id)
         # the group player itself, or the group that the playback of a member goes to
         target = self.mass.players._resolve_play_media_target(player) if player else None
-        if (
-            starts_player
-            and target is not None
-            and target.type == PlayerType.GROUP
-            # parked for an announcement: a step during the clip starts no player
-            and not (player and player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS))
-        ):
+        if starts_player and target is not None and target.type == PlayerType.GROUP:
             # the wait is a task of its own: the move of a further step replaces this move
             # and joins that wait, so the members are powered on and waited for once
             power_on = self.mass.create_task(
