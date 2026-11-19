@@ -30,6 +30,7 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
+    ATTR_ANNOUNCEMENT_HELD_QUEUE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_IDLE_SINCE,
     CONF_ANNOUNCE_TTS_ENGINE,
@@ -338,10 +339,20 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # use fallback/default implementation
             await self._play_announcement(player, announcement, volume_level)
         finally:
-            # Cleared after restore finishes.
-            # Resume during announce still needs the parked position while this is set.
+            # Cleared after restore finishes: a resume during the announcement still needs the
+            # position the queue was stopped at while this is set.
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
-            self.mass.player_queues.release_after_announcement(player.player_id)
+            if (
+                held_queue_id := player.extra_data.pop(ATTR_ANNOUNCEMENT_HELD_QUEUE, None)
+            ) is not None:
+                try:
+                    self.mass.player_queues.release_after_announcement(held_queue_id)
+                except Exception:
+                    # deliberately broad: a failing release must not replace the error of the
+                    # announcement itself or skip the cleanup below
+                    self.logger.exception(
+                        "Failed to release queue %s after announcement", held_queue_id
+                    )
             # the idle power off counts from here, also after a native announcement that
             # leaves the playback state as it was
             player.extra_data.pop(ATTR_IDLE_SINCE, None)
@@ -775,7 +786,8 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # _handle_stop skips the user permission check on this internal path.
             if active_queue := self.get_active_queue(player):
                 await self.mass.player_queues._handle_stop(active_queue.queue_id)
-                self.mass.player_queues.hold_for_announcement(player.player_id)
+                if self.mass.player_queues.hold_for_announcement(active_queue.queue_id):
+                    player.extra_data[ATTR_ANNOUNCEMENT_HELD_QUEUE] = active_queue.queue_id
             else:
                 await self._handle_cmd_stop(player.player_id)
             # wait for the player to stop

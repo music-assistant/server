@@ -145,6 +145,9 @@ class PlayerQueueData:
     # the significant part of the state last written to cache (volatile playback-progress fields
     # stripped); lets the debounced saver skip a redundant write when nothing meaningful changed
     last_saved_state: dict[str, Any] | None = None
+    # the position an announcement that stopped the queue holds it at, until the queue plays
+    # again or the announcement is over
+    announcement_position: float | None = None
 
     def to_cache(self) -> dict[str, Any]:
         """
@@ -165,6 +168,9 @@ class PlayerQueueData:
             "smart_shuffle_active",
         ):
             queue.pop(key, None)
+        # the hold of an announcement ends with the restart, so it is not worth a cache write
+        if isinstance(extra_attributes := queue.get("extra_attributes"), dict):
+            extra_attributes.pop(ATTR_ANNOUNCEMENT_IN_PROGRESS, None)
         return {
             "cache_format_version": CACHE_FORMAT_VERSION,
             "queue": queue,
@@ -225,7 +231,7 @@ class PlayerQueueData:
         queue = PlayerQueue.from_dict(wire)
         # reset the play-action-in-progress flag on restore (MA may have been killed mid-action)
         queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
-        # and the hold of an announcement, which ended with the restart
+        # the hold of an announcement ended with the restart, also in a cache that still has it
         queue.extra_attributes.pop(ATTR_ANNOUNCEMENT_IN_PROGRESS, None)
         queue.sources = [
             item
