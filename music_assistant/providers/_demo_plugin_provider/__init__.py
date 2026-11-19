@@ -98,9 +98,8 @@ SUPPORTED_FEATURES = {
     # this demo declares two of the plugin-specific features to demonstrate the concept:
     # 'AUDIO_SOURCE' means the provider exposes a (live) audio source to Music Assistant
     # and 'SCROBBLE' means it receives a report of every media item that is played.
-    # a provider with an audio source whatever its config also lists 'audio_source' in the
-    # 'media_types' of manifest.json, so the app shows it under Music sources, also before
-    # it is loaded.
+    # the 'provides' of manifest.json lists them as 'audio_source' and 'scrobble', for
+    # discovery only, before the provider is loaded; these features decide what it does.
     ProviderFeature.AUDIO_SOURCE,
     ProviderFeature.SCROBBLE,
 }

@@ -1,6 +1,12 @@
 """Tests for the provider manifest.json validator."""
 
-from scripts.check_manifests import PROVIDERS_PATH, _resolve_manifests, _validate, find_violations
+from scripts.check_manifests import (
+    PROVIDERS_PATH,
+    VALID_TYPES,
+    _resolve_manifests,
+    _validate,
+    find_violations,
+)
 
 
 def _valid_manifest() -> dict[str, object]:
@@ -115,27 +121,38 @@ def test_support_url_must_be_https() -> None:
         assert any("'support_url' must be" in issue for issue in _validate(manifest, "demo"))
 
 
-def test_valid_media_types_accepted() -> None:
-    """Declared media types that are known MediaType values produce no issues."""
+def test_valid_provides_accepted() -> None:
+    """Declared offerings that are known and fit the provider type produce no issues."""
     manifest = _valid_manifest()
-    manifest["media_types"] = ["radio", "audio_source"]
+    manifest["provides"] = ["radio", "podcast"]
     assert _validate(manifest, "demo") == []
-    manifest["media_types"] = []
+    manifest["provides"] = []
+    assert _validate(manifest, "demo") == []
+    manifest.update(type="plugin", provides=["audio_source", "scrobble"])
+    assert _validate(manifest, "demo") == []
+    manifest.update(type="player", provides=["audio_source"])
     assert _validate(manifest, "demo") == []
 
 
-def test_media_types_breaking_the_rules_rejected() -> None:
-    """Media types that are not a list of known, unique MediaType values are reported."""
+def test_provides_breaking_the_rules_rejected() -> None:
+    """Offerings that are not a list of known, unique values that fit the type are reported."""
     manifest = _valid_manifest()
-    manifest["media_types"] = "radio"
-    assert _validate(manifest, "demo") == ["'media_types' must be a list"]
-    manifest["media_types"] = ["radio", "radios", "unknown", 1, "radio"]
+    manifest["provides"] = "radio"
+    assert _validate(manifest, "demo") == ["'provides' must be a list"]
+    manifest["provides"] = ["radio", "radios", "unknown", 1, "radio", "scrobble"]
     assert _validate(manifest, "demo") == [
-        "media type 'radios' is not a known MediaType",
-        "media type 'unknown' is not a known MediaType",
-        "media type '1' is not a known MediaType",
-        "media type 'radio' is listed more than once",
+        "offering 'radios' is not a known ProviderOffering",
+        "offering 'unknown' is not a known ProviderOffering",
+        "offering '1' is not a known ProviderOffering",
+        "offering 'radio' is listed more than once",
+        "offering 'scrobble' does not fit provider type 'music'",
     ]
+    manifest.update(type="metadata", provides=["audio_source"])
+    assert _validate(manifest, "demo") == [
+        "offering 'audio_source' does not fit provider type 'metadata'"
+    ]
+    manifest.update(type="speaker", provides=["radio"])
+    assert _validate(manifest, "demo") == [f"type 'speaker' is not one of {sorted(VALID_TYPES)}"]
 
 
 def test_real_tree_is_clean() -> None:
