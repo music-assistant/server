@@ -230,6 +230,9 @@
     "dynamic_pin_channel_display_speaker": {
       "label": "Enter the code the device shows on screen or speaks aloud"
     },
+    "speaker_display_name": {
+      "label": "Speaker"
+    },
     "speaker_online": {
       "label": "{0} is online."
     },

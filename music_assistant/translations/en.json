@@ -2645,6 +2645,7 @@
   "provider.sendspin.config_entries.speaker_channel.label": "Channel of {0}",
   "provider.sendspin.config_entries.speaker_channel.options.front_left": "Left",
   "provider.sendspin.config_entries.speaker_channel.options.front_right": "Right",
+  "provider.sendspin.config_entries.speaker_display_name.label": "Speaker",
   "provider.sendspin.config_entries.speaker_offline.label": "{0} is offline. The other speakers play every channel until it is back.",
   "provider.sendspin.config_entries.speaker_online.label": "{0} is online.",
   "provider.sendspin.config_entries.speaker_output_delay.description": "Offset in milliseconds to keep this speaker in sync with the other speakers of this player. Increase if its audio plays too late.",

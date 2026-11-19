@@ -25,6 +25,7 @@ from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import (
     ChannelLayout,
+    ConfigEntryType,
     ContentType,
     IdentifierType,
     MediaType,
@@ -845,6 +846,55 @@ async def test_a_config_save_keeps_the_speakers_and_the_group_id_of_a_set(
     assert set_protocol.speaker_channel(RIGHT) == SpeakerChannel.FRONT_RIGHT
     assert sendspin.multi_channel_player_of(LEFT) == set_protocol.protocol_id
     assert sendspin.multi_channel_player_of(RIGHT) == set_protocol.protocol_id
+
+
+async def test_each_speaker_of_a_set_shows_its_state_name_channel_and_delay(
+    mass: MusicAssistant,
+) -> None:
+    """The config of a set has an entry for the state, name, channel and delay of each speaker."""
+    sendspin = _sendspin(mass)
+    player, _, _ = await _compose(mass, sendspin)
+
+    config = await mass.config.get_player_config(player.player_id)
+
+    assert [
+        (key, entry.type, entry.value)
+        for key, entry in config.values.items()
+        if key.startswith("speaker_")
+    ] == [
+        ("speaker_1_state", ConfigEntryType.LABEL, "online"),
+        ("speaker_1_display_name", ConfigEntryType.LABEL, "Kitchen left"),
+        ("speaker_1_channel_setting", ConfigEntryType.STRING, "front_left"),
+        ("speaker_1_output_delay", ConfigEntryType.INTEGER, 0),
+        ("speaker_2_state", ConfigEntryType.LABEL, "online"),
+        ("speaker_2_display_name", ConfigEntryType.LABEL, "Kitchen right"),
+        ("speaker_2_channel_setting", ConfigEntryType.STRING, "front_right"),
+        ("speaker_2_output_delay", ConfigEntryType.INTEGER, 0),
+    ]
+
+
+async def test_a_config_save_keeps_the_names_of_the_speakers_of_a_set(
+    mass: MusicAssistant,
+) -> None:
+    """A save of the config of a set keeps the stored name of each speaker, which shows again."""
+    sendspin = _sendspin(mass)
+    player, _, _ = await _compose(mass, sendspin)
+    set_id = _set_of(sendspin, player).protocol_id
+
+    await mass.config.save_player_config(
+        player.player_id,
+        {
+            "speaker_1_output_delay": 120,
+            "speaker_1_display_name": None,
+            "speaker_2_display_name": "Somebody else",
+        },
+    )
+
+    values = (mass.config.get_protocol_record(set_id) or {})["values"]
+    assert (values["speaker_1_name"], values["speaker_2_name"]) == ("Kitchen left", "Kitchen right")
+    config = await mass.config.get_player_config(player.player_id)
+    assert config.get_value("speaker_1_display_name") == "Kitchen left"
+    assert config.get_value("speaker_2_display_name") == "Kitchen right"
 
 
 async def test_a_channel_the_other_speaker_takes_back_stays_with_it(mass: MusicAssistant) -> None:

@@ -15,6 +15,7 @@ CONF_SPEAKER_CHANNEL = "speaker_{n}_channel"
 CONF_SPEAKER_CHANNEL_SETTING = "speaker_{n}_channel_setting"
 CONF_SPEAKER_OUTPUT_DELAY = "speaker_{n}_output_delay"
 CONF_SPEAKER_STATE = "speaker_{n}_state"
+CONF_SPEAKER_DISPLAY_NAME = "speaker_{n}_display_name"
 
 CONF_SENDSPIN_STATIC_DELAY = "sendspin_static_delay"
 # the static delays the user set for the protocols that do not carry the output now, by their id

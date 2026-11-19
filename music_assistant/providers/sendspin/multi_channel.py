@@ -30,6 +30,7 @@ from .constants import (
     CONF_SPEAKER_CHANNEL,
     CONF_SPEAKER_CHANNEL_SETTING,
     CONF_SPEAKER_CLIENT_ID,
+    CONF_SPEAKER_DISPLAY_NAME,
     CONF_SPEAKER_NAME,
     CONF_SPEAKER_OUTPUT_DELAY,
     CONF_SPEAKER_STATE,
@@ -318,8 +319,14 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
                         translation_key="speaker_online" if online else "speaker_offline",
                         translation_params=[speaker.name],
                     ),
-                    # the record has no entries, so a config save never changes it: a channel
-                    # comes in through a setting of its own
+                    # the record has no entries, so a config save never changes it: the name
+                    # shows under a key of its own, and a channel comes in through a setting
+                    ConfigEntry(
+                        key=CONF_SPEAKER_DISPLAY_NAME.format(n=number),
+                        type=ConfigEntryType.LABEL,
+                        default_value=speaker.name,
+                        translation_key="speaker_display_name",
+                    ),
                     ConfigEntry(
                         key=CONF_SPEAKER_CHANNEL_SETTING.format(n=number),
                         type=ConfigEntryType.STRING,
