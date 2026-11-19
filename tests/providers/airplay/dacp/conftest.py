@@ -125,6 +125,7 @@ def make_player(  # noqa: PLR0913
         stream = MagicMock()
         stream.active_remote_id = active_remote
         stream.running = True
+        stream.start_pending = False
         stream.connected = stream_connected
         stream.prevent_playback = prevent_playback
         stream.session = MagicMock() if has_session else None

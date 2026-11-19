@@ -204,16 +204,20 @@ class AirPlayProvider(PlayerProvider):
         )
         if player_id is None:
             return
+        # Some receivers echo play (or play/pause) as confirmation of a command from MA,
+        # also while MA's own stream to them is still starting.
+        stream = player.stream
+        stream_starting = stream is not None and stream.running and stream.start_pending
         match command:
             case AirPlayRemoteCommand.PLAY:
-                # Some receivers echo play as confirmation of a command from MA.
-                if player.playback_state != PlaybackState.PLAYING:
+                if player.playback_state != PlaybackState.PLAYING and not stream_starting:
                     self.mass.create_task(self.mass.players.cmd_play(player_id))
             case AirPlayRemoteCommand.PAUSE:
                 if player.playback_state == PlaybackState.PLAYING:
                     self.mass.create_task(self.mass.players.cmd_pause(player_id))
             case AirPlayRemoteCommand.PLAY_PAUSE:
-                self.mass.create_task(self.mass.players.cmd_play_pause(player_id))
+                if not stream_starting:
+                    self.mass.create_task(self.mass.players.cmd_play_pause(player_id))
             case AirPlayRemoteCommand.NEXT:
                 self.mass.create_task(self.mass.players.cmd_next_track(player_id))
             case AirPlayRemoteCommand.PREVIOUS:
