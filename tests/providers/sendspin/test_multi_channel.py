@@ -876,6 +876,31 @@ async def test_an_unmute_reaches_a_speaker_that_does_not_report_its_mute(
     assert (left.mute_commands, right.mute_commands) == ([True, False], [True, False])
 
 
+async def test_a_mute_set_on_a_speaker_that_does_not_report_its_mutes_reaches_the_set(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A mute set on a speaker that never reports the mutes it gets goes to the set and the others.
+
+    The mutes the set sent it are forgotten once the speaker would have reported them.
+    """
+    monkeypatch.setattr(multi_channel, "UNREPORTED_EXPIRY", 0.2)
+    sendspin = _sendspin(mass)
+    player, left, right = await _compose(mass, sendspin)
+    right.reports_mute = False
+    await mass.players.cmd_volume_mute(player.player_id, True)
+    await mass.players.cmd_volume_mute(player.player_id, False)
+    await asyncio.sleep(0.3)
+
+    # muted with the button of the right speaker
+    right.update_player_state(muted=True)
+
+    await _wait_for(
+        lambda: mass.players.get_player(player.player_id).volume_muted is True  # type: ignore[union-attr]
+    )
+    assert left.mute_commands == [True, False, True]
+
+
 async def test_an_output_delay_sent_again_before_the_speaker_reports_is_not_dropped(
     mass: MusicAssistant,
 ) -> None:

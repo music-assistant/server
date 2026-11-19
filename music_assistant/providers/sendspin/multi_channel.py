@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import secrets
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -59,8 +60,8 @@ SPEAKER_JOIN_GRACE = 2.0
 CHANNEL_CHANGE_DEBOUNCE = 1.0
 # Seconds a speaker that changed group has to settle, as a move passes through a solo group.
 SPEAKER_GROUP_SETTLE = 0.5
-# The most levels kept per speaker that it has not reported back yet.
-MAX_UNREPORTED_LEVELS = 8
+# Seconds within which a speaker reports a level or delay it got, if it reports it at all.
+UNREPORTED_EXPIRY = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,9 +141,9 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         self._attr_type = PlayerType.MULTI_CHANNEL
         self._speaker_listeners: dict[str, tuple[SendspinClient, Callable[[], None]]] = {}
         # levels and delays sent to a speaker that it has not reported back yet
-        self._sent_volumes: dict[str, list[int]] = {}
-        self._sent_mutes: dict[str, list[bool]] = {}
-        self._sent_delays: dict[str, list[int]] = {}
+        self._sent_volumes: dict[str, list[tuple[int, float]]] = {}
+        self._sent_mutes: dict[str, list[tuple[bool, float]]] = {}
+        self._sent_delays: dict[str, list[tuple[int, float]]] = {}
         # speakers that connected again, which still report the state they kept
         self._joining: set[str] = set()
         # speakers that left the group on their own, back at the next playback start
@@ -644,20 +645,29 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         self.update_state()
 
 
-def _last_known[T](sent: list[T], reported: T) -> T:
+def _last_known[T](sent: list[tuple[T, float]], reported: T) -> T:
     """Return the level a speaker has, counting the last one sent that it did not report yet."""
-    return sent[-1] if sent else reported
+    return unreported[-1][0] if (unreported := _unreported(sent)) else reported
 
 
-def _remember[T](sent: list[T], value: T) -> None:
-    """Keep a level sent to a speaker until it reports it back."""
-    sent.append(value)
-    del sent[:-MAX_UNREPORTED_LEVELS]
+def _remember[T](sent: list[tuple[T, float]], value: T) -> None:
+    """Keep a level sent to a speaker until it reports it back, or no longer will."""
+    _unreported(sent).append((value, time.monotonic()))
 
 
-def _take_echo[T](sent: list[T], value: T) -> bool:
+def _take_echo[T](sent: list[tuple[T, float]], value: T) -> bool:
     """Return whether a reported level was sent, forgetting it and the levels sent before it."""
-    if value not in sent:
+    unreported = _unreported(sent)
+    index = next((i for i, (sent_value, _) in enumerate(unreported) if sent_value == value), None)
+    if index is None:
         return False
-    del sent[: sent.index(value) + 1]
+    del unreported[: index + 1]
     return True
+
+
+def _unreported[T](sent: list[tuple[T, float]]) -> list[tuple[T, float]]:
+    """Forget the levels sent too long ago for a speaker to report them, and return the rest."""
+    expired_before = time.monotonic() - UNREPORTED_EXPIRY
+    while sent and sent[0][1] < expired_before:
+        del sent[0]
+    return sent
