@@ -1824,7 +1824,7 @@ class AirPlayStreamSession:
             return await asyncio.wait_for(
                 stream.send_cli_command(command), AIRPLAY_SILENT_MEMBER_TIMEOUT
             )
-        except Exception as err:
+        except OSError as err:  # a timeout is an OSError too
             self.prov.logger.debug(
                 "Could not send %s to %s: %s", command, airplay_player.protocol_id, err
             )
