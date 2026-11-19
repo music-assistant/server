@@ -217,8 +217,13 @@ async def test_a_stop_of_a_queue_whose_player_waits_for_its_device_goes_to_no_de
         await scenario.settle()
 
     stop_player.assert_not_awaited()
-    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+    with pytest.raises(
+        PlayerUnavailableError, match="power on of player Bathroom was called off"
+    ) as error:
         await play
+    # its plug is on: it was stopped, not switched off
+    assert error.value.translation_key == "player_stopped_during_startup"
+    assert error.value.translation_args == ["Bathroom"]
     assert plug.commands == [True]
 
 
@@ -252,8 +257,10 @@ async def test_command_to_an_unavailable_player_raises(
     player_id = await _detached_player(scenario)
 
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, False)]
-    with pytest.raises(PlayerUnavailableError):
+    with pytest.raises(PlayerUnavailableError) as error:
         await getattr(scenario.mass.players, command)(player_id, *args)
+    assert error.value.translation_key == "player_not_available"
+    assert error.value.translation_args == ["Den"]
 
 
 async def test_power_on_of_an_unavailable_player_is_accepted(scenario: Scenario) -> None:

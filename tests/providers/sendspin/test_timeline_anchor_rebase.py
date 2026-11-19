@@ -11,6 +11,7 @@ from music_assistant_models.dsp import DSPConfig
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.models.player import PlayerMedia
+from music_assistant.providers.sendspin import playback
 from music_assistant.providers.sendspin.playback import (
     _HISTORY_KEEP_PAST_US,
     ANCHOR_REBASE_SIGNIFICANT_US,
@@ -121,6 +122,8 @@ async def _run_commit_loop(
     monkeypatch.setattr(
         "music_assistant.providers.sendspin.playback.import_module_in_thread", AsyncMock()
     )
+    # every chunk is a commit of its own, the first one too
+    monkeypatch.setattr(playback, "_START_QUEUE_US", _CHUNK_DURATION_US)
 
     trace = _CommitLoopTrace(player=player)
     player.on_flow_timeline_changed.side_effect = lambda *_: trace.player_calls.append(
@@ -418,6 +421,8 @@ async def test_a_commit_finishing_after_its_stream_was_replaced_leaves_the_sessi
     monkeypatch.setattr(
         "music_assistant.providers.sendspin.playback.import_module_in_thread", AsyncMock()
     )
+    # every chunk is a commit of its own, so the stream is replaced during the second
+    monkeypatch.setattr(playback, "_START_QUEUE_US", _CHUNK_DURATION_US)
     seen: list[tuple[int, int | None]] = []
     original_prune = SendspinPlaybackSession._prune_history_locked
 
@@ -429,6 +434,8 @@ async def test_a_commit_finishing_after_its_stream_was_replaced_leaves_the_sessi
 
     await session._run_playback(PlayerMedia(uri="library://track/1"))
 
+    # the stream was replaced during its second commit, which was its last
+    assert old_stream.calls == 2
     # Only the first chunk was taken; the one returned after the replacement was not.
     assert seen == [(1, first_us)]
     cast("MagicMock", player.on_first_audio_heard).assert_not_called()

@@ -22,6 +22,7 @@ from music_assistant_models.enums import ProtocolRole
 
 from music_assistant.providers.sendspin.player import SendspinPlayer
 from music_assistant.providers.sendspin.provider import SendspinProvider
+from music_assistant.providers.sendspin.sources import SendspinSources
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
@@ -144,6 +145,7 @@ async def _connect(
         setattr(provider, name, getattr(SendspinProvider, name).__get__(provider))
     provider.server_api = SimpleNamespace(get_client={CLIENT_ID: client}.get)
     provider.is_virtual_player = lambda _client_id: False
+    provider.sources = SendspinSources(provider)
     provider.is_held_unapproved = lambda _client_id: False
     provider.is_held_elsewhere = lambda _client_id: False
     provider._auto_trust_guest_access = AsyncMock()

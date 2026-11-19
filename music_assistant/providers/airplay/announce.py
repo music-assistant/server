@@ -303,11 +303,9 @@ def _live_members(player: AirPlayPlayer) -> list[AirPlayPlayer]:
     """
     if not player.has_live_audio:
         return []
-    stream = player.stream
-    assert stream is not None  # guaranteed by has_live_audio
     if player.synced_to:
         return [player]
-    if stream.session is None:
+    if (session := player.session) is None:
         # A Sendspin-bridged player plays without a stream session, but its
         # stream is a regular AirPlayStream the clip mixes into (self-only).
         provider = cast("AirPlayProvider", player.provider)
@@ -324,7 +322,7 @@ def _live_members(player: AirPlayPlayer) -> list[AirPlayPlayer]:
     # announcing to it covers every member of its session.
     return [
         member
-        for member in stream.session.sync_clients
+        for member in session.sync_clients
         if member.stream is not None and member.stream.running and member.stream.connected
     ]
 

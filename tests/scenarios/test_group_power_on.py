@@ -30,6 +30,7 @@ from music_assistant.controllers.streams.announcements import (
     ANNOUNCEMENT_PCM_FORMAT,
     AnnouncementRender,
 )
+from music_assistant.models.media_capabilities import AudioSourceMixin
 from music_assistant.models.plugin import PluginProvider
 from tests.common import as_user, record_lock_waits
 
@@ -1249,7 +1250,7 @@ def _live_source(scenario: Scenario, monkeypatch: pytest.MonkeyPatch) -> str:
     provider = MagicMock(spec=PluginProvider, instance_id=instance_id)
     resolve = scenario.mass.players._resolve_audio_source_uri
 
-    async def _resolve(uri: str) -> tuple[AudioSource, PluginProvider] | None:
+    async def _resolve(uri: str) -> tuple[AudioSource, AudioSourceMixin] | None:
         return (source, provider) if uri == SOURCE_URI else await resolve(uri)
 
     monkeypatch.setattr(scenario.mass.players, "_resolve_audio_source_uri", _resolve)

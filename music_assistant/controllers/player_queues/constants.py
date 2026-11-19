@@ -187,6 +187,10 @@ SKIP_END_MARGIN = 1
 # point a sleep timer stops at ended there. One that changed earlier was skipped on the device.
 SLEEP_TIMER_NATURAL_END_MARGIN = 5
 
+# An item no command cut off counts as played to its end once its last reported position is
+# this close to its duration: the last report lags the end and is truncated to whole seconds.
+PLAYED_TO_END_MARGIN = 2
+
 # A player counts as having played a fully streamed flow stream session once its position is
 # this close to the end of it: position reports are not exact down to the last audio frame.
 FLOW_PLAYED_OUT_MARGIN = 0.5
@@ -195,3 +199,12 @@ FLOW_PLAYED_OUT_MARGIN = 0.5
 # keeps playing the audio it buffered, which a held-open stream lets it do for up to the maximum
 # lead-out; the extra minute covers its idle report after the connection closes.
 FLOW_PLAYOUT_IDLE_TIMEOUT = FLOW_STREAM_MAX_LEAD_OUT_SECONDS + 60
+
+# A queue restarts a flow stream its player lost at most this many times within the window (in
+# seconds), so a player that keeps losing its stream does not restart playback over and over.
+LOST_FLOW_RESTART_LIMIT = 3
+LOST_FLOW_RESTART_WINDOW = 600
+
+# A queue stops once this many of its items in a row got no audio from their source, so it does
+# not run on through its items while a music service or the network is down.
+SOURCE_FAILURE_LIMIT = 3

@@ -47,7 +47,8 @@ from music_assistant.helpers.throttle_retry import (
     ThrottlerManager,
     request_priority,
 )
-from music_assistant.models.plugin import PluginProvider, SourceControlValue
+from music_assistant.models.media_capabilities import SourceControlValue
+from music_assistant.models.plugin import PluginProvider
 
 from .auth import refresh_music_token
 from .constants import (

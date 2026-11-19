@@ -48,6 +48,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL_CUTS_POWER,
     CONF_REQUIRES_FIXED_CONTENT_LENGTH,
 )
+from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
@@ -64,6 +65,7 @@ from tests.common import (
     make_player_state,
     mock_player_mass,
     record_lock_waits,
+    virtual_loop_clock,
 )
 
 GROUP_PROTOCOL_ID = "ugp_test"
@@ -922,6 +924,8 @@ class _MemberQueue:
     def _drop_pending_step(self, queue_id: str) -> None:
         """Hold no step to drop."""
 
+    _show_play_action = PlayerQueuesController._show_play_action
+
 
 async def _transfer_to_the_group(players: PlayerController, member_id: str) -> None:
     """Start the group the way a transfer of a member's queue to it does, under both locks."""
@@ -1034,10 +1038,17 @@ class TestCommandOnAMemberOfAHeldGroup:
             call = getattr(players, command)("m1")
 
         waits = record_lock_waits(players)
+        loop = asyncio.get_running_loop()
 
-        await call
+        # the clock only moves while the loop waits for a timer, so a pause of the process
+        # (garbage collection, a busy machine) does not count, and any wait does
+        with virtual_loop_clock():
+            started = loop.time()
+            await call
+            took = loop.time() - started
 
         assert waits == []
+        assert took < LOCK_BUDGET
         assert sorted(played_on) == ["m1", "m2"]
 
 

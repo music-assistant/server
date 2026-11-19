@@ -10,7 +10,7 @@ from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
@@ -55,6 +55,8 @@ def make_mass(tmp_path: Path) -> Any:
         base_url="http://localhost",
         external_url=None,
         remote_access=SimpleNamespace(is_enabled=False),
+        # an unloaded instance drops its page addresses
+        provider_pages=MagicMock(),
     )
     mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=None)
     # nor does the library hold anyone's favorite state for the listed tracks

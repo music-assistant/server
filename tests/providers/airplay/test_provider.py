@@ -585,6 +585,7 @@ def _ap2_player() -> MagicMock:
     """Return a mock player that resolves to native AirPlay 2."""
     player = MagicMock()
     player.protocol = StreamingProtocol.AIRPLAY2
+    player.sync_offset_ms = 0
     return player
 
 
@@ -592,6 +593,7 @@ def _raop_player() -> MagicMock:
     """Return a mock player that resolves to legacy RAOP."""
     player = MagicMock()
     player.protocol = StreamingProtocol.RAOP
+    player.sync_offset_ms = 0
     return player
 
 
@@ -736,7 +738,6 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
         player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
         player.stream.start = AsyncMock(side_effect=_ack_commanded_instant)
         player.stream.buffered_route = False
-        player.config.get_value = MagicMock(return_value=0)
     session = _make_ptp_session(prov, players)
     now = 100.0
 
@@ -784,6 +785,7 @@ def _stream_player(*, ptp_daemon_ready: bool) -> MagicMock:
     player.device_info.model = "Test1,1"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(return_value=None)
+    player.device_password = None
     # Keep the arg build on its shortest path: no discovery records to expand.
     player.airplay_discovery_info = None
     player.raop_discovery_info = None

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import IdentifierType, ProtocolRole
+from music_assistant_models.enums import ChannelLayout, IdentifierType, PlayerType, ProtocolRole
 
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.raumfeld.constants import CONF_RESTART_ON_JOIN
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant.models.player import Player
-    from tests.scenarios.harness import Scenario
+    from tests.scenarios.harness import FakePlayerProvider, FakeProtocol, Scenario
 
 HOST_IP = "192.168.1.41"
 SERIAL_BAR = "04:a3:16:f3:b6:c4"
@@ -36,11 +37,21 @@ class _Speaker:
     renderer_udn: str
     serial: str
     ip_address: str
+    # the renderers of the other speakers in the room, listed after this one
+    others: tuple[str, ...] = ()
 
 
 BAR_SPEAKER = _Speaker("uuid:room-bar", "uuid:renderer-bar", SERIAL_BAR, "192.168.1.42")
 # the speaker of the room that runs on the host
 TV_SPEAKER = _Speaker("uuid:room-tv", "uuid:renderer-tv", "b8:27:eb:57:da:f9", HOST_IP)
+# a second speaker for the room Bar, listed after its own speaker
+BAR_SPEAKER_2 = _Speaker(
+    "uuid:room-bar", "uuid:renderer-bar-2", "04:a3:16:f3:b6:c5", "192.168.1.43"
+)
+KAMER_SPEAKER = _Speaker(
+    "uuid:room-kamer", "uuid:renderer-kamer", "d8:3a:dd:da:8e:62", "192.168.1.14"
+)
+KAMER = "raumfeld_d83addda8e62"
 
 
 @pytest.fixture(autouse=True)
@@ -81,7 +92,7 @@ async def _sync(
                 speaker.renderer_udn,
                 "ACTIVE",
                 False,
-                renderer_udns=(speaker.renderer_udn,),
+                renderer_udns=(speaker.renderer_udn, *speaker.others),
             )
             for name, speaker in rooms.items()
         },
@@ -97,9 +108,41 @@ async def _sync(
     for name, speaker in rooms.items():
         provider._room_serials[name] = speaker.serial
         provider._room_serial_renderers[name] = speaker.renderer_udn
+        # read to find the speaker of a room of several, which would go out to the network
+        provider._renderer_descriptions[speaker.renderer_udn] = (
+            f"<root><device><serialNumber>{speaker.serial}</serialNumber></device></root>"
+        )
         provider._versions_read.add(name)
     await provider._sync_rooms()
     await scenario.settle()
+
+
+def _dlna_output(dlna: FakePlayerProvider, speaker: _Speaker, mac_address: str) -> FakeProtocol:
+    """
+    Return the DLNA renderer of a speaker, which the DLNA provider finds once it is registered.
+
+    :param mac_address: The MAC address the speaker's renderer reports.
+    """
+    return dlna.protocol(
+        speaker.renderer_udn,
+        f"Speaker {speaker.renderer_udn}",
+        role="audio",
+        identifiers={
+            IdentifierType.UUID: speaker.renderer_udn.removeprefix("uuid:"),
+            IdentifierType.IP_ADDRESS: speaker.ip_address,
+            IdentifierType.MAC_ADDRESS: mac_address,
+        },
+    )
+
+
+@contextmanager
+def _no_device_reads(provider: RaumfeldPlayerProvider) -> Iterator[None]:
+    """Keep a room whose speaker changed from reading the new one, which is not there."""
+    with (
+        patch.object(provider, "_read_description", AsyncMock(return_value=None)),
+        patch.object(provider, "_read_software_version", AsyncMock(return_value=None)),
+    ):
+        yield
 
 
 def _attached(provider: RaumfeldPlayerProvider, protocol_id: str) -> RaumfeldPlayer:
@@ -392,3 +435,219 @@ async def test_a_room_whose_speaker_returns_under_another_address_reports_it(
     assert record is not None
     assert [IdentifierType.IP_ADDRESS.value, "192.168.1.43"] in record["values"]["identifiers"]
     assert scenario.player_of(other_device) != player_id
+
+
+async def test_a_room_of_several_speakers_is_a_multi_channel_player(scenario: Scenario) -> None:
+    """
+    A room of several speakers is one multi-channel player in stereo, and it follows the room.
+
+    Every speaker of a room plays the same stereo sound, so the layout is stereo. A speaker
+    moved to another room takes that along: each room keeps its own player.
+    """
+    provider = await _raumfeld(scenario)
+    bar_pair = replace(BAR_SPEAKER, others=("uuid:renderer-bar-2",))
+    await _sync(scenario, provider, {"Bar": bar_pair, "TV": TV_SPEAKER})
+    bar_id = _player(_attached(provider, BAR)).player_id
+    tv_id = _player(_attached(provider, TV)).player_id
+
+    bar, tv = scenario.player(bar_id), scenario.player(tv_id)
+    assert bar is not None
+    assert tv is not None
+    assert (bar.type, bar.channel_layout) == (PlayerType.MULTI_CHANNEL, ChannelLayout.STEREO)
+    assert (tv.type, tv.channel_layout) == (PlayerType.PLAYER, None)
+
+    tv_pair = replace(TV_SPEAKER, others=("uuid:renderer-bar-2",))
+    await _sync(scenario, provider, {"Bar": BAR_SPEAKER, "TV": tv_pair})
+
+    assert _player(_attached(provider, BAR)).player_id == bar_id
+    assert _player(_attached(provider, TV)).player_id == tv_id
+    bar, tv = scenario.player(bar_id), scenario.player(tv_id)
+    assert bar is not None
+    assert tv is not None
+    assert (bar.type, bar.channel_layout) == (PlayerType.PLAYER, None)
+    assert (tv.type, tv.channel_layout) == (PlayerType.MULTI_CHANNEL, ChannelLayout.STEREO)
+
+
+async def test_a_room_stored_as_a_single_speaker_is_stored_as_the_set_it_is_now(
+    scenario: Scenario,
+) -> None:
+    """
+    The type stored for a room follows the speakers it has when it attaches.
+
+    That is the case of a room an older version stored as a single player.
+    """
+    provider = await _raumfeld(scenario)
+    await _sync(scenario, provider, {"Bar": BAR_SPEAKER})
+    player_id = _player(_attached(provider, BAR)).player_id
+    assert scenario.mass.config.get(f"players/{player_id}/player_type") == "player"
+    await _sync(scenario, provider, {})
+
+    await _sync(scenario, provider, {"Bar": replace(BAR_SPEAKER, others=("uuid:renderer-bar-2",))})
+
+    assert _player(_attached(provider, BAR)).player_id == player_id
+    assert scenario.mass.config.get(f"players/{player_id}/player_type") == "multi_channel"
+
+
+async def test_a_room_whose_only_speaker_moved_to_another_room_is_removed(
+    scenario: Scenario,
+) -> None:
+    """
+    A room that ended because its only speaker moved to another room loses its player.
+
+    The speaker's renderer then is a player of its own, like any further speaker of a room.
+    """
+    provider = await _raumfeld(scenario)
+    dlna = await scenario.add_provider("dlna")
+    await _sync(scenario, provider, {"Bar": BAR_SPEAKER, "Kamer": KAMER_SPEAKER})
+    output = _dlna_output(dlna, KAMER_SPEAKER, "00:1e:c0:00:00:03")
+    await scenario.register(output)
+    await scenario.idle()
+    kamer_player = _player(_attached(provider, KAMER)).player_id
+    assert scenario.player_of(output) == kamer_player
+
+    await _sync(
+        scenario, provider, {"Bar": replace(BAR_SPEAKER, others=(KAMER_SPEAKER.renderer_udn,))}
+    )
+    await scenario.idle()
+
+    assert scenario.player(kamer_player) is None
+    assert scenario.mass.config.get_protocol_record(KAMER) is None
+    bar_player = _player(_attached(provider, BAR)).player_id
+    assert scenario.player_of(output) not in (None, kamer_player, bar_player)
+
+
+async def test_an_output_of_a_speaker_moved_to_another_room_leaves_its_room(
+    scenario: Scenario,
+) -> None:
+    """
+    A room whose speaker moved to another room lets go of its outputs and keeps its player.
+
+    The outputs of the speaker are a player of their own, as the speaker is a further speaker
+    of the room it moved to. The room takes the renderer of the speaker it plays through now.
+    """
+    provider = await _raumfeld(scenario)
+    dlna = await scenario.add_provider("dlna")
+    bar_pair = replace(BAR_SPEAKER, others=(BAR_SPEAKER_2.renderer_udn,))
+    await _sync(scenario, provider, {"Bar": bar_pair, "TV": TV_SPEAKER})
+    moved = _dlna_output(dlna, BAR_SPEAKER, "00:1e:c0:00:00:01")
+    stays = _dlna_output(dlna, BAR_SPEAKER_2, "00:1e:c0:00:00:02")
+    await scenario.register(moved)
+    await scenario.register(stays)
+    await scenario.idle()
+    bar_player = _player(_attached(provider, BAR)).player_id
+    assert scenario.player_of(moved) == bar_player
+    assert scenario.player_of(stays) not in (None, bar_player)
+
+    with _no_device_reads(provider):
+        await _sync(
+            scenario,
+            provider,
+            {"Bar": BAR_SPEAKER_2, "TV": replace(TV_SPEAKER, others=(BAR_SPEAKER.renderer_udn,))},
+        )
+        await scenario.idle()
+
+    assert _player(_attached(provider, BAR)).player_id == bar_player
+    tv_player = _player(_attached(provider, TV)).player_id
+    assert scenario.player_of(moved) not in (None, bar_player, tv_player)
+    assert scenario.player_of(stays) == bar_player
+
+
+async def test_two_rooms_that_swap_speakers_swap_their_outputs(scenario: Scenario) -> None:
+    """Each room keeps its player and takes the outputs of the speaker it plays through now."""
+    provider = await _raumfeld(scenario)
+    dlna = await scenario.add_provider("dlna")
+    await _sync(scenario, provider, {"Bar": BAR_SPEAKER, "TV": TV_SPEAKER})
+    bar_output = _dlna_output(dlna, BAR_SPEAKER, "00:1e:c0:00:00:01")
+    tv_output = _dlna_output(dlna, TV_SPEAKER, "00:1e:c0:00:00:04")
+    await scenario.register(bar_output)
+    await scenario.register(tv_output)
+    await scenario.idle()
+    bar_player = _player(_attached(provider, BAR)).player_id
+    tv_player = _player(_attached(provider, TV)).player_id
+    assert scenario.player_of(bar_output) == bar_player
+    assert scenario.player_of(tv_output) == tv_player
+
+    with _no_device_reads(provider):
+        await _sync(
+            scenario,
+            provider,
+            {
+                "Bar": replace(TV_SPEAKER, room_udn=BAR_SPEAKER.room_udn),
+                "TV": replace(BAR_SPEAKER, room_udn=TV_SPEAKER.room_udn),
+            },
+        )
+        await scenario.idle()
+
+    assert _player(_attached(provider, BAR)).player_id == bar_player
+    assert _player(_attached(provider, TV)).player_id == tv_player
+    assert scenario.player_of(bar_output) == tv_player
+    assert scenario.player_of(tv_output) == bar_player
+
+
+async def test_a_speaker_away_for_a_while_keeps_its_outputs_on_its_room(
+    scenario: Scenario,
+) -> None:
+    """
+    A speaker of a room of several that is away for a while is still the room's when it returns.
+
+    The host lists a speaker in deep standby nowhere, the same as one that left the system.
+    """
+    provider = await _raumfeld(scenario)
+    dlna = await scenario.add_provider("dlna")
+    bar_pair = replace(BAR_SPEAKER, others=(BAR_SPEAKER_2.renderer_udn,))
+    await _sync(scenario, provider, {"Bar": bar_pair})
+    own = _dlna_output(dlna, BAR_SPEAKER, "00:1e:c0:00:00:01")
+    second = _dlna_output(dlna, BAR_SPEAKER_2, "00:1e:c0:00:00:02")
+    await scenario.register(own)
+    await scenario.register(second)
+    await scenario.idle()
+    bar_player = _player(_attached(provider, BAR)).player_id
+
+    with _no_device_reads(provider):
+        await scenario.unregister(own)
+        await _sync(scenario, provider, {"Bar": BAR_SPEAKER_2})
+        await scenario.idle()
+        assert scenario.player_of(second) not in (None, bar_player)
+
+        await scenario.register(own)
+        await _sync(scenario, provider, {"Bar": bar_pair})
+        await scenario.idle()
+
+    assert _player(_attached(provider, BAR)).player_id == bar_player
+    assert scenario.player_of(own) == bar_player
+    assert scenario.player_of(second) not in (None, bar_player)
+
+
+async def test_a_speaker_that_returns_to_the_room_it_left_is_the_rooms_again(
+    scenario: Scenario,
+) -> None:
+    """
+    A room takes back the outputs of its speaker once that returns from another room.
+
+    The outputs of the other speaker of the room, which it took meanwhile, go off it again.
+    """
+    provider = await _raumfeld(scenario)
+    dlna = await scenario.add_provider("dlna")
+    bar_pair = replace(BAR_SPEAKER, others=(BAR_SPEAKER_2.renderer_udn,))
+    await _sync(scenario, provider, {"Bar": bar_pair, "TV": TV_SPEAKER})
+    moved = _dlna_output(dlna, BAR_SPEAKER, "00:1e:c0:00:00:01")
+    stays = _dlna_output(dlna, BAR_SPEAKER_2, "00:1e:c0:00:00:02")
+    await scenario.register(moved)
+    await scenario.register(stays)
+    await scenario.idle()
+    bar_player = _player(_attached(provider, BAR)).player_id
+    with _no_device_reads(provider):
+        await _sync(
+            scenario,
+            provider,
+            {"Bar": BAR_SPEAKER_2, "TV": replace(TV_SPEAKER, others=(BAR_SPEAKER.renderer_udn,))},
+        )
+        await scenario.idle()
+        assert scenario.player_of(stays) == bar_player
+
+        await _sync(scenario, provider, {"Bar": bar_pair, "TV": TV_SPEAKER})
+        await scenario.idle()
+
+    assert _player(_attached(provider, BAR)).player_id == bar_player
+    assert scenario.player_of(moved) == bar_player
+    assert scenario.player_of(stays) not in (None, bar_player)

@@ -13,6 +13,7 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import (
+    ChannelLayout,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -245,7 +246,8 @@ class TestPublishedValues:
 
         state = _derive(
             provider="test_prov--1",
-            player_type=PlayerType.STEREO_PAIR,
+            player_type=PlayerType.MULTI_CHANNEL,
+            channel_layout=ChannelLayout.LAYOUT_5_1,
             name="Living room",
             enabled=True,
             hide_in_ui=True,
@@ -271,7 +273,8 @@ class TestPublishedValues:
 
         assert state.player_id == PLAYER_ID
         assert state.provider == "test_prov--1"
-        assert state.type == PlayerType.STEREO_PAIR
+        assert state.type == PlayerType.MULTI_CHANNEL
+        assert state.channel_layout == ChannelLayout.LAYOUT_5_1
         assert state.name == "Living room"
         assert state.hide_in_ui is True
         assert state.expose_to_ha is False
@@ -2014,9 +2017,11 @@ class TestGroupVolume:
         assert state.group_volume is None
         assert state.group_volume_muted is None
 
-    def test_leader_counts_its_own_new_volume(self) -> None:
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
+    def test_leader_counts_its_own_new_volume(self, player_type: PlayerType) -> None:
         """The loudest member decides, and the leader counts with the level it has now."""
         state = _derive(
+            player_type=player_type,
             previous_state=make_player_state(
                 PLAYER_ID, volume_control=PLAYER_CONTROL_NATIVE, volume_level=20
             ),

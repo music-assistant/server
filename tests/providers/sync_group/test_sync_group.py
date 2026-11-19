@@ -41,6 +41,7 @@ from music_assistant.constants import (
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_VOLUME_CONTROL,
 )
+from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
@@ -58,6 +59,7 @@ from tests.common import (
     make_player_state,
     mock_player_mass,
     record_lock_waits,
+    virtual_loop_clock,
 )
 
 # the lock budget of the tests that wait for a real player lock, in seconds
@@ -350,13 +352,16 @@ class TestProtocolAwareLeaderSelection:
         leader = sgp._select_sync_leader()
         assert leader is player_a
 
-    def test_select_leader_skips_non_playback_member(self) -> None:
-        """A light member listed first is never picked as sync leader."""
+    @pytest.mark.parametrize(
+        "player_type", [PlayerType.DISPLAY, PlayerType.VISUALIZER, PlayerType.LIGHT]
+    )
+    def test_select_leader_skips_non_playback_member(self, player_type: PlayerType) -> None:
+        """A display, visualizer or light member listed first is never picked as sync leader."""
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
-        _make_member(mass, "light", "sendspin", player_type=PlayerType.LIGHT)
+        _make_member(mass, "non_audio", "sendspin", player_type=player_type)
         player_b = _make_member(mass, "player_b")
-        sgp._attr_group_members = ["light", "player_b"]
+        sgp._attr_group_members = ["non_audio", "player_b"]
 
         leader = sgp._select_sync_leader()
         assert leader is player_b
@@ -1364,10 +1369,17 @@ class TestCommandOnAMemberOfASyncGroup:
             player.refresh_state(signal_event=False)
         assert member.active_group == _group_id(group)
         waits = record_lock_waits(players)
+        loop = asyncio.get_running_loop()
 
-        await getattr(players, command)("B")
+        # the clock only moves while the loop waits for a timer: a pause of the process does
+        # not count, any wait does
+        with virtual_loop_clock():
+            started = loop.time()
+            await getattr(players, command)("B")
+            took = loop.time() - started
 
         assert waits == []
+        assert took < LOCK_BUDGET
         leader.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
 
     @pytest.mark.parametrize("command", ["cmd_play", "cmd_resume"])
@@ -1383,10 +1395,17 @@ class TestCommandOnAMemberOfASyncGroup:
             player.refresh_state(signal_event=False)
         assert child.synced_to == "L"
         waits = record_lock_waits(players)
+        loop = asyncio.get_running_loop()
 
-        await getattr(players, command)("B")
+        # the clock only moves while the loop waits for a timer: a pause of the process does
+        # not count, any wait does
+        with virtual_loop_clock():
+            started = loop.time()
+            await getattr(players, command)("B")
+            took = loop.time() - started
 
         assert waits == []
+        assert took < LOCK_BUDGET
         leader.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
         child.own_protocol.play_media.assert_not_awaited()  # type: ignore[union-attr]
 
@@ -1426,6 +1445,8 @@ class _LoadingQueue:
 
     def _drop_pending_step(self, queue_id: str) -> None:
         """Hold no step to drop."""
+
+    _show_play_action = PlayerQueuesController._show_play_action
 
 
 class TestRejoinLeavesABusyMemberAlone:

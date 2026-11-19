@@ -232,7 +232,11 @@ class HueEntertainmentBridge:
                     adopted = True
                     self._is_streaming = True
                     self._start_render_loop()
-                    self.logger.info("Entertainment streaming active for '%s'", self.target.name)
+                    # a target that waits for busy lamps, or was taken over, logs that itself
+                    if self.target.is_streaming:
+                        self.logger.info(
+                            "Entertainment streaming active for '%s'", self.target.name
+                        )
                     return
                 except TargetUnavailableError as err:
                     self.logger.error(

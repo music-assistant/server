@@ -46,7 +46,8 @@ from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import interface_name_for_ip
-from music_assistant.models.plugin import PluginProvider, SourceControlValue
+from music_assistant.models.media_capabilities import SourceControlValue
+from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.airplay_receiver.helpers import get_shairport_sync_binary
 from music_assistant.providers.airplay_receiver.metadata import MetadataReader
 

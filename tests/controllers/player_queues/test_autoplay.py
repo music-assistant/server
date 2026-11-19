@@ -266,6 +266,7 @@ def test_get_queue_config_entries_categories_and_dependencies() -> None:
     """Per-queue entries land in their categories, default to 'global' and offer a global option."""
     fake = MagicMock()
     fake.mass.music.providers = []
+    fake.mass.get_providers_supporting_feature.return_value = []
     fake.mass.streams.smart_fades_available = False
 
     entries = PlayerQueuesController.get_queue_config_entries(cast("PlayerQueuesController", fake))
@@ -277,7 +278,7 @@ def test_get_queue_config_entries_categories_and_dependencies() -> None:
     assert by_key["autoplay_playlist"].depends_on_value == AutoplayMode.PLAYLIST.value
     assert by_key["crossfade_mode"].category == "crossfade"
     assert by_key["crossfade_mode"].default_value == CONF_VALUE_GLOBAL
-    assert by_key["volume_normalization"].category == "audio"
+    assert by_key["volume_normalization"].category == "volume_normalization"
     assert by_key["volume_normalization"].default_value == CONF_VALUE_GLOBAL
     # crossfade duration and the recency windows are global-only, so they are not per-queue entries
     assert "crossfade_duration" not in by_key

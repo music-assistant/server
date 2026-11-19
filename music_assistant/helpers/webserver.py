@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING, Any, Final
 
 from aiohttp import web
@@ -25,6 +25,8 @@ DEFAULT_SHUTDOWN_TIMEOUT: Final = 10
 DynamicRouteHandler = Callable[
     [web.Request], Coroutine[Any, Any, web.Response | web.StreamResponse]
 ]
+# Type alias for a hook that adjusts every response before its headers are sent
+ResponsePrepareHook = Callable[[web.Request, web.StreamResponse], Awaitable[None]]
 
 
 REDACTED_HEADER_VALUE: Final = "<redacted>"
@@ -75,6 +77,7 @@ class Webserver:
         ingress_tcp_site_params: tuple[str, int] | None = None,
         app_state: dict[str, Any] | None = None,
         ssl_context: Any | None = None,
+        response_prepare_hooks: list[ResponsePrepareHook] | None = None,
     ) -> None:
         """
         Async initialize of module.
@@ -89,6 +92,8 @@ class Webserver:
         :param ingress_tcp_site_params: Tuple of (host, port) for ingress TCP site.
         :param app_state: Optional dict of key-value pairs to set on app before starting.
         :param ssl_context: Optional SSL context for HTTPS support.
+        :param response_prepare_hooks: Hooks called with every response before its headers are
+            sent, streaming and WebSocket responses included.
         """
         self._bind_port = bind_port
         self._static_routes = static_routes
@@ -104,6 +109,8 @@ class Webserver:
         if app_state:
             for key, value in app_state.items():
                 self._webapp[key] = value
+        for hook in response_prepare_hooks or ():
+            self._webapp.on_response_prepare.append(hook)
         self._apprunner = web.AppRunner(
             self._webapp, access_log=None, shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT
         )

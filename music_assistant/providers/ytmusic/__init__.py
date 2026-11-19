@@ -1141,7 +1141,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             except MediaNotFoundError:
                 # personal playlist might not be available for all users, ignore if not found
                 return None
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one mix must not fail the others
                 self.logger.debug("Failed to fetch personal mix %s: %s", playlist_id, err)
                 return None
 

@@ -31,6 +31,7 @@ from music_assistant.providers.sendspin.constants import (
 )
 from music_assistant.providers.sendspin.player import SendspinPlayer
 from music_assistant.providers.sendspin.provider import SendspinProvider
+from music_assistant.providers.sendspin.sources import SendspinSources
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
@@ -56,7 +57,11 @@ _CLIENT_CODE = (
     "hold_bridge_client",
     "get_bridge_holder",
     "release_bridge_client",
+    "wait_for_bridge_client",
+    "stop_waiting_for_bridge_client",
+    "wake_bridge_waiters",
     "refresh_bridge_client",
+    "bridge_lock",
     "_begin_client_event",
     "_finish_client_event",
     "_is_current_client_event",
@@ -93,6 +98,7 @@ def _sendspin(scenario: Scenario) -> Any:
     provider.clients = {}
     provider.server_api = SimpleNamespace(get_client=provider.clients.get)
     provider.is_virtual_player = lambda _client_id: False
+    provider.sources = SendspinSources(provider)
     provider.is_held_unapproved = lambda _client_id: False
     provider.is_held_elsewhere = lambda _client_id: False
     provider._auto_trust_guest_access = AsyncMock()
@@ -105,6 +111,8 @@ def _sendspin(scenario: Scenario) -> Any:
     provider._bridge_static_delay_defaults = {}
     provider._bridge_player_types = {}
     provider._bridge_holders = {}
+    provider._bridge_waiters = {}
+    provider._bridge_locks = {}
     return provider
 
 

@@ -845,7 +845,7 @@ class BandcampProvider(MusicProvider):
         tralbum_id, is_album = (album_id, True) if album_id else (track_id, False)
         try:
             lyrics_map = await self._get_tralbum_lyrics(tralbum_id, is_album)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - lyrics never fail the track lookup
             self.logger.debug("Failed to fetch lyrics for %s: %s", prov_track_id, error)
             return
         if text := lyrics_map.get(str(track_id)):
