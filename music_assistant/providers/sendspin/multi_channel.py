@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from aiosendspin.server import VolumeChangedEvent
+from aiosendspin.server.events import ClientGroupChangedEvent
 from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -56,6 +57,8 @@ LAYOUT_CHANNELS: dict[ChannelLayout, tuple[SpeakerChannel, ...]] = {
 SPEAKER_JOIN_GRACE = 2.0
 # Delay to let the changes of several speakers end in one restart of the playback.
 CHANNEL_CHANGE_DEBOUNCE = 1.0
+# Seconds a speaker that changed group has to settle, as a move passes through a solo group.
+SPEAKER_GROUP_SETTLE = 0.5
 # The most levels kept per speaker that it has not reported back yet.
 MAX_UNREPORTED_LEVELS = 8
 
@@ -142,9 +145,13 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         self._sent_delays: dict[str, list[int]] = {}
         # speakers that connected again, which still report the state they kept
         self._joining: set[str] = set()
+        # speakers that left the group on their own, back at the next playback start
+        self._left: set[str] = set()
         self._take_lock = asyncio.Lock()
         self._load_speakers()
-        self._played_channels = self._current_channels()
+        self._played_channels: dict[str, SpeakerChannel | None] = {
+            speaker.client_id: speaker.channel for speaker in self._speakers
+        }
         self._refresh_speaker_state()
 
     @property
@@ -167,12 +174,25 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         """
         return self._current_channels().get(client_id)
 
-    async def take_speakers(self) -> None:
+    def plays_with(self, client_id: str) -> bool:
+        """
+        Return whether a speaker of this player is in the group this player plays in.
+
+        :param client_id: The client id of the speaker.
+        """
+        client = self._sendspin_provider.server_api.get_client(client_id)
+        return client is not None and client.group is self.api.group
+
+    async def take_speakers(self, *, rejoin: bool = False) -> None:
         """
         Take the speakers of this player into the group it plays in.
 
         A speaker that still has a protocol of its own loses it first: the speaker belongs
-        to this player, and a player that has no other protocol left goes with it.
+        to this player, and a player that has no other protocol left goes with it. A speaker
+        that is unavailable stays out, and so does one that left the group on its own.
+
+        :param rejoin: Take back the speakers that left the group on their own, as a new
+            playback session does.
         """
         async with self._take_lock:
             for speaker in self._speakers:
@@ -180,7 +200,7 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
                 if record is not None and record.get("provider") == self.provider.instance_id:
                     await self.mass.players.remove_protocol(speaker.client_id)
             for speaker in self._speakers:
-                await self._take_speaker(speaker.client_id)
+                await self._take_speaker(speaker.client_id, rejoin=rejoin)
         self._on_speakers_changed()
 
     def on_speaker_changed(self, client_id: str) -> None:
@@ -203,6 +223,7 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
             self.mass.cancel_timer(f"sendspin_mc_join_{client_id}")
             if client is None:
                 self._stop_listening(client_id)
+                self._left.discard(client_id)
         self._on_speakers_changed()
 
     async def volume_set(self, volume_level: int) -> None:
@@ -227,12 +248,16 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         overlay_active: bool = False,
     ) -> None:
         """
-        Let the format of every speaker follow the sample rate of a new playback session.
+        Prepare the speakers for a new playback session.
+
+        The speakers that left the group on their own come back, and the format of every
+        speaker follows the sample rate of the session.
 
         :param start_streamdetails: Stream details of the first item of the session, if any.
         :param crossfade_enabled: Whether the session blends the audio of its items.
         :param overlay_active: Whether an audio overlay is mixed into the session.
         """
+        await self.take_speakers(rejoin=True)
         await super().follow_session_sample_rate(
             start_streamdetails,
             crossfade_enabled=crossfade_enabled,
@@ -350,8 +375,9 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         """Stop following the speakers when this player is detached."""
         for client_id in list(self._speaker_listeners):
             self._stop_listening(client_id)
-        for client_id in self._joining:
-            self.mass.cancel_timer(f"sendspin_mc_join_{client_id}")
+        for speaker in self._speakers:
+            self.mass.cancel_timer(f"sendspin_mc_join_{speaker.client_id}")
+            self.mass.cancel_timer(f"sendspin_mc_group_{speaker.client_id}")
         self._joining.clear()
         self.mass.cancel_timer(f"sendspin_mc_channels_{self.protocol_id}")
         await super().on_detach()
@@ -401,10 +427,14 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         return client is not None and client.connection is not None
 
     def _speaker_roles(self) -> list[tuple[str, PlayerRoleProtocol]]:
-        """Return the player role of every connected speaker this player took."""
+        """Return the player role of every connected speaker that plays with this player."""
         roles: list[tuple[str, PlayerRoleProtocol]] = []
         for client_id, (client, _) in self._speaker_listeners.items():
-            if client.connection is None or client_id in self._joining:
+            if (
+                client.connection is None
+                or client_id in self._joining
+                or client.group is not self.api.group
+            ):
                 continue
             role = next(
                 (r for r in client.roles_by_family("player") if isinstance(r, PlayerRoleProtocol)),
@@ -416,7 +446,10 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
 
     def _current_channels(self) -> dict[str, SpeakerChannel | None]:
         """Return the channel each speaker plays now: none while another one is away."""
-        complete = all(self._is_online(speaker.client_id) for speaker in self._speakers)
+        complete = all(
+            self._is_online(speaker.client_id) and self.plays_with(speaker.client_id)
+            for speaker in self._speakers
+        )
         return {s.client_id: s.channel if complete else None for s in self._speakers}
 
     async def _join_speaker(self, client_id: str) -> None:
@@ -426,14 +459,22 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
             await self._take_speaker(client_id)
         self._on_speakers_changed()
 
-    async def _take_speaker(self, client_id: str) -> None:
-        """Take a speaker into the group of this player and give it the state of the player."""
+    async def _take_speaker(self, client_id: str, *, rejoin: bool = False) -> None:
+        """
+        Take a speaker into the group of this player and give it the state of the player.
+
+        :param client_id: The client id of the speaker.
+        :param rejoin: Also take it when it left the group on its own.
+        """
         provider = self._sendspin_provider
         client = provider.server_api.get_client(client_id)
         # a speaker that still has a protocol of its own is taken once that is removed
         if client is None or self.player is None or provider.get_protocol(client_id) is not None:
             return
         self._listen_to(client)
+        if not client.available or (client_id in self._left and not rejoin):
+            return
+        self._left.discard(client_id)
         await self.api.group.add_client(client)
         if client.connection is None:
             return
@@ -483,6 +524,28 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
                 key = CONF_SPEAKER_OUTPUT_DELAY.format(n=number)
                 if self.mass.config.get_protocol_value(self.protocol_id, key) != delay_ms:
                     self.mass.config.set_protocol_value(self.protocol_id, key, delay_ms)
+            case ClientGroupChangedEvent(new_group=group) if group is not self.api.group:
+                self.mass.call_later(
+                    SPEAKER_GROUP_SETTLE,
+                    self._follow_speaker_group,
+                    client.client_id,
+                    task_id=f"sendspin_mc_group_{client.client_id}",
+                )
+
+    async def _follow_speaker_group(self, client_id: str) -> None:
+        """Follow a speaker that another group or a group of its own took."""
+        client = self._sendspin_provider.server_api.get_client(client_id)
+        # a speaker that is gone or away is followed through its connection
+        if client is None or client.connection is None or self.plays_with(client_id):
+            return
+        if client.available and len(client.group.clients) > 1:
+            # another group took it, such as through its switch: it belongs to this player
+            async with self._take_lock:
+                await self._take_speaker(client_id)
+        else:
+            # it left, as unavailable or on its own: it comes back at the next playback start
+            self._left.add(client_id)
+        self._on_speakers_changed()
 
     def _take_speaker_level(self, client_id: str, volume: int, muted: bool) -> None:
         """
@@ -491,7 +554,7 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
         A report of a level this player sent changes nothing, so the speakers never
         send each other's levels back and forth.
         """
-        if client_id in self._joining:
+        if client_id in self._joining or not self.plays_with(client_id):
             return
         changed = False
         if (

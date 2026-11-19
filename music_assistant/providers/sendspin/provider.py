@@ -1087,13 +1087,16 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         """
         Return the protocol whose output settings a client plays with, and its own channel.
 
-        A speaker of a multi-channel player plays with the settings of that player.
+        A speaker of a multi-channel player plays with the settings of that player, while it
+        is in the group of that player.
 
         :param client_id: The client id.
         :return: The protocol id, and the channel the client plays (None for every channel).
         """
-        if (protocol_id := self._multi_channel_speakers.get(client_id)) is not None and (
-            isinstance(set_player := self.get_protocol(protocol_id), SendspinMultiChannelPlayer)
+        if (
+            (protocol_id := self._multi_channel_speakers.get(client_id)) is not None
+            and isinstance(set_player := self.get_protocol(protocol_id), SendspinMultiChannelPlayer)
+            and set_player.plays_with(client_id)
         ):
             return protocol_id, set_player.speaker_channel(client_id)
         return client_id, None

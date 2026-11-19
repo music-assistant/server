@@ -10,7 +10,7 @@ import pytest
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.types import AudioCodec, PlayerCommand
+from aiosendspin.models.types import AudioCodec, PlaybackStateType, PlayerCommand
 from aiosendspin.server import (
     ClientAddedEvent,
     ClientConnectedEvent,
@@ -268,6 +268,7 @@ def _quick_speaker_changes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Let a speaker that connects again and a channel change take effect at once."""
     monkeypatch.setattr(multi_channel, "SPEAKER_JOIN_GRACE", 0.05)
     monkeypatch.setattr(multi_channel, "CHANNEL_CHANGE_DEBOUNCE", 0.05)
+    monkeypatch.setattr(multi_channel, "SPEAKER_GROUP_SETTLE", 0.05)
 
 
 async def test_two_speakers_combine_into_one_multi_channel_player(mass: MusicAssistant) -> None:
@@ -853,6 +854,68 @@ async def test_a_delay_a_speaker_reports_itself_is_stored_for_it(mass: MusicAssi
 
     set_id = _set_of(sendspin, player).protocol_id
     assert mass.config.get_protocol_value(set_id, "speaker_1_output_delay") == 250
+
+
+async def test_a_speaker_that_becomes_unavailable_is_away_until_the_next_playback(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A speaker that becomes unavailable leaves every channel to the other speaker.
+
+    It plays with the settings of the set no more, does not come back when it is available
+    again or when the set changes group, and comes back when the next playback session starts.
+    """
+    sendspin = _sendspin(mass)
+    restart = AsyncMock()
+    monkeypatch.setattr(mass.players, "on_player_dsp_change", restart)
+    player, _, _ = await _compose(mass, sendspin)
+    set_protocol = _set_of(sendspin, player)
+    set_id = set_protocol.protocol_id
+    left_client = sendspin.server_api.get_client(LEFT)
+    assert left_client is not None
+
+    # it plays its line-in
+    await left_client.handle_availability_change(False)
+
+    await _wait_for(lambda: sendspin.speaker_output(RIGHT) == (set_id, None))
+    assert LEFT not in _group_client_ids(set_protocol)
+    assert sendspin.speaker_output(LEFT) == (LEFT, None)
+    await _wait_for(lambda: restart.await_count == 1)
+
+    await left_client.handle_availability_change(True)
+    await asyncio.sleep(0.2)
+    # as when the set joins or leaves a group
+    await set_protocol.take_speakers()
+    assert LEFT not in _group_client_ids(set_protocol)
+
+    await set_protocol.playback_session._follow_session_sample_rate(
+        [client.client_id for client in set_protocol.api.group.clients]
+    )
+
+    assert LEFT in _group_client_ids(set_protocol)
+    assert sendspin.speaker_output(LEFT) == (set_id, SpeakerChannel.FRONT_LEFT)
+
+
+async def test_a_speaker_that_another_group_takes_comes_back_to_its_set(
+    mass: MusicAssistant,
+) -> None:
+    """A speaker that its switch moves to the group of another player is taken back at once."""
+    sendspin = _sendspin(mass)
+    player, _, _ = await _compose(mass, sendspin)
+    set_protocol = _set_of(sendspin, player)
+    await _add_speaker(sendspin, DEN, "Den")
+    den_client = sendspin.server_api.get_client(DEN)
+    left_client = sendspin.server_api.get_client(LEFT)
+    assert den_client is not None
+    assert left_client is not None
+    # a group that plays is a group its switch offers
+    den_client.group._set_playback_state(PlaybackStateType.PLAYING)
+
+    await left_client.handle_switch_command()
+
+    await _wait_for(lambda: LEFT in _group_client_ids(set_protocol))
+    assert [client.client_id for client in den_client.group.clients] == [DEN]
+    assert sendspin.speaker_output(LEFT) == (set_protocol.protocol_id, SpeakerChannel.FRONT_LEFT)
 
 
 async def test_removing_a_disabled_set_gives_its_speakers_back(mass: MusicAssistant) -> None:
