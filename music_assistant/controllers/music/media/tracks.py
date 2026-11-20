@@ -1990,14 +1990,7 @@ class TracksController(MediaControllerBase[Track]):
         An empty set of artists never clears the stored rows: a track without any
         artist can not be played or resolved.
         """
-        all_artists = list(artists)
-        if not all_artists:
-            if overwrite:
-                # a caller asking to replace all artists with none is a bug,
-                # so keep the stored rows and make the attempt visible
-                self.logger.warning("Ignoring request to clear all artists of track id %s", db_id)
-            return
-        await self._set_main_artists(db_id, all_artists, overwrite=overwrite)
+        await self._set_main_artists(DB_TABLE_TRACK_ARTISTS, "track_id", db_id, artists, overwrite)
 
     @staticmethod
     def _library_filter_parts(explicit: bool | None) -> list[str]:

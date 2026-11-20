@@ -1815,14 +1815,7 @@ class AlbumsController(MediaControllerBase[Album]):
         An empty set of artists never clears the stored rows: an album that lost its
         artists disappears from their discography and is skipped by provider matching.
         """
-        all_artists = list(artists)
-        if not all_artists:
-            if overwrite:
-                # a caller asking to replace all artists with none is a bug,
-                # so keep the stored rows and make the attempt visible
-                self.logger.warning("Ignoring request to clear all artists of album id %s", db_id)
-            return
-        await self._set_main_artists(db_id, all_artists, overwrite=overwrite)
+        await self._set_main_artists(DB_TABLE_ALBUM_ARTISTS, "album_id", db_id, artists, overwrite)
 
     async def _set_album_track(self, db_id: int, db_track_id: int, track: Track) -> None:
         """Store Album Track info."""
