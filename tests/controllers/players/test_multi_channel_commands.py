@@ -6,7 +6,12 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import IdentifierType, ProviderFeature, SpeakerChannel
+from music_assistant_models.enums import (
+    ChannelLayout,
+    IdentifierType,
+    ProviderFeature,
+    SpeakerChannel,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     PlayerUnavailableError,
@@ -39,6 +44,12 @@ async def _speakers(
     sendspin.create_multi_channel_player = AsyncMock(return_value=MagicMock())  # type: ignore[method-assign]
     sendspin.get_multi_channel_candidates = MagicMock(  # type: ignore[method-assign]
         return_value=["ss_kitchen", "ss_office"]
+    )
+    sendspin.get_multi_channel_layouts = MagicMock(  # type: ignore[method-assign]
+        return_value={
+            ChannelLayout.STEREO: (SpeakerChannel.FRONT_LEFT, SpeakerChannel.FRONT_RIGHT),
+            ChannelLayout.LAYOUT_1_1: (SpeakerChannel.FRONT_CENTER, SpeakerChannel.LFE),
+        }
     )
     kitchen = sendspin.protocol("ss_kitchen", "Kitchen", identifiers=KITCHEN)
     office = sendspin.protocol("ss_office", "Office", identifiers=OFFICE)
@@ -152,3 +163,38 @@ async def test_the_candidates_of_a_provider_that_can_not_combine_are_refused(
         scenario.mass.players.multi_channel_candidates(provider)
 
     sendspin.get_multi_channel_candidates.assert_not_called()  # type: ignore[attr-defined]
+
+
+async def test_the_layouts_are_those_of_the_provider_by_their_value(scenario: Scenario) -> None:
+    """The layouts of a provider come by their value, each with its channels in order."""
+    sendspin, _, _ = await _speakers(scenario)
+
+    layouts = scenario.mass.players.multi_channel_layouts(sendspin.instance_id)
+
+    assert layouts == {
+        "stereo": [SpeakerChannel.FRONT_LEFT, SpeakerChannel.FRONT_RIGHT],
+        "1.1": [SpeakerChannel.FRONT_CENTER, SpeakerChannel.LFE],
+    }
+    assert list(layouts) == ["stereo", "1.1"]
+
+
+@pytest.mark.parametrize(
+    ("request_kind", "error"),
+    [
+        ("an unknown provider", ProviderUnavailableError),
+        ("a provider that can not combine speakers", UnsupportedFeaturedException),
+    ],
+)
+async def test_the_layouts_of_a_provider_that_can_not_combine_are_refused(
+    scenario: Scenario, request_kind: str, error: type[Exception]
+) -> None:
+    """Layouts are refused for a provider that is not there or can not combine speakers."""
+    sendspin, _, _ = await _speakers(
+        scenario, combines=request_kind != "a provider that can not combine speakers"
+    )
+    provider = "unknown" if request_kind == "an unknown provider" else sendspin.instance_id
+
+    with pytest.raises(error):
+        scenario.mass.players.multi_channel_layouts(provider)
+
+    sendspin.get_multi_channel_layouts.assert_not_called()  # type: ignore[attr-defined]

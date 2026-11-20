@@ -53,6 +53,7 @@ from aiosendspin.server.roles.registry import role_requires_pairing
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ChannelLayout,
     ConfigEntryType,
     EventType,
     IdentifierType,
@@ -131,6 +132,7 @@ from music_assistant.providers.sendspin.helpers import (
 )
 from music_assistant.providers.sendspin.local_pair import LocalAutoPairer
 from music_assistant.providers.sendspin.multi_channel import (
+    LAYOUT_CHANNELS,
     SendspinMultiChannelPlayer,
     layout_of,
     new_group_id,
@@ -1010,7 +1012,8 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         """
         if layout_of(speakers.values()) is None:
             raise InvalidDataError(
-                "A multi-channel player needs one speaker on front left and one on front right",
+                "A multi-channel player needs one speaker on front left and one on front right, "
+                "a subwoofer with them, or one speaker on front center with a subwoofer",
                 translation_key="multi_channel_channels",
                 translation_owner=self.translation_owner,
             )
@@ -1075,6 +1078,10 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 self._add_client_without_protocol(client_id)
         self.logger.info("Multi-channel player %s removed", protocol_id)
 
+    def get_multi_channel_layouts(self) -> dict[ChannelLayout, tuple[SpeakerChannel, ...]]:
+        """Return the layouts of a multi-channel player, each with its channels in order."""
+        return dict(LAYOUT_CHANNELS)
+
     def get_multi_channel_candidates(self) -> list[str]:
         """Return the client ids of the speakers that can go up in a new multi-channel player."""
         return [
@@ -1124,23 +1131,24 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         """
         return client_id in self._virtual_players or client_id.startswith(MULTI_CHANNEL_ID_PREFIX)
 
-    def speaker_output(self, client_id: str) -> tuple[str, SpeakerChannel | None]:
+    def speaker_output(self, client_id: str) -> tuple[str, SpeakerChannel | None, bool]:
         """
-        Return the protocol whose output settings a client plays with, and its own channel.
+        Return the protocol whose output settings a client plays with, and what it plays.
 
         A speaker of a multi-channel player plays with the settings of that player, while it
         is in the group of that player.
 
         :param client_id: The client id.
-        :return: The protocol id, and the channel the client plays (None for every channel).
+        :return: The protocol id, the channel the client plays (None for every channel), and
+            whether the subwoofer of its multi-channel player plays along.
         """
         if (
             (protocol_id := self._multi_channel_speakers.get(client_id)) is not None
             and isinstance(set_player := self.get_protocol(protocol_id), SendspinMultiChannelPlayer)
             and set_player.plays_with(client_id)
         ):
-            return protocol_id, set_player.speaker_channel(client_id)
-        return client_id, None
+            return protocol_id, set_player.speaker_channel(client_id), set_player.subwoofer_plays
+        return client_id, None, False
 
     def is_held_elsewhere(self, client_id: str) -> bool:
         """Return whether another server holds this client."""
