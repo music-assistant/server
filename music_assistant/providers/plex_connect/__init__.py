@@ -487,7 +487,7 @@ class PlexConnectProvider(PluginProvider):
         if port != configured_port:
             try:
                 self.mass.config.set_raw_provider_config_value(self.instance_id, CONF_PORT, port)
-            except Exception as err:
+            except (KeyError, ValueError) as err:
                 self.logger.debug("Failed to persist port %s: %s", port, err)
         return port
 

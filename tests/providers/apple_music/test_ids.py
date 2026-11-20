@@ -53,7 +53,7 @@ def test_is_apple_id_rejects_names_standing_in_as_ids() -> None:
 
 
 def _provider() -> AppleMusicProvider:
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "apple_music"
     config = Mock()
     config.instance_id = "apple_music--test1"

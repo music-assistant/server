@@ -36,6 +36,7 @@ def _make_stream(
     player.device_info.mac_address = "AA:BB:CC:DD:EE:FF"
     player.logger = logging.getLogger("test.airplay.player")
     player.set_state_from_stream = MagicMock()
+    player.owner = player
 
     mass = MagicMock()
     mass.create_task = MagicMock()

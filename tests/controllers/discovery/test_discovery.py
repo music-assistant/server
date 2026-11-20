@@ -2,13 +2,35 @@
 
 import asyncio
 import logging
+from collections.abc import Iterator
 from ipaddress import ip_address
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from zeroconf import IPVersion
+from zeroconf import (  # type: ignore[attr-defined]  # these DNS classes are missing in __all__
+    DNSAddress,
+    DNSCache,
+    DNSOutgoing,
+    DNSPointer,
+    DNSService,
+    DNSText,
+    IPVersion,
+    RecordUpdate,
+    RecordUpdateListener,
+    ServiceStateChange,
+    current_time_millis,
+)
 from zeroconf.asyncio import AsyncZeroconf
+from zeroconf.const import (
+    _CLASS_IN,
+    _CLASS_IN_UNIQUE,
+    _FLAGS_TC,
+    _TYPE_A,
+    _TYPE_PTR,
+    _TYPE_SRV,
+    _TYPE_TXT,
+)
 
 from music_assistant.constants import CONF_SERVER_ID, VERBOSE_LOG_LEVEL
 from music_assistant.mass import MusicAssistant
@@ -94,6 +116,28 @@ def test_discovery_library_logger_levels(
     finally:
         controller_logger.setLevel(previous_controller_level)
         for logger, previous_level in zip(library_loggers, previous_library_levels, strict=True):
+            logger.setLevel(previous_level)
+
+
+def test_discovery_library_loggers_follow_an_inherited_level(mass_minimal: MusicAssistant) -> None:
+    """A controller logger without a level of its own sets the libraries from the one it inherits."""
+    controller_logger = mass_minimal.discovery.logger
+    assert controller_logger.parent is not None
+    loggers = [
+        controller_logger,
+        controller_logger.parent,
+        logging.getLogger("async_upnp_client"),
+        logging.getLogger("zeroconf"),
+    ]
+    previous_levels = [logger.level for logger in loggers]
+    try:
+        controller_logger.setLevel(logging.NOTSET)
+        controller_logger.parent.setLevel(logging.INFO)
+        mass_minimal.discovery._configure_library_loggers()
+
+        assert [logger.level for logger in loggers[2:]] == [logging.WARNING, logging.WARNING]
+    finally:
+        for logger, previous_level in zip(loggers, previous_levels, strict=True):
             logger.setLevel(previous_level)
 
 
@@ -381,15 +425,18 @@ async def test_async_find_mdns_service_matches_exact_device_name(mass: MusicAssi
     )
 
 
-async def test_async_find_mdns_service_no_substring_match(mass: MusicAssistant) -> None:
+async def test_async_find_mdns_service_no_substring_match(mass_minimal: MusicAssistant) -> None:
     """Looking up a name that is only a substring of a discovered name should not match."""
-    mass.discovery.aiozc.zeroconf.cache.cache = {
+    # a started server advertises itself in background tasks that also build an
+    # AsyncServiceInfo, which would land in the patch below while the lookup waits
+    mass_minimal.discovery._aiozc = MagicMock()
+    mass_minimal.discovery.aiozc.zeroconf.cache.cache = {
         "atv kelder._raop._tcp.local.": {},
     }
     with patch(
         "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
     ) as mock_service_info:
-        result = await mass.discovery.async_find_mdns_service(
+        result = await mass_minimal.discovery.async_find_mdns_service(
             "_raop._tcp.local.", "Kelder", timeout=0.1
         )
 
@@ -503,3 +550,146 @@ async def test_async_find_mdns_service_preserves_at_sign_in_name(mass: MusicAssi
     mock_service_info.assert_called_once_with(
         "_airplay._tcp.local.", "living@home._airplay._tcp.local."
     )
+
+
+AIRPLAY_TYPE = "_airplay._tcp.local."
+AIRPLAY_NAME = f"kitchen.{AIRPLAY_TYPE}"
+AIRPLAY_HOST = "kitchen.local."
+
+
+def _airplay_records(age: float) -> list[DNSAddress | DNSPointer | DNSService | DNSText]:
+    """
+    Return the records of one AirPlay service, as if last heard the given seconds ago.
+
+    :param age: How many seconds ago the records were received.
+    """
+    created = current_time_millis() - age * 1000
+    return [
+        DNSPointer(AIRPLAY_TYPE, _TYPE_PTR, _CLASS_IN, 4500, AIRPLAY_NAME, created),
+        DNSService(
+            AIRPLAY_NAME, _TYPE_SRV, _CLASS_IN_UNIQUE, 120, 0, 0, 7000, AIRPLAY_HOST, created
+        ),
+        DNSText(AIRPLAY_NAME, _TYPE_TXT, _CLASS_IN_UNIQUE, 4500, b"\x08model=x1", created),
+        DNSAddress(
+            AIRPLAY_HOST, _TYPE_A, _CLASS_IN_UNIQUE, 120, bytes([10, 0, 0, 5]), created=created
+        ),
+    ]
+
+
+class StubZeroconf:
+    """A zeroconf stand-in with a real cache that keeps the packets it would send."""
+
+    def __init__(self, live_names: set[str]) -> None:
+        """
+        Initialize the stub.
+
+        :param live_names: The service names whose device answers a question.
+        """
+        self.cache = DNSCache()
+        self.started = True
+        self.sent: list[DNSOutgoing] = []
+        self._live_names = live_names
+        self._listeners: list[RecordUpdateListener] = []
+
+    def async_add_listener(self, listener: RecordUpdateListener, _question: object) -> None:
+        """Register a record listener."""
+        self._listeners.append(listener)
+
+    def async_remove_listener(self, listener: RecordUpdateListener) -> None:
+        """Remove a record listener."""
+        self._listeners.remove(listener)
+
+    def async_send(self, out: DNSOutgoing, *_args: object) -> None:
+        """Keep the packet and let the live devices that are asked for answer it."""
+        self.sent.append(out)
+        if not any(question.name in self._live_names for question in out.questions):
+            return
+        records = _airplay_records(age=0)
+        updates = [RecordUpdate(record, self.cache.async_get_unique(record)) for record in records]
+        for listener in self._listeners:
+            listener.async_update_records(self, current_time_millis(), updates)  # type: ignore[arg-type]
+        self.cache.async_add_records(records)
+
+
+def _mdns_provider() -> MagicMock:
+    """Return a provider stand-in that discovers AirPlay services over mDNS."""
+    provider = MagicMock(instance_id="stub_mdns")
+    provider.manifest.mdns_discovery = [AIRPLAY_TYPE]
+    provider.on_mdns_service_state_change = AsyncMock()
+    return provider
+
+
+@pytest.fixture
+def fast_mdns_confirm() -> Iterator[None]:
+    """Shorten the wait for answers to an mDNS question."""
+    with (
+        patch("music_assistant.controllers.discovery.controller.MDNS_CONFIRM_RESEND", 0.01),
+        patch("music_assistant.controllers.discovery.controller.MDNS_CONFIRM_TIMEOUT", 0.02),
+    ):
+        yield
+
+
+@pytest.mark.usefixtures("fast_mdns_confirm")
+async def test_replay_skips_a_cached_service_that_no_longer_answers(mass: MusicAssistant) -> None:
+    """A service still cached after its device went quiet is asked for and not replayed."""
+    zeroconf = StubZeroconf(live_names=set())
+    zeroconf.cache.async_add_records(_airplay_records(age=60))
+    mass.discovery._aiozc = MagicMock(zeroconf=zeroconf)
+    provider = _mdns_provider()
+
+    await mass.discovery._replay_mdns_discovery(provider)
+
+    provider.on_mdns_service_state_change.assert_not_awaited()
+    # asked twice (with one resend), both times without the cached answers
+    assert len(zeroconf.sent) == 2
+    for out in zeroconf.sent:
+        assert [(q.name, q.type) for q in out.questions] == [(AIRPLAY_NAME, _TYPE_SRV)]
+        assert not out.answers
+
+
+@pytest.mark.usefixtures("fast_mdns_confirm")
+async def test_replay_hands_on_a_cached_service_that_answers(mass: MusicAssistant) -> None:
+    """A service last heard a while ago is replayed once its device answers the question."""
+    zeroconf = StubZeroconf(live_names={AIRPLAY_NAME})
+    zeroconf.cache.async_add_records(_airplay_records(age=60))
+    mass.discovery._aiozc = MagicMock(zeroconf=zeroconf)
+    provider = _mdns_provider()
+
+    await mass.discovery._replay_mdns_discovery(provider)
+
+    assert len(zeroconf.sent) == 1
+    provider.on_mdns_service_state_change.assert_awaited_once()
+    name, state_change, info = provider.on_mdns_service_state_change.await_args.args
+    assert (name, state_change) == (AIRPLAY_NAME, ServiceStateChange.Added)
+    assert info.parsed_addresses() == ["10.0.0.5"]
+
+
+async def test_replay_trusts_a_service_heard_recently(mass: MusicAssistant) -> None:
+    """A service heard moments ago is replayed straight from the cache, without a question."""
+    zeroconf = StubZeroconf(live_names=set())
+    zeroconf.cache.async_add_records(_airplay_records(age=5))
+    mass.discovery._aiozc = MagicMock(zeroconf=zeroconf)
+    provider = _mdns_provider()
+
+    await mass.discovery._replay_mdns_discovery(provider)
+
+    assert zeroconf.sent == []
+    provider.on_mdns_service_state_change.assert_awaited_once()
+
+
+@pytest.mark.usefixtures("fast_mdns_confirm")
+async def test_confirm_asks_in_queries_of_one_packet(mass: MusicAssistant) -> None:
+    """Many services are asked for in queries of one packet each, none flagged as truncated."""
+    names = {f"{'speaker' * 8}-{index}.{AIRPLAY_TYPE}" for index in range(60)}
+    zeroconf = StubZeroconf(live_names=set())
+    mass.discovery._aiozc = MagicMock(zeroconf=zeroconf)
+
+    assert await mass.discovery._async_confirm_mdns_services(names) == set()
+
+    # a responder waits 400-500 ms before it answers a truncated query (RFC 6762, section 7.2)
+    packets = [packet for out in zeroconf.sent for packet in out.packets()]
+    assert len(packets) == len(zeroconf.sent) > 2
+    assert not any(int.from_bytes(packet[2:4]) & _FLAGS_TC for packet in packets)
+    asked = [question.name for out in zeroconf.sent for question in out.questions]
+    assert len(asked) == 2 * len(names)
+    assert set(asked) == names

@@ -15,6 +15,8 @@ DEFAULT_SLIMPROTO_PORT = 3483
 CONF_DISPLAY = "display"
 CONF_VISUALIZATION = "visualization"
 CONF_STORED_VOLUME = "stored_volume"
+# category for caching previous player state (bumped to invalidate old format)
+CACHE_CATEGORY_PREV_STATE = 1
 
 DEFAULT_PLAYER_VOLUME = 20
 DEFAULT_VISUALIZATION = SlimVisualisationType.NONE
@@ -28,6 +30,7 @@ STATE_MAP = {
 }
 
 REPEATMODE_MAP = {RepeatMode.OFF: 0, RepeatMode.ONE: 1, RepeatMode.ALL: 2}
+REPEATMODE_BY_LMS_VALUE = {str(value): mode for mode, value in REPEATMODE_MAP.items()}
 
 CONF_ENTRY_DISPLAY = ConfigEntry(
     key=CONF_DISPLAY,

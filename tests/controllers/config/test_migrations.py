@@ -1705,6 +1705,25 @@ async def test_migrate_removes_the_retired_builtin_provider_configs() -> None:
     assert data["providers"] == kept
 
 
+def test_migrate_removes_the_sendspin_source_plugin_config() -> None:
+    """The config of the retired Sendspin Source plugin goes, the one of Sendspin stays."""
+    data: dict[str, Any] = {
+        "providers": {
+            "sendspin_source": {
+                "domain": "sendspin_source",
+                "type": "plugin",
+                "values": {"target_latency": 800},
+            },
+            "sendspin": {"domain": "sendspin", "type": "player", "values": {}},
+        }
+    }
+    kept = deepcopy(data["providers"]["sendspin"])
+
+    assert _migrate_remove_retired_builtin_providers(data) is True
+    assert data["providers"] == {"sendspin": kept}
+    assert _migrate_remove_retired_builtin_providers(data) is False
+
+
 def test_migrate_remove_retired_builtin_providers_leaves_other_data_alone() -> None:
     """Settings without a retired provider config, or with malformed ones, are left as they are."""
     cases: list[dict[str, Any]] = [

@@ -5,6 +5,7 @@
   "name": "Hue Lights Sync",
   "description": "Sync Philips Hue lights to music, through a Hue bridge's Entertainment Mode or straight to Hue lamps on ZHA via Ziggurat.",
   "codeowners": ["@music-assistant"],
+  "provides": ["visualizer"],
   "depends_on": "sendspin",
   "requirements": ["hue-entertainment==0.6.0"],
   "documentation": "https://music-assistant.io/plugins/hue-entertainment/",

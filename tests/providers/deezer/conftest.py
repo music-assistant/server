@@ -15,7 +15,7 @@ from music_assistant.providers.deezer.provider import SUPPORTED_FEATURES, Deezer
 def provider() -> DeezerProvider:
     """Create a real DeezerProvider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "deezer"
     config = Mock()
     config.instance_id = "deezer--test123"

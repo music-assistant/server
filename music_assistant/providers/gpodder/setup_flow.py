@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from aiohttp import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
@@ -149,7 +150,7 @@ async def _run_nextcloud(session: SetupSession) -> None:
             login_url, poll_endpoint, poll_token = await _nc_start(
                 session.mass.http_session, url_nc, verify_ssl
             )
-        except Exception:
+        except ClientError, TimeoutError, KeyError, TypeError, ValueError:
             errors = {"base": "not_a_nextcloud_instance"}
             continue
         try:

@@ -234,6 +234,34 @@ def test_provider_ref_refused(repo_ref: Any, value: str) -> None:
     assert run.git_calls == []
 
 
+def test_provider_folders(repo_ref: Any, tmp_path: Path) -> None:
+    """The provider folders are the top-level ones and those in providers/, with a manifest."""
+    checkout = tmp_path / "checkout"
+    for folder in ("my_domain", "provider", "providers/other_domain", ".hidden", "docs"):
+        (checkout / folder).mkdir(parents=True)
+    for folder in ("my_domain", "provider", "providers/other_domain", ".hidden"):
+        (checkout / folder / "manifest.json").write_text("{}", encoding="utf-8")
+
+    run = repo_ref("provider_folders", str(checkout))
+
+    assert run.returncode == 0
+    assert run.stdout.splitlines() == [
+        str(checkout / "my_domain"),
+        str(checkout / "provider"),
+        str(checkout / "providers" / "other_domain"),
+    ]
+
+
+def test_provider_folders_none(repo_ref: Any, tmp_path: Path) -> None:
+    """A checkout without a provider folder prints nothing."""
+    (tmp_path / "docs").mkdir()
+
+    run = repo_ref("provider_folders", str(tmp_path))
+
+    assert run.returncode == 0
+    assert not run.stdout
+
+
 def test_dev_image_builds_on_the_base_image_argument() -> None:
     """The image builds on the base image the publishing job passes in, by default the nightly."""
     dockerfile = (ROOT / "Dockerfile.dev").read_text(encoding="utf-8")

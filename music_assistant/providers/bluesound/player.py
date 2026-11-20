@@ -239,7 +239,7 @@ class BluesoundPlayer(PlayerProtocol):
                         paired_player.ip, paired_player.port, timeout=3
                     )
                 except (PlayerUnexpectedResponseError, PlayerUnreachableError) as err:
-                    self.logger.debug(f"Could not remove players: {err!s}")
+                    self.logger.debug("Could not remove players: %s", err)
                     continue
                 removed_player = self.provider.get_protocol(player_id)
                 if removed_player:
@@ -253,7 +253,7 @@ class BluesoundPlayer(PlayerProtocol):
                 try:
                     await self.client.add_follower(paired_player.ip, paired_player.port, timeout=5)
                 except (PlayerUnexpectedResponseError, PlayerUnreachableError) as err:
-                    self.logger.debug(f"Could not add player {paired_player}: {err!s}")
+                    self.logger.debug("Could not add player %s: %s", paired_player, err)
                     continue
                 self._attr_group_members.append(player_id)
                 added_player = self.provider.get_protocol(player_id)
@@ -360,7 +360,7 @@ class BluesoundPlayer(PlayerProtocol):
 
     async def update_attributes(self) -> None:
         """Update the BluOS player attributes."""
-        self.logger.debug(f"updating {self.protocol_id} attributes")
+        self.logger.debug("updating %s attributes", self.protocol_id)
         if self.dynamic_poll_count > 0:
             self.dynamic_poll_count -= 1
 
@@ -368,14 +368,14 @@ class BluesoundPlayer(PlayerProtocol):
             self.status = await self.client.status()
             self._attr_available = True
         except (PlayerUnreachableError, PlayerUnexpectedResponseError) as err:
-            self.logger.debug(f"Player {self.name} status check failed: {err}")
+            self.logger.debug("Player %s status check failed: %s", self.name, err)
             self._attr_available = False
             self._attr_poll_interval = IDLE_POLL_INTERVAL
             self.update_state()
             return
 
         if self.poll_state == POLL_STATE_DYNAMIC and self.dynamic_poll_count <= 0:
-            self.logger.debug(f"Changing bluos poll state from {self.poll_state} to static")
+            self.logger.debug("Changing bluos poll state from %s to static", self.poll_state)
             self.poll_state = POLL_STATE_STATIC
 
         self._attr_playback_state = self._resolve_playback_state()
@@ -409,7 +409,9 @@ class BluesoundPlayer(PlayerProtocol):
         self._attr_volume_muted = self.status.mute
 
         self.logger.debug(
-            f"Volume from sync_status: {self.sync_status.volume}, from status: {self.status.volume}"
+            "Volume from sync_status: %s, from status: %s",
+            self.sync_status.volume,
+            self.status.volume,
         )
 
         provider = cast("BluesoundPlayerProvider", self.provider)

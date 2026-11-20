@@ -1125,43 +1125,50 @@ class MetaDataController(
 
 def _duplicate_album_sibling_guard() -> str:
     """Return a query part that selects albums which may be a duplicate of another library row."""
-    shares_artist = (
-        f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUM_ARTISTS} own "
-        f"JOIN {DB_TABLE_ALBUM_ARTISTS} other ON other.artist_id = own.artist_id "
-        f"WHERE own.album_id = {DB_TABLE_ALBUMS}.item_id AND other.album_id = dup.item_id)"
-    )
-    # a title that normalizes to nothing (e.g. Ed Sheeran's '+', '=' and '÷') matches every
-    # other such title, so those fall back to their raw spelling like the album comparison does
-    same_title = (
-        f"({DB_TABLE_ALBUMS}.search_name != '' OR "
-        f"REPLACE({DB_TABLE_ALBUMS}.name,' ','') = REPLACE(dup.name,' ',''))"
-    )
-    # a provider that spells out the retail suffix stores the album under the plain name
+    # An album pairs up when one of its "own" keys equals a "dup" key of another album by the
+    # same artist. Matching artist and title key at once keeps large same-title groups cheap.
+    # A provider that spells out the retail suffix stores the album under the plain name
     # plus that suffix, so the pair is related from either side. The raw title decides
     # which side spelled it out, so an ordinary title that merely ends in those letters
     # ("Step") is left alone.
-    # Every alternative stays an equality on dup.search_name, keeping the name index in use.
-    own_name = f"{DB_TABLE_ALBUMS}.search_name"
-    matches_name = [f"dup.search_name = {own_name}"]
+    own_keys = ["'=' || a.search_name"]
+    dup_keys = ["'=' || a.search_name"]
     for suffix in ALBUM_RETAIL_SUFFIX_KEYS:
-        matches_name.append(
-            f"({album_retail_suffix_sql_match('dup.name', suffix)} "
-            f"AND dup.search_name = {own_name} || '{suffix}')"
+        spelled_out = album_retail_suffix_sql_match("a.name", suffix)
+        own_keys.append(f"'{suffix}:' || a.search_name || '{suffix}'")
+        dup_keys.append(f"CASE WHEN {spelled_out} THEN '{suffix}:' || a.search_name END")
+        own_keys.append(
+            f"CASE WHEN {spelled_out} THEN '=' || "
+            f"substr(a.search_name, 1, length(a.search_name) - {len(suffix)}) END"
         )
-        matches_name.append(
-            f"({album_retail_suffix_sql_match(f'{DB_TABLE_ALBUMS}.name', suffix)} "
-            f"AND dup.search_name = "
-            f"substr({own_name}, 1, length({own_name}) - {len(suffix)}))"
+    # a title that normalizes to nothing (e.g. Ed Sheeran's '+', '=' and '÷') matches every
+    # other such title, so those fall back to their raw spelling like the album comparison does
+    raw_name = "'|' || REPLACE(a.name,' ','')"
+    own_keys = [
+        f"CASE WHEN a.search_name != '' THEN {key} ELSE {key} || {raw_name} END" for key in own_keys
+    ]
+    dup_keys += [f"{key} || {raw_name}" for key in dup_keys]
+
+    def keyed(keys: list[str]) -> str:
+        return " UNION ALL ".join(
+            f"SELECT aa.album_id, aa.artist_id, {key} AS key "
+            f"FROM {DB_TABLE_ALBUM_ARTISTS} aa JOIN {DB_TABLE_ALBUMS} a ON a.item_id = aa.album_id"
+            for key in keys
         )
-    same_name = " OR ".join(matches_name)
+
     # deliberately an identity-only pre-filter: which editions may be merged is decided by
     # the album comparison, which escalates an ambiguous edition to tracklists and
-    # MusicBrainz and rejects a recording-changing one (live, remix, ...) outright
+    # MusicBrainz and rejects a recording-changing one (live, remix, ...) outright.
+    # A group whose lowest and highest album are both this album holds no other album.
+    # CROSS JOIN keeps own as the outer loop, so dup is probed by artist and key.
     return (
-        f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUMS} dup "
-        f"WHERE dup.item_id != {DB_TABLE_ALBUMS}.item_id "
-        f"AND ({same_name}) "
-        f"AND {same_title} AND {shares_artist})"
+        f"{DB_TABLE_ALBUMS}.item_id IN ("
+        f"WITH own AS ({keyed(own_keys)}), dup AS MATERIALIZED ("
+        "SELECT artist_id, key, MIN(album_id) AS first_id, MAX(album_id) AS last_id "
+        f"FROM ({keyed(dup_keys)}) GROUP BY artist_id, key) "
+        "SELECT own.album_id FROM own CROSS JOIN dup "
+        "ON dup.artist_id = own.artist_id AND dup.key = own.key "
+        "WHERE dup.first_id != own.album_id OR dup.last_id != own.album_id)"
     )
 
 

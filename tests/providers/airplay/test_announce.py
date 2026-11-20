@@ -87,6 +87,9 @@ def _make_player(player_id: str, stream: MagicMock | None = None) -> MagicMock:
     player.player.volume_level = 30
     player.has_live_audio = stream is not None
     player.stream = stream
+    player.session = stream.session if stream is not None else None
+    player.owner = player
+    player.endpoints = [player]
     player._lock = asyncio.Lock()
     player.logger = logging.getLogger("test.airplay.announce")
     player.mass.create_task = MagicMock(
@@ -111,7 +114,7 @@ def _make_playing_group(*streams: MagicMock) -> list[MagicMock]:
     session = MagicMock()
     session.sync_clients = members
     for member in members:
-        member.stream.session = session
+        member.stream.session = member.session = session
     return members
 
 
@@ -776,3 +779,56 @@ async def test_announcement_without_audio_plays_nothing(
     stream.announce.assert_not_awaited()
     assert "produced no audio" in caplog.text
     player.mass.streams.announcement_renderer.release.assert_awaited_once()
+
+
+def test_a_set_announces_on_its_speakers_at_its_own_volume() -> None:
+    """The speakers of a set mix the clip, and the volume bump of a speaker is the set's."""
+    airplay_set = _make_player("set")
+    airplay_set.stream = None
+    airplay_set.synced_to = "leader"
+    speaker = _make_player("speaker", stream=_make_stream())
+    speaker.owner = airplay_set
+    speaker.player = None
+    airplay_set.endpoints = [speaker]
+    airplay_set.has_live_audio = True
+
+    assert announce._live_members(airplay_set) == [speaker]
+    assert announce._volume_target(speaker) is airplay_set.player
+
+
+def test_a_bridged_set_announces_on_its_speakers() -> None:
+    """A set the Sendspin bridge feeds mixes the clip into the streams of its speakers."""
+    airplay_set = _make_player("set", stream=_make_stream())
+    airplay_set.stream.session = None
+    airplay_set.session = None
+    speaker = _make_player("speaker", stream=_make_stream())
+    speaker.stream.session = None
+    speaker.owner = airplay_set
+    airplay_set.endpoints = [speaker]
+    airplay_set.provider.bridge_manager.get_bridge = MagicMock(
+        return_value=MagicMock(owns_airplay_stream=True)
+    )
+
+    assert announce._live_members(airplay_set) == [speaker]
+
+
+def test_the_apple_tv_of_a_set_takes_no_announcement() -> None:
+    """
+    A set that leads its session announces on its speakers only, timed by them alone.
+
+    The Apple TV is not heard, and the clip is mixed in after its silenced feed.
+    """
+    speaker, apple_tv = _make_playing_group(_make_stream(), _make_stream())
+    speaker.renders_audio = True
+    apple_tv.renders_audio = False
+    apple_tv.endpoints = [speaker]
+    apple_tv.has_live_audio = True
+    # the Apple TV runs far ahead: its span must not move the instant of the speakers
+    apple_tv.stream.latency_lead_ms = 60_000
+
+    members = announce._live_members(apple_tv)
+    with patch("music_assistant.providers.airplay.announce.cli_clock_time", return_value=100.0):
+        at_unix_ms = announce._resolve_announce_instant(apple_tv, members, "clip")
+
+    assert members == [speaker]
+    assert at_unix_ms < 100_000 + 60_000

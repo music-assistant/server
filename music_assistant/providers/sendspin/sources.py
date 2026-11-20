@@ -1,5 +1,5 @@
 """
-Sendspin Source provider implementation.
+Line-in sources of Sendspin clients.
 
 Exposes every connected Sendspin client with an active `source` role as a Music
 Assistant AudioSource, plus approved inputs that another server holds. Decoded PCM
@@ -46,24 +46,8 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_ALLOW_AUDIO_ANALYSIS
 from music_assistant.helpers.player import get_available_player
-from music_assistant.models.plugin import PluginProvider
-from music_assistant.providers.sendspin.constants import (
-    CONF_SOURCE_AUTOSTART_TARGET,
-    SOURCE_AUTOSTART_OFF,
-)
 
-from .constants import (
-    AUTOSTART_SIGNAL_ABSENT_HOLD_S,
-    AUTOSTART_SIGNAL_DEBOUNCE_S,
-    CHUNK_DURATION_MS,
-    COLD_START_TIMEOUT_S,
-    CONF_TARGET_LATENCY,
-    DEFAULT_TARGET_LATENCY_MS,
-    OUTPUT_BIT_DEPTH,
-    OUTPUT_CHANNELS,
-    OUTPUT_SAMPLE_RATE,
-    SOURCE_TIMEOUT_S,
-)
+from .constants import CONF_SOURCE_AUTOSTART_TARGET, SOURCE_AUTOSTART_OFF
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
@@ -77,19 +61,43 @@ if TYPE_CHECKING:
         SourceStream,
     )
     from aiosendspin.server.roles import SourceV1Role
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
-    from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.config_entries import ConfigValueType
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
-    from music_assistant.providers.sendspin.provider import SendspinProvider
 
+    from .provider import SendspinProvider
+
+# PCM output format for a Sendspin source that has not announced its own yet. A
+# source plays in its own format once it does.
 OUTPUT_FORMAT = AudioFormat(
-    content_type=ContentType.from_bit_depth(OUTPUT_BIT_DEPTH),
-    sample_rate=OUTPUT_SAMPLE_RATE,
-    bit_depth=OUTPUT_BIT_DEPTH,
-    channels=OUTPUT_CHANNELS,
+    content_type=ContentType.PCM_S24LE,
+    sample_rate=48000,
+    bit_depth=24,
+    channels=2,
 )
+
+# Source audio the clock bridge buffers before playback starts, to absorb network jitter.
+TARGET_LATENCY_MS = 500
+
+CHUNK_DURATION_MS = 25
+
+# Give up and end the stream after this long without source audio (client
+# disconnected or reports unavailable). Outlasts the time the server needs to notice
+# a dropped connection, so a client that reconnects resumes the stream.
+SOURCE_TIMEOUT_S = 60.0
+
+# Fail the stream if the client sends nothing at all after being asked to start.
+# A source that never arrives is a failed acquisition, not a silent line-in.
+COLD_START_TIMEOUT_S = 5.0
+
+# Hold a new line-in signal this long before starting. A preamp hovering around its
+# detection threshold reports present/absent repeatedly.
+AUTOSTART_SIGNAL_DEBOUNCE_S = 2.0
+
+# Keep playing this long after the signal disappears, so the gap between tracks or a
+# quiet passage does not end the stream.
+AUTOSTART_SIGNAL_ABSENT_HOLD_S = 60.0
 
 
 @dataclass
@@ -126,43 +134,39 @@ class _SourceClientState:
     selection_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
-class SendspinSourceProvider(PluginProvider):
-    """Expose Sendspin source-role clients as MA AudioSources."""
+class SendspinSources:
+    """Expose the inputs of Sendspin source-role clients as AudioSources of the Sendspin provider."""
 
-    def __init__(
-        self,
-        mass: MusicAssistant,
-        manifest: ProviderManifest,
-        config: ProviderConfig,
-    ) -> None:
-        """Initialize the provider."""
-        super().__init__(mass, manifest, config)
+    def __init__(self, provider: SendspinProvider) -> None:
+        """
+        Initialize for a Sendspin provider, without following its clients yet.
+
+        :param provider: The Sendspin provider that delivers the sources.
+        """
+        self.provider = provider
+        self.mass: MusicAssistant = provider.mass
+        self.logger = provider.logger.getChild("sources")
         self._clients: dict[str, _SourceClientState] = {}
         # Playback session of the last stream released per source, to tell a retry from a selection.
         self._released_playback_sessions: dict[str, str] = {}
         self._server_unsubscribe: Callable[[], None] | None = None
         self._unloading = False
 
-    async def loaded_in_mass(self) -> None:
-        """Start watching every source client, including ones that are already idle."""
-        await super().loaded_in_mass()
-        self._unloading = False
-        if (sendspin := self._sendspin_provider) is None:
-            return
-        self._server_unsubscribe = sendspin.server_api.add_event_listener(self._on_server_event)
-        for client in sendspin.server_api.connected_clients:
+    def start(self) -> None:
+        """Start following the Sendspin clients, including the ones that are connected already."""
+        server_api = self.provider.server_api
+        self._server_unsubscribe = server_api.add_event_listener(self._on_server_event)
+        for client in server_api.connected_clients:
             self._watch_client(client)
-        for client in sendspin.server_api.clients:
+        for client in server_api.clients:
             if self.get_player_input_sources(client.client_id):
                 self._refresh_player_listing(client.client_id)
 
-    async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider."""
-        sendspin = self._sendspin_provider
-        clients = sendspin.server_api.clients if sendspin is not None else []
+    async def stop(self) -> None:
+        """End every source stream and stop following the clients, as the provider unloads."""
         listed_client_ids = [
             client.client_id
-            for client in clients
+            for client in self.provider.server_api.clients
             if self.get_player_input_sources(client.client_id)
         ]
         self._unloading = True
@@ -182,10 +186,8 @@ class SendspinSourceProvider(PluginProvider):
 
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return one AudioSource per connected source client or approved held input."""
-        if (sendspin := self._sendspin_provider) is None:
-            return []
         sources: list[AudioSource] = []
-        for client in sendspin.server_api.clients:
+        for client in self.provider.server_api.clients:
             if client.is_connected:
                 if self._get_source_role(client) is None:
                     continue
@@ -230,7 +232,7 @@ class SendspinSourceProvider(PluginProvider):
                     await session.pcm_received.wait()
             audio_format = session.output_format or OUTPUT_FORMAT
         return StreamDetails(
-            provider=self.instance_id,
+            provider=self.provider.instance_id,
             item_id=item_id,
             audio_format=audio_format,
             media_type=media_type,
@@ -285,7 +287,7 @@ class SendspinSourceProvider(PluginProvider):
                             # published on it while resetting the queue we are preserving
                             await self.mass.players.deselect_source(
                                 autostart_queue_id,
-                                provider_instance_id=self.instance_id,
+                                provider_instance_id=self.provider.instance_id,
                                 source_id=source_id,
                                 playback_session_id=autostart_session_id,
                             )
@@ -347,9 +349,7 @@ class SendspinSourceProvider(PluginProvider):
             state.suppressed_autostart_claim = None
             self._drop_empty_client_state(source_id, state)
 
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes]:
+    async def get_audio_stream(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes]:
         """
         Yield PCM in the format of ``streamdetails`` pulled from the source's clock bridge.
 
@@ -416,14 +416,8 @@ class SendspinSourceProvider(PluginProvider):
         # the session publishes the source it was selected with, so hand it the new one
         self.mass.players.refresh_source(session.owner_player_id, self._audio_source(client))
 
-    @property
-    def _sendspin_provider(self) -> SendspinProvider | None:
-        return cast("SendspinProvider | None", self.mass.get_provider("sendspin"))
-
     def _get_client(self, client_id: str) -> SendspinClient | None:
-        if (sendspin := self._sendspin_provider) is None:
-            return None
-        return sendspin.server_api.get_client(client_id)
+        return self.provider.server_api.get_client(client_id)
 
     @staticmethod
     def _get_source_role(client: SendspinClient) -> SourceV1Role | None:
@@ -433,13 +427,13 @@ class SendspinSourceProvider(PluginProvider):
     def _audio_source(self, client: SendspinClient) -> AudioSource:
         return AudioSource(
             item_id=client.client_id,
-            provider=self.instance_id,
+            provider=self.provider.instance_id,
             name=self._source_name(client.client_id),
             provider_mappings={
                 ProviderMapping(
                     item_id=client.client_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
+                    provider_domain=self.provider.domain,
+                    provider_instance=self.provider.instance_id,
                     audio_format=OUTPUT_FORMAT,
                 )
             },
@@ -474,11 +468,9 @@ class SendspinSourceProvider(PluginProvider):
         if "source" not in {role_family(role_id) for role_id in client.negotiated_role_ids}:
             return False
         # Only a device this server dialed can be dialed again to take it over.
-        if (sendspin := self._sendspin_provider) is None or (
-            sendspin.server_api.get_client_url(client.client_id) is None
-        ):
+        if self.provider.server_api.get_client_url(client.client_id) is None:
             return False
-        store = sendspin.server_api.pairing_store
+        store = self.provider.server_api.pairing_store
         if await store.record_by_client_id(client.client_id) is not None:
             return True
         trusted = await store.trusted_unpaired(client.client_id)
@@ -490,9 +482,7 @@ class SendspinSourceProvider(PluginProvider):
             and self._released_playback_sessions.get(client_id) == playback_session_id
         ):
             return False
-        if (
-            sendspin := self._sendspin_provider
-        ) is None or not sendspin.server_api.request_client_playback_connection(client_id):
+        if not self.provider.server_api.request_client_playback_connection(client_id):
             return False
         self.logger.info("Taking Sendspin source %s over from another server", client_id)
         return True
@@ -513,7 +503,7 @@ class SendspinSourceProvider(PluginProvider):
             raise AudioError(
                 f"Sendspin source {session.client_id} did not start streaming",
                 translation_key="no_audio",
-                translation_owner=self.translation_owner,
+                translation_owner=self.provider.translation_owner,
                 translation_args=[self._device_name(session.client_id)],
             ) from None
 
@@ -679,7 +669,7 @@ class SendspinSourceProvider(PluginProvider):
             # Queue stop also cancels pending preload and enqueue timers.
             await self.mass.players.deselect_source(
                 session.owner_player_id,
-                provider_instance_id=self.instance_id,
+                provider_instance_id=self.provider.instance_id,
                 source_id=session.client_id,
                 playback_session_id=session.playback_session_id,
             )
@@ -725,7 +715,7 @@ class SendspinSourceProvider(PluginProvider):
             if queue
             else (player.synced_to or player.active_group or player.player_id)
         )
-        return target_id, create_uri(MediaType.AUDIO_SOURCE, self.instance_id, client_id)
+        return target_id, create_uri(MediaType.AUDIO_SOURCE, self.provider.instance_id, client_id)
 
     async def _attach_stream(
         self, session: _SourceSession, event: SourceStreamStartedEvent
@@ -735,11 +725,6 @@ class SendspinSourceProvider(PluginProvider):
             return
         if session.ingest_task is not None:
             session.ingest_task.cancel()
-        # Provider options are unresolved when the instance first loads.
-        target_latency = (
-            cast("int | None", self.config.get_value(CONF_TARGET_LATENCY))
-            or DEFAULT_TARGET_LATENCY_MS
-        )
         session.start_event = event
         if session.output_format is None:
             session.output_format = AudioFormat(
@@ -748,14 +733,12 @@ class SendspinSourceProvider(PluginProvider):
                 bit_depth=event.audio_format.bit_depth,
                 channels=event.audio_format.channels,
             )
-        session.bridge = self._create_bridge(
-            event.audio_format, session.output_format, target_latency
-        )
+        session.bridge = self._create_bridge(event.audio_format, session.output_format)
         session.last_pcm_monotonic = time.monotonic()
         session.ingest_task = self.mass.create_task(self._ingest(session, event.handle))
 
     def _create_bridge(
-        self, input_format: SendspinAudioFormat, output_format: AudioFormat, target_latency_ms: int
+        self, input_format: SendspinAudioFormat, output_format: AudioFormat
     ) -> SourceBridge:
         return AsrcSourceBridge(
             input_format=input_format,
@@ -764,7 +747,7 @@ class SendspinSourceProvider(PluginProvider):
                 bit_depth=output_format.bit_depth,
                 channels=output_format.channels,
             ),
-            target_latency_ms=target_latency_ms,
+            target_latency_ms=TARGET_LATENCY_MS,
         )
 
     async def _ingest(self, session: _SourceSession, handle: SourceStream) -> None:
@@ -834,7 +817,7 @@ class SendspinSourceProvider(PluginProvider):
             self.mass.cancel_task(task_id)
 
     def _source_name(self, client_id: str) -> str:
-        return f"{self.name} ({self._device_name(client_id)})"
+        return f"{self.provider.name} ({self._device_name(client_id)})"
 
     def _device_name(self, client_id: str) -> str:
         """Return the name of the player the user sees for this client."""
@@ -851,7 +834,7 @@ class SendspinSourceProvider(PluginProvider):
         return protocol.player if protocol is not None else None
 
     def _autostart_timer_id(self, client_id: str) -> str:
-        return f"{self.instance_id}_autostart_{client_id}"
+        return f"{self.provider.instance_id}_autostart_{client_id}"
 
     def _autostop_timer_id(self, client_id: str) -> str:
-        return f"{self.instance_id}_autostop_{client_id}"
+        return f"{self.provider.instance_id}_autostop_{client_id}"

@@ -19,7 +19,7 @@ def _episode(guid: str, published: int) -> dict[str, Any]:
 def _provider(episodes: list[dict[str, Any]]) -> PodcastMusicprovider:
     """Return a provider serving the given episodes, bypassing the feed fetch."""
     mass = Mock()
-    manifest = Mock(domain="podcastfeed", features=set())
+    manifest = Mock(domain="podcastfeed")
     config = Mock(instance_id="podcastfeed--test", enabled=True)
     config.get_value.side_effect = lambda key, default=None: (
         "INFO" if key == "log_level" else default

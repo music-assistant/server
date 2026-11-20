@@ -361,7 +361,7 @@ def test_a_fallback_only_source_follows_a_changed_placeholder() -> None:
     """
     A source that never reports keeps taking its placeholder from the stream details.
 
-    vban_receiver and sendspin_source never call update_stream_metadata, so the
+    vban_receiver and sendspin never call update_stream_metadata, so the
     placeholder is all they have. Adopting one must not stop a later one landing:
     a VBAN reconnect from a different sender describes something else.
     """

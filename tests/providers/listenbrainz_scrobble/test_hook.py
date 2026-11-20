@@ -152,7 +152,7 @@ def _provider(
     """Build a ListenBrainz provider instance with the given stored setup data."""
     return ListenBrainzScrobbleProvider(
         _mass(setup_data, http_session=http_session),
-        Mock(domain="listenbrainz_scrobble", features=set()),
+        Mock(domain="listenbrainz_scrobble"),
         _config(),
         SUPPORTED_FEATURES,
     )
@@ -199,7 +199,7 @@ def _playing_report() -> MediaItemPlaybackProgressReport:
 
 async def test_setup_declares_the_scrobble_feature() -> None:
     """The provider tells the server it records plays, or it would never be handed any."""
-    provider = await setup(_mass(), Mock(domain="listenbrainz_scrobble", features=set()), _config())
+    provider = await setup(_mass(), Mock(domain="listenbrainz_scrobble"), _config())
 
     assert isinstance(provider, ListenBrainzScrobbleProvider)
     assert ProviderFeature.SCROBBLE in provider.supported_features

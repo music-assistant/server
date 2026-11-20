@@ -8,6 +8,8 @@ import platform
 import plistlib
 import re
 import time
+from dataclasses import dataclass
+from enum import StrEnum
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any, Final
 
@@ -20,7 +22,7 @@ from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import format_ip_for_url
 
-from .constants import AIRPLAY_BUFFER_DEPTH_DEFAULTS
+from .constants import AIRPLAY_BUFFER_DEPTH_DEFAULTS, AIRPLAY_DISCOVERY_TYPE
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import PlayerConfig
@@ -253,6 +255,63 @@ def get_decoded_property(discovery_info: AsyncServiceInfo, key: str) -> str | No
     return None
 
 
+class SetKind(StrEnum):
+    """The kind of set of AirPlay devices that plays as one player."""
+
+    # an Apple TV with one HomePod or a stereo pair of them as its speakers
+    HOME_THEATER = "home_theater"
+    # a stereo pair of HomePods without an Apple TV
+    STEREO_PAIR = "stereo_pair"
+
+
+@dataclass(frozen=True)
+class SetMembership:
+    """The place of an AirPlay device in a set of devices that plays as one player."""
+
+    # id of the set, shared by all of its devices
+    set_id: str
+    # 0 for the device that carries the set, above 0 for one of its speakers. A record of a
+    # stereo pair tells no role: there it is the digit of the idle pair form of its group id,
+    # None while a sender plays to the pair
+    position: int | None
+    # number of devices in the set, the one that carries it included
+    size: int
+    # name of the room the set is in
+    name: str | None
+    kind: SetKind = SetKind.HOME_THEATER
+
+
+def parse_set_membership(discovery_info: AsyncServiceInfo | None) -> SetMembership | None:
+    """
+    Return the place of a device in a set of devices that plays as one player, None outside one.
+
+    That is the home theater set of an Apple TV, read from the keys that stay the same while
+    any sender plays to it, or a stereo pair of HomePods. A HomePod in both belongs to the
+    set of its Apple TV.
+
+    :param discovery_info: The _airplay._tcp record of the device.
+    """
+    if discovery_info is None or discovery_info.type != AIRPLAY_DISCOVERY_TYPE:
+        return None
+    set_id = get_decoded_property(discovery_info, "psgid")
+    if not set_id or get_decoded_property(discovery_info, "psgtp") != "1":
+        return _parse_stereo_pair(discovery_info)
+    try:
+        position = int(get_decoded_property(discovery_info, "pgmid") or "")
+    except ValueError:
+        return None
+    try:
+        size = int(get_decoded_property(discovery_info, "psgsz") or 0)
+    except ValueError:
+        size = 0
+    return SetMembership(
+        set_id=set_id.upper(),
+        position=position,
+        size=size,
+        name=get_decoded_property(discovery_info, "gpn") or None,
+    )
+
+
 def supports_companion_pairing(discovery_info: AsyncServiceInfo | None) -> bool:
     """Return whether a Companion service supports PIN pairing."""
     if discovery_info is None:
@@ -455,3 +514,31 @@ def _get_cli_binary_name(system: str, machine: str) -> str | None:
     if normalized_system not in ("linux", "macos"):
         return None
     return f"cliairplay-{normalized_system}-{architecture}"
+
+
+def _parse_stereo_pair(discovery_info: AsyncServiceInfo) -> SetMembership | None:
+    """
+    Return the membership of a HomePod in a stereo pair, None outside one.
+
+    Both speakers carry the id of the pair. While nobody plays to the pair, the group id has
+    its idle pair form ``<pair id>+<digit>+<id>``, which tells no role: both HomePods of a
+    settled pair read the same one. The position only tells whether the record is in that form.
+
+    :param discovery_info: The _airplay._tcp record of the device.
+    """
+    if not (pair_id := get_decoded_property(discovery_info, "tsid")):
+        return None
+    pair_id = pair_id.upper()
+    group_id = (get_decoded_property(discovery_info, "gid") or "").upper().split("+")
+    position = (
+        int(group_id[1])
+        if len(group_id) == 3 and group_id[0] == pair_id and group_id[1].isdigit()
+        else None
+    )
+    return SetMembership(
+        set_id=pair_id,
+        position=position,
+        size=2,
+        name=get_decoded_property(discovery_info, "gpn") or None,
+        kind=SetKind.STEREO_PAIR,
+    )

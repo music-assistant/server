@@ -352,13 +352,17 @@ class TestProtocolAwareLeaderSelection:
         leader = sgp._select_sync_leader()
         assert leader is player_a
 
-    def test_select_leader_skips_non_playback_member(self) -> None:
-        """A light member listed first is never picked as sync leader."""
+    @pytest.mark.parametrize(
+        "player_type",
+        [PlayerType.DISPLAY, PlayerType.VISUALIZER, PlayerType.LIGHT, PlayerType.CONTROLLER],
+    )
+    def test_select_leader_skips_non_playback_member(self, player_type: PlayerType) -> None:
+        """A member that can not play audio is never picked as sync leader, even when first."""
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
-        _make_member(mass, "light", "sendspin", player_type=PlayerType.LIGHT)
+        _make_member(mass, "non_audio", "sendspin", player_type=player_type)
         player_b = _make_member(mass, "player_b")
-        sgp._attr_group_members = ["light", "player_b"]
+        sgp._attr_group_members = ["non_audio", "player_b"]
 
         leader = sgp._select_sync_leader()
         assert leader is player_b

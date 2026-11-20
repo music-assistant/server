@@ -125,7 +125,7 @@ def _mass(in_library: set[int], on_service: set[int]) -> Mock:
 
 async def _provider(mass: Mock) -> LastFMRecommendationsProvider:
     """Return a provider on the given mass, with a mocked Last.fm API client."""
-    manifest = Mock(domain="lastfm_recommendations", features=set())
+    manifest = Mock(domain="lastfm_recommendations")
     config = Mock(instance_id=INSTANCE_ID)
     config.name = "Last.fm Test"
     config.get_value.side_effect = lambda key, default=None: {"log_level": "INFO"}.get(key, default)

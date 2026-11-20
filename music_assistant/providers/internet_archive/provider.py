@@ -556,7 +556,7 @@ class InternetArchiveProvider(MusicProvider):
 
         except Exception as err:
             self.logger.warning(
-                f"Could not process audio files for audiobook {prov_audiobook_id}: {err}"
+                "Could not process audio files for audiobook %s: %s", prov_audiobook_id, err
             )
             audiobook.duration = 0
             audiobook.metadata.chapters = []
@@ -850,7 +850,7 @@ class InternetArchiveProvider(MusicProvider):
                             chapters_yielded = True
                             yield chunk
                 except Exception as e:
-                    self.logger.error(f"Chapter {i + 1} streaming failed: {e}")
+                    self.logger.error("Chapter %s streaming failed: %s", i + 1, e)
                     continue
 
             # If no chapters succeeded, raise an error instead of silent failure
@@ -911,7 +911,9 @@ class InternetArchiveProvider(MusicProvider):
             audio_files = await self._get_audio_files(prov_podcast_id)
             podcast.total_episodes = len(audio_files)
         except Exception as err:
-            self.logger.warning(f"Could not get episode count for podcast {prov_podcast_id}: {err}")
+            self.logger.warning(
+                "Could not get episode count for podcast %s: %s", prov_podcast_id, err
+            )
             podcast.total_episodes = None
 
         return podcast

@@ -21,7 +21,7 @@ from uuid import uuid4
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.constants import CONF_PASSWORD, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.helpers.images import _extract_imageproxy_id, get_image_thumb_path
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
@@ -319,6 +319,11 @@ class AirPlayStream:
         """Return boolean if the device connection has been established."""
         return self._connected.is_set()
 
+    @property
+    def receiver_closed(self) -> bool:
+        """Whether the receiver ended the session itself, e.g. when another sender took over."""
+        return self._receiver_closed
+
     async def connect(
         self,
         use_shared_ptp: bool | None = None,
@@ -403,7 +408,8 @@ class AirPlayStream:
         # after the session ends, so it is only sent when nothing else owns this output's
         # volume: otherwise the device keeps playing at the level its own app or remote is
         # set to. A latched mute would start the stream silent, so it does travel along.
-        if self.player.owns_volume or self.player.volume_muted:
+        # A device whose audio is not heard (the Apple TV of a set) gets neither.
+        if self.player.renders_audio and (self.player.owns_volume or self.player.volume_muted):
             # Repeat after 2 seconds because some players ignore the first volume command
             # (https://github.com/music-assistant/support/issues/3330). The repeat reads
             # the level when it fires, so it never replays a value that changed since.
@@ -956,6 +962,69 @@ class AirPlayStream:
                     artwork_url, metadata_generation, artwork_render
                 )
 
+    def handle_stream_loss(self, *, rejoin: bool = True) -> bool:
+        """
+        Take the player of a stream that was lost out of its group, and line up its return.
+
+        A speaker of a set takes its set along. A set that plays on its own stops: it plays on
+        all of its speakers or not at all.
+
+        :param rejoin: Whether to line up its return, which a join that failed does not get.
+        :return: Whether the player led its group, whose state the player controller settles.
+        """
+        player = self.player
+        # a speaker of a set leaves and re-joins a group with its set
+        owner = player.owner or player
+        # Candidates for the automatic re-join: the leader this member
+        # was synced to (plus its other members, in case leadership
+        # transfers while the backoff runs), or - when this was the
+        # leader itself - the members that survive it. Captured before
+        # the ungroup below mutates the group state (create_task
+        # starts eagerly).
+        was_leader = bool(owner.group_members)
+        if owner.synced_to:
+            rejoin_candidates = [owner.synced_to]
+            if leader := owner.provider.get_protocol(owner.synced_to):
+                rejoin_candidates += [
+                    member_id
+                    for member_id in leader.group_members
+                    if member_id not in (owner.protocol_id, owner.synced_to)
+                ]
+        else:
+            rejoin_candidates = [m for m in owner.group_members if m != owner.protocol_id]
+        # Hand off to the player controller so it drops just this member, or
+        # transfers leadership to a healthy member, instead of dissolving the
+        # whole group over a single dead transport. A sync leader is left in
+        # its current state here on purpose: the controller only transfers
+        # leadership while the queue still looks active, and transfer_queue or
+        # dissolve sets the final state.
+        # The player leaves the group of its AirPlay sync leader only:
+        # cmd_ungroup acts on the player at the visible/group level, which can
+        # remove the member from its (sync)group - or, for a static member,
+        # release the whole group (HA unjoin semantics) - over one dead
+        # transport. The device fell out; its membership is intent that must
+        # survive, so only the leader's live session loses it.
+        if owner.synced_to:
+            sync_leader = owner.provider.get_protocol(owner.synced_to)
+            leader_player = sync_leader.player if sync_leader else None
+        else:
+            leader_player = owner.player if was_leader else None
+        if leader_player is not None and owner.player is not None:
+            self.mass.create_task(self._leave_group(leader_player, owner.player.player_id))
+        if rejoin and rejoin_candidates and not self._receiver_closed:
+            # the group (or its successor) may still be playing:
+            # schedule bounded attempts to re-join it
+            owner.schedule_group_rejoin(rejoin_candidates)
+        if (
+            (owner is not player or player.speakers)
+            and not was_leader
+            and not owner.synced_to
+            and (session := self.session)
+        ):
+            # a set plays on all of its speakers or not at all
+            self.mass.create_task(session.stop())
+        return was_leader
+
     def _full_media_duration(self, metadata: PlayerMedia) -> int:
         """
         Return the media's full track duration in seconds.
@@ -1142,7 +1211,7 @@ class AirPlayStream:
             metadata_caps = raop_info.decoded_properties.get("md")
             if metadata_caps or target_protocol == StreamingProtocol.RAOP:
                 args += ["--md", metadata_caps or ""]
-        if target_protocol == StreamingProtocol.RAOP and self.player.config.get_value(
+        if target_protocol == StreamingProtocol.RAOP and self.player.settings.get_value(
             CONF_ENCRYPTION, True
         ):
             args += ["--encrypt"]
@@ -1181,8 +1250,8 @@ class AirPlayStream:
             args += ["--secret", auth_secret]
 
         # Device password
-        if password := self.player.config.get_value(CONF_PASSWORD):
-            args += ["--password", str(password)]
+        if password := self.player.device_password:
+            args += ["--password", password]
 
         # Shared PTP daemon clock (multi-room sync for native AP2 streams). The
         # decision is made once per session and passed in, so every native AP2
@@ -1196,7 +1265,7 @@ class AirPlayStream:
             # stock depth. The stored value wins; Automatic (0) resolves
             # through the same device-family table that seeds the config
             # entry default, so selecting it never downgrades a device.
-            depth_ms = cast("int", self.player.config.get_value(CONF_BUFFER_DEPTH) or 0)
+            depth_ms = cast("int", self.player.settings.get_value(CONF_BUFFER_DEPTH) or 0)
             if not depth_ms:
                 depth_ms = default_buffer_depth(
                     self.player.device_info.manufacturer or "",
@@ -1520,51 +1589,14 @@ class AirPlayStream:
                         logger.warning(
                             "cliairplay process stopped unexpectedly for %s", player.display_name
                         )
-                    # Candidates for the automatic re-join: the leader this member
-                    # was synced to (plus its other members, in case leadership
-                    # transfers while the backoff runs), or - when this was the
-                    # leader itself - the members that survive it. Captured before
-                    # the ungroup below mutates the group state (create_task
-                    # starts eagerly).
-                    was_leader = bool(player.group_members)
-                    if player.synced_to:
-                        rejoin_candidates = [player.synced_to]
-                        if leader := player.provider.get_protocol(player.synced_to):
-                            rejoin_candidates += [
-                                member_id
-                                for member_id in leader.group_members
-                                if member_id not in (player.protocol_id, player.synced_to)
-                            ]
-                    else:
-                        rejoin_candidates = [
-                            m for m in player.group_members if m != player.protocol_id
-                        ]
-                    # Hand off to the player controller so it drops just this member, or
-                    # transfers leadership to a healthy member, instead of dissolving the
-                    # whole group over a single dead transport. A sync leader is left in
-                    # its current state here on purpose: the controller only transfers
-                    # leadership while the queue still looks active, and transfer_queue or
-                    # dissolve sets the final state.
-                    # The player leaves the group of its AirPlay sync leader only:
-                    # cmd_ungroup acts on the player at the visible/group level, which can
-                    # remove the member from its (sync)group - or, for a static member,
-                    # release the whole group (HA unjoin semantics) - over one dead
-                    # transport. The device fell out; its membership is intent that must
-                    # survive, so only the leader's live session loses it.
-                    if player.synced_to:
-                        sync_leader = player.provider.get_protocol(player.synced_to)
-                        leader_player = sync_leader.player if sync_leader else None
-                    else:
-                        leader_player = player.player if was_leader else None
-                    if leader_player is not None and player.player is not None:
-                        self.mass.create_task(
-                            self._leave_group(leader_player, player.player.player_id)
-                        )
-                    if rejoin_candidates and not self._receiver_closed:
-                        # the group (or its successor) may still be playing:
-                        # schedule bounded attempts to re-join it
-                        player.schedule_group_rejoin(rejoin_candidates)
-                    if was_leader:
+                    if not player.renders_audio:
+                        # the device of a set only shows what its speakers play: they play on
+                        if (session := self.session) is not None:
+                            self.mass.create_task(
+                                session.end_silent_member(player, taken_over=self._receiver_closed)
+                            )
+                        return
+                    if self.handle_stream_loss():
                         return
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             finally:
@@ -1784,7 +1816,8 @@ class AirPlayStream:
         # identity checksum back and forth — and every flip is a full
         # now-playing replace that makes an Apple TV degrade its Now Playing
         # screen on the next track change.
-        state_media = self.player.player.current_media if self.player.player else None
+        owner = self.player.owner
+        state_media = owner.player.current_media if owner and owner.player else None
         if (
             metadata is not None
             and state_media is not None
@@ -1933,7 +1966,7 @@ class AirPlayStream:
         target_protocol = self.player.protocol_override or self.player.protocol
         if target_protocol != StreamingProtocol.AIRPLAY2 or not self.player.password_required:
             return
-        if self.player.config.get_value(CONF_PASSWORD):
+        if self.player.device_password:
             return
         # stored credentials keep the binary's pair-verify leg viable, and its own
         # failure report guides the user when that leg is rejected after all

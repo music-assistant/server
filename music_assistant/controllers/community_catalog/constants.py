@@ -9,6 +9,10 @@ CONF_ENABLED: Final = "community_catalog_enabled"
 CONF_AUTO_UPDATE: Final = "auto_update"
 # the folder in the data directory that holds what the server keeps of the community catalog
 COMMUNITY_PROVIDERS_FOLDER: Final = "community_providers"
+# where a repository holds a provider, as the community catalog accepts it: in a top-level
+# folder named after its domain or PROVIDER_FOLDER, or in PROVIDERS_FOLDER/<domain>
+PROVIDER_FOLDER: Final = "provider"
+PROVIDERS_FOLDER: Final = "providers"
 # the providers that moved from the server to the community catalog: a server installs one
 # from the catalog by itself, once, where it has a settings entry of it
 MOVED_PROVIDER_DOMAINS: Final[frozenset[str]] = frozenset()

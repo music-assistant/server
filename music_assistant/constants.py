@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 122
+API_SCHEMA_VERSION: Final[int] = 124
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -170,8 +170,6 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")  # noqa: S104 - the wildcard addresses themselves
-# Port used by the built-in Sendspin server (runs next to, not behind, the webserver)
-SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_IDLE_POWER_OFF: Final[str] = "idle_power_off"
 CONF_POWER_CONTROL_CUTS_POWER: Final[str] = "power_control_cuts_power"
@@ -580,7 +578,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(-30, -5),
     default_value=-14,
-    category="playback",
+    category="volume_normalization",
     advanced=True,
     requires_reload=True,
 )

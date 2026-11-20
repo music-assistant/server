@@ -455,10 +455,7 @@ class AudioAnalysisProvider(Provider):
         solo_lock = solo if isinstance(solo, asyncio.Lock) else None
         take_solo = False
         if solo_lock is not None:
-            try:
-                take_solo = bool(controller.playback_active())
-            except Exception:
-                take_solo = False
+            take_solo = bool(controller.playback_active())
 
         solo_held = False
 

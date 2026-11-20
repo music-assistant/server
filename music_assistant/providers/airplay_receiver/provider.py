@@ -17,6 +17,7 @@ from music_assistant_models.enums import (
     EventType,
     ImageType,
     MediaType,
+    ProviderFeature,
     SourceControl,
     StreamType,
 )
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
 
+SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
 # seconds the silence nudge waits for the audio pipe's consumer to reattach
 AUDIO_PIPE_READER_TIMEOUT = 1.0
@@ -157,7 +159,7 @@ class AirPlayReceiverProvider(PluginProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self._shairport_bin: str | None = None
         self._daemons: dict[str, _ReceiverDaemon] = {}
         # players whose daemon gave up permanently; skipped by reconcile until the

@@ -14,7 +14,7 @@ from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvi
 def provider() -> OpenSonicProvider:
     """Create a real OpenSonicProvider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "opensubsonic"
     config = Mock()
     config.instance_id = "opensubsonic--test123"

@@ -28,7 +28,7 @@ def _session(**jar_cookies: str) -> Mock:
 
 
 def _provider(instance_id: str, arl: str, mass: Mock) -> DeezerProvider:
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "deezer"
     config = Mock()
     config.instance_id = instance_id

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.airplay.provider import AirPlayProvider
 
@@ -371,3 +372,102 @@ async def test_documented_unhandled_commands_noop(
     ):
         getattr(players, cmd).assert_not_called()
     assert response.startswith(b"HTTP/1.0 204 No Content")
+
+
+def _set_with_speakers(
+    mock_mass: MagicMock, airplay_provider: AirPlayProvider, **kwargs: object
+) -> tuple[MagicMock, list[MagicMock]]:
+    """
+    Make the player of a set with two speakers, each with a stream of its own.
+
+    :param kwargs: Passed on to make_player for the player of the set.
+    """
+    airplay_set = make_player(mock_mass, active_remote="apple-tv", **kwargs)  # type: ignore[arg-type]
+    airplay_set.renders_audio = False
+    speakers = []
+    for index in (1, 2):
+        speaker = MagicMock(owner=airplay_set, renders_audio=True, _transitioning=False)
+        speaker.name = f"HomePod {index}"
+        speaker.player = None
+        speaker.synced_to = None
+        speaker.playback_state = PlaybackState.IDLE
+        speaker.stream = MagicMock(
+            active_remote_id=f"speaker-{index}",
+            running=True,
+            connected=True,
+            prevent_playback=False,
+            stop=AsyncMock(),
+        )
+        speakers.append(speaker)
+    airplay_set.session_endpoints = [*speakers, airplay_set]
+    airplay_set.stream.session.remove_silent_member = MagicMock(return_value="leave")
+    airplay_provider._speakers = {f"apspeaker{index}": s for index, s in enumerate(speakers)}
+    return airplay_set, speakers
+
+
+async def test_a_request_of_a_speaker_acts_on_its_set(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """A HomePod of a set controls the set: its commands address the player of the set."""
+    airplay_set, _ = _set_with_speakers(mock_mass, airplay_provider, synced_to="leader")
+
+    await replay(airplay_provider, build_dacp_request("/ctrl-int/1/nextitem", "speaker-1"))
+    await replay(airplay_provider, build_dacp_request(_PREVENT_1, "speaker-1"))
+
+    mock_mass.players.cmd_next_track.assert_called_once_with(airplay_set.player.player_id)
+    # the set is grouped, so the HomePod switching away takes the set out of its group
+    mock_mass.players.cmd_ungroup.assert_called_once_with(airplay_set.player.player_id)
+
+
+async def test_a_speaker_switching_away_stops_its_whole_set(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """Another sender taking one HomePod stops the set on every speaker and its Apple TV."""
+    airplay_set, speakers = _set_with_speakers(mock_mass, airplay_provider)
+
+    await replay(airplay_provider, build_dacp_request(_PREVENT_1, "speaker-1"))
+
+    for endpoint in (*speakers, airplay_set):
+        endpoint.stream.stop.assert_called_once()
+    mock_mass.players.cmd_ungroup.assert_not_called()
+
+
+async def test_the_apple_tv_of_a_set_switching_away_leaves_its_speakers_playing(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """
+    The Apple TV only shows what its speakers play: switching away it leaves alone.
+
+    Its speakers play on until another sender takes them, which stops the set.
+    """
+    airplay_set, speakers = _set_with_speakers(mock_mass, airplay_provider)
+
+    await replay(airplay_provider, build_dacp_request(_PREVENT_1, "apple-tv"))
+
+    airplay_set.stream.session.remove_silent_member.assert_called_once_with(
+        airplay_set, rejoin=False
+    )
+    for speaker in speakers:
+        speaker.stream.stop.assert_not_called()
+    airplay_set.stream.stop.assert_not_called()
+
+
+async def test_a_speaker_follows_the_transition_and_the_state_of_its_set(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """While its set starts anew a speaker's switch away is stale; its pause follows the set."""
+    airplay_set, speakers = _set_with_speakers(mock_mass, airplay_provider, transitioning=True)
+    # the speakers themselves read idle and settled: only the set says otherwise
+    assert speakers[0]._transitioning is False
+
+    await replay(airplay_provider, build_dacp_request(_PREVENT_1, "speaker-1"))
+    await replay(airplay_provider, build_dacp_request("/ctrl-int/1/discrete-pause", "speaker-2"))
+
+    for endpoint in (*speakers, airplay_set):
+        endpoint.stream.stop.assert_not_called()
+    mock_mass.call_later.assert_called_once_with(
+        1.0,
+        mock_mass.players.cmd_pause,
+        airplay_set.player.player_id,
+        task_id=f"debounced_pause_{airplay_set.player.player_id}",
+    )

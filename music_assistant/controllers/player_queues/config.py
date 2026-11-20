@@ -109,7 +109,7 @@ CATEGORY_CLICK_ACTIONS = "click_actions"
 CATEGORY_SMART_SHUFFLE = "smart_shuffle"
 CATEGORY_AUTOPLAY = "autoplay"
 CATEGORY_CROSSFADE = "crossfade"
-CATEGORY_AUDIO = "audio"
+CATEGORY_VOLUME_NORMALIZATION = "volume_normalization"
 CATEGORY_PLAYBACK = "playback"
 
 
@@ -488,7 +488,7 @@ def _volume_normalization_entry(*, per_queue: bool) -> ConfigEntry:
     # a per-queue change restarts playback so the (re)baked gain filter applies right away
     return _onoff_entry(
         CONF_VOLUME_NORMALIZATION,
-        CATEGORY_AUDIO,
+        CATEGORY_VOLUME_NORMALIZATION,
         per_queue=per_queue,
         global_default=CONF_VALUE_ENABLED,
         reload_on_change=True,

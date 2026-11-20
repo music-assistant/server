@@ -343,15 +343,15 @@ async def test_a_provider_that_is_reloaded_leaves_the_output_as_it_was(
 async def test_a_restart_with_the_provider_of_the_carrier_disabled_hands_the_output_over() -> None:
     """A carrier whose provider the user disabled does not keep its place."""
     settings, state = await _settled((), "on")
-    assert state == ("airplay", AIRPLAY_CLIENT, "airplay", "on")
-    settings["providers"]["airplay"]["enabled"] = False
+    assert state == ("squeezelite", AIRPLAY_CLIENT, "squeezelite", "on")
+    settings["providers"]["squeezelite"]["enabled"] = False
 
-    for schedule in _schedules(("squeezelite", "chromecast"), ("squeezelite", "chromecast")):
+    for schedule in _schedules(("airplay", "chromecast"), ("airplay", "chromecast")):
         device = _device()
         await _restarted(device, settings)
         for event in schedule:
             await _play(device, event)
-        assert device.state() == ("squeezelite", AIRPLAY_CLIENT, "squeezelite", "on"), schedule
+        assert device.state() == ("airplay", AIRPLAY_CLIENT, "airplay", "on"), schedule
         await _done(device)
 
 
@@ -415,12 +415,77 @@ async def test_an_upgrade_leaves_the_one_output_of_a_device_as_it_is(
     settings = await _upgraded(device)
 
     assert settings["player_protocols"][client_id] == before
+    # squeezelite comes first, and carries it from the first start
     expected = (
-        ("airplay", client_id, "airplay", "on")
+        ("squeezelite", client_id, "squeezelite", "on")
         if enabled
-        else (None, client_id, "airplay", "off-user")
+        else (None, client_id, "squeezelite", "off-user")
     )
     await _assert_in_every_start_order(settings, subset, subset, expected, shared=shared)
+
+
+@pytest.mark.parametrize("enabled", [True, False], ids=["output on", "output off"])
+@pytest.mark.parametrize(
+    "squeezelite_output", [False, True], ids=["airplay output", "squeezelite output too"]
+)
+async def test_the_first_start_after_an_upgrade_hands_the_airplay_output_to_squeezelite(
+    enabled: bool, squeezelite_output: bool
+) -> None:
+    """The one output moves from AirPlay to squeezelite as it was, and each keeps its delay."""
+    subset = ("airplay", "squeezelite")
+    device = _device(subset)
+    device.store_output(
+        AIRPLAY_CLIENT, AIRPLAY_ID, enabled=enabled, values={CONF_SENDSPIN_STATIC_DELAY: 77}
+    )
+    if squeezelite_output:
+        # an output squeezelite had of its own before the update
+        device.store_output(
+            SQUEEZELITE_CLIENT,
+            SQUEEZELITE_ID,
+            enabled=enabled,
+            values={CONF_SENDSPIN_STATIC_DELAY: 40},
+        )
+    settings = await _upgraded(device)
+    kind = "on" if enabled else "off-user"
+    over_squeezelite: dict[str, Any] = {
+        CONF_UNDERLYING_PLAYER_ID: SQUEEZELITE_ID,
+        CONF_SENDSPIN_BRIDGE_STATIC_DELAYS: {AIRPLAY_ID: 77},
+    }
+    over_airplay: dict[str, Any] = {
+        CONF_UNDERLYING_PLAYER_ID: AIRPLAY_ID,
+        CONF_SENDSPIN_STATIC_DELAY: 77,
+    }
+    if squeezelite_output:
+        over_squeezelite[CONF_SENDSPIN_STATIC_DELAY] = 40
+        over_airplay[CONF_SENDSPIN_BRIDGE_STATIC_DELAYS] = {SQUEEZELITE_ID: 40}
+
+    for schedule in _schedules(subset, subset):
+        device = _device(subset)
+        await _restarted(device, settings)
+        for event in schedule:
+            await _play(device, event)
+
+        assert list(device.outputs()) == [AIRPLAY_CLIENT], schedule
+        assert device.state() == (
+            "squeezelite" if enabled else None,
+            AIRPLAY_CLIENT,
+            "squeezelite",
+            kind,
+        ), schedule
+        assert device.output()["values"] == over_squeezelite, schedule
+        if not enabled:
+            assert device.timeline == [], f"an output that is off was registered in {schedule}"
+
+        await device.switch(device.squeezelite, False)
+
+        assert device.state() == (
+            "airplay" if enabled else None,
+            AIRPLAY_CLIENT,
+            "airplay",
+            kind,
+        ), schedule
+        assert device.output()["values"] == over_airplay, schedule
+        await _done(device)
 
 
 def _store_cast_default(device: BridgedDevice, client_id: str = CAST_CLIENT) -> None:
@@ -440,7 +505,7 @@ def _store_cast_default(device: BridgedDevice, client_id: str = CAST_CLIENT) -> 
 async def test_an_upgrade_keeps_the_airplay_output_in_use_next_to_a_cast_default(
     cast_there: bool,
 ) -> None:
-    """Two outputs become the one AirPlay carries, in every start order, with Cast away or not."""
+    """Two outputs become the one AirPlay carried, in every start order, with Cast away or not."""
     device = _device()
     device.store_output(AIRPLAY_CLIENT, AIRPLAY_ID, values={CONF_SENDSPIN_STATIC_DELAY: 77})
     _store_cast_default(device)
@@ -457,7 +522,7 @@ async def test_an_upgrade_keeps_the_airplay_output_in_use_next_to_a_cast_default
     assert values[CONF_SENDSPIN_BRIDGE_STATIC_DELAYS] == {CAST_ID: 330}
     attached = DOMAINS if cast_there else ("airplay", "squeezelite")
     await _assert_in_every_start_order(
-        settings, DOMAINS, attached, ("airplay", AIRPLAY_CLIENT, "airplay", "on")
+        settings, DOMAINS, attached, ("squeezelite", AIRPLAY_CLIENT, "squeezelite", "on")
     )
 
 
@@ -473,7 +538,7 @@ async def test_an_upgrade_keeps_an_airplay_output_its_user_switched_off(cast_the
 
     attached = DOMAINS if cast_there else ("airplay", "squeezelite")
     await _assert_in_every_start_order(
-        settings, DOMAINS, attached, (None, AIRPLAY_CLIENT, "airplay", "off-user")
+        settings, DOMAINS, attached, (None, AIRPLAY_CLIENT, "squeezelite", "off-user")
     )
 
 
@@ -507,9 +572,9 @@ async def test_an_upgrade_hands_an_output_whose_carrier_is_gone_to_the_first_bri
     settings = await _upgraded(device)
 
     expected = (
-        ("airplay", "spb_112233445566", "airplay", "on")
+        ("squeezelite", "spb_112233445566", "squeezelite", "on")
         if enabled
-        else (None, "spb_112233445566", "airplay", "off-user")
+        else (None, "spb_112233445566", "squeezelite", "off-user")
     )
     await _assert_in_every_start_order(settings, subset, subset, expected)
 
@@ -529,10 +594,10 @@ async def test_switching_the_output_off_only_stops_the_bridge(shared: bool) -> N
 
     await device.switch_output(False)
 
-    assert device.timeline == [("stopped", "airplay")]
-    assert device.state() == (None, client_id, "airplay", "off-user")
+    assert device.timeline == [("stopped", "squeezelite")]
+    assert device.state() == (None, client_id, "squeezelite", "off-user")
     assert device.output()["values"] == {
-        CONF_UNDERLYING_PLAYER_ID: device.airplay.protocol_id,
+        CONF_UNDERLYING_PLAYER_ID: SQUEEZELITE_ID,
         CONF_SENDSPIN_STATIC_DELAY: 120,
     }
 
@@ -561,24 +626,23 @@ async def test_airplay_switched_on_takes_an_output_cast_has_switched_off(
 
 
 @pytest.mark.parametrize("shared", [False, True], ids=["own ids", "one id"])
-async def test_an_output_that_is_off_stays_with_airplay_while_its_provider_is_not_loaded(
+async def test_an_output_that_is_off_stays_with_squeezelite_while_its_provider_is_not_loaded(
     shared: bool,
 ) -> None:
-    """Squeezelite does not register an output of its own next to one AirPlay has, switched off."""
+    """AirPlay does not register an output of its own next to one squeezelite has, switched off."""
     device = _device(("airplay", "squeezelite"), shared=shared)
-    client_id = SQUEEZELITE_CLIENT if shared else AIRPLAY_CLIENT
     device.store_output(
-        client_id,
-        device.airplay.protocol_id,
+        SQUEEZELITE_CLIENT,
+        SQUEEZELITE_ID,
         enabled=False,
         values={CONF_SENDSPIN_STATIC_DELAY: 77},
     )
     before = deepcopy(device.output())
-    await device.unload_provider("airplay")
+    await device.unload_provider("squeezelite")
 
-    await device.attach(device.squeezelite)
+    await device.attach(device.airplay)
 
-    assert device.state() == (None, client_id, "airplay", "off-user")
+    assert device.state() == (None, SQUEEZELITE_CLIENT, "squeezelite", "off-user")
     assert device.output() == before
     assert device.timeline == []
 
@@ -587,7 +651,6 @@ async def test_the_output_stays_stored_while_the_set_up_of_its_new_carrier_waits
     """A hand-over never leaves a moment without the output, however long the new bridge takes."""
     device = _device(("airplay", "squeezelite"), shared=True)
     await device.attach(device.airplay)
-    await device.attach(device.squeezelite)
     device.output()["values"][CONF_SENDSPIN_STATIC_DELAY] = 77
     # the squeezelite bridge reads what it learned about its player before it registers
     gate = asyncio.Event()
@@ -598,7 +661,7 @@ async def test_the_output_stays_stored_while_the_set_up_of_its_new_carrier_waits
     device.mass.cache.get = AsyncMock(side_effect=_read_later)
     device.timeline.clear()
 
-    await device.switch(device.airplay, False)
+    await device.attach(device.squeezelite)
 
     assert device.timeline == [("stopped", "airplay")]
     assert device.output()["enabled"] is True
@@ -618,15 +681,15 @@ async def test_switching_off_a_carrier_that_is_away_hands_the_output_over_at_onc
     device = _device()
     for protocol in device.protocols.values():
         await device.attach(protocol)
-    await device.detach(device.airplay)
-    assert device.state() == (None, AIRPLAY_CLIENT, "airplay", "on")
-
-    await device.switch(device.airplay, False)
-
-    assert device.state() == ("squeezelite", AIRPLAY_CLIENT, "squeezelite", "on")
-
     await device.detach(device.squeezelite)
+    assert device.state() == (None, AIRPLAY_CLIENT, "squeezelite", "on")
+
     await device.switch(device.squeezelite, False)
+
+    assert device.state() == ("airplay", AIRPLAY_CLIENT, "airplay", "on")
+
+    await device.detach(device.airplay)
+    await device.switch(device.airplay, False)
 
     assert device.state() == (None, AIRPLAY_CLIENT, "chromecast", "off-default")
 
