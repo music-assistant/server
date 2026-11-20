@@ -710,7 +710,7 @@ class ARDAudiothek(MusicProvider):
                 CONF_EXPIRY_TIME,
             ):
                 self._update_setup_data(key, None)
-        except Exception as err:  # noqa: BLE001 - see the comment below
+        except KeyError as err:
             # a failed cleanup is retried on the next start and must not keep the provider down
             self.logger.debug("Could not clear the former ARD credentials: %r", err)
 
