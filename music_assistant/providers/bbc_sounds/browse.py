@@ -41,6 +41,7 @@ from music_assistant.providers.bbc_sounds.naming import (
     TitleParts,
     full_station_name,
     schedule_date_title,
+    station_name,
     station_programme_title,
 )
 
@@ -346,7 +347,7 @@ class BrowseManager:
                     BrowseFolder(
                         item_id=station.id,
                         path=f"{path}/{station.id}",
-                        name=full_station_name(station),
+                        name=station_name(station),
                         provider=self.instance_id,
                         image=MediaItemImage(
                             type=ImageType.THUMB,
