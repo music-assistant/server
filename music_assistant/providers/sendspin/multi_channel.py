@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import secrets
 import time
 from collections.abc import Iterable, Mapping
@@ -29,6 +30,7 @@ from music_assistant_models.enums import (
     PlayerType,
     SpeakerChannel,
 )
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
     CONF_CROSSOVER_FREQUENCY,
@@ -44,6 +46,7 @@ from music_assistant.constants import (
 )
 
 from .constants import (
+    CONF_SENDSPIN_STATIC_DELAY,
     CONF_SPEAKER_CHANNEL,
     CONF_SPEAKER_CHANNEL_SETTING,
     CONF_SPEAKER_CLIENT_ID,
@@ -82,6 +85,8 @@ LAYOUT_CHANNELS: dict[ChannelLayout, tuple[SpeakerChannel, ...]] = {
 # The crossover frequencies (Hz) and the subwoofer levels (dB) a player with a subwoofer offers.
 CROSSOVER_FREQUENCIES = range(40, 201, 10)
 SUBWOOFER_LEVEL_RANGE = (-12, 0)
+# A stored value of one speaker of a multi-channel player, by the number of the speaker.
+SPEAKER_KEY = re.compile(r"^speaker_(?P<number>\d+)_(?P<field>.+)$")
 # Seconds a speaker that connected again has to report the state it kept, before it takes the
 # volume of its player.
 SPEAKER_JOIN_GRACE = 2.0
@@ -243,6 +248,76 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
             for speaker in self._speakers:
                 await self._take_speaker(speaker.client_id, rejoin=rejoin)
         self._on_speakers_changed(restart=not rejoin)
+
+    def add_speaker(self, member: SendspinPlayer, channel: SpeakerChannel) -> None:
+        """
+        Store a speaker as the next speaker of this player, which take_speakers then takes.
+
+        :param member: The Sendspin protocol of the speaker.
+        :param channel: The channel the speaker plays.
+        :raises InvalidDataError: When the channels make up no layout a player can have.
+        """
+        if layout_of([*(speaker.channel for speaker in self._speakers), channel]) is None:
+            raise InvalidDataError(
+                f"{member.display_name} can not play {channel.value} in {self.display_name}",
+                translation_key="multi_channel_channels",
+                translation_owner=self._sendspin_provider.translation_owner,
+            )
+        number = len(self._speakers) + 1
+        for key, value in (
+            (CONF_SPEAKER_CLIENT_ID, member.protocol_id),
+            (CONF_SPEAKER_NAME, member.display_name),
+            (CONF_SPEAKER_CHANNEL, channel.value),
+            (
+                CONF_SPEAKER_OUTPUT_DELAY,
+                member.config.get_value(CONF_SENDSPIN_STATIC_DELAY, member.static_delay_default_ms),
+            ),
+        ):
+            self.mass.config.set_protocol_value(self.protocol_id, key.format(n=number), value)
+        self._load_speakers()
+
+    def remove_speaker(self, number: int) -> str:
+        """
+        Let a speaker of this player go, which plays on with its other speakers.
+
+        The speakers after it move up a number.
+
+        :param number: The number of the speaker.
+        :return: The client id of the speaker.
+        :raises InvalidDataError: When this player has no such speaker, or its other speakers
+            make up no layout a player can have.
+        """
+        speaker = next((s for s in self._speakers if s.number == number), None)
+        if speaker is None:
+            raise InvalidDataError(
+                f"{self.display_name} has no speaker {number}",
+                translation_key="multi_channel_unknown_speaker",
+                translation_owner=self._sendspin_provider.translation_owner,
+            )
+        if layout_of(s.channel for s in self._speakers if s is not speaker) is None:
+            raise InvalidDataError(
+                f"Without {speaker.name} the speakers of {self.display_name} make up no layout",
+                translation_key="multi_channel_last_speakers",
+                translation_owner=self._sendspin_provider.translation_owner,
+                translation_args=[speaker.name],
+            )
+        client_id = speaker.client_id
+        self._stop_listening(client_id)
+        self.mass.cancel_timer(f"sendspin_mc_join_{client_id}")
+        self.mass.cancel_timer(f"sendspin_mc_group_{client_id}")
+        self._joining.discard(client_id)
+        self._left.discard(client_id)
+        self._set_aside.discard(client_id)
+        for sent in (self._sent_volumes, self._sent_mutes, self._sent_delays):
+            sent.pop(client_id, None)
+        values = (self.mass.config.get_protocol_record(self.protocol_id) or {}).get("values") or {}
+        self.mass.config.set(
+            f"{CONF_PLAYER_PROTOCOLS}/{self.protocol_id}/values",
+            _without_speaker(values, number),
+        )
+        self._load_speakers()
+        self._on_speakers_changed()
+        return client_id
 
     def on_speaker_changed(self, client_id: str) -> None:
         """
@@ -882,6 +957,17 @@ class SendspinMultiChannelPlayer(SendspinPlayer):
             )
         self._played_channels = played_channels
         self.update_state()
+
+
+def _without_speaker(values: Mapping[str, Any], number: int) -> dict[str, Any]:
+    """Return the stored values of a multi-channel player without a speaker, renumbering the rest."""
+    kept: dict[str, Any] = {}
+    for key, value in values.items():
+        if (match := SPEAKER_KEY.match(key)) is None or int(match["number"]) < number:
+            kept[key] = value
+        elif (speaker_number := int(match["number"])) > number:
+            kept[f"speaker_{speaker_number - 1}_{match['field']}"] = value
+    return kept
 
 
 def _last_known[T](sent: list[tuple[T, float]], reported: T) -> T:

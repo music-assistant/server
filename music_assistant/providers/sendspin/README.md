@@ -434,6 +434,11 @@ their channels in order.
   player takes (its switch) is taken back at once.
 - One volume: a level set on the set goes to every speaker, and a level a speaker reports itself
   goes to the others. A speaker that reports back a level the set sent changes nothing.
+- A speaker can be added to a set (`players/add_multi_channel_speaker`) and removed from it
+  (`players/remove_multi_channel_speaker`, by its number), as long as the speakers make up a
+  layout: a subwoofer goes into a stereo pair and out again. Adding takes the speaker as combining
+  does; removing lets it go as taking apart does, and the speakers after it move up a number with
+  all their `speaker_<n>_*` values, so the numbers stay without a gap.
 - Taking a set apart is removing its player: its speakers register as clients of their own again,
   one that is away once it connects again. A speaker belongs to one set; a second request for it
   is refused.
