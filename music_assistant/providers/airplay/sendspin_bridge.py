@@ -789,7 +789,7 @@ class SendspinAirPlayBridge:
         group = client.group
         try:
             previous_group_id = await client.quiesce_to_solo_stopped()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - library code, the speaker stays registered
             self.logger.warning(
                 "Could not take %s out of its Sendspin session: %s",
                 self.airplay_player.display_name,
@@ -866,7 +866,7 @@ class SendspinAirPlayBridge:
                 return
             try:
                 await group.add_client(client)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failed re-join attempt is retried
                 self.logger.warning(
                     "Could not re-join %s to its Sendspin group (attempt %d/%d): %s",
                     self.airplay_player.display_name,
@@ -1589,7 +1589,7 @@ class _BridgeTransport:
                 # for cleanup. If we assigned it earlier, the new stream would be missed
                 # and leaked. Only publish once connect() succeeds and this task is current.
                 await self._start_cold_stream(AirPlayStream(self.endpoint))
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failed start is logged and cleaned up
             self.logger.error(
                 "Failed to start AirPlay protocol for %s: %s",
                 self.endpoint.display_name,
@@ -1632,7 +1632,7 @@ class _BridgeTransport:
             # speaker from the session's client list and ends a session left
             # without clients, so its audio source is not left running.
             await stream.session.remove_client(self.endpoint, reason="displaced by sendspin bridge")
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - bookkeeping only, the transport is already gone
             self.logger.warning(
                 "Could not release %s from its previous session: %s",
                 self.endpoint.display_name,
@@ -1705,7 +1705,7 @@ class _BridgeTransport:
             return await self._anchor_stream(stream, warm=True)
         except asyncio.CancelledError:
             raise
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any failure falls back to a cold restart
             self.logger.warning(
                 "Warm handover failed for %s (%r), falling back to a cold restart",
                 self.endpoint.display_name,
