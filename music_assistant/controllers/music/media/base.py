@@ -2792,11 +2792,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         media_type = media_type or self.media_type
         table_alias = table_alias or self.db_table
+        # without table statistics sqlite picks the unique index, which scans every id of the
+        # media type per item, so the index on the item id is forced
         return (
             f"(SELECT JSON_GROUP_ARRAY(json_array("
             f"{DB_TABLE_EXTERNAL_ID_LOOKUP}.external_id_type, "
             f"{DB_TABLE_EXTERNAL_ID_LOOKUP}.external_id)) "
             f"FROM {DB_TABLE_EXTERNAL_ID_LOOKUP} "
+            f"INDEXED BY {DB_TABLE_EXTERNAL_ID_LOOKUP}_item_id_idx "
             f"WHERE {DB_TABLE_EXTERNAL_ID_LOOKUP}.media_type = '{media_type.value}' "
             f"AND {DB_TABLE_EXTERNAL_ID_LOOKUP}.item_id = {table_alias}.item_id)"
         )

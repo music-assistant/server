@@ -48,6 +48,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_MEDIA_PROGRESS,
@@ -1133,6 +1134,12 @@ async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistan
             # correlated subqueries only sort the few rows of a single item
             top_level = [row["detail"] for row in plan_rows if row["parent"] == 0]
             assert not any("TEMP B-TREE" in detail.upper() for detail in top_level), details
+            # the ids of every listed item are read through the index on the item id
+            id_lookups = [detail for detail in details if DB_TABLE_EXTERNAL_ID_LOOKUP in detail]
+            assert id_lookups, details
+            assert all(
+                f"{DB_TABLE_EXTERNAL_ID_LOOKUP}_item_id_idx" in detail for detail in id_lookups
+            ), details
     finally:
         # restore the real statistics for any tests running after this one
         await database.execute("ANALYZE")
