@@ -151,4 +151,7 @@ def test_openapi_spec(snapshot: SnapshotAssertion) -> None:
 @pytest.mark.parametrize("generate", [generate_commands_json, generate_schemas_json])
 def test_alias_commands_are_left_out(generate: Any) -> None:
     """A command kept for backward compatibility does not show in the documentation."""
-    assert "widgets/get_legacy" not in str(generate(_handlers()))
+    handlers = _handlers()
+    assert "widgets/get_legacy" not in str(generate(handlers))
+    alias = handlers["widgets/get_legacy"]
+    assert not generate({alias.command: alias})
