@@ -1606,12 +1606,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 name=item_id,
             )
         if media_type == MediaType.AUDIO_SOURCE:
-            # AudioSources are not library-backed; resolve them through the owning
-            # provider's get_audio_sources() catalog. Returning the live
+            # AudioSources are not library-backed; resolve them through the sources
+            # the owning provider lists for the calling user. Returning the live
             # MediaItem lets play_media create a queue item the standard way.
             prov = self.mass.get_provider(provider_instance_id_or_domain)
             if isinstance(prov, AudioSourceMixin):
-                for source in await prov.get_audio_sources():
+                for source in await self._get_provider_audio_sources(prov, None):
                     if source.item_id == item_id:
                         return source
             raise MediaNotFoundError(
@@ -3139,12 +3139,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         Player-bound providers yield only the sources bound to the given player;
         without a player scope all their sources bound to a player the calling
-        user may see are yielded. Player-unbound providers always yield all sources.
+        user may see are yielded. Player-unbound providers yield all sources, except
+        the inputs of player devices the calling user may not see.
         """
         # probing with the (possibly empty) scope tells bound and unbound apart:
         # a player-bound provider returns a list for any player id, unbound returns None
         if provider.get_player_audio_sources(player_id or "") is None:
-            return await provider.get_audio_sources()
+            return self._without_hidden_player_inputs(provider, await provider.get_audio_sources())
         # bound sources honor the calling user's player access filter, so a
         # restricted user cannot discover sources of players hidden from them
         current_user = get_current_user()
@@ -3159,6 +3160,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for allowed_player_id in player_filter:
             sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
         return sources
+
+    def _without_hidden_player_inputs(
+        self, provider: AudioSourceMixin, sources: list[AudioSource]
+    ) -> list[AudioSource]:
+        """Return the sources without the inputs of player devices the calling user may not see."""
+        current_user = get_current_user()
+        if player_access_filter(current_user) is None:
+            return sources
+        hidden: set[str] = set()
+        for player in self.mass.players.iter_players(return_disabled=True):
+            if has_player_access(current_user, player.player_id, player):
+                continue
+            # a device's own inputs may be reported for one of its protocols
+            for device_id in {player.player_id, *player.protocol_ids}:
+                hidden.update(x.item_id for x in provider.get_player_input_sources(device_id))
+        return [x for x in sources if x.item_id not in hidden]
 
     async def _link_genres_if_unmapped(self, item: MediaItemType) -> None:
         """Link a library item to the genres it carries, if it has no genre links yet."""

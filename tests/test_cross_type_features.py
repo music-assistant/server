@@ -10,7 +10,11 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from aiohttp import ClientConnectionError
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
-from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     Artist,
     AudioSource,
@@ -816,6 +820,7 @@ class _AudioSourcePlugin(PluginProvider):
         instance_id: str,
         sources: list[AudioSource],
         bound_players: dict[str, list[AudioSource]] | None = None,
+        player_inputs: dict[str, list[AudioSource]] | None = None,
     ) -> None:
         self.manifest = Mock(type=ProviderType.PLUGIN)
         self.manifest.domain = instance_id
@@ -824,6 +829,7 @@ class _AudioSourcePlugin(PluginProvider):
         self._supported_features = {ProviderFeature.AUDIO_SOURCE}
         self._sources = sources
         self._bound_players = bound_players
+        self._player_inputs = player_inputs or {}
 
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return all sources this plugin exposes."""
@@ -834,6 +840,10 @@ class _AudioSourcePlugin(PluginProvider):
         if self._bound_players is None:
             return None
         return self._bound_players.get(player_id, [])
+
+    def get_player_input_sources(self, player_id: str) -> list[AudioSource]:
+        """Return the sources that are inputs of the given player's own device."""
+        return self._player_inputs.get(player_id, [])
 
 
 def _audio_source_browse_controller() -> tuple[MusicController, PluginProvider, PluginProvider]:
@@ -851,6 +861,7 @@ def _audio_source_browse_controller() -> tuple[MusicController, PluginProvider, 
     mass = Mock()
     mass.get_providers_supporting_feature.return_value = []
     mass.players.get_audio_source_providers.return_value = [bound_plugin, unbound_plugin]
+    mass.players.iter_players.return_value = []
     mass.get_provider.side_effect = lambda instance_id: {
         "connect": bound_plugin,
         "vban": unbound_plugin,
@@ -937,6 +948,99 @@ async def test_browse_bound_sources_honor_the_user_player_filter() -> None:
     # scoping to a player outside the filter yields no bound sources
     assert _audio_source_item("connect", "kitchen") not in hidden_scope
     assert _audio_source_item("vban", "input1") in hidden_scope
+
+
+def _line_in_controller() -> tuple[MusicController, PluginProvider]:
+    """Build a browse controller that also lists line-ins of two players and of no player."""
+    controller, bound_plugin, unbound_plugin = _audio_source_browse_controller()
+    kitchen_input = _audio_source_item("sendspin", "kitchen-device")
+    office_input = _audio_source_item("sendspin", "office-device")
+    line_in = _AudioSourcePlugin(
+        "sendspin",
+        [kitchen_input, office_input, _audio_source_item("sendspin", "mixer")],
+        # the kitchen device is known by the id of its protocol, the office one by the player
+        player_inputs={"kitchen-sendspin": [kitchen_input], "office": [office_input]},
+    )
+    mass = cast("Mock", controller.mass)
+    mass.players.get_audio_source_providers.return_value = [bound_plugin, unbound_plugin, line_in]
+    mass.get_provider.side_effect = {
+        "connect": bound_plugin,
+        "vban": unbound_plugin,
+        "sendspin": line_in,
+    }.get
+    mass.players.iter_players.return_value = [
+        Mock(player_id="kitchen", protocol_ids={"kitchen-sendspin"}, attached_protocols={}),
+        Mock(player_id="office", protocol_ids=set(), attached_protocols={}),
+    ]
+    return controller, line_in
+
+
+def _as_user_limited_to(*player_ids: str) -> Any:
+    """Run as a user whose player filter allows only the given players."""
+    return patch(
+        "music_assistant.controllers.music.controller.get_current_user",
+        return_value=Mock(player_filter=list(player_ids)),
+    )
+
+
+async def test_browse_line_in_sources_follow_the_user_player_filter() -> None:
+    """A restricted user only sees the line-ins of player devices their filter allows."""
+    controller, _line_in = _line_in_controller()
+
+    with _as_user_limited_to("office"):
+        unscoped = await controller.browse(path="sendspin://")
+        scoped = await controller.browse(path="sendspin://", player_id="office")
+
+    for result in (unscoped, scoped):
+        assert _audio_source_item("sendspin", "office-device") in result
+        assert _audio_source_item("sendspin", "kitchen-device") not in result
+        # a source of no player stays available to everyone
+        assert _audio_source_item("sendspin", "mixer") in result
+
+
+async def test_browse_line_in_sources_unrestricted_user_sees_all() -> None:
+    """A user without a player filter sees every line-in."""
+    controller, _line_in = _line_in_controller()
+
+    result = await controller.browse(path="sendspin://")
+
+    assert _audio_source_item("sendspin", "office-device") in result
+    assert _audio_source_item("sendspin", "kitchen-device") in result
+    assert _audio_source_item("sendspin", "mixer") in result
+
+
+async def test_audio_source_lookup_follows_the_user_player_filter() -> None:
+    """A restricted user can only look up the sources of players their filter allows."""
+    controller, _line_in = _line_in_controller()
+
+    with _as_user_limited_to("office"):
+        office = await controller.get_item(MediaType.AUDIO_SOURCE, "office-device", "sendspin")
+        mixer = await controller.get_item(MediaType.AUDIO_SOURCE, "mixer", "sendspin")
+        for provider, item_id in (("sendspin", "kitchen-device"), ("connect", "kitchen")):
+            with pytest.raises(MediaNotFoundError):
+                await controller.get_item(MediaType.AUDIO_SOURCE, item_id, provider)
+
+    assert office == _audio_source_item("sendspin", "office-device")
+    assert mixer == _audio_source_item("sendspin", "mixer")
+    assert await controller.get_item(
+        MediaType.AUDIO_SOURCE, "kitchen-device", "sendspin"
+    ) == _audio_source_item("sendspin", "kitchen-device")
+
+
+async def test_audio_source_uri_resolves_only_for_the_user_player_filter() -> None:
+    """Selecting or playing a source by its uri only finds sources the user may use."""
+    music, line_in = _line_in_controller()
+    music.mass.music = music
+    players = PlayerController.__new__(PlayerController)
+    players.mass = music.mass
+    players.logger = Mock()
+
+    with _as_user_limited_to("office"):
+        allowed = await players._resolve_audio_source_uri("sendspin://audio_source/office-device")
+        hidden = await players._resolve_audio_source_uri("sendspin://audio_source/kitchen-device")
+
+    assert allowed == (_audio_source_item("sendspin", "office-device"), line_in)
+    assert hidden is None
 
 
 class _LineInPlayerProvider(AudioSourceMixin, PlayerProvider):
