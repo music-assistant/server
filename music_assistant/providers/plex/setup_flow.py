@@ -117,7 +117,7 @@ async def _discover_servers(session: SetupSession) -> tuple[str | None, int | No
             text="discovering_servers",
             expires_in=15,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort prefill
         # discovery is only a convenience prefill; never let it break the flow
         return None, None
 
