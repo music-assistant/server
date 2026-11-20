@@ -318,17 +318,40 @@ async def test_library_lists_the_authors_of_its_audiobooks(
 
 
 async def test_author_favorites_go_to_deezer(provider: DeezerProvider, gql: AsyncMock) -> None:
-    """An author is the same Deezer artist: adding, removing and a dislike all reach Deezer."""
+    """An author is the same Deezer artist: adding and a dislike reach Deezer."""
     manager = provider.media_manager
 
     added = await manager.library_add(parse_author(provider, "75255", "Conni"))
-    removed = await manager.library_remove("author_75255", MediaType.ARTIST)
     await manager.set_favorite("author_75255", MediaType.ARTIST, False)
 
-    assert (added, removed) == (True, True)
+    assert added is True
     gql.add_artist_to_favorite.assert_awaited_once_with(artist_id="75255")
-    gql.remove_artist_from_favorite.assert_awaited_once_with(artist_id="75255")
     gql.ban_artist_from_recommendation.assert_awaited_once_with(artist_id="75255")
+
+
+@pytest.mark.parametrize(
+    ("is_favorite", "audiobooks", "unfavorited"),
+    [(True, {"1"}, True), (True, set(), False), (False, {"1"}, False)],
+    ids=["favorite author", "favorite music artist", "no favorite"],
+)
+async def test_removing_an_author_unfavorites_only_a_favorite_author(
+    provider: DeezerProvider,
+    gql: AsyncMock,
+    is_favorite: bool,
+    audiobooks: set[str],
+    unfavorited: bool,
+) -> None:
+    """Removing an author unfavorites the Deezer artist only if that favorite lists the author."""
+    artist = _artist_node("75255", "Conni", "1", "2")
+    artist.is_favorite = is_favorite
+    gql.get_artist.return_value = artist
+    gql.check_audiobook_ids.side_effect = lambda ids: set(ids) & audiobooks
+
+    removed = await provider.media_manager.library_remove("author_75255", MediaType.ARTIST)
+
+    assert removed is True
+    expected = [call(artist_id="75255")] if unfavorited else []
+    assert gql.remove_artist_from_favorite.await_args_list == expected
 
 
 @pytest.mark.parametrize(

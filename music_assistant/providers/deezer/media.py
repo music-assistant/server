@@ -904,10 +904,10 @@ class DeezerMediaManager:
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove an item from the provider's library/favorites."""
         if media_type == MediaType.ARTIST:
-            # an author is the same artist on Deezer
-            await self.provider.gql_client.remove_artist_from_favorite(
-                artist_id=prov_item_id.removeprefix(AUTHOR_ARTIST_PREFIX)
-            )
+            artist_id = prov_item_id.removeprefix(AUTHOR_ARTIST_PREFIX)
+            # an author is the same artist on Deezer, unless only an audiobook lists it
+            if artist_id == prov_item_id or await self._is_favorite_author(artist_id):
+                await self.provider.gql_client.remove_artist_from_favorite(artist_id=artist_id)
         elif media_type == MediaType.ALBUM:
             await self.provider.gql_client.remove_album_from_favorite(album_id=prov_item_id)
         elif media_type == MediaType.TRACK:
@@ -1019,6 +1019,15 @@ class DeezerMediaManager:
         release_ids = [edge.node.id for edge in result.albums.edges if edge.node is not None]
         _, authors_without_music = await self._get_authors({artist_id: release_ids})
         return artist_id in authors_without_music
+
+    async def _is_favorite_author(self, artist_id: str) -> bool:
+        """Tell whether a Deezer artist is in the library as author through its favorite."""
+        result = await self.provider.gql_client.get_artist(artist_id=artist_id)
+        if result is None or not result.is_favorite:
+            return False
+        release_ids = [edge.node.id for edge in result.albums.edges if edge.node is not None]
+        authors, _ = await self._get_authors({artist_id: release_ids})
+        return artist_id in authors
 
     async def _get_authors(self, releases: dict[str, list[str]]) -> tuple[set[str], set[str]]:
         """Return the artists with an audiobook among their newest releases, and those without music."""
