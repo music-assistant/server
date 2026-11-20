@@ -246,6 +246,7 @@ async def test_a_saved_config_is_ignored_while_the_provider_goes(case: str) -> N
 async def test_the_provider_listens_for_saved_player_configs(tmp_path: Path) -> None:
     """The listener is subscribed when the provider is set up, and goes when it unloads."""
     provider = _provider()
+    provider.calibration = AsyncMock()
     provider.mass.storage_path = str(tmp_path)
 
     with (

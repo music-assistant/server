@@ -1,5 +1,5 @@
 """
-Calibration session orchestration for the Sendspin Sync plugin.
+Calibration session orchestration of the Sendspin provider.
 
 A session commandeers a set of Sendspin players, groups them onto a hidden
 Sendspin virtual player and starts the calibration track on that anchor's queue
@@ -40,7 +40,7 @@ import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 from math import isfinite
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from mashumaro import DataClassDictMixin
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
@@ -59,7 +59,8 @@ from music_assistant.helpers.shared_playback import (
     SharedPlaybackSession,
     is_remote_session_host,
 )
-from music_assistant.providers.sendspin.constants import MAX_SENDSPIN_STATIC_DELAY
+
+from .constants import MAX_SENDSPIN_STATIC_DELAY
 
 if TYPE_CHECKING:
     import logging
@@ -71,7 +72,8 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
     from music_assistant.models.player_protocol import PlayerProtocol
-    from music_assistant.providers.sendspin.provider import SendspinProvider
+
+    from .provider import SendspinProvider
 
 # Name of the hidden anchor player. It is never shown in the UI, but it does end
 # up in logs and diagnostics, so it names what it is.
@@ -193,17 +195,16 @@ class CalibrationSession:
 
     def __init__(
         self,
-        mass: MusicAssistant,
-        logger: logging.Logger,
-        translation_owner: str,
+        sendspin: SendspinProvider,
         shared_session: SharedPlaybackSession,
         snapshots: dict[str, PlayerSnapshot],
         on_owed_delays_changed: Callable[[Mapping[str, StaticDelaySnapshot]], None] | None = None,
     ) -> None:
         """Initialize the session. Use the :meth:`create` factory instead."""
-        self.mass = mass
-        self.logger = logger
-        self.translation_owner = translation_owner
+        self.sendspin = sendspin
+        self.mass: MusicAssistant = sendspin.mass
+        self.logger: logging.Logger = sendspin.logger
+        self.translation_owner = sendspin.translation_owner
         self._shared_session = shared_session
         self._snapshots = snapshots
         self._on_owed_delays_changed = on_owed_delays_changed
@@ -229,10 +230,7 @@ class CalibrationSession:
     @classmethod
     async def create(
         cls,
-        mass: MusicAssistant,
-        logger: logging.Logger,
-        translation_owner: str,
-        owner_instance_id: str,
+        sendspin: SendspinProvider,
         player_ids: list[str],
         force: bool = False,
         on_owed_delays_changed: Callable[[Mapping[str, StaticDelaySnapshot]], None] | None = None,
@@ -245,11 +243,8 @@ class CalibrationSession:
         static delay to is measured from zero, so what it takes off is put back by
         :meth:`stop`.
 
-        :param mass: MusicAssistant instance.
-        :param logger: Logger of the owning provider.
-        :param translation_owner: Namespace whose strings.json localizes this session's errors.
-        :param owner_instance_id: Instance id of the provider that owns the session;
-            the anchor player is removed when it unloads.
+        :param sendspin: The Sendspin provider that owns the session. The anchor player
+            is removed when it unloads, and its strings.json localizes the errors.
         :param player_ids: The speakers to calibrate, in the order given, as the user
             sees them - not the Sendspin protocols they play through.
         :param force: Take over players that are busy playing the user's own content.
@@ -262,35 +257,36 @@ class CalibrationSession:
         :raises UnsupportedFeaturedException: If a given player does not render over
             Sendspin, or has neither a mute nor a volume control.
         :raises ActionUnavailable: If a player is busy playing and ``force`` was not set,
-            if one could not be silenced, or if the Sendspin provider is not loaded.
+            or if one could not be silenced.
         :return: The commandeered, not yet streaming session.
         """
+        mass = sendspin.mass
+        translation_owner = sendspin.translation_owner
         if not player_ids:
             raise InvalidDataError(
                 "A calibration session needs at least one player",
-                translation_key="no_players",
+                translation_key="calibration_no_players",
                 translation_owner=translation_owner,
             )
         if len(set(player_ids)) != len(player_ids):
             raise InvalidDataError(
                 "Duplicate player ids in the calibration session",
-                translation_key="duplicate_players",
+                translation_key="calibration_duplicate_players",
                 translation_owner=translation_owner,
             )
         players = [_validate_player(mass, player_id, translation_owner) for player_id in player_ids]
         _reject_silent_players(players, translation_owner)
         if not force:
             _reject_busy_players(players, translation_owner)
-        sendspin = _require_sendspin(mass, translation_owner)
         snapshots = {player.player_id: _snapshot(player) for player in players}
         shared_session = await SharedPlaybackSession.create_remote(
             mass,
-            owner_instance_id=owner_instance_id,
+            owner_instance_id=sendspin.instance_id,
             display_name=ANCHOR_DISPLAY_NAME,
         )
         # the session only owns what it managed to group and zero, so a failure halfway
         # restores those players and leaves the untouched ones alone
-        session = cls(mass, logger, translation_owner, shared_session, {}, on_owed_delays_changed)
+        session = cls(sendspin, shared_session, {}, on_owed_delays_changed)
         try:
             for player in players:
                 try:
@@ -400,13 +396,13 @@ class CalibrationSession:
         if self._stopped:
             raise ActionUnavailable(
                 "This calibration session has been stopped",
-                translation_key="session_stopped",
+                translation_key="calibration_session_stopped",
                 translation_owner=self.translation_owner,
             )
         if player_id not in self._snapshots:
             raise InvalidDataError(
                 f"Player {player_id} is not part of this calibration session",
-                translation_key="player_not_in_session",
+                translation_key="calibration_player_not_in_session",
                 translation_args=[player_id],
                 translation_owner=self.translation_owner,
             )
@@ -426,7 +422,7 @@ class CalibrationSession:
             names = ", ".join(audible)
             raise ActionUnavailable(
                 f"Player {names} could not be silenced for calibration",
-                translation_key="player_not_silenced",
+                translation_key="calibration_player_not_silenced",
                 translation_args=[names],
                 translation_owner=self.translation_owner,
             )
@@ -514,7 +510,7 @@ class CalibrationSession:
             return
         try:
             await self.mass.player_queues.stop(self.queue_id)
-        except Exception as err:  # noqa: BLE001 - provider code, may not mask the restore
+        except Exception as err:
             # deliberately broad: this may never mask the restore below, and the queue
             # controller reaches into the player provider, which is free to surface
             # anything its client library raises. CancelledError still propagates.
@@ -602,7 +598,7 @@ class CalibrationSession:
         """
         try:
             await step
-        except Exception as err:  # noqa: BLE001 - provider code, one step may not end the rest
+        except Exception as err:
             # deliberately broad and per step: every step reaches into the player
             # provider, which is free to surface anything its client library raises,
             # and one failure may not strand the rest of the restore.
@@ -669,11 +665,7 @@ class CalibrationSession:
         zeroed = self._zeroed_delays.get(player_id)
         if zeroed is None:
             return
-        # resolved again rather than held from the start of the session: a session runs
-        # for as long as it takes to walk a house, and the Sendspin provider that carries
-        # the delay may have reloaded in the meantime
-        sendspin = _require_sendspin(self.mass, self.translation_owner)
-        await put_static_delay_back(sendspin, zeroed)
+        await put_static_delay_back(self.sendspin, zeroed)
         # dropped only once the value is back, so anything that raised above is still
         # owed and gets named by the sweep at the end of the restore
         del self._zeroed_delays[player_id]
@@ -760,7 +752,7 @@ class CalibrationSession:
             return
         if not snapshot.was_playing or snapshot.synced_to or snapshot.active_group:
             return
-        # the player may have been on another plugin's source rather than its own
+        # the player may have been on a plugin's source rather than its own
         # queue, so resume through the player controller with what it was playing
         await self.mass.players.cmd_resume(
             player.player_id, snapshot.active_source, snapshot.current_media
@@ -773,7 +765,7 @@ class CalibrationSession:
         self._anchor_closed = True
         try:
             await self._shared_session.close()
-        except Exception as err:  # noqa: BLE001 - provider code, a teardown may not raise
+        except Exception as err:
             # deliberately broad: the anchor lives in the Sendspin provider, whose
             # removal path can surface anything; a failure here may not propagate out
             # of a teardown. CancelledError still propagates.
@@ -807,7 +799,7 @@ class CalibrationSession:
         if player.player_id not in self._silenced:
             raise ActionUnavailable(
                 f"Player {player.state.name} could not be silenced for calibration",
-                translation_key="player_not_silenced",
+                translation_key="calibration_player_not_silenced",
                 translation_args=[player.state.name],
                 translation_owner=self.translation_owner,
             )
@@ -846,7 +838,7 @@ class CalibrationSession:
                 await self.mass.players.cmd_volume_mute(player_id, True)
             else:
                 await self.mass.players.cmd_volume_set(player_id, 0)
-        except Exception as err:  # noqa: BLE001 - provider code, may not abort the solo
+        except Exception as err:
             # deliberately broad: a failure to silence one speaker may not abort the
             # solo of the speaker being measured. CancelledError still propagates.
             self.logger.warning("Could not silence player %s: %s", player.state.name, err)
@@ -866,7 +858,7 @@ class CalibrationSession:
             name = self._name_of(player_id)
             raise PlayerUnavailableError(
                 f"Player {name} is not available",
-                translation_key="player_unavailable",
+                translation_key="calibration_player_unavailable",
                 translation_args=[name],
                 translation_owner=self.translation_owner,
             )
@@ -945,7 +937,7 @@ def is_eligible(mass: MusicAssistant, player: Player) -> bool:
     if player.state.type not in CALIBRATABLE_PLAYER_TYPES:
         return False
     if is_remote_session_host(mass, player.player_id):
-        # the hidden anchor of a session (this one or another plugin's) is not a speaker
+        # the hidden anchor of a session (of a calibration or of a plugin) is not a speaker
         return False
     # Deliberately no check on whether the speaker accepts a static delay. Offsets are
     # relative, so dropping a speaker here would not merely deny it a correction - it
@@ -1010,7 +1002,7 @@ def resolve_static_delays(
     if not offsets_ms:
         raise InvalidDataError(
             "No measurements were given to apply",
-            translation_key="no_measurements",
+            translation_key="calibration_no_measurements",
             translation_owner=translation_owner,
         )
     _reject_uncovered_group(offsets_ms, current_delays_ms, translation_owner)
@@ -1033,29 +1025,11 @@ def resolve_static_delays(
             raise InvalidDataError(
                 f"Measurements put player {player_id} {delay_ms} ms behind the earliest speaker, "
                 f"more than the {MAX_SENDSPIN_STATIC_DELAY} ms Sendspin can correct",
-                translation_key="delay_out_of_range",
+                translation_key="calibration_delay_out_of_range",
                 translation_args=[player_id, delay_ms, MAX_SENDSPIN_STATIC_DELAY],
                 translation_owner=translation_owner,
             )
     return delays_ms
-
-
-def _require_sendspin(mass: MusicAssistant, translation_owner: str) -> SendspinProvider:
-    """
-    Return the Sendspin provider a session reads and writes static delays through.
-
-    :param mass: MusicAssistant instance.
-    :param translation_owner: Translation owner for the error raised here.
-    :raises ActionUnavailable: If the Sendspin provider is not loaded.
-    """
-    sendspin = cast("SendspinProvider | None", mass.get_provider(SENDSPIN_DOMAIN))
-    if sendspin is None:
-        raise ActionUnavailable(
-            "The Sendspin provider is not available",
-            translation_key="sendspin_unavailable",
-            translation_owner=translation_owner,
-        )
-    return sendspin
 
 
 def _validate_player(mass: MusicAssistant, player_id: str, translation_owner: str) -> Player:
@@ -1066,14 +1040,14 @@ def _validate_player(mass: MusicAssistant, player_id: str, translation_owner: st
         name = player.state.name if player is not None else player_id
         raise PlayerUnavailableError(
             f"Player {name} is not available",
-            translation_key="player_unavailable",
+            translation_key="calibration_player_unavailable",
             translation_args=[name],
             translation_owner=translation_owner,
         )
     if not is_eligible(mass, player):
         raise UnsupportedFeaturedException(
             f"Player {player.state.name} can not take part in a calibration session",
-            translation_key="player_not_eligible",
+            translation_key="calibration_player_not_eligible",
             translation_args=[player.state.name],
             translation_owner=translation_owner,
         )
@@ -1093,7 +1067,7 @@ def _reject_silent_players(players: list[Player], translation_owner: str) -> Non
     names = ", ".join(p.state.name for p in silent)
     raise ActionUnavailable(
         f"{names} is muted or turned all the way down; turn it up before calibrating",
-        translation_key="player_silent",
+        translation_key="calibration_player_silent",
         translation_args=[names],
         translation_owner=translation_owner,
     )
@@ -1107,7 +1081,7 @@ def _reject_busy_players(players: list[Player], translation_owner: str) -> None:
     names = ", ".join(p.state.name for p in busy)
     raise ActionUnavailable(
         f"{names} is currently playing; stop it first or start the session with force",
-        translation_key="player_busy",
+        translation_key="calibration_player_busy",
         translation_args=[names],
         translation_owner=translation_owner,
     )
@@ -1129,7 +1103,7 @@ def _reject_uncovered_group(
         player_id = min(unknown_ids)
         raise InvalidDataError(
             f"Player {player_id} is not part of this calibration session",
-            translation_key="player_not_in_session",
+            translation_key="calibration_player_not_in_session",
             translation_args=[player_id],
             translation_owner=translation_owner,
         )
@@ -1137,7 +1111,7 @@ def _reject_uncovered_group(
         player_id = min(unmeasured_ids)
         raise InvalidDataError(
             f"Player {player_id} was not measured, so the group can not be equalised",
-            translation_key="player_not_measured",
+            translation_key="calibration_player_not_measured",
             translation_args=[player_id],
             translation_owner=translation_owner,
         )
@@ -1149,7 +1123,7 @@ def _reject_unusable_offsets(offsets_ms: Mapping[str, float], translation_owner:
         if not isfinite(offset_ms):
             raise InvalidDataError(
                 f"Measured offset {offset_ms} for player {player_id} is not a finite number",
-                translation_key="offset_not_finite",
+                translation_key="calibration_offset_not_finite",
                 translation_args=[player_id],
                 translation_owner=translation_owner,
             )

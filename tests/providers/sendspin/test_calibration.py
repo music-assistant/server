@@ -1,9 +1,8 @@
-"""Tests for the Sendspin Sync plugin provider entry point."""
+"""Tests for the calibration track and the calibration commands of the Sendspin provider."""
 
 from __future__ import annotations
 
 import asyncio
-import pathlib
 from contextlib import aclosing
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,66 +13,34 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     PlayerType,
-    ProviderFeature,
     StreamType,
 )
 from music_assistant_models.errors import (
     ActionUnavailable,
     InvalidDataError,
-    MediaNotFoundError,
     PlayerUnavailableError,
     ResourceBusyError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.player import OutputProtocol
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.controllers.streams.audio import AUDIO_SOURCE_CHUNK_SECONDS
 from music_assistant.controllers.webserver.helpers.auth_middleware import ROLE_SCOPES
 from music_assistant.helpers.shared_playback import SENDSPIN_DOMAIN
-from music_assistant.providers import sendspin_sync
-from music_assistant.providers.sendspin_sync import (
-    AUDIO_SOURCE_ID,
+from music_assistant.providers.sendspin.calibration import (
+    CALIBRATION_SOURCE_ID,
     CONF_OWED_STATIC_DELAYS,
     SESSION_TIMEOUT_SECONDS,
-    SUPPORTED_FEATURES,
-    SendspinSyncProvider,
-    setup,
+    SendspinCalibration,
 )
-from music_assistant.providers.sendspin_sync.chirp import (
+from music_assistant.providers.sendspin.calibration_chirp import (
     BIT_DEPTH,
     CHANNELS,
     SAMPLE_RATE,
     build_chirp_period,
 )
-from music_assistant.providers.sendspin_sync.session import CalibrationSession
-
-MANIFEST_PATH = pathlib.Path(sendspin_sync.__file__).parent / "manifest.json"
-
-
-async def test_setup_returns_the_plugin_provider() -> None:
-    """setup() hands Music Assistant a SendspinSyncProvider instance."""
-    manifest = MagicMock()
-    config = MagicMock()
-    # both are load-bearing: Provider.__init__ names its logger after the domain and
-    # passes the log level through str(), which a bare MagicMock turns into a repr
-    # that setLevel rejects
-    manifest.domain = "sendspin_sync"
-    config.get_value = MagicMock(return_value="GLOBAL")
-    provider = await setup(MagicMock(), manifest, config)
-    assert isinstance(provider, SendspinSyncProvider)
-
-
-async def test_manifest_declares_its_sendspin_dependency() -> None:
-    """The shipped manifest couples the plugin to the sendspin provider."""
-    manifest = await ProviderManifest.parse(str(MANIFEST_PATH))
-    assert manifest.domain == "sendspin_sync"
-    assert manifest.depends_on == "sendspin"
-
-
-def test_provider_declares_the_audio_source_feature() -> None:
-    """The calibration track is offered through the AudioSource feature."""
-    assert {ProviderFeature.AUDIO_SOURCE} == SUPPORTED_FEATURES
+from music_assistant.providers.sendspin.calibration_session import CalibrationSession
+from music_assistant.providers.sendspin.provider import SendspinProvider
 
 
 async def test_the_calibration_source_is_only_started_by_a_session() -> None:
@@ -84,8 +51,8 @@ async def test_the_calibration_source_is_only_started_by_a_session() -> None:
     the session and leave its speakers silent until the timeout.
     """
     provider = await _setup_provider()
-    (source,) = await provider.get_audio_sources()
-    assert source.item_id == AUDIO_SOURCE_ID
+    source = provider.audio_source
+    assert source.item_id == CALIBRATION_SOURCE_ID
     assert not source.can_initiate
     assert source.exclusive
     assert not source.can_play_pause
@@ -97,24 +64,17 @@ async def test_the_calibration_source_is_only_started_by_a_session() -> None:
 async def test_stream_details_describe_the_generated_pcm() -> None:
     """The declared format matches the bytes the generator actually emits."""
     provider = await _setup_provider()
-    streamdetails = await provider.get_stream_details(AUDIO_SOURCE_ID, MediaType.AUDIO_SOURCE)
+    streamdetails = provider.get_stream_details()
     assert streamdetails.stream_type == StreamType.CUSTOM
     assert streamdetails.audio_format.sample_rate == SAMPLE_RATE
     assert streamdetails.audio_format.bit_depth == BIT_DEPTH
     assert streamdetails.audio_format.channels == CHANNELS
 
 
-async def test_stream_details_reject_an_unknown_source() -> None:
-    """A request for an item this plugin does not own is a MediaNotFoundError."""
-    provider = await _setup_provider()
-    with pytest.raises(MediaNotFoundError):
-        await provider.get_stream_details("nope", MediaType.AUDIO_SOURCE)
-
-
 async def test_stream_details_claim_nothing() -> None:
     """Fetching stream details leaves ownership untouched, so queue preload is safe."""
     provider = await _setup_provider()
-    await provider.get_stream_details(AUDIO_SOURCE_ID, MediaType.AUDIO_SOURCE)
+    provider.get_stream_details()
     assert provider._in_use_by_queue is None
     assert provider._active_session_id is None
 
@@ -122,7 +82,7 @@ async def test_stream_details_claim_nothing() -> None:
 async def test_audio_stream_repeats_the_period_seamlessly() -> None:
     """Consecutive chunks concatenate back into whole periods, with no gap at the loop."""
     provider = await _setup_provider()
-    await provider.on_source_selected(AUDIO_SOURCE_ID, "player", "queue", "session")
+    provider.on_source_selected("queue", "session")
     period = build_chirp_period()
     streamed = await _take_bytes(provider, len(period) * 2)
     assert streamed == period * 2
@@ -144,10 +104,10 @@ async def test_the_period_slices_into_whole_chunks() -> None:
 async def test_audio_stream_stops_when_another_session_supersedes_it() -> None:
     """A fresh claim on the same queue ends the previous session's generator."""
     provider = await _setup_provider()
-    await provider.on_source_selected(AUDIO_SOURCE_ID, "player", "queue", "session")
-    async with aclosing(provider.get_audio_stream(MagicMock())) as stream:
+    provider.on_source_selected("queue", "session")
+    async with aclosing(provider.get_audio_stream()) as stream:
         assert await anext(stream)
-        await provider.on_source_selected(AUDIO_SOURCE_ID, "player", "queue", "newer-session")
+        provider.on_source_selected("queue", "newer-session")
         with pytest.raises(StopAsyncIteration):
             await anext(stream)
     # the superseded generator must not release the newer session's claim
@@ -158,8 +118,8 @@ async def test_audio_stream_stops_when_another_session_supersedes_it() -> None:
 async def test_teardown_releases_the_source() -> None:
     """The matching unselect frees the source for another queue."""
     provider = await _setup_provider()
-    await provider.on_source_selected(AUDIO_SOURCE_ID, "player", "queue", "session")
-    await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue", "session")
+    provider.on_source_selected("queue", "session")
+    provider.on_source_unselected("queue", "session")
     assert provider._in_use_by_queue is None
     assert provider._active_session_id is None
 
@@ -167,25 +127,65 @@ async def test_teardown_releases_the_source() -> None:
 async def test_a_stale_teardown_leaves_the_live_claim_alone() -> None:
     """An unselect from a superseded same-queue request is ignored."""
     provider = await _setup_provider()
-    await provider.on_source_selected(AUDIO_SOURCE_ID, "player", "queue", "newer-session")
-    await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue", "older-session")
+    provider.on_source_selected("queue", "newer-session")
+    provider.on_source_unselected("queue", "older-session")
     assert provider._in_use_by_queue == "queue"
     assert provider._active_session_id == "newer-session"
 
 
-async def test_source_hooks_ignore_another_plugins_source() -> None:
-    """Lifecycle callbacks for a source this plugin does not own change nothing."""
-    provider = await _setup_provider()
-    await provider.on_source_selected("elsewhere", "player", "queue", "session")
-    assert provider._in_use_by_queue is None
+async def test_the_provider_serves_the_calibration_track_beside_its_line_ins() -> None:
+    """
+    The track is one of the provider's AudioSources, and each call for it reaches calibration.
 
-    await provider.on_source_selected(AUDIO_SOURCE_ID, "player", "queue", "session")
-    await provider.on_source_unselected("elsewhere", "queue", "session")
-    assert provider._in_use_by_queue == "queue"
+    A session plays the track like any other source, so the provider has to list it and
+    answer for it - without handing it to the code that serves the line-ins of clients.
+    """
+    calibration = await _setup_provider()
+    provider = MagicMock()
+    provider.calibration = calibration
+    line_in = MagicMock()
+    provider.sources.get_audio_sources = AsyncMock(return_value=[line_in])
+    provider.sources.on_source_selected = AsyncMock()
+    provider.sources.on_source_unselected = AsyncMock()
+
+    assert await SendspinProvider.get_audio_sources(provider) == [
+        line_in,
+        calibration.audio_source,
+    ]
+    details = await SendspinProvider.get_stream_details(
+        provider, CALIBRATION_SOURCE_ID, MediaType.AUDIO_SOURCE
+    )
+    assert details.item_id == CALIBRATION_SOURCE_ID
+    await SendspinProvider.on_source_selected(
+        provider, CALIBRATION_SOURCE_ID, "player", "queue", "session"
+    )
+    assert calibration._in_use_by_queue == "queue"
+    async with aclosing(SendspinProvider.get_audio_stream(provider, details)) as stream:
+        assert await anext(stream) == calibration._period_chunks[0]
+    await SendspinProvider.on_source_unselected(provider, CALIBRATION_SOURCE_ID, "queue", "session")
+    assert calibration._active_session_id is None
+    provider.sources.on_source_selected.assert_not_awaited()
+    provider.sources.on_source_unselected.assert_not_awaited()
+
+
+async def test_the_provider_still_serves_a_line_in_from_its_sources() -> None:
+    """Every id but the calibration track's is a client's line-in, as before."""
+    provider = MagicMock()
+    provider.calibration = await _setup_provider()
+    line_in_details = MagicMock()
+    provider.sources.get_stream_details = AsyncMock(return_value=line_in_details)
+    provider.sources.on_source_selected = AsyncMock()
+
+    details = await SendspinProvider.get_stream_details(provider, "client", MediaType.AUDIO_SOURCE)
+    await SendspinProvider.on_source_selected(provider, "client", "player", "queue", "session")
+
+    assert details is line_in_details
+    provider.sources.on_source_selected.assert_awaited_once()
+    assert provider.calibration._in_use_by_queue is None
 
 
 async def test_api_commands_are_registered_and_released_on_unload() -> None:
-    """Every session command is registered under the plugin namespace and given back."""
+    """Every session command is registered under the calibration namespace and given back."""
     provider = await _setup_provider()
     unregister_calls: list[str] = []
 
@@ -194,20 +194,20 @@ async def test_api_commands_are_registered_and_released_on_unload() -> None:
 
     mass = _mock_mass(provider)
     mass.register_api_command = MagicMock(side_effect=_register)
-    await provider.loaded_in_mass()
+    await provider.start()
 
     registered = [call.args[0] for call in mass.register_api_command.call_args_list]
     assert registered == [
-        "sendspin_sync/eligible_players",
-        "sendspin_sync/session",
-        "sendspin_sync/start_session",
-        "sendspin_sync/solo_player",
-        "sendspin_sync/keep_alive",
-        "sendspin_sync/apply_measurements",
-        "sendspin_sync/stop_session",
+        "sendspin/calibration/eligible_players",
+        "sendspin/calibration/session",
+        "sendspin/calibration/start_session",
+        "sendspin/calibration/solo_player",
+        "sendspin/calibration/keep_alive",
+        "sendspin/calibration/apply_measurements",
+        "sendspin/calibration/stop_session",
     ]
 
-    await provider.unload()
+    await provider.close()
     assert unregister_calls == registered
 
 
@@ -225,7 +225,7 @@ async def test_session_commands_need_more_than_a_guest_scope() -> None:
     provider = await _setup_provider()
     mass = _mock_mass(provider)
     mass.register_api_command = MagicMock()
-    await provider.loaded_in_mass()
+    await provider.start()
 
     scope_by_command = {
         call.args[0]: call.kwargs["required_scope"]
@@ -233,13 +233,13 @@ async def test_session_commands_need_more_than_a_guest_scope() -> None:
     }
 
     assert scope_by_command == {
-        "sendspin_sync/eligible_players": Scope.PLAYERS_READ,
-        "sendspin_sync/session": Scope.PLAYERS_READ,
-        "sendspin_sync/start_session": Scope.CONFIG_PLAYERS_WRITE,
-        "sendspin_sync/solo_player": Scope.CONFIG_PLAYERS_WRITE,
-        "sendspin_sync/keep_alive": Scope.CONFIG_PLAYERS_WRITE,
-        "sendspin_sync/apply_measurements": Scope.CONFIG_PLAYERS_WRITE,
-        "sendspin_sync/stop_session": Scope.CONFIG_PLAYERS_WRITE,
+        "sendspin/calibration/eligible_players": Scope.PLAYERS_READ,
+        "sendspin/calibration/session": Scope.PLAYERS_READ,
+        "sendspin/calibration/start_session": Scope.CONFIG_PLAYERS_WRITE,
+        "sendspin/calibration/solo_player": Scope.CONFIG_PLAYERS_WRITE,
+        "sendspin/calibration/keep_alive": Scope.CONFIG_PLAYERS_WRITE,
+        "sendspin/calibration/apply_measurements": Scope.CONFIG_PLAYERS_WRITE,
+        "sendspin/calibration/stop_session": Scope.CONFIG_PLAYERS_WRITE,
     }
     assert Scope.CONFIG_PLAYERS_WRITE not in ROLE_SCOPES[UserRole.GUEST]
 
@@ -308,7 +308,7 @@ async def test_a_session_anchor_is_never_offered_as_a_speaker() -> None:
     The hidden virtual player that leads a calibration group is not a speaker to pick.
 
     Eligibility no longer turns on the provider a player belongs to, and a virtual player
-    is typed like a web player, so this is the check that keeps anchors - this plugin's
+    is typed like a web player, so this is the check that keeps anchors - a calibration's
     or another's - out of the list.
     """
     provider = await _setup_provider()
@@ -320,23 +320,14 @@ async def test_a_session_anchor_is_never_offered_as_a_speaker() -> None:
     assert [p.player_id for p in offered] == ["browser"]
 
 
-async def test_nothing_is_offered_without_the_sendspin_provider() -> None:
-    """With Sendspin gone there are no Sendspin speakers to calibrate."""
-    provider = await _setup_provider()
-    _stub_players(provider, {"a": "a"})
-    _mock_mass(provider).get_provider = MagicMock(return_value=None)
-
-    assert await provider.get_eligible_players() == []
-
-
 async def test_unload_stops_a_running_session() -> None:
-    """Unloading the plugin does not leave a user's speakers muted and regrouped."""
+    """Unloading the provider does not leave a user's speakers muted and regrouped."""
     provider = await _setup_provider()
     session = MagicMock()
     session.stop = AsyncMock()
     provider._session = session
 
-    await provider.unload()
+    await provider.close()
 
     session.stop.assert_awaited_once()
     assert await provider.get_session() is None
@@ -380,9 +371,9 @@ async def test_the_stream_ending_externally_stops_the_session() -> None:
     session.queue_id = "anchor"
     session.stopped = False
     provider._session = session
-    await provider.on_source_selected(AUDIO_SOURCE_ID, "player", "anchor", "session")
+    provider.on_source_selected("anchor", "session")
 
-    await provider.on_source_unselected(AUDIO_SOURCE_ID, "anchor", "session")
+    provider.on_source_unselected("anchor", "session")
 
     create_task = _mock_mass(provider).create_task
     create_task.assert_called_once()
@@ -397,9 +388,9 @@ async def test_another_queues_teardown_leaves_the_session_alone() -> None:
     session.queue_id = "anchor"
     session.stopped = False
     provider._session = session
-    await provider.on_source_selected(AUDIO_SOURCE_ID, "player", "elsewhere", "session")
+    provider.on_source_selected("elsewhere", "session")
 
-    await provider.on_source_unselected(AUDIO_SOURCE_ID, "elsewhere", "session")
+    provider.on_source_unselected("elsewhere", "session")
 
     _mock_mass(provider).create_task.assert_not_called()
 
@@ -411,9 +402,9 @@ async def test_a_stopped_session_is_not_torn_down_again() -> None:
     session.queue_id = "anchor"
     session.stopped = True
     provider._session = session
-    await provider.on_source_selected(AUDIO_SOURCE_ID, "player", "anchor", "session")
+    provider.on_source_selected("anchor", "session")
 
-    await provider.on_source_unselected(AUDIO_SOURCE_ID, "anchor", "session")
+    provider.on_source_unselected("anchor", "session")
 
     _mock_mass(provider).create_task.assert_not_called()
 
@@ -535,7 +526,7 @@ async def test_a_start_that_is_cancelled_leaves_its_session_for_the_unload_to_fi
         pytest.raises(asyncio.CancelledError),
     ):
         await provider.start_session(["player"])
-    await provider.unload()
+    await provider.close()
 
     assert session.stop.await_count == 2
 
@@ -545,7 +536,7 @@ async def test_the_delays_a_session_takes_off_are_stored_until_they_are_back() -
     A server that goes down mid-session may not come back with speakers at zero.
 
     The zero is stored with each speaker and the delay it replaced is only in memory, so
-    the plugin stores what it owes at once and clears it when the session has put it back.
+    the provider stores what it owes at once and clears it when the session has put it back.
     """
     provider = await _setup_provider()
     _stub_sendspin(provider, {"a": 250, "b": 0})
@@ -553,7 +544,7 @@ async def test_the_delays_a_session_takes_off_are_stored_until_they_are_back() -
 
     await _run_real_session(provider, ["a", "b"])
     assert stored.call_args.args == (
-        provider.instance_id,
+        provider.provider.instance_id,
         CONF_OWED_STATIC_DELAYS,
         '[["a", 250, null]]',
     )
@@ -571,14 +562,14 @@ async def test_delays_left_off_by_a_server_that_went_down_are_put_back_on_load()
     config = _mock_mass(provider).config
     config.get_raw_provider_config_value = MagicMock(return_value='[["a", 250, "a_airplay"]]')
 
-    await provider.loaded_in_mass()
+    await provider.start()
 
     sendspin.set_player_static_delay.assert_awaited_once_with("a", 250, carrier_id="a_airplay")
     assert config.set_raw_provider_config_value.call_args.args[2] == "[]"
 
 
 async def test_a_speaker_that_is_not_back_yet_gets_its_delay_in_what_is_stored_of_it() -> None:
-    """After a restart the plugin loads before most speakers have connected."""
+    """After a restart the provider loads before any speaker has connected."""
     provider = await _setup_provider()
     sendspin = _stub_sendspin(provider, {})
     sendspin.set_player_static_delay = AsyncMock(side_effect=PlayerUnavailableError("a"))
@@ -586,7 +577,7 @@ async def test_a_speaker_that_is_not_back_yet_gets_its_delay_in_what_is_stored_o
         return_value='[["a", 250, null]]'
     )
 
-    await provider.loaded_in_mass()
+    await provider.start()
 
     sendspin.store_player_static_delay.assert_called_once_with("a", 250, carrier_id=None)
 
@@ -992,16 +983,6 @@ async def test_a_member_whose_output_was_handed_over_is_refused() -> None:
     sendspin.set_player_static_delay.assert_not_awaited()
 
 
-async def test_measurements_are_refused_when_sendspin_is_gone() -> None:
-    """Without the Sendspin provider there is nothing to apply the correction through."""
-    provider = await _setup_provider()
-    await _run_session(provider, ["a"])
-    _mock_mass(provider).get_provider = MagicMock(return_value=None)
-
-    with pytest.raises(ActionUnavailable):
-        await provider.apply_measurements({"a": 0.0})
-
-
 async def test_a_full_cycle_leaves_the_measured_speakers_on_their_correction() -> None:
     """
     Start, measure, apply and stop: the speakers end on the delays the run computed.
@@ -1105,14 +1086,14 @@ async def test_a_timed_out_session_gives_the_delays_back() -> None:
     assert await provider.get_session() is None
 
 
-async def test_unloading_the_plugin_gives_the_delays_back() -> None:
-    """Nor may a reload of the plugin itself."""
+async def test_unloading_the_provider_gives_the_delays_back() -> None:
+    """Nor may a reload of the provider itself."""
     provider = await _setup_provider()
     delays_ms = {"a": 250}
     _stub_sendspin(provider, delays_ms)
     await _run_real_session(provider, ["a"])
 
-    await provider.unload()
+    await provider.close()
 
     assert delays_ms == {"a": 250}
 
@@ -1130,7 +1111,7 @@ def _stub_session(player_ids: list[str] | None = None) -> MagicMock:
     return session
 
 
-async def _run_session(provider: SendspinSyncProvider, player_ids: list[str]) -> MagicMock:
+async def _run_session(provider: SendspinCalibration, player_ids: list[str]) -> MagicMock:
     """Put a stub session over the given players in place on the provider."""
     session = _stub_session(player_ids)
     with patch.object(CalibrationSession, "create", AsyncMock(return_value=session)):
@@ -1138,14 +1119,14 @@ async def _run_session(provider: SendspinSyncProvider, player_ids: list[str]) ->
     return session
 
 
-async def _run_real_session(provider: SendspinSyncProvider, player_ids: list[str]) -> None:
+async def _run_real_session(provider: SendspinCalibration, player_ids: list[str]) -> None:
     """
     Start an actual calibration session over the given players, on a stubbed anchor.
 
     Unlike :func:`_run_session` this drives the real session, so the static delays it
     zeroes on the way in and puts back at teardown are exercised too.
 
-    :param provider: The plugin provider to start the session on.
+    :param provider: The calibration to start the session on.
     :param player_ids: The players to calibrate. Register them first with
         :func:`_stub_sendspin`.
     """
@@ -1158,7 +1139,7 @@ async def _run_real_session(provider: SendspinSyncProvider, player_ids: list[str
     mass.player_queues.stop = AsyncMock()
     mass.player_queues.get = MagicMock(return_value=None)
     with patch(
-        "music_assistant.providers.sendspin_sync.session.SharedPlaybackSession"
+        "music_assistant.providers.sendspin.calibration_session.SharedPlaybackSession"
     ) as shared_cls:
         shared_cls.create_remote = AsyncMock(return_value=_stub_anchor())
         await provider.start_session(player_ids)
@@ -1176,7 +1157,7 @@ def _stub_anchor() -> MagicMock:
 
 
 def _stub_sendspin(
-    provider: SendspinSyncProvider,
+    provider: SendspinCalibration,
     current_delays_ms: dict[str, int],
     non_adjustable: set[str] | None = None,
     session_members: dict[str, str] | None = None,
@@ -1190,7 +1171,7 @@ def _stub_sendspin(
     Also registers the session's players, since an apply resolves each member to the
     Sendspin player its delay is written to.
 
-    :param provider: The plugin provider to install the stub behind.
+    :param provider: The calibration whose provider is stubbed.
     :param current_delays_ms: The static delay each *Sendspin* player starts out carrying.
     :param non_adjustable: Sendspin players whose client refuses a static delay. Reading
         one raises, exactly as the real provider does.
@@ -1209,7 +1190,7 @@ def _stub_sendspin(
             raise UnsupportedFeaturedException(player_id)
         return current_delays_ms[player_id]
 
-    sendspin = MagicMock()
+    sendspin = cast("MagicMock", provider.provider)
     sendspin.is_virtual_player = MagicMock(return_value=False)
     sendspin.supports_player_static_delay = MagicMock(side_effect=lambda p: p not in refused)
     sendspin.get_player_static_delay = MagicMock(side_effect=_get)
@@ -1223,13 +1204,13 @@ def _stub_sendspin(
     return sendspin
 
 
-def _stub_players(provider: SendspinSyncProvider, session_members: dict[str, str]) -> None:
+def _stub_players(provider: SendspinCalibration, session_members: dict[str, str]) -> None:
     """
     Register visible players that all_players offers and a session can resolve.
 
     Each is eligible and resolves to the Sendspin player its static delay is written to.
 
-    :param provider: The plugin provider whose stub MusicAssistant should hold them.
+    :param provider: The calibration whose stub MusicAssistant should hold them.
     :param session_members: Session member id -> the Sendspin player behind it. A member
         mapped to itself is a web player; any other mapping is a physical speaker, whose
         visible player wraps a hidden Sendspin client of that id.
@@ -1279,29 +1260,27 @@ def _applied_delays(sendspin: MagicMock) -> dict[str, int]:
     return {call.args[0]: call.args[1] for call in sendspin.set_player_static_delay.await_args_list}
 
 
-async def _setup_provider() -> SendspinSyncProvider:
-    """Return a fully initialized provider backed by mocked MA plumbing."""
-    manifest = MagicMock()
-    manifest.domain = "sendspin_sync"
-    config = MagicMock()
-    config.get_value = MagicMock(return_value="GLOBAL")
-    config.name = "Sendspin Sync"
-    config.instance_id = "sendspin_sync--test"
-    provider = await setup(MagicMock(), manifest, config)
-    assert isinstance(provider, SendspinSyncProvider)
-    await provider.handle_async_init()
+async def _setup_provider() -> SendspinCalibration:
+    """Return the calibration of a stub Sendspin provider, with its track generated."""
+    sendspin = MagicMock()
+    sendspin.mass = MagicMock()
+    sendspin.instance_id = "sendspin"
+    sendspin.domain = "sendspin"
+    sendspin.translation_owner = "provider.sendspin"
+    provider = SendspinCalibration(sendspin)
+    await provider.setup()
     return provider
 
 
-def _mock_mass(provider: SendspinSyncProvider) -> MagicMock:
+def _mock_mass(provider: SendspinCalibration) -> MagicMock:
     """Return the stub MusicAssistant the given provider was set up with."""
     return cast("MagicMock", provider.mass)
 
 
-async def _take_bytes(provider: SendspinSyncProvider, count: int) -> bytes:
+async def _take_bytes(provider: SendspinCalibration, count: int) -> bytes:
     """Return the first ``count`` bytes the provider's audio stream yields."""
     collected = bytearray()
-    async with aclosing(provider.get_audio_stream(MagicMock())) as stream:
+    async with aclosing(provider.get_audio_stream()) as stream:
         async for chunk in stream:
             collected += chunk
             if len(collected) >= count:

@@ -1,16 +1,16 @@
-# Sendspin Sync Plugin
+# Sendspin speaker calibration
 
-An experimental plugin provider that depends on the Sendspin player provider.
-
-`manifest.json` declares `"depends_on": "sendspin"`, so Music Assistant defers
-setup until the Sendspin player provider is loaded. Sendspin is a builtin
-provider that cannot be disabled, so in practice it is always present.
+An experimental part of the Sendspin provider: it measures how far apart a set of
+Sendspin speakers play, from a phone walked past them, and sets their static
+delays to match. `SendspinCalibration` in `calibration.py` holds it, the same way
+`SendspinSources` holds the line-ins.
 
 ## The calibration track
 
-The plugin exposes a single AudioSource under "Live Inputs": a calibration track
-that plays through the regular playback path — same codec, resampler and DSP as
-music — so latency measured from it transfers to real playback.
+The provider offers one more AudioSource beside the line-ins of its clients: a
+calibration track that plays through the regular playback path — same codec,
+resampler and DSP as music — so latency measured from it transfers to real
+playback. It is offered to no browse view or source list: only a session starts it.
 
 The track is a chirp train at a fixed period. Riding one uninterrupted stream,
 that train is a metronome running on the server clock, which lets a listener
@@ -26,7 +26,7 @@ server's absolute time. Two properties therefore matter:
   against a sweep compresses room reverberation into a sharp peak, where onset
   detection on noise degrades badly in a reverberant room.
 
-`chirp.py` holds the signal and its specification: a 60 ms Hann-windowed
+`calibration_chirp.py` holds the signal and its specification: a 60 ms Hann-windowed
 logarithmic sweep from 500 Hz to 8000 Hz at -6 dBFS, then a -60 dBFS noise bed
 for the rest of the period, as 48 kHz 16-bit stereo PCM.
 
@@ -37,13 +37,13 @@ each of them in turn. It is driven through the API:
 
 | Command | Scope | Purpose |
 | --- | --- | --- |
-| `sendspin_sync/eligible_players` | `players.read` | The speakers a session can run against, whether MA can write each one's delay, and whether it is silent |
-| `sendspin_sync/session` | `players.read` | State of the running session, or `null` |
-| `sendspin_sync/start_session` | `config.players.write` | Take the given speakers over and start the track |
-| `sendspin_sync/solo_player` | `config.players.write` | Make one member of the session audible |
-| `sendspin_sync/keep_alive` | `config.players.write` | Say the client driving the session is still there |
-| `sendspin_sync/apply_measurements` | `config.players.write` | Turn the measured offsets into static delays and apply the ones MA can write |
-| `sendspin_sync/stop_session` | `config.players.write` | End the session and restore every speaker |
+| `sendspin/calibration/eligible_players` | `players.read` | The speakers a session can run against, whether MA can write each one's delay, and whether it is silent |
+| `sendspin/calibration/session` | `players.read` | State of the running session, or `null` |
+| `sendspin/calibration/start_session` | `config.players.write` | Take the given speakers over and start the track |
+| `sendspin/calibration/solo_player` | `config.players.write` | Make one member of the session audible |
+| `sendspin/calibration/keep_alive` | `config.players.write` | Say the client driving the session is still there |
+| `sendspin/calibration/apply_measurements` | `config.players.write` | Turn the measured offsets into static delays and apply the ones MA can write |
+| `sendspin/calibration/stop_session` | `config.players.write` | End the session and restore every speaker |
 
 The speakers are grouped onto a **hidden Sendspin virtual player** that owns the
 queue the track plays on. That anchor never renders audio itself, which buys two
@@ -97,7 +97,7 @@ and `apply_measurements` push it back as well.
 
 A stop can itself be cut short: a server going down cancels the task it runs in.
 The session keeps track of what it has already put back, so the stop that follows
-— the plugin's unload — finishes it instead of finding it done.
+— the provider's unload — finishes it instead of finding it done.
 
 ### Measuring from zero
 
@@ -144,8 +144,8 @@ zero:
   registers again. Nothing is stored of a browser tab or an app that has gone, and
   that one lost the zero along with everything else.
 - **The server went down.** The zero is stored with the speaker, and the delay it
-  replaced would only be in memory. So the plugin stores every delay a session
-  still owes among its own values, before the zero is written and at once rather
+  replaced would only be in memory. So every delay a session still owes is
+  stored among the values of the provider, before the zero is written and at once rather
   than with the next save of the config, and puts them back when it loads.
 
 A delay that still could not be put back is logged by value for the user to set by
@@ -341,14 +341,11 @@ one for the user to go and adjust on a device that is not there.
 ## File Structure
 
 ```
-sendspin_sync/
-├── __init__.py       SendspinSyncProvider + setup() + the session API commands
-├── chirp.py          Calibration signal generation
-├── session.py        Calibration session orchestration (grouping, isolation, restore)
-│                     plus the offset-to-static-delay normalisation
-├── manifest.json     Experimental plugin manifest
-├── strings.json      Translatable manifest description + session error messages
-├── icon.svg          Provider icon (light)
-├── icon_dark.svg     Provider icon (dark)
-└── README.md         This file
+sendspin/
+├── calibration.py           SendspinCalibration: the track and the session API commands
+├── calibration_chirp.py     Calibration signal generation
+├── calibration_session.py   Calibration session orchestration (grouping, isolation,
+│                            restore) plus the offset-to-static-delay normalisation
+├── strings.json             The session error messages, as calibration_*
+└── CALIBRATION.md           This file
 ```

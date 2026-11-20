@@ -1,4 +1,4 @@
-"""Tests for the Sendspin Sync calibration session orchestration."""
+"""Tests for the Sendspin calibration session orchestration."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.player import OutputProtocol
 
-from music_assistant.providers.sendspin_sync.session import (
+from music_assistant.providers.sendspin.calibration_session import (
     CalibrationSession,
     CalibrationSessionState,
     is_eligible,
@@ -30,7 +30,7 @@ from music_assistant.providers.sendspin_sync.session import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
-    from music_assistant.providers.sendspin_sync.session import StaticDelaySnapshot
+    from music_assistant.providers.sendspin.calibration_session import StaticDelaySnapshot
 
 ANCHOR_ID = "virtual_calibration"
 
@@ -51,12 +51,10 @@ async def test_the_track_does_not_start_until_begin_is_called() -> None:
     mass = _make_mass(_make_player("a"))
 
     with patch(
-        "music_assistant.providers.sendspin_sync.session.SharedPlaybackSession"
+        "music_assistant.providers.sendspin.calibration_session.SharedPlaybackSession"
     ) as shared_cls:
         shared_cls.create_remote = AsyncMock(return_value=_make_shared_session())
-        session = await CalibrationSession.create(
-            mass, MagicMock(), "provider.sendspin_sync", "sendspin_sync--test", ["a"]
-        )
+        session = await CalibrationSession.create(_sendspin(mass), ["a"])
 
     mass.player_queues.play_media.assert_not_awaited()
     await session.begin(MagicMock())
@@ -106,12 +104,10 @@ async def test_every_member_is_silenced_before_the_stream_starts() -> None:
     mass = _make_mass(_make_player("a"), _make_player("b"))
 
     with patch(
-        "music_assistant.providers.sendspin_sync.session.SharedPlaybackSession"
+        "music_assistant.providers.sendspin.calibration_session.SharedPlaybackSession"
     ) as shared_cls:
         shared_cls.create_remote = AsyncMock(return_value=_make_shared_session())
-        await CalibrationSession.create(
-            mass, MagicMock(), "provider.sendspin_sync", "sendspin_sync--test", ["a", "b"]
-        )
+        await CalibrationSession.create(_sendspin(mass), ["a", "b"])
 
     assert _silenced(mass) == {"a", "b"}
     mass.player_queues.play_media.assert_not_awaited()
@@ -561,12 +557,10 @@ async def test_the_delays_are_zeroed_before_the_stream_starts() -> None:
     mass = _make_mass(_make_player("a"), static_delays_ms={"a": 250})
 
     with patch(
-        "music_assistant.providers.sendspin_sync.session.SharedPlaybackSession"
+        "music_assistant.providers.sendspin.calibration_session.SharedPlaybackSession"
     ) as shared_cls:
         shared_cls.create_remote = AsyncMock(return_value=_make_shared_session())
-        await CalibrationSession.create(
-            mass, MagicMock(), "provider.sendspin_sync", "sendspin_sync--test", ["a"]
-        )
+        await CalibrationSession.create(_sendspin(mass), ["a"])
 
     assert _static_delays(mass) == {"a": 0}
     mass.player_queues.play_media.assert_not_awaited()
@@ -695,7 +689,7 @@ async def test_a_delay_that_could_not_go_back_at_all_is_named() -> None:
     mass = _make_mass(_make_player("a"), static_delays_ms={"a": 250})
     session = await _start(mass, ["a"], logger=logger)
     delays_ms = _static_delays(mass)
-    mass.get_provider = MagicMock(return_value=None)
+    _sendspin(mass).set_player_static_delay = AsyncMock(side_effect=RuntimeError("refused"))
 
     await session.stop()
 
@@ -956,17 +950,6 @@ async def test_a_failure_while_grouping_puts_back_what_it_had_already_zeroed() -
         await _start(mass, ["a", "b"], shared=shared)
 
     assert _static_delays(mass) == {"a": 250, "b": 20}
-
-
-async def test_a_session_refuses_to_start_without_the_sendspin_provider() -> None:
-    """Without Sendspin there is nothing to take a delay off, nor to give one back."""
-    mass = _make_mass(_make_player("a"))
-    mass.get_provider = MagicMock(return_value=None)
-
-    with pytest.raises(ActionUnavailable, match="Sendspin provider"):
-        await _start(mass, ["a"])
-
-    mass.player_queues.play_media.assert_not_awaited()
 
 
 async def test_a_solo_that_cannot_make_its_target_audible_fails() -> None:
@@ -1235,14 +1218,14 @@ async def _start(
     :param on_owed_delays_changed: Told which static delays the session still owes.
     """
     with patch(
-        "music_assistant.providers.sendspin_sync.session.SharedPlaybackSession"
+        "music_assistant.providers.sendspin.calibration_session.SharedPlaybackSession"
     ) as shared_cls:
         shared_cls.create_remote = AsyncMock(return_value=shared or _make_shared_session())
+        sendspin = _sendspin(mass)
+        if logger is not None:
+            sendspin.logger = logger
         session = await CalibrationSession.create(
-            mass,
-            logger or MagicMock(),
-            "provider.sendspin_sync",
-            "sendspin_sync--test",
+            sendspin,
             player_ids,
             force=force,
             on_owed_delays_changed=on_owed_delays_changed,
@@ -1479,6 +1462,7 @@ def _make_mass(
     sendspin.get_player_static_delay_carrier = MagicMock(return_value=None)
     sendspin.set_player_static_delay = AsyncMock(side_effect=_set_delay)
     sendspin.static_delays_ms = delays_ms
+    sendspin.mass = mass
     mass.get_provider = MagicMock(return_value=sendspin)
     return mass
 

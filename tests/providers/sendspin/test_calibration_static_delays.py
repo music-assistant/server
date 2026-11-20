@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.providers.sendspin.calibration_session import resolve_static_delays
 from music_assistant.providers.sendspin.constants import MAX_SENDSPIN_STATIC_DELAY
-from music_assistant.providers.sendspin_sync.session import resolve_static_delays
 
-OWNER = "provider.sendspin_sync"
+OWNER = "provider.sendspin"
 
 
 def test_the_earliest_speaker_becomes_the_reference() -> None:
@@ -122,7 +122,7 @@ def test_a_measurement_that_is_not_a_number_raises(bad_offset: float) -> None:
     with pytest.raises(InvalidDataError) as raised:
         resolve_static_delays({"good": 0.0, "bad": bad_offset}, {"good": 0, "bad": 0}, OWNER)
 
-    assert raised.value.translation_key == "offset_not_finite"
+    assert raised.value.translation_key == "calibration_offset_not_finite"
     assert raised.value.translation_args == ["bad"]
 
 
@@ -133,7 +133,7 @@ def test_a_measurement_beyond_the_supported_range_is_refused_not_clamped() -> No
     with pytest.raises(InvalidDataError) as raised:
         resolve_static_delays({"a": 0.0, "absurd": beyond_range}, {"a": 0, "absurd": 0}, OWNER)
 
-    assert raised.value.translation_key == "delay_out_of_range"
+    assert raised.value.translation_key == "calibration_delay_out_of_range"
     # the message has to name the player and the value for the user to act on it
     assert raised.value.translation_args == ["absurd", int(beyond_range), MAX_SENDSPIN_STATIC_DELAY]
 
@@ -154,7 +154,7 @@ def test_an_existing_delay_counts_towards_the_range() -> None:
             {"a": 0.0, "b": 10.0}, {"a": 0, "b": MAX_SENDSPIN_STATIC_DELAY}, OWNER
         )
 
-    assert raised.value.translation_key == "delay_out_of_range"
+    assert raised.value.translation_key == "calibration_delay_out_of_range"
 
 
 def test_a_player_outside_the_group_raises() -> None:
@@ -162,7 +162,7 @@ def test_a_player_outside_the_group_raises() -> None:
     with pytest.raises(InvalidDataError) as raised:
         resolve_static_delays({"a": 0.0, "stranger": 5.0}, {"a": 0, "b": 0}, OWNER)
 
-    assert raised.value.translation_key == "player_not_in_session"
+    assert raised.value.translation_key == "calibration_player_not_in_session"
     assert raised.value.translation_args == ["stranger"]
 
 
@@ -176,7 +176,7 @@ def test_an_unmeasured_group_member_raises() -> None:
     with pytest.raises(InvalidDataError) as raised:
         resolve_static_delays({"a": 0.0}, {"a": 0, "forgotten": 0}, OWNER)
 
-    assert raised.value.translation_key == "player_not_measured"
+    assert raised.value.translation_key == "calibration_player_not_measured"
     assert raised.value.translation_args == ["forgotten"]
 
 
@@ -185,10 +185,10 @@ def test_no_measurements_at_all_raises() -> None:
     with pytest.raises(InvalidDataError) as raised:
         resolve_static_delays({}, {"a": 0}, OWNER)
 
-    assert raised.value.translation_key == "no_measurements"
+    assert raised.value.translation_key == "calibration_no_measurements"
 
 
-def test_the_errors_carry_the_plugin_as_their_translation_owner() -> None:
+def test_the_errors_carry_the_provider_as_their_translation_owner() -> None:
     """The messages resolve against this provider's own strings, not just common."""
     with pytest.raises(InvalidDataError) as raised:
         resolve_static_delays({}, {"a": 0}, OWNER)

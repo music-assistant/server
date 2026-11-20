@@ -1,16 +1,15 @@
 """
-Sendspin Sync plugin provider.
+Speaker calibration of the Sendspin provider.
 
-Declares a dependency on the Sendspin player provider, so it only loads once
-Sendspin is up. It exposes a single AudioSource - the calibration chirp track -
-which plays through the regular playback path so the latency measured from it
-matches the latency of real music on the same player.
+Offers a single AudioSource - the calibration chirp track - which plays through
+the regular playback path so the latency measured from it matches the latency of
+real music on the same player.
 
 On top of that source it orchestrates calibration sessions: a set of Sendspin
 speakers is grouped onto a hidden anchor, the chirp train runs once for the whole
 session, and the API commands registered here walk the speakers one at a time
-while a phone-side probe measures each arrival. See session.py for the session
-itself.
+while a phone-side probe measures each arrival. See calibration_session.py for
+the session itself.
 """
 
 from __future__ import annotations
@@ -18,18 +17,12 @@ from __future__ import annotations
 import asyncio
 import json
 from itertools import cycle
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import (
-    ContentType,
-    MediaType,
-    ProviderFeature,
-    StreamType,
-)
+from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     ActionUnavailable,
-    MediaNotFoundError,
     PlayerUnavailableError,
     ResourceBusyError,
 )
@@ -37,13 +30,10 @@ from music_assistant_models.media_items import AudioSource, ProviderMapping
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.controllers.streams.audio import AUDIO_SOURCE_CHUNK_SECONDS
-from music_assistant.helpers.shared_playback import SENDSPIN_DOMAIN
-from music_assistant.models.plugin import PluginProvider
 
-from .chirp import BIT_DEPTH, CHANNELS, SAMPLE_RATE, build_chirp_period
-from .session import (
+from .calibration_chirp import BIT_DEPTH, CHANNELS, SAMPLE_RATE, build_chirp_period
+from .calibration_session import (
     CalibrationPlayer,
     CalibrationResult,
     CalibrationSession,
@@ -58,21 +48,20 @@ from .session import (
 )
 
 if TYPE_CHECKING:
+    import logging
     from collections.abc import AsyncGenerator, Callable, Mapping
 
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-    from music_assistant_models.provider import ProviderManifest
-
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models import ProviderInstanceType
-    from music_assistant.providers.sendspin.provider import SendspinProvider
+
+    from .provider import SendspinProvider
 
 
-SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
-
-# stable id of the single AudioSource this provider exposes; combined with the
-# provider instance_id it forms the persistent browse/play uri
-AUDIO_SOURCE_ID = "calibration"
+# Id of the calibration track among the AudioSources of the Sendspin provider. Every
+# other one is the line-in of a client and carries that client's id, which this can
+# not be mistaken for.
+CALIBRATION_SOURCE_ID = "__calibration__"
+# what the track is called where a queue shows what it plays
+CALIBRATION_SOURCE_NAME = "Sendspin Sync calibration"
 
 # A session holds a user's speakers muted and regrouped, so it may never outlive
 # the phone that is driving it. A client says it is still there with keep_alive, a
@@ -81,20 +70,13 @@ AUDIO_SOURCE_ID = "calibration"
 SESSION_TIMEOUT_SECONDS = 180
 
 # Key of the static delays a session took off and has not put back yet, among the
-# stored values of this provider. They are only held in memory otherwise, and the
-# zero in their place is stored with each speaker.
-CONF_OWED_STATIC_DELAYS = "owed_static_delays"
+# stored values of the Sendspin provider. They are only held in memory otherwise, and
+# the zero in their place is stored with each speaker.
+CONF_OWED_STATIC_DELAYS = "calibration_owed_static_delays"
 
 
-async def setup(
-    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
-) -> ProviderInstanceType:
-    """Initialize provider(instance) with given configuration."""
-    return SendspinSyncProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-class SendspinSyncProvider(PluginProvider):
-    """Sendspin Sync plugin provider for Music Assistant."""
+class SendspinCalibration:
+    """The calibration track and the calibration sessions of the Sendspin provider."""
 
     # tracks which queue currently owns the exclusive AudioSource. Set in
     # on_source_selected (NOT in get_stream_details - that path also runs from
@@ -109,25 +91,34 @@ class SendspinSyncProvider(PluginProvider):
     _audio_source: AudioSource
     _period_chunks: list[bytes]
 
-    def __init__(
-        self,
-        mass: MusicAssistant,
-        manifest: ProviderManifest,
-        config: ProviderConfig,
-        supported_features: set[ProviderFeature] | None = None,
-    ) -> None:
-        """Initialize the Sendspin Sync plugin."""
-        super().__init__(mass, manifest, config, supported_features)
+    def __init__(self, provider: SendspinProvider) -> None:
+        """
+        Initialize the calibration of the given provider.
+
+        :param provider: The Sendspin provider the speakers are calibrated through.
+        """
+        self.provider = provider
         self._unregister_handles: list[Callable[[], None]] = []
         self._session: CalibrationSession | None = None
         self._session_lock = asyncio.Lock()
 
-    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
-        """Return the (options) config entries for this provider instance."""
-        return (CONF_ENTRY_WARN_PREVIEW,)
+    @property
+    def mass(self) -> MusicAssistant:
+        """Return the MusicAssistant instance of the provider."""
+        return self.provider.mass
 
-    async def handle_async_init(self) -> None:
-        """Handle async initialization of the provider."""
+    @property
+    def logger(self) -> logging.Logger:
+        """Return the logger of the provider."""
+        return self.provider.logger
+
+    @property
+    def audio_source(self) -> AudioSource:
+        """Return the calibration track, as the AudioSource a session plays."""
+        return self._audio_source
+
+    async def setup(self) -> None:
+        """Generate the calibration track, as the provider initializes."""
         self._audio_format = AudioFormat(
             content_type=ContentType.PCM_S16LE,
             sample_rate=SAMPLE_RATE,
@@ -135,14 +126,14 @@ class SendspinSyncProvider(PluginProvider):
             channels=CHANNELS,
         )
         self._audio_source = AudioSource(
-            item_id=AUDIO_SOURCE_ID,
-            provider=self.instance_id,
-            name=self.name,
+            item_id=CALIBRATION_SOURCE_ID,
+            provider=self.provider.instance_id,
+            name=CALIBRATION_SOURCE_NAME,
             provider_mappings={
                 ProviderMapping(
-                    item_id=AUDIO_SOURCE_ID,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
+                    item_id=CALIBRATION_SOURCE_ID,
+                    provider_domain=self.provider.domain,
+                    provider_instance=self.provider.instance_id,
                     audio_format=self._audio_format,
                 )
             },
@@ -169,13 +160,17 @@ class SendspinSyncProvider(PluginProvider):
             period[offset : offset + chunk_size] for offset in range(0, len(period), chunk_size)
         ]
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
+    async def start(self) -> None:
+        """Put back what an earlier run still owes and offer the commands, as the provider loads."""
         # ahead of the commands, so no session can start over delays still owed
         await self._put_owed_static_delays_back()
         api_handlers = (
-            ("sendspin_sync/eligible_players", self.get_eligible_players, Scope.PLAYERS_READ),
-            ("sendspin_sync/session", self.get_session, Scope.PLAYERS_READ),
+            (
+                "sendspin/calibration/eligible_players",
+                self.get_eligible_players,
+                Scope.PLAYERS_READ,
+            ),
+            ("sendspin/calibration/session", self.get_session, Scope.PLAYERS_READ),
             # CONFIG_PLAYERS_WRITE, unlike the read-only commands above. Starting a
             # session zeroes the static delays and stopping one puts them back, so both
             # persist player config just as applying a result does - exactly what
@@ -184,27 +179,27 @@ class SendspinSyncProvider(PluginProvider):
             # than left as a half-open door. PLAYERS_CONTROL is a guest scope, and an
             # in-process call to the Sendspin provider is not re-checked against the
             # caller's scopes.
-            ("sendspin_sync/start_session", self.start_session, Scope.CONFIG_PLAYERS_WRITE),
-            ("sendspin_sync/solo_player", self.solo_player, Scope.CONFIG_PLAYERS_WRITE),
-            ("sendspin_sync/keep_alive", self.keep_alive, Scope.CONFIG_PLAYERS_WRITE),
             (
-                "sendspin_sync/apply_measurements",
+                "sendspin/calibration/start_session",
+                self.start_session,
+                Scope.CONFIG_PLAYERS_WRITE,
+            ),
+            ("sendspin/calibration/solo_player", self.solo_player, Scope.CONFIG_PLAYERS_WRITE),
+            ("sendspin/calibration/keep_alive", self.keep_alive, Scope.CONFIG_PLAYERS_WRITE),
+            (
+                "sendspin/calibration/apply_measurements",
                 self.apply_measurements,
                 Scope.CONFIG_PLAYERS_WRITE,
             ),
-            ("sendspin_sync/stop_session", self.stop_session, Scope.CONFIG_PLAYERS_WRITE),
+            ("sendspin/calibration/stop_session", self.stop_session, Scope.CONFIG_PLAYERS_WRITE),
         )
         for command, handler, required_scope in api_handlers:
             self._unregister_handles.append(
                 self.mass.register_api_command(command, handler, required_scope=required_scope)
             )
 
-    async def unload(self, is_removed: bool = False) -> None:
-        """
-        Call when the provider is being unloaded.
-
-        :param is_removed: Whether the provider is being removed (vs just reloaded).
-        """
+    async def close(self) -> None:
+        """Withdraw the commands and give back a running session's speakers, as the provider unloads."""
         for unregister in self._unregister_handles:
             unregister()
         self._unregister_handles.clear()
@@ -215,32 +210,19 @@ class SendspinSyncProvider(PluginProvider):
             if self._session is not None:
                 await self._session.stop()
                 self._session = None
-        await super().unload(is_removed)
 
-    async def get_audio_sources(self) -> list[AudioSource]:
-        """Return the AudioSources this plugin currently exposes."""
-        return [self._audio_source]
-
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """
-        Return StreamDetails for the calibration AudioSource.
-
-        Raises MediaNotFoundError for any other item_id.
-        """
-        if item_id != AUDIO_SOURCE_ID:
-            raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
+    def get_stream_details(self) -> StreamDetails:
+        """Return the StreamDetails of the calibration track."""
         return StreamDetails(
-            provider=self.instance_id,
-            item_id=item_id,
+            provider=self.provider.instance_id,
+            item_id=CALIBRATION_SOURCE_ID,
             audio_format=self._audio_format,
             media_type=MediaType.AUDIO_SOURCE,
             stream_type=StreamType.CUSTOM,
-            stream_metadata=StreamMetadata(title=self.name),
+            stream_metadata=StreamMetadata(title=CALIBRATION_SOURCE_NAME),
         )
 
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes]:
+    async def get_audio_stream(self) -> AsyncGenerator[bytes]:
         """Yield the calibration track as raw PCM, looping the precomputed period."""
         consumer_queue = self._in_use_by_queue
         captured_session_id = self._active_session_id
@@ -267,21 +249,23 @@ class SendspinSyncProvider(PluginProvider):
             ):
                 self._in_use_by_queue = None
 
-    async def on_source_selected(
-        self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
-    ) -> None:
-        """React to the calibration AudioSource being selected for playback on a player."""
-        if source_id != AUDIO_SOURCE_ID:
-            return
+    def on_source_selected(self, owner_player_id: str, stream_session_id: str) -> None:
+        """
+        Take note of the queue the calibration track was selected on.
+
+        :param owner_player_id: The player whose queue plays the track.
+        :param stream_session_id: The stream the selection belongs to.
+        """
         self._in_use_by_queue = owner_player_id
         self._active_session_id = stream_session_id
 
-    async def on_source_unselected(
-        self, source_id: str, owner_player_id: str, stream_session_id: str
-    ) -> None:
-        """React to MA tearing down the calibration AudioSource's stream from a queue."""
-        if source_id != AUDIO_SOURCE_ID:
-            return
+    def on_source_unselected(self, owner_player_id: str, stream_session_id: str) -> None:
+        """
+        Release the calibration track once its stream is torn down from a queue.
+
+        :param owner_player_id: The player whose queue played the track.
+        :param stream_session_id: The stream that was torn down.
+        """
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
@@ -309,10 +293,6 @@ class SendspinSyncProvider(PluginProvider):
         ``adjustable`` false: it can be measured like any other, and its result comes
         back from ``apply_measurements`` for the user to apply on the device itself.
         """
-        sendspin = cast("SendspinProvider | None", self.mass.get_provider(SENDSPIN_DOMAIN))
-        if sendspin is None:
-            # nothing to measure without it, and nothing to ask about a speaker either
-            return []
         offered: list[CalibrationPlayer] = []
         # all_players (not iter_players) so a non-admin user is only offered the
         # speakers they are allowed to see. Unfiltered by provider: a speaker that plays
@@ -328,7 +308,7 @@ class SendspinSyncProvider(PluginProvider):
                     busy=is_busy(player),
                     # asked of the speaker's Sendspin side, which is the only object
                     # that carries a static delay
-                    adjustable=sendspin.supports_player_static_delay(protocol.protocol_id),
+                    adjustable=self.provider.supports_player_static_delay(protocol.protocol_id),
                     silent=is_silent(player),
                 )
             )
@@ -367,22 +347,18 @@ class SendspinSyncProvider(PluginProvider):
         :raises UnsupportedFeaturedException: If a given player does not render over
             Sendspin, or has neither a mute nor a volume control.
         :raises ActionUnavailable: If a player is already muted or turned all the way
-            down, is playing and ``force`` was not set, could not be silenced, or the
-            Sendspin provider is not loaded.
+            down, is playing and ``force`` was not set, or could not be silenced.
         :return: The state of the started session.
         """
         async with self._session_lock:
             if self._session is not None:
                 raise ResourceBusyError(
                     "A calibration session is already running",
-                    translation_key="session_already_running",
-                    translation_owner=self.translation_owner,
+                    translation_key="calibration_session_already_running",
+                    translation_owner=self.provider.translation_owner,
                 )
             session = await CalibrationSession.create(
-                self.mass,
-                self.logger,
-                self.translation_owner,
-                owner_instance_id=self.instance_id,
+                self.provider,
                 player_ids=player_ids,
                 force=force,
                 on_owed_delays_changed=self._store_owed_static_delays,
@@ -393,7 +369,7 @@ class SendspinSyncProvider(PluginProvider):
             self._session = session
             self._arm_session_timeout()
             try:
-                await session.begin(self._audio_source)
+                await session.begin(self.audio_source)
             except BaseException:
                 # also a cancellation: the session stays registered until it is torn
                 # down, so an unload that follows can finish a stop that was cut short
@@ -420,8 +396,8 @@ class SendspinSyncProvider(PluginProvider):
             if self._session is None:
                 raise ActionUnavailable(
                     "No calibration session is running",
-                    translation_key="no_session",
-                    translation_owner=self.translation_owner,
+                    translation_key="calibration_no_session",
+                    translation_owner=self.provider.translation_owner,
                 )
             # ahead of the solo: one that fails part-way leaves a session that is still
             # being driven, by a client that is told what went wrong
@@ -442,8 +418,8 @@ class SendspinSyncProvider(PluginProvider):
         if self._session is None or self._session.stopped:
             raise ActionUnavailable(
                 "No calibration session is running",
-                translation_key="no_session",
-                translation_owner=self.translation_owner,
+                translation_key="calibration_no_session",
+                translation_owner=self.provider.translation_owner,
             )
         self._arm_session_timeout()
         return self._session.state
@@ -485,8 +461,7 @@ class SendspinSyncProvider(PluginProvider):
         inactivity timeout still applies, so a client has to apply within it.
 
         :param offsets_ms: Measured arrival offset per player id, in milliseconds.
-        :raises ActionUnavailable: If no calibration session is running, or the Sendspin
-            provider is not available.
+        :raises ActionUnavailable: If no calibration session is running.
         :raises InvalidDataError: If the measurements do not cover exactly the session's
             members, a value is not finite, or one implies a delay Sendspin can not carry.
         :raises PlayerUnavailableError: If a member of the session has meanwhile gone.
@@ -499,10 +474,10 @@ class SendspinSyncProvider(PluginProvider):
             if self._session is None:
                 raise ActionUnavailable(
                     "No calibration session is running",
-                    translation_key="no_session",
-                    translation_owner=self.translation_owner,
+                    translation_key="calibration_no_session",
+                    translation_owner=self.provider.translation_owner,
                 )
-            sendspin = self._sendspin_provider()
+            sendspin = self.provider
             delay_targets = self._delay_targets(sendspin, self._session.player_ids)
             # The Sendspin provider refuses to read a delay off a speaker it can not
             # write one to: it holds no value for such a speaker, so a read would report
@@ -514,7 +489,9 @@ class SendspinSyncProvider(PluginProvider):
                 player_id: sendspin.get_player_static_delay(target) if target else 0
                 for player_id, target in delay_targets.items()
             }
-            delays_ms = resolve_static_delays(offsets_ms, current_delays_ms, self.translation_owner)
+            delays_ms = resolve_static_delays(
+                offsets_ms, current_delays_ms, self.provider.translation_owner
+            )
             result = CalibrationResult(applied={}, previous={}, manual={})
             # Saving these mid-session does not disturb the measurement: the static delay
             # config entry is immediate_apply and carries no requires_reload, so the
@@ -546,21 +523,6 @@ class SendspinSyncProvider(PluginProvider):
         Does nothing when no session is running.
         """
         await self._stop_session()
-
-    def _sendspin_provider(self) -> SendspinProvider:
-        """
-        Return the Sendspin provider a measured correction is applied through.
-
-        :raises ActionUnavailable: If the Sendspin provider is not available.
-        """
-        sendspin = cast("SendspinProvider | None", self.mass.get_provider(SENDSPIN_DOMAIN))
-        if sendspin is None:
-            raise ActionUnavailable(
-                "The Sendspin provider is not available",
-                translation_key="sendspin_unavailable",
-                translation_owner=self.translation_owner,
-            )
-        return sendspin
 
     def _delay_targets(
         self, sendspin: SendspinProvider, player_ids: list[str]
@@ -600,9 +562,9 @@ class SendspinSyncProvider(PluginProvider):
                 name = player.state.name if player is not None else player_id
                 raise PlayerUnavailableError(
                     f"Player {name} is not available",
-                    translation_key="player_unavailable",
+                    translation_key="calibration_player_unavailable",
                     translation_args=[name],
-                    translation_owner=self.translation_owner,
+                    translation_owner=self.provider.translation_owner,
                 )
             if not sendspin.supports_player_static_delay(protocol.protocol_id):
                 targets[player_id] = None
@@ -611,9 +573,9 @@ class SendspinSyncProvider(PluginProvider):
             if not self._session.is_measured_over(player_id, carrier_id):
                 raise ActionUnavailable(
                     f"Player {player_id} plays through another protocol than it was measured over",
-                    translation_key="player_output_changed",
+                    translation_key="calibration_player_output_changed",
                     translation_args=[player.state.name if player else player_id],
-                    translation_owner=self.translation_owner,
+                    translation_owner=self.provider.translation_owner,
                 )
             targets[player_id] = protocol.protocol_id
         if fixed := [player_id for player_id, target in targets.items() if target is None]:
@@ -675,7 +637,10 @@ class SendspinSyncProvider(PluginProvider):
         ]
         try:
             self.mass.config.set_raw_provider_config_value(
-                self.instance_id, CONF_OWED_STATIC_DELAYS, json.dumps(entries), immediate=True
+                self.provider.instance_id,
+                CONF_OWED_STATIC_DELAYS,
+                json.dumps(entries),
+                immediate=True,
             )
         except KeyError:
             # the provider is being removed, and its stored config went first
@@ -691,13 +656,9 @@ class SendspinSyncProvider(PluginProvider):
         speaker itself when it is already there.
         """
         stored = self.mass.config.get_raw_provider_config_value(
-            self.instance_id, CONF_OWED_STATIC_DELAYS
+            self.provider.instance_id, CONF_OWED_STATIC_DELAYS
         )
         if not isinstance(stored, str) or not (entries := json.loads(stored)):
-            return
-        sendspin = cast("SendspinProvider | None", self.mass.get_provider(SENDSPIN_DOMAIN))
-        if sendspin is None:
-            # kept for the next load: this provider only loads once Sendspin has
             return
         for protocol_id, delay_ms, carrier_id in entries:
             self.logger.warning(
@@ -707,9 +668,9 @@ class SendspinSyncProvider(PluginProvider):
             )
             try:
                 await put_static_delay_back(
-                    sendspin, StaticDelaySnapshot(protocol_id, delay_ms, carrier_id)
+                    self.provider, StaticDelaySnapshot(protocol_id, delay_ms, carrier_id)
                 )
-            except Exception as err:  # noqa: BLE001 - one speaker may not keep the rest waiting
+            except Exception as err:
                 # deliberately broad: one speaker that can not take its delay back may
                 # not keep the provider from loading, nor the others from theirs
                 self.logger.warning(
@@ -723,9 +684,9 @@ class SendspinSyncProvider(PluginProvider):
     @property
     def _session_timeout_id(self) -> str:
         """Return the timer id of this instance's session timeout."""
-        return f"{self.instance_id}_calibration_timeout"
+        return f"{self.provider.instance_id}_calibration_timeout"
 
     @property
     def _session_teardown_id(self) -> str:
         """Return the task id that dedupes teardowns triggered by the stream ending."""
-        return f"{self.instance_id}_calibration_teardown"
+        return f"{self.provider.instance_id}_calibration_teardown"

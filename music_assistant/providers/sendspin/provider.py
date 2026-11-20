@@ -111,6 +111,10 @@ from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_SAMPLE_RATE,
     BridgePlayerRole,
 )
+from music_assistant.providers.sendspin.calibration import (
+    CALIBRATION_SOURCE_ID,
+    SendspinCalibration,
+)
 from music_assistant.providers.sendspin.constants import (
     CONF_ALLOW_LEGACY_CLIENTS,
     CONF_MULTI_CHANNEL_GROUP_ID,
@@ -488,6 +492,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self._hass_auto_pairer = HassAutoPairer(self)
         self._local_auto_pairer = LocalAutoPairer(self)
         self.sources = SendspinSources(self)
+        self.calibration = SendspinCalibration(self)
         self.unregister_cbs = []
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -505,6 +510,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
     async def handle_async_init(self) -> None:
         """Load the persistent server identity and pairing store, then create the server."""
         self._set_aiosendspin_log_level()
+        await self.calibration.setup()
         storage_dir = Path(self.mass.storage_path) / "sendspin"
         identity_path = storage_dir / IDENTITY_FILENAME
         try:
@@ -1651,6 +1657,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         )
         await self._remove_orphan_virtual_player_configs()
         self.sources.start()
+        await self.calibration.start()
         # the speakers of the stored multi-channel players are known before any of them connects
         self._restore_multi_channel_players()
         # Start server for handling incoming Sendspin connections from clients
@@ -1691,6 +1698,8 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         :param is_removed: True when the provider is removed from the configuration.
         """
         self._unloading = True
+        # first, while the speakers of a running calibration can still be given back
+        await self.calibration.close()
         # call_later timers are not swept by mass.stop(), so cancel them explicitly here.
         for session in self._pin_sessions.values():
             if session.task is not None:
@@ -1724,21 +1733,31 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self._bridge_waiters.clear()
 
     async def get_audio_sources(self) -> list[AudioSource]:
-        """Return the line-ins of the connected Sendspin clients and approved held ones."""
-        return await self.sources.get_audio_sources()
+        """
+        Return the line-ins of the connected Sendspin clients and approved held ones.
+
+        The calibration track is among them so a calibration session can play it. It
+        can not be started from a listing.
+        """
+        return [*await self.sources.get_audio_sources(), self.calibration.audio_source]
 
     def get_player_input_sources(self, player_id: str) -> list[AudioSource]:
         """Return the line-in of the Sendspin client of the given player."""
         return self.sources.get_player_input_sources(player_id)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Return the StreamDetails of a Sendspin line-in."""
+        """Return the StreamDetails of a Sendspin line-in, or of the calibration track."""
+        if item_id == CALIBRATION_SOURCE_ID:
+            return self.calibration.get_stream_details()
         return await self.sources.get_stream_details(item_id, media_type)
 
     async def on_source_selected(
         self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Claim a Sendspin line-in and ask its client to start streaming."""
+        if source_id == CALIBRATION_SOURCE_ID:
+            self.calibration.on_source_selected(owner_player_id, stream_session_id)
+            return
         await self.sources.on_source_selected(
             source_id, player_id, owner_player_id, stream_session_id
         )
@@ -1747,13 +1766,21 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Release a Sendspin line-in when its stream is torn down."""
+        if source_id == CALIBRATION_SOURCE_ID:
+            self.calibration.on_source_unselected(owner_player_id, stream_session_id)
+            return
         await self.sources.on_source_unselected(source_id, owner_player_id, stream_session_id)
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes]:
-        """Return the PCM of a Sendspin line-in; a line-in can not seek."""
-        async with aclosing(self.sources.get_audio_stream(streamdetails)) as stream:
+        """Return the PCM of a Sendspin line-in or the calibration track; neither can seek."""
+        source = (
+            self.calibration.get_audio_stream()
+            if streamdetails.item_id == CALIBRATION_SOURCE_ID
+            else self.sources.get_audio_stream(streamdetails)
+        )
+        async with aclosing(source) as stream:
             async for chunk in stream:
                 yield chunk
 

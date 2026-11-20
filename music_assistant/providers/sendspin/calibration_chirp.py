@@ -1,5 +1,5 @@
 """
-Calibration chirp signal for the Sendspin Sync plugin.
+Calibration chirp signal of the Sendspin provider.
 
 Builds the repeating calibration track: a short logarithmic sine sweep at the
 start of every fixed-length period, followed by a near-silent noise bed.

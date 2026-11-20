@@ -1,4 +1,4 @@
-"""Tests for the Sendspin Sync calibration chirp signal."""
+"""Tests for the Sendspin calibration chirp signal."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from itertools import pairwise
 
 import pytest
 
-from music_assistant.providers.sendspin_sync.chirp import (
+from music_assistant.providers.sendspin.calibration_chirp import (
     BED_PEAK,
     BIT_DEPTH,
     CHANNELS,
