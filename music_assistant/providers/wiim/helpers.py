@@ -22,7 +22,7 @@ OFFICIAL_MANUFACTURERS = (MANUFACTURER_WIIM, MANUFACTURER_AUDIO_PRO)
 
 _HEX = re.compile(r"^[0-9a-fA-F]+$")
 
-# The channel a speaker plays in a native stereo pair (getSlaveList group_channel).
+# The channel a speaker plays in a native stereo pair (getSlaveList channel, group_channel).
 SET_CHANNEL_LEFT = 1
 SET_CHANNEL_RIGHT = 2
 
@@ -54,17 +54,25 @@ def linkplay_group_compatible(
 
 def native_set_channel(slave: dict[str, Any]) -> int | None:
     """
-    Return the channel of a slave in its leader's native set, None for an ordinary group member.
+    Return the channel of a slave in its leader's native set, None when the entry shows none.
 
-    A native set is a stereo pair (or another multichannel set) made in the WiiM Home app.
+    A native set is a stereo pair (or another multichannel set) made in the WiiM Home app. Its
+    leader reports it this way only while the set plays alone, not while it is part of a
+    larger multiroom group.
 
     :param slave: One entry of the slave list a leader reports.
     """
-    try:
-        channel = int(slave.get("group_channel", 0))
-    except TypeError, ValueError:
-        return None
+    channel = _int_field(slave, "group_channel")
     return channel if channel > 0 else None
+
+
+def plays_set_channel(slave: dict[str, Any]) -> bool:
+    """
+    Return whether a slave plays the left or the right channel.
+
+    :param slave: One entry of the slave list a leader reports.
+    """
+    return _int_field(slave, "channel") in (SET_CHANNEL_LEFT, SET_CHANNEL_RIGHT)
 
 
 def native_set_layout(channels: list[int]) -> ChannelLayout | None:
@@ -184,6 +192,14 @@ def match_slave_uuid_to_player_id(
         if candidate_hex == target_hex:
             return player_id
     return None
+
+
+def _int_field(slave: dict[str, Any], key: str) -> int:
+    """Return an integer field of a slave list entry, 0 when it is missing or no number."""
+    try:
+        return int(slave.get(key, 0))
+    except TypeError, ValueError:
+        return 0
 
 
 def _wmrm_major(device_info: PywiimDeviceInfo) -> int | None:
