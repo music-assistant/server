@@ -1388,7 +1388,9 @@ class StreamsController(CoreController):
                 and queue_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
             ):
                 # a radio or live item never ends by itself
-                self._watch_lost_stream(request, pq_data, session_id, player)
+                self._watch_lost_stream(
+                    request, pq_data, session_id, player, queue_item.queue_item_id
+                )
             if stream_failure is not None or queue_item.streamdetails.stream_error:
                 # every stage in between replaces the message with one of its own, so
                 # the reason worth reporting is the one at the bottom of the chain
@@ -2719,6 +2721,7 @@ class StreamsController(CoreController):
         queue_data: PlayerQueueData,
         session_id: str,
         protocol: PlayerProtocol,
+        queue_item_id: str | None = None,
     ) -> None:
         """
         Restart the queue of a stream its player closed, unless the player asks for it again.
@@ -2732,6 +2735,8 @@ class StreamsController(CoreController):
         :param queue_data: The server-side record of the queue the stream belongs to.
         :param session_id: Stream session the response was opened for.
         :param protocol: The output protocol that requested the stream.
+        :param queue_item_id: The item of a single item stream, which only restarts while it
+            is still the current item of the queue; None for a flow stream.
         """
         if (
             request.transport is not None
@@ -2754,11 +2759,12 @@ class StreamsController(CoreController):
             queue.queue_id,
             session_id,
             player_id,
+            queue_item_id,
             task_id=f"lost_stream_{queue.queue_id}_{player_id}",
         )
 
     async def _restart_lost_stream_unless_reopened(
-        self, queue_id: str, session_id: str, player_id: str
+        self, queue_id: str, session_id: str, player_id: str, queue_item_id: str | None = None
     ) -> None:
         """
         Restart a queue whose player lost its stream, unless the player has one open again.
@@ -2766,6 +2772,7 @@ class StreamsController(CoreController):
         :param queue_id: The queue the lost stream belongs to.
         :param session_id: Stream session of the lost stream.
         :param player_id: The id the player requested the lost stream under.
+        :param queue_item_id: The item of a lost single item stream; None for a flow stream.
         """
         if any(
             entry_session_id == session_id
@@ -2774,6 +2781,13 @@ class StreamsController(CoreController):
             and request.transport is not None
             for entry_session_id, request in self._open_item_streams.get(queue_id) or []
         ):
+            return
+        if queue_item_id is not None and (
+            (queue := self.mass.player_queues.get(queue_id)) is None
+            or queue.current_item is None
+            or queue.current_item.queue_item_id != queue_item_id
+        ):
+            # the queue moved on from the lost item, for example by a skip at the device
             return
         protocol = self.mass.players.get_output_protocol(player_id)
         if protocol is not None and protocol.needs_poll:

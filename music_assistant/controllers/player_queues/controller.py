@@ -1463,8 +1463,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             ):
                 # enable fade in effect if the player is idle for a while
                 fade_in = resume_pos > 0
-            if resume_item.media_type == MediaType.RADIO:
-                # we're not able to skip in online radio so this is pointless
+            if resume_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
+                # we're not able to skip in online radio or a live source so this is pointless
                 resume_pos = 0
             await self.play_index(
                 queue_id, resume_item.queue_item_id, int(resume_pos), fade_in or False

@@ -90,6 +90,7 @@ async def test_a_closed_flow_stream_starts_the_wait(
         QUEUE_ID,
         SESSION_ID,
         PLAYER_ID,
+        None,
         task_id=f"lost_stream_{QUEUE_ID}_{PLAYER_ID}",
     )
 
@@ -146,6 +147,8 @@ async def test_only_a_lost_item_that_never_ends_starts_the_wait(
         assert controller.mass.call_later.call_args.kwargs == {
             "task_id": f"lost_stream_{QUEUE_ID}_{PLAYER_ID}"
         }
+        queue_item = controller.mass.player_queues.get_item.return_value
+        assert controller.mass.call_later.call_args.args[-1] == queue_item.queue_item_id
     else:
         controller.mass.call_later.assert_not_called()
 
@@ -261,6 +264,23 @@ async def test_a_request_that_streams_nothing_to_the_player_still_restarts(
     await _end_wait(controller)
 
     controller.mass.player_queues.restart_lost_flow_stream.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("current_item_id", "restarts"),
+    [("item-1", True), ("item-2", False)],
+    ids=["still_current", "moved_on"],
+)
+async def test_a_lost_item_restarts_only_while_it_is_the_current_item(
+    current_item_id: str, restarts: bool
+) -> None:
+    """A queue that moved on to another item, for example by a skip at the device, stays."""
+    controller = _waiting_controller()
+    controller.mass.player_queues.get.return_value.current_item.queue_item_id = current_item_id
+
+    await controller._restart_lost_stream_unless_reopened(QUEUE_ID, SESSION_ID, PLAYER_ID, "item-1")
+
+    assert controller.mass.player_queues.restart_lost_flow_stream.called is restarts
 
 
 async def test_a_polled_player_is_polled_before_the_queue_decides() -> None:
