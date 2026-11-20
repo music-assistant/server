@@ -2586,6 +2586,62 @@ async def test_flow_end_does_not_hand_the_held_tail_a_duration_for_a_short_sourc
 
 
 @pytest.mark.asyncio
+async def test_flow_keeps_the_declared_length_of_a_resumed_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resumed item's length is not rebuilt from a seek that the source did not take."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    declared_duration = 4
+    first_item = _flow_track(pcm_format, "item-1", duration=declared_duration)
+    # the source did not take the seek, so it serves the whole item from its start
+    first_item.streamdetails.seek_position = 100
+    queued_item = _flow_track(
+        pcm_format, "item-2", duration=declared_duration, still_delivering=True
+    )
+    audio, _mass, queue, queue_data = _flow_context(
+        announced_item=queued_item, load_next=QueueEmpty
+    )
+    _flow_smart_fade(monkeypatch, audio)
+    _flow_source(monkeypatch, audio, pcm_format, declared_duration)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    async for _ in stream:
+        pass
+
+    entry = queue_data.flow_mode_stream_log[0]
+    assert entry.seek_position == 100
+    assert entry.duration is None
+    assert first_item.streamdetails.duration == first_item.duration == declared_duration
+
+
+@pytest.mark.asyncio
+async def test_flow_measures_an_item_that_is_longer_than_declared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An item that was not resumed and plays on past a too short declared length is measured."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    delivered_seconds = 6
+    first_item = _flow_track(pcm_format, "item-1", duration=1)
+    queued_item = _flow_track(pcm_format, "item-2", duration=1, still_delivering=True)
+    audio, _mass, queue, queue_data = _flow_context(
+        announced_item=queued_item, load_next=QueueEmpty
+    )
+    _flow_smart_fade(monkeypatch, audio)
+    _flow_source(monkeypatch, audio, pcm_format, delivered_seconds)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    async for _ in stream:
+        pass
+
+    assert queue_data.flow_mode_stream_log[0].duration == delivered_seconds
+    assert first_item.streamdetails.duration == first_item.duration == delivered_seconds
+
+
+@pytest.mark.asyncio
 async def test_flow_end_does_not_give_an_aborted_last_item_the_previous_items_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2706,9 +2762,25 @@ async def test_flow_keeps_the_declared_length_of_a_trimmed_but_fully_delivered_i
 
 
 @pytest.mark.parametrize(
-    ("released_by_stop", "declared_duration", "expected_duration"),
-    [(False, 4, 3), (True, 4, 4), (False, 10, 10)],
-    ids=["clean_source", "source_released_by_a_stop", "clean_end_far_short_of_the_item"],
+    ("released_by_stop", "declared_duration", "expected_duration", "seek_position", "delivered"),
+    [
+        (False, 4, 3, 0, 3),
+        (True, 4, 4, 0, 3),
+        (False, 10, 10, 0, 3),
+        (False, 102, 103, 100, 3),
+        (False, 4, 4, 100, 3),
+        (False, 1, 5, 0, 5),
+        (False, 1, 1, 100, 5),
+    ],
+    ids=[
+        "clean_source",
+        "source_released_by_a_stop",
+        "clean_end_far_short_of_the_item",
+        "resumed_item_played_to_its_end",
+        "resumed_item_whose_seek_was_not_taken",
+        "item_longer_than_declared_is_measured",
+        "resumed_item_longer_than_declared_keeps_it",
+    ],
 )
 @pytest.mark.asyncio
 async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
@@ -2716,6 +2788,8 @@ async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
     released_by_stop: bool,
     declared_duration: int,
     expected_duration: int,
+    seek_position: int,
+    delivered: int,
 ) -> None:
     """A single item whose buffer a stop released keeps its length, as in the flow."""
     mass = MagicMock()
@@ -2727,7 +2801,7 @@ async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
         stream_error=False,
         tail_overlap=None,
         uri="test://track",
-        seek_position=0,
+        seek_position=seek_position,
         seconds_streamed=0,
         duration=declared_duration,
         is_realtime=False,
@@ -2749,7 +2823,7 @@ async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
     audio.setup()
 
     async def _item_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
-        for _ in range(3):
+        for _ in range(delivered):
             yield bytes(pcm_format.pcm_sample_size)
         if released_by_stop:
             # a stop detaches the buffer from the details before it releases it
@@ -2767,8 +2841,8 @@ async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
 
     chunks = [chunk async for chunk in stream]
 
-    assert len(chunks) == 3
-    assert streamdetails.seconds_streamed == 3
+    assert len(chunks) == delivered
+    assert streamdetails.seconds_streamed == delivered
     # a source that delivered the item within tolerance measures its length, one that
     # stopped short of it, released or not, leaves the declared length
     assert streamdetails.duration == expected_duration

@@ -419,23 +419,31 @@ def _delivered_media_covers_item(
     streamdetails: StreamDetails,
     delivered_seconds: float,
     source_duration: int | None = None,
+    *,
+    resumed: bool = False,
 ) -> bool:
     """
-    Return whether the delivered audio reaches the item's length.
+    Return whether the delivered audio matches the item's length.
 
     :param streamdetails: The item's stream details.
     :param delivered_seconds: Media-time delivered, counted from the start of the item.
     :param source_duration: The length the source itself reports, when it does.
+    :param resumed: Whether the item was resumed by a seek, so where the delivered audio
+        started is only as exact as that seek.
     """
     lengths = [length for length in (streamdetails.duration, source_duration) if length]
     if not lengths:
         return True
+    if resumed and streamdetails.duration:
+        # a seek that landed early or was ignored delivers more than the item holds
+        if delivered_seconds > streamdetails.duration + _duration_tolerance(streamdetails.duration):
+            return False
     return any(delivered_seconds >= length - _duration_tolerance(length) for length in lengths)
 
 
 def _duration_tolerance(length: float) -> float:
     """
-    Return how far a full playthrough may end short of the given length.
+    Return how far a full playthrough may end from the given length.
 
     :param length: The length in seconds.
     """
@@ -452,17 +460,24 @@ def _store_measured_duration(
     queue_item: QueueItem | None = None,
     play_log_entry: PlayLogEntry | None = None,
     source_duration: int | None = None,
+    resumed: bool = False,
 ) -> None:
     """
-    Store the measured length on the item, unless the source stopped short.
+    Store the measured length on the item, unless it does not match what the item holds.
 
     :param streamdetails: The item's stream details.
     :param delivered_seconds: Media-time delivered, counted from the start of the item.
     :param queue_item: The queue item to update as well.
     :param play_log_entry: The play log entry to update as well.
     :param source_duration: The length the source itself reports, when it does.
+    :param resumed: Whether the item was resumed by a seek.
     """
-    if not _delivered_media_covers_item(streamdetails, delivered_seconds, source_duration):
+    if not _delivered_media_covers_item(
+        streamdetails,
+        delivered_seconds,
+        source_duration,
+        resumed=resumed,
+    ):
         return
     streamdetails.duration = int(delivered_seconds)
     # propagate accurate duration to queue_item so UI displays it
@@ -2391,6 +2406,8 @@ class StreamsAudio:
             claimed_for = tail_overlap.next_queue_item_id
             self._crossfade_pending[queue.queue_id] = (claimed_for, handoff)
 
+        # a crossfade moves the position too, but only a seek of the request resumes the item
+        resumed = handover is None and bool(streamdetails.seek_position)
         # pin the body to DYNAMIC when the intro was baked DYNAMIC,
         # else a late measurement flips it and causes a volume jump
         norm_override: VolumeNormalizationMode | None = None
@@ -2803,7 +2820,12 @@ class StreamsAudio:
             written_seconds = (
                 start_position + (seconds_streamed + uncredited_tail_seconds) * playback_speed
             )
-            _store_measured_duration(streamdetails, written_seconds, queue_item=queue_item)
+            _store_measured_duration(
+                streamdetails,
+                written_seconds,
+                queue_item=queue_item,
+                resumed=resumed,
+            )
         self.logger.debug(
             "Finished Streaming queue track: %s (%s) on queue %s "
             "- crossfade data prepared for next track: %s",
@@ -3561,6 +3583,7 @@ class StreamsAudio:
                         written_seconds,
                         queue_item=queue_track,
                         play_log_entry=play_log_entry,
+                        resumed=bool(raw_seek_position),
                     )
                 if last_play_log_entry is play_log_entry and last_fadeout_part:
                     # Pre-count the full crossfade tail so the queue index calculation
