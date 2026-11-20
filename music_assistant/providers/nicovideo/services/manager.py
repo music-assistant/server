@@ -78,8 +78,6 @@ class NicovideoServiceManager:
                 caller_line = caller_frame.f_lineno
                 filename = caller_filename.rsplit("/", 1)[-1]
                 caller_info = f"{filename}:{caller_function}:{caller_line}"
-        except Exception:  # noqa: BLE001 - diagnostics must not fail the caller
-            caller_info = "stack_inspection_failed"
         finally:
             del frame  # Prevent reference cycles
         return caller_info
