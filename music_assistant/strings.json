@@ -220,7 +220,7 @@
     },
     "output_codec": {
       "label": "Output codec to use for streaming audio to the player",
-      "description": "Select the codec to use for streaming audio to this player. \nBy default, Music Assistant sends lossless, high quality audio to all players and prefers the FLAC codec because it offers some compression while still remaining lossless \n\nSome players however do not support FLAC and require the stream to be packed into e.g. a lossy mp3 codec or you like to save some network bandwidth. \n\n Choosing a lossy codec saves some bandwidth at the cost of audio quality.",
+      "description": "Select the codec to use for streaming audio to this player. \nMost players get lossless, high quality FLAC by default, which offers some compression while still remaining lossless. \n\nSome players default to a lossy codec such as MP3 instead, because they do not support FLAC or stop playing a long FLAC stream after a while. \n\nChoosing a lossy codec also saves some network bandwidth, at the cost of audio quality.",
       "options": {
         "flac": "FLAC (lossless, compressed)",
         "mp3": "MP3 (lossy)",
