@@ -1463,8 +1463,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             ):
                 # enable fade in effect if the player is idle for a while
                 fade_in = resume_pos > 0
-            if resume_item.media_type == MediaType.RADIO:
-                # we're not able to skip in online radio so this is pointless
+            if resume_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
+                # we're not able to skip in online radio or a live source so this is pointless
                 resume_pos = 0
             await self.play_index(
                 queue_id, resume_item.queue_item_id, int(resume_pos), fade_in or False
@@ -2268,20 +2268,34 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         played = protocol.corrected_elapsed_time or 0
         return played >= streamed - FLOW_PLAYED_OUT_MARGIN
 
-    def restart_lost_flow_stream(self, queue_id: str, session_id: str) -> bool:
+    def restart_lost_flow_stream(
+        self,
+        queue_id: str,
+        session_id: str,
+        only_while_playing: bool = False,
+        queue_item_id: str | None = None,
+    ) -> bool:
         """
-        Restart a queue at the position that plays now, for a flow stream its player lost.
+        Restart a queue at the position that plays now, for a stream its player lost.
 
+        The lost stream is a flow stream, or the stream of a radio or live item, which restarts
+        live.
         Only the current session restarts, once, and a queue at most LOST_FLOW_RESTART_LIMIT
         times within LOST_FLOW_RESTART_WINDOW seconds. A queue halted by a command, a flow
         stream that was fully generated and a player switched off at its power control do not
         restart.
 
-        :param queue_id: The queue whose flow stream the player lost.
-        :param session_id: The stream session of the lost flow stream.
+        :param queue_id: The queue whose stream the player lost.
+        :param session_id: The stream session of the lost stream.
+        :param only_while_playing: Restart only while the player is available and plays the
+            queue, without an announcement: for a stream the player closed without an error.
+        :param queue_item_id: Restart only while this item is the current item of the queue:
+            for the lost stream of a single item.
         :return: Whether the queue restarts, or already does for this session.
         """
-        if not self._lost_flow_stream_restartable(queue_id, session_id):
+        if not self._lost_flow_stream_restartable(queue_id, session_id, queue_item_id):
+            return False
+        if only_while_playing and not self._player_plays_queue(queue_id):
             return False
         queue_data = self._queue_data[queue_id]
         if queue_data.flow_restarted_session_id == session_id:
@@ -2309,7 +2323,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # group
         with self.mass.players.without_member_power_on():
             self.mass.create_task(
-                self._restart_lost_flow_stream(queue_id, session_id),
+                self._restart_lost_flow_stream(
+                    queue_id,
+                    session_id,
+                    only_while_playing=only_while_playing,
+                    queue_item_id=queue_item_id,
+                ),
                 task_id=f"restart_lost_flow_stream_{queue_id}_{session_id}",
             )
         return True
@@ -3393,24 +3412,71 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             shuffle=shuffle_enabled,
         )
 
-    def _lost_flow_stream_restartable(self, queue_id: str, session_id: str) -> bool:
-        """Return whether a queue may restart the lost flow stream of a session."""
+    def _lost_flow_stream_restartable(
+        self, queue_id: str, session_id: str, queue_item_id: str | None = None
+    ) -> bool:
+        """
+        Return whether a queue may restart the lost stream of a session.
+
+        :param queue_id: The queue whose stream the player lost.
+        :param session_id: The stream session of the lost stream.
+        :param queue_item_id: The item of a lost single item stream, which restarts only while
+            it is the current item of the queue.
+        """
         queue_data = self.queue_data_or_none(queue_id)
         if (
             queue_data is None
             or queue_data.session_id != session_id
             or queue_data.halted_by_command
             or queue_data.flow_buffer_completed == session_id
+            # a step (next, previous) or start that did not play yet takes over the queue
+            or queue_data.transitioning
         ):
+            return False
+        if queue_item_id is not None and (
+            (current_item := queue_data.queue.current_item) is None
+            or current_item.queue_item_id != queue_item_id
+        ):
+            # the queue moved on from the lost item, for example by a skip at the device
             return False
         player = self.mass.players.get_player(queue_id)
         return player is not None and not player.offline_by_power_control
 
-    async def _restart_lost_flow_stream(self, queue_id: str, session_id: str) -> None:
-        """Resume a queue where it plays now, unless a command took it over meanwhile."""
+    def _player_plays_queue(self, queue_id: str) -> bool:
+        """Return whether the player of a queue is available and plays the queue now."""
+        # read from the player: the queue takes over its state with a delay, which misses
+        # what a poll of the player just before reported
+        player = self.mass.players.get_player(queue_id)
+        return (
+            player is not None
+            and player.available
+            and player.playback_state == PlaybackState.PLAYING
+            # the queue is active until another source takes over the player
+            and player.active_source in (queue_id, None)
+            and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        )
+
+    async def _restart_lost_flow_stream(
+        self,
+        queue_id: str,
+        session_id: str,
+        only_while_playing: bool = False,
+        queue_item_id: str | None = None,
+    ) -> None:
+        """
+        Resume a queue where it plays now, unless a command took it over meanwhile.
+
+        :param queue_id: The queue whose stream the player lost.
+        :param session_id: The stream session of the lost stream.
+        :param only_while_playing: Resume only while the player still plays the queue.
+        :param queue_item_id: Resume only while this item is the current item of the queue.
+        """
         async with self.mass.players.get_group_and_player_lock(queue_id):
             # a command that held or waited for the lock (stop, next, play) went first
-            if not self._lost_flow_stream_restartable(queue_id, session_id):
+            if not self._lost_flow_stream_restartable(queue_id, session_id, queue_item_id):
+                return
+            if only_while_playing and not self._player_plays_queue(queue_id):
+                # paused, stopped or taken over at the device while this waited for the lock
                 return
             await self.resume(queue_id, fade_in=False)
 
