@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from auntie_sounds.history import SegmentHistory
 from auntie_sounds.models import (
     LiveStation,
     Network,
@@ -10,12 +11,19 @@ from auntie_sounds.models import (
     PodcastEpisode,
     RadioClip,
     ScheduleItem,
+    Segment,
+    SegmentOffset,
     Station,
     Synopses,
     Titles,
 )
+from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+import music_assistant.helpers.datetime as dt
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
+from music_assistant.providers.bbc_sounds.live_rewind import LiveProgrammeId
 from music_assistant.providers.bbc_sounds.naming import (
     UNKNOWN_STATION,
     TitleParts,
@@ -23,6 +31,7 @@ from music_assistant.providers.bbc_sounds.naming import (
     programme_title,
     station_programme_title,
 )
+from music_assistant.providers.bbc_sounds.now_playing import NowPlaying
 
 
 @pytest.mark.parametrize(
@@ -110,11 +119,50 @@ ON_AIR_STATION = LiveStation(
     titles=Titles(primary="Today", secondary="06:30 - 07:00"),
     network=Network(id="bbc_radio_four", short_title="Radio 4"),
 )
+TRACK = Segment(
+    id="track",
+    segment_type="music",
+    uris=[],
+    titles=Titles(primary="Artist", secondary="Song"),
+    image_url="https://example.com/song.jpg",
+    offset=SegmentOffset(start=0, end=600),
+)
+PROGRAMME_ID = LiveProgrammeId(
+    "bbc_radio_four",
+    "p01",
+    int(ON_AIR.start.timestamp()) if ON_AIR.start else 0,
+    int(ON_AIR.end.timestamp()) if ON_AIR.end else 0,
+)
 STATION = "BBC Radio 4"
 # A list row, which has one line
 CATCH_UP = "06:30 Today • Business news"
 # Now playing, where the programme is on now
 NOW_PLAYING = "Today • Business news: News and current affairs"
+
+
+def _details(item_id: str) -> StreamDetails:
+    return StreamDetails(
+        provider="bbc_sounds",
+        item_id=item_id,
+        audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+    )
+
+
+async def _live_rewind_now_playing(
+    provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch, behind: int, track: bool
+) -> StreamMetadata | None:
+    """Return what a live programme shows a few minutes in, the given seconds behind live."""
+    elapsed = 300 if track else 600
+    history = SegmentHistory()
+    if track:
+        history.merge([TRACK], programme_start=ON_AIR.start, now=ON_AIR.end)  # type: ignore[arg-type]
+    provider.client.schedules.refresh_history.return_value = history  # type: ignore[attr-defined]
+    monkeypatch.setattr(dt, "utc_timestamp", lambda: PROGRAMME_ID.start + elapsed + behind)
+    details = _details(PROGRAMME_ID.item_id)
+    await provider.stream_manager.now_playing.update_live_programme(
+        NowPlaying(fallback=None, album=STATION), PROGRAMME_ID, ON_AIR, details, elapsed
+    )
+    return details.stream_metadata
 
 
 class TestDisplayNames:
@@ -205,6 +253,44 @@ class TestDisplayNames:
         """A programme on air now, in the catch-up folder and the queue."""
         episode = await provider.adaptor.new_live_programme(ON_AIR)
         assert episode.name == f"«LIVE» {CATCH_UP}"
+
+    @pytest.mark.parametrize(
+        ("behind", "marker"),
+        [
+            pytest.param(30, "«LIVE»", id="at-live-edge"),
+            pytest.param(600, "«Rewound»", id="behind"),
+        ],
+    )
+    async def test_live_rewind_between_tracks(
+        self, provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch, behind: int, marker: str
+    ) -> None:
+        """A live programme's now playing between tracks, marked for the live edge."""
+        assert await _live_rewind_now_playing(provider, monkeypatch, behind, track=False) == (
+            StreamMetadata(title=f"{marker} {NOW_PLAYING}", album=STATION)
+        )
+
+    async def test_song(self, provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A song's now playing: the frontend shows the artist and album as artist • station."""
+        assert await _live_rewind_now_playing(provider, monkeypatch, 30, track=True) == (
+            StreamMetadata(
+                title="Song",
+                artist="Artist",
+                album=STATION,
+                image_url="https://example.com/song.jpg",
+            )
+        )
+
+    async def test_station_between_tracks(self, provider: BBCSoundsProvider) -> None:
+        """A live station's now playing between tracks, with the station on line 2."""
+        provider.client.schedules.refresh_history.return_value = SegmentHistory()  # type: ignore[attr-defined]
+        provider.client.schedules.on_air.return_value = ON_AIR  # type: ignore[attr-defined]
+        details = _details("bbc_radio_four")
+
+        await provider.stream_manager.now_playing.update_station(
+            NowPlaying(fallback=None, album=STATION), details, 0
+        )
+
+        assert details.stream_metadata == StreamMetadata(title=NOW_PLAYING, album=STATION)
 
     def test_live_station_folder(self) -> None:
         """A station in the live folder: its description is the programme on air."""
