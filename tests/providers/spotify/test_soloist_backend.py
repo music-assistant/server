@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -931,6 +931,45 @@ def test_losing_the_device_after_the_item_is_over_is_not_a_takeover(tmp_path: Pa
     run._observe_device_active(active=False)
     assert run._error is None
     cast("MagicMock", run.mass.create_task).assert_called_once()
+
+
+async def _lose_the_device(run: _EngineRun) -> None:
+    """Report the engine as no longer the account's active device."""
+    run._observe_device_active(active=False)
+
+
+async def _move_away_from_a_fed_item(run: _EngineRun) -> None:
+    """Have the engine announce another track than the one fed to it."""
+    await _feed(run)
+    await run._handle_event(_track_event(TRACK_C))
+
+
+@pytest.mark.parametrize("take_over", [_lose_the_device, _move_away_from_a_fed_item])
+async def test_a_takeover_stops_the_queue_before_its_stream_fails(
+    tmp_path: Path, take_over: Callable[[_EngineRun], Awaitable[None]]
+) -> None:
+    """A stream failing before the queue stopped skips to the next item, taking the account back."""
+    run = _live_run(tmp_path)
+    tasks = _run_tasks(run)
+    consumer = asyncio.ensure_future(_collect(run))
+    await asyncio.sleep(0)
+    stream_failed_before_the_stop: list[bool] = []
+
+    async def _stop(_queue_id: str) -> None:
+        # the player acknowledges the stop only after a round trip
+        await asyncio.sleep(0.01)
+        stream_failed_before_the_stop.append(consumer.done())
+
+    queues = cast("MagicMock", run.mass).player_queues
+    queues.stop = AsyncMock(side_effect=_stop)
+    await take_over(run)
+    with pytest.raises(AudioError, match="already streaming somewhere else"):
+        async with asyncio.timeout(5):
+            await consumer
+    queues.stop.assert_awaited_once_with("player1")
+    assert stream_failed_before_the_stop == [False]
+    await asyncio.gather(*tasks)
+    assert run.stopped
 
 
 def _shorten_pause_grace(monkeypatch: pytest.MonkeyPatch) -> float:
