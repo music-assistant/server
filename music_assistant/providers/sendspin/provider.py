@@ -101,6 +101,8 @@ from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.sendspin.bridge_manager import (
     evaluate_bridge_of,
     evaluate_bridges_of_player,
+    store_static_delay,
+    stored_carrier_of,
 )
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
@@ -108,6 +110,10 @@ from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_ROLE_ID,
     BRIDGE_SAMPLE_RATE,
     BridgePlayerRole,
+)
+from music_assistant.providers.sendspin.calibration import (
+    CALIBRATION_SOURCE_ID,
+    SendspinCalibration,
 )
 from music_assistant.providers.sendspin.constants import (
     CONF_ALLOW_LEGACY_CLIENTS,
@@ -119,6 +125,8 @@ from music_assistant.providers.sendspin.constants import (
     CONF_SPEAKER_OUTPUT_DELAY,
     CONF_VIRTUAL_PLAYER_OWNER,
     DEFAULT_SERVER_PORT,
+    MAX_SENDSPIN_STATIC_DELAY,
+    MIN_SENDSPIN_STATIC_DELAY,
     MULTI_CHANNEL_ID_PREFIX,
     VIRTUAL_PLAYER_ID_PREFIX,
 )
@@ -484,6 +492,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self._hass_auto_pairer = HassAutoPairer(self)
         self._local_auto_pairer = LocalAutoPairer(self)
         self.sources = SendspinSources(self)
+        self.calibration = SendspinCalibration(self)
         self.unregister_cbs = []
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -501,6 +510,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
     async def handle_async_init(self) -> None:
         """Load the persistent server identity and pairing store, then create the server."""
         self._set_aiosendspin_log_level()
+        await self.calibration.setup()
         storage_dir = Path(self.mass.storage_path) / "sendspin"
         identity_path = storage_dir / IDENTITY_FILENAME
         try:
@@ -832,6 +842,158 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 self.mass.create_task(existing._apply_static_delay())
             return
         self._bridge_static_delay_defaults[client_id] = default_ms
+
+    def supports_player_static_delay(self, protocol_id: str) -> bool:
+        """
+        Return whether a static delay can be read from and applied to the given output.
+
+        The permissive counterpart to the accessors below, published so that a caller can
+        decide whether a speaker is worth offering at all rather than discovering it
+        through an exception. Answers False - never raises - for a protocol that is
+        unknown, belongs to another provider, or whose player role does not carry the
+        command.
+
+        Not a complete pre-check for those accessors: this says nothing about whether the
+        output is *available*, which they additionally require. A True here does not
+        promise a later read or write will not raise.
+
+        Depends on what the live client advertises, so a real Sendspin speaker may answer
+        False and may change its answer across reconnects.
+
+        :param protocol_id: Id of the Sendspin protocol to check.
+        """
+        protocol = self.mass.players.get_protocol(protocol_id)
+        return isinstance(protocol, SendspinPlayer) and protocol.supports_static_delay
+
+    def get_player_static_delay_carrier(self, protocol_id: str) -> str | None:
+        """
+        Return the id of the protocol that carries a Sendspin output now, None for a client.
+
+        A bridged speaker keeps one static delay per carrier, so a delay read or measured
+        while one protocol carries the output says nothing about another. Published so
+        that a caller holding a delay across a hand-over can name the carrier it belongs to.
+
+        :param protocol_id: Id of the Sendspin protocol to inspect.
+        :raises PlayerUnavailableError: No available protocol with this id exists.
+        :raises UnsupportedFeaturedException: The protocol is not a Sendspin player, or its
+            player role does not accept a static delay.
+        """
+        return self._static_delay_carrier(self._static_delay_player(protocol_id))
+
+    def get_player_static_delay(self, protocol_id: str) -> int:
+        """
+        Return the static delay a Sendspin output currently carries, in milliseconds.
+
+        The counterpart to :meth:`set_player_static_delay`, published so that a caller
+        computing a correction can fold in the delay an output already has - including
+        one the user set by hand for an amp - without reading this provider's protocol
+        config itself. Reads the value exactly as the push to the device reads it, so
+        what comes back is what the client was last told to apply. For a bridged speaker
+        that is the delay of the protocol that carries the output now.
+
+        Accepts and rejects exactly the outputs the setter does. In particular, one that
+        does not accept a static delay raises rather than reporting 0: a 0 there is
+        indistinguishable from a real one, and a correction computed against it could
+        never be applied.
+
+        :param protocol_id: Id of the Sendspin protocol to inspect.
+        :raises PlayerUnavailableError: No available protocol with this id exists.
+        :raises UnsupportedFeaturedException: The protocol is not a Sendspin player, or its
+            player role does not accept a static delay.
+        :return: The static delay in effect for this output, which is its model-specific
+            default until the user or a calibration sets one.
+        """
+        player = self._static_delay_player(protocol_id)
+        return cast(
+            "int",
+            player.config.get_value(CONF_SENDSPIN_STATIC_DELAY, player.static_delay_default_ms),
+        )
+
+    def store_player_static_delay(
+        self, protocol_id: str, delay_ms: int, *, carrier_id: str | None = None
+    ) -> bool:
+        """
+        Store the static delay of a Sendspin output that is not there to take it.
+
+        For a caller that owes an output a delay while its client is away, or does not
+        accept one right now: the value is stored for the protocol it belongs to and is
+        what the client is given once it registers again. Nothing is pushed.
+
+        :param protocol_id: Id of the Sendspin protocol the delay belongs to.
+        :param delay_ms: Delay to keep, in whole milliseconds, within 0-5000 inclusive.
+        :param carrier_id: Id of the protocol that carried the output when the delay was
+            read, None for a Sendspin client of its own.
+        :raises InvalidDataError: delay_ms falls outside the supported range.
+        :return: Whether the delay is stored. Nothing is stored of an output that only
+            exists while its device is connected, and such an output keeps no delay once
+            it is gone, so there is nothing to put back for it either.
+        """
+        self._check_static_delay_range(protocol_id, delay_ms)
+        return store_static_delay(self.mass, protocol_id, carrier_id, delay_ms)
+
+    async def set_player_static_delay(
+        self, protocol_id: str, delay_ms: int, *, carrier_id: str | None = None
+    ) -> None:
+        """
+        Set the static delay of a Sendspin output and push it to the device.
+
+        Published so that a measured audio output latency can be applied from outside
+        this provider, without another provider writing to this protocol's config itself.
+
+        Mind the sign: a static delay *advances* a player rather than holding it back,
+        because the client subtracts it from the server timestamp. A larger value makes
+        the sound leave that speaker earlier. To equalise a group, give the
+        earliest-arriving player 0 and pull each other player forward by the difference
+        between its own arrival time and that earliest one.
+
+        Applying the value an output already has is a no-op; this cannot be used to force
+        a re-push to the device.
+
+        :param protocol_id: Id of the Sendspin protocol to adjust.
+        :param delay_ms: Delay to apply, in whole milliseconds. Must fall within
+            0-5000 inclusive; the protocol carries no negative offset. Out-of-range
+            input is rejected rather than clamped, so a bad measurement reaches the
+            caller instead of being silently turned into a plausible-looking correction.
+        :param carrier_id: Id of the protocol the delay belongs to, for a bridged speaker
+            whose output may have been handed over since the delay was read. A delay of
+            a protocol that does not carry the output now is put aside for when it does
+            again, and nothing is pushed. None for the delay of whatever carries it now.
+        :raises PlayerUnavailableError: No available protocol with this id exists, the
+            output is being handed over to another protocol and no carrier was named, or
+            nothing is stored of the output to keep the delay of another carrier in.
+        :raises UnsupportedFeaturedException: The protocol is not a Sendspin player, or its
+            player role does not accept a static delay.
+        :raises InvalidDataError: delay_ms falls outside the supported range.
+        """
+        player = self._static_delay_player(protocol_id)
+        self._check_static_delay_range(protocol_id, delay_ms)
+        current_carrier_id = self._static_delay_carrier(player)
+        # What is stored of an output moves to its next carrier ahead of the client that
+        # registers for it. Until then this client still plays over the carrier before,
+        # with the delay of that one in the config copy it holds.
+        handing_over = current_carrier_id != player.underlying_protocol_id
+        if handing_over and carrier_id is None:
+            msg = f"Player {protocol_id} is being handed over to another protocol"
+            raise PlayerUnavailableError(msg)
+        if carrier_id is not None and (handing_over or carrier_id != current_carrier_id):
+            self.logger.info(
+                "Keeping static delay of %s ms of %s for %s", delay_ms, player.name, carrier_id
+            )
+            if not store_static_delay(self.mass, protocol_id, carrier_id, delay_ms):
+                msg = f"Nothing is stored of player {protocol_id} to keep a static delay in"
+                raise PlayerUnavailableError(msg)
+            return
+        if delay_ms == self.get_player_static_delay(protocol_id):
+            return
+        self.logger.info("Applying static delay of %s ms to %s", delay_ms, player.name)
+        # the same two steps a delay the device reports takes: the stored value, which
+        # also updates the config copy the push reads, then the push. Not a config save,
+        # which needs a stored config and so refuses a browser tab or an app.
+        self.mass.config.set_protocol_value(protocol_id, CONF_SENDSPIN_STATIC_DELAY, delay_ms)
+        if delay_ms != self.get_player_static_delay(protocol_id):
+            msg = f"Static delay of {delay_ms} ms did not reach the config of player {protocol_id}"
+            raise UnsupportedFeaturedException(msg)
+        await player._apply_static_delay()
 
     def register_bridge_player_type(self, client_id: str, player_type: PlayerType) -> None:
         """
@@ -1495,6 +1657,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         )
         await self._remove_orphan_virtual_player_configs()
         self.sources.start()
+        await self.calibration.start()
         # the speakers of the stored multi-channel players are known before any of them connects
         self._restore_multi_channel_players()
         # Start server for handling incoming Sendspin connections from clients
@@ -1535,6 +1698,8 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         :param is_removed: True when the provider is removed from the configuration.
         """
         self._unloading = True
+        # first, while the speakers of a running calibration can still be given back
+        await self.calibration.close()
         # call_later timers are not swept by mass.stop(), so cancel them explicitly here.
         for session in self._pin_sessions.values():
             if session.task is not None:
@@ -1568,21 +1733,31 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self._bridge_waiters.clear()
 
     async def get_audio_sources(self) -> list[AudioSource]:
-        """Return the line-ins of the connected Sendspin clients and approved held ones."""
-        return await self.sources.get_audio_sources()
+        """
+        Return the line-ins of the connected Sendspin clients and approved held ones.
+
+        The calibration track is among them so a calibration session can play it. It
+        can not be started from a listing.
+        """
+        return [*await self.sources.get_audio_sources(), self.calibration.audio_source]
 
     def get_player_input_sources(self, player_id: str) -> list[AudioSource]:
         """Return the line-in of the Sendspin client of the given player."""
         return self.sources.get_player_input_sources(player_id)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Return the StreamDetails of a Sendspin line-in."""
+        """Return the StreamDetails of a Sendspin line-in, or of the calibration track."""
+        if item_id == CALIBRATION_SOURCE_ID:
+            return self.calibration.get_stream_details()
         return await self.sources.get_stream_details(item_id, media_type)
 
     async def on_source_selected(
         self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Claim a Sendspin line-in and ask its client to start streaming."""
+        if source_id == CALIBRATION_SOURCE_ID:
+            self.calibration.on_source_selected(owner_player_id, stream_session_id)
+            return
         await self.sources.on_source_selected(
             source_id, player_id, owner_player_id, stream_session_id
         )
@@ -1591,15 +1766,76 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Release a Sendspin line-in when its stream is torn down."""
+        if source_id == CALIBRATION_SOURCE_ID:
+            self.calibration.on_source_unselected(owner_player_id, stream_session_id)
+            return
         await self.sources.on_source_unselected(source_id, owner_player_id, stream_session_id)
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes]:
-        """Return the PCM of a Sendspin line-in; a line-in can not seek."""
-        async with aclosing(self.sources.get_audio_stream(streamdetails)) as stream:
+        """Return the PCM of a Sendspin line-in or the calibration track; neither can seek."""
+        source = (
+            self.calibration.get_audio_stream()
+            if streamdetails.item_id == CALIBRATION_SOURCE_ID
+            else self.sources.get_audio_stream(streamdetails)
+        )
+        async with aclosing(source) as stream:
             async for chunk in stream:
                 yield chunk
+
+    def _static_delay_player(self, protocol_id: str) -> SendspinPlayer:
+        """
+        Return the Sendspin player behind a static delay read or write.
+
+        :param protocol_id: Id of the Sendspin protocol to resolve.
+        :raises PlayerUnavailableError: No available protocol with this id exists.
+        :raises UnsupportedFeaturedException: The protocol is not a Sendspin player, or its
+            player role does not accept a static delay.
+        """
+        player = self.mass.players.get_protocol(protocol_id)
+        if player is None or not player.available:
+            msg = f"Player {protocol_id} is not available"
+            raise PlayerUnavailableError(msg)
+        if not isinstance(player, SendspinPlayer):
+            msg = f"Player {protocol_id} is not a Sendspin player"
+            raise UnsupportedFeaturedException(msg)
+        # A player whose role won't take a static delay has no config entry for it, so a
+        # write would report success while changing nothing and a read would only ever
+        # see the default.
+        if not player.supports_static_delay:
+            msg = f"Player {protocol_id} does not accept a Sendspin static delay"
+            raise UnsupportedFeaturedException(msg)
+        return player
+
+    def _static_delay_carrier(self, player: SendspinPlayer) -> str | None:
+        """
+        Return the id of the protocol the stored static delay of an output belongs to.
+
+        That is the carrier what is stored of the output names, which moves ahead of the
+        client during a hand-over. None for a Sendspin client of its own.
+
+        :param player: The Sendspin player of the output.
+        """
+        if (live_carrier_id := player.underlying_protocol_id) is None:
+            return None
+        return stored_carrier_of(self.mass, player.protocol_id) or live_carrier_id
+
+    @staticmethod
+    def _check_static_delay_range(protocol_id: str, delay_ms: int) -> None:
+        """
+        Raise when a static delay falls outside the range Sendspin carries.
+
+        :param protocol_id: Id of the Sendspin protocol the delay is for.
+        :param delay_ms: The delay to check, in milliseconds.
+        :raises InvalidDataError: delay_ms falls outside the supported range.
+        """
+        if not MIN_SENDSPIN_STATIC_DELAY <= delay_ms <= MAX_SENDSPIN_STATIC_DELAY:
+            msg = (
+                f"Static delay {delay_ms} ms for player {protocol_id} is outside the supported "
+                f"range of {MIN_SENDSPIN_STATIC_DELAY}-{MAX_SENDSPIN_STATIC_DELAY} ms"
+            )
+            raise InvalidDataError(msg)
 
     def _set_aiosendspin_log_level(self) -> None:
         """Keep aiosendspin's (very chatty) logging quiet unless verbose logging is enabled."""
@@ -2006,7 +2242,11 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         if not isinstance(player, SendspinBasePlayer) or player.player is None:
             return
         # A trust change (de)activates roles; role instances are recreated on activation,
-        # so pushed config (preferred format, static delay) must be re-applied.
+        # so pushed config (preferred format, static delay) must be re-applied. A role
+        # that accepts a static delay only now has no entry for it in the config yet, and
+        # loading the config again applies it as well.
+        if isinstance(player, SendspinPlayer) and await player.load_static_delay_entry():
+            return
         await player.on_config_updated()
         player.update_state()
 

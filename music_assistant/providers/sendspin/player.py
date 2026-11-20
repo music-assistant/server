@@ -134,6 +134,8 @@ from .constants import (
     CONNECT_METHOD_UNPAIRED_WITH_INPUT,
     CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT,
     DEFAULT_SENDSPIN_STATIC_DELAY,
+    MAX_SENDSPIN_STATIC_DELAY,
+    MIN_SENDSPIN_STATIC_DELAY,
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
@@ -1564,6 +1566,14 @@ class SendspinPlayer(SendspinBasePlayer):
                 return rates
         return [(44100, 16)]
 
+    @property
+    def supports_static_delay(self) -> bool:
+        """Return whether the live player role accepts a static delay."""
+        player_role = self._player_role
+        return player_role is not None and not _OUTPUT_DELAY_COMMANDS.isdisjoint(
+            player_role.state_supported_commands
+        )
+
     def preserve_control_features_from(self, other: SendspinPlayer) -> None:
         """Keep the first registration's volume/mute features as a workaround for Cast."""
         if not other.control_features_pinned:
@@ -1638,12 +1648,35 @@ class SendspinPlayer(SendspinBasePlayer):
             self._attr_device_info.add_identifier(id_type, id_value)
         self.ride_on(underlying_protocol_id)
 
+    async def load_static_delay_entry(self) -> bool:
+        """
+        Load the config again once the player role accepts a static delay it has no entry for.
+
+        A config only holds the entries the player declares when it is loaded, and a
+        client that is paired, or reports its commands, after it registered declares the
+        static delay later than that. Without the entry a stored delay never reaches the
+        config copy the push reads, and a read only sees the default. Loading the config
+        also stores the delay the device reported in the meantime.
+
+        :return: Whether the config was loaded again.
+        """
+        if (
+            self.player is None
+            or not self.supports_static_delay
+            or CONF_SENDSPIN_STATIC_DELAY in self.config.values
+        ):
+            return False
+        await self.mass.players.on_protocol_config_change(self.protocol_id, set())
+        return True
+
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin client."""
         match event:
             case VolumeChangedEvent(volume=volume, muted=muted):
                 self._take_reported_volume(volume, muted)
                 self.update_state()
+                # a report of the client is also where the commands it accepts arrive
+                self._schedule_static_delay_entry()
             case OutputDelayChangedEvent(output_delay_ms=delay_ms):
                 self.logger.debug("Output delay changed to %d ms", delay_ms)
                 current = self.config.get_value(
@@ -1654,6 +1687,7 @@ class SendspinPlayer(SendspinBasePlayer):
                     # the device; a value stored before that load could miss the loaded copy,
                     # so keep it until then and the device's own delay is pushed back
                     self._reported_static_delay = delay_ms
+                    self._schedule_static_delay_entry()
                 else:
                     # an older report kept from before the config was loaded is outdated now
                     self._reported_static_delay = None
@@ -2261,16 +2295,14 @@ class SendspinPlayer(SendspinBasePlayer):
                 sample_rate_entry.depends_on_value = SENDSPIN_FORMAT_AUTOMATIC
                 entries.append(sample_rate_entry)
 
-        if player_role is not None and not _OUTPUT_DELAY_COMMANDS.isdisjoint(
-            player_role.state_supported_commands
-        ):
+        if self.supports_static_delay:
             entries.append(
                 ConfigEntry(
                     key=CONF_SENDSPIN_STATIC_DELAY,
                     type=ConfigEntryType.INTEGER,
                     required=False,
                     default_value=self.static_delay_default_ms,
-                    range=(0, 5000),
+                    range=(MIN_SENDSPIN_STATIC_DELAY, MAX_SENDSPIN_STATIC_DELAY),
                     immediate_apply=True,
                     # Not a advanced option since this will only show up for players where it is likely
                     # necessary to adjust the delay.
@@ -2739,6 +2771,19 @@ class SendspinPlayer(SendspinBasePlayer):
         """
         formats = player_role.get_supported_formats() or []
         return [fmt for fmt in formats if fmt.codec == formats[0].codec]
+
+    def _schedule_static_delay_entry(self) -> None:
+        """Load the static delay entry of a registered player that only now accepts a delay."""
+        if (
+            self.player is None
+            or not self.supports_static_delay
+            or CONF_SENDSPIN_STATIC_DELAY in self.config.values
+        ):
+            return
+        self.mass.create_task(
+            self.load_static_delay_entry(),
+            task_id=f"sendspin_static_delay_entry_{self.protocol_id}",
+        )
 
     async def _apply_static_delay(self) -> None:
         """Read config and send the output delay command if supported."""
