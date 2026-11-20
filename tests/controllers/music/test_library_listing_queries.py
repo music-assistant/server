@@ -1088,7 +1088,7 @@ async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistan
     """
     Default library listings stream from the sort index without a temp b-tree.
 
-    The ids of the listed items are read through the index on the item id.
+    The external ids of the listed items are read through the index on the item id.
     """
     database = seeded_mass.music.database
     # drop the planner statistics so SQLite falls back to its default (large) table
