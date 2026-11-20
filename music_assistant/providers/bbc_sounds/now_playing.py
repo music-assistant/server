@@ -1,24 +1,30 @@
-"""Now-playing code for the BBC Sounds provider."""
+"""
+Now-playing metadata functionality for BBC Sounds streams.
+
+Handles checking what is meant to be playing at a given point in time on the various
+playback types (live stream, live rewind stream, playback content).
+"""
 
 import asyncio
 import copy
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from auntie_sounds import SoundsException
 from auntie_sounds.history import Track
-from auntie_sounds.models import (
-    LiveStation,
-    Segment,
-)
+from auntie_sounds.models import PlayableItem, Segment
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.constants import (
-    VERBOSE_LOG_LEVEL,
-)
-from music_assistant.controllers.cache import use_cache
+import music_assistant.helpers.datetime as dt
+from music_assistant.controllers.streams.audio import STREAMDETAILS_HLS_START_SECONDS_KEY
+from music_assistant.controllers.streams.constants import HLS_RADIO_LIVE_START_SECONDS
 from music_assistant.providers.bbc_sounds.constants import Constants
-from music_assistant.providers.bbc_sounds.live_rewind import LiveProgrammeId
+from music_assistant.providers.bbc_sounds.live_rewind import LIVE_EDGE_TOLERANCE, LiveProgrammeId
+from music_assistant.providers.bbc_sounds.naming import (
+    TitleParts,
+    programme_title,
+)
 
 if TYPE_CHECKING:
     from auntie_sounds import SoundsClient
@@ -26,16 +32,30 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.providers.bbc_sounds.provider import BBCSoundsProvider
 
+# A miss is cached too, so a track with no artwork anywhere is only looked up once a day
+SEGMENT_IMAGE_EXPIRATION = 60 * 60 * 24
 
-def live_station_to_metadata(station: LiveStation, detailed: bool = False) -> StreamMetadata | None:
-    """Calculate what to show for a radio programme's metadata."""
-    if station and station.titles and station.titles.primary:
-        # Filter out any None values before
-        title = " • ".join(filter(None, (station.titles.secondary, station.titles.primary)))
-        if detailed and station.synopses and station.synopses.short:
-            title = f"{title}: {station.synopses.short}"
-        return StreamMetadata(title=title, artist=None, image_url=station.image_url)
-    return None
+# The HLS live edge plus the player's buffer, measured at about 7 seconds behind broadcast
+LIVE_EDGE_LATENCY = 7
+
+
+@dataclass(slots=True)
+class NowPlaying:
+    """What one stream shows: its fallback between tracks, and the track shown now."""
+
+    fallback: StreamMetadata | None
+    album: str | None = None
+    segment_id: str | None = None
+    generation: int = 0
+
+
+def programme_metadata(
+    item: PlayableItem, station: str | None, parts: TitleParts = TitleParts.STATION
+) -> StreamMetadata:
+    """Return what a stream shows for its programme when no track is playing."""
+    return StreamMetadata(
+        title=programme_title(item, parts), album=station, image_url=item.image_url
+    )
 
 
 def _segments_cache_key(vpid: str) -> str:
@@ -55,182 +75,235 @@ def _find_segment(segments: list[Segment], elapsed_time: int) -> Segment | None:
     )
 
 
-def _segment_to_metadata(now_playing: Segment) -> StreamMetadata:
-    """Convert a now-playing segment to StreamMetadata."""
-    title = now_playing.titles.secondary or ""
-    artist = now_playing.titles.primary or ""
-    image_url = now_playing.image_url
-    if image_url and Constants.BLANK_IMAGE_NAME in image_url:
-        image_url = None
-    return StreamMetadata(title=title, artist=artist, image_url=image_url)
+def _bbc_image(segment: Segment) -> str | None:
+    """Return the segment's own image, unless it is the BBC's blank placeholder."""
+    url = segment.image_url
+    return None if url is None or Constants.BLANK_IMAGE_NAME in url else url
+
+
+def _track_metadata(segment: Segment, album: str | None, image_url: str | None) -> StreamMetadata:
+    """Return the metadata shown for a track."""
+    return StreamMetadata(
+        title=segment.titles.secondary or "",
+        artist=segment.titles.primary or "",
+        album=album,
+        image_url=image_url,
+    )
 
 
 class NowPlayingManager:
-    """Manages the now-playing/segment/live stream metadata."""
+    """Finds the track at the listener's position and shows it, or the stream's fallback."""
 
     def __init__(self, provider: BBCSoundsProvider) -> None:
         """Initialise the now playing manager."""
         self.provider: BBCSoundsProvider = provider
         self.client: SoundsClient = provider.client
-        self.mass: MusicAssistant = self.provider.mass
-        self.domain = self.provider.domain
-        self.logger = self.provider.logger
+        self.mass: MusicAssistant = provider.mass
+        self.domain = provider.domain
+        self.logger = provider.logger
 
-    async def update_live_stream_metadata(
-        self, stream_details: StreamDetails, elapsed_time: int
+    async def update_station(
+        self, state: NowPlaying, stream_details: StreamDetails, _elapsed_time: int
     ) -> None:
-        """Get the currently playing song for live radio streams."""
-        self.logger.log(VERBOSE_LOG_LEVEL, "Updating live stream metadata")
-        if not stream_details or not stream_details.stream_metadata:
-            return
-
+        """Show the track the listener hears on a live station, which is behind live."""
         station_id = stream_details.item_id
-        if not station_id:
-            return
 
-        now_playing = await self.client.schedules.currently_playing_song(station_id)
-        if now_playing:
-            self.logger.log(VERBOSE_LOG_LEVEL, "Now playing for %s: %s", station_id, now_playing)
-            self._set_metadata(stream_details, _segment_to_metadata(now_playing))
-        else:
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "No song playing on %s, displaying current programme info",
-                station_id,
-            )
-            if metadata := await self._current_programme_metadata(station_id):
-                stream_details.stream_metadata = metadata
+        # MA records how far behind live the stream started, which is unset before playback
+        data = stream_details.data or {}
+        delay = data.get(STREAMDETAILS_HLS_START_SECONDS_KEY)
+        if delay is None:
+            delay = HLS_RADIO_LIVE_START_SECONDS
 
-    async def update_on_demand_stream_metadata(
-        self, stream_details: StreamDetails, elapsed_time: int
-    ) -> None:
-        """Show the segment playing at elapsed_time, or the episode between segments."""
-        self.logger.log(VERBOSE_LOG_LEVEL, "Updating on-demand stream metadata")
-
-        data = stream_details.data
-        if (segments := data.get("segments")) is None:
-            self.logger.debug("No segments found on stream_details.data, loading them...")
-            segments = data["segments"] = await self._load_programme_segments(data["vpid"])
-
-        segment = _find_segment(segments, elapsed_time)
-        segment_id = segment.id if segment else None
-
-        # We're either showing the correct segment, or we're correctly showing the episode metadata
-        if segment_id == data.get("segment_id"):
-            self.logger.log(
-                VERBOSE_LOG_LEVEL, "No need to update metadata, segment_id=%s", segment_id
-            )
-            return
-        data["segment_id"] = segment_id
+        segment = await self._station_track(
+            station_id, dt.utc(), timedelta(seconds=delay + LIVE_EDGE_LATENCY)
+        )
 
         if segment is None:
-            self.logger.debug("Between segments, showing episode metadata")
-            self._set_metadata(stream_details, data["episode_metadata"])
-            return
+            if programme := await self.client.schedules.on_air(station_id):
+                state.fallback = programme_metadata(programme, state.album)
 
-        self._set_metadata(stream_details, _segment_to_metadata(segment))
-        image_before = segment.image_url
-        await self._fill_segment_image(stream_details, segment)
-        if segment.image_url == image_before:
-            return
-        await self._save_programme_segments(data["vpid"], segments)
-        # Check we don't try and set an old segment's metadata if we took too long
-        if data["segment_id"] == segment.id:
-            self._set_metadata(stream_details, _segment_to_metadata(segment))
+        self._show_now_playing(stream_details, state, segment)
 
-    async def update_live_programme_metadata(
-        self, stream_details: StreamDetails, elapsed_time: int
+    async def update_live_programme(
+        self,
+        state: NowPlaying,
+        programme_id: LiveProgrammeId,
+        programme: PlayableItem,
+        stream_details: StreamDetails,
+        elapsed_time: int,
     ) -> None:
-        """Show the track on air at the listener's point in a live programme."""
-        programme_id = LiveProgrammeId.parse(stream_details.item_id)
-        if programme_id is None:
-            return
-        history = await self.client.schedules.refresh_history(programme_id.station_id)
-        self.logger.debug("Live programme history: %s", history._entries)
+        """
+        Show the track at the listener's point in a programme played from live rewind.
+
+        :param state: The stream's now-playing state.
+        :param programme_id: The programme being played.
+        :param programme: The programme, from the station's schedule.
+        :param stream_details: Stream details of the programme.
+        :param elapsed_time: Seconds played since the start of the programme.
+        """
         at = datetime.fromtimestamp(programme_id.start + elapsed_time, UTC)
-        match history.lookup(at):
-            case Track(segment=segment):
-                self.logger.debug("Track found in history: %s", str(history.lookup(at)))
-                stream_details.stream_metadata = _segment_to_metadata(segment)
-            case _:
-                # None falls back to the queue item, which describes the programme
-                self.logger.debug("No track found, or no song playing")
-                stream_details.stream_metadata = None
+        segment = await self._station_track(programme_id.station_id, at)
 
-    @use_cache(expiration=Constants.DYNAMIC_EXPIRATION, base_class=StreamMetadata)
-    async def _current_programme_metadata(self, station_id: str) -> StreamMetadata | None:
-        """Reduce downstream API calls via simple wrapper for caching."""
-        # TODO: we can actually cache this for the remainder of the programme if we
-        # calculate that value
-        self.logger.debug("Fetching fresh programme result from API")
-        station = await self.client.schedules.current_programme(station_id)
-        if not station:
-            return None
-        self.logger.debug("%s(%s)", type(station), station.id)
-        self.logger.log(VERBOSE_LOG_LEVEL, station)
-        return live_station_to_metadata(station, detailed=True)
+        if segment is None:
+            at_live_edge = dt.utc_timestamp() - at.timestamp() <= LIVE_EDGE_TOLERANCE
+            parts = TitleParts.LIVE_EDGE if at_live_edge else TitleParts.LIVE_REWIND
+            state.fallback = programme_metadata(programme, state.album, parts)
+        self._show_now_playing(stream_details, state, segment)
 
-    async def _load_programme_segments(self, vpid: str) -> list[Segment]:
-        """Get on demand segments from cache or API."""
-        cached = await self.mass.cache.get(provider=self.domain, key=_segments_cache_key(vpid))
+    async def update_on_demand(
+        self,
+        state: NowPlaying,
+        segments: list[Segment],
+        stream_details: StreamDetails,
+        elapsed_time: int,
+    ) -> None:
+        """Show the track at elapsed_time in an on-demand programme."""
+        self._show_now_playing(stream_details, state, _find_segment(segments, elapsed_time))
+
+    async def programme_segments(self, vpid: str) -> list[Segment]:
+        """Get an on-demand programme's tracks from the cache or the API."""
+        key = _segments_cache_key(vpid)
+        cached = await self.mass.cache.get(key, provider=self.domain)
         if isinstance(cached, list):
-            self.logger.debug("Cache hit for programme segments for %s", vpid)
             return [Segment.from_dict(item) for item in cached]
-        self.logger.debug("No cache for programme segments for %s", vpid)
         segments = await self.client.content.get_show_segments(vpid)
         # The track list can be published after the programme, so an empty one isn't cached
         if segments:
-            await self._save_programme_segments(vpid, segments)
+            await self.mass.cache.set(
+                key, [segment.to_dict() for segment in segments], provider=self.domain
+            )
         return segments
 
-    async def _save_programme_segments(self, vpid: str, segments: list[Segment]) -> None:
-        """To cache segments initially, but also after any segment is updated."""
-        self.logger.debug("Saving segments to cache")
-        await self.mass.cache.set(
-            provider=self.domain,
-            key=_segments_cache_key(vpid),
-            data=[segment.to_dict() for segment in segments],
+    async def _station_track(
+        self, station_id: str, at: datetime, delay: timedelta = timedelta(0)
+    ) -> Segment | None:
+        """Return the track a station had on air at a time, polling as the BBC asks."""
+        history = await self.client.schedules.refresh_history(station_id)
+        result = history.lookup(at, delay)
+        return result.segment if isinstance(result, Track) else None
+
+    def _show_now_playing(
+        self, stream_details: StreamDetails, state: NowPlaying, segment: Segment | None
+    ) -> None:
+        """
+        Show a track's now playing details in the player.
+
+        It starts a background task to look up its track image, updating if/when it
+        arrives.
+        """
+        if segment is None:
+            # Leaving a track invalidates any artwork lookup still running for it
+            if state.segment_id is not None:
+                state.generation += 1
+                self.logger.debug(
+                    "%s: track %s ended, showing fallback",
+                    stream_details.item_id,
+                    state.segment_id,
+                )
+
+            state.segment_id = None
+            self._set_metadata(stream_details, state.fallback)
+            return
+
+        # This runs each time, but a track that is already showing is all good
+        if segment.id == state.segment_id:
+            return
+
+        state.generation += 1
+        generation = state.generation
+        state.segment_id = segment.id
+
+        own_image = _bbc_image(segment)
+        self.logger.debug(
+            "%s: now playing %s - %s (%s), BBC track image: %s",
+            stream_details.item_id,
+            segment.titles.primary,
+            segment.titles.secondary,
+            segment.id,
+            own_image is not None,
         )
 
-    async def _fill_segment_image(self, stream_details: StreamDetails, segment: Segment) -> None:
-        """Fill in a segment's missing image from Spotify, then from MA's radio artwork lookup."""
-        if _segment_to_metadata(segment).image_url:
-            self.logger.debug("Segment already has an image, skipping.")
+        # Show the track straight away, track image arrives when it's ready
+        self._set_metadata(stream_details, _track_metadata(segment, state.album, own_image))
+
+        if own_image is None:
+            self.mass.create_task(
+                self._show_segment_image(stream_details, state, segment, generation),
+                task_name="bbc_sounds_segment_image",
+            )
+
+    async def _show_segment_image(
+        self, stream_details: StreamDetails, state: NowPlaying, segment: Segment, generation: int
+    ) -> None:
+        """
+        Look up a track's artwork and show it, unless the listener has moved on.
+
+        state.generation counts track changes. A lookup notes the generation it started
+        in, and its result is only applied if the generation is unchanged, so slow
+        artwork for an earlier track never overwrites what is showing now.
+        """
+        image = await self._segment_image(stream_details, segment)
+
+        # The listener may have moved on while the lookup was running
+        if state.generation != generation:
+            self.logger.debug(
+                "Ignoring found track image for %s, track changed during lookup", segment.id
+            )
             return
+
+        if image is None:
+            self.logger.debug("No track image found for %s", segment.id)
+            return
+
+        self._set_metadata(stream_details, _track_metadata(segment, state.album, image))
+
+    async def _segment_image(self, stream_details: StreamDetails, segment: Segment) -> str | None:
+        """Look up artwork for a track the BBC has none for, from Spotify then MA."""
+        key = f"segment_image_{segment.id}"
+        cached = await self.mass.cache.get(key, provider=self.domain)
+        if isinstance(cached, str):
+            return cached or None
+
+        image: str | None = None
+
         try:
             async with asyncio.timeout(Constants.ARTWORK_TIMEOUT):
-                try:
-                    await self.client.content.ensure_segment_image(segment)
-                except SoundsException as err:
-                    self.logger.debug("Error when fetching segment image: %s", err)
-
-                metadata = _segment_to_metadata(segment)
-
-                if metadata.image_url:
-                    self.logger.debug("Segment image fetched from Spotify successfully.")
-                    return
-
-                self.logger.debug("No Spotify image, falling back to MA")
-
-                # Use a copy of the StreamDetails to update so we avoid races
-                lookup = copy.copy(stream_details)
-                lookup.stream_metadata = metadata
-                await self.mass.metadata.update_radio_stream_artwork(lookup)
+                image = await self._spotify_image(segment) or await self._ma_image(
+                    stream_details, segment
+                )
         except TimeoutError:
-            self.logger.debug("Timeout while waiting for artwork")
-            return
+            self.logger.debug("Timed out looking up artwork for %s", segment.id)
+            return None
+        await self.mass.cache.set(
+            key, image or "", provider=self.domain, expiration=SEGMENT_IMAGE_EXPIRATION
+        )
+        return image
 
-        # MA updates the metadata directly, so grab it back out for the segment
-        if (found := lookup.stream_metadata) and found.image_url:
-            self.logger.debug("MA found an image, using that.")
-            segment.image_url = found.image_url
-        else:
-            self.logger.debug("No images found from any sources for the current song.")
+    async def _spotify_image(self, segment: Segment) -> str | None:
+        """Return the track's Spotify artwork, without changing the library's segment."""
+        lookup = copy.copy(segment)
+        try:
+            await self.client.content.ensure_segment_image(lookup)
+        except SoundsException as err:
+            self.logger.debug("Error fetching artwork from Spotify: %s", err)
+        if lookup.image_url != segment.image_url:
+            self.logger.debug("Found a track image from Spotify.")
+        return _bbc_image(lookup)
 
-    def _set_metadata(self, stream_details: StreamDetails, metadata: StreamMetadata) -> None:
-        """Force a metadata refresh instead of waiting."""
+    async def _ma_image(self, stream_details: StreamDetails, segment: Segment) -> str | None:
+        """Return the artwork MA's radio artwork lookup finds for the track."""
+        # MA fills in the metadata it is given, so give it a copy
+        lookup = copy.copy(stream_details)
+        lookup.stream_metadata = _track_metadata(segment, None, None)
+        await self.mass.metadata.update_radio_stream_artwork(lookup)
+        return lookup.stream_metadata.image_url if lookup.stream_metadata else None
+
+    def _set_metadata(self, stream_details: StreamDetails, metadata: StreamMetadata | None) -> None:
+        """Show new metadata at once, instead of at the queue's next update."""
         if metadata == stream_details.stream_metadata:
             return
+
+        self.logger.debug("Now playing on %s: %s", stream_details.item_id, metadata)
         stream_details.stream_metadata = metadata
         if stream_details.queue_id:
             self.mass.player_queues.signal_update(stream_details.queue_id)

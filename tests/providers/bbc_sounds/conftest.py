@@ -80,6 +80,9 @@ def cache_tasks(provider: BBCSoundsProvider) -> list[asyncio.Future[Any]]:
     provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
         side_effect=_cache_get
     )
+    provider.mass.cache.get = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda key, **_kwargs: store.get(key)
+    )
     provider.mass.cache.set = AsyncMock(side_effect=_cache_set)  # type: ignore[method-assign]
     provider.mass.create_task = Mock(side_effect=_create_task)  # type: ignore[method-assign]
     return background_tasks
