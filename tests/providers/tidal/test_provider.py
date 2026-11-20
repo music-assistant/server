@@ -32,7 +32,7 @@ def mass_mock() -> Mock:
 @pytest.fixture
 def manifest_mock() -> Mock:
     """Return a mock provider manifest."""
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "tidal"
     return manifest
 
@@ -141,7 +141,7 @@ async def test_handle_async_init_missing_auth() -> None:
     mass.http_session = AsyncMock()
     mass.metadata.locale = "en_US"
 
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "tidal"
 
     config = Mock()

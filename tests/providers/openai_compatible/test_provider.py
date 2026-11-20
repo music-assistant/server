@@ -2,6 +2,7 @@
 
 import base64
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -17,6 +18,8 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from music_assistant.helpers.plugin_engines import EngineKind, get_default_engine
+from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.openai_compatible import (
     SUPPORTED_FEATURES,
     OpenAICompatibleProvider,
@@ -29,6 +32,7 @@ from music_assistant.providers.openai_compatible.constants import (
     SERVICE_BASE_URLS,
     SERVICE_CUSTOM,
 )
+from music_assistant.testing import full_mass_context
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
@@ -317,24 +321,30 @@ def test_api_key_comes_from_setup_data_and_is_stripped() -> None:
     assert provider._api_key == "sk-secret"
 
 
-async def test_probe_returns_invalid_api_key_slug_on_login_failed() -> None:
-    """A rejected key must map to the frontend's invalid_api_key error slug."""
+async def test_probe_raises_invalid_api_key_on_login_failed() -> None:
+    """A rejected key must map to the invalid_api_key error."""
     session = cast("SetupSession", SimpleNamespace(mass=MagicMock()))
-    with patch.object(setup_flow, "list_models", AsyncMock(side_effect=LoginFailed("bad key"))):
-        result = await setup_flow._probe(session, {"base_url": BASE_URL, "api_key": "bad"})
-
-    assert result == "invalid_api_key"
-
-
-async def test_probe_returns_cannot_connect_slug_on_provider_unavailable() -> None:
-    """An unreachable host must map to the frontend's cannot_connect error slug."""
-    session = cast("SetupSession", SimpleNamespace(mass=MagicMock()))
-    with patch.object(
-        setup_flow, "list_models", AsyncMock(side_effect=ProviderUnavailableError("down"))
+    with (
+        patch.object(setup_flow, "list_models", AsyncMock(side_effect=LoginFailed("bad key"))),
+        pytest.raises(SetupFlowError) as exc_info,
     ):
-        result = await setup_flow._probe(session, {"base_url": BASE_URL})
+        await setup_flow._probe(session, {"base_url": BASE_URL, "api_key": "bad"})
 
-    assert result == "cannot_connect"
+    assert exc_info.value.translation_key == "invalid_api_key"
+
+
+async def test_probe_raises_cannot_connect_on_provider_unavailable() -> None:
+    """An unreachable host must map to the cannot_connect error."""
+    session = cast("SetupSession", SimpleNamespace(mass=MagicMock()))
+    with (
+        patch.object(
+            setup_flow, "list_models", AsyncMock(side_effect=ProviderUnavailableError("down"))
+        ),
+        pytest.raises(SetupFlowError) as exc_info,
+    ):
+        await setup_flow._probe(session, {"base_url": BASE_URL})
+
+    assert exc_info.value.translation_key == "cannot_connect"
 
 
 async def test_probe_succeeds_when_endpoint_has_no_model_listing() -> None:
@@ -343,21 +353,24 @@ async def test_probe_succeeds_when_endpoint_has_no_model_listing() -> None:
     with patch.object(setup_flow, "list_models", AsyncMock(return_value=[])):
         result = await setup_flow._probe(session, {"base_url": BASE_URL})
 
-    assert result is None
+    assert result == []
 
 
 async def test_probe_reports_an_address_that_answers_with_an_error() -> None:
     """A wrong address must be caught during setup, not on the first AI query."""
     session = cast("SetupSession", SimpleNamespace(mass=MagicMock()))
-    with patch.object(setup_flow, "list_models", AsyncMock(side_effect=InvalidDataError("404"))):
-        result = await setup_flow._probe(session, {"base_url": BASE_URL})
+    with (
+        patch.object(setup_flow, "list_models", AsyncMock(side_effect=InvalidDataError("404"))),
+        pytest.raises(SetupFlowError) as exc_info,
+    ):
+        await setup_flow._probe(session, {"base_url": BASE_URL})
 
-    assert result == "cannot_connect"
+    assert exc_info.value.translation_key == "cannot_connect"
 
 
 async def test_run_setup_prefills_the_address_of_the_chosen_service() -> None:
     """Picking a known service fills in its address so it need not be looked up."""
-    session = _FakeSession(setup_data={}, submissions=[{"service": "groq"}, {}])
+    session = _FakeSession(setup_data={}, submissions=[{"service": "groq"}, {}, {}])
 
     await _run_setup(session)
 
@@ -366,7 +379,7 @@ async def test_run_setup_prefills_the_address_of_the_chosen_service() -> None:
 
 async def test_run_setup_leaves_the_address_empty_for_a_custom_service() -> None:
     """There is nothing to prefill for a service we do not know the address of."""
-    session = _FakeSession(setup_data={}, submissions=[{"service": SERVICE_CUSTOM}, {}])
+    session = _FakeSession(setup_data={}, submissions=[{"service": SERVICE_CUSTOM}, {}, {}])
 
     await _run_setup(session)
 
@@ -377,7 +390,7 @@ async def test_run_setup_prefers_the_new_services_address_when_switching() -> No
     """Moving an instance to another service must not keep the previous address."""
     session = _FakeSession(
         setup_data={"service": "openai", "base_url": SERVICE_BASE_URLS["openai"]},
-        submissions=[{"service": "ollama"}, {}],
+        submissions=[{"service": "ollama"}, {}, {}],
     )
 
     await _run_setup(session)
@@ -390,7 +403,7 @@ async def test_run_setup_keeps_an_edited_address_for_the_same_service() -> None:
     edited = "http://nas.local:11434/v1"
     session = _FakeSession(
         setup_data={"service": "ollama", "base_url": edited},
-        submissions=[{"service": "ollama"}, {}],
+        submissions=[{"service": "ollama"}, {}, {}],
     )
 
     await _run_setup(session)
@@ -402,7 +415,7 @@ async def test_run_setup_keeps_the_stored_api_key_when_the_field_is_left_empty()
     """The stored key is never sent to the client, so an empty field must not wipe it."""
     session = _FakeSession(
         setup_data={"service": "openai", "base_url": BASE_URL, "api_key": "sk-existing"},
-        submissions=[{"service": "openai"}, {"base_url": BASE_URL, "api_key": ""}],
+        submissions=[{"service": "openai"}, {"base_url": BASE_URL, "api_key": ""}, {}],
     )
 
     await _run_setup(session)
@@ -418,7 +431,7 @@ async def test_run_setup_replaces_the_stored_api_key_when_a_new_one_is_given() -
     """A freshly typed key overwrites the stored one."""
     session = _FakeSession(
         setup_data={"service": "openai", "base_url": BASE_URL, "api_key": "sk-existing"},
-        submissions=[{"service": "openai"}, {"base_url": BASE_URL, "api_key": "sk-new"}],
+        submissions=[{"service": "openai"}, {"base_url": BASE_URL, "api_key": "sk-new"}, {}],
     )
 
     await _run_setup(session)
@@ -433,6 +446,7 @@ async def test_run_setup_clears_the_stored_api_key_on_request() -> None:
         submissions=[
             {"service": "ollama"},
             {"base_url": BASE_URL, "api_key": "", "clear_api_key": True},
+            {},
         ],
     )
 
@@ -443,17 +457,129 @@ async def test_run_setup_clears_the_stored_api_key_on_request() -> None:
 
 async def test_run_setup_offers_the_clear_option_only_when_a_key_is_stored() -> None:
     """A first-time setup has nothing to clear, so the option stays out of the form."""
-    fresh = _FakeSession(setup_data={}, submissions=[{"service": "openai"}, {}])
+    fresh = _FakeSession(setup_data={}, submissions=[{"service": "openai"}, {}, {}])
     stored = _FakeSession(
         setup_data={"service": "openai", "base_url": BASE_URL, "api_key": "sk-existing"},
-        submissions=[{"service": "openai"}, {"base_url": BASE_URL, "api_key": ""}],
+        submissions=[{"service": "openai"}, {"base_url": BASE_URL, "api_key": ""}, {}],
     )
 
     await _run_setup(fresh)
     await _run_setup(stored)
 
-    assert setup_flow.CONF_CLEAR_API_KEY not in [entry.key for entry in fresh.entries]
-    assert setup_flow.CONF_CLEAR_API_KEY in [entry.key for entry in stored.entries]
+    assert setup_flow.CONF_CLEAR_API_KEY not in [entry.key for entry in fresh.forms["connection"]]
+    assert setup_flow.CONF_CLEAR_API_KEY in [entry.key for entry in stored.forms["connection"]]
+
+
+async def test_run_setup_offers_the_listed_models_to_pick_from() -> None:
+    """The models step offers what the endpoint lists, for text and image models alike."""
+    session = _FakeSession(setup_data={}, submissions=[{"service": "openai"}, {}, {}])
+
+    await _run_setup(session, AsyncMock(return_value=["gpt-a", "gpt-b"]))
+
+    for key in (CONF_MODELS, CONF_IMAGE_MODELS):
+        options = _entry(session, key, "models").options
+        assert [option.value for option in options] == ["gpt-a", "gpt-b"]
+
+
+async def test_run_setup_stores_the_picked_models_in_the_settings() -> None:
+    """The picks land in the settings the provider reads its engines from, not in setup_data."""
+    session = _FakeSession(
+        setup_data={},
+        submissions=[
+            {"service": "openai"},
+            {"base_url": BASE_URL, "api_key": "sk-new"},
+            {CONF_MODELS: ["gpt-a"], CONF_IMAGE_MODELS: ["gpt-image"]},
+        ],
+    )
+
+    await _run_setup(session, AsyncMock(return_value=["gpt-a", "gpt-image"]))
+
+    assert session.finished_options == {CONF_MODELS: ["gpt-a"], CONF_IMAGE_MODELS: ["gpt-image"]}
+    assert session.finished == {"service": "openai", "base_url": BASE_URL, "api_key": "sk-new"}
+
+
+async def test_run_setup_prefills_the_current_models_on_a_reconfigure() -> None:
+    """A reconfigure starts from the current picks, also when the endpoint no longer lists them."""
+    session = _FakeSession(
+        setup_data={"service": "openai", "base_url": BASE_URL},
+        submissions=[{"service": "openai"}, {}, {}],
+        values={CONF_MODELS: ["old-model"], CONF_IMAGE_MODELS: ["old-image"]},
+    )
+
+    await _run_setup(session, AsyncMock(return_value=["new-model"]))
+
+    models = _entry(session, CONF_MODELS, "models")
+    assert models.value == ["old-model"]
+    assert [option.value for option in models.options] == ["new-model", "old-model"]
+    assert _entry_value(session, CONF_IMAGE_MODELS, "models") == ["old-image"]
+
+
+async def test_run_setup_accepts_typed_models_when_the_service_lists_none() -> None:
+    """Without a listing the models step has no options, so the names can be typed in."""
+    picks = {CONF_MODELS: ["typed-by-hand"], CONF_IMAGE_MODELS: []}
+    session = _FakeSession(
+        setup_data={}, submissions=[{"service": SERVICE_CUSTOM}, {"base_url": BASE_URL}, picks]
+    )
+
+    await _run_setup(session)
+
+    assert _entry(session, CONF_MODELS, "models").options == []
+    assert session.finished_options == picks
+
+
+async def test_adding_the_provider_gives_the_picked_models_as_engines(tmp_path: Path) -> None:
+    """Right after the setup flow the picks are engines, the default one included."""
+    listing = AsyncMock(return_value=["gpt-a", "gpt-b"])
+    with (
+        patch.object(setup_flow, "list_models", listing),
+        patch("music_assistant.providers.openai_compatible.list_models", listing),
+    ):
+        async with full_mass_context(tmp_path) as mass:
+            step = await mass.config.setup_provider("openai_compatible")
+            step = await mass.config.submit_setup_flow(step.flow_id, {"service": "openai"})
+            step = await mass.config.submit_setup_flow(
+                step.flow_id, {"base_url": BASE_URL, "api_key": "sk-test"}
+            )
+            assert step.step_id == "models"
+            step = await mass.config.submit_setup_flow(
+                step.flow_id, {CONF_MODELS: ["gpt-b"], CONF_IMAGE_MODELS: []}
+            )
+            assert step.result is not None
+            instance_id = step.result["instance_id"]
+            provider = mass.get_provider(instance_id, provider_type=OpenAICompatibleProvider)
+            assert provider is not None
+            assert [engine.id for engine in await provider.get_ai_engines()] == ["gpt-b"]
+            default = await get_default_engine(mass, EngineKind.TEXT)
+            assert default is not None
+            assert default.id == "gpt-b"
+
+            # a reconfigure starts from the current picks and replaces them
+            step = await mass.config.reconfigure_provider(instance_id)
+            step = await mass.config.submit_setup_flow(step.flow_id, {"service": "openai"})
+            step = await mass.config.submit_setup_flow(step.flow_id, {"base_url": BASE_URL})
+            assert next(e.value for e in step.entries if e.key == CONF_MODELS) == ["gpt-b"]
+            await mass.config.submit_setup_flow(
+                step.flow_id, {CONF_MODELS: ["gpt-a"], CONF_IMAGE_MODELS: ["gpt-b"]}
+            )
+            provider = mass.get_provider(instance_id, provider_type=OpenAICompatibleProvider)
+            assert provider is not None
+            assert [engine.id for engine in await provider.get_ai_engines()] == ["gpt-a"]
+            assert [engine.id for engine in await provider.get_image_engines()] == ["gpt-b"]
+            # the reconfigure keeps the stored key while its field stays empty
+            assert provider._api_key == "sk-test"
+
+
+async def test_run_setup_asks_for_the_connection_again_when_the_endpoint_fails() -> None:
+    """A rejected key returns to the connection details before any model is asked for."""
+    session = _FakeSession(
+        setup_data={},
+        submissions=[{"service": "openai"}, {"api_key": "bad"}, {"api_key": "good"}, {}],
+    )
+
+    await _run_setup(session, AsyncMock(side_effect=[LoginFailed("bad key"), ["gpt-a"]]))
+
+    assert session.steps == ["service", "connection", "connection", "models"]
+    assert session.errors["connection"]["base"].translation_key == "invalid_api_key"
 
 
 async def test_get_ai_engines_returns_one_engine_per_configured_model(
@@ -1112,34 +1238,60 @@ def _build_provider(mass: AsyncMock, setup_data: dict[str, Any]) -> OpenAICompat
     return provider
 
 
-def _entry_value(session: _FakeSession, key: str) -> Any:
-    """Return the prefilled value of an entry on the last form the flow rendered."""
-    return next(entry.value for entry in session.entries if entry.key == key)
+def _entry(session: _FakeSession, key: str, step_id: str = "connection") -> Any:
+    """Return an entry of the given step as the flow last rendered it."""
+    return next(entry for entry in session.forms[step_id] if entry.key == key)
 
 
-async def _run_setup(session: _FakeSession) -> None:
-    """Drive the setup flow against a fake session, with a reachable endpoint."""
-    with patch.object(setup_flow, "list_models", AsyncMock(return_value=[])):
+def _entry_value(session: _FakeSession, key: str, step_id: str = "connection") -> Any:
+    """Return the prefilled value of an entry of the given step."""
+    return _entry(session, key, step_id).value
+
+
+async def _run_setup(session: _FakeSession, models: AsyncMock | None = None) -> None:
+    """
+    Drive the setup flow against a fake session.
+
+    :param session: The fake session replaying the submissions.
+    :param models: Stand-in for the model listing, a reachable endpoint without models if omitted.
+    """
+    with patch.object(setup_flow, "list_models", models or AsyncMock(return_value=[])):
         await setup_flow.run_setup(cast("SetupSession", session))
 
 
 class _FakeSession:
     """Minimal stand-in for SetupSession that replays scripted form submissions."""
 
-    def __init__(self, setup_data: dict[str, Any], submissions: list[dict[str, Any]]) -> None:
-        """Initialize with the stored setup_data and the submissions to replay in order."""
-        self.context = SimpleNamespace(setup_data=setup_data)
+    def __init__(
+        self,
+        setup_data: dict[str, Any],
+        submissions: list[dict[str, Any]],
+        values: dict[str, Any] | None = None,
+    ) -> None:
+        """Initialize with the stored setup_data, options and the submissions to replay."""
+        self.context = SimpleNamespace(setup_data=setup_data, values=values or {})
         self.mass = MagicMock()
-        self.entries: list[Any] = []
+        # the entries and errors each step was last rendered with, by step id
+        self.forms: dict[str, list[Any]] = {}
+        self.errors: dict[str, Any] = {}
+        self.steps: list[str] = []
         self.finished: dict[str, Any] | None = None
+        self.finished_options: dict[str, Any] | None = None
         self._submissions = list(submissions)
 
-    async def form(self, entries: list[Any], **kwargs: Any) -> dict[str, Any]:
+    async def form(
+        self, entries: list[Any], step_id: str = "user", **kwargs: Any
+    ) -> dict[str, Any]:
         """Record the rendered entries and return the next scripted submission."""
-        self.entries = entries
+        self.forms[step_id] = entries
+        self.errors[step_id] = kwargs.get("errors")
+        self.steps.append(step_id)
         return dict(self._submissions.pop(0))
 
-    async def finish(self, values: dict[str, Any]) -> dict[str, str]:
+    async def finish(
+        self, values: dict[str, Any], options: dict[str, Any] | None = None
+    ) -> dict[str, str]:
         """Record the values the flow decided to persist."""
         self.finished = dict(values)
+        self.finished_options = dict(options or {})
         return {"instance_id": "openai_compatible--new"}

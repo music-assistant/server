@@ -72,7 +72,7 @@ async def provider() -> AsyncGenerator[AppleMusicProvider]:
     mass.cache.get_with_freshness = AsyncMock(side_effect=_cache_get)
     mass.cache.set = AsyncMock(side_effect=_cache_set)
     mass.create_task = Mock(side_effect=_create_task)
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "apple_music"
     config = Mock()
     config.instance_id = INSTANCE_ID

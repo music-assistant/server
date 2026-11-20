@@ -1259,6 +1259,45 @@ async def test_update_user_profile_renames_a_user(auth_manager: AuthenticationMa
     assert await auth_manager.get_user_by_username("oldname") is None
 
 
+async def test_update_user_profile_clears_the_display_name_and_avatar(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that a user can clear its display name and avatar url with an empty value."""
+    user = await auth_manager.create_user(
+        username="clearer", display_name="Clearer", avatar_url="https://example.com/a.jpg"
+    )
+    set_current_user(user)
+
+    updated_user = await auth_manager.update_user_profile(display_name="")
+    assert updated_user.display_name is None
+    assert updated_user.avatar_url == "https://example.com/a.jpg"
+
+    updated_user = await auth_manager.update_user_profile(avatar_url="")
+    assert updated_user.display_name is None
+    assert updated_user.avatar_url is None
+
+    stored_user = await auth_manager.get_user(user.user_id)
+    assert stored_user is not None
+    assert stored_user.display_name is None
+    assert stored_user.avatar_url is None
+
+
+async def test_update_user_profile_without_changes_keeps_the_profile(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that an update without any fields leaves the profile as it is."""
+    user = await auth_manager.create_user(
+        username="keeper", display_name="Keeper", avatar_url="https://example.com/k.jpg"
+    )
+    set_current_user(user)
+
+    updated_user = await auth_manager.update_user_profile()
+
+    assert updated_user.username == "keeper"
+    assert updated_user.display_name == "Keeper"
+    assert updated_user.avatar_url == "https://example.com/k.jpg"
+
+
 async def test_get_user_tokens(auth_manager: AuthenticationManager) -> None:
     """
     Test getting user's tokens.
@@ -4062,3 +4101,61 @@ async def test_replace_player_in_user_filters_updates_live_sessions(
 
     assert session.authenticated_user is not None
     assert session.authenticated_user.player_filter == ["sonos_1"]
+
+
+async def test_update_user_profile_updates_own_live_session(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that auth/me on a live session returns the profile the user just saved.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    user = await auth_manager.create_user(username="selfeditor")
+    session = await _create_ws_client(mass_minimal, user.user_id)
+    set_current_user(session.authenticated_user)
+
+    await auth_manager.update_user_profile(
+        display_name="Self Editor", preferences={"onboarding": {"intent": "listen"}}
+    )
+
+    set_current_user(session.authenticated_user)
+    me = await auth_manager.get_current_user_info()
+    assert me.display_name == "Self Editor"
+    assert me.preferences == {"onboarding": {"intent": "listen"}}
+
+
+async def test_update_user_profile_by_admin_updates_the_users_live_session(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that an admin editing another user reaches the live session of that user.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    admin = await auth_manager.create_user(username="editadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="edited")
+    admin_session = await _create_ws_client(mass_minimal, admin.user_id)
+    user_session = await _create_ws_client(mass_minimal, user.user_id)
+    set_current_user(admin_session.authenticated_user)
+
+    await auth_manager.update_user_profile(
+        user_id=user.user_id,
+        username="renamed",
+        display_name="Edited User",
+        avatar_url="https://example.com/avatar.png",
+        preferences={"theme": "dark"},
+    )
+
+    set_current_user(user_session.authenticated_user)
+    me = await auth_manager.get_current_user_info()
+    assert me.username == "renamed"
+    assert me.display_name == "Edited User"
+    assert me.avatar_url == "https://example.com/avatar.png"
+    assert me.preferences == {"theme": "dark"}
+    # the session of the admin keeps its own profile
+    assert admin_session.authenticated_user is not None
+    assert admin_session.authenticated_user.username == "editadmin"
+    assert admin_session.authenticated_user.preferences == {}

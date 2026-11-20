@@ -553,6 +553,25 @@ class QuizType(ABC):
         return await musicbrainz.get_release_year_by_track_name(artist_name, track.name)
 
 
+def get_track_artist_answers(track: Track) -> list[str]:
+    """
+    Return deterministic accepted artist names available on the track.
+
+    :param track: Track whose artist names should be accepted.
+    """
+    answers: list[str] = []
+    seen_answers: set[str] = set()
+    for answer in (
+        track.artist_str,
+        *(artist.name for artist in track.artists),
+        *(artist.sort_name for artist in track.artists),
+    ):
+        if answer and (normalized_answer := answer.casefold()) not in seen_answers:
+            answers.append(answer)
+            seen_answers.add(normalized_answer)
+    return answers
+
+
 def get_track_release_year(track: Track) -> int | None:
     """
     Return a usable release year from a track's available metadata.

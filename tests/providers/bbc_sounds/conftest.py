@@ -37,7 +37,7 @@ def client() -> SoundsClient:
 def provider(client: SoundsClient) -> BBCSoundsProvider:
     """Create a real BBCSoundsProvider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "bbc_sounds"
     config = Mock()
     config.instance_id = "bbc_sounds--test123"

@@ -6,6 +6,7 @@
   "type": "music",
   "requirements": [],
   "codeowners": ["@OzGav"],
+  "provides": ["radio"],
   "multi_instance": false,
   "stage": "stable"
 }

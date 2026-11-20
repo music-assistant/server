@@ -34,7 +34,7 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
     mass.music.audiobooks.get_library_items_by_prov_id = AsyncMock(return_value=[])
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "bookorbit"
     config = Mock()
     config.instance_id = INSTANCE

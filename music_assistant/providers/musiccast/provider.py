@@ -282,8 +282,9 @@ class MusicCastProvider(PlayerProvider):
             player_main = musiccast_player_helper.player_main
             assert player_main is not None
             self.logger.info(
-                f"The player {player_main.display_name or player_main.name} has multiple zones. "
-                "Please use the player config to configure a non-net source for grouping. "
+                "The player %s has multiple zones. "
+                "Please use the player config to configure a non-net source for grouping. ",
+                player_main.display_name or player_main.name,
             )
 
         if (mc_player_known := self.musiccast_player_helpers.get(device_id)) is not None:

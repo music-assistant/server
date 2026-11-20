@@ -27,8 +27,8 @@ dependencies = [
   "getmac==0.9.6",
   "hass-client==1.4.1",
   "mashumaro==3.22",
-  "music-assistant-models==1.1.244",
-  "music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/2.17.374/music_assistant_frontend-2.17.374-py3-none-any.whl#sha256=540c8534fa44ee42a9e624885f266fefac7f18e2048f7b775f13217ec8268e60",
+  "music-assistant-models==1.1.248",
+  "music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/2.17.376/music_assistant_frontend-2.17.376-py3-none-any.whl#sha256=50b603037b93a8b2613b2802593557b1f982fa97d7d4845c921aef1a819dfb6f",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==13.0.0",
@@ -238,7 +238,6 @@ ignore = [
   "CPY001", # Just annoying, not really useful
   "LOG004", # Just annoying, not really useful
   "FURB110", # Just annoying, not really useful  # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
-  "BLE001",
   "FBT001",
   "FBT002",
   "FBT003",
@@ -247,7 +246,6 @@ ignore = [
   "PTH118",
   "PTH120",
   "PTH123",
-  "G004",
   "S106",
   "SLF001",
   "SIM102",
@@ -273,6 +271,49 @@ extend-select = ["D213"]
 "tests/**" = ["S104", "S105"]
 # the provider templates show example code in comments
 "music_assistant/providers/_demo_*/**" = ["ERA001"]
+# BLE001 is being enabled area by area: remove a path once its broad excepts are decided
+"music_assistant/controllers/music/**" = ["BLE001"]
+"music_assistant/controllers/player_queues/**" = ["BLE001"]
+"music_assistant/controllers/players/**" = ["BLE001"]
+"music_assistant/controllers/streams/**" = ["BLE001"]
+"music_assistant/providers/ai_radio/**" = ["BLE001"]
+"music_assistant/providers/airplay/**" = ["BLE001"]
+"music_assistant/providers/airplay_receiver/**" = ["BLE001"]
+"music_assistant/providers/ard_audiothek/**" = ["BLE001"]
+"music_assistant/providers/chromecast/**" = ["BLE001"]
+"music_assistant/providers/fastmcp_server/**" = ["BLE001"]
+"music_assistant/providers/filesystem_local/**" = ["BLE001"]
+"music_assistant/providers/hass/**" = ["BLE001"]
+"music_assistant/providers/hue_entertainment/**" = ["BLE001"]
+"music_assistant/providers/internet_archive/**" = ["BLE001"]
+"music_assistant/providers/kion_music/**" = ["BLE001"]
+"music_assistant/providers/milkdrop_visualizer/**" = ["BLE001"]
+"music_assistant/providers/music_quiz/**" = ["BLE001"]
+"music_assistant/providers/musicbrainz/**" = ["BLE001"]
+"music_assistant/providers/nicovideo/**" = ["BLE001"]
+"music_assistant/providers/openai_tts/**" = ["BLE001"]
+"music_assistant/providers/podcast_index/**" = ["BLE001"]
+"music_assistant/providers/profiler/**" = ["BLE001"]
+"music_assistant/providers/roku_media_assistant/**" = ["BLE001"]
+"music_assistant/providers/samsung_wam/**" = ["BLE001"]
+"music_assistant/providers/sendspin/**" = ["BLE001"]
+"music_assistant/providers/snapcast/**" = ["BLE001"]
+"music_assistant/providers/sonic_analysis/**" = ["BLE001"]
+"music_assistant/providers/sonic_similarity/**" = ["BLE001"]
+"music_assistant/providers/sonos_s1/**" = ["BLE001"]
+"music_assistant/providers/spotify/**" = ["BLE001"]
+"music_assistant/providers/spotify_connect/**" = ["BLE001"]
+"music_assistant/providers/squeezelite/**" = ["BLE001"]
+"music_assistant/providers/sync_group/**" = ["BLE001"]
+"music_assistant/providers/universal_group/**" = ["BLE001"]
+"music_assistant/providers/yandex_music/**" = ["BLE001"]
+"music_assistant/providers/yandex_smarthome/**" = ["BLE001"]
+"music_assistant/providers/yandex_station/**" = ["BLE001"]
+"music_assistant/providers/zvuk_music/**" = ["BLE001"]
+"tests/controllers/streams/test_get_media_stream.py" = ["BLE001"]
+"tests/core/test_diagnostics.py" = ["BLE001"]
+"tests/providers/msx_bridge/**" = ["BLE001"]
+"tests/providers/nicovideo/**" = ["BLE001"]
 
 [tool.ruff.lint.flake8-pytest-style]
 fixture-parentheses = false

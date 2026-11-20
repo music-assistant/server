@@ -47,6 +47,7 @@ from music_assistant_models.enums import (
     PlayerType,
     ProviderFeature,
     ProviderType,
+    SpeakerChannel,
     StreamType,
     VolumeNormalizationMode,
 )
@@ -271,6 +272,12 @@ _EXTINF_DURATION = re.compile(r"^#EXTINF:\s*(\d+(?:\.\d+)?)", re.MULTILINE)
 RADIO_MAX_FAILED_RESTARTS = 3
 RADIO_RESTART_MIN_PLAYTIME = 60
 RADIO_RESTART_DELAY = 1.0
+
+# The output channels that play the channel of a speaker of a multi-channel player.
+SPEAKER_CHANNEL_OUTPUT = {
+    SpeakerChannel.FRONT_LEFT: "left",
+    SpeakerChannel.FRONT_RIGHT: "right",
+}
 
 
 @dataclass
@@ -1379,6 +1386,7 @@ class StreamsAudio:
         queue_id: str | None = None,
         session_id: str | None = None,
         queue_item_id: str | None = None,
+        channel: SpeakerChannel | None = None,
     ) -> AudioOutputPlan:
         """
         Return executable filters and matching output details for a player.
@@ -1393,6 +1401,8 @@ class StreamsAudio:
         :param queue_id: Explicit queue identifier for the processing snapshot.
         :param session_id: Explicit queue session identifier for the processing snapshot.
         :param queue_item_id: Queue item for a single-item output path.
+        :param channel: The channel a speaker of the multi-channel player plays, in place
+            of the configured output channels.
         """
         filter_params: list[str | ComplexFilter] = []
         player = self.mass.players.get_output_protocol(protocol_id)
@@ -1445,7 +1455,11 @@ class StreamsAudio:
             if dsp.output_gain != 0:
                 filter_params.append(f"volume={dsp.output_gain}dB")
 
-        channel_value = self._get_output_channels(player, protocol_id)
+        channel_value = (
+            SPEAKER_CHANNEL_OUTPUT.get(channel, "stereo")
+            if channel is not None
+            else self._get_output_channels(player, protocol_id)
+        )
         source_channel = None
         channel_mix = ""
         # a single channel source is already the downmix and holds no FL/FR to select
@@ -1480,7 +1494,8 @@ class StreamsAudio:
                 output_gain=dsp.output_gain if dsp.enabled else 0.0,
                 preset_id=dsp.preset_id,
             ),
-            source_channel=source_channel,
+            # together the speakers of a multi-channel player play every channel
+            source_channel=source_channel if channel is None else None,
             output_format=output_format,
         )
         output_plan = AudioOutputPlan(
@@ -1928,6 +1943,10 @@ class StreamsAudio:
                     )
             except AudioError as err:
                 streamdetails.stream_error = True
+                # a prepared buffer that is gone, or a stream slot that is taken, is no failure
+                # of the source
+                if prepared_buffer is None and not isinstance(err, ProviderStreamLimitError):
+                    self.mass.player_queues.report_source_failure(queue_item, session_id)
                 if raise_on_error:
                     raise
                 logger.error(
@@ -2096,6 +2115,9 @@ class StreamsAudio:
                 # revoke availability when the stream never produced any audio
                 if bytes_received == 0 and not isinstance(err, ProviderStreamLimitError):
                     queue_item.available = False
+                # the source failed, as opposed to the reading of the audio it delivered
+                if audio_buffer.has_error and not isinstance(err, ProviderStreamLimitError):
+                    self.mass.player_queues.report_source_failure(queue_item, session_id)
                 if raise_on_error:
                     raise
                 logger.error(
@@ -3361,6 +3383,9 @@ class StreamsAudio:
                         queue_track.streamdetails.uri if queue_track.streamdetails else "unknown",
                         queue.display_name,
                     )
+                    if not queue_track.streamdetails.stream_error:
+                        # its source ended without audio; an error is reported where it occurred
+                        self.mass.player_queues.report_source_failure(queue_track, flow_session_id)
                     queue_track.streamdetails.stream_error = True
                     play_log_entry.seconds_streamed = 0
                     if last_fadeout_part:
@@ -3577,6 +3602,13 @@ class StreamsAudio:
                     next_sample_rate,
                 )
                 return False
+            if not self._player_has_next_item(protocol_id, flow_mode, next_item):
+                self.logger.debug(
+                    "Skipping the tail overlap of %s: the player has not received %s yet",
+                    queue_item.name,
+                    next_item.name,
+                )
+                return False
             return True
         if crossfade_mode == CrossfadeMode.DISABLED:
             return False
@@ -3615,6 +3647,13 @@ class StreamsAudio:
                 "with different sample rates (%s vs %s)",
                 sample_rate,
                 next_sample_rate,
+            )
+            return False
+
+        if not self._player_has_next_item(protocol_id, flow_mode, next_item):
+            self.logger.debug(
+                "Skipping crossfade: the player has not received %s as its next item yet",
+                next_item.name,
             )
             return False
 
@@ -5570,6 +5609,23 @@ class StreamsAudio:
                 CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.default_value,
             )
         )
+
+    def _player_has_next_item(
+        self, protocol_id: str | None, flow_mode: bool, next_item: QueueItem
+    ) -> bool:
+        """
+        Return whether the player of the item streams holds the item after the boundary.
+
+        :param protocol_id: The protocol that plays the item streams; not needed for a flow
+            stream.
+        :param flow_mode: Whether the items play on one flow stream.
+        :param next_item: The queue item that plays after the boundary.
+        """
+        # a flow stream carries the next item itself
+        if flow_mode or protocol_id is None:
+            return True
+        protocol = self.mass.players.get_protocol(protocol_id)
+        return protocol is None or protocol.has_received_next_item(next_item)
 
     @staticmethod
     def _same_album(queue_item: QueueItem, next_item: QueueItem) -> bool:

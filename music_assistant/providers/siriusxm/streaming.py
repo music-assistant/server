@@ -85,7 +85,7 @@ class SiriusXMStreamingManager:
         """
         try:
             now_playing = await self.provider.client.get_now_playing(streamdetails.item_id)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a metadata refresh must never break playback
             # Deliberately broad: this runs as a background task for the whole
             # of playback, and no metadata problem is worth surfacing as an
             # unhandled task error. A failed refresh also says nothing about

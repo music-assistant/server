@@ -325,7 +325,7 @@ class PulseCaptureServer:
                 try:
                     async for line in proc.iter_stderr():
                         LOGGER.debug("pulseaudio: %s", line)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - the supervisor loop must keep running
                     LOGGER.debug("pulseaudio log reader stopped: %s", err)
                 await proc.close()
                 if self._proc is proc:
@@ -337,7 +337,7 @@ class PulseCaptureServer:
             await asyncio.sleep(backoff)
             try:
                 await self._launch_daemon()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the supervisor loop must keep running
                 backoff = min(backoff * 2, _RESTART_BACKOFF_MAX)
                 LOGGER.error("Failed to restart the PulseAudio capture daemon: %s", err)
                 continue

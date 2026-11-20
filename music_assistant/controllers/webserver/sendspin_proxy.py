@@ -107,20 +107,19 @@ class SendspinProxyHandler:
         try:
             internal_ws = None
             for attempt in range(5):
-                try:
-                    internal_ws = await self.mass.http_session.ws_connect(
-                        self.webserver.internal_sendspin_url
-                    )
-                    break
-                except ClientConnectorError:
-                    if attempt < 4:
-                        await asyncio.sleep(0.5 * (attempt + 1))
-                        continue
-                    self.logger.exception("Failed to connect to internal Sendspin server")
-                    await wsock.close(code=1011, message=b"Internal server error")
-                    return wsock
+                if (sendspin_url := self.webserver.internal_sendspin_url) is not None:
+                    try:
+                        internal_ws = await self.mass.http_session.ws_connect(sendspin_url)
+                        break
+                    except ClientConnectorError:
+                        if attempt == 4:
+                            self.logger.exception("Failed to connect to internal Sendspin server")
+                            await wsock.close(code=1011, message=b"Internal server error")
+                            return wsock
+                if attempt < 4:
+                    await asyncio.sleep(0.5 * (attempt + 1))
             if internal_ws is None:
-                raise RuntimeError("Retry loop exited without connecting or returning")  # noqa: TRY301 - handled by except below
+                raise RuntimeError("No Sendspin provider is loaded")  # noqa: TRY301 - handled by except below
         except Exception:
             self.logger.exception("Failed to connect to internal Sendspin server")
             await wsock.close(code=1011, message=b"Internal server error")

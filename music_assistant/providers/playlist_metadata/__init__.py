@@ -29,16 +29,24 @@ import logging
 import math
 import os
 import random
+from binascii import Error as Base64Error
 from collections import Counter
 from io import BytesIO
 from pathlib import Path
+from sqlite3 import OperationalError
 from time import time
 from typing import TYPE_CHECKING, Any, Final
 
+from aiohttp import ClientError
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
-from music_assistant_models.errors import ActionUnavailable, ProviderUnavailableError
+from music_assistant_models.errors import (
+    ActionUnavailable,
+    MediaNotFoundError,
+    MusicAssistantError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
@@ -550,7 +558,7 @@ class PlaylistMetadataProvider(MetadataProvider):
                 artist = await self.mass.music.artists.get_library_item(artist_id)
                 if artist and artist.image:
                     artist_images[artist.name] = artist.image
-            except Exception as err:
+            except (MediaNotFoundError, ValueError, OperationalError) as err:
                 LOGGER.debug("Could not get artist %s: %s", artist_id, err)
 
         for uri in rules.get("seed_artist_uris", []):
@@ -566,7 +574,7 @@ class PlaylistMetadataProvider(MetadataProvider):
                     artist_images[artist.name] = artist.image
             except ProviderUnavailableError:
                 LOGGER.debug("Provider not available for URI %s", uri)
-            except Exception as err:
+            except (MusicAssistantError, ClientError, OSError) as err:
                 LOGGER.debug("Could not get artist from URI %s: %s", uri, err)
 
         for album_id in rules.get("album_ids", []):
@@ -574,7 +582,7 @@ class PlaylistMetadataProvider(MetadataProvider):
                 album = await self.mass.music.albums.get_library_item(album_id)
                 if album and album.image:
                     album_images[album.name] = album.image
-            except Exception as err:
+            except (MediaNotFoundError, ValueError, OperationalError) as err:
                 LOGGER.debug("Could not get album %s: %s", album_id, err)
 
         for uri in rules.get("seed_album_uris", []):
@@ -590,7 +598,7 @@ class PlaylistMetadataProvider(MetadataProvider):
                     album_images[album.name] = album.image
             except ProviderUnavailableError:
                 LOGGER.debug("Provider not available for URI %s", uri)
-            except Exception as err:
+            except (MusicAssistantError, ClientError, OSError) as err:
                 LOGGER.debug("Could not get album from URI %s: %s", uri, err)
 
         # TODO: Could also collect images from genre_ids by getting artists from those genres
@@ -726,7 +734,7 @@ class PlaylistMetadataProvider(MetadataProvider):
             img_data = await self._render(
                 effective_template, images, secondary_images, playlist_name=playlist.name
             )
-        except Exception as err:
+        except (OSError, ValueError, Image.DecompressionBombError) as err:
             LOGGER.warning("Failed to generate playlist artwork for %s: %s", playlist.name, err)
             return None
 
@@ -758,7 +766,7 @@ class PlaylistMetadataProvider(MetadataProvider):
             )
             if library_artist and library_artist.image:
                 return library_artist.image
-        except Exception as err:
+        except (MediaNotFoundError, OperationalError) as err:
             LOGGER.debug("Artist provider lookup failed for %s: %s", artist.name, err)
 
         # Fall back to name search in case the provider mapping differs
@@ -770,7 +778,7 @@ class PlaylistMetadataProvider(MetadataProvider):
             )
             if results and results[0].image:
                 return results[0].image
-        except Exception as err:
+        except OperationalError as err:
             LOGGER.debug("Artist library lookup failed for %s: %s", artist.name, err)
 
         return None
@@ -1267,7 +1275,7 @@ async def _fetch(mass: MusicAssistant, image: MediaItemImage) -> bytes | None:
     """Fetch raw image bytes, returning None on failure."""
     try:
         return await get_image_data(mass, image.path, image.provider)
-    except Exception as err:
+    except (MusicAssistantError, OSError, ClientError, Base64Error) as err:
         LOGGER.debug(
             "Failed to fetch image path=%s provider=%s: %s", image.path, image.provider, err
         )

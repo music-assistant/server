@@ -14,6 +14,7 @@ from plexapi.exceptions import BadRequest, Unauthorized
 
 from music_assistant.providers.plex import PlexProvider
 from music_assistant.providers.plex.constants import (
+    AUTH_TOKEN_UNAUTH,
     CONF_AUTH_TOKEN,
     CONF_LIBRARY_ID,
     CONF_LOCAL_SERVER_IP,
@@ -350,4 +351,49 @@ async def test_setup_flow_reports_server_access_denied() -> None:
     ):
         await run_setup(session)  # type: ignore[arg-type]
     assert ("server", {"base": "server_access_denied"}) in session.forms
+    assert session.finished is not None
+
+
+async def _run_local_setup(plex_server_effects: list[Any]) -> _FlowSession:
+    """Run the setup flow without an account against a Plex server with the given behaviour."""
+    session = _FlowSession()
+    session.mass.cache.get = AsyncMock(return_value=None)
+    session.mass.cache.set = AsyncMock()
+    with (
+        patch(
+            "music_assistant.providers.plex.setup_flow.discover_local_servers",
+            AsyncMock(return_value=(None, None)),
+        ),
+        patch(
+            "music_assistant.providers.plex.setup_flow._authenticate",
+            AsyncMock(return_value=AUTH_TOKEN_UNAUTH),
+        ),
+        patch("music_assistant.providers.plex.helpers.PlexServer", side_effect=plex_server_effects),
+    ):
+        await run_setup(session)  # type: ignore[arg-type]
+    return session
+
+
+def _plex_server(section_types: list[str]) -> MagicMock:
+    server = MagicMock()
+    server.friendlyName = "Server"
+    server.library.sections.return_value = [
+        SimpleNamespace(type=section_type, title="Music", settings=list)
+        for section_type in section_types
+    ]
+    return server
+
+
+async def test_setup_flow_reports_unreachable_server() -> None:
+    """A server that drops the connection gives a connection error, not "no libraries"."""
+    dropped = requests.exceptions.ConnectionError("Connection aborted.")
+    session = await _run_local_setup([dropped, _plex_server(["artist"])])
+    assert ("server", {"base": "cannot_connect"}) in session.forms
+    assert session.finished is not None
+
+
+async def test_setup_flow_reports_server_without_music_library() -> None:
+    """A reachable server without a music library gives the "no libraries" error."""
+    session = await _run_local_setup([_plex_server(["movie"]), _plex_server(["artist"])])
+    assert ("server", {"base": "no_libraries"}) in session.forms
     assert session.finished is not None

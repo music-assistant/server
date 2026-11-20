@@ -115,6 +115,12 @@ CACHE_CATEGORY_BUTTON_ITEMS = 1
 # joins it or is away for a while.
 CACHE_CATEGORY_ROOM_ID = 3
 ROOM_ID_CACHE_TTL = 10 * 365 * 24 * 3600
+# The outputs taken off a room because their speaker moved to another room, with the UDN of
+# that speaker. An output taken off a player stays apart from it for the server, so it only
+# joins a room that plays through its speaker again because the provider merges it, also when
+# the speaker returns after a restart.
+CACHE_CATEGORY_RELEASED_OUTPUTS = 4
+RELEASED_OUTPUTS_KEY = "released_outputs"
 SOURCE_LINE_IN = "line_in"
 
 # A room joining a group that plays hooks into the running stream a little behind the others

@@ -303,29 +303,36 @@ def _live_members(player: AirPlayPlayer) -> list[AirPlayPlayer]:
     """
     if not player.has_live_audio:
         return []
-    stream = player.stream
-    assert stream is not None  # guaranteed by has_live_audio
+    # a set renders through its speakers
+    own_members = [
+        endpoint
+        for endpoint in player.endpoints
+        if endpoint.stream is not None and endpoint.stream.running and endpoint.stream.connected
+    ]
     if player.synced_to:
-        return [player]
-    if stream.session is None:
+        return own_members
+    if (session := player.session) is None:
         # A Sendspin-bridged player plays without a stream session, but its
-        # stream is a regular AirPlayStream the clip mixes into (self-only).
+        # streams are regular AirPlayStreams the clip mixes into (its own members only).
         provider = cast("AirPlayProvider", player.provider)
         bridge = provider.bridge_manager.get_bridge(player.protocol_id)
         if bridge is not None and bridge.owns_airplay_stream:
-            return [player]
+            return own_members
         return []
     if _owning_group_entity(player):
         # A group ENTITY (e.g. a syncgroup) owns this session, and that entity
         # is the whole-group announcement handle: this player addressed
         # individually announces alone, even as the session's sync leader.
-        return [player]
+        return own_members
     # An ad-hoc leader has no entity above it, so it IS the group handle:
-    # announcing to it covers every member of its session.
+    # announcing to it covers every member of its session that is heard.
     return [
         member
-        for member in stream.session.sync_clients
-        if member.stream is not None and member.stream.running and member.stream.connected
+        for member in session.sync_clients
+        if member.renders_audio
+        and member.stream is not None
+        and member.stream.running
+        and member.stream.connected
     ]
 
 
@@ -348,8 +355,11 @@ def _resolve_announce_instant(
     :param render_key: Identity of the announcement audio; instants are only
         ever shared between arms of the SAME announcement.
     """
-    session = player.stream.session if player.stream else None
-    session_members = session.sync_clients if session else members
+    # a set plays in the session of its speakers
+    session = player.session or (player.stream.session if player.stream else None)
+    session_members = (
+        [member for member in session.sync_clients if member.renders_audio] if session else members
+    )
     if len(members) >= len(session_members):
         return _shared_announce_instant(
             member.stream for member in members if member.stream is not None
@@ -416,7 +426,9 @@ def _volume_target(member: AirPlayPlayer) -> Player | None:
     nothing else owns it: the announcement volume is set on the player, whose volume
     control decides where it lands. None while the member is not attached.
     """
-    return member.player
+    # a speaker of a set plays at the volume of its set
+    owner = member.owner
+    return owner.player if owner else None
 
 
 def _member_duck_db(member: AirPlayPlayer, volume_level: int | None) -> float:

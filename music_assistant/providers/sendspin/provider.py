@@ -6,7 +6,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from ipaddress import ip_address
@@ -60,15 +60,22 @@ from music_assistant_models.enums import (
     PlayerType,
     ProtocolRole,
     ProviderFeature,
+    SpeakerChannel,
 )
-from music_assistant_models.errors import InvalidCommand, SetupFailedError
+from music_assistant_models.errors import (
+    InvalidCommand,
+    InvalidDataError,
+    PlayerUnavailableError,
+    SetupFailedError,
+    UnsupportedFeaturedException,
+)
 
 from music_assistant.constants import (
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     CONF_LOG_LEVEL,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PROVIDERS,
     CONF_UNDERLYING_PLAYER_ID,
-    SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -81,10 +88,13 @@ from music_assistant.helpers.guest_access import (
 from music_assistant.helpers.util import (
     format_ip_for_url,
     is_locally_administered_mac,
+    is_port_in_use,
     is_valid_mac_address,
+    select_free_port,
 )
 from music_assistant.helpers.virtual_player import cleanup_virtual_player
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.media_capabilities import AudioSourceMixin
 from music_assistant.models.player import OWN_PROTOCOL_ROLES
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
@@ -101,8 +111,15 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.constants import (
     CONF_ALLOW_LEGACY_CLIENTS,
+    CONF_MULTI_CHANNEL_GROUP_ID,
     CONF_SENDSPIN_STATIC_DELAY,
+    CONF_SPEAKER_CHANNEL,
+    CONF_SPEAKER_CLIENT_ID,
+    CONF_SPEAKER_NAME,
+    CONF_SPEAKER_OUTPUT_DELAY,
     CONF_VIRTUAL_PLAYER_OWNER,
+    DEFAULT_SERVER_PORT,
+    MULTI_CHANNEL_ID_PREFIX,
     VIRTUAL_PLAYER_ID_PREFIX,
 )
 from music_assistant.providers.sendspin.hass_auto_pair import HassAutoPairer
@@ -111,6 +128,13 @@ from music_assistant.providers.sendspin.helpers import (
     effective_pair_methods,
     error_alert,
     speaks_legacy_wire,
+)
+from music_assistant.providers.sendspin.local_pair import LocalAutoPairer
+from music_assistant.providers.sendspin.multi_channel import (
+    SendspinMultiChannelPlayer,
+    layout_of,
+    new_group_id,
+    stored_speakers,
 )
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
@@ -122,27 +146,38 @@ from music_assistant.providers.sendspin.security import (
     IDENTITY_FILENAME,
     get_or_create_server_identity,
 )
+from music_assistant.providers.sendspin.sources import SendspinSources
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Collection, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Collection, Sequence
 
     from aiosendspin.models.management import (
         ManagementResultData,
         ManagementSetPairingConfigPayload,
     )
     from aiosendspin.noise.trust_store import ServerPairingStore
+    from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
     from aiosendspin.server.client import SendspinClient
     from aiosendspin.server.connection import SendspinConnection
     from aiosendspin.server.server import ExternalStreamStartRequest
     from music_assistant_models.auth import User
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.enums import MediaType
     from music_assistant_models.event import MassEvent
+    from music_assistant_models.media_items import AudioSource
     from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.webserver.auth import AuthenticationManager
+    from music_assistant.models.player import Player
     from music_assistant.providers.hass import HomeAssistantProvider
 
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.SYNC_PLAYERS,
+    ProviderFeature.AUDIO_SOURCE,
+    ProviderFeature.CREATE_MULTI_CHANNEL_PLAYER,
+}
 DEFAULT_SENDSPIN_CLIENT_PORT = 8928
 DEFAULT_SENDSPIN_CLIENT_PATH = "/sendspin"
 VIRTUAL_PLAYER_REGISTER_TIMEOUT = 10.0
@@ -372,8 +407,8 @@ def _manual_client_url(address: str) -> str:
     )
 
 
-class SendspinProvider(PlayerProvider):
-    """Player Provider for Sendspin."""
+class SendspinProvider(AudioSourceMixin, PlayerProvider):
+    """Player Provider for Sendspin, which also delivers the line-ins of its clients."""
 
     reload_on_streams_network_change = True
     server_api: SendspinServer
@@ -394,15 +429,17 @@ class SendspinProvider(PlayerProvider):
     _held_paired: set[str]
     _refused_here: dict[str, GoodbyeReason]
     _unencrypted_clients: set[str]
+    _announced_clients: set[str]
     _unloading: bool
     _hass_available: bool
     _server_start_failed: bool
+    server_port: int
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize a new Sendspin player provider."""
-        super().__init__(mass, manifest, config, {ProviderFeature.SYNC_PLAYERS})
+        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         # Handle config option for manual IP's. Read a default here: at construction the
         # config only carries the server defaults + stored raw values (the provider's typed
         # option entries are resolved and applied by the config controller right after this).
@@ -424,11 +461,15 @@ class SendspinProvider(PlayerProvider):
         self._client_event_versions = {}
         self._client_event_task_counts = {}
         self._virtual_players = {}
+        # speaker client id -> the protocol id of the multi-channel player it belongs to
+        self._multi_channel_speakers: dict[str, str] = {}
+        # speakers of a set taken apart while they were away, registered once they are back
         self._held_elsewhere = set()
         self._held_unapproved = set()
         self._held_paired = set()
         self._refused_here = {}
         self._unencrypted_clients = set()
+        self._announced_clients = set()
         self._pin_sessions: dict[str, PinPairingSession] = {}
         self._pending_pairing_evictions: set[str] = set()
         self._running_pairing_evictions: set[asyncio.Task[None]] = set()
@@ -439,7 +480,10 @@ class SendspinProvider(PlayerProvider):
         self._unloading = False
         self._hass_available = False
         self._server_start_failed = False
+        self.server_port = DEFAULT_SERVER_PORT
         self._hass_auto_pairer = HassAutoPairer(self)
+        self._local_auto_pairer = LocalAutoPairer(self)
+        self.sources = SendspinSources(self)
         self.unregister_cbs = []
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -513,12 +557,31 @@ class SendspinProvider(PlayerProvider):
             self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED),
             self.mass.subscribe(self._on_queue_updated, EventType.QUEUE_UPDATED),
             self.mass.subscribe(self._on_player_config_updated, EventType.PLAYER_CONFIG_UPDATED),
+            self.mass.subscribe(self._on_player_removed, EventType.PLAYER_REMOVED),
         ]
         # seed the hass availability snapshot so the first (un)load is seen as a change
         hass = self.mass.get_provider("hass")
         self._hass_available = hass is not None and hass.available
         if self._hass_available:
             self._hass_auto_pairer.subscribe()
+        # pick the port before the provider is registered, so every URL built for this
+        # server names it. Clients find the server over mDNS, which announces this port.
+        bind_ip = self.mass.streams.bind_ip
+        if await is_port_in_use(DEFAULT_SERVER_PORT, bind_ip):
+            try:
+                port = await select_free_port(
+                    DEFAULT_SENDSPIN_CLIENT_PORT + 1, DEFAULT_SERVER_PORT + 100, bind_ip
+                )
+            except OSError:
+                # a bad bind address fails every probe, and the bind itself reports why
+                self.logger.debug("No free port found, binding the default Sendspin port")
+            else:
+                self.server_port = port
+                self.logger.warning(
+                    "Port %d is in use, starting the Sendspin server on port %d instead",
+                    DEFAULT_SERVER_PORT,
+                    port,
+                )
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
@@ -532,14 +595,20 @@ class SendspinProvider(PlayerProvider):
         """Event callback registered to the sendspin server."""
         match event:
             case ClientAddedEvent(client_id):
+                self._announced_clients.add(client_id)
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_added(client_id, event_version))
             case ClientRemovedEvent(client_id):
+                self._announced_clients.discard(client_id)
                 self._set_held_elsewhere(client_id, held=False)
                 self._unencrypted_clients.discard(client_id)
+                self._refresh_speaker(client_id)
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_removed(client_id, event_version))
             case ClientUpdatedEvent(client_id):
+                # a client without a protocol is set up by its add, which reads the latest hello
+                if self.get_protocol(client_id) is None:
+                    return
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_updated(client_id, event_version))
             case ClientCredentialMismatchEvent(client_id):
@@ -553,11 +622,17 @@ class SendspinProvider(PlayerProvider):
                 else:
                     self._unencrypted_clients.discard(client_id)
                 self._set_held_elsewhere(client_id, held=False)
+                # aiosendspin announces a client once while it keeps it, so a client whose
+                # player was removed meanwhile gets a new one here
+                if client_id in self._announced_clients:
+                    self._add_client_without_protocol(client_id)
                 # A reconnect within aiosendspin's cleanup delay reuses the player, and this
                 # event fires before the new connection's roles are attached.
                 self.mass.loop.call_soon(self._refresh_player_state, client_id)
                 self.mass.loop.call_soon(self._hass_auto_pairer.on_client_connected, client_id)
+                self.mass.loop.call_soon(self._local_auto_pairer.on_client_connected, client_id)
             case ClientDisconnectedEvent(client_id, goodbye_reason):
+                self._refresh_speaker(client_id)
                 self._set_held_elsewhere(
                     client_id,
                     held=goodbye_reason in HELD_ELSEWHERE_GOODBYE_REASONS | REFUSED_GOODBYE_REASONS,
@@ -586,15 +661,8 @@ class SendspinProvider(PlayerProvider):
         """
         for client in self.server_api.clients:
             client_id = client.client_id
-            if not (client.is_connected or self.server_api.is_external_player(client_id)):
-                continue
-            # a client whose add, update or removal is being handled is left to that
-            if self.get_protocol(client_id) is not None or client_id in self._client_event_versions:
-                continue
-            if not self.mass.players.wants_protocol(client_id):
-                continue
-            event_version = self._begin_client_event(client_id)
-            self.mass.create_task(self._handle_client_added(client_id, event_version))
+            if client.is_connected or self.server_api.is_external_player(client_id):
+                self._add_client_without_protocol(client_id)
         for client_id in self.mass.config.get_protocol_ids_of_provider(self.instance_id):
             underlying_id = self.mass.config.get_protocol_value(
                 client_id, CONF_UNDERLYING_PLAYER_ID
@@ -925,6 +993,155 @@ class SendspinProvider(PlayerProvider):
         """Return whether the given player_id belongs to a registered virtual player."""
         return player_id in self._virtual_players
 
+    async def create_multi_channel_player(
+        self, name: str, speakers: dict[str, SpeakerChannel]
+    ) -> Player:
+        """
+        Combine Sendspin speakers into one new multi-channel player.
+
+        Each speaker loses its own Sendspin protocol to the new player, and a player that has
+        no other protocol left goes with it.
+
+        :param name: Name of the new player.
+        :param speakers: The channel each speaker plays, by its client id.
+        :raises InvalidDataError: When the channels make up no layout a player can have.
+        :raises UnsupportedFeaturedException: When a client is no Sendspin speaker of its own.
+        :raises PlayerUnavailableError: When a speaker is not connected.
+        """
+        if layout_of(speakers.values()) is None:
+            raise InvalidDataError(
+                "A multi-channel player needs one speaker on front left and one on front right",
+                translation_key="multi_channel_channels",
+                translation_owner=self.translation_owner,
+            )
+        members = [self._get_multi_channel_speaker(client_id) for client_id in speakers]
+        group_id = new_group_id()
+        protocol_id = f"{MULTI_CHANNEL_ID_PREFIX}{group_id}"
+        values: dict[str, ConfigValueType] = {CONF_MULTI_CHANNEL_GROUP_ID: group_id}
+        for number, (member, channel) in enumerate(
+            zip(members, speakers.values(), strict=True), start=1
+        ):
+            values[CONF_SPEAKER_CLIENT_ID.format(n=number)] = member.protocol_id
+            values[CONF_SPEAKER_NAME.format(n=number)] = member.display_name
+            values[CONF_SPEAKER_CHANNEL.format(n=number)] = channel.value
+            values[CONF_SPEAKER_OUTPUT_DELAY.format(n=number)] = member.config.get_value(
+                CONF_SENDSPIN_STATIC_DELAY, member.static_delay_default_ms
+            )
+        self.mass.config.create_protocol_record(
+            protocol_id,
+            provider=self.instance_id,
+            player_id=None,
+            role=ProtocolRole.NATIVE,
+            default_name=name,
+        )
+        self.mass.config.set(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}/values", values)
+        self._multi_channel_speakers.update(dict.fromkeys(speakers, protocol_id))
+        try:
+            self._register_virtual_player_client(
+                protocol_id, name, product_name="Multi-channel player"
+            )
+            player = await self._wait_for_virtual_player(protocol_id)
+            await cast("SendspinMultiChannelPlayer", self.get_protocol(protocol_id)).take_speakers()
+        except BaseException:
+            await self.mass.players.remove_protocol(protocol_id)
+            await self.release_multi_channel_player(protocol_id)
+            raise
+        self.logger.info("Multi-channel player %s created", name)
+        return player
+
+    async def release_multi_channel_player(self, protocol_id: str) -> None:
+        """
+        Let the speakers of a multi-channel player go, as the player is removed for good.
+
+        A speaker that is connected registers as a Sendspin client of its own again, one that
+        is away does so when it connects.
+
+        :param protocol_id: Id of the protocol of the multi-channel player.
+        """
+        speaker_ids = [
+            client_id
+            for client_id, set_id in self._multi_channel_speakers.items()
+            if set_id == protocol_id
+        ]
+        for client_id in speaker_ids:
+            del self._multi_channel_speakers[client_id]
+        if self.server_api.get_client(protocol_id) is not None:
+            await self.server_api.remove_client(protocol_id)
+        for client_id in speaker_ids:
+            if (client := self.server_api.get_client(client_id)) is None:
+                continue
+            await client.ungroup()
+            if client.is_connected:
+                self._add_client_without_protocol(client_id)
+        self.logger.info("Multi-channel player %s removed", protocol_id)
+
+    def get_multi_channel_candidates(self) -> list[str]:
+        """Return the client ids of the speakers that can go up in a new multi-channel player."""
+        return [
+            protocol.protocol_id
+            for protocol in self.protocols
+            if self._multi_channel_refusal(protocol.protocol_id) is None
+        ]
+
+    async def get_client_session_format(
+        self, client_id: str, start_streamdetails: StreamDetails
+    ) -> tuple[SendspinAudioFormat, AudioCodec] | None:
+        """
+        Return the Sendspin format and codec a client plays in a session starting with an item.
+
+        A speaker of a multi-channel player follows the sample rate of that player.
+
+        :param client_id: The client id.
+        :param start_streamdetails: Stream details of the first item of the session.
+        :return: The format and codec, or None when the format of the client does not follow
+            the session.
+        """
+        if (protocol_id := self.multi_channel_player_of(client_id)) is not None:
+            set_player = self.get_protocol(protocol_id)
+            if isinstance(set_player, SendspinMultiChannelPlayer) and set_player.plays_with(
+                client_id
+            ):
+                return await set_player.get_speaker_session_format(client_id, start_streamdetails)
+            return None
+        player = self.get_protocol(client_id)
+        if isinstance(player, SendspinPlayer):
+            return await player.get_session_format(start_streamdetails)
+        return None
+
+    def multi_channel_player_of(self, client_id: str) -> str | None:
+        """
+        Return the protocol id of the multi-channel player a speaker belongs to.
+
+        :param client_id: The client id of the speaker.
+        """
+        return self._multi_channel_speakers.get(client_id)
+
+    def is_silent_client(self, client_id: str) -> bool:
+        """
+        Return whether a client renders no audio: a virtual or a multi-channel player.
+
+        :param client_id: The client id.
+        """
+        return client_id in self._virtual_players or client_id.startswith(MULTI_CHANNEL_ID_PREFIX)
+
+    def speaker_output(self, client_id: str) -> tuple[str, SpeakerChannel | None]:
+        """
+        Return the protocol whose output settings a client plays with, and its own channel.
+
+        A speaker of a multi-channel player plays with the settings of that player, while it
+        is in the group of that player.
+
+        :param client_id: The client id.
+        :return: The protocol id, and the channel the client plays (None for every channel).
+        """
+        if (
+            (protocol_id := self._multi_channel_speakers.get(client_id)) is not None
+            and isinstance(set_player := self.get_protocol(protocol_id), SendspinMultiChannelPlayer)
+            and set_player.plays_with(client_id)
+        ):
+            return protocol_id, set_player.speaker_channel(client_id)
+        return client_id, None
+
     def is_held_elsewhere(self, client_id: str) -> bool:
         """Return whether another server holds this client."""
         return client_id in self._held_elsewhere and client_id not in self._refused_here
@@ -1107,6 +1324,16 @@ class SendspinProvider(PlayerProvider):
             await self.server_api.untrust_unpaired(client_id)
         await self._refresh_player(client_id)
 
+    async def on_protocol_removed(self, protocol_id: str) -> None:
+        """Drop the pairing and guest approval of a removed player's device."""
+        if await self.server_api.pairing_store.record_by_client_id(protocol_id) is not None:
+            await self._drop_pairing(protocol_id)
+            self.logger.info(
+                "Removed the pairing of client %s: its player was removed", protocol_id
+            )
+        await self.server_api.untrust_unpaired(protocol_id)
+        await self._refresh_player(protocol_id)
+
     async def pair_web_player(self, pairing_token: str) -> None:
         """
         Pair the built-in web player that minted the given pairing token.
@@ -1267,11 +1494,14 @@ class SendspinProvider(PlayerProvider):
             self.mass.webserver.auth.subscribe_user_access_revoked(self._on_user_access_revoked)
         )
         await self._remove_orphan_virtual_player_configs()
+        self.sources.start()
+        # the speakers of the stored multi-channel players are known before any of them connects
+        self._restore_multi_channel_players()
         # Start server for handling incoming Sendspin connections from clients
         # and mDNS discovery of new clients
         try:
             await self.server_api.start_server(
-                port=SENDSPIN_SERVER_PORT,
+                port=self.server_port,
                 host=self.mass.streams.bind_ip,
                 advertise_addresses=[self.mass.streams.publish_ip],
             )
@@ -1281,7 +1511,7 @@ class SendspinProvider(PlayerProvider):
             # so surface this as a provider error the user can see
             self.unload_with_error(
                 SetupFailedError(
-                    f"Could not start the Sendspin server on port {SENDSPIN_SERVER_PORT}: {err}"
+                    f"Could not start the Sendspin server on port {self.server_port}: {err}"
                 )
             )
             return
@@ -1319,6 +1549,8 @@ class SendspinProvider(PlayerProvider):
         self._management_sessions.clear()
         self._pairing_config_snapshots.clear()
         self._hass_auto_pairer.close()
+        self._local_auto_pairer.close()
+        await self.sources.stop()
         if self._running_pairing_evictions:
             await asyncio.gather(*self._running_pairing_evictions, return_exceptions=True)
         # Stop the Sendspin server. A failed start already cleaned up after itself,
@@ -1332,7 +1564,42 @@ class SendspinProvider(PlayerProvider):
         self._client_event_task_counts.clear()
         self._client_event_versions.clear()
         self._virtual_players.clear()
+        self._multi_channel_speakers.clear()
         self._bridge_waiters.clear()
+
+    async def get_audio_sources(self) -> list[AudioSource]:
+        """Return the line-ins of the connected Sendspin clients and approved held ones."""
+        return await self.sources.get_audio_sources()
+
+    def get_player_input_sources(self, player_id: str) -> list[AudioSource]:
+        """Return the line-in of the Sendspin client of the given player."""
+        return self.sources.get_player_input_sources(player_id)
+
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Return the StreamDetails of a Sendspin line-in."""
+        return await self.sources.get_stream_details(item_id, media_type)
+
+    async def on_source_selected(
+        self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
+    ) -> None:
+        """Claim a Sendspin line-in and ask its client to start streaming."""
+        await self.sources.on_source_selected(
+            source_id, player_id, owner_player_id, stream_session_id
+        )
+
+    async def on_source_unselected(
+        self, source_id: str, owner_player_id: str, stream_session_id: str
+    ) -> None:
+        """Release a Sendspin line-in when its stream is torn down."""
+        await self.sources.on_source_unselected(source_id, owner_player_id, stream_session_id)
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """Return the PCM of a Sendspin line-in; a line-in can not seek."""
+        async with aclosing(self.sources.get_audio_stream(streamdetails)) as stream:
+            async for chunk in stream:
+                yield chunk
 
     def _set_aiosendspin_log_level(self) -> None:
         """Keep aiosendspin's (very chatty) logging quiet unless verbose logging is enabled."""
@@ -1342,6 +1609,21 @@ class SendspinProvider(PlayerProvider):
             logging.getLogger("aiosendspin").setLevel(logging.DEBUG)
         else:
             logging.getLogger("aiosendspin").setLevel(self.logger.level + 10)
+
+    def _add_client_without_protocol(self, client_id: str) -> None:
+        """Add a client that has no protocol, unless its player does not want one."""
+        # a client whose add, update or removal is being handled is left to that, and a
+        # speaker of a multi-channel player to that player
+        if (
+            self.get_protocol(client_id) is not None
+            or client_id in self._client_event_versions
+            or client_id in self._multi_channel_speakers
+        ):
+            return
+        if not self.mass.players.wants_protocol(client_id):
+            return
+        event_version = self._begin_client_event(client_id)
+        self.mass.create_task(self._handle_client_added(client_id, event_version))
 
     def _begin_client_event(self, client_id: str) -> int:
         """Increment version and in-flight task count for a client event."""
@@ -1428,7 +1710,8 @@ class SendspinProvider(PlayerProvider):
         Create the appropriate player class based on client roles.
 
         Priority: player role -> SendspinPlayer, metadata role -> DISPLAY,
-        visualizer role -> VISUALIZER, source role -> SendspinSourcePlayer.
+        visualizer role -> VISUALIZER, source role -> SendspinSourcePlayer,
+        artwork role -> DISPLAY, color role -> LIGHT, controller role -> CONTROLLER.
         Bridge-registered type overrides the default.
         """
         extra_ids = self._bridge_identifiers.pop(client_id, None)
@@ -1465,11 +1748,14 @@ class SendspinProvider(PlayerProvider):
         has_metadata_role = "metadata" in negotiated_families
         has_visualizer_role = "visualizer" in negotiated_families
 
-        if has_player_role:
+        player: SendspinBasePlayer
+        if client_id.startswith(MULTI_CHANNEL_ID_PREFIX):
+            player = SendspinMultiChannelPlayer(self, client_id, initial_hello=initial_hello)
+        elif has_player_role:
             audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
             if previous_player is not None:
                 audio_player.preserve_control_features_from(previous_player)
-            player: SendspinBasePlayer = audio_player
+            player = audio_player
         elif has_metadata_role or has_visualizer_role:
             default_type = PlayerType.DISPLAY if has_metadata_role else PlayerType.VISUALIZER
             viz_player = SendspinVisualizerPlayer(self, client_id, initial_hello=initial_hello)
@@ -1479,6 +1765,18 @@ class SendspinProvider(PlayerProvider):
             # Capture-only device: a SendspinPlayer here would advertise playback it
             # cannot do. It registers as an audio input instead.
             player = SendspinSourcePlayer(self, client_id, initial_hello=initial_hello)
+        elif negotiated_families & {"artwork", "color", "controller"}:
+            # Without an audio sink it can follow a group but never play or lead one.
+            default_type = (
+                PlayerType.DISPLAY
+                if "artwork" in negotiated_families
+                else PlayerType.LIGHT
+                if "color" in negotiated_families
+                else PlayerType.CONTROLLER
+            )
+            viz_player = SendspinVisualizerPlayer(self, client_id, initial_hello=initial_hello)
+            viz_player._attr_type = bridge_player_type or default_type
+            player = viz_player
         else:
             audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
             if previous_player is not None:
@@ -1746,6 +2044,14 @@ class SendspinProvider(PlayerProvider):
         player = self.get_protocol(client_id)
         if isinstance(player, SendspinBasePlayer):
             player.update_state()
+        self._refresh_speaker(client_id)
+
+    def _refresh_speaker(self, client_id: str) -> None:
+        """Let a multi-channel player follow a speaker of it that connected or went away."""
+        if (protocol_id := self._multi_channel_speakers.get(client_id)) is not None and (
+            isinstance(set_player := self.get_protocol(protocol_id), SendspinMultiChannelPlayer)
+        ):
+            set_player.on_speaker_changed(client_id)
 
     def _on_user_access_revoked(self, user: User) -> None:
         """Handle a user's access being withdrawn (tokens revoked or account deleted)."""
@@ -1754,6 +2060,14 @@ class SendspinProvider(PlayerProvider):
             task = self.mass.create_task(self._evict_pairings_for_owner(owner))
             self._running_pairing_evictions.add(task)
             task.add_done_callback(self._running_pairing_evictions.discard)
+
+    async def _drop_pairing(self, client_id: str) -> None:
+        """Drop the pairing of a client, and its own half too when it is connected."""
+        try:
+            await self.server_api.unpair(client_id)
+        except ValueError:
+            # Not connected: there is no client half to notify, drop only our record.
+            await self.server_api.pairing_store.remove_record(client_id)
 
     async def _evict_pairings_for_owner(self, owner: str) -> None:
         """Drop every pairing bound to ``owner``, unpairing connected clients in-band."""
@@ -1765,11 +2079,7 @@ class SendspinProvider(PlayerProvider):
             current = await pairing_store.record_by_client_id(record.client_id)
             if current is None or current.owner != owner:
                 continue
-            try:
-                await self.server_api.unpair(record.client_id)
-            except ValueError:
-                # Not connected: there is no client half to notify, drop only our record.
-                await pairing_store.remove_record(record.client_id)
+            await self._drop_pairing(record.client_id)
             self.logger.info(
                 "Removed the pairing of client %s: its owner's access was revoked",
                 record.client_id,
@@ -1845,6 +2155,11 @@ class SendspinProvider(PlayerProvider):
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale add event for %s", client_id)
                 return
+            if client_id in self._multi_channel_speakers:
+                # a speaker of a multi-channel player is no protocol of its own
+                await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
+                self._refresh_speaker(client_id)
+                return
             existing_player = self.get_protocol(client_id)
             preserved_identifiers = (
                 dict(existing_player.device_info.identifiers) if existing_player is not None else {}
@@ -1874,6 +2189,9 @@ class SendspinProvider(PlayerProvider):
                     self.logger.debug(
                         "Skipping stale add event for %s after HA enrichment", client_id
                     )
+                    return
+                if client_id in self._multi_channel_speakers:
+                    # it went up in a multi-channel player meanwhile
                     return
                 await self.mass.players.register(player)
             finally:
@@ -1985,6 +2303,9 @@ class SendspinProvider(PlayerProvider):
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale update event for %s after refresh", client_id)
                 return
+            if client_id in self._multi_channel_speakers:
+                # it went up in a multi-channel player meanwhile
+                return
             if was_session_only != existing_player.session_only:
                 # whether it is a player of its own while connected is fixed at attach
                 existing_player._attr_underlying_protocol_id = None
@@ -2008,15 +2329,17 @@ class SendspinProvider(PlayerProvider):
             return None
         return cast("str | None", values.get(CONF_VIRTUAL_PLAYER_OWNER))
 
-    def _register_virtual_player_client(self, player_id: str, display_name: str) -> None:
-        """Register the silent external Sendspin client backing a virtual player."""
+    def _register_virtual_player_client(
+        self, player_id: str, display_name: str, product_name: str = "Virtual Player"
+    ) -> None:
+        """Register the silent external Sendspin client backing a virtual or multi-channel player."""
         hello = ClientHelloPayload(
             client_id=player_id,
             name=display_name,
             version=1,
             supported_roles=[BRIDGE_ROLE_ID],
             device_info=SendspinDeviceInfo(
-                product_name="Virtual Player",
+                product_name=product_name,
                 manufacturer="Music Assistant",
             ),
             player_support=ClientHelloPlayerSupport(
@@ -2051,19 +2374,18 @@ class SendspinProvider(PlayerProvider):
             role.set_timing(required_lead_time_ms=0, min_buffer_ms=0)
             break
 
-    async def _wait_for_virtual_player(self, player_id: str) -> None:
-        """Wait until the virtual player is registered in MA with its queue."""
+    async def _wait_for_virtual_player(self, protocol_id: str) -> Player:
+        """Wait until the player of a silent client is registered in MA with its queue."""
 
-        def _registered() -> bool | None:
-            if (
-                self.mass.players.get_player(player_id) is not None
-                and self.mass.player_queues.get(player_id) is not None
-            ):
-                return True
+        def _registered() -> Player | None:
+            player = self.mass.players.get_player_by_protocol(protocol_id)
+            if player is not None and self.mass.player_queues.get(player.player_id) is not None:
+                return player
             return None
 
-        if await _poll_until(_registered, VIRTUAL_PLAYER_REGISTER_TIMEOUT) is None:
-            raise SetupFailedError(f"Virtual player {player_id} was not registered in time")
+        if (player := await _poll_until(_registered, VIRTUAL_PLAYER_REGISTER_TIMEOUT)) is None:
+            raise SetupFailedError(f"Virtual player {protocol_id} was not registered in time")
+        return player
 
     async def _cleanup_failed_virtual_player_creation(self, player_id: str) -> None:
         """
@@ -2079,6 +2401,72 @@ class SendspinProvider(PlayerProvider):
             self.logger,
             "Could not clean up failed virtual player creation %s: %s",
         )
+
+    def _get_multi_channel_speaker(self, client_id: str) -> SendspinPlayer:
+        """
+        Return the protocol of a client that can be a speaker of a multi-channel player.
+
+        :param client_id: The client id of the speaker.
+        :raises UnsupportedFeaturedException: When the client is no Sendspin speaker of its own.
+        :raises PlayerUnavailableError: When the speaker is not connected.
+        """
+        if (refusal := self._multi_channel_refusal(client_id)) is not None:
+            raise refusal
+        return cast("SendspinPlayer", self.get_protocol(client_id))
+
+    def _multi_channel_refusal(
+        self, client_id: str
+    ) -> UnsupportedFeaturedException | PlayerUnavailableError | None:
+        """
+        Return why a client can not be a speaker of a new multi-channel player, None if it can.
+
+        :param client_id: The client id of the speaker.
+        """
+        protocol = self.get_protocol(client_id)
+        name = protocol.display_name if protocol is not None else client_id
+        if client_id in self._multi_channel_speakers:
+            return UnsupportedFeaturedException(
+                f"{name} is part of a multi-channel player already",
+                translation_key="multi_channel_speaker_taken",
+                translation_owner=self.translation_owner,
+                translation_args=[name],
+            )
+        # a bridge rides on another protocol of its device, a web player is a session
+        if (
+            not isinstance(protocol, SendspinPlayer)
+            or isinstance(protocol, SendspinMultiChannelPlayer)
+            or protocol.underlying_protocol_id is not None
+            or protocol.session_only
+            or not protocol.api.roles_by_family("player")
+        ):
+            return UnsupportedFeaturedException(
+                f"{name} can not be a speaker of a multi-channel player",
+                translation_key="multi_channel_not_a_speaker",
+                translation_owner=self.translation_owner,
+                translation_args=[name],
+            )
+        if protocol.player is None or not protocol.api.is_connected or protocol.needs_setup:
+            return PlayerUnavailableError(
+                f"{name} is not available",
+                translation_key="multi_channel_speaker_unavailable",
+                translation_owner=self.translation_owner,
+                translation_args=[name],
+            )
+        return None
+
+    def _restore_multi_channel_players(self) -> None:
+        """Register the silent clients of the stored multi-channel players."""
+        for protocol_id in self.mass.config.get_protocol_ids_of_provider(self.instance_id):
+            if not protocol_id.startswith(MULTI_CHANNEL_ID_PREFIX):
+                continue
+            record = self.mass.config.get_protocol_record(protocol_id) or {}
+            for speaker in stored_speakers(record.get("values") or {}):
+                self._multi_channel_speakers[speaker.client_id] = protocol_id
+            self._register_virtual_player_client(
+                protocol_id,
+                str(record.get("default_name") or protocol_id),
+                product_name="Multi-channel player",
+            )
 
     def _on_virtual_player_stream_start(self, _request: ExternalStreamStartRequest) -> None:
         """Accept stream start requests for virtual players (nothing to connect)."""
@@ -2121,6 +2509,14 @@ class SendspinProvider(PlayerProvider):
         if self._unloading or self.mass.closing or (player_id := event.object_id) is None:
             return
         await evaluate_bridges_of_player(self.mass, player_id)
+
+    async def _on_player_removed(self, event: MassEvent) -> None:
+        """Let the speakers go of a multi-channel player that is removed for good."""
+        # a set that is disabled has no protocol object, so its removal reaches no on_remove
+        for protocol_id in set(self._multi_channel_speakers.values()):
+            record = self.mass.config.get_protocol_record(protocol_id)
+            if record is None or record.get("player_id") == event.object_id:
+                await self.release_multi_channel_player(protocol_id)
 
     async def _remove_orphan_virtual_player_configs(self) -> None:
         """Delete stored configs of virtual players whose owner provider is gone."""
