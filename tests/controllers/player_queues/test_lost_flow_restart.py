@@ -16,7 +16,9 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import PlaybackState
 
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.constants import (
     LOST_FLOW_RESTART_LIMIT,
@@ -37,7 +39,13 @@ def _fake_controller() -> Any:
     fake._lost_flow_stream_restartable = partial(
         PlayerQueuesController._lost_flow_stream_restartable, fake
     )
-    fake.mass.players.get_player.return_value.offline_by_power_control = False
+    fake._player_plays_queue = partial(PlayerQueuesController._player_plays_queue, fake)
+    player = fake.mass.players.get_player.return_value
+    player.offline_by_power_control = False
+    player.available = True
+    player.playback_state = PlaybackState.PLAYING
+    player.active_source = QUEUE_ID
+    player.extra_data = {}
     without_member_power_on = {"active": False}
     member_power_on = fake.mass.players.without_member_power_on.return_value
     member_power_on.__enter__.side_effect = lambda: without_member_power_on.update(active=True)
@@ -53,9 +61,12 @@ def _fake_controller() -> Any:
     return fake
 
 
-def _restart(fake: Any, session_id: str = "session-1") -> bool:
+def _restart(fake: Any, session_id: str = "session-1", only_while_playing: bool = False) -> bool:
     return PlayerQueuesController.restart_lost_flow_stream(
-        cast("PlayerQueuesController", fake), QUEUE_ID, session_id
+        cast("PlayerQueuesController", fake),
+        QUEUE_ID,
+        session_id,
+        only_while_playing=only_while_playing,
     )
 
 
@@ -134,6 +145,89 @@ def test_no_restart(condition: str) -> None:
     fake._restart_lost_flow_stream.assert_not_called()
     fake.mass.create_task.assert_not_called()
     assert queue_data.flow_restart_times == []
+
+
+def test_a_stream_the_player_closed_restarts_a_queue_it_plays() -> None:
+    """A player that still plays its queue after it closed its stream restarts."""
+    fake = _fake_controller()
+
+    assert _restart(fake, only_while_playing=True) is True
+
+    fake._restart_lost_flow_stream.assert_called_once_with(QUEUE_ID, "session-1")
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "paused",
+        "idle",
+        "inactive",
+        "unavailable",
+        "announcement",
+        "another_session",
+        "halted_by_command",
+        "flow_fully_generated",
+        "switched_off",
+        "no_player",
+    ],
+)
+def test_no_restart_for_a_stream_the_player_closed(condition: str) -> None:
+    """Only a player that is available and plays its queue, without an announcement, restarts."""
+    fake = _fake_controller()
+    queue_data = fake._queue_data[QUEUE_ID]
+    player = fake.mass.players.get_player.return_value
+    session_id = "session-1"
+    if condition == "paused":
+        player.playback_state = PlaybackState.PAUSED
+    elif condition == "idle":
+        player.playback_state = PlaybackState.IDLE
+    elif condition == "inactive":
+        # another app took over the player
+        player.active_source = "spotify_connect"
+    elif condition == "unavailable":
+        player.available = False
+    elif condition == "announcement":
+        player.extra_data = {ATTR_ANNOUNCEMENT_IN_PROGRESS: True}
+    elif condition == "another_session":
+        session_id = "session-0"
+    elif condition == "halted_by_command":
+        queue_data.halted_by_command = True
+    elif condition == "flow_fully_generated":
+        queue_data.flow_buffer_completed = "session-1"
+    elif condition == "switched_off":
+        player.offline_by_power_control = True
+    else:
+        fake.mass.players.get_player.return_value = None
+
+    assert _restart(fake, session_id, only_while_playing=True) is False
+
+    fake._restart_lost_flow_stream.assert_not_called()
+    assert queue_data.flow_restart_times == []
+
+
+def test_a_receiver_that_errors_while_idle_still_restarts() -> None:
+    """The reconnect and the error report of a receiver come while it does not play."""
+    fake = _fake_controller()
+    fake.mass.players.get_player.return_value.playback_state = PlaybackState.IDLE
+
+    assert _restart(fake) is True
+
+    fake._restart_lost_flow_stream.assert_called_once()
+
+
+@pytest.mark.parametrize("reconnect_first", [True, False], ids=["reconnect_first", "wait_first"])
+def test_a_closed_stream_and_its_reconnect_restart_once(reconnect_first: bool) -> None:
+    """A player that closed its stream and then asked to continue it restarts once."""
+    fake = _fake_controller()
+    reports = [partial(_restart, fake), partial(_restart, fake, only_while_playing=True)]
+    if not reconnect_first:
+        reports.reverse()
+
+    for report in reports:
+        report()
+
+    fake._restart_lost_flow_stream.assert_called_once()
+    assert len(fake._queue_data[QUEUE_ID].flow_restart_times) == 1
 
 
 def test_an_unknown_queue_restarts_nothing() -> None:

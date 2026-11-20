@@ -99,6 +99,7 @@ from music_assistant.controllers.streams.constants import (
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     FLOW_STREAM_MAX_LEAD_OUT_SECONDS,
     ICY_WRITE_SIZE,
+    LOST_STREAM_GRACE,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     BufferSize,
     PacingProfile,
@@ -1381,6 +1382,13 @@ class StreamsController(CoreController):
                 stream_failure = err
             finally:
                 self._active_output_streams -= 1
+            if (
+                first_chunk_received
+                and not stream_completed
+                and queue_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
+            ):
+                # a radio or live item never ends by itself
+                self._watch_lost_stream(request, pq_data, session_id, player)
             if stream_failure is not None or queue_item.streamdetails.stream_error:
                 # every stage in between replaces the message with one of its own, so
                 # the reason worth reporting is the one at the bottom of the chain
@@ -1810,6 +1818,8 @@ class StreamsController(CoreController):
                 if not entries:
                     del self._open_item_streams[queue_id]
 
+        if not self.mass.player_queues.flow_stream_finished(queue_id):
+            self._watch_lost_stream(request, queue_data, session_id, player)
         if not client_disconnected and fixed_content_length:
             await self._finish_flow_stream(request, resp, queue_id, session_id, player)
 
@@ -2702,6 +2712,85 @@ class StreamsController(CoreController):
         # advertise is relayed to the player but never applied to the response itself.
         # Without this the player is left waiting on a stream that already ended.
         resp.force_close()
+
+    def _watch_lost_stream(
+        self,
+        request: web.Request,
+        queue_data: PlayerQueueData,
+        session_id: str,
+        protocol: PlayerProtocol,
+    ) -> None:
+        """
+        Restart the queue of a stream its player closed, unless the player asks for it again.
+
+        For a stream that does not end by itself. The queue restarts where it plays now when
+        the player has no stream of the session open again after LOST_STREAM_GRACE seconds.
+        A player that is still connected or was stopped, or a session the queue moved past,
+        restarts nothing.
+
+        :param request: The stream request whose response ended.
+        :param queue_data: The server-side record of the queue the stream belongs to.
+        :param session_id: Stream session the response was opened for.
+        :param protocol: The output protocol that requested the stream.
+        """
+        if (
+            request.transport is not None
+            or queue_data.session_id != session_id
+            or (protocol.player and protocol.player.stop_called)
+        ):
+            return
+        queue = queue_data.queue
+        player_id = request.match_info["player_id"]
+        self.logger.debug(
+            "Player %s closed its stream of %s: restarting playback unless it asks for the "
+            "stream again within %s seconds",
+            protocol.display_name,
+            queue.display_name,
+            LOST_STREAM_GRACE,
+        )
+        self.mass.call_later(
+            LOST_STREAM_GRACE,
+            self._restart_lost_stream_unless_reopened,
+            queue.queue_id,
+            session_id,
+            player_id,
+            task_id=f"lost_stream_{queue.queue_id}_{player_id}",
+        )
+
+    async def _restart_lost_stream_unless_reopened(
+        self, queue_id: str, session_id: str, player_id: str
+    ) -> None:
+        """
+        Restart a queue whose player lost its stream, unless the player has one open again.
+
+        :param queue_id: The queue the lost stream belongs to.
+        :param session_id: Stream session of the lost stream.
+        :param player_id: The id the player requested the lost stream under.
+        """
+        if any(
+            entry_session_id == session_id
+            and request.method == "GET"
+            and request.match_info.get("player_id") == player_id
+            and request.transport is not None
+            for entry_session_id, request in self._open_item_streams.get(queue_id) or []
+        ):
+            return
+        protocol = self.mass.players.get_output_protocol(player_id)
+        if protocol is not None and protocol.needs_poll:
+            # a player without state events may have been stopped at the device since its
+            # last poll
+            try:
+                await protocol.poll()
+            except Exception as err:
+                self.logger.debug(
+                    "Not restarting the lost stream of %s: polling it failed: %s",
+                    protocol.display_name,
+                    err,
+                )
+                return
+        self.mass.player_queues.restart_lost_flow_stream(
+            queue_id, session_id, only_while_playing=True
+        )
 
     def _requested_item_ids(
         self,

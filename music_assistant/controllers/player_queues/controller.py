@@ -2268,20 +2268,28 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         played = protocol.corrected_elapsed_time or 0
         return played >= streamed - FLOW_PLAYED_OUT_MARGIN
 
-    def restart_lost_flow_stream(self, queue_id: str, session_id: str) -> bool:
+    def restart_lost_flow_stream(
+        self, queue_id: str, session_id: str, only_while_playing: bool = False
+    ) -> bool:
         """
-        Restart a queue at the position that plays now, for a flow stream its player lost.
+        Restart a queue at the position that plays now, for a stream its player lost.
 
+        The lost stream is a flow stream, or the stream of a radio or live item, which restarts
+        live.
         Only the current session restarts, once, and a queue at most LOST_FLOW_RESTART_LIMIT
         times within LOST_FLOW_RESTART_WINDOW seconds. A queue halted by a command, a flow
         stream that was fully generated and a player switched off at its power control do not
         restart.
 
-        :param queue_id: The queue whose flow stream the player lost.
-        :param session_id: The stream session of the lost flow stream.
+        :param queue_id: The queue whose stream the player lost.
+        :param session_id: The stream session of the lost stream.
+        :param only_while_playing: Restart only while the player is available and plays the
+            queue, without an announcement: for a stream the player closed without an error.
         :return: Whether the queue restarts, or already does for this session.
         """
         if not self._lost_flow_stream_restartable(queue_id, session_id):
+            return False
+        if only_while_playing and not self._player_plays_queue(queue_id):
             return False
         queue_data = self._queue_data[queue_id]
         if queue_data.flow_restarted_session_id == session_id:
@@ -3405,6 +3413,20 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return False
         player = self.mass.players.get_player(queue_id)
         return player is not None and not player.offline_by_power_control
+
+    def _player_plays_queue(self, queue_id: str) -> bool:
+        """Return whether the player of a queue is available and plays the queue now."""
+        # read from the player: the queue takes over its state with a delay, which misses
+        # what a poll of the player just before reported
+        player = self.mass.players.get_player(queue_id)
+        return (
+            player is not None
+            and player.available
+            and player.playback_state == PlaybackState.PLAYING
+            # the queue is active until another source takes over the player
+            and player.active_source in (queue_id, None)
+            and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        )
 
     async def _restart_lost_flow_stream(self, queue_id: str, session_id: str) -> None:
         """Resume a queue where it plays now, unless a command took it over meanwhile."""

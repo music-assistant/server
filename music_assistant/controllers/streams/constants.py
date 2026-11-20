@@ -239,6 +239,10 @@ SEEK_WAIT_THRESHOLD: Final[int] = 20
 # back is served without refetching.
 PLAYED_AUDIO_RETENTION: Final[int] = 60
 
+# Seconds a player that closed a stream it plays gets to ask for it again, before its
+# queue restarts where it plays now.
+LOST_STREAM_GRACE: Final[int] = 15
+
 # Streams webserver default port
 DEFAULT_PORT: Final[int] = 8097
 
