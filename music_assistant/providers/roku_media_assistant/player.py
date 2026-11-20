@@ -376,7 +376,7 @@ class MediaAssistantPlayer(PlayerProtocol):
                                 )
                         self._attr_elapsed_time = position
                         self._attr_elapsed_time_last_updated = now
-                    except Exception:  # noqa: BLE001 - a bad position must not stop the poll
+                    except ValueError, AttributeError:
                         self.logger.info(
                             "Playback Position received from %s Was Invalid", self.name
                         )
