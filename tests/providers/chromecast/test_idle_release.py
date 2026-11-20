@@ -16,10 +16,13 @@ from music_assistant_models.enums import PlaybackState, PlayerType
 from pychromecast import IDLE_APP_ID
 
 from music_assistant.providers.chromecast.constants import (
+    APP_MEDIA_RECEIVER,
     APP_QUIT_DELAY,
     MASS_APP_ID,
 )
 from music_assistant.providers.chromecast.player import ChromecastPlayer
+
+MASS_STREAM_BASE = "http://192.168.1.10:8097"
 
 
 def _fake_player(
@@ -56,6 +59,7 @@ def _fake_player(
     fake._attr_powered = False
     fake._attr_group_members = []
     fake._attr_playback_state = prev_state
+    fake.mass.streams.base_url = MASS_STREAM_BASE
     return fake
 
 
@@ -85,16 +89,26 @@ def _media_status(
     return status
 
 
+def _assert_release_not_scheduled(fake: Any) -> None:
+    released = [
+        c for c in fake.mass.call_later.call_args_list if fake._quit_app_when_unused in c.args
+    ]
+    assert released == []
+
+
 def _assert_release_scheduled(fake: Any) -> None:
     fake.mass.call_later.assert_called_once_with(
         APP_QUIT_DELAY, fake._quit_app_when_unused, task_id=fake._app_quit_task_id
     )
 
 
-@pytest.mark.parametrize("prev_state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
-def test_playback_ending_releases_the_device(prev_state: PlaybackState) -> None:
+@pytest.mark.parametrize(("playing", "paused"), [(True, False), (False, True)])
+def test_playback_ending_releases_the_device(playing: bool, paused: bool) -> None:
     """Nothing follows up on playback that ended on its own, so the device is released."""
-    fake = _fake_player(prev_state=prev_state)
+    fake = _fake_player(prev_state=PlaybackState.IDLE)
+    fake._handle_media_status(
+        _media_status(playing=playing, paused=paused, content_id=f"{MASS_STREAM_BASE}/track.flac")
+    )
 
     fake._handle_media_status(_media_status())
 
@@ -122,7 +136,8 @@ def test_an_announcement_on_an_idle_player_releases_the_device() -> None:
 
 def test_a_device_that_ran_dry_at_the_end_of_the_flow_stream_releases_it() -> None:
     """A device stuck buffering at flow EOF counts as finished, so it is released too."""
-    fake = _fake_player(flow_underrun=True)
+    fake = _fake_player(prev_state=PlaybackState.IDLE, flow_underrun=True)
+    fake._handle_media_status(_media_status(playing=True, content_id="http://mass/flow.flac"))
 
     fake._handle_media_status(_media_status(buffering=True, content_id="http://mass/flow.flac"))
 
@@ -158,6 +173,8 @@ def test_pausing_keeps_the_device_claimed() -> None:
 def test_an_idle_player_is_not_released_again() -> None:
     """A player that was already idle has no session of its own to release."""
     fake = _fake_player(prev_state=PlaybackState.IDLE)
+    # set as after our own playback, so only the was-playing guard keeps it claimed
+    fake._playing_own_session = True
 
     fake._handle_media_status(_media_status())
 
@@ -186,6 +203,8 @@ def test_a_dashboard_keepalive_does_not_release_the_device(
 def test_a_cast_group_is_not_released_when_playback_ends() -> None:
     """A cast group is released by its power control, not by playback ending."""
     fake = _fake_player(player_type=PlayerType.GROUP)
+    # our own playback is what ends, so only the group guard keeps the device claimed
+    fake._playing_own_session = True
 
     fake._handle_media_status(_media_status())
 
@@ -196,6 +215,8 @@ def test_a_cast_group_is_not_released_when_playback_ends() -> None:
 def test_a_group_member_is_not_released_when_the_group_stops() -> None:
     """A member follows the group's Cast session, so it has none of its own to release."""
     fake = _fake_player(active_cast_group="group_player_1")
+    # the group's own playback is what ends, so only the member guard keeps it claimed
+    fake._playing_own_session = True
     # the handler reads the group's status instead of its own, but only for a real cast player
     group = MagicMock(spec=ChromecastPlayer)
     group.cc = MagicMock()
@@ -206,3 +227,39 @@ def test_a_group_member_is_not_released_when_the_group_stops() -> None:
 
     assert fake._attr_playback_state == PlaybackState.IDLE
     fake.mass.call_later.assert_not_called()
+
+
+def test_our_stream_on_the_default_media_receiver_releases_the_device() -> None:
+    """Without the Music Assistant app, our stream plays on the Default Media Receiver."""
+    fake = _fake_player(prev_state=PlaybackState.IDLE)
+    fake.cc.app_id = APP_MEDIA_RECEIVER
+
+    fake._handle_media_status(
+        _media_status(playing=True, content_id=f"{MASS_STREAM_BASE}/flow/abc.flac")
+    )
+    # once playback ended the receiver may report nothing loaded
+    fake._handle_media_status(_media_status())
+
+    _assert_release_scheduled(fake)
+
+
+@pytest.mark.parametrize("idle_content_id", ["", "http://192.168.1.20:8123/media/chime.mp3"])
+def test_playback_cast_by_another_party_is_not_released(idle_content_id: str) -> None:
+    """
+    A cast by another party (such as Home Assistant) keeps the receiver's own idle timeout.
+
+    Quitting it would end that party's session, so its next cast would start a new one
+    and the device would play its connect chime.
+
+    :param idle_content_id: What the receiver still reports as loaded once playback ended.
+    """
+    fake = _fake_player(prev_state=PlaybackState.IDLE)
+    fake.cc.app_id = APP_MEDIA_RECEIVER
+
+    fake._handle_media_status(
+        _media_status(playing=True, content_id="http://192.168.1.20:8123/media/chime.mp3")
+    )
+    fake._handle_media_status(_media_status(content_id=idle_content_id))
+
+    assert fake._attr_playback_state == PlaybackState.IDLE
+    _assert_release_not_scheduled(fake)
