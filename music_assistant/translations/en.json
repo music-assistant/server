@@ -182,7 +182,7 @@
   "common.config_entries.output_channels.options.mono": "Mono (both channels)",
   "common.config_entries.output_channels.options.right": "Right channel only",
   "common.config_entries.output_channels.options.stereo": "Stereo (both channels)",
-  "common.config_entries.output_codec.description": "Select the codec to use for streaming audio to this player. \nBy default, Music Assistant sends lossless, high quality audio to all players and prefers the FLAC codec because it offers some compression while still remaining lossless \n\nSome players however do not support FLAC and require the stream to be packed into e.g. a lossy mp3 codec or you like to save some network bandwidth. \n\n Choosing a lossy codec saves some bandwidth at the cost of audio quality.",
+  "common.config_entries.output_codec.description": "Select the codec to use for streaming audio to this player. \nMost players get lossless, high quality FLAC by default, which offers some compression while still remaining lossless. \n\nSome players default to a lossy codec such as MP3 instead, because they do not support FLAC or stop playing a long FLAC stream after a while. \n\nChoosing a lossy codec also saves some network bandwidth, at the cost of audio quality.",
   "common.config_entries.output_codec.label": "Output codec to use for streaming audio to the player",
   "common.config_entries.output_codec.option_descriptions.aac": "Lossy — comparable to MP3; pick it for players that prefer AAC.",
   "common.config_entries.output_codec.option_descriptions.flac": "Lossless and compressed — full quality at a moderate bitrate. The default and best choice for most players.",
