@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from aiohttp import ClientTimeout
+from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.enums import (
     ImageType,
     MediaType,
@@ -581,7 +581,8 @@ class AIRadioRuntimeMixin:
                 country=country,
                 timeout_seconds=timeout_seconds,
             )
-        except Exception as err:  # noqa: BLE001 - weather is optional, any failure skips it
+        except (MusicAssistantError, ClientError, TimeoutError, ValueError) as err:
+            # a failed request, a timeout or an unreadable answer: weather is optional
             self.logger.warning(
                 "Weather lookup failed for '%s, %s': %s",
                 city,
