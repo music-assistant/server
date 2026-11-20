@@ -65,6 +65,7 @@ class WiimProvider(PlayerProvider):
         self.wiim_controller = WiimController(self.mass.http_session_no_ssl)
         # The single native multiroom topology authority shared by both backends.
         self.native_groups = NativeGroupCoordinator(self)
+        await self.native_groups.load_native_sets()
         # UPnP identity probe used to classify a discovered device (official WiiM/Audio Pro
         # vs a generic LinkPlay device such as Edifier). The description.xml is served over
         # plain HTTP; no UPnP eventing is used by the generic backend.
