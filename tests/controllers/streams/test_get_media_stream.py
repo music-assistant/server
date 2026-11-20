@@ -1596,3 +1596,25 @@ def test_delivered_media_covers_item_the_source_reports(
         audio_mod._delivered_media_covers_item(streamdetails, delivered, reported)  # type: ignore[arg-type]
         is covers
     )
+
+
+@pytest.mark.parametrize(
+    ("declared", "delivered", "covers"),
+    [
+        (120, 120.0, True),
+        (120, 121.0, True),  # a full playthrough that ends a little long
+        (120, 211.0, False),  # a seek that was ignored: the resume position counted twice
+        (3600, 3700.0, False),  # a seek that landed early delivers more than the item holds
+    ],
+)
+def test_delivered_media_covers_a_resumed_item_only_up_to_its_length(
+    declared: int, delivered: float, covers: bool
+) -> None:
+    """A resumed item's delivery that overshoots its length is not a measurement of it."""
+    streamdetails = SimpleNamespace(duration=declared)
+
+    assert (
+        audio_mod._delivered_media_covers_item(streamdetails, delivered, resumed=True)  # type: ignore[arg-type]
+        is covers
+    )
+    assert audio_mod._delivered_media_covers_item(streamdetails, delivered) is True  # type: ignore[arg-type]
