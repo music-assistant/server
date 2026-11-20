@@ -140,6 +140,8 @@ class FFMpeg(AsyncProcess):
         # Source duration in (whole) seconds as detected from the ffmpeg input log line,
         # or None if not yet parsed / not reported (e.g. live radio streams).
         self.parsed_duration: int | None = None
+        # ffmpeg only guessed the duration from the bitrate, as it does without a header
+        self.duration_estimated = False
         self._stdin_feeder_task: asyncio.Task[None] | None = None
         self._stdin_feeder_exception: Exception | None = None
         self._stderr_reader_task: asyncio.Task[None] | None = None
@@ -263,6 +265,8 @@ class FFMpeg(AsyncProcess):
 
             # Source duration is reported separately from the stream info. Useful when
             # the provider didn't supply one (some podcast feeds report total_time=0).
+            if "Estimating duration from bitrate" in line:
+                self.duration_estimated = True
             if self.parsed_duration is None:
                 duration = parse_ffmpeg_duration(line)
                 if duration is not None:

@@ -1896,3 +1896,21 @@ def test_apply_stream_info_keeps_a_declared_content_type() -> None:
         24,
         1,
     )
+
+
+@pytest.mark.parametrize("estimated", [True, False])
+async def test_log_reader_notes_a_duration_that_ffmpeg_only_estimated(estimated: bool) -> None:
+    """The duration is flagged as an estimate when ffmpeg says it guessed it from the bitrate."""
+    ffmpeg = FFMpeg(audio_input="-", input_format=_PCM_FORMAT, output_format=_PCM_FORMAT)
+
+    async def fake_stderr() -> AsyncGenerator[str]:
+        if estimated:
+            yield "[mp3 @ 0x55d0c8a1b2c0] Estimating duration from bitrate, this may be inaccurate"
+        yield "  Duration: 00:59:00.00, start: 0.000000, bitrate: 128 kb/s"
+
+    ffmpeg.iter_stderr = fake_stderr  # type: ignore[method-assign]
+
+    await ffmpeg._log_reader_task()
+
+    assert ffmpeg.parsed_duration == 3540
+    assert ffmpeg.duration_estimated is estimated

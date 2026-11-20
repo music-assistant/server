@@ -299,6 +299,9 @@ SPEAKER_CHANNEL_OUTPUT = {
 DURATION_SHORTFALL_SECONDS = 2.0
 DURATION_SHORTFALL_RATIO = 0.01
 DURATION_SHORTFALL_MAX_SECONDS = 10.0
+# A length ffmpeg estimated from the stream (a bitrate guess for a feed without a header)
+# is only that accurate.
+DURATION_ESTIMATE_RATIO = 0.2
 
 
 @dataclass
@@ -420,6 +423,7 @@ def _delivered_media_covers_item(
     delivered_seconds: float,
     source_duration: int | None = None,
     *,
+    duration_estimated: bool = False,
     resumed: bool = False,
 ) -> bool:
     """
@@ -428,6 +432,7 @@ def _delivered_media_covers_item(
     :param streamdetails: The item's stream details.
     :param delivered_seconds: Media-time delivered, counted from the start of the item.
     :param source_duration: The length the source itself reports, when it does.
+    :param duration_estimated: Whether the item's length is the source's estimate.
     :param resumed: Whether the item was resumed by a seek, so where the delivered audio
         started is only as exact as that seek.
     """
@@ -436,21 +441,30 @@ def _delivered_media_covers_item(
         return True
     if resumed and streamdetails.duration:
         # a seek that landed early or was ignored delivers more than the item holds
-        if delivered_seconds > streamdetails.duration + _duration_tolerance(streamdetails.duration):
+        if delivered_seconds > streamdetails.duration + _duration_tolerance(
+            streamdetails.duration, estimated=duration_estimated
+        ):
             return False
-    return any(delivered_seconds >= length - _duration_tolerance(length) for length in lengths)
+    return any(
+        delivered_seconds >= length - _duration_tolerance(length, estimated=duration_estimated)
+        for length in lengths
+    )
 
 
-def _duration_tolerance(length: float) -> float:
+def _duration_tolerance(length: float, *, estimated: bool = False) -> float:
     """
     Return how far a full playthrough may end from the given length.
 
     :param length: The length in seconds.
+    :param estimated: Whether the length is an estimate of the source.
     """
-    return min(
+    tolerance = min(
         DURATION_SHORTFALL_MAX_SECONDS,
         max(DURATION_SHORTFALL_SECONDS, length * DURATION_SHORTFALL_RATIO),
     )
+    if estimated:
+        return max(tolerance, length * DURATION_ESTIMATE_RATIO)
+    return tolerance
 
 
 def _store_measured_duration(
@@ -460,6 +474,7 @@ def _store_measured_duration(
     queue_item: QueueItem | None = None,
     play_log_entry: PlayLogEntry | None = None,
     source_duration: int | None = None,
+    duration_estimated: bool = False,
     resumed: bool = False,
 ) -> None:
     """
@@ -470,12 +485,14 @@ def _store_measured_duration(
     :param queue_item: The queue item to update as well.
     :param play_log_entry: The play log entry to update as well.
     :param source_duration: The length the source itself reports, when it does.
+    :param duration_estimated: Whether the item's length is the source's estimate.
     :param resumed: Whether the item was resumed by a seek.
     """
     if not _delivered_media_covers_item(
         streamdetails,
         delivered_seconds,
         source_duration,
+        duration_estimated=duration_estimated,
         resumed=resumed,
     ):
         return
@@ -5305,6 +5322,7 @@ class StreamsAudio:
         finished = False
         cancelled = False
         first_chunk_received = False
+        duration_estimated = False
         ffmpeg_loglevel = "debug" if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else "info"
         pass_fds: tuple[int, ...] = ()
         if isinstance(audio_source, str):
@@ -5374,6 +5392,7 @@ class StreamsAudio:
                     # don't clobber an accurate provider value with a rounded one.
                     if ffmpeg_proc.parsed_duration is not None and not streamdetails.duration:
                         streamdetails.duration = ffmpeg_proc.parsed_duration
+                        duration_estimated = ffmpeg_proc.duration_estimated
                     logger.debug(
                         "First chunk received after %.2f seconds (codec detected: %s)",
                         mass.loop.time() - stream_start,
@@ -5442,7 +5461,10 @@ class StreamsAudio:
                 _store_measured_duration(
                     streamdetails,
                     ffmpeg_seek_position + seconds_received,
-                    source_duration=ffmpeg_proc.parsed_duration,
+                    source_duration=(
+                        None if ffmpeg_proc.duration_estimated else ffmpeg_proc.parsed_duration
+                    ),
+                    duration_estimated=duration_estimated,
                 )
 
             logger.log(
