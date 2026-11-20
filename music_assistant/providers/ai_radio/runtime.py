@@ -581,7 +581,7 @@ class AIRadioRuntimeMixin:
                 country=country,
                 timeout_seconds=timeout_seconds,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - weather is optional, any failure skips it
             self.logger.warning(
                 "Weather lookup failed for '%s, %s': %s",
                 city,
@@ -837,7 +837,7 @@ class AIRadioRuntimeMixin:
         try:
             # the host reads these out loud, where a decimal place only clutters the line
             numeric = round(float(value))
-        except Exception:
+        except TypeError, ValueError, OverflowError:
             return str(value)
         return str(numeric)
 

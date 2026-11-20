@@ -34,7 +34,7 @@ class FixtureLoader:
                 return [fixture_type.model_validate(item) for item in data]
             # Single object case
             return fixture_type.model_validate(data)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - any failure fails the test
             pytest.fail(f"Failed to validate fixture {relative_path}: {e}")
 
     def _get_fixture_type_from_path(self, relative_path: pathlib.Path) -> type[BaseModel] | None:
