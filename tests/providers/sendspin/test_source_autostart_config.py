@@ -17,6 +17,8 @@ from music_assistant.constants import CONF_ALLOW_AUDIO_ANALYSIS, CONF_PROTOCOL_K
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.sendspin.constants import (
     CONF_SOURCE_AUTOSTART_TARGET,
+    CONF_SOURCE_NAME,
+    DEFAULT_SOURCE_NAME,
     SOURCE_AUTOSTART_OFF,
 )
 from music_assistant.providers.sendspin.player import (
@@ -126,6 +128,24 @@ async def test_no_analysis_switch_for_a_client_without_a_source_role() -> None:
     """A plain speaker has no input to analyse."""
     player = _player(negotiated_role_ids=["player@v1"], line_sense=False, known_players=[])
     assert CONF_ALLOW_AUDIO_ANALYSIS not in {e.key for e in await _all_entries(player)}
+
+
+async def test_a_speaker_with_an_input_offers_a_name_for_it() -> None:
+    """The input of a device that also plays gets its own name, Line-in until the user sets one."""
+    player = _player(
+        negotiated_role_ids=["player@v1", "source@v1"], line_sense=False, known_players=[]
+    )
+    entry = next((e for e in await _all_entries(player) if e.key == CONF_SOURCE_NAME), None)
+    assert entry is not None
+    assert entry.type == ConfigEntryType.STRING
+    assert entry.default_value == DEFAULT_SOURCE_NAME == "Line-in"
+
+
+@pytest.mark.parametrize("roles", [["source@v1"], ["player@v1"]], ids=["capture_only", "speaker"])
+async def test_no_input_name_without_both_an_input_and_an_output(roles: list[str]) -> None:
+    """A capture-only device is named by its player, and a plain speaker has no input."""
+    player = _player(negotiated_role_ids=roles, line_sense=False, known_players=[])
+    assert CONF_SOURCE_NAME not in {e.key for e in await _all_entries(player)}
 
 
 def test_capture_only_source_defaults_to_off() -> None:

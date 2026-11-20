@@ -47,7 +47,12 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant.constants import CONF_ALLOW_AUDIO_ANALYSIS
 from music_assistant.helpers.player import get_available_player
 
-from .constants import CONF_SOURCE_AUTOSTART_TARGET, SOURCE_AUTOSTART_OFF
+from .constants import (
+    CONF_SOURCE_AUTOSTART_TARGET,
+    CONF_SOURCE_NAME,
+    DEFAULT_SOURCE_NAME,
+    SOURCE_AUTOSTART_OFF,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
@@ -210,7 +215,7 @@ class SendspinSources:
             or "player" not in {role_family(role_id) for role_id in client.negotiated_role_ids}
         ):
             return []
-        return [self._audio_source(client)]
+        return [self._audio_source(client, name=self._input_name(player_id))]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -237,7 +242,9 @@ class SendspinSources:
             audio_format=audio_format,
             media_type=media_type,
             stream_type=StreamType.CUSTOM,
-            stream_metadata=StreamMetadata(title=self._source_name(item_id)),
+            stream_metadata=StreamMetadata(
+                title=self._input_name(item_id) or self._device_name(item_id)
+            ),
         )
 
     async def on_source_selected(
@@ -424,11 +431,11 @@ class SendspinSources:
         roles = client.roles_by_family("source")
         return cast("SourceV1Role", roles[0]) if roles else None
 
-    def _audio_source(self, client: SendspinClient) -> AudioSource:
+    def _audio_source(self, client: SendspinClient, name: str | None = None) -> AudioSource:
         return AudioSource(
             item_id=client.client_id,
             provider=self.provider.instance_id,
-            name=self._source_name(client.client_id),
+            name=name or self._source_name(client.client_id),
             provider_mappings={
                 ProviderMapping(
                     item_id=client.client_id,
@@ -817,7 +824,18 @@ class SendspinSources:
             self.mass.cancel_task(task_id)
 
     def _source_name(self, client_id: str) -> str:
-        return f"{self.provider.name} ({self._device_name(client_id)})"
+        """Return the name of the input where it is listed apart from its device, such as Browse."""
+        input_name = self._input_name(client_id) or self.provider.name
+        return f"{input_name} ({self._device_name(client_id)})"
+
+    def _input_name(self, client_id: str) -> str | None:
+        """Return the name the user gave the input, or None for a device that only captures."""
+        client = self._get_client(client_id)
+        if client is None or "player" not in {
+            role_family(role_id) for role_id in client.negotiated_role_ids
+        }:
+            return None
+        return self._protocol_config_value(client_id, CONF_SOURCE_NAME, DEFAULT_SOURCE_NAME)
 
     def _device_name(self, client_id: str) -> str:
         """Return the name of the player the user sees for this client."""

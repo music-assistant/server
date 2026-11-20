@@ -194,6 +194,10 @@
         "this_device": "This device"
       }
     },
+    "source_name": {
+      "label": "Name of the input",
+      "description": "The name of the audio input of this device, such as Record player. Other players and Browse show it with the name of this player."
+    },
     "allow_audio_analysis": {
       "label": "[%key:common::config_entries::allow_audio_analysis::label%]",
       "description": "[%key:common::config_entries::allow_audio_analysis::description%]"

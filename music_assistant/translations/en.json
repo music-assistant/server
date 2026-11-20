@@ -2646,6 +2646,8 @@
   "provider.sendspin.config_entries.source_input_disable.label": "Turn off audio input",
   "provider.sendspin.config_entries.source_input_enable.description": "Let this device send its audio (such as a line-in) to Music Assistant.",
   "provider.sendspin.config_entries.source_input_enable.label": "Turn on audio input",
+  "provider.sendspin.config_entries.source_name.description": "The name of the audio input of this device, such as Record player. Other players and Browse show it with the name of this player.",
+  "provider.sendspin.config_entries.source_name.label": "Name of the input",
   "provider.sendspin.config_entries.speaker_channel.label": "Channel of {0}",
   "provider.sendspin.config_entries.speaker_channel.options.front_left": "Left",
   "provider.sendspin.config_entries.speaker_channel.options.front_right": "Right",
