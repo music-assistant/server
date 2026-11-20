@@ -1085,7 +1085,11 @@ async def test_collection_covers_skip_thumbs_the_viewer_cannot_be_shown(
 
 
 async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistant) -> None:
-    """Default library listings stream from the sort index without a temp b-tree."""
+    """
+    Default library listings stream from the sort index without a temp b-tree.
+
+    The ids of the listed items are read through the index on the item id.
+    """
     database = seeded_mass.music.database
     # drop the planner statistics so SQLite falls back to its default (large) table
     # size estimates: with only a handful of seeded rows it would (rightfully) just
