@@ -183,6 +183,12 @@ RELATION_TABLE_COLUMNS = {
     DB_TABLE_TRACK_ARTISTS: ("track_id", "artist_id"),
 }
 
+# The (table, owner column) holding the main artists of each media type that has them.
+MAIN_ARTIST_TABLES = {
+    MediaType.ALBUM: (DB_TABLE_ALBUM_ARTISTS, "album_id"),
+    MediaType.TRACK: (DB_TABLE_TRACK_ARTISTS, "track_id"),
+}
+
 # When set (task-local), per-item MEDIA_ITEM_ADDED/UPDATED events and the on_item_updated
 # provider write-back are suppressed, so bulk operations (provider sync, provider cleanup)
 # don't flood subscribers with one event per touched item.
@@ -4323,6 +4329,32 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         async with self.mass.music.database.deferred_commit():
             await self._update_library_item_from_provider(db_id, update)
         return True
+
+    async def _set_main_artists(
+        self,
+        db_id: int,
+        artists: Iterable[Artist | ItemMapping],
+        overwrite: bool = False,
+    ) -> None:
+        """
+        Store the main artists of a track or album.
+
+        :param db_id: Library id of the item.
+        :param artists: The main artists, in credited order.
+        :param overwrite: Replace the stored main artists.
+        """
+        table, owner_column = MAIN_ARTIST_TABLES[self.media_type]
+        # look up all artists first so a failing lookup leaves the stored rows untouched
+        artist_ids = [
+            await self.mass.music.artists.get_or_add_library_artist_id(artist) for artist in artists
+        ]
+        if overwrite:
+            await self.mass.music.database.delete(table, {owner_column: db_id})
+        # different (provider) artists may resolve to the same library artist
+        for artist_id in dict.fromkeys(artist_ids):
+            await self.mass.music.database.insert_or_replace(
+                table, {owner_column: db_id, "artist_id": artist_id}
+            )
 
     async def _copy_library_item_relations(self, target_id: int, source_id: int) -> None:
         """Copy the relations that reference the merged media item onto the target."""

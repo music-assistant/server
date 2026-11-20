@@ -1997,27 +1997,7 @@ class TracksController(MediaControllerBase[Track]):
                 # so keep the stored rows and make the attempt visible
                 self.logger.warning("Ignoring request to clear all artists of track id %s", db_id)
             return
-        if overwrite:
-            # on overwrite, clear the track_artists table first
-            await self.mass.music.database.delete(
-                DB_TABLE_TRACK_ARTISTS,
-                {
-                    "track_id": db_id,
-                },
-            )
-        for artist in all_artists:
-            await self._set_track_artist(db_id, artist=artist)
-
-    async def _set_track_artist(self, db_id: int, artist: Artist | ItemMapping) -> None:
-        """Store Track Artist info."""
-        # write (or update) record in track_artists table
-        await self.mass.music.database.insert_or_replace(
-            DB_TABLE_TRACK_ARTISTS,
-            {
-                "track_id": db_id,
-                "artist_id": await self.mass.music.artists.get_or_add_library_artist_id(artist),
-            },
-        )
+        await self._set_main_artists(db_id, all_artists, overwrite=overwrite)
 
     @staticmethod
     def _library_filter_parts(explicit: bool | None) -> list[str]:
