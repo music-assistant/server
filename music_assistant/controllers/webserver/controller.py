@@ -116,6 +116,13 @@ PREVIEW_TOKEN_TTL = 60
 # Ceiling on live preview tokens. LIBRARY_READ is a guest scope, so minting is reachable by
 # every signed-in client; the cap keeps a chatty or hostile one from growing the store.
 MAX_PREVIEW_TOKENS = 500
+# The public setup endpoint creates the first admin for whoever reaches it first, so it only
+# stays open for a short while after the server starts.
+SETUP_WINDOW_MINUTES = 15
+SETUP_TIMED_OUT_MESSAGE = (
+    f"Setup was not completed within {SETUP_WINDOW_MINUTES} minutes of Music Assistant "
+    "starting. Restart Music Assistant to try again."
+)
 
 
 def _get_publish_addresses(
@@ -204,6 +211,7 @@ class WebserverController(CoreController):
         self.auth = AuthenticationManager(self)
         self.remote_access = RemoteAccessManager(self)
         self._sendspin_proxy = SendspinProxyHandler(self)
+        self._setup_deadline = time.monotonic() + SETUP_WINDOW_MINUTES * 60
         # Preview tokens keyed on the token in the URL, value is
         # (provider instance id or domain, item id, monotonic expiry).
         self._preview_tokens: dict[str, tuple[str, str, float]] = {}
@@ -424,8 +432,12 @@ class WebserverController(CoreController):
                 "\n"
                 "    %s/setup\n"
                 "\n"
+                "The setup page stays open for %s minutes. If it times out,\n"
+                "restart Music Assistant to try again.\n"
+                "\n"
                 "################################################################################\n",
                 base_url,
+                SETUP_WINDOW_MINUTES,
             )
         else:
             self.logger.info(
@@ -1322,6 +1334,9 @@ class WebserverController(CoreController):
             # this should not happen, but guard anyways
             return await self._render_error_page("Setup has already been completed.")
 
+        if not self._setup_window_open():
+            return await self._render_error_page(SETUP_TIMED_OUT_MESSAGE)
+
         setup_html_path = str(RESOURCES_DIR.joinpath("setup.html"))
         async with aiofiles.open(setup_html_path) as f:
             html_content = await f.read()
@@ -1333,6 +1348,11 @@ class WebserverController(CoreController):
         if self.auth.has_users:
             return web.json_response(
                 {"success": False, "error": "Setup already completed"}, status=400
+            )
+
+        if not self._setup_window_open():
+            return web.json_response(
+                {"success": False, "error": SETUP_TIMED_OUT_MESSAGE}, status=403
             )
 
         if not request.can_read_body:
@@ -1407,6 +1427,10 @@ class WebserverController(CoreController):
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
             )
+
+    def _setup_window_open(self) -> bool:
+        """Return whether the first-time setup still accepts the first admin."""
+        return time.monotonic() < self._setup_deadline
 
     def _resolve_preview_token(self, token: str) -> tuple[str, str] | None:
         """Return the provider and item a preview token grants, or None when it is not valid."""
