@@ -122,7 +122,7 @@ class NowPlayingManager:
             if programme := await self.client.schedules.on_air(station_id):
                 state.fallback = programme_metadata(programme, state.album)
 
-        await self._show_now_playing(stream_details, state, segment)
+        self._show_now_playing(stream_details, state, segment)
 
     async def update_live_programme(
         self,
@@ -148,7 +148,7 @@ class NowPlayingManager:
             at_live_edge = dt.utc_timestamp() - at.timestamp() <= LIVE_EDGE_TOLERANCE
             parts = TitleParts.LIVE_EDGE if at_live_edge else TitleParts.LIVE_REWIND
             state.fallback = programme_metadata(programme, state.album, parts)
-        await self._show_now_playing(stream_details, state, segment)
+        self._show_now_playing(stream_details, state, segment)
 
     async def update_on_demand(
         self,
@@ -158,7 +158,7 @@ class NowPlayingManager:
         elapsed_time: int,
     ) -> None:
         """Show the track at elapsed_time in an on-demand programme."""
-        await self._show_now_playing(stream_details, state, _find_segment(segments, elapsed_time))
+        self._show_now_playing(stream_details, state, _find_segment(segments, elapsed_time))
 
     async def programme_segments(self, vpid: str) -> list[Segment]:
         """Get an on-demand programme's tracks from the cache or the API."""
@@ -182,15 +182,14 @@ class NowPlayingManager:
         result = history.lookup(at, delay)
         return result.segment if isinstance(result, Track) else None
 
-    async def _show_now_playing(
+    def _show_now_playing(
         self, stream_details: StreamDetails, state: NowPlaying, segment: Segment | None
     ) -> None:
         """
-        Show a track, filling in its artwork once, or the fallback when there is none.
+        Show a track's now playing details in the player.
 
-        state.generation counts track changes. An image lookup notes the generation it
-        started in, and its result is only applied if the generation is unchanged, so
-        slow artwork for an earlier track never overwrites what is showing now.
+        It starts a background task to look up its track image, updating if/when it
+        arrives.
         """
         if segment is None:
             # Leaving a track invalidates any artwork lookup still running for it
@@ -224,12 +223,25 @@ class NowPlayingManager:
             own_image is not None,
         )
 
-        # Show the track straight away. Any artwork lookup completes when it's ready
+        # Show the track straight away, track image arrives when it's ready
         self._set_metadata(stream_details, _track_metadata(segment, state.album, own_image))
 
-        if own_image is not None:
-            return
+        if own_image is None:
+            self.mass.create_task(
+                self._show_segment_image(stream_details, state, segment, generation),
+                task_name="bbc_sounds_segment_image",
+            )
 
+    async def _show_segment_image(
+        self, stream_details: StreamDetails, state: NowPlaying, segment: Segment, generation: int
+    ) -> None:
+        """
+        Look up a track's artwork and show it, unless the listener has moved on.
+
+        state.generation counts track changes. A lookup notes the generation it started
+        in, and its result is only applied if the generation is unchanged, so slow
+        artwork for an earlier track never overwrites what is showing now.
+        """
         image = await self._segment_image(stream_details, segment)
 
         # The listener may have moved on while the lookup was running

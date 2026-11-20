@@ -3,7 +3,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from auntie_sounds.history import SegmentHistory
@@ -85,6 +85,20 @@ def _history(*segments: Segment, programme_start: datetime = PROGRAMME_START) ->
 @pytest.fixture(name="now_playing")
 def _now_playing(provider: BBCSoundsProvider) -> NowPlayingManager:
     return provider.stream_manager.now_playing
+
+
+@pytest.fixture(name="lookups", autouse=True)
+def _lookups(provider: BBCSoundsProvider) -> list[asyncio.Task[Any]]:
+    """Run background tasks for real, starting them eagerly as MA does, and return them."""
+    tasks: list[asyncio.Task[Any]] = []
+
+    def _create_task(target: Any, *_args: Any, **_kwargs: Any) -> asyncio.Task[Any]:
+        task = asyncio.create_task(target, eager_start=True)
+        tasks.append(task)
+        return task
+
+    provider.mass.create_task = Mock(side_effect=_create_task)  # type: ignore[method-assign]
+    return tasks
 
 
 @pytest.fixture(name="image_cache")
@@ -318,6 +332,7 @@ class TestArtwork:
         provider: BBCSoundsProvider,
         now_playing: NowPlayingManager,
         image_cache: dict[str, Any],
+        lookups: list[asyncio.Task[Any]],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test a lookup that times out shows the track without artwork and isn't cached."""
@@ -336,6 +351,7 @@ class TestArtwork:
         await now_playing.update_on_demand(state, segments, stream_details, 30)
 
         assert stream_details.stream_metadata == StreamMetadata(title="Song first", artist="Artist")
+        await asyncio.gather(*lookups)
         assert image_cache == {}
 
         await now_playing.update_on_demand(state, segments, stream_details, 90)
@@ -440,6 +456,40 @@ class TestStation:
 
         assert stream_details.stream_metadata is not None
         assert stream_details.stream_metadata.title == "Song heard"
+
+    async def test_track_is_shown_before_its_artwork_is_found(
+        self,
+        provider: BBCSoundsProvider,
+        now_playing: NowPlayingManager,
+        image_cache: dict[str, Any],
+        lookups: list[asyncio.Task[Any]],
+    ) -> None:
+        """Test a station shows its track at once, and the artwork when the lookup ends."""
+        found = asyncio.Event()
+
+        async def _update_radio_stream_artwork(details: StreamDetails) -> None:
+            await found.wait()
+            details.stream_metadata = StreamMetadata(title="Song", image_url=MA_IMAGE)
+
+        provider.mass.metadata.update_radio_stream_artwork = AsyncMock(  # type: ignore[method-assign]
+            side_effect=_update_radio_stream_artwork
+        )
+        start = datetime.now(UTC) - timedelta(seconds=600)
+        _mock(now_playing.client.schedules).refresh_history.return_value = _history(
+            _segment("on_air", start=500, end=700, image_url=None), programme_start=start
+        )
+        stream_details = _stream_details("bbc_radio_two")
+
+        await now_playing.update_station(NowPlaying(fallback=None), stream_details, 0)
+
+        assert stream_details.stream_metadata == StreamMetadata(
+            title="Song on_air", artist="Artist"
+        )
+
+        found.set()
+        await asyncio.gather(*lookups)
+
+        assert stream_details.stream_metadata.image_url == MA_IMAGE
 
     async def test_zero_delay_is_kept(
         self, now_playing: NowPlayingManager, image_cache: dict[str, Any]
