@@ -88,8 +88,8 @@ async def test_radio_show_episode_gets_a_description(converter: PodcastConverter
     assert result.metadata.description == "Long synopsis"
 
 
-async def test_stream_title_is_the_episode_name(converter: PodcastConverter) -> None:
-    """The now playing title is the episode name, never its synopsis."""
+async def test_stream_title_is_the_episode_listing(converter: PodcastConverter) -> None:
+    """The now playing title is the episode as listed, with its short synopsis."""
     episode = PodcastEpisode(
         id="e01",
         pid="e01",
@@ -103,7 +103,7 @@ async def test_stream_title_is_the_episode_name(converter: PodcastConverter) -> 
 
     assert stream_details is not None
     assert stream_details.stream_metadata is not None
-    assert stream_details.stream_metadata.title == "An episode"
+    assert stream_details.stream_metadata.title == "A podcast • An episode: Short synopsis"
 
 
 async def test_radio_clip_description_is_a_synopsis(converter: PodcastConverter) -> None:

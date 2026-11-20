@@ -8,12 +8,15 @@ from unittest.mock import ANY, AsyncMock, Mock
 import pytest
 from auntie_sounds.models import (
     Container,
+    Duration,
     Menu,
     MenuItem,
     Network,
     Playlist,
     Podcast,
     RadioClip,
+    RadioShow,
+    Schedule,
     ScheduleItem,
     Synopses,
     Titles,
@@ -166,7 +169,7 @@ class TestOnDemandEpisodes:
 
     @pytest.mark.usefixtures("cache_tasks")
     async def test_radio_clip_is_returned_as_an_episode(self, provider: BBCSoundsProvider) -> None:
-        """Test a clip listed as a podcast episode can be looked up, keeping its own name."""
+        """Test a clip listed as a podcast episode can be looked up, named with its programme."""
         _mock(provider.client.content).get_by_pid.return_value = RadioClip(
             id="vpid",
             pid="clip_pid",
@@ -186,7 +189,41 @@ class TestOnDemandEpisodes:
         episode = await provider.get_podcast_episode("clip_pid")
 
         assert type(episode) is PodcastEpisode
-        assert episode.name == "Clip title"
+        assert episode.name == "Podcast • Clip title"
+
+    @pytest.mark.usefixtures("cache_tasks")
+    async def test_radio_show_keeps_the_date_it_was_broadcast(
+        self, provider: BBCSoundsProvider
+    ) -> None:
+        """Test a show played from a schedule is named with its broadcast date."""
+
+        def show(start: datetime | None = None, end: datetime | None = None) -> RadioShow:
+            return RadioShow(
+                id="vpid",
+                pid="show_pid",
+                titles=Titles(primary="Today", secondary="Business news"),
+                duration=Duration(label="", value=3600),
+                container=Podcast(id="brand_pid", title="Today", titles=Titles(primary="Today")),
+                start=start,
+                end=end,
+            )
+
+        # 05:30 UTC is 06:30 in the UK in October
+        start = datetime(2026, 10, 12, 5, 30, tzinfo=UTC)
+        end = datetime(2026, 10, 12, 6, 30, tzinfo=UTC)
+        _mock(provider.client.schedules).get_schedule.return_value = Schedule(
+            id="schedule", sub_items=[show(start, end)]
+        )
+        await provider.browse_manager.browse(
+            f"{provider.instance_id}://schedules/{RADIO_FOUR_SERVICE_ID}/2026-10-12"
+        )
+        aired_show = show()
+        _mock(provider.client.content).get_by_pid.return_value = aired_show
+
+        episode = await provider.get_podcast_episode("show_pid")
+
+        assert episode.name == "Today • Business news · 12 Oct 2026"
+        assert (aired_show.start, aired_show.end) == (start, end)
 
     @pytest.mark.usefixtures("cache_tasks")
     async def test_other_types_are_rejected(self, provider: BBCSoundsProvider) -> None:
