@@ -61,12 +61,18 @@ def _fake_controller() -> Any:
     return fake
 
 
-def _restart(fake: Any, session_id: str = "session-1", only_while_playing: bool = False) -> bool:
+def _restart(
+    fake: Any,
+    session_id: str = "session-1",
+    only_while_playing: bool = False,
+    queue_item_id: str | None = None,
+) -> bool:
     return PlayerQueuesController.restart_lost_flow_stream(
         cast("PlayerQueuesController", fake),
         QUEUE_ID,
         session_id,
         only_while_playing=only_while_playing,
+        queue_item_id=queue_item_id,
     )
 
 
@@ -81,7 +87,7 @@ def test_a_lost_flow_stream_resumes_the_queue_where_it_plays_now() -> None:
     assert _restart(fake) is True
 
     fake._restart_lost_flow_stream.assert_called_once_with(
-        QUEUE_ID, "session-1", only_while_playing=False
+        QUEUE_ID, "session-1", only_while_playing=False, queue_item_id=None
     )
     fake.mass.create_task.assert_called_once()
     assert fake.mass.create_task.call_args.args[0] is fake._restart_lost_flow_stream.return_value
@@ -131,6 +137,7 @@ def test_restarts_stop_at_the_limit_until_the_window_passed(
         "switched_off",
         "no_player",
         "pending_step",
+        "another_item",
     ],
 )
 def test_no_restart(condition: str) -> None:
@@ -149,10 +156,13 @@ def test_no_restart(condition: str) -> None:
     elif condition == "pending_step":
         # a next or previous waits out its debounce, or a start did not play yet
         queue_data.transitioning = True
+    elif condition == "another_item":
+        # the lost stream of a single item, while the queue moved on to another item
+        queue_data.queue.current_item.queue_item_id = "item-2"
     else:
         fake.mass.players.get_player.return_value = None
 
-    assert _restart(fake, session_id) is False
+    assert _restart(fake, session_id, queue_item_id="item-1") is False
 
     fake._restart_lost_flow_stream.assert_not_called()
     fake.mass.create_task.assert_not_called()
@@ -166,7 +176,7 @@ def test_a_stream_the_player_closed_restarts_a_queue_it_plays() -> None:
     assert _restart(fake, only_while_playing=True) is True
 
     fake._restart_lost_flow_stream.assert_called_once_with(
-        QUEUE_ID, "session-1", only_while_playing=True
+        QUEUE_ID, "session-1", only_while_playing=True, queue_item_id=None
     )
 
 
@@ -329,3 +339,41 @@ async def test_a_restart_waiting_for_the_lock_rechecks_a_closed_stream(
     )
 
     assert fake.resume.await_count == (0 if only_while_playing else 1)
+
+
+def test_a_lost_item_that_is_still_current_restarts() -> None:
+    """The lost stream of a single item restarts while that item is the current one."""
+    fake = _fake_controller()
+    fake._queue_data[QUEUE_ID].queue.current_item.queue_item_id = "item-1"
+
+    assert _restart(fake, only_while_playing=True, queue_item_id="item-1") is True
+
+    fake._restart_lost_flow_stream.assert_called_once_with(
+        QUEUE_ID, "session-1", only_while_playing=True, queue_item_id="item-1"
+    )
+
+
+async def test_a_restart_waiting_for_the_lock_rechecks_its_item() -> None:
+    """A move to another item while the restart waited for the lock stops it."""
+    fake = _fake_controller()
+    queue = fake._queue_data[QUEUE_ID].queue
+    queue.current_item.queue_item_id = "item-1"
+
+    @contextlib.asynccontextmanager
+    async def _playback_lock(_queue_id: str) -> AsyncIterator[None]:
+        # the player reported another item of the same session while the restart waited
+        queue.current_item.queue_item_id = "item-2"
+        yield
+
+    fake.mass.players.get_group_and_player_lock = _playback_lock
+    fake.resume = AsyncMock()
+
+    await PlayerQueuesController._restart_lost_flow_stream(
+        cast("PlayerQueuesController", fake),
+        QUEUE_ID,
+        "session-1",
+        only_while_playing=True,
+        queue_item_id="item-1",
+    )
+
+    fake.resume.assert_not_awaited()

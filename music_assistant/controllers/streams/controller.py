@@ -38,6 +38,7 @@ from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
     MediaNotFoundError,
+    PlayerUnavailableError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
@@ -2783,25 +2784,25 @@ class StreamsController(CoreController):
             # last poll
             try:
                 await protocol.poll()
-            except Exception as err:
+            except PlayerUnavailableError:
                 self.logger.debug(
+                    "Not restarting the lost stream of %s: it is unavailable",
+                    protocol.display_name,
+                )
+                return
+            except Exception as err:
+                self.logger.warning(
                     "Not restarting the lost stream of %s: polling it failed: %s",
                     protocol.display_name,
                     err,
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
                 return
             await asyncio.sleep(LOST_STREAM_POLL_SETTLE)
             if self._stream_reopened(queue_id, session_id, player_id):
                 return
-        if queue_item_id is not None and (
-            (queue := self.mass.player_queues.get(queue_id)) is None
-            or queue.current_item is None
-            or queue.current_item.queue_item_id != queue_item_id
-        ):
-            # the queue moved on from the lost item, for example by a skip at the device
-            return
         self.mass.player_queues.restart_lost_flow_stream(
-            queue_id, session_id, only_while_playing=True
+            queue_id, session_id, only_while_playing=True, queue_item_id=queue_item_id
         )
 
     def _stream_reopened(self, queue_id: str, session_id: str, player_id: str) -> bool:

@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import PlayerUnavailableError
 
 from music_assistant.controllers.streams import controller as controller_mod
 from music_assistant.controllers.streams.constants import LOST_STREAM_GRACE
@@ -229,7 +230,7 @@ async def test_a_player_that_did_not_ask_again_restarts_its_queue() -> None:
     await _end_wait(controller)
 
     controller.mass.player_queues.restart_lost_flow_stream.assert_called_once_with(
-        QUEUE_ID, SESSION_ID, only_while_playing=True
+        QUEUE_ID, SESSION_ID, only_while_playing=True, queue_item_id=None
     )
     controller.mass.players.get_output_protocol.return_value.poll.assert_not_awaited()
 
@@ -266,21 +267,15 @@ async def test_a_request_that_streams_nothing_to_the_player_still_restarts(
     controller.mass.player_queues.restart_lost_flow_stream.assert_called_once()
 
 
-@pytest.mark.parametrize(
-    ("current_item_id", "restarts"),
-    [("item-1", True), ("item-2", False)],
-    ids=["still_current", "moved_on"],
-)
-async def test_a_lost_item_restarts_only_while_it_is_the_current_item(
-    current_item_id: str, restarts: bool
-) -> None:
-    """A queue that moved on to another item, for example by a skip at the device, stays."""
+async def test_a_lost_item_restarts_only_as_that_item() -> None:
+    """The queue restarts the lost single item only while that item is still its current one."""
     controller = _waiting_controller()
-    controller.mass.player_queues.get.return_value.current_item.queue_item_id = current_item_id
 
     await controller._restart_lost_stream_unless_reopened(QUEUE_ID, SESSION_ID, PLAYER_ID, "item-1")
 
-    assert controller.mass.player_queues.restart_lost_flow_stream.called is restarts
+    controller.mass.player_queues.restart_lost_flow_stream.assert_called_once_with(
+        QUEUE_ID, SESSION_ID, only_while_playing=True, queue_item_id="item-1"
+    )
 
 
 async def test_a_polled_player_is_polled_before_the_queue_decides(
@@ -317,11 +312,19 @@ async def test_a_player_that_asks_again_while_it_is_polled_restarts_nothing(
     controller.mass.player_queues.restart_lost_flow_stream.assert_not_called()
 
 
-async def test_a_polled_player_that_does_not_answer_restarts_nothing() -> None:
+@pytest.mark.parametrize(
+    ("error", "log_level"),
+    [(PlayerUnavailableError("gone"), "debug"), (RuntimeError("bug"), "warning")],
+    ids=["unavailable", "unexpected"],
+)
+async def test_a_polled_player_that_does_not_answer_restarts_nothing(
+    error: Exception, log_level: str
+) -> None:
     """A player that can not tell whether it still plays is not restarted."""
     controller = _waiting_controller(needs_poll=True)
-    controller.mass.players.get_output_protocol.return_value.poll.side_effect = TimeoutError
+    controller.mass.players.get_output_protocol.return_value.poll.side_effect = error
 
     await _end_wait(controller)
 
     controller.mass.player_queues.restart_lost_flow_stream.assert_not_called()
+    getattr(controller.logger, log_level).assert_called_once()
