@@ -47,6 +47,8 @@ from music_assistant.providers.airplay.constants import (
 from music_assistant.providers.airplay.control_player import AirPlayControlPlayer
 from music_assistant.providers.airplay.player import AirPlayPlayer, GenericAirPlayPlayer
 from music_assistant.providers.airplay.provider import AirPlayProvider
+from music_assistant.providers.airplay.speaker import AirPlaySpeaker
+from music_assistant.providers.airplay.stream import AirPlayStream
 
 PLAYER_ID = "apaabbccddeeff"
 DEVICE_ID = "AA:BB:CC:DD:EE:FF"
@@ -397,12 +399,14 @@ def test_native_volume_update_applies_when_idle() -> None:
 
 
 @pytest.mark.parametrize(
-    ("reported", "expected"), [(10, (10, False)), (0, (62, True))], ids=["level", "mute"]
+    ("source", "reported", "expected"),
+    [("companion", 10, (10, False)), ("command", 0, (62, True))],
+    ids=["level", "mute"],
 )
 def test_native_volume_update_reaches_the_sendspin_bridge(
-    reported: int, expected: tuple[int, bool]
+    source: str, reported: int, expected: tuple[int, bool]
 ) -> None:
-    """A level or mute the device reports through its control reaches the bridge as well."""
+    """A level the device reports, or a native mute, reaches the bridge as well."""
     player = _make_control_player()
     player.stream = MagicMock(running=False)
     player._attr_volume_level = 62
@@ -414,10 +418,97 @@ def test_native_volume_update_reaches_the_sendspin_bridge(
     )
 
     with patch.object(player, "update_state"):
-        player._handle_volume_update("companion", reported)
+        player._handle_volume_update(source, reported)
 
     assert seen == [expected]
     bridge_manager.sync_volume.assert_called_with(PLAYER_ID)
+
+
+@pytest.mark.parametrize("source", ["companion", "mrp"])
+def test_a_zero_the_device_reports_itself_is_not_a_mute(source: str) -> None:
+    """A native volume of 0 the device reports leaves the level and the mute alone."""
+    player = _make_control_player()
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update(source, 0)
+
+    assert player.volume_muted is False
+    assert player.volume_level == 62
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_not_called()
+    cast("MagicMock", player.provider).bridge_manager.sync_volume.assert_not_called()
+    update_state.assert_not_called()
+
+
+@pytest.mark.parametrize("unmute", ["command", "report"])
+async def test_only_a_native_mute_of_our_own_latches_and_an_unmute_clears_it(unmute: str) -> None:
+    """A native mute stays latched through a 0 the device echoes, until an unmute or a level."""
+    player = _make_control_player()
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 42
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.SetVolume
+    device.audio.set_volume = AsyncMock()
+    player._companion_device = device
+
+    with patch.object(player, "update_state"):
+        await player.volume_mute(True)
+        player._handle_volume_update("companion", 0)
+        muted_after_echo = player.volume_muted
+        if unmute == "command":
+            await player.volume_mute(False)
+        else:
+            player._handle_volume_update("companion", 30)
+
+    assert muted_after_echo is True
+    assert player.volume_muted is False
+    assert player.volume_level == (42 if unmute == "command" else 30)
+
+
+async def test_a_zero_reported_by_a_plain_apple_tv_leaves_its_later_room_audible() -> None:
+    """
+    An Apple TV reporting 0 while its audio goes to the TV plays its room at the room level.
+
+    Back as the carrier of a set, its speakers start their streams at the level of the set.
+    """
+    player = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "credentials"})
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+    with patch.object(player, "update_state"):
+        player._handle_volume_update("companion", 0)
+
+    set_txt = {"psgid": "3F2A9C1E", "psgsz": "2", "psgtp": "1", "gpn": "Study"}
+    cast("MagicMock", player.airplay_discovery_info).decoded_properties.update(
+        set_txt | {"pgmid": "0"}
+    )
+    provider = cast("MagicMock", player.provider)
+    provider.get_set_carrier.return_value = player
+    speaker = AirPlaySpeaker(
+        provider=provider,
+        protocol_id="apaabbccddee01",
+        raop_discovery_info=None,
+        airplay_discovery_info=_service_info(
+            AIRPLAY_DISCOVERY_TYPE,
+            properties={"deviceid": "AA:BB:CC:DD:EE:01", "features": AP2_FEATURES}
+            | set_txt
+            | {"pgmid": "1"},
+            address="192.168.1.11",
+        ),
+        address="192.168.1.11",
+        display_name="HomePod Study",
+        manufacturer="Apple",
+        model="HomePod",
+    )
+    stream = MagicMock(player=speaker, send_cli_command=AsyncMock(return_value=True))
+
+    assert player.carries_set
+    assert speaker.owner is player
+    await AirPlayStream._send_current_volume(stream)
+
+    stream.send_cli_command.assert_awaited_once_with("VOLUME=62")
 
 
 def test_control_pairing_is_optional_and_never_requires_setup() -> None:
