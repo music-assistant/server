@@ -283,8 +283,11 @@ async def test_a_lost_item_restarts_only_while_it_is_the_current_item(
     assert controller.mass.player_queues.restart_lost_flow_stream.called is restarts
 
 
-async def test_a_polled_player_is_polled_before_the_queue_decides() -> None:
+async def test_a_polled_player_is_polled_before_the_queue_decides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A stop at the device of a player without state events is seen before the restart."""
+    monkeypatch.setattr(controller_mod, "LOST_STREAM_POLL_SETTLE", 0)
     controller = _waiting_controller(needs_poll=True)
     protocol = controller.mass.players.get_output_protocol.return_value
     order: list[str] = []
@@ -297,6 +300,21 @@ async def test_a_polled_player_is_polled_before_the_queue_decides() -> None:
 
     controller.mass.players.get_output_protocol.assert_called_once_with(PLAYER_ID)
     assert order == ["poll", "restart"]
+
+
+async def test_a_player_that_asks_again_while_it_is_polled_restarts_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stream the player opens while it is polled counts as asking for it again."""
+    monkeypatch.setattr(controller_mod, "LOST_STREAM_POLL_SETTLE", 0)
+    controller = _waiting_controller(needs_poll=True)
+    controller.mass.players.get_output_protocol.return_value.poll.side_effect = lambda: (
+        controller._open_item_streams.setdefault(QUEUE_ID, []).append(_open_request())
+    )
+
+    await _end_wait(controller)
+
+    controller.mass.player_queues.restart_lost_flow_stream.assert_not_called()
 
 
 async def test_a_polled_player_that_does_not_answer_restarts_nothing() -> None:

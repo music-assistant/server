@@ -80,7 +80,9 @@ def test_a_lost_flow_stream_resumes_the_queue_where_it_plays_now() -> None:
 
     assert _restart(fake) is True
 
-    fake._restart_lost_flow_stream.assert_called_once_with(QUEUE_ID, "session-1")
+    fake._restart_lost_flow_stream.assert_called_once_with(
+        QUEUE_ID, "session-1", only_while_playing=False
+    )
     fake.mass.create_task.assert_called_once()
     assert fake.mass.create_task.call_args.args[0] is fake._restart_lost_flow_stream.return_value
     fake.logger.info.assert_called_once()
@@ -122,7 +124,14 @@ def test_restarts_stop_at_the_limit_until_the_window_passed(
 
 @pytest.mark.parametrize(
     "condition",
-    ["another_session", "halted_by_command", "flow_fully_generated", "switched_off", "no_player"],
+    [
+        "another_session",
+        "halted_by_command",
+        "flow_fully_generated",
+        "switched_off",
+        "no_player",
+        "pending_step",
+    ],
 )
 def test_no_restart(condition: str) -> None:
     """Only the current, playing session of a player that is on restarts."""
@@ -137,6 +146,9 @@ def test_no_restart(condition: str) -> None:
         queue_data.flow_buffer_completed = "session-1"
     elif condition == "switched_off":
         fake.mass.players.get_player.return_value.offline_by_power_control = True
+    elif condition == "pending_step":
+        # a next or previous waits out its debounce, or a start did not play yet
+        queue_data.transitioning = True
     else:
         fake.mass.players.get_player.return_value = None
 
@@ -153,7 +165,9 @@ def test_a_stream_the_player_closed_restarts_a_queue_it_plays() -> None:
 
     assert _restart(fake, only_while_playing=True) is True
 
-    fake._restart_lost_flow_stream.assert_called_once_with(QUEUE_ID, "session-1")
+    fake._restart_lost_flow_stream.assert_called_once_with(
+        QUEUE_ID, "session-1", only_while_playing=True
+    )
 
 
 @pytest.mark.parametrize(
@@ -289,3 +303,29 @@ async def test_the_restart_yields_to_a_command_that_went_first(command: str | No
         assert resumed_under_lock == [True]
     else:
         fake.resume.assert_not_awaited()
+
+
+@pytest.mark.parametrize("only_while_playing", [True, False], ids=["closed_stream", "error"])
+async def test_a_restart_waiting_for_the_lock_rechecks_a_closed_stream(
+    only_while_playing: bool,
+) -> None:
+    """A pause at the device while the restart waited stops it, unless the receiver errored."""
+    fake = _fake_controller()
+
+    @contextlib.asynccontextmanager
+    async def _playback_lock(_queue_id: str) -> AsyncIterator[None]:
+        # the player reported a pause from its device while the restart waited for the lock
+        fake.mass.players.get_player.return_value.playback_state = PlaybackState.PAUSED
+        yield
+
+    fake.mass.players.get_group_and_player_lock = _playback_lock
+    fake.resume = AsyncMock()
+
+    await PlayerQueuesController._restart_lost_flow_stream(
+        cast("PlayerQueuesController", fake),
+        QUEUE_ID,
+        "session-1",
+        only_while_playing=only_while_playing,
+    )
+
+    assert fake.resume.await_count == (0 if only_while_playing else 1)

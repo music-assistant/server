@@ -100,6 +100,7 @@ from music_assistant.controllers.streams.constants import (
     FLOW_STREAM_MAX_LEAD_OUT_SECONDS,
     ICY_WRITE_SIZE,
     LOST_STREAM_GRACE,
+    LOST_STREAM_POLL_SETTLE,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     BufferSize,
     PacingProfile,
@@ -2774,20 +2775,7 @@ class StreamsController(CoreController):
         :param player_id: The id the player requested the lost stream under.
         :param queue_item_id: The item of a lost single item stream; None for a flow stream.
         """
-        if any(
-            entry_session_id == session_id
-            and request.method == "GET"
-            and request.match_info.get("player_id") == player_id
-            and request.transport is not None
-            for entry_session_id, request in self._open_item_streams.get(queue_id) or []
-        ):
-            return
-        if queue_item_id is not None and (
-            (queue := self.mass.player_queues.get(queue_id)) is None
-            or queue.current_item is None
-            or queue.current_item.queue_item_id != queue_item_id
-        ):
-            # the queue moved on from the lost item, for example by a skip at the device
+        if self._stream_reopened(queue_id, session_id, player_id):
             return
         protocol = self.mass.players.get_output_protocol(player_id)
         if protocol is not None and protocol.needs_poll:
@@ -2802,8 +2790,34 @@ class StreamsController(CoreController):
                     err,
                 )
                 return
+            await asyncio.sleep(LOST_STREAM_POLL_SETTLE)
+            if self._stream_reopened(queue_id, session_id, player_id):
+                return
+        if queue_item_id is not None and (
+            (queue := self.mass.player_queues.get(queue_id)) is None
+            or queue.current_item is None
+            or queue.current_item.queue_item_id != queue_item_id
+        ):
+            # the queue moved on from the lost item, for example by a skip at the device
+            return
         self.mass.player_queues.restart_lost_flow_stream(
             queue_id, session_id, only_while_playing=True
+        )
+
+    def _stream_reopened(self, queue_id: str, session_id: str, player_id: str) -> bool:
+        """
+        Return whether a player has a stream of a session open again.
+
+        :param queue_id: The queue the stream belongs to.
+        :param session_id: Stream session of the stream.
+        :param player_id: The id the player requested the stream under.
+        """
+        return any(
+            entry_session_id == session_id
+            and request.method == "GET"
+            and request.match_info.get("player_id") == player_id
+            and request.transport is not None
+            for entry_session_id, request in self._open_item_streams.get(queue_id) or []
         )
 
     def _requested_item_ids(
