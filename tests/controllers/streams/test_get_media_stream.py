@@ -675,7 +675,7 @@ async def test_get_media_stream_keeps_duration_when_ffmpeg_fast_seeks_an_mp3_by_
 ) -> None:
     """Ffmpeg fast-seeks a remote MP3 whether or not the probe found hints for it."""
     streamdetails = _seekable_streamdetails()
-    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 180)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3600)
     audio = _make_audio_controller()
 
     await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=3500))
@@ -692,7 +692,7 @@ async def test_get_media_stream_keeps_duration_when_the_seek_only_lands_approxim
     """A fast seek may land anywhere, so what follows it says nothing about the length."""
     streamdetails = _seekable_streamdetails()
     mp3_probe.result = Mp3SeekHints(True, 0)
-    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 180)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3600)
     audio = _make_audio_controller()
 
     await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=3500))
@@ -1693,3 +1693,47 @@ async def test_get_media_stream_does_not_take_an_estimated_source_length_as_the_
     await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
 
     assert streamdetails.duration == expected
+
+
+@pytest.mark.parametrize(("estimated", "expected"), [(False, 3500), (True, 3600)])
+@pytest.mark.asyncio
+async def test_get_media_stream_takes_the_length_ffmpeg_reads_after_a_fast_seek(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+    estimated: bool,
+    expected: int,
+) -> None:
+    """A resumed remote MP3 gets the file's own length where nothing measured can be trusted."""
+    streamdetails = _seekable_streamdetails()
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3500)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration_estimated", estimated)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=1800))
+
+    assert streamdetails.duration == expected
+
+
+@pytest.mark.parametrize(
+    ("seek_position", "content_type"),
+    [(0, ContentType.MP3), (60, ContentType.FLAC)],
+    ids=["played_from_the_start", "seek_that_lands_exactly"],
+)
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_the_declared_length_unless_the_seek_is_by_byte_offset(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+    seek_position: int,
+    content_type: ContentType,
+) -> None:
+    """The header length only stands in where a seek by byte offset leaves nothing to measure."""
+    streamdetails = _seekable_streamdetails()
+    streamdetails.audio_format = AudioFormat(content_type=content_type)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3500)
+    audio = _make_audio_controller()
+
+    await _drain(
+        audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=seek_position)
+    )
+
+    assert streamdetails.duration == 3600
