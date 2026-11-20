@@ -11,16 +11,20 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import ListingType, MediaType, ProviderFeature
+from music_assistant_models.enums import ArtistType, ListingType, MediaType, ProviderFeature
 from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
+    Genre,
     ItemMapping,
+    MediaCollection,
+    MediaItemCollection,
     MediaItemMetadata,
     Podcast,
     PodcastEpisode,
@@ -488,3 +492,78 @@ async def test_a_composed_playlist_leaves_out_the_episodes_of_an_explicit_podcas
         items = await mass.music.playlists.tracks("1", "builtin")
 
     assert [item.name for item in items] == ["clean"]
+
+
+async def test_a_genre_lists_the_tracks_and_albums_the_member_may_see(
+    mass: MusicAssistant,
+) -> None:
+    """A genre's tracks and albums leave the explicit ones out."""
+    ids = await _add_library_tracks(mass)
+    artist = await _artist(mass)
+    genre = await mass.music.genres.add_item_to_library(
+        Genre(item_id="0", provider="library", name="Genre", provider_mappings=set())
+    )
+    for library_id in ids.values():
+        await mass.music.genres.add_media_mapping(genre.item_id, MediaType.TRACK, library_id)
+    for album in (_album("clean album", False), _album("explicit album", True)):
+        album.artists = UniqueList([artist])
+        library_album = await mass.music.albums.add_item_to_library(album)
+        await mass.music.genres.add_media_mapping(
+            genre.item_id, MediaType.ALBUM, library_album.item_id
+        )
+
+    with _as(KID):
+        tracks = await mass.music.genres.tracks(genre.item_id)
+        albums = await mass.music.genres.albums(genre.item_id)
+
+    assert sorted(track.name for track in tracks) == ALLOWED
+    assert [album.name for album in albums] == ["clean album"]
+
+
+@pytest.mark.parametrize("collapse_collections", [False, True])
+async def test_an_authors_series_leaves_out_its_explicit_books(
+    mass: MusicAssistant, collapse_collections: Literal[False, True]
+) -> None:
+    """An explicit book is left out of its author's page, inside a series as well."""
+    author = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="author",
+            provider=PROVIDER,
+            name="Jane Writer",
+            artist_type=ArtistType.AUTHOR,
+            provider_mappings={_mapping("author")},
+        )
+    )
+    for sequence, (name, explicit) in enumerate(
+        (("Clean Book", False), ("Explicit Book", True)), start=1
+    ):
+        await mass.music.audiobooks.add_item_to_library(
+            Audiobook(
+                item_id=name,
+                provider=PROVIDER,
+                name=name,
+                authors=UniqueList([author]),
+                metadata=MediaItemMetadata(
+                    explicit=explicit,
+                    collections=UniqueList(
+                        [MediaItemCollection(title="Series", sequence=float(sequence))]
+                    ),
+                ),
+                provider_mappings={_mapping(name)},
+            )
+        )
+
+    with _as(KID):
+        items = await mass.music.artists.audiobooks(
+            author.item_id,
+            "library",
+            in_library_only=True,
+            collapse_collections=collapse_collections,
+        )
+
+    books = [
+        book
+        for item in items
+        for book in (item.items if isinstance(item, MediaCollection) else [item])
+    ]
+    assert [book.name for book in books] == ["Clean Book"]

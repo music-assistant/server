@@ -1101,6 +1101,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             artist_type=library_artist.artist_type,
             collapse_collections=collapse_collections,
             provider_filter=provider_filter,
+            explicit=True,
         )
         result: list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]] = db_items
         if in_library_only:
@@ -1167,8 +1168,17 @@ class ArtistsController(MediaControllerBase[Artist]):
         *,
         collapse_collections: bool = False,
         provider_filter: str | None = None,
+        explicit: bool = False,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
-        """Return all in-library audiobooks for an author/ narrator."""
+        """
+        Return all in-library audiobooks for an author/ narrator.
+
+        :param item_id: The library item ID of the author or narrator.
+        :param artist_type: Whether the artist is listed as author or as narrator.
+        :param collapse_collections: Return a series as one collection row.
+        :param provider_filter: Optional provider instance ID to limit the audiobooks to.
+        :param explicit: Also leave out the explicit audiobooks a restricted user may not see.
+        """
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
         if library_item.artist_type != artist_type:
@@ -1177,11 +1187,16 @@ class ArtistsController(MediaControllerBase[Artist]):
         subquery = (
             f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id"
         )
-        query = f"audiobooks.item_id in ({subquery})"
+        query_parts = [f"audiobooks.item_id in ({subquery})"]
+        query_params: dict[str, Any] = {"artist_id": db_id}
+        if explicit:
+            # a collapsed series is one row with no flag of its own, so its books are
+            # narrowed here rather than in the listing
+            query_parts.extend(self.mass.music.audiobooks.listing_filter(query_params))
         return await self.mass.music.audiobooks.get_library_items_by_query(
             limit=0,
-            extra_query_parts=[query],
-            extra_query_params={"artist_id": db_id},
+            extra_query_parts=query_parts,
+            extra_query_params=query_params,
             collapse_collections=collapse_collections,
             provider_filter=self._ensure_provider_filter(provider_filter),
         )

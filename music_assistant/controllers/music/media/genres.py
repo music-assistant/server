@@ -1400,10 +1400,11 @@ class GenreController(MediaControllerBase[Genre]):
             f"WHERE gm.media_id = {controller.db_table}.item_id "
             f"AND gm.media_type = '{controller.media_type.value}' AND gm.genre_id = :genre_id)"
         )
+        query_params: dict[str, Any] = {"genre_id": genre_id}
         return await controller.get_library_items_by_query(
             search=search,
-            extra_query_parts=[query],
-            extra_query_params={"genre_id": genre_id},
+            extra_query_parts=[query, *controller.listing_filter(query_params)],
+            extra_query_params=query_params,
             extra_join_parts=extra_join_parts,
             limit=limit,
             offset=offset,
