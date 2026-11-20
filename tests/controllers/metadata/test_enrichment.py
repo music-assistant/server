@@ -416,13 +416,24 @@ async def test_forced_track_refresh_takes_the_lyrics_of_the_local_file_first() -
     """The lyrics are read again from the music providers, a local file first."""
     enrichment = _enrichment()
     local = ProviderMapping(
-        item_id="local", provider_domain="filesystem_local", provider_instance="local_1"
+        item_id="local",
+        provider_domain="filesystem_local",
+        provider_instance="local_1",
     )
     streaming = ProviderMapping(item_id="tidal", provider_domain="tidal", provider_instance="t_1")
+    providers = {
+        "local_1": MagicMock(is_streaming_provider=False),
+        "t_1": MagicMock(is_streaming_provider=True),
+    }
+    _mass(enrichment).get_provider = MagicMock(
+        side_effect=lambda provider_instance, **_kwargs: providers.get(provider_instance)
+    )
     prov_items = {
         "local": _track_with_lyrics("local plain", None),
         "tidal": _track_with_lyrics("tidal plain", None),
     }
+    prov_items["local"].provider = "local_1"
+    prov_items["tidal"].provider = "t_1"
     _mass(enrichment).music.tracks.get_provider_item = AsyncMock(
         side_effect=lambda item_id, _instance, **_kwargs: prov_items[item_id]
     )
@@ -433,8 +444,9 @@ async def test_forced_track_refresh_takes_the_lyrics_of_the_local_file_first() -
     await enrichment._update_track_metadata(track, force_refresh=True)
 
     _replaced_lyrics(enrichment).assert_awaited_once_with(
-        "1", {"lyrics": "local plain", "lrc_lyrics": "[00:01.00]sync"}
+        "1", {"lyrics": "local plain", "lrc_lyrics": None}
     )
+    lyrics_provider.get_track_metadata.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -463,6 +475,7 @@ async def test_track_refresh_keeps_local_lyrics_but_updates_other_metadata(
     )
     mixed_provider = _metadata_provider("mixed", ProviderFeature.TRACK_METADATA)
     mixed_provider.supported_features.add(ProviderFeature.LYRICS)
+    mixed_provider.supported_features.add(ProviderFeature.ALBUM_METADATA)
     mixed_provider.get_track_metadata = AsyncMock(return_value=provider_metadata)
     enrichment.providers = [mixed_provider]  # type: ignore[misc]
     track = _track_with_lyrics(None, None, local)

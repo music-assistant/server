@@ -102,6 +102,7 @@ _LOCAL_METADATA, _LOCAL_MUSIC, _MUSIC_SERVICE, _ONLINE_METADATA = range(4)
 _ARTIST_FIELDS = ("style", "mood", "life_span", "artist_entity_type", "label")
 _ALBUM_FIELDS = ("review", "label", "release_date", "copyright", "explicit", "style", "mood")
 _TRACK_FIELDS = ("copyright", "explicit", "grouping", "release_date", "style", "mood")
+_LYRICS_ONLY = {ProviderFeature.TRACK_METADATA, ProviderFeature.LYRICS}
 
 
 class MetadataEnrichmentMixin:
@@ -632,6 +633,8 @@ class MetadataEnrichmentMixin:
         if (force_refresh or needs_refresh) and self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
             for provider in self.providers:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
+                    continue
+                if local_source_has_lyrics and provider.supported_features <= _LYRICS_ONLY:
                     continue
 
                 try:

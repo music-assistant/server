@@ -513,6 +513,14 @@ class MetaDataController(
             track = await self.mass.music.tracks.get(
                 track.item_id, "library", allow_update_metadata=False
             )
+            _, lyrics = self._select_track_lyrics(track.metadata, (None, None))
+            if lyrics[0] or lyrics[1]:
+                for mapping in track.provider_mappings:
+                    source = self.mass.get_provider(
+                        mapping.provider_instance, provider_type=MusicProvider
+                    )
+                    if source and not source.is_streaming_provider:
+                        return lyrics
             with system_auth_context():
                 await self._update_track_metadata(track, force_refresh=False)
             _, lyrics = self._select_track_lyrics(track.metadata, (None, None))
@@ -523,13 +531,20 @@ class MetaDataController(
         track_provider = self.mass.music.get_visible_provider(track.provider)
         if (
             isinstance(track_provider, MusicProvider)
+            and not track_provider.is_streaming_provider
+            and lyrics[0]
+        ):
+            # lyrics from the user's own files are the final word
+            return lyrics
+        if (
+            isinstance(track_provider, MusicProvider)
             and ProviderFeature.LYRICS in track_provider.supported_features
         ):
             full_track = await self.mass.music.tracks.get_provider_item(
                 track.item_id, track.provider
             )
             has_lrc, lyrics = self._select_track_lyrics(full_track.metadata, lyrics)
-            if has_lrc or (not track_provider.is_streaming_provider and full_track.metadata.lyrics):
+            if has_lrc:
                 return lyrics
 
         # fallback to other metadata providers

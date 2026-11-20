@@ -10,7 +10,11 @@ from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderFeature, ProviderSharing, ProviderType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import MediaItemMetadata, MediaItemPalette
+from music_assistant_models.media_items import (
+    MediaItemMetadata,
+    MediaItemPalette,
+    ProviderMapping,
+)
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -24,6 +28,7 @@ from tests.controllers.music.helpers import create_track
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
     from music_assistant_models.media_items import Track
 
     from music_assistant.controllers.metadata import MetaDataController
@@ -418,25 +423,26 @@ async def test_track_lyrics_skips_metadata_lookup_for_local_lyrics(
     """Embedded local lyrics are authoritative, while an empty local source falls back online."""
     mass_minimal.music = MusicController(mass_minimal)
     own_provider = MagicMock(spec=MusicProvider)
-    own_provider.supported_features = {ProviderFeature.LYRICS}
+    own_provider.supported_features = set()
     own_provider.is_streaming_provider = False
-    full_track = create_track("filesystem_local", "local-track")
-    full_track.metadata.lyrics = local_lyrics
     lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
     track = create_track("filesystem_local", "local-track")
+    track.metadata.lyrics = local_lyrics
+    provider_item_lookup = AsyncMock()
 
     with (
         patch.object(mass_minimal.music, "get_visible_provider", return_value=own_provider),
         patch.object(
             mass_minimal.music.tracks,
             "get_provider_item",
-            new=AsyncMock(return_value=full_track),
+            new=provider_item_lookup,
         ),
         patch.object(mass_minimal, "get_providers", return_value=[lyrics_provider]),
     ):
         result = await metadata_controller.get_track_lyrics(track)
 
     assert result == expected
+    provider_item_lookup.assert_not_awaited()
     if lookup_expected:
         lyrics_provider.get_track_metadata.assert_awaited_once()
     else:
@@ -488,3 +494,63 @@ async def test_track_lyrics_returns_library_lyrics_after_refresh(
     refresh.assert_awaited_once_with(stored_track, force_refresh=False)
     own_provider_lookup.assert_not_called()
     metadata_provider.get_track_metadata.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("provider_available", "is_streaming", "stored_lyrics", "expected", "refresh_expected"),
+    [
+        (True, False, "local plain", ("local plain", None), False),
+        (True, False, None, ("refreshed plain", None), True),
+        (True, True, "streaming plain", ("refreshed plain", None), True),
+        (False, False, "stored plain", ("refreshed plain", None), True),
+    ],
+)
+async def test_track_lyrics_only_skips_library_refresh_for_local_lyrics(
+    metadata_controller: MetaDataController,
+    mass_minimal: MusicAssistant,
+    provider_available: bool,
+    is_streaming: bool,
+    stored_lyrics: str | None,
+    expected: tuple[str | None, str | None],
+    refresh_expected: bool,
+) -> None:
+    """Only lyrics from an available local source make a library refresh unnecessary."""
+    mass_minimal.music = MusicController(mass_minimal)
+    provider_instance = "spotify_1" if is_streaming else "local_1"
+    mapping = ProviderMapping(
+        item_id="source-track",
+        provider_domain="spotify" if is_streaming else "filesystem_local",
+        provider_instance=provider_instance,
+    )
+    track = create_track("library", "1")
+    track.provider = "library"
+    stored_track = create_track("library", "1")
+    stored_track.provider = "library"
+    stored_track.provider_mappings = {mapping}
+    stored_track.metadata.lyrics = stored_lyrics
+
+    async def _refresh(refreshed_track: Track, **_kwargs: object) -> None:
+        refreshed_track.metadata.lyrics = "refreshed plain"
+        refreshed_track.metadata.lrc_lyrics = None
+
+    refresh = AsyncMock(side_effect=_refresh)
+    source_provider = MagicMock(spec=MusicProvider)
+    source_provider.is_streaming_provider = is_streaming
+    get_provider = MagicMock(return_value=source_provider if provider_available else None)
+
+    with (
+        patch.object(
+            mass_minimal.music.tracks,
+            "get",
+            new=AsyncMock(return_value=stored_track),
+        ),
+        patch.object(metadata_controller, "_update_track_metadata", new=refresh),
+        patch.object(mass_minimal, "get_provider", new=get_provider),
+    ):
+        result = await metadata_controller.get_track_lyrics(track)
+
+    assert result == expected
+    if refresh_expected:
+        refresh.assert_awaited_once_with(stored_track, force_refresh=False)
+    else:
+        refresh.assert_not_awaited()
