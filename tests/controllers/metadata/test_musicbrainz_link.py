@@ -1374,6 +1374,7 @@ async def test_link_run_selects_the_artists_and_tracks_of_identified_albums(
 
 async def test_link_run_looks_a_musicbrainz_id_up_by_its_item(mass: MusicAssistant) -> None:
     """The link run finds the MusicBrainz id of an item through the index on the item id."""
+    # the test database has no table statistics, as on a new install
     plan = await mass.music.database.get_rows_from_query(
         f"EXPLAIN QUERY PLAN SELECT item_id FROM {DB_TABLE_TRACKS} "
         f"WHERE {_tracks_to_identify_query()}",
