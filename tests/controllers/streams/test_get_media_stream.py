@@ -678,7 +678,7 @@ async def test_get_media_stream_keeps_duration_when_ffmpeg_fast_seeks_an_mp3_by_
     monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3600)
     audio = _make_audio_controller()
 
-    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=60))
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=3500))
 
     assert streamdetails.duration == 3600
 
@@ -695,7 +695,7 @@ async def test_get_media_stream_keeps_duration_when_the_seek_only_lands_approxim
     monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 3600)
     audio = _make_audio_controller()
 
-    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=60))
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=3500))
 
     assert patch_two_minute_ffmpeg.last_instance is not None
     assert "+fastseek" in (patch_two_minute_ffmpeg.last_instance.extra_input_args or [])
