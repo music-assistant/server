@@ -2642,6 +2642,32 @@ async def test_flow_measures_an_item_that_is_longer_than_declared(
 
 
 @pytest.mark.asyncio
+async def test_flow_end_hands_the_held_tail_to_the_item_it_belongs_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tail held for a fade is credited to its own item, not to a later one without audio."""
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    delivered_seconds = 40
+    first_item = _flow_track(pcm_format, "item-1", duration=300)
+    silent_item = _flow_track(pcm_format, "item-2", duration=300, still_delivering=True)
+    queued_item = _flow_track(pcm_format, "item-3", duration=300, still_delivering=True)
+    audio, _mass, queue, _queue_data = _flow_context(
+        announced_item=queued_item, load_next=[silent_item, QueueEmpty]
+    )
+    _flow_smart_fade(monkeypatch, audio)
+    _flow_source(monkeypatch, audio, pcm_format, {"item-1": delivered_seconds, "item-2": 0})
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+
+    async for _ in stream:
+        pass
+
+    assert first_item.streamdetails.seconds_streamed == delivered_seconds
+    assert silent_item.streamdetails.seconds_streamed == 0
+
+
+@pytest.mark.asyncio
 async def test_flow_end_does_not_give_an_aborted_last_item_the_previous_items_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -3619,7 +3619,7 @@ class StreamsAudio:
                 await asyncio.sleep(0)
             # correct seconds streamed - the duration already includes the tail
             last_part_seconds = len(last_fadeout_part) / pcm_sample_size
-            streamdetails = queue_track.streamdetails
+            streamdetails = last_streamdetails
             assert streamdetails is not None
             streamdetails.seconds_streamed = (
                 streamdetails.seconds_streamed or 0
