@@ -22,7 +22,11 @@ from music_assistant.constants import (
     MASS_LOGGER_NAME,
 )
 
-from .auth_providers import get_ha_user_details, get_or_create_ha_user
+from .auth_providers import (
+    HomeAssistantLinkRefused,
+    get_ha_user_details,
+    get_or_create_ha_user,
+)
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
@@ -164,7 +168,8 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
     :param mass: The MusicAssistant instance.
     :param headers: The request headers Home Assistant Ingress sets.
     :return: The user, or None when the headers name no Home Assistant user, the user is not
-        linked yet and Home Assistant can not confirm it, or its account is disabled.
+        linked yet and Home Assistant can not confirm it or may not link it to the user of
+        that name, or its account is disabled.
     """
     ingress_user_id = headers.get("X-Remote-User-ID")
     ingress_username = headers.get("X-Remote-User-Name")
@@ -187,14 +192,17 @@ async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str])
         )
         return None
     # Ingress users are created on first sign-in, as HA already authenticated them
-    user = await get_or_create_ha_user(
-        mass,
-        ingress_user_id,
-        ha_username or ingress_username,
-        ha_display_name or ingress_display_name,
-        avatar_url,
-        allow_create=True,
-    )
+    try:
+        user = await get_or_create_ha_user(
+            mass,
+            ingress_user_id,
+            ha_username or ingress_username,
+            ha_display_name or ingress_display_name,
+            avatar_url,
+            allow_create=True,
+        )
+    except HomeAssistantLinkRefused:
+        return None
     if user and not user.enabled:
         LOGGER.warning(
             "Refused Home Assistant Ingress sign-in for %s: "
