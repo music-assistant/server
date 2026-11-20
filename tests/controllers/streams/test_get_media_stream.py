@@ -55,6 +55,7 @@ class _FakeFFMpeg:
         self.input_format = input_format
         self._probed_codec_type = ContentType.FLAC  # arbitrary, distinct from PCM/OGG
         self.parsed_duration: int | None = None
+        self.duration_estimated = False
         # mirrors the real FFMpeg: unset while the process runs, filled in on reap
         self.returncode: int | None = None
         self.log_history: list[str] = []
@@ -237,9 +238,11 @@ class _TwoMinuteFFMpeg(_FakeFFMpeg):
 
     seconds_emitted = 120
     reported_duration: int | None = None
+    reported_duration_estimated = False
 
     async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
         self.parsed_duration = self.reported_duration
+        self.duration_estimated = self.reported_duration_estimated
         for _ in range(self.seconds_emitted):
             yield b"\x00" * _PCM_SAMPLE_SIZE
 
@@ -1618,3 +1621,75 @@ def test_delivered_media_covers_a_resumed_item_only_up_to_its_length(
         is covers
     )
     assert audio_mod._delivered_media_covers_item(streamdetails, delivered) is True  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("estimated", "delivered", "covers"),
+    [
+        (3540, 3000.0, True),  # an estimate off by an unknown header, played to its clean end
+        (3540, 3100.0, True),
+        (3540, 2000.0, False),  # far short of even an estimate: a source that stopped
+        (3540, 10.0, False),
+    ],
+)
+def test_delivered_media_covers_an_estimated_length_loosely(
+    estimated: int, delivered: float, covers: bool
+) -> None:
+    """A length that ffmpeg only estimated is corrected by a playthrough that is near it."""
+    streamdetails = SimpleNamespace(duration=estimated)
+
+    assert (
+        audio_mod._delivered_media_covers_item(
+            streamdetails,  # type: ignore[arg-type]
+            delivered,
+            estimated,
+            duration_estimated=True,
+        )
+        is covers
+    )
+    assert (
+        audio_mod._delivered_media_covers_item(streamdetails, delivered, estimated)  # type: ignore[arg-type]
+        is False
+    )
+
+
+@pytest.mark.parametrize(("estimated", "expected"), [(True, 120), (False, 150)])
+@pytest.mark.asyncio
+async def test_get_media_stream_corrects_a_length_only_that_ffmpeg_estimated(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+    estimated: bool,
+    expected: int,
+) -> None:
+    """A playthrough near an estimated length measures it, one near an exact length does not."""
+    streamdetails = _multi_part_streamdetails(duration=0)
+    audio = _make_audio_controller()
+    fake_stream, _ = _recording_multi_file_stream()
+    monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 150)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration_estimated", estimated)
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert streamdetails.duration == expected
+
+
+@pytest.mark.parametrize(("estimated", "expected"), [(True, 3600), (False, 120)])
+@pytest.mark.asyncio
+async def test_get_media_stream_does_not_take_an_estimated_source_length_as_the_items(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_two_minute_ffmpeg: type[_TwoMinuteFFMpeg],
+    estimated: bool,
+    expected: int,
+) -> None:
+    """A length that ffmpeg only guessed does not make a source that stops there complete."""
+    streamdetails = _multi_part_streamdetails()
+    audio = _make_audio_controller()
+    fake_stream, _ = _recording_multi_file_stream()
+    monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration", 120)
+    monkeypatch.setattr(patch_two_minute_ffmpeg, "reported_duration_estimated", estimated)
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert streamdetails.duration == expected
