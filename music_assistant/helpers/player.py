@@ -26,6 +26,7 @@ _DEFAULT_ICONS_BY_PROVIDER = {
 }
 
 _DEFAULT_ICONS_BY_PLAYER_TYPE = {
+    PlayerType.CONTROLLER: "monitor",
     PlayerType.DISPLAY: "monitor",
     PlayerType.LIGHT: "sun",
     PlayerType.SOURCE: "vinyl",

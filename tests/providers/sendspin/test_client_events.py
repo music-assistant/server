@@ -38,6 +38,7 @@ def _provider(*, wanted: bool = True) -> tuple[SendspinProvider, MagicMock]:
     provider._pending_unregisters = {}
     provider._client_event_versions = {}
     provider._client_event_task_counts = {}
+    provider._multi_channel_speakers = {}
     provider._await_client_hello = AsyncMock(return_value=True)  # type: ignore[method-assign]
     provider._auto_trust_guest_access = AsyncMock()  # type: ignore[method-assign]
     provider._apply_hass_esphome_enrichment = AsyncMock()  # type: ignore[method-assign]

@@ -458,7 +458,7 @@ async def _collect_engines[EngineT: PluginEngine](
             continue
         try:
             engines = await fetch(provider)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failing plugin must not stop the others
             LOGGER.warning(
                 "Could not retrieve %s engines from %s: %s",
                 feature,

@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import aiohttp
 import pytest
@@ -156,6 +156,38 @@ class TestSendspinProxyRetry:
         # Verify backoff: 0.5s, then 1.0s
         mock_sleep.assert_any_call(0.5)
         mock_sleep.assert_any_call(1.0)
+
+    async def test_waits_for_the_sendspin_provider_to_load(
+        self, handler: SendspinProxyHandler, mock_webserver: MagicMock
+    ) -> None:
+        """Verify the proxy retries until the Sendspin provider has loaded."""
+        internal_url = "ws://127.0.0.1:8927/sendspin"
+        mock_ws_response = AsyncMock(spec=web.WebSocketResponse)
+        mock_ws_response.closed = False
+        type(mock_webserver).internal_sendspin_url = PropertyMock(side_effect=[None, internal_url])
+        mock_internal_ws = AsyncMock()
+        mock_internal_ws.closed = False
+        mock_ws_connect = AsyncMock(return_value=mock_internal_ws)
+
+        with (
+            patch.object(handler, "_authenticate", return_value=MagicMock()),
+            patch.object(handler, "_proxy_messages", new_callable=AsyncMock),
+            patch("aiohttp.web.WebSocketResponse", return_value=mock_ws_response),
+            patch.object(handler.mass, "http_session", create=True) as mock_session,
+            patch(
+                "music_assistant.controllers.webserver.sendspin_proxy.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "music_assistant.controllers.webserver.sendspin_proxy.is_request_from_ingress_proxy",
+                return_value=False,
+            ),
+        ):
+            mock_session.ws_connect = mock_ws_connect
+            request = make_mocked_request("GET", "/sendspin")
+            await handler.handle_sendspin_proxy(request)
+
+        mock_ws_connect.assert_awaited_once_with(internal_url)
 
     async def test_gives_up_after_max_retries(self, handler: SendspinProxyHandler) -> None:
         """Verify the proxy closes the client websocket after exhausting retries."""

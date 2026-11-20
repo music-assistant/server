@@ -167,7 +167,7 @@ def catch_log_exception(
             """Catch and log exception."""
             try:
                 await async_func(*args)
-            except Exception:
+            except Exception:  # noqa: BLE001 - this wrapper exists to log any error
                 log_exception(format_err, *args)
 
         wrapper_func = async_wrapper
@@ -179,7 +179,7 @@ def catch_log_exception(
             """Catch and log exception."""
             try:
                 func(*args)
-            except Exception:
+            except Exception:  # noqa: BLE001 - this wrapper exists to log any error
                 log_exception(format_err, *args)
 
         wrapper_func = wrapper

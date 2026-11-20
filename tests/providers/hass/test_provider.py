@@ -1816,6 +1816,7 @@ async def test_config_entries_offer_the_control_lists_without_options() -> None:
     for entry in control_entries:
         assert entry.options == []
         assert entry.multi_value is True
+        assert entry.immediate_apply is True
 
 
 async def test_domain_states_use_a_single_subscription() -> None:

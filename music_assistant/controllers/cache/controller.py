@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import time
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
@@ -34,7 +35,13 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import local_clock_time_to_utc
-from music_assistant.helpers.json import SerializableType, async_json_loads, json_dumps, json_loads
+from music_assistant.helpers.json import (
+    JSON_DECODE_EXCEPTIONS,
+    SerializableType,
+    async_json_loads,
+    json_dumps,
+    json_loads,
+)
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -190,7 +197,7 @@ class CacheController(CoreController):
                 return None, False, False
             try:
                 data = await async_json_loads(db_row["data"])
-            except Exception as exc:
+            except JSON_DECODE_EXCEPTIONS as exc:
                 LOGGER.error(
                     "Error parsing cache data for %s/%s/%s: %s",
                     provider,
@@ -492,7 +499,7 @@ class CacheController(CoreController):
             )
             try:
                 await self.__migrate_database(prev_version)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failed migration resets the cache instead of stopping startup
                 LOGGER.warning("Cache database migration failed: %s, resetting cache", err)
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
                 await self.__create_database_tables()
@@ -518,7 +525,7 @@ class CacheController(CoreController):
                 )
                 await self.database.vacuum()
                 self.logger.debug("Compacting database done")
-        except Exception as err:
+        except sqlite3.Error as err:
             self.logger.warning("Database vacuum failed: %s", str(err))
 
     async def __create_database_tables(self) -> None:

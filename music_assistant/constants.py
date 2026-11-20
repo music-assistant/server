@@ -170,8 +170,6 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")  # noqa: S104 - the wildcard addresses themselves
-# Port used by the built-in Sendspin server (runs next to, not behind, the webserver)
-SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_IDLE_POWER_OFF: Final[str] = "idle_power_off"
 CONF_POWER_CONTROL_CUTS_POWER: Final[str] = "power_control_cuts_power"
@@ -446,7 +444,6 @@ CONF_ENTRY_MAX_CONCURRENT_TASKS = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(1, 10),
     default_value=2,
-    advanced=True,
     requires_reload=False,
 )
 
@@ -685,6 +682,7 @@ CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY = ConfigEntry(
     ],
     default_value="percentual",
     category="announcements",
+    advanced=True,
 )
 
 CONF_ENTRY_ANNOUNCE_VOLUME = ConfigEntry(
@@ -692,6 +690,7 @@ CONF_ENTRY_ANNOUNCE_VOLUME = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     default_value=85,
     category="announcements",
+    advanced=True,
 )
 
 CONF_ENTRY_ANNOUNCE_VOLUME_MIN = ConfigEntry(
@@ -699,6 +698,7 @@ CONF_ENTRY_ANNOUNCE_VOLUME_MIN = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     default_value=15,
     category="announcements",
+    advanced=True,
 )
 
 CONF_ENTRY_ANNOUNCE_VOLUME_MAX = ConfigEntry(
@@ -706,6 +706,7 @@ CONF_ENTRY_ANNOUNCE_VOLUME_MAX = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     default_value=75,
     category="announcements",
+    advanced=True,
 )
 
 

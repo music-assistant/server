@@ -648,7 +648,7 @@ class DiscoveryController(CoreController):
                 "Successfully announced to Home Assistant. Discovery UUID: %s",
                 result.get("uuid") if isinstance(result, dict) else None,
             )
-        except Exception as err:
+        except (SupervisorError, ValueError) as err:
             self.logger.warning("Failed to announce to Home Assistant: %s", err)
         await self._announce_mcp_server()
 

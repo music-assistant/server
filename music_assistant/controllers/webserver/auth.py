@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import logging
 import secrets
+import sqlite3
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from datetime import datetime, timedelta
@@ -273,7 +274,7 @@ class AuthenticationManager:
             return None
         except pyjwt.InvalidTokenError:
             self.logger.debug("Token is not a valid JWT, trying legacy hash lookup")
-        except Exception as err:
+        except ValueError as err:
             self.logger.debug("Error decoding JWT token: %s, trying legacy hash lookup", err)
 
         # Fallback to legacy hash-based token lookup
@@ -623,6 +624,7 @@ class AuthenticationManager:
         # Return updated user
         updated_user = await self.get_user(user.user_id)
         assert updated_user is not None  # User exists, so get_user must return it
+        self.webserver.update_active_user(updated_user)
         return updated_user
 
     async def update_user_preferences(
@@ -651,6 +653,7 @@ class AuthenticationManager:
         # Return updated user
         updated_user = await self.get_user(user.user_id)
         assert updated_user is not None  # User exists, so get_user must return it
+        self.webserver.update_active_user(updated_user)
         return updated_user
 
     async def update_provider_link(
@@ -1591,13 +1594,11 @@ class AuthenticationManager:
                 {"user_id": target_user.user_id},
                 {"player_filter": json_dumps(player_filter)},
             )
-            self.webserver.update_active_user_filters(
-                target_user.user_id, player_filter=player_filter
-            )
-        # Refresh target user to get updated filters
-        refreshed_user = await self.get_user(target_user.user_id)
-        if not refreshed_user:
-            raise InvalidDataError("Failed to refresh user after filter update")
+            # Refresh target user to get updated filters
+            refreshed_user = await self.get_user(target_user.user_id)
+            if not refreshed_user:
+                raise InvalidDataError("Failed to refresh user after filter update")
+            self.webserver.update_active_user(refreshed_user)
         return refreshed_user
 
     async def remove_from_user_filters(self, player_ids: Collection[str] = ()) -> None:
@@ -2056,7 +2057,7 @@ class AuthenticationManager:
                 prev_version = int(db_row["value"])
             else:
                 prev_version = DB_SCHEMA_VERSION
-        except KeyError, ValueError, Exception:
+        except KeyError, TypeError, ValueError, sqlite3.Error:
             # settings table doesn't exist yet or other error
             prev_version = 0
 
@@ -2475,7 +2476,7 @@ class AuthenticationManager:
             await self.database.commit()
             if total > 0:
                 self.logger.info("Cleaned up %d row(s) of deleted user(s)", total)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - optional hygiene, see the comment above
             self.logger.warning("Failed to clean up rows of deleted users: %s", err)
 
     async def _rewrite_user_filters(
@@ -2535,7 +2536,8 @@ class AuthenticationManager:
                 )
                 # a session holds its own copy of the User object, so the live ones have to
                 # follow or they keep applying the filter that was just rewritten
-                self.webserver.update_active_user_filters(row["user_id"], player_filter=remaining)
+                if user := await self.get_user(row["user_id"]):
+                    self.webserver.update_active_user(user)
 
     async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
         """
@@ -2555,7 +2557,7 @@ class AuthenticationManager:
             )
             await self.mass.music.database.commit()
             self.logger.info("Migrated existing playlog entries to first user: %s", user_id)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - best effort, must not block creating the first user
             self.logger.warning("Failed to migrate playlog entries: %s", err)
 
     async def _update_profile_password(

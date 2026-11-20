@@ -91,6 +91,7 @@ from music_assistant.controllers.player_queues.constants import (
     QUEUE_CACHE_SAVE_DELAY,
     QUEUE_SHUTDOWN_STOP_TIMEOUT,
     SKIP_END_MARGIN,
+    SOURCE_FAILURE_LIMIT,
 )
 from music_assistant.controllers.player_queues.helpers import (
     committed_index,
@@ -1766,6 +1767,37 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue_data := self.queue_data_or_none(queue_id)) is not None:
             queue_data.halted_by_command = False
 
+    def hold_for_announcement(self, queue_id: str) -> None:
+        """
+        Mark a playing queue as interrupted by an announcement, at its resume position.
+
+        :param queue_id: The queue the announcement stopped.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        queue = queue_data.queue
+        if not (queue.active and queue.state == PlaybackState.PLAYING):
+            return
+        queue.elapsed_time = queue.resume_pos
+        queue.elapsed_time_last_updated = time.time()
+        queue.extra_attributes[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
+        self.signal_update(queue_id)
+
+    def release_after_announcement(self, queue_id: str) -> None:
+        """
+        Let a queue held for an announcement follow its player again.
+
+        :param queue_id: The queue of the player the announcement played on.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        if not queue_data.queue.extra_attributes.pop(ATTR_ANNOUNCEMENT_IN_PROGRESS, False):
+            return
+        # the player's updates were ignored during the clip
+        if (player := self.mass.players.get_player(queue_id)) is not None:
+            self.on_player_update(player, {})
+        self.signal_update(queue_id)
+
     def on_player_elapsed_time_corrected(self, player: Player) -> None:
         """Correct the queue's timing base if the player's real elapsed_time diverged."""
         queue_id = player.player_id
@@ -1983,9 +2015,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.signal_update(queue_id)
         # preload next streamdetails
         self._preload_next_item(queue_id, item_id)
-        # clean up stale audio buffers for old queue items to prevent memory leaks
-        if current_index is not None:
-            self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
 
     def mark_item_served(self, queue_id: str, item_id: str) -> None:
         """
@@ -1996,6 +2025,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.served_item_ids[item_id] = queue_data.session_id
+            # the output of a stream whose source failed can still send out an empty stream
+            queue_item = self.get_item(queue_id, item_id)
+            if not (
+                queue_item and queue_item.streamdetails and queue_item.streamdetails.stream_error
+            ):
+                queue_data.failed_source_items.clear()
 
     def register_audio_buffer(self, queue_item: QueueItem, audio_buffer: AudioBuffer) -> None:
         """
@@ -2087,6 +2122,32 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue_item := self.get_item(queue_id, queue_item_id)) is None:
             return
         await self._abort_source_buffer(queue_item)
+
+    def report_source_failure(self, queue_item: QueueItem, session_id: str | None = None) -> None:
+        """
+        Record that the source of a queue item failed to deliver its audio.
+
+        The queue stops once SOURCE_FAILURE_LIMIT of its items in a row failed, without audio
+        of an item reaching the player in between.
+
+        :param queue_item: The queue item whose source failed.
+        :param session_id: The playback session the audio was for, or None for the one that
+            plays now. The failure of a session that no longer plays is not counted.
+        """
+        queue_data = self._queue_data.get(queue_item.queue_id)
+        if (
+            queue_data is None
+            or queue_data.session_id is None
+            or session_id not in (None, queue_data.session_id)
+        ):
+            return
+        queue_data.failed_source_items.add(queue_item.queue_item_id)
+        if len(queue_data.failed_source_items) < SOURCE_FAILURE_LIMIT:
+            return
+        self.mass.create_task(
+            self._stop_for_failed_sources(queue_item.queue_id, queue_data.session_id),
+            task_id=f"stop_for_failed_sources_{queue_item.queue_id}",
+        )
 
     def queue_buffer_completed(self, queue_id: str, queue_exhausted: bool) -> None:
         """
@@ -2874,6 +2935,25 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # would end on the device, so only the session this start opened is let go
         if queue_data.session_id is not None:
             self._end_session(queue_data, queue_data.session_id)
+
+    async def _stop_for_failed_sources(self, queue_id: str, session_id: str) -> None:
+        """
+        Stop a queue whose items got no audio, unless a command took it over meanwhile.
+
+        :param queue_id: The queue to stop.
+        :param session_id: The playback session the items failed in.
+        """
+        async with self.mass.players.get_group_and_player_lock(queue_id):
+            queue_data = self._queue_data.get(queue_id)
+            # a command that held or waited for the lock (stop, next, play) went first
+            if queue_data is None or queue_data.session_id != session_id:
+                return
+            self.logger.warning(
+                "Stopped %s: %s tracks in a row got no audio from their source",
+                queue_data.queue.display_name,
+                len(queue_data.failed_source_items),
+            )
+            await self._handle_stop(queue_id)
 
     def _release_queue_audio(self, queue_id: str, queue_data: PlayerQueueData) -> None:
         """

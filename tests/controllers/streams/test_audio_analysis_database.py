@@ -6,7 +6,7 @@ import logging
 import os
 import pathlib
 import sqlite3
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -383,6 +383,35 @@ async def test_candidate_queries_read_library_keys_through_temp_table(
         "SELECT * FROM temp.candidate_tracks", limit=0
     )
     assert leftover == []
+
+
+async def test_coverage_reads_analysis_rows_through_covering_indexes(
+    ctrl: AudioAnalysisController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Coverage counts never read the analysis records, which hold the large payloads."""
+    await ctrl.setup_database()
+    ctrl.mass.providers = [MagicMock(domain="filesystem_local", available=True)]  # type: ignore[misc]
+    ctrl.mass.get_provider = MagicMock(return_value=MagicMock(analysis_version=2))  # type: ignore[method-assign]
+    database = ctrl.database
+    count_from_query = database.get_count_from_query
+    plan_steps: list[str] = []
+
+    async def explain_and_count(query: str, params: dict[str, Any] | None = None) -> int:
+        rows = await database.get_rows_from_query(f"EXPLAIN QUERY PLAN {query}", params, limit=0)
+        plan_steps.extend(row["detail"] for row in rows)
+        return await count_from_query(query, params)
+
+    monkeypatch.setattr(database, "get_count_from_query", explain_and_count)
+    await ctrl.get_coverage(SONIC_ANALYSIS_DOMAIN)
+
+    # the pending count aliases the analysis table as "an"
+    analysis_reads = [
+        step
+        for step in plan_steps
+        if step.split()[0] in ("SCAN", "SEARCH") and step.split()[1] in (AA_TABLE_ANALYSIS, "an")
+    ]
+    assert len(analysis_reads) == 3
+    assert all("COVERING INDEX" in step for step in analysis_reads), analysis_reads
 
 
 @pytest.mark.asyncio

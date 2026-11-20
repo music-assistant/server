@@ -4,6 +4,18 @@ from __future__ import annotations
 
 BRIDGE_PREFIX = "spb_"
 VIRTUAL_PLAYER_ID_PREFIX = "sendspin_virtual_"
+MULTI_CHANNEL_ID_PREFIX = "sendspin_mc_"
+
+# The record of a multi-channel player: its group id and, per speaker number, its speaker.
+CONF_MULTI_CHANNEL_GROUP_ID = "multi_channel_group_id"
+CONF_SPEAKER_CLIENT_ID = "speaker_{n}_client_id"
+CONF_SPEAKER_NAME = "speaker_{n}_name"
+CONF_SPEAKER_CHANNEL = "speaker_{n}_channel"
+# The channel the user sets for a speaker, stored until the player takes it into its record.
+CONF_SPEAKER_CHANNEL_SETTING = "speaker_{n}_channel_setting"
+CONF_SPEAKER_OUTPUT_DELAY = "speaker_{n}_output_delay"
+CONF_SPEAKER_STATE = "speaker_{n}_state"
+CONF_SPEAKER_DISPLAY_NAME = "speaker_{n}_display_name"
 
 CONF_SENDSPIN_STATIC_DELAY = "sendspin_static_delay"
 # the static delays the user set for the protocols that do not carry the output now, by their id
@@ -14,6 +26,8 @@ CONF_VIRTUAL_PLAYER_OWNER = "virtual_player_owner"
 DEFAULT_SENDSPIN_STATIC_DELAY = 0
 
 CONF_ALLOW_LEGACY_CLIENTS = "allow_legacy_clients"
+
+DEFAULT_SERVER_PORT = 8927
 
 # Pairing method the setup flow lets the user pick between.
 CONF_PAIRING_METHOD = "pairing_method"
