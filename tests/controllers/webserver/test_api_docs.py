@@ -12,6 +12,7 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigValueType,  # noqa: TC002 - the command parser resolves it at run time
 )
+from syrupy.extensions.json import JSONSnapshotExtension
 
 from music_assistant.controllers.webserver.api_docs import (
     generate_commands_json,
@@ -22,6 +23,12 @@ from music_assistant.helpers.api import APICommandHandler
 
 if TYPE_CHECKING:
     from syrupy.assertion import SnapshotAssertion
+
+
+@pytest.fixture
+def snapshot(snapshot: SnapshotAssertion) -> SnapshotAssertion:
+    """Store the snapshots as JSON, which keeps blank lines in texts free of trailing spaces."""
+    return snapshot.use_extension(JSONSnapshotExtension)
 
 
 class Colour(StrEnum):
