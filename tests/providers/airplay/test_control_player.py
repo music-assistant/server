@@ -1132,6 +1132,8 @@ async def test_provider_selects_player_model_from_device_identity(
         )
     }
     provider._mrp_info_by_address = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
     provider.mass.players.register = AsyncMock()
     provider.mass.players.get_protocol.return_value = None
@@ -1172,6 +1174,8 @@ async def test_apple_device_setup_attaches_discovered_companion_service() -> Non
     provider.dashboards = MagicMock()
     provider._companion_info_by_address = {}
     provider._mrp_info_by_address = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     companion_info = _service_info(
         COMPANION_DISCOVERY_TYPE,
         properties={"rpFl": "0x367A2"},
@@ -1277,6 +1281,8 @@ async def test_mrp_discovery_is_attached_by_shared_address() -> None:
     provider = AirPlayProvider.__new__(AirPlayProvider)
     provider.mass = MagicMock()
     provider._mrp_info_by_address = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     player = _make_control_player(companion_flags=None)
     set_mrp_info = AsyncMock()
     player.set_mrp_discovery_info = set_mrp_info  # type: ignore[method-assign]
@@ -1344,6 +1350,8 @@ async def test_generic_device_setup_skips_control_discovery() -> None:
     provider.dashboards = MagicMock()
     provider._companion_info_by_address = {}
     provider._mrp_info_by_address = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
     provider.mass.players.register = AsyncMock()
     provider.mass.players.get_protocol.return_value = None
@@ -1692,6 +1700,30 @@ async def test_the_volume_of_a_set_is_not_the_volume_of_its_apple_tv() -> None:
     device.audio.set_volume.assert_not_awaited()
     assert player.volume_level == 30
     assert player.volume_muted is True
+
+
+async def test_the_volume_of_an_idle_pair_is_the_native_volume_of_its_homepod() -> None:
+    """
+    The HomePod that carries a stereo pair is a speaker of it: its native volume is the pair's.
+
+    As for a HomePod of its own, a volume goes to the device and one it reports comes back.
+    """
+    player = _make_control_player()
+    cast("MagicMock", player.airplay_discovery_info).decoded_properties.update(
+        {"tsid": "7C1E5A20", "gid": "7C1E5A20+0+AABBCC003301", "gpn": "Loft"}
+    )
+    cast("MagicMock", player.provider).get_pair_position.return_value = 0
+    cast("MagicMock", player.provider).get_set_speakers.return_value = [MagicMock(stream=None)]
+    assert player.carries_set is True
+    device = MagicMock()
+    device.audio.set_volume = AsyncMock()
+
+    with patch.object(player, "_device_for_feature", return_value=device):
+        await player.volume_set(30)
+    player._handle_volume_update("companion", 45)
+
+    device.audio.set_volume.assert_awaited_once_with(30)
+    assert player.volume_level == 45
 
 
 def test_the_state_of_a_set_follows_its_speakers_while_they_play() -> None:

@@ -1098,6 +1098,8 @@ async def test_setup_player_flags_shairport_on_this_host(
     prov.mass.players.register = AsyncMock()
     prov._is_own_airplay_receiver = AsyncMock(return_value=False)  # type: ignore[method-assign]
     prov._bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
+    prov._pair_records = {}
+    prov._pair_carriers = {}
     info = _discovery_info([address], properties={"am": model})
     info.type = "_airplay._tcp.local."
     info.ip_addresses_by_version.return_value = [ip_address(address)]

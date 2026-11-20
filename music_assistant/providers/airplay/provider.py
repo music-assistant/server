@@ -9,11 +9,12 @@ import logging
 import os
 import time
 from contextlib import suppress
+from dataclasses import replace
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, PlaybackState
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerType
 from music_assistant_models.errors import MediaNotFoundError
 from zeroconf import NonUniqueNameException, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
@@ -21,6 +22,7 @@ from zeroconf.asyncio import AsyncServiceInfo
 from music_assistant.constants import (
     CONF_LOG_LEVEL,
     CONF_PLAYER_PROTOCOLS,
+    CONF_PLAYERS,
     CONF_PROVIDERS,
     VERBOSE_LOG_LEVEL,
 )
@@ -67,6 +69,8 @@ from .control_player import AirPlayControlPlayer
 from .dashboard import AirPlayDashboards
 from .helpers import (
     CLI_CLOCK_OFFSET_NS,
+    SetKind,
+    SetMembership,
     convert_airplay_volume,
     get_cli_binary,
     get_model_info,
@@ -254,8 +258,36 @@ class AirPlayProvider(PlayerProvider):
             if (speaker.available or (speaker.stream is not None and speaker.stream.running))
             and (membership := speaker.set_membership)
             and membership.set_id == set_id
+            and membership.position is not None
         ]
         return [speaker for _, speaker in sorted(speakers, key=lambda item: item[0])]
+
+    def get_pair_position(self, protocol_id: str, pair_id: str) -> int | None:
+        """
+        Return the place of a HomePod in its stereo pair: 0 for the one that carries the pair.
+
+        None while it is not decided which HomePod carries the pair.
+
+        :param protocol_id: Protocol id of the HomePod.
+        :param pair_id: Id of the pair.
+        """
+        if (carrier := self._pair_carriers.get(pair_id)) is None:
+            return None
+        return 0 if carrier == protocol_id else 1
+
+    def has_stored_room(self, protocol_id: str) -> bool:
+        """
+        Return whether the stored player of a device is a multi-channel player of a set it carries.
+
+        :param protocol_id: Protocol id of the device.
+        """
+        record = self.mass.config.get_protocol_record(protocol_id) or {}
+        if not (player_id := record.get("player_id")):
+            return False
+        return bool(
+            self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/player_type")
+            == PlayerType.MULTI_CHANNEL
+        )
 
     async def release_set_speakers(self, set_id: str) -> None:
         """
@@ -305,6 +337,10 @@ class AirPlayProvider(PlayerProvider):
         self._speakers: dict[str, AirPlaySpeaker] = {}
         # Protocol id of the device that carries each set seen, also of a disabled one
         self._set_carriers: dict[str, str] = {}
+        # The last record of each HomePod of a stereo pair, by pair id, and which HomePod carries
+        # each pair: decided once and kept, as the records tell no roles.
+        self._pair_records: dict[str, dict[str, AsyncServiceInfo]] = {}
+        self._pair_carriers: dict[str, str] = {}
         # Shared audible instants for in-flight announcements, keyed by
         # (group-or-leader player id, render key) -> unix ms. The controller
         # forwards a group-entity announcement to every member concurrently;
@@ -359,15 +395,8 @@ class AirPlayProvider(PlayerProvider):
             if state_change == ServiceStateChange.Removed and "@" in name:
                 # Service name is enough to mark the player as unavailable on 'Removed' notification
                 raw_id, display_name = name.split(".", maxsplit=1)[0].split("@", 1)
-            elif state_change == ServiceStateChange.Removed and (
-                gone := self._find_by_airplay_name(name)
-            ):
-                # the record that names the set of a device is gone; its other records keep
-                # it on the network, but they name no set
-                if isinstance(gone, AirPlaySpeaker):
-                    await self._update_speaker(gone, gone.display_name, state_change, None)
-                else:
-                    gone.set_airplay_record_gone()
+            elif state_change == ServiceStateChange.Removed:
+                await self._handle_airplay_goodbye(name)
                 return
             else:
                 # If we are not in a 'Removed' state, we need info to be filled to update the player
@@ -380,7 +409,9 @@ class AirPlayProvider(PlayerProvider):
         else:
             return
         protocol_id = f"ap{raw_id.lower()}"
-        if (membership := parse_set_membership(info)) and membership.position == 0:
+        if pair_id := self._note_pair_record(protocol_id, info):
+            await self._replay_pair_records(pair_id, protocol_id)
+        if (membership := self._membership_of(protocol_id, info)) and membership.position == 0:
             self._set_carriers[membership.set_id] = protocol_id
             if not self.mass.players.wants_protocol(protocol_id):
                 # the user disabled the player of this set: its speakers play on their own
@@ -403,7 +434,7 @@ class AirPlayProvider(PlayerProvider):
         assert info is not None  # type guard
         player: AirPlayPlayer | None
         if player := cast("AirPlayPlayer | None", self.get_protocol(protocol_id)):
-            if self._is_speaker_record(info):
+            if self._is_speaker_record(protocol_id, info):
                 # a device that joined a set is a speaker of that set from now on
                 await self._bridge_manager.remove_bridge(protocol_id)
                 await self.mass.players.unregister(protocol_id)
@@ -521,9 +552,9 @@ class AirPlayProvider(PlayerProvider):
         """Handle setup of a new player that is discovered using mdns."""
         # return early if the user disabled the player or switched this output off; a
         # speaker of a set is no player of its own, also while its old player is disabled
-        if not self._is_speaker_record(discovery_info) and not self.mass.players.wants_protocol(
-            protocol_id
-        ):
+        if not self._is_speaker_record(
+            protocol_id, discovery_info
+        ) and not self.mass.players.wants_protocol(protocol_id):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
             return
         # Filter out this server's own AirPlay Receiver (shairport-sync) instances
@@ -551,6 +582,19 @@ class AirPlayProvider(PlayerProvider):
                 RAOP_DISCOVERY_TYPE, display_name, timeout=10.0
             )
 
+        # a lookup that found no record is no goodbye of the records of the device
+        if airplay_discovery_info and (
+            pair_id := self._note_pair_record(protocol_id, airplay_discovery_info)
+        ):
+            await self._replay_pair_records(pair_id, protocol_id)
+        if (
+            membership := self._membership_of(protocol_id, airplay_discovery_info)
+        ) and membership.position is None:
+            # a HomePod of a stereo pair waits until it is decided which one carries the pair
+            self.logger.debug(
+                "Ignoring %s until the other HomePod of its pair is seen", display_name
+            )
+            return
         if airplay_discovery_info:
             model_discovery_info = airplay_discovery_info
         elif raop_discovery_info:
@@ -571,7 +615,7 @@ class AirPlayProvider(PlayerProvider):
         # if we reach this point, all preflights are ok and we can create the player
         self.logger.debug("Discovered AirPlay device %s on %s", display_name, address)
 
-        if self._is_speaker_record(airplay_discovery_info):
+        if self._is_speaker_record(protocol_id, airplay_discovery_info):
             self._add_speaker(
                 AirPlaySpeaker(
                     provider=self,
@@ -686,16 +730,17 @@ class AirPlayProvider(PlayerProvider):
         if isinstance(player, AirPlayControlPlayer):
             self.dashboards.setup_player(player)
 
-    def _is_speaker_record(self, discovery_info: AsyncServiceInfo | None) -> bool:
+    def _is_speaker_record(self, protocol_id: str, discovery_info: AsyncServiceInfo | None) -> bool:
         """
         Return whether a record names its device a speaker of a set that plays as one player.
 
         The speakers of a set whose own player the user disabled stay players of their own.
 
+        :param protocol_id: Protocol id of the device.
         :param discovery_info: The mdns record of the device.
         """
-        membership = parse_set_membership(discovery_info)
-        if membership is None or membership.position == 0:
+        membership = self._membership_of(protocol_id, discovery_info)
+        if membership is None or membership.position in (None, 0):
             return False
         carrier_id = self._set_carriers.get(membership.set_id)
         return carrier_id is None or self.mass.players.wants_protocol(carrier_id)
@@ -721,7 +766,7 @@ class AirPlayProvider(PlayerProvider):
             speaker.set_available(False)
         elif info.type != AIRPLAY_DISCOVERY_TYPE:
             speaker.set_discovery_info(info, display_name)
-        elif not self._is_speaker_record(info):
+        elif not self._is_speaker_record(speaker.protocol_id, info):
             # it left its set: normal discovery finds it as a player of its own
             del self._speakers[speaker.protocol_id]
             await self._leave_session(speaker, "speaker left its set")
@@ -761,6 +806,117 @@ class AirPlayProvider(PlayerProvider):
             ),
             None,
         )
+
+    def _membership_of(
+        self, protocol_id: str, discovery_info: AsyncServiceInfo | None
+    ) -> SetMembership | None:
+        """
+        Return the place of a device in a set; for a stereo pair, the place decided for it.
+
+        :param protocol_id: Protocol id of the device.
+        :param discovery_info: The mdns record of the device.
+        """
+        membership = parse_set_membership(discovery_info)
+        if membership is not None and membership.kind == SetKind.STEREO_PAIR:
+            return replace(
+                membership, position=self.get_pair_position(protocol_id, membership.set_id)
+            )
+        return membership
+
+    def _note_pair_record(
+        self, protocol_id: str, discovery_info: AsyncServiceInfo | None
+    ) -> str | None:
+        """
+        Keep what a record of a HomePod tells about its stereo pair; decide who carries it.
+
+        The HomePod whose player is the room of the pair keeps carrying it, and so does the only
+        one of the two with a stored player: the player of the other is removed once the pair
+        formed. Without either, the HomePod with the lowest protocol id carries it, once both
+        records are in. Return the id of the pair when that was decided just now.
+
+        :param protocol_id: Protocol id of the device.
+        :param discovery_info: The mdns record of the device.
+        """
+        if discovery_info is None:
+            # a device that said goodbye: its records are no evidence of a pair any more
+            for records in self._pair_records.values():
+                records.pop(protocol_id, None)
+            return None
+        if discovery_info.type != AIRPLAY_DISCOVERY_TYPE:
+            return None
+        membership = parse_set_membership(discovery_info)
+        pair_id = (
+            membership.set_id
+            if membership is not None and membership.kind == SetKind.STEREO_PAIR
+            else None
+        )
+        for other_id, records in self._pair_records.items():
+            if other_id != pair_id and records.pop(protocol_id, None) is not None:
+                # a HomePod that left its pair carries it no more
+                if self._pair_carriers.get(other_id) == protocol_id:
+                    del self._pair_carriers[other_id]
+        if pair_id is None:
+            return None
+        records = self._pair_records.setdefault(pair_id, {})
+        records[protocol_id] = discovery_info
+        if pair_id in self._pair_carriers:
+            return None
+        players = [device_id for device_id in records if self._has_stored_player(device_id)]
+        if rooms := sorted(device_id for device_id in records if self.has_stored_room(device_id)):
+            carrier = rooms[0]
+        elif len(records) == 2 and len(players) == 1:
+            # a room formed while the server ran is stored as the player it was until it attaches
+            carrier = players[0]
+        elif len(records) == 2:
+            # the records tell no roles; the lowest id makes the same choice at every start
+            carrier = min(records)
+        else:
+            return None
+        self._pair_carriers[pair_id] = carrier
+        return pair_id
+
+    def _has_stored_player(self, protocol_id: str) -> bool:
+        """
+        Return whether a device has a stored player.
+
+        :param protocol_id: Protocol id of the device.
+        """
+        record = self.mass.config.get_protocol_record(protocol_id) or {}
+        return bool(
+            (player_id := record.get("player_id"))
+            and self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+        )
+
+    async def _handle_airplay_goodbye(self, name: str) -> None:
+        """
+        Handle the goodbye of an _airplay._tcp record, which comes without the record.
+
+        The record that names the set of a device is gone; its other records keep the device on
+        the network, but they name no set.
+
+        :param name: The service name of the record.
+        """
+        for records in self._pair_records.values():
+            for device_id, info in list(records.items()):
+                if info.name == name:
+                    del records[device_id]
+        if (gone := self._find_by_airplay_name(name)) is None:
+            return
+        if isinstance(gone, AirPlaySpeaker):
+            await self._update_speaker(gone, gone.display_name, ServiceStateChange.Removed, None)
+        else:
+            gone.set_airplay_record_gone()
+
+    async def _replay_pair_records(self, pair_id: str, protocol_id: str) -> None:
+        """
+        Apply the last records of the other HomePods of a pair once who carries it was decided.
+
+        :param pair_id: Id of the pair.
+        :param protocol_id: Protocol id of the HomePod whose record is being applied.
+        """
+        for other_id, info in list(self._pair_records.get(pair_id, {}).items()):
+            if other_id != protocol_id:
+                await self.on_mdns_service_state_change(info.name, ServiceStateChange.Updated, info)
 
     def _rejoin_set_session(self, speaker: AirPlaySpeaker) -> None:
         """

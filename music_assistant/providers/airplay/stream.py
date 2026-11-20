@@ -1016,7 +1016,7 @@ class AirPlayStream:
             # schedule bounded attempts to re-join it
             owner.schedule_group_rejoin(rejoin_candidates)
         if (
-            owner is not player
+            (owner is not player or player.speakers)
             and not was_leader
             and not owner.synced_to
             and (session := self.session)

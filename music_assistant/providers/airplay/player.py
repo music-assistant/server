@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import ipaddress
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -76,6 +77,7 @@ from .constants import (
     StreamingProtocol,
 )
 from .helpers import (
+    SetKind,
     default_buffer_depth,
     default_hires_enabled,
     get_decoded_property,
@@ -271,18 +273,15 @@ class AirPlayPlayer(PlayerProtocol):
     def hires_playback_enabled(self) -> bool:
         """Return if 24-bit hi-res playback is possible and enabled for this player."""
         if self.carries_set:
-            # a set plays on its speakers
-            speakers = self.speakers
-            return bool(speakers) and all(speaker.hires_playback_enabled for speaker in speakers)
-        if not self._hires_route:
-            return False
-        # a stored toggle is the user's choice; without one it follows the probed formats,
-        # which the config parsed at registration predates
-        return bool(
-            self.mass.config.get_protocol_value(
-                self.protocol_id, CONF_ENABLE_HIRES, self._hires_default_enabled
+            # a set plays on its speakers, and a stereo pair also on the speaker that carries it
+            endpoints = self.endpoints
+            return bool(endpoints) and all(
+                endpoint._hires_enabled_here
+                if endpoint is self
+                else endpoint.hires_playback_enabled
+                for endpoint in endpoints
             )
-        )
+        return self._hires_enabled_here
 
     @property
     def supported_sample_rates(self) -> list[tuple[int, int]]:
@@ -399,14 +398,14 @@ class AirPlayPlayer(PlayerProtocol):
         # the device to whatever else may be streaming to it.
         if not self.has_live_audio:
             features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
-        if self.carries_set:
+        if self.carries_home_theater:
             features.add(PlayerFeature.OPTIONS)
         return features
 
     @property
     def options(self) -> UniqueList[PlayerOption]:
         """Return the options of the player: for a set, whether it plays on its speakers only."""
-        if not self.carries_set:
+        if not self.carries_home_theater:
             return super().options
         return UniqueList(
             [
@@ -493,13 +492,29 @@ class AirPlayPlayer(PlayerProtocol):
 
     @property
     def set_membership(self) -> SetMembership | None:
-        """Return the place of this device in the home theater set of an Apple TV, if any."""
-        return parse_set_membership(self.airplay_discovery_info)
+        """Return the place of this device in a set of devices that plays as one player, if any."""
+        membership = parse_set_membership(self.airplay_discovery_info)
+        if membership is not None and membership.kind == SetKind.STEREO_PAIR:
+            # the records of a pair tell no roles: which HomePod carries it is decided once
+            position = cast("AirPlayProvider", self.provider).get_pair_position(
+                self.protocol_id, membership.set_id
+            )
+            return replace(membership, position=position)
+        return membership
 
     @property
     def carries_set(self) -> bool:
-        """Return whether this device carries a home theater set of speakers."""
+        """Return whether this device carries a set of speakers that plays as one player."""
         return (membership := self.set_membership) is not None and membership.position == 0
+
+    @property
+    def carries_home_theater(self) -> bool:
+        """Return whether this device is an Apple TV that carries a home theater set."""
+        return (
+            (membership := self.set_membership) is not None
+            and membership.position == 0
+            and membership.kind == SetKind.HOME_THEATER
+        )
 
     @property
     def speakers(self) -> list[AirPlaySpeaker]:
@@ -511,10 +526,10 @@ class AirPlayPlayer(PlayerProtocol):
     @property
     def endpoints(self) -> list[AirPlayPlayer]:
         """Return the players whose audio is heard when this player plays in a stream session."""
-        # a set is heard on its speakers, whatever the device that carries it is fed
-        if self.carries_set:
+        # a home theater set is heard on its speakers, whatever its Apple TV is fed
+        if self.carries_home_theater:
             return list(self.speakers)
-        return [self]
+        return [self, *self.speakers]
 
     @property
     def silent_member(self) -> AirPlayPlayer | None:
@@ -524,7 +539,7 @@ class AirPlayPlayer(PlayerProtocol):
         That is the Apple TV of a set, which shows what plays and takes the commands of its
         remote, unless the set plays on its speakers only. None for every other player.
         """
-        if self.carries_set and not self.homepods_only:
+        if self.carries_home_theater and not self.homepods_only:
             return self
         return None
 
@@ -537,12 +552,12 @@ class AirPlayPlayer(PlayerProtocol):
     def renders_audio(self) -> bool:
         """Return whether the audio this device is fed in a stream session is heard."""
         # an Apple TV never passes a stream on to the speakers of its set
-        return not self.carries_set
+        return not self.carries_home_theater
 
     @property
     def homepods_only(self) -> bool:
         """Return whether a set plays on its speakers only, without a session to its Apple TV."""
-        return self.carries_set and bool(
+        return self.carries_home_theater and bool(
             self.mass.config.get_protocol_value(self.protocol_id, CONF_HOMEPODS_ONLY, False)
         )
 
@@ -885,7 +900,7 @@ class AirPlayPlayer(PlayerProtocol):
         :param option_key: The key of the PlayerOption.
         :param option_value: The new value of the PlayerOption.
         """
-        if option_key != CONF_HOMEPODS_ONLY or not self.carries_set:
+        if option_key != CONF_HOMEPODS_ONLY or not self.carries_home_theater:
             raise PlayerCommandFailed(f"Option {option_key} can not be set on {self.display_name}")
         self.mass.config.set_protocol_value(
             self.protocol_id, CONF_HOMEPODS_ONLY, bool(option_value)
@@ -1233,7 +1248,25 @@ class AirPlayPlayer(PlayerProtocol):
         """
         if self.player is None or not self.available or self._airplay_record_gone:
             return
-        speaker_ids = {speaker.protocol_id for speaker in self.speakers}
+        if (own := parse_set_membership(self.airplay_discovery_info)) is None:
+            # the set is gone: a speaker in it once it is formed again is reported again
+            self._reported_speaker_ids = set()
+            return
+        # What both current records tell, never an earlier record: those of a pair only name it
+        # in their idle pair form, while nobody plays to it.
+        if own.position is None:
+            return
+        provider = cast("AirPlayProvider", self.provider)
+        speaker_ids = {
+            speaker.protocol_id
+            for speaker in self.speakers
+            if (membership := parse_set_membership(speaker.airplay_discovery_info))
+            and membership.position is not None
+            # the room of a pair is never taken for the old player of its other HomePod
+            and not (
+                own.kind == SetKind.STEREO_PAIR and provider.has_stored_room(speaker.protocol_id)
+            )
+        }
         if added := speaker_ids - self._reported_speaker_ids:
             self.mass.create_task(
                 self.mass.players.remove_absorbed_players(self.protocol_id, sorted(added))
@@ -1421,7 +1454,7 @@ class AirPlayPlayer(PlayerProtocol):
         :param collected: The values collected so far; updated in place.
         """
         if (
-            self.carries_set
+            self.carries_home_theater
             and self.setup_reason == "pairing_required"
             and await self._offer_homepods_only(session)
         ):
@@ -1853,11 +1886,22 @@ class AirPlayPlayer(PlayerProtocol):
     @property
     def _carries_speaker_pair(self) -> bool:
         """Return whether this device carries a set of more than one speaker."""
-        # the device that carries a set counts in its size
-        return (
-            (membership := self.set_membership) is not None
-            and membership.position == 0
-            and membership.size > 2
+        if (membership := self.set_membership) is None or membership.position != 0:
+            return False
+        # the Apple TV of a home theater set counts in its size
+        return membership.kind == SetKind.STEREO_PAIR or membership.size > 2
+
+    @property
+    def _hires_enabled_here(self) -> bool:
+        """Return whether this device itself takes 24-bit audio."""
+        if not self._hires_route:
+            return False
+        # a stored toggle is the user's choice; without one it follows the probed formats,
+        # which the config parsed at registration predates
+        return bool(
+            self.mass.config.get_protocol_value(
+                self.protocol_id, CONF_ENABLE_HIRES, self._hires_default_enabled
+            )
         )
 
     @property

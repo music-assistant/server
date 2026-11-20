@@ -64,7 +64,7 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
 airplay/
 ├── provider.py           # Main provider class, MDNS discovery, DACP server, PTP daemon
 ├── player.py             # AirPlayPlayer implementation
-├── speaker.py            # AirPlaySpeaker: a speaker of the home theater set of an Apple TV
+├── speaker.py            # AirPlaySpeaker: a speaker of a set that plays as one player
 ├── stream_session.py     # Manages streaming sessions for synchronized playback
 ├── pairing.py           # Pairing: HAP via cliairplay --pair-setup, RAOP native
 ├── helpers.py           # Utility functions (binary lookup, TXT serialization, etc.)
@@ -225,6 +225,23 @@ pair), and the HomePods are fed directly as its speakers.
   speaker of the set just set up again, which ends it too), and never stopping its speakers. A
   speaker that comes back while the set plays and cannot join is left out until it comes back
   again, and a set with no speaker left in the stream stops, as in a native session.
+
+A stereo pair of HomePods without an Apple TV plays as one player the same way: the protocol
+of the first HomePod is the player of the pair (named after the room, multi-channel with a
+stereo layout), the second is its speaker, and both are fed the whole stereo stream.
+
+- Both HomePods carry the id of the pair (`tsid`). Their records tell no roles: while nobody
+  plays to the pair the group id has its idle pair form `<tsid>+<digit>+<id>`, the same on both
+  HomePods once the pair settled, and during a session it is the id of that session.
+- Which HomePod carries the pair is decided once and kept (in memory only): the one whose stored
+  player is the multi-channel room; else, with both records seen, the only one that has a stored
+  player at all (the player of the other is removed once the pair formed, while the room stays
+  stored as the player it was until it attaches again), or otherwise the one with the lowest
+  protocol id. Until then both are left alone.
+- The player the second HomePod had before is only removed when both current records are in
+  their idle pair form, never on a remembered one, and never when that player is a
+  multi-channel room.
+- A HomePod that is in a pair and in the set of an Apple TV belongs to the set of the Apple TV.
 
 ### Protocol ID Format
 

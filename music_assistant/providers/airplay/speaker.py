@@ -1,4 +1,4 @@
-"""A speaker of the home theater set of an Apple TV."""
+"""A speaker of a set of AirPlay devices that plays as one player."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 class AirPlaySpeaker(AirPlayPlayer):
     """
-    A speaker of the home theater set of an Apple TV, such as a HomePod.
+    A HomePod of the home theater set of an Apple TV, or the second HomePod of a stereo pair.
 
     It renders the audio of its set and is never registered as a protocol of its own: it
     plays with the settings and the volume of its set, or the defaults of its device, and
@@ -108,8 +108,8 @@ class AirPlaySpeaker(AirPlayPlayer):
         if (owner := self.owner) is None:
             return
         if state == PlaybackState.IDLE and any(
-            speaker is not self and speaker.stream and speaker.stream.running
-            for speaker in owner.speakers
+            endpoint is not self and endpoint.stream and endpoint.stream.running
+            for endpoint in owner.endpoints
         ):
             # the set still plays on another of its speakers
             return
