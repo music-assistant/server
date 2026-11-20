@@ -115,6 +115,11 @@ PLAYBACK_START_TIMEOUT_S = 3.0
 # _deferred_play_media_fire for why).
 PLAY_MEDIA_DEBOUNCE_S = 0.5
 
+# How long a stream that ended while Spotify plays keeps its claim before the Spotify
+# session is released: a renderer can drop its stream and reopen it at once (Sonos does
+# on start, within tens of milliseconds).
+STREAM_REOPEN_GRACE_S = 1.0
+
 # Ignore Spotify volume events for this long after a session becomes active, so
 # the player's own volume wins over the backend's initial value on (re)connect.
 INITIAL_VOLUME_GRACE_S = 3.0
@@ -147,8 +152,9 @@ class _PlayerDaemon:
     # in_use_by_player is the queue currently streaming us. Claimed in
     # on_source_selected (NOT in get_stream_details — that path also runs
     # from queue preload, where claiming would block a later cross-queue
-    # handoff). Released in on_source_unselected when the session id
-    # matches, or in _clear_active_player on the backend's 'inactive' event.
+    # handoff). Released by on_source_unselected when the session id matches
+    # (after a grace period while Spotify plays), or in _clear_active_player
+    # on the backend's 'inactive' event.
     in_use_by_player: str | None = None
     # active_session_id is the controller-provided token for the current
     # stream request — used to reject stale on_source_unselected callbacks
@@ -175,6 +181,9 @@ class _PlayerDaemon:
     # slow player can hold it for up to 10s), so a resume is never killed by a
     # stop landing late.
     pending_pause_stop_task: asyncio.Task[None] | None = None
+    # holds the deferred release of a stream that ended while Spotify was playing;
+    # a new stream claiming the source within the grace period cancels it.
+    pending_release_task: asyncio.Task[None] | None = None
     last_session_active_time: float = 0
     last_volume_sent: int | None = None
     # Last context/track URIs seen on the event stream. Used to take playback
@@ -484,6 +493,7 @@ class SpotifyConnectProvider(PluginProvider):
         # already-replaced session id lets on_source_unselected's stale-guard
         # reject that teardown — otherwise it releases the Spotify session this
         # handover is about to use.
+        self._cancel_pending_release(daemon)
         daemon.in_use_by_player = owner_player_id
         daemon.active_session_id = stream_session_id
         daemon.active_player_id = active_player_id
@@ -562,20 +572,12 @@ class SpotifyConnectProvider(PluginProvider):
         # the live claim of the new stream.
         if daemon.active_session_id != stream_session_id:
             return
-        daemon.active_session_id = None
-        if daemon.in_use_by_player == owner_player_id:
-            daemon.in_use_by_player = None
         if daemon.playing:
-            # MA-side stop/queue-clear: release the Spotify session so the app
-            # drops the device as its playback target — the daemon would
-            # otherwise keep playing into a pipe nobody consumes and the app
-            # would stay tethered to the device. (Teardowns caused by a
-            # Spotify-side pause, deselect or a player handoff never reach
-            # here: those cleared the playing flag or replaced the session id first.)
-            try:
-                await daemon.backend.deactivate()
-            except Exception as err:  # noqa: BLE001 - releasing the session is best effort
-                self.logger.debug("Failed to release Spotify session on stream teardown: %s", err)
+            daemon.pending_release_task = self.mass.create_task(
+                self._deferred_release(daemon, owner_player_id, stream_session_id)
+            )
+            return
+        await self._release_stream_claim(daemon, owner_player_id, stream_session_id)
 
     async def on_source_released(self, source_id: str, player_id: str) -> None:
         """Release the Spotify session when a player is done with this source."""
@@ -809,11 +811,16 @@ class SpotifyConnectProvider(PluginProvider):
         daemon.stop_called = True
         pending_tasks = [
             task
-            for task in (daemon.pending_play_media_task, daemon.pending_pause_stop_task)
+            for task in (
+                daemon.pending_play_media_task,
+                daemon.pending_pause_stop_task,
+                daemon.pending_release_task,
+            )
             if task is not None and not task.done()
         ]
         self._cancel_pending_play_media(daemon)
         self._cancel_pending_pause_stop(daemon)
+        self._cancel_pending_release(daemon)
         # await the cancelled tasks so no late player command outlives the daemon
         for task in pending_tasks:
             with suppress(asyncio.CancelledError):
@@ -1098,6 +1105,43 @@ class SpotifyConnectProvider(PluginProvider):
                 err,
             )
             await self.on_source_released(daemon.player_id, target_player_id)
+
+    async def _deferred_release(
+        self, daemon: _PlayerDaemon, owner_player_id: str, stream_session_id: str
+    ) -> None:
+        """Release the stream's claim after the grace period, unless a new stream took it."""
+        await asyncio.sleep(STREAM_REOPEN_GRACE_S)
+        # past the wait the release runs to completion, a new claim no longer cancels it
+        daemon.pending_release_task = None
+        await self._release_stream_claim(daemon, owner_player_id, stream_session_id)
+
+    async def _release_stream_claim(
+        self, daemon: _PlayerDaemon, owner_player_id: str, stream_session_id: str
+    ) -> None:
+        """Release an ended stream's claim, and the Spotify session while it still plays."""
+        if daemon.active_session_id != stream_session_id:
+            return
+        daemon.active_session_id = None
+        if daemon.in_use_by_player == owner_player_id:
+            daemon.in_use_by_player = None
+        if daemon.playing:
+            # MA-side stop/queue-clear: release the Spotify session so the app
+            # drops the device as its playback target — the daemon would
+            # otherwise keep playing into a pipe nobody consumes and the app
+            # would stay tethered to the device. (Teardowns caused by a
+            # Spotify-side pause, deselect or a player handoff never reach
+            # here: those cleared the playing flag or replaced the session id first.)
+            try:
+                await daemon.backend.deactivate()
+            except Exception as err:  # noqa: BLE001 - releasing the session is best effort
+                self.logger.debug("Failed to release Spotify session on stream teardown: %s", err)
+
+    def _cancel_pending_release(self, daemon: _PlayerDaemon) -> None:
+        """Cancel the deferred release of an ended stream, if still waiting."""
+        task = daemon.pending_release_task
+        if task is not None and not task.done():
+            task.cancel()
+        daemon.pending_release_task = None
 
     def _clear_active_player(self, daemon: _PlayerDaemon) -> None:
         """Clear the active player and reset playback state when a session ends."""
