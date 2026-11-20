@@ -453,6 +453,38 @@ def _duration_tolerance(length: float, *, estimated: bool = False) -> float:
     return tolerance
 
 
+def _take_source_length(
+    streamdetails: StreamDetails,
+    ffmpeg_proc: FFMpeg,
+    *,
+    approximate_seek: bool,
+) -> bool:
+    """
+    Take the length ffmpeg read from the source where the item's own is missing or off.
+
+    :param streamdetails: The item's stream details.
+    :param ffmpeg_proc: The process that has read the source's header.
+    :param approximate_seek: Whether ffmpeg resumed the item by a seek by byte offset.
+    :return: Whether the length that was taken is only ffmpeg's estimate.
+    """
+    probed = ffmpeg_proc.parsed_duration
+    if probed is None:
+        return False
+    if not streamdetails.duration:
+        streamdetails.duration = probed
+        return ffmpeg_proc.duration_estimated
+    if (
+        approximate_seek
+        and probed
+        and not ffmpeg_proc.duration_estimated
+        and abs(probed - streamdetails.duration) > _duration_tolerance(streamdetails.duration)
+    ):
+        # nothing measured after a seek by byte offset can be trusted, so the length of
+        # the file as ffmpeg read it from its header stands in
+        streamdetails.duration = probed
+    return False
+
+
 def _store_measured_duration(
     streamdetails: StreamDetails,
     delivered_seconds: float,
@@ -5267,6 +5299,7 @@ class StreamsAudio:
 
         # skip a remote MP3's ID3 tag on every launch and handle seek support
         ffmpeg_seek_position = 0
+        approximate_seek = False
         ffmpeg_input_format = arriving_audio_format(streamdetails)
         if streamdetails.duration and streamdetails.allow_seek:
             await self._add_remote_mp3_input_args(
@@ -5355,9 +5388,9 @@ class StreamsAudio:
                     # Some providers omit (or report 0 for) the item duration; ffmpeg can
                     # usually probe it from the source. Only apply when missing so we
                     # don't clobber an accurate provider value with a rounded one.
-                    if ffmpeg_proc.parsed_duration is not None and not streamdetails.duration:
-                        streamdetails.duration = ffmpeg_proc.parsed_duration
-                        duration_estimated = ffmpeg_proc.duration_estimated
+                    duration_estimated = _take_source_length(
+                        streamdetails, ffmpeg_proc, approximate_seek=approximate_seek
+                    )
                     logger.debug(
                         "First chunk received after %.2f seconds (codec detected: %s)",
                         mass.loop.time() - stream_start,
