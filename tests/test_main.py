@@ -213,7 +213,12 @@ def startup(monkeypatch: pytest.MonkeyPatch) -> Iterator[Startup]:
     monkeypatch.setattr(resource, "getrlimit", MagicMock(return_value=(64, 64)))
     monkeypatch.setattr(resource, "setrlimit", MagicMock())
     with patch.object(main_module, "MusicAssistant", return_value=mass) as mass_class:
-        yield Startup(mass, mass_class, setup_logger)
+        signal_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+        try:
+            yield Startup(mass, mass_class, setup_logger)
+        finally:
+            for sig, handler in signal_handlers.items():
+                signal.signal(sig, handler)
 
 
 def _run_main(monkeypatch: pytest.MonkeyPatch, data_dir: Path, *argv: str) -> None:
