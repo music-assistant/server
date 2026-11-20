@@ -74,6 +74,8 @@ from .helpers import (
     convert_airplay_volume,
     get_cli_binary,
     get_model_info,
+    get_protocol_id,
+    is_airplay_record_of,
     is_apple_device,
     parse_set_membership,
     probe_audio_formats,
@@ -83,6 +85,8 @@ from .sendspin_bridge import SendspinBridgeManager
 from .speaker import AirPlaySpeaker
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from music_assistant_models.config_entries import ProviderConfig
 
 # Marker the `cliairplay --ptp-daemon` process prints once it has bound the
@@ -404,11 +408,11 @@ class AirPlayProvider(PlayerProvider):
         elif "@" in info.name:
             raw_id, display_name = info.name.split(".")[0].split("@", 1)
         elif deviceid := info.decoded_properties.get("deviceid"):
-            raw_id = deviceid.replace(":", "")
+            raw_id = deviceid
             display_name = info.name.split(".")[0]
         else:
             return
-        protocol_id = f"ap{raw_id.lower()}"
+        protocol_id = get_protocol_id(raw_id)
         if pair_id := self._note_pair_record(protocol_id, info):
             await self._replay_pair_records(pair_id, protocol_id)
         if (membership := self._membership_of(protocol_id, info)) and membership.position == 0:
@@ -574,6 +578,14 @@ class AirPlayProvider(PlayerProvider):
             airplay_discovery_info = await self.mass.discovery.async_find_mdns_service(
                 AIRPLAY_DISCOVERY_TYPE, display_name, timeout=10.0
             )
+            # the name can belong to another device: mDNS renames the instance of a device
+            # that advertises a name already taken, but not the name in its RAOP record
+            if airplay_discovery_info is None or not is_airplay_record_of(
+                airplay_discovery_info, protocol_id
+            ):
+                airplay_discovery_info = await self._find_cached_service(
+                    AIRPLAY_DISCOVERY_TYPE, lambda info: is_airplay_record_of(info, protocol_id)
+                )
         else:
             # AirPlay service discovered - try to also find the RAOP service
             self.logger.debug("Discovered AirPlay service for %s", display_name)
@@ -1114,6 +1126,17 @@ class AirPlayProvider(PlayerProvider):
         player_addresses: set[str],
     ) -> AsyncServiceInfo | None:
         """Find a cached mDNS service sharing an address with the AirPlay endpoint."""
+        return await self._find_cached_service(
+            service_type,
+            lambda info: not player_addresses.isdisjoint(info.parsed_addresses()),
+        )
+
+    async def _find_cached_service(
+        self,
+        service_type: str,
+        matches: Callable[[AsyncServiceInfo], bool],
+    ) -> AsyncServiceInfo | None:
+        """Find a cached mDNS service of the given type that the predicate accepts."""
         service_type_lower = service_type.lower()
         for mdns_name in set(self.mass.discovery.aiozc.zeroconf.cache.cache):
             if service_type_lower not in mdns_name or mdns_name == service_type_lower:
@@ -1124,7 +1147,7 @@ class AirPlayProvider(PlayerProvider):
                 3000,
             ):
                 continue
-            if not player_addresses.isdisjoint(discovery_info.parsed_addresses()):
+            if matches(discovery_info):
                 return discovery_info
         return None
 
