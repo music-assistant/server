@@ -29,6 +29,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT
 
 from .constants import (
     AUDIOBOOK_CHAPTERS_PAGE_SIZE,
@@ -627,7 +628,7 @@ class DeezerMediaManager:
         if result is None:
             return []
         all_edges = list(result.albums.edges)
-        while result.albums.page_info.has_next_page:
+        while result.albums.page_info.has_next_page and len(all_edges) < ARTIST_ALBUMS_LIMIT:
             result = await self.provider.gql_client.get_artist(
                 artist_id=prov_artist_id,
                 albums_after=result.albums.page_info.end_cursor,
@@ -636,7 +637,9 @@ class DeezerMediaManager:
                 break
             all_edges.extend(result.albums.edges)
         return [
-            parse_album(self.provider, edge.node) for edge in all_edges if edge.node is not None
+            parse_album(self.provider, edge.node)
+            for edge in all_edges[:ARTIST_ALBUMS_LIMIT]
+            if edge.node is not None
         ]
 
     async def get_artist_topalbums(self, prov_artist_id: str) -> list[Album]:

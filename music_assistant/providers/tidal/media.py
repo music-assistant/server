@@ -13,6 +13,8 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import SearchResults
 
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT
+
 from .constants import FAVORITE_TRACKS_PLAYLIST_ID, PAGES_MIX, PLAYLISTS, SKIPPABLE_ITEM_ERRORS
 from .parsers import (
     parse_favorite_tracks_playlist,
@@ -226,7 +228,9 @@ class TidalMediaManager:
             replace_media="albums",
         ):
             albums.extend(_parse_items(parse_album_v2, self.provider, doc))
-        return albums
+            if len(albums) >= ARTIST_ALBUMS_LIMIT:
+                break
+        return albums[:ARTIST_ALBUMS_LIMIT]
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get artist top tracks."""
