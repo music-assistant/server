@@ -48,6 +48,7 @@ from .constants import (
     DASHBOARD_KEEPALIVE_SUFFIXES,
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
+    get_cast_output_codec_entry,
 )
 from .helpers import CastStatusListener, ChromecastInfo, is_google_device
 from .receiver_commands import MassCastCommandController
@@ -154,14 +155,17 @@ class ChromecastPlayer(Player):
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        output_codec_entry = get_cast_output_codec_entry(self.cast_info.model_name)
         if self.type == PlayerType.GROUP:
             return [
+                output_codec_entry,
                 *CAST_PLAYER_CONFIG_ENTRIES,
                 CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
         return [
+            output_codec_entry,
             *CAST_PLAYER_CONFIG_ENTRIES,
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             CONF_ENTRY_SAMPLE_RATES_CAST,
