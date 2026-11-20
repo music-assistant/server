@@ -530,6 +530,14 @@ def install_mixer(
     monkeypatch.setattr(rig.audio.smart_fades_mixer, "mix", _concat_mix)
 
 
+async def given_up(buffer: AudioBuffer) -> bool:
+    """Return whether the buffer gave its audio up, once that release has run."""
+    if (release := buffer._release_task) is None:
+        return False
+    await release
+    return buffer.cancelled and buffer.seconds_available == 0
+
+
 async def drain(stream: AsyncGenerator[bytes]) -> int:
     """Consume a stream as a player does and return how many bytes it delivered."""
     emitted = 0

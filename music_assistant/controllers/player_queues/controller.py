@@ -2036,16 +2036,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         Record an audio buffer that was made for an item of a queue.
 
-        The buffer gets to know the queue and the item it was made for, and that queue keeps
-        it on record for as long as it holds audio.
+        The buffer gets to know the queue it was made for, and that queue keeps it on record
+        for as long as it holds audio.
 
         :param queue_item: The queue item the buffer was made for.
         :param audio_buffer: The buffer, before its source starts to fill it.
         """
         audio_buffer.queue_id = queue_item.queue_id
-        audio_buffer.queue_item_id = queue_item.queue_item_id
         queue_data = self._queue_data[queue_item.queue_id]
-        self._audio_buffers(queue_data).append((queue_item, audio_buffer))
+        self._audio_buffers(queue_data).append(audio_buffer)
 
     def wants_audio(self, queue_item: QueueItem) -> bool:
         """
@@ -2086,7 +2085,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         if (queue_data := self._queue_data.get(queue_id)) is None:
             return
-        for _queue_item, audio_buffer in self._audio_buffers(queue_data):
+        for audio_buffer in self._audio_buffers(queue_data):
             audio_buffer.release_if_unneeded()
 
     def keeps_stream_slot(self, audio_buffer: AudioBuffer, provider_instance: str) -> bool:
@@ -3038,17 +3037,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 return True
         return False
 
-    def _audio_buffers(self, queue_data: PlayerQueueData) -> list[tuple[QueueItem, AudioBuffer]]:
+    def _audio_buffers(self, queue_data: PlayerQueueData) -> list[AudioBuffer]:
         """
-        Return the buffers on a queue's record that still hold audio, each with its item.
+        Return the buffers on a queue's record that still hold audio.
 
-        The entries of buffers that were cleared are dropped from the record.
+        Buffers that were cleared are dropped from the record.
 
         :param queue_data: The data of the queue.
         """
-        # a buffer that was cleared stays cancelled, so its entry is of no use any more
+        # a buffer that was cleared stays cancelled, so it is of no use any more
         queue_data.audio_buffers = [
-            entry for entry in queue_data.audio_buffers if not entry[1].cancelled
+            audio_buffer for audio_buffer in queue_data.audio_buffers if not audio_buffer.cancelled
         ]
         return queue_data.audio_buffers
 
@@ -3077,9 +3076,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.cancel_task(f"preload_next_item_{queue_id}")
         self.mass.cancel_timer(f"enqueue_next_item_{queue_id}")
         self.mass.cancel_task(f"enqueue_next_item_{queue_id}")
-        # a prewarm still running would attach its buffer after the teardown has run,
-        # leaving a stopped queue holding a provider's stream. Cancelled here rather than
-        # alongside that teardown, where the task id can already belong to a new session.
+        # a prewarm still running would attach its buffer after the queue's audio was released,
+        # leaving the queue holding a provider's stream (a detached player keeps its session).
+        # Cancelled here rather than alongside the teardown, where the task id can already
+        # belong to a new session.
         self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
         self._set_transitioning(queue_id, False)
 

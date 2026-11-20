@@ -216,15 +216,6 @@ async def test_a_replace_keeps_the_old_queue_playing_until_the_pool_is_in() -> N
     play_index.assert_awaited_once_with("q1", 0)
 
 
-@pytest.fixture
-async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[SlotRig]:
-    """Build a rig with real audio buffers over a provider that allows one stream."""
-    monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
-    rig = SlotRig()
-    yield rig
-    await rig.close()
-
-
 def _playing_with_the_next_track_fetched(rig: SlotRig) -> list[QueueItem]:
     """Play the first of four tracks on the rig, with the second one fetched by the player."""
     tracks = rig.play("track 0", "track 1", "track 2", "track 3")

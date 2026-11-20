@@ -15,7 +15,6 @@ from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
-import music_assistant.controllers.streams.audio as audio_mod
 import music_assistant.controllers.streams.audio_buffer as buffer_mod
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -29,12 +28,12 @@ from tests.controllers.streams.stream_slot_rig import (
     SESSION_ID,
     SlotRig,
     allow_starts,
+    given_up,
     realtime_capture,
 )
 
 if TYPE_CHECKING:
     from music_assistant.controllers.players import PlayerController
-    from music_assistant.controllers.streams.audio_buffer import AudioBuffer
     from music_assistant.mass import MusicAssistant
 
 
@@ -367,15 +366,6 @@ async def test_prepare_next_waits_for_capacity_as_long_as_the_caller_allows() ->
     )
 
 
-@pytest.fixture
-async def rig(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[SlotRig]:
-    """Build the rig with every music source open to the queue's playback."""
-    monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
-    rig = SlotRig()
-    yield rig
-    await rig.close()
-
-
 async def _prepare_and_hold(
     rig: SlotRig, playing: QueueItem
 ) -> tuple[asyncio.Task[None], asyncio.Event]:
@@ -403,14 +393,6 @@ async def _prepare_and_hold(
     return preparation, first_audio
 
 
-async def _given_up(buffer: AudioBuffer) -> bool:
-    """Return whether the buffer gave its audio up, once that release has run."""
-    if (release := buffer._release_task) is None:
-        return False
-    await release
-    return buffer.cancelled and buffer.seconds_available == 0
-
-
 @pytest.mark.parametrize(
     ("still_next", "expect_released"),
     [(False, True), (True, False)],
@@ -431,7 +413,7 @@ async def test_an_aborted_prepare_releases_its_half_filled_source(
     with pytest.raises(asyncio.CancelledError):
         await preparation
 
-    assert await _given_up(half_filled) is expect_released
+    assert await given_up(half_filled) is expect_released
     assert rig.fills(half_filled) is not expect_released
     assert rig.slot_free() is expect_released
 
@@ -589,7 +571,7 @@ async def test_prepare_next_releases_a_buffer_whose_item_left_the_queue_mid_fill
             QUEUE_ID, [rig.track("track 5")], QueueOption.REPLACE_NEXT
         )
 
-    assert await _given_up(filling)
+    assert await given_up(filling)
     await asyncio.wait_for(preparation, 1)
     first_audio.set()
     await rig.settle()
