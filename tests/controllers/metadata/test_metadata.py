@@ -254,21 +254,27 @@ async def test_track_lyrics_prefers_lrc_from_later_provider(
     first = _lyrics_provider(MediaItemMetadata(lyrics="first plain"))
     second = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
     track = create_track("spotify", "t1")
-    track.metadata.lyrics = "track plain"
 
     with patch.object(mass_minimal, "get_providers", return_value=[first, second]):
         result = await metadata_controller.get_track_lyrics(track)
 
-    assert result == ("track plain", "[00:01.00]sync")
+    assert result == ("first plain", "[00:01.00]sync")
     first.get_track_metadata.assert_awaited_once()
     second.get_track_metadata.assert_awaited_once()
-    lookup_track = first.get_track_metadata.await_args.args[0]
-    assert lookup_track is track
-    assert (lookup_track.metadata.lyrics, lookup_track.metadata.lrc_lyrics) == (
-        "track plain",
-        None,
+    first_lookup = first.get_track_metadata.await_args.args[0]
+    second_lookup = second.get_track_metadata.await_args.args[0]
+    assert first_lookup is not track
+    assert second_lookup is not track
+    assert first_lookup is not second_lookup
+    assert (first_lookup.item_id, first_lookup.name, first_lookup.provider) == (
+        track.item_id,
+        track.name,
+        track.provider,
     )
-    assert track.metadata.lyrics == "track plain"
+    assert first_lookup.metadata.lyrics is None
+    assert second_lookup.metadata.lyrics == "first plain"
+    assert second_lookup.metadata.lrc_lyrics is None
+    assert track.metadata.lyrics is None
 
 
 async def test_track_lyrics_passes_full_track_to_metadata_providers(
@@ -305,7 +311,16 @@ async def test_track_lyrics_passes_full_track_to_metadata_providers(
 
     assert result == ("own provider plain", "[00:01.00]sync")
     metadata_provider.get_track_metadata.assert_awaited_once()
-    assert metadata_provider.get_track_metadata.await_args.args[0] is full_track
+    lookup_track = metadata_provider.get_track_metadata.await_args.args[0]
+    assert lookup_track is not full_track
+    assert (lookup_track.item_id, lookup_track.name, lookup_track.provider) == (
+        full_track.item_id,
+        full_track.name,
+        full_track.provider,
+    )
+    assert lookup_track.metadata.lyrics == "own provider plain"
+    assert full_track.metadata.lyrics == "own provider plain"
+    assert track.metadata.lyrics is None
 
 
 async def test_track_lyrics_returns_first_plain_result_after_searching_providers(

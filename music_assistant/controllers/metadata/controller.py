@@ -8,7 +8,8 @@ import random
 import sqlite3
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass
+from copy import copy
+from dataclasses import dataclass, replace
 from time import time
 from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, uuid5
@@ -552,7 +553,9 @@ class MetaDataController(
             if ProviderFeature.LYRICS not in provider.supported_features:
                 continue
             try:
-                metadata = await provider.get_track_metadata(full_track)
+                lookup_track = copy(full_track)
+                lookup_track.metadata = replace(full_track.metadata, lyrics=lyrics[0])
+                metadata = await provider.get_track_metadata(lookup_track)
             except Exception as err:
                 # a provider failure must not abort the lookup — skip to the next provider
                 self.logger.warning(
