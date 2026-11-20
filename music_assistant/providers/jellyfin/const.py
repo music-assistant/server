@@ -48,7 +48,9 @@ USER_DATA_KEY_IS_FAVORITE: Final = "IsFavorite"
 
 MEDIA_TYPE_AUDIO: Final = "Audio"
 
-SUPPORTED_CONTAINER_FORMATS: Final = "ogg,flac,mp3,aac,mpeg,alac,wav,aiff,wma,m4a,m4b,dsf,opus,wv"
+SUPPORTED_CONTAINER_FORMATS: Final = (
+    "ogg,flac,mp3,aac,mpeg,alac,wav,aiff,wma,asf,m4a,m4b,dsf,opus,wv"
+)
 
 ARTIST_FIELDS: Final = [
     ItemFields.Overview,
