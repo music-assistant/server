@@ -157,7 +157,7 @@ class MediaAssistantPlayer(PlayerProtocol):
             self._attr_elapsed_time = None
             self._attr_elapsed_time_last_updated = None
             self.update_state()
-        except Exception:  # noqa: BLE001 - device call, any failure is only logged
+        except Exception:  # noqa: BLE001 - a failed command is only logged
             self.logger.error("Failed to send stop signal to: %s", self.name)
 
     async def pause(self) -> None:
@@ -235,7 +235,7 @@ class MediaAssistantPlayer(PlayerProtocol):
             self._position_last_moved = time.time()
             self._stream_end_logged = False
             self.update_state()
-        except Exception:  # noqa: BLE001 - device call, any failure is only logged
+        except Exception:  # noqa: BLE001 - a failed command is only logged
             self.logger.error("Failed to Play Media on: %s", self.name)
             return
 
@@ -407,7 +407,7 @@ class MediaAssistantPlayer(PlayerProtocol):
                             "isLive": "true",
                         },
                     )
-            except Exception:  # noqa: BLE001 - poll must carry on
+            except Exception:  # noqa: BLE001 - a failed media state read must not fail the poll
                 self.logger.warning("Failed to update media state for: %s", self.name)
 
         self.update_state()

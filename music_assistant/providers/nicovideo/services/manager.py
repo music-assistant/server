@@ -126,7 +126,7 @@ class NicovideoServiceManager:
         try:
             async with self.niconico_api_throttler.acquire():
                 return await asyncio.to_thread(func, *args, **kwargs)
-        except Exception as err:  # noqa: BLE001 - third-party library with wide errors
+        except Exception as err:  # noqa: BLE001 - niconico.py raises many error types
             operation = func.__name__ if hasattr(func, "__name__") else "unknown_function"
             self._log_call_exception(operation, err)
             return None

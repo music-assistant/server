@@ -165,7 +165,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
         temp_speaker = Speaker(ip_address)
         try:
             await temp_speaker.connect()
-        except Exception as err:  # noqa: BLE001 - device library with wide errors
+        except Exception as err:  # noqa: BLE001 - pywam raises many error types
             self.logger.warning("Failed to connect to player at %s: %s", ip_address, err)
             return
 
@@ -174,7 +174,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
             attrs = StateSyncMapper.create_speaker_attributes(temp_speaker)
             if not attrs.mac:
                 raise ConnectionError("Could not retrieve MAC address from speaker")  # noqa: TRY301 - handled by except below
-        except Exception as err:  # noqa: BLE001 - device library with wide errors
+        except Exception as err:  # noqa: BLE001 - pywam raises many error types
             self.logger.warning("Failed to set up player at %s: %s", ip_address, err)
             await temp_speaker.disconnect()
             return
