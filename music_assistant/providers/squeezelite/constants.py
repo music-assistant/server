@@ -15,6 +15,7 @@ DEFAULT_SLIMPROTO_PORT = 3483
 CONF_DISPLAY = "display"
 CONF_VISUALIZATION = "visualization"
 CONF_STORED_VOLUME = "stored_volume"
+CONF_STORED_POWER = "stored_power"
 # category for caching previous player state (bumped to invalidate old format)
 CACHE_CATEGORY_PREV_STATE = 1
 

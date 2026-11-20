@@ -36,6 +36,7 @@ from music_assistant.providers.sendspin.bridge_manager import evaluate_bridge_of
 from .constants import (
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
+    CONF_STORED_POWER,
     CONF_STORED_VOLUME,
     REPEATMODE_BY_LMS_VALUE,
     REPEATMODE_MAP,
@@ -83,6 +84,8 @@ class SqueezelitePlayer(PlayerProtocol):
 
     # the Sendspin bridge of this player while it has one, set by that bridge
     sendspin_bridge: SendspinSqueezeliteBridge | None = None
+    # set once the saved power state is restored: the state a player connects with is not saved
+    _power_tracking: bool = False
 
     def __init__(
         self,
@@ -159,6 +162,7 @@ class SqueezelitePlayer(PlayerProtocol):
         # carries a volume from the legacy cache over before that entry expires; only after the
         # attach, which creates the record of a new protocol
         self._store_volume()
+        await self._restore_power()
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
@@ -300,7 +304,12 @@ class SqueezelitePlayer(PlayerProtocol):
         # Update player state from slim player
         self._attr_available = self.client.connected
         self._attr_name = self.client.name
+        was_powered = self._attr_powered
         self._attr_powered = self.client.powered
+        if self._power_tracking and self.client.connected and self._attr_powered != was_powered:
+            self.mass.config.set_protocol_value(
+                self.protocol_id, CONF_STORED_POWER, self._attr_powered
+            )
         old_state = self._attr_playback_state
         self._attr_playback_state = STATE_MAP[self.client.state]
         self._attr_volume_level = self.client.volume_level
@@ -592,6 +601,15 @@ class SqueezelitePlayer(PlayerProtocol):
         """Drop an old-stream heartbeat that landed before the flush."""
         self._attr_elapsed_time = self.client.elapsed_seconds
         self._attr_elapsed_time_last_updated = time.time()
+
+    async def _restore_power(self) -> None:
+        """Power the player on again, unless it was switched off before it disconnected."""
+        # straight to the device: Music Assistant's power command would also apply auto play
+        if PlayerFeature.POWER not in self.supported_features:
+            return
+        if self.mass.config.get_protocol_value(self.protocol_id, CONF_STORED_POWER, True):
+            await self.client.power(True)
+        self._power_tracking = True
 
     def _store_volume(self) -> None:
         """Keep the current volume in the protocol config so it survives a reconnect."""
