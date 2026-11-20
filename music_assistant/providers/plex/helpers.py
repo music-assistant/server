@@ -123,7 +123,7 @@ def _library_tracks_progress(section: PlexLibrarySection) -> bool:
             "Library '%s' not flagged as resumable (enableTrackOffsets absent or disabled)",
             section_title,
         )
-    except Exception as err:
+    except (PlexApiException, requests.exceptions.RequestException) as err:
         LOGGER.warning(
             "Failed to read library settings for '%s': %s",
             getattr(section, "title", "<unknown>"),

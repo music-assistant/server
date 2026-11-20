@@ -39,6 +39,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    MusicAssistantError,
     SetupFailedError,
 )
 from music_assistant_models.media_items import (
@@ -1067,7 +1068,11 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                 "Retrieved %d similar tracks for track %s", len(tracks), prov_track_id
             )
             return tracks
-        except Exception as err:
+        except (
+            MusicAssistantError,
+            plexapi.exceptions.PlexApiException,
+            requests.exceptions.RequestException,
+        ) as err:
             self.logger.warning("Error getting similar tracks for %s: %s", prov_track_id, err)
         return []
 
@@ -1236,7 +1241,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             for db_row in rows:
                 try:
                     await controller.remove_provider_mappings(db_row["item_id"], self.instance_id)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - one stale mapping must not stop the cleanup
                     self.logger.warning(
                         "Failed to remove stale %s provider mapping for %s: %s",
                         media_type.value,
@@ -2286,7 +2291,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                             item.type,
                             hub.title,
                         )
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - one unparsable item must not drop the whole hub
                     self.logger.debug(
                         "Failed to parse item (type: %s) in hub '%s': %s",
                         getattr(item, "type", "unknown"),
