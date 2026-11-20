@@ -161,6 +161,15 @@ DSP_IRS_DIRNAME: Final[str] = "dsp_irs"
 # validating against this keeps a caller-supplied id from escaping the storage dir
 DSP_IR_ID_RE: Final = re.compile(r"^[a-z0-9]+$")
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
+# How a multi-channel player splits the bass between its subwoofer and its main speakers.
+CONF_CROSSOVER_FREQUENCY: Final[str] = "crossover_frequency"
+CONF_SUBWOOFER_LEVEL: Final[str] = "subwoofer_level"
+CONF_SUBWOOFER_OWN_CROSSOVER: Final[str] = "subwoofer_own_crossover"
+CONF_HIGH_PASS_MAIN_SPEAKERS: Final[str] = "high_pass_main_speakers"  # noqa: S105 - config key
+DEFAULT_CROSSOVER_FREQUENCY: Final[int] = 80
+DEFAULT_SUBWOOFER_LEVEL: Final[int] = 0
+DEFAULT_SUBWOOFER_OWN_CROSSOVER: Final[bool] = False
+DEFAULT_HIGH_PASS_MAIN_SPEAKERS: Final[bool] = True
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_FLOW_MODE_SAMPLE_RATE: Final[str] = "flow_mode_sample_rate"
 CONF_LOG_LEVEL: Final[str] = "log_level"

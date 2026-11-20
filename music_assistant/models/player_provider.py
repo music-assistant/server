@@ -11,7 +11,7 @@ from music_assistant_models.errors import PlayerUnavailableError
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from music_assistant_models.enums import SpeakerChannel
+    from music_assistant_models.enums import ChannelLayout, SpeakerChannel
 
     from music_assistant.models.player import Player
     from music_assistant.models.player_protocol import PlayerProtocol
@@ -103,6 +103,14 @@ class PlayerProvider(Provider):
         :param name: Name of the new player.
         :param speakers: The channel each speaker plays, by the id of this provider's
             protocol of that speaker.
+        """
+        raise NotImplementedError
+
+    def get_multi_channel_layouts(self) -> dict[ChannelLayout, tuple[SpeakerChannel, ...]]:
+        """
+        Return the layouts this provider combines speakers into, each with its channels in order.
+
+        Only called for providers that support the CREATE_MULTI_CHANNEL_PLAYER feature.
         """
         raise NotImplementedError
 
