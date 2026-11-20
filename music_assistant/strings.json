@@ -487,7 +487,7 @@
     "sync_options": "Sync/import options",
     "builtin_playlists": "Builtin Playlists",
     "web_player": "Web Player",
-    "playback": "Queue Playback",
+    "playback": "Playback",
     "source_selection": "Source selection",
     "items_to_select": "Items to select",
     "default_enqueue_option": "Default enqueue option",

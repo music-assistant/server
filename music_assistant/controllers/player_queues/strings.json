@@ -24,7 +24,7 @@
       },
       "option_descriptions": {
         "similar_artists": "Plays a similar artist of the last track's artist, the same way as playing that artist.",
-        "global": "Follow the Player Queues default."
+        "global": "Follow the default for all players."
       },
       "disabled_reasons": {
         "similar": "No music source or metadata source that can supply similar tracks is currently available.",
@@ -55,7 +55,7 @@
         "global": "Global"
       },
       "option_descriptions": {
-        "global": "Follow the Player Queues default."
+        "global": "Follow the default for all players."
       },
       "disabled_reasons": {
         "smart_crossfade": "Not available on this server: smart crossfade needs the smart fades analysis provider and a larger audio buffer (balanced or higher)."
@@ -73,7 +73,7 @@
         "global": "Global"
       },
       "option_descriptions": {
-        "global": "Follow the Player Queues default."
+        "global": "Follow the default for all players."
       }
     },
     "smart_shuffle_optimize_smart_fades": {
@@ -85,7 +85,7 @@
         "global": "Global"
       },
       "option_descriptions": {
-        "global": "Follow the Player Queues default."
+        "global": "Follow the default for all players."
       }
     },
     "smart_shuffle_song_recency": {
@@ -139,7 +139,7 @@
         "global": "Global"
       },
       "option_descriptions": {
-        "global": "Follow the Player Queues default."
+        "global": "Follow the default for all players."
       }
     },
     "pause_timeout": {
