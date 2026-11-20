@@ -144,6 +144,7 @@ def test_no_restart(condition: str) -> None:
     """Only the current, playing session of a player that is on restarts."""
     fake = _fake_controller()
     queue_data = fake._queue_data[QUEUE_ID]
+    queue_data.queue.current_item.queue_item_id = "item-1"
     session_id = "session-1"
     if condition == "another_session":
         session_id = "session-0"
