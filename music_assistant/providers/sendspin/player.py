@@ -128,12 +128,14 @@ from .constants import (
     CONF_SOURCE_AUTOSTART_TARGET,
     CONF_SOURCE_INPUT_ACTION,
     CONF_SOURCE_INPUT_DECLINED,
+    CONF_SOURCE_NAME,
     CONF_VIRTUAL_PLAYER_OWNER,
     CONNECT_METHOD_PAIR,
     CONNECT_METHOD_UNPAIRED,
     CONNECT_METHOD_UNPAIRED_WITH_INPUT,
     CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT,
     DEFAULT_SENDSPIN_STATIC_DELAY,
+    DEFAULT_SOURCE_NAME,
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
@@ -548,7 +550,17 @@ class SendspinBasePlayer(PlayerProtocol):
         entries = await super().get_config_entries()
         entries.extend(await self._get_security_config_entries())
         entries.extend(self._get_source_autostart_config_entries())
-        if "source" in self._negotiated_families():
+        families = self._negotiated_families()
+        if "source" in families:
+            # a device that only captures is named by its player, which is the input itself
+            if "player" in families:
+                entries.append(
+                    ConfigEntry(
+                        key=CONF_SOURCE_NAME,
+                        type=ConfigEntryType.STRING,
+                        default_value=DEFAULT_SOURCE_NAME,
+                    )
+                )
             entries.append(
                 ConfigEntry(
                     key=CONF_ALLOW_AUDIO_ANALYSIS,

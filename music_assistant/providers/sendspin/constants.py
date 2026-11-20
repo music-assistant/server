@@ -66,3 +66,7 @@ CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_DISABLE = "management_dynamic_pin_disable"
 # The player a line-in starts playing on when its client senses a signal.
 CONF_SOURCE_AUTOSTART_TARGET = "source_autostart_target"
 SOURCE_AUTOSTART_OFF = "off"
+
+# The name the user gives the line-in of a device that also plays.
+CONF_SOURCE_NAME = "source_name"
+DEFAULT_SOURCE_NAME = "Line-in"
