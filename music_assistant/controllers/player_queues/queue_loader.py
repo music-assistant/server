@@ -1436,7 +1436,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 queue.ended = False
             discarded = [] if option == QueueOption.REPLACE else queue_data.items[insert_at:]
             if queue_data.next_item_id_preparing in {item.queue_item_id for item in discarded}:
-                # a prewarm of an item the swap drops has nothing left to prepare
+                # a prewarm of an item the swap drops would otherwise go on with the item that
+                # takes its place
                 self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
             # the managed pool already interleaved the sources in a recency-aware order; load as-is,
             # in one swap of the items so no reader sees the queue without its tail

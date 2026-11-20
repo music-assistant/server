@@ -3076,9 +3076,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.cancel_task(f"preload_next_item_{queue_id}")
         self.mass.cancel_timer(f"enqueue_next_item_{queue_id}")
         self.mass.cancel_task(f"enqueue_next_item_{queue_id}")
-        # a prewarm still running has nothing left to prepare for a stopped queue. Cancelled
-        # here rather than alongside the teardown, where the task id can already belong to a
-        # new session.
+        # a prewarm still running would attach its buffer after the queue's audio was released,
+        # leaving the queue holding a provider's stream (a detached player keeps its session).
+        # Cancelled here rather than alongside the teardown, where the task id can already
+        # belong to a new session.
         self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
         self._set_transitioning(queue_id, False)
 
