@@ -3,8 +3,8 @@ Stream feeding for the Player Queues controller.
 
 Handles handing the next queue item to the player and preparing its audio: enqueuing the upcoming
 item on the player, preloading its stream details, warming the next track's AudioBuffer ahead of
-playback, and cleaning up stale buffers. Owns no per-queue state; it is mixed into the controller
-and reads/mutates the controller's `PlayerQueueData` records.
+playback, and releasing the audio of a queue that stops or is cleared. Owns no per-queue state; it
+is mixed into the controller and reads/mutates the controller's `PlayerQueueData` records.
 """
 
 from __future__ import annotations
@@ -23,10 +23,7 @@ from music_assistant_models.errors import (
     ResourceBusyError,
 )
 
-from music_assistant.constants import (
-    ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    VERBOSE_LOG_LEVEL,
-)
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
@@ -91,7 +88,6 @@ class StreamFeederMixin(_PlayerQueuesBase):
             return None
 
         async def _do_prepare() -> None:
-            prepared_item: QueueItem | None = None
             try:
                 try:
                     prepared_item = await self.load_next_queue_item(queue_id, queue_item_id)
@@ -99,12 +95,12 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     return
                 # unplayable items are skipped, so the prepared item can be a later one
                 queue_data.next_item_id_preparing = prepared_item.queue_item_id
-                # the queue can be replaced while the details are fetched, and audio warmed
-                # for an item that left it would sit on a buffer no cleanup reaches
+                # the queue can be replaced while the details are fetched: an item that left
+                # it no longer plays next, so it is neither prepared nor hinted to the source
+                # of the streamed item below
                 if self.get_item(queue_id, prepared_item.queue_item_id) is None:
                     return
-                # a stop releases the audio of its session once; what gets attached to a queue
-                # without a session after that stays until its inactivity timeout
+                # nor is anything prepared or hinted for a queue whose playback ended meanwhile
                 if queue_data.session_id is None:
                     return
                 if (streamed_item := self.get_item(queue_id, queue_item_id)) and (
@@ -138,32 +134,8 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     allow_provider_match=False,
                     stop_paused_queues=False,
                 )
-                # removal paths that do not cancel this task (replace_next, delete) can take
-                # the item off the queue while the buffer fills; the stale-buffer sweep walks
-                # only current items, so a buffer left here would sit until its inactivity
-                # timeout. The same goes for a queue whose session ended meanwhile. A session
-                # that rotated (a skip) owns the audio, and its stop releases it.
-                # Detached before releasing, as everywhere a buffer is cleared.
-                if (
-                    self.get_item(queue_id, prepared_item.queue_item_id) is None
-                    or queue_data.session_id is None
-                ):
-                    if (details := prepared_item.streamdetails) and (orphan := details.buffer):
-                        details.buffer = None
-                        await orphan.clear()
             except (AudioError, MediaNotFoundError) as err:
                 self.logger.debug("Failed to prepare next audio buffer: %s", err)
-            except asyncio.CancelledError:
-                # a replacement prepare aborted this one: release the half-filled source
-                # so its slot is not pinned until the inactivity sweep
-                if (
-                    prepared_item
-                    and (sd := prepared_item.streamdetails)
-                    and (buf := sd.buffer)
-                    and buf.is_buffering
-                ):
-                    await asyncio.shield(buf.clear())
-                raise
 
         # a call for the same item joins the preparation that is already running,
         # one for another item replaces it
@@ -463,49 +435,6 @@ class StreamFeederMixin(_PlayerQueuesBase):
             task_name=task_id,
             abort_existing=True,
         )
-
-    async def _cleanup_stale_queue_buffers(self, queue_id: str, current_index: int) -> None:
-        """
-        Clean up audio buffers for queue items that are no longer needed.
-
-        This clears buffers for items at index <= current_index - 2, keeping only:
-        - The previous track (current_index - 1)
-        - The current track (current_index)
-        - The next track (current_index + 1, handled by preloading)
-
-        :param queue_id: The queue ID to clean up buffers for.
-        :param current_index: The current playing index in the queue.
-        """
-        if current_index < 2:
-            return  # Nothing to clean up yet
-
-        queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
-        cleanup_threshold = current_index - 2
-        buffers_cleared = 0
-
-        for idx, item in enumerate(queue_items):
-            if idx > cleanup_threshold:
-                break  # No need to check further
-            if (streamdetails := item.streamdetails) and (buffer := streamdetails.buffer):
-                self.logger.log(
-                    VERBOSE_LOG_LEVEL,
-                    "Clearing stale audio buffer for queue item %s (index %d) in queue %s",
-                    item.name,
-                    idx,
-                    queue_id,
-                )
-                # detached before releasing, as in _cleanup_queue_audio_data
-                streamdetails.buffer = None
-                await buffer.clear()
-                buffers_cleared += 1
-
-        if buffers_cleared > 0:
-            self.logger.debug(
-                "Cleared %d stale audio buffer(s) for queue %s (items before index %d)",
-                buffers_cleared,
-                queue_id,
-                cleanup_threshold + 1,
-            )
 
     async def _cleanup_queue_audio_data(self, queue_id: str, session_id: str | None = None) -> None:
         """

@@ -610,7 +610,7 @@ class AudioBuffer:
                     and provider.max_concurrent_streams is not None
                     and not provider.has_available_stream_slot
                 )
-                if must_release_slot or time.time() - existing_buffer._last_access_time > 30:
+                if must_release_slot:
                     await asyncio.shield(existing_buffer.clear())
                 else:
                     # nothing reads it through the stream details any more; a consumer

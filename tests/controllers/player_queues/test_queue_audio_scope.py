@@ -203,6 +203,33 @@ async def test_a_replaced_buffer_nobody_reads_goes_at_once(rig: SlotRig) -> None
     assert rig.fills(second)
 
 
+@NO_LIMIT
+async def test_a_replaced_buffer_whose_source_broke_off_long_ago_goes_at_once(
+    rig: SlotRig,
+) -> None:
+    """Audio a failed source left behind is given up when the track gets a new buffer."""
+    (track,) = rig.play("track 0")
+    breaks_off = asyncio.Event()
+    rig.sources["track 0"] = partial(source, 3, 0, breaks_off, fails=True)
+    failed = await rig.ask(track)
+    assert failed is not None
+    breaks_off.set()
+    while not failed.has_error:
+        await asyncio.sleep(0)
+    assert failed.seconds_available == 3
+    failed._last_access_time -= 3600
+    rig.sources["track 0"] = partial(source, 3)
+
+    second = await rig.ask(track)
+    await rig.settle()
+
+    assert second is not None
+    assert second is not failed
+    assert failed.cancelled
+    assert failed.seconds_available == 0
+    assert not rig.fills(failed)
+
+
 # --- no source is opened for a track that left the scope
 
 
@@ -420,6 +447,54 @@ async def test_a_player_that_jumps_back_lets_go_of_the_track_before_the_one_it_l
 
     assert await _given_up(before)
     await rig.settle()
+
+
+@NO_LIMIT
+async def test_a_player_that_fetches_the_next_track_lets_go_of_the_track_two_back(
+    rig: SlotRig,
+) -> None:
+    """Of the tracks behind the one the player fetches, only the last keeps its audio."""
+    tracks = rig.play("track 0", "track 1", "track 2", "track 3", realtime=False)
+    for name in ("track 0", "track 1"):
+        rig.sources[name] = partial(source, 5)
+    two_back = await rig.ask(tracks[0])
+    assert two_back is not None
+    await rig.delivered(tracks[0])
+    _move_to(rig, 1)
+    before = await rig.ask(tracks[1])
+    assert before is not None
+    await rig.delivered(tracks[1])
+    assert not two_back.cancelled
+
+    rig.queues.track_loaded_in_buffer(QUEUE_ID, tracks[2].queue_item_id)
+
+    assert await _given_up(two_back)
+    assert not before.cancelled
+    assert before.seconds_available == 5
+    await rig.settle()
+
+
+@NO_LIMIT
+async def test_a_track_two_back_that_is_still_read_keeps_its_audio_until_its_reader_leaves(
+    rig: SlotRig,
+) -> None:
+    """A stream that still reads a track the player moved on from is not cut off."""
+    tracks = rig.play("track 0", "track 1", "track 2", "track 3", realtime=False)
+    rig.sources["track 0"] = partial(source, 5)
+    two_back = await rig.ask(tracks[0])
+    assert two_back is not None
+    await rig.delivered(tracks[0])
+    reader = two_back.get_raw_stream()
+    await anext(reader)
+    _move_to(rig, 1)
+
+    rig.queues.track_loaded_in_buffer(QUEUE_ID, tracks[2].queue_item_id)
+    await rig.settle()
+
+    assert not two_back.cancelled
+    await anext(reader)
+    await reader.aclose()
+    assert await _given_up(two_back)
 
 
 @NO_LIMIT
