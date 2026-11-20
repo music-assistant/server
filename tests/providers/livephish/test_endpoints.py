@@ -192,7 +192,9 @@ async def test_browse_root_matches_the_app_sections(provider: LivePhishProvider)
     assert [item.item_id for item in items] == ["artist", "years", "songs", "albums", "tour"]
     assert [item.name for item in items] == ["Artist", "Years", "Songs", "Albums", "Tour"]
     assert all(isinstance(item, BrowseFolder) and not item.is_playable for item in items)
-    assert items[1].path == "livephish--test123://years"
+    years = items[1]
+    assert isinstance(years, BrowseFolder)
+    assert years.path == "livephish--test123://years"
 
 
 @pytest.mark.asyncio

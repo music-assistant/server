@@ -12,7 +12,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, urljoin, urlparse
 
 from aiohttp import (
@@ -404,8 +404,10 @@ class LivePhishProvider(MusicProvider):
         # Sign in through the identity server's login form, then exchange the code.
         code, verifier = await self._authorization_code(str(username), str(password))
         token = await self._exchange_code(code, verifier)
-        access_token = token["access_token"]
-        expires_in = token["expires_in"]
+        access_token = token.get("access_token")
+        expires_in = token.get("expires_in")
+        if not isinstance(access_token, str) or not isinstance(expires_in, int | float):
+            raise LoginFailed("Live Phish login did not return a token")
         self._auth_token = access_token
         self._token_expiry = time() + expires_in
         # Drop the token again unless the account endpoint accepts it. A later call
@@ -513,7 +515,10 @@ class LivePhishProvider(MusicProvider):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
             if response.status >= 400:
                 raise LoginFailed(await _token_error(response))
-            return await response.json()
+            payload = await response.json()
+            if not isinstance(payload, dict):
+                raise LoginFailed("Live Phish login did not return a token")
+            return cast("dict[str, Any]", payload)
 
     async def _get_account(self) -> Any:
         """Return the authenticated account payload from the subscriptions endpoint."""
@@ -956,7 +961,7 @@ class LivePhishProvider(MusicProvider):
 
     @use_cache(3600 * 24)
     @throttle_with_retries
-    async def _get_legacy_catalog(self, method: str, **params: Any) -> Any:
+    async def _get_legacy_catalog(self, /, method: str, **params: Any) -> Any:
         """
         Return the payload of one public legacy catalog method.
 
@@ -1333,7 +1338,7 @@ class LivePhishProvider(MusicProvider):
             for item_id, name, translation_key in sections
         ]
 
-    async def _browse_years(self, year: str | None) -> list[BrowseFolder | Album]:
+    async def _browse_years(self, year: str | None) -> Sequence[BrowseFolder | Album]:
         """Return performance years, or the shows from one year."""
         if year is None:
             payload = await self._get_legacy_catalog("catalog.showYearCatalog")
@@ -1361,7 +1366,7 @@ class LivePhishProvider(MusicProvider):
         )
         return self._albums_from_containers(containers)
 
-    async def _browse_songs(self, song_id: str | None) -> list[BrowseFolder | Album]:
+    async def _browse_songs(self, song_id: str | None) -> Sequence[BrowseFolder | Album]:
         """Return song titles, or the shows that played one title."""
         payload = await self._get_legacy_catalog("catalog.songCatalog")
         if not isinstance(payload, list):
@@ -1401,7 +1406,7 @@ class LivePhishProvider(MusicProvider):
         )
         return self._albums_from_containers(containers)
 
-    async def _browse_tours(self, category_id: str | None) -> list[BrowseFolder | Album]:
+    async def _browse_tours(self, category_id: str | None) -> Sequence[BrowseFolder | Album]:
         """Return tour categories, or the shows in one category."""
         if category_id is None:
             payload = await self._get_legacy_catalog("catalog.containerCategories")
