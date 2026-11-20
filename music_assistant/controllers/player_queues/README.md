@@ -259,7 +259,8 @@ and a preparation that is cancelled does not take it along: the buffer stays whi
 A buffer that is out of scope gives its audio up, whether its source still fills or has delivered
 everything, and whether or not its provider has a slot to spare; whoever waits for it gets no audio.
 The queue asks its buffers whenever its scope can change: when a session starts or ends, when its
-items change, when its player fetches another item or reports another one as playing, when a fade
+items change (an edit, a load, a dynamic queue that rebuilds its upcoming tracks), when its player
+fetches another item or reports another one as playing, when a fade
 takes the next track, when the repeat mode or the sleep timer target changes, and before it gets
 audio for an item. A buffer is
 also asked when a user leaves it, when the claim on its item ends, when another buffer takes its

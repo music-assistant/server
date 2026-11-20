@@ -1447,12 +1447,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 keep_remaining=False,
                 keep_played=option != QueueOption.REPLACE,
             )
-            for item in discarded:
-                # off the queue now, so no cleanup reaches its audio any more; detached before
-                # releasing, as everywhere a buffer is cleared
-                if (details := item.streamdetails) and (buffer := details.buffer):
-                    details.buffer = None
-                    await buffer.clear()
             if start_playing:
                 await self.play_index(queue_id, insert_at)
             else:
