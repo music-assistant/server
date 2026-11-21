@@ -50,7 +50,8 @@ from music_assistant.providers.airplay.constants import (
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.helpers import (
-    CLI_CLOCK_OFFSET_NS,
+    cli_clock_args,
+    cli_clock_time,
     default_buffer_depth,
     generate_active_remote_id,
     get_cli_binary,
@@ -1182,8 +1183,6 @@ class AirPlayStream:
             str(self.pcm_format.sample_rate),
             "--bitdepth",
             str(self.pcm_format.bit_depth),
-            "--clock-offset-ns",
-            str(CLI_CLOCK_OFFSET_NS),
         ]
         if timing_arg:
             args += ["--timing", timing_arg]
@@ -1313,6 +1312,10 @@ class AirPlayStream:
             args += ["--debug", "10"]
         elif self.prov.logger.isEnabledFor(logging.DEBUG):
             args += ["--debug", "5"]
+
+        # Read after the last await: the process exists before anything else can run,
+        # and from then on it pins the rate of the timeline it was given.
+        args += cli_clock_args(self.mass.timeline_clock)
 
         # Audio is fed continuously on the process stdin; the binary reads it into
         # a single ring buffer for the whole session lifetime (flushed and
@@ -1837,7 +1840,8 @@ class AirPlayStream:
         """
         Send a RAOP progress anchor once an acknowledged start becomes audible.
 
-        :param audible_unix_ms: Acknowledged audible start instant in Unix milliseconds.
+        :param audible_unix_ms: Acknowledged audible start instant on the cliairplay
+            timeline, in unix milliseconds.
         :param generation: Start generation that owns this progress update.
         """
         # Live inputs do not necessarily have media metadata, so the normal
@@ -1846,8 +1850,9 @@ class AirPlayStream:
         # PROGRESS that arrives before the session streams, so wait until the
         # audible instant, and discard updates belonging to a stopped/flushed/old
         # start. An ASAP start without a usable ack reports 0: treat it as now.
-        audible = audible_unix_ms / 1000 if audible_unix_ms > 0 else time.time()
-        await asyncio.sleep(max(0, audible - time.time()) + 0.1)
+        clock = self.mass.timeline_clock
+        audible = audible_unix_ms / 1000 if audible_unix_ms > 0 else cli_clock_time(clock)
+        await asyncio.sleep(max(0, audible - cli_clock_time(clock)) + 0.1)
         async with self._metadata_lock:
             if (
                 generation != self._progress_anchor_generation
@@ -1855,7 +1860,7 @@ class AirPlayStream:
                 or not self.connected
             ):
                 return
-            progress = int(self._start_position + max(0, time.time() - audible))
+            progress = int(self._start_position + max(0, cli_clock_time(clock) - audible))
             if await self.send_cli_command(f"PROGRESS={progress}"):
                 self._last_progress_sent = progress
 

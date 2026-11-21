@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import ClientError
 
+from music_assistant.helpers.timeline_clock import TimelineClock, rate_term_ns
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_DISCOVERY_TYPE,
     RAOP_DISCOVERY_TYPE,
@@ -16,6 +17,7 @@ from music_assistant.providers.airplay.helpers import (
     _CLI_BINARY_CHECK_TIMEOUT,
     SetKind,
     SetMembership,
+    cli_clock_args,
     cli_clock_time,
     default_buffer_depth,
     get_cli_binary,
@@ -36,14 +38,39 @@ ALAC_48000_24 = 1 << 21
 
 def test_cli_clock_time_ignores_wall_clock_steps() -> None:
     """A wall clock step does not move the cliairplay timeline."""
-    before = cli_clock_time()
+    clock = TimelineClock()
+    before = cli_clock_time(clock)
     with (
         patch("time.time", return_value=time.time() + 3600),
         patch("time.time_ns", return_value=time.time_ns() + 3600 * 10**9),
     ):
-        during = cli_clock_time()
+        during = cli_clock_time(clock)
 
     assert 0 <= during - before < 1
+
+
+def test_cli_clock_time_starts_at_unix_time() -> None:
+    """The cliairplay timeline reads as unix time when the clock is created."""
+    assert abs(cli_clock_time(TimelineClock()) - time.time()) < 0.1
+
+
+@pytest.mark.parametrize("rate_ppb", [0, 857_000, -857_000, 2_000_000])
+def test_cli_clock_args_give_cliairplay_the_same_timeline(rate_ppb: int) -> None:
+    """From its arguments, cliairplay computes the very time cli_clock_time reads."""
+    clock = TimelineClock()
+    with patch("music_assistant.helpers.timeline_clock.raw_clock_ns", return_value=4 * 10**14):
+        clock.set_rate(rate_ppb)
+    args = cli_clock_args(clock)
+    offset_ns = int(args[args.index("--clock-offset-ns") + 1])
+    assert int(args[args.index("--clock-rate-ppb") + 1]) == rate_ppb
+
+    for raw_ns in (4 * 10**14, 4 * 10**14 + 123_456_789, 2 * 10**15 + 1):
+        with patch("music_assistant.helpers.timeline_clock.raw_clock_ns", return_value=raw_ns):
+            timeline_unix_ns = clock.now_ns() + clock.unix_offset_ns
+            unix_now = cli_clock_time(clock)
+        # host_clock_now_ns() of cliairplay: the raw clock plus the offset and the rate term
+        assert raw_ns + offset_ns + rate_term_ns(raw_ns, rate_ppb) == timeline_unix_ns
+        assert unix_now == timeline_unix_ns / 1e9
 
 
 def test_get_decoded_property_matches_case_insensitively() -> None:

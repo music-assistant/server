@@ -553,6 +553,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             allow_unencrypted=allow_legacy_clients,
             allow_noncompliant_clients=allow_legacy_clients,
             languages=self._spoken_pin_languages(),
+            clock=self.mass.timeline_clock,
         )
         self.unregister_cbs = [
             self.server_api.add_event_listener(self.event_cb),

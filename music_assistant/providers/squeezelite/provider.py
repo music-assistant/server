@@ -6,7 +6,6 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import web
-from aiosendspin.clock import RawMonotonicClock
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
 from aioslimproto.server import SlimServer
@@ -92,7 +91,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         # Validate ALL required ports before starting ANY services
         await self._validate_all_ports(control_port, telnet_port, json_port)
 
-        self.clock = RawMonotonicClock()
+        self.clock = self.mass.timeline_clock
         self.bridge_manager = SendspinBridgeManager(self)
 
         # create the server here (also validates config and sets up the CLI) but defer
