@@ -214,9 +214,7 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
         if (owner_id := source.owner_player_id) is None:
             return None
         # a provider may name the player by one of its protocols
-        if (protocol := self.get_protocol(owner_id)) is not None and protocol.player is not None:
-            return protocol.player
-        return self.get_player(owner_id)
+        return self.get_player_or_protocol_player(owner_id)
 
     def get_audio_source_name(self, source: AudioSource, player_id: str | None = None) -> str:
         """

@@ -213,6 +213,30 @@ def test_a_player_merged_into_another_is_found_by_its_old_id() -> None:
     assert home.controller.get_audio_source_name(source, "kitchen") == "Spotify Connect"
 
 
+def test_an_old_player_id_wins_over_a_protocol_of_another_player_with_that_id() -> None:
+    """
+    A stored player id names that player, also when a protocol of another player has it.
+
+    The id was Living Room's before a merge, and an audio protocol of Kitchen has the same id.
+    """
+    home = _Home()
+    home.controller._legacy_ids["old_living_room"] = "living_room"
+    attach_mock(
+        MockProvider("airplay", instance_id="airplay", mass=home.mass),
+        "old_living_room",
+        "Kitchen",
+        role=ProtocolRole.AUDIO,
+        player=home.kitchen,
+    )
+    source = replace(SPOTIFY, owner_player_id="old_living_room")
+
+    assert home.controller.get_audio_source_owner(source) is home.living_room
+    assert home.controller.get_audio_source_name(source, "living_room") == "Spotify Connect"
+    assert (
+        home.controller.get_audio_source_name(source, "kitchen") == "Spotify Connect (Living Room)"
+    )
+
+
 def test_the_own_player_lists_its_sources_by_their_names() -> None:
     """The source list of a player names the sources that belong to it without the player."""
     home = _Home()
