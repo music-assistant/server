@@ -303,6 +303,17 @@ class GroupCommandsMixin(_PlayerControllerBase):
                 player_ids.append(player.player_id)
         return player_ids
 
+    @api_command("players/multi_channel_layouts", required_scope=Scope.PLAYERS_READ)
+    def multi_channel_layouts(self, provider: str) -> dict[str, list[SpeakerChannel]]:
+        """
+        Return the layouts a provider combines speakers into, each with its channels in order.
+
+        :param provider: The provider (id) whose speakers to combine.
+        :return: The channels of each layout, by the value of the layout (such as "2.1").
+        """
+        layouts = self._get_multi_channel_provider(provider).get_multi_channel_layouts()
+        return {layout.value: list(channels) for layout, channels in layouts.items()}
+
     @api_command("players/remove_group_player", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_group_player(self, player_id: str) -> None:
         """
