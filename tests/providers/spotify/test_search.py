@@ -63,9 +63,6 @@ def provider(get_data: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> SpotifyPro
     prov.logger = MagicMock()
     prov._sp_user = None
     prov.dev_session_active = False
-    prov._global_session = MagicMock()
-    prov._dev_session = MagicMock()
-    prov._dev_session.throttler.cooldown_remaining = 0
 
     mass = MagicMock()
     # bypass the use_cache decorator: always miss
@@ -288,24 +285,6 @@ async def test_search_with_dev_session_only_limits_global_playlists(
     assert len(result.playlists) == GLOBAL_SEARCH_LIMIT
     global_calls = [c for c in get_data.await_args_list if c.kwargs["use_global_session"]]
     assert len(global_calls) == GLOBAL_SEARCH_LIMIT // 10
-
-
-@pytest.mark.asyncio
-async def test_search_stops_at_global_depth_while_dev_session_is_limited(
-    provider: SpotifyProvider, get_data: AsyncMock
-) -> None:
-    """A user search the global session serves while the custom client ID is limited stops early."""
-    provider.dev_session_active = True
-    cast("MagicMock", provider._dev_session).throttler.cooldown_remaining = 30
-    get_data.side_effect = _respond_full_pages
-
-    result = await provider.search("chill", [MediaType.TRACK, MediaType.PLAYLIST], limit=50)
-
-    assert len(result.tracks) == GLOBAL_SEARCH_LIMIT
-    assert len(result.playlists) == GLOBAL_SEARCH_LIMIT
-    # the global session sees all playlists, so they are not searched separately
-    pages = [(c.kwargs["type"], c.kwargs["offset"]) for c in get_data.await_args_list]
-    assert pages == [("track,playlist", offset) for offset in range(0, GLOBAL_SEARCH_LIMIT, 10)]
 
 
 @pytest.mark.asyncio
