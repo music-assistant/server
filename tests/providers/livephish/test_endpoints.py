@@ -39,6 +39,7 @@ def _response(provider: LivePhishProvider) -> None:
     [
         ("catalog", "releases/recent", f"{CATALOG_API}/releases/recent"),
         ("stash", "releases/favorite", f"{STASH_API}/me/releases/favorite"),
+        ("purchases", "", f"{STASH_URL}/items"),
         ("subscription", "", ACCOUNT_URL),
         ("user", "", STASH_URL),
     ],
@@ -89,7 +90,7 @@ def test_relative_show_art_uses_the_player_cdn(provider: LivePhishProvider) -> N
 
 @pytest.mark.asyncio
 async def test_legacy_artists_use_the_catalog_method(provider: LivePhishProvider) -> None:
-    """Library artists are loaded from the public catalog.artists method."""
+    """The public catalog.artists method is requested from the legacy API."""
     _response(provider)
     method = cast("Any", LivePhishProvider._get_legacy_catalog).__wrapped__.__wrapped__
 
@@ -101,38 +102,74 @@ async def test_legacy_artists_use_the_catalog_method(provider: LivePhishProvider
 
 
 @pytest.mark.asyncio
-async def test_library_uses_catalog_artists_and_releases(provider: LivePhishProvider) -> None:
-    """Artists come from catalog.artists and albums from that artist's releases."""
-    provider._get_legacy_catalog = AsyncMock(  # type: ignore[method-assign]
-        return_value={
-            "artists": [
-                {
-                    "artistID": 1,
-                    "artistName": "Phish",
-                    "artistImage": "/assets/ld/images/ld_head_149.gif",
-                },
-                {"artistName": "Skip"},
+async def test_library_uses_favorites_and_purchases(provider: LivePhishProvider) -> None:
+    """Followed artists, favourite releases, and purchased shows form the library."""
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    async def _get_all_items(api: str, endpoint: str, **kwargs: object) -> list[dict[str, object]]:
+        calls.append((api, endpoint, kwargs))
+        if endpoint == "artists/favorite":
+            return [
+                {"id": "1", "name": "Phish"},
+                {"name": "Skip"},
             ]
-        }
-    )
-    provider._get_all_items = AsyncMock(  # type: ignore[method-assign]
-        return_value=[{"id": "435", "title": "A Live One", "artist": {"id": "1", "name": "Phish"}}]
-    )
+        if endpoint == "releases/favorite":
+            return [{"id": "435", "title": "A Live One", "artist": {"id": "1", "name": "Phish"}}]
+        if api == "purchases":
+            return [
+                {
+                    "id": "order-line",
+                    "orderId": "order-1",
+                    "product": {
+                        "contentType": "audio",
+                        "release": {
+                            "id": "900",
+                            "title": "Purchased Show",
+                            "artist": {"id": "2", "name": "Trey"},
+                        },
+                    },
+                },
+                {
+                    "id": "duplicate-order",
+                    "product": {
+                        "contentType": "audio",
+                        "release": {
+                            "id": "435",
+                            "title": "A Live One",
+                            "artist": {"id": "1", "name": "Phish"},
+                        },
+                    },
+                },
+                {
+                    "id": "video-order",
+                    "product": {
+                        "contentType": "video",
+                        "release": {"id": "901", "title": "Webcast"},
+                    },
+                },
+            ]
+        return []
+
+    cast("Any", provider)._get_all_items = _get_all_items
 
     artists = [item async for item in provider.get_library_artists()]
-    albums = [item async for item in provider.get_library_albums()]
-
     assert [artist.item_id for artist in artists] == ["1"]
+    assert all(api != "purchases" for api, _endpoint, _kwargs in calls)
+
+    albums = [item async for item in provider.get_library_albums()]
     assert artists[0].image is not None
     assert artists[0].image.path == "icon.png"
-    assert artists[0].image.remotely_accessible is False
     icon = await provider.resolve_image(artists[0].image.path)
     assert isinstance(icon, str)
     assert icon.endswith("providers/livephish/icon.png")
-    assert [album.item_id for album in albums] == ["435"]
-    assert provider._get_all_items.await_args is not None
-    assert provider._get_all_items.await_args.args[:2] == ("catalog", "releases")
-    assert provider._get_all_items.await_args.kwargs["artistIds"] == "1"
+    assert [album.item_id for album in albums] == ["435", "900"]
+    assert ("catalog", "releases") not in {(api, endpoint) for api, endpoint, _kwargs in calls}
+    assert calls[0][0:2] == ("stash", "artists/favorite")
+    assert calls[0][2]["sortBy"] == "nameAsc"
+    purchase_calls = [call for call in calls if call[0] == "purchases"]
+    assert purchase_calls
+    assert purchase_calls[0][2]["itemTypes"] == "audio"
+    assert purchase_calls[0][2]["productTypes"] == "release"
 
 
 @pytest.mark.asyncio
@@ -147,8 +184,8 @@ async def test_recommendations_omit_recommended_shows(provider: LivePhishProvide
 
 
 @pytest.mark.asyncio
-async def test_album_tracks_name_the_library_artist(provider: LivePhishProvider) -> None:
-    """Playing a track points at the library artist, not the catalog id."""
+async def test_album_tracks_keep_the_provider_artist(provider: LivePhishProvider) -> None:
+    """Album tracks name the Live Phish artist."""
     track = provider._parse_track(
         {"trackID": 8869, "songTitle": "Sample in a Jar"},
         artist=ItemMapping(
@@ -159,19 +196,14 @@ async def test_album_tracks_name_the_library_artist(provider: LivePhishProvider)
         ),
     )
     provider._load_album_tracks = AsyncMock(return_value=[track])  # type: ignore[method-assign]
-    cast("Any", provider.mass).music.artists.get_library_item_by_prov_id = AsyncMock(
-        return_value=ItemMapping(
-            media_type=MediaType.ARTIST,
-            item_id="8",
-            provider="library",
-            name="Phish",
-        )
-    )
+    lookup = AsyncMock()
+    cast("Any", provider.mass).music.artists.get_library_item_by_prov_id = lookup
 
     tracks = await provider.get_album_tracks("504")
 
-    assert tracks[0].artists[0].item_id == "8"
-    assert tracks[0].artists[0].provider == "library"
+    assert tracks[0].artists[0].item_id == "1"
+    assert tracks[0].artists[0].provider == provider.instance_id
+    lookup.assert_not_awaited()
 
 
 def _show(container_id: str, title: str) -> dict[str, object]:

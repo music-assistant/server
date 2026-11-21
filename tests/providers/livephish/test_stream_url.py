@@ -1,20 +1,18 @@
-"""Test Live Phish stream url building for regular, promo/trial and inactive subscriptions."""
+"""Test Live Phish playback urls for quality, plan entitlement, and rate limits."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType, StreamType
-from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.errors import AudioError, MediaNotFoundError, RateLimited
 
-from music_assistant.providers.livephish import LivePhishProvider
-from music_assistant.providers.livephish.constants import STREAM_API_URL
+from music_assistant.providers.livephish import CONF_QUALITY, QUALITY_LOSSY, LivePhishProvider
+from music_assistant.providers.livephish.constants import PLAYBACK_API
 from tests.common import use_real_create_task
 
-USER_ID = "user-1"
 SUBSCRIPTION_BASE = {
     "startedAt": "08/01/2026 00:00:00",
     "endsAt": "09/01/2026 00:00:00",
@@ -22,23 +20,18 @@ SUBSCRIPTION_BASE = {
 }
 
 
-def _stub_show(provider: LivePhishProvider, show_id: str = "435") -> None:
-    """Stub the cached track so the stream request can read its show id."""
-    provider.get_track = AsyncMock(  # type: ignore[method-assign]
-        return_value=SimpleNamespace(album=SimpleNamespace(item_id=show_id))
-    )
-    cache: Any = provider.mass.cache
-    cache.get = AsyncMock(return_value=None)
-    provider._sku_from_show = AsyncMock(return_value=None)  # type: ignore[method-assign]
+def _logged_in(provider: LivePhishProvider) -> None:
+    """Give the provider a token so playback does not start a login."""
+    provider._auth_token = "test-token"
+    provider._token_expiry = 10**12
 
 
 def _stub_account_info(provider: LivePhishProvider, subscription: dict[str, Any]) -> None:
-    """Stub the cached account accessors with the given subscription payload."""
-    _stub_show(provider)
+    """Stub the cached account accessor with the given subscription payload."""
+    _logged_in(provider)
     provider._get_subscription_info = AsyncMock(  # type: ignore[method-assign]
         return_value=subscription
     )
-    provider._get_user_id = AsyncMock(return_value=USER_ID)  # type: ignore[method-assign]
 
 
 def _install_cache_miss(provider: LivePhishProvider) -> None:
@@ -49,42 +42,64 @@ def _install_cache_miss(provider: LivePhishProvider) -> None:
     use_real_create_task(provider.mass)
 
 
-def _stub_http_session(provider: LivePhishProvider, *bodies: str) -> MagicMock:
-    """Stub the http session so subplayer calls return the given bodies in order."""
-    bodies = bodies or ('{"streamLink": "https://stream.test/track.m3u8"}',)
-    contexts = []
-    for body in bodies:
-        response = AsyncMock()
-        response.raise_for_status = lambda: None
-        response.text = AsyncMock(return_value=body)
-        get_ctx = AsyncMock()
-        get_ctx.__aenter__ = AsyncMock(return_value=response)
-        get_ctx.__aexit__ = AsyncMock(return_value=False)
-        contexts.append(get_ctx)
-    session_get = MagicMock(side_effect=contexts)
+def _stub_http_session(
+    provider: LivePhishProvider,
+    *,
+    status: int = 200,
+    body: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+) -> MagicMock:
+    """Stub the http session so the playback call returns one response."""
+    response = AsyncMock()
+    response.status = status
+    response.headers = headers or {}
+    response.json = AsyncMock(
+        return_value=body if body is not None else {"url": "https://stream.test/track.m4a"}
+    )
+    get_ctx = AsyncMock()
+    get_ctx.__aenter__ = AsyncMock(return_value=response)
+    get_ctx.__aexit__ = AsyncMock(return_value=False)
+    session_get = MagicMock(return_value=get_ctx)
     mass: Any = provider.mass
     mass.http_session.get = session_get
     return session_get
 
 
-def _assert_player_request(params: dict[str, Any], track_id: str = "123") -> None:
-    """Assert the stream call matches the player's subplayer request."""
-    assert params["skuID"] == track_id
-    assert params["containerID"] == "435"
-    assert params["app"] == 1
-    assert params["v"] == 2
-    assert params["tk"]
-    assert params["lxp"].endswith(".000000")
-    assert "platformID" not in params
-    assert "trackId" not in params
-    assert "method" not in params
+def _set_quality(provider: LivePhishProvider, quality: str) -> None:
+    """Point the provider config at one stream quality."""
+    config: Any = provider.config
+    config.get_value.side_effect = lambda key, default=None: {
+        "log_level": "GLOBAL",
+        CONF_QUALITY: quality,
+    }.get(key, default)
 
 
 @pytest.mark.asyncio
-async def test_stream_url_fetches_account_info_on_cache_miss(provider: LivePhishProvider) -> None:
-    """Without cached account details the subscription and user id are read from Live Phish."""
+async def test_stream_url_requests_the_playback_api(provider: LivePhishProvider) -> None:
+    """A HiFi plan requests lossless and lossy together, by track id."""
+    _stub_account_info(
+        provider, {**SUBSCRIPTION_BASE, "plan": {"planId": "plan-42", "isHighQuality": True}}
+    )
+    session_get = _stub_http_session(provider)
+
+    assert await provider._get_stream_url("7284") == "https://stream.test/track.m4a"
+
+    assert session_get.call_args.args[0] == f"{PLAYBACK_API}/tracks/7284/url"
+    assert session_get.call_args.kwargs["params"] == {
+        "formats": "lossless,lossy",
+        "forceFlac": "true",
+    }
+    assert session_get.call_args.kwargs["headers"]["Authorization"] == "Bearer test-token"
+    assert session_get.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_url_fetches_the_subscription_on_a_cache_miss(
+    provider: LivePhishProvider,
+) -> None:
+    """Without a cached subscription the account is read before the playback url."""
     _install_cache_miss(provider)
-    _stub_show(provider)
+    _logged_in(provider)
     subscription = {**SUBSCRIPTION_BASE, "plan": {"planId": "plan-42", "isHighQuality": True}}
 
     async def _fake(api: str, _endpoint: str, **_kwargs: Any) -> Any:
@@ -93,23 +108,18 @@ async def test_stream_url_fetches_account_info_on_cache_miss(provider: LivePhish
     provider._get_data = AsyncMock(side_effect=_fake)  # type: ignore[method-assign]
     session_get = _stub_http_session(provider)
 
-    assert await provider._get_stream_url("123") == "https://stream.test/track.m3u8"
-    params = session_get.call_args.kwargs["params"]
-    assert params["subCostplanIDAccessList"] == "plan-42"
-    assert params["nn_userID"] == "123"
-    assert session_get.call_args.args[0] == STREAM_API_URL
-    _assert_player_request(params)
+    assert await provider._get_stream_url("123") == "https://stream.test/track.m4a"
+    assert session_get.call_args.kwargs["params"]["formats"] == "lossless,lossy"
 
 
 @pytest.mark.asyncio
-async def test_stream_url_reuses_cached_account_info(provider: LivePhishProvider) -> None:
-    """Cached subscription and user details are reused without asking Live Phish again."""
+async def test_stream_url_reuses_cached_subscription(provider: LivePhishProvider) -> None:
+    """A cached subscription is reused without asking Live Phish for the account again."""
     cached = {
         "_get_subscription_info": {
             **SUBSCRIPTION_BASE,
             "plan": {"planId": "plan-42", "isHighQuality": True},
         },
-        "_get_user_id": USER_ID,
     }
 
     async def _cache_hit(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
@@ -117,52 +127,59 @@ async def test_stream_url_reuses_cached_account_info(provider: LivePhishProvider
 
     cache: Any = provider.mass.cache
     cache.get_with_freshness = AsyncMock(side_effect=_cache_hit)
-    _stub_show(provider)
+    _logged_in(provider)
     api_mock = AsyncMock()
     provider._get_data = api_mock  # type: ignore[method-assign]
-    session_get = _stub_http_session(provider)
+    _stub_http_session(provider)
 
-    assert await provider._get_stream_url("123") == "https://stream.test/track.m3u8"
+    assert await provider._get_stream_url("123") == "https://stream.test/track.m4a"
     api_mock.assert_not_awaited()
-    params = session_get.call_args.kwargs["params"]
-    assert params["nn_userID"] == USER_ID
-    assert params["subscriptionID"] == "legacy-1"
 
 
 @pytest.mark.asyncio
-async def test_stream_url_prefers_plan_id_field(provider: LivePhishProvider) -> None:
-    """The player sends plan.planId when the subscription payload includes it."""
+async def test_lossy_setting_requests_only_lossy(provider: LivePhishProvider) -> None:
+    """The lossy setting does not ask for a lossless file."""
+    _set_quality(provider, QUALITY_LOSSY)
     _stub_account_info(
-        provider,
-        {**SUBSCRIPTION_BASE, "plan": {"id": "other", "planId": "plan-42", "isHighQuality": True}},
+        provider, {**SUBSCRIPTION_BASE, "plan": {"id": "plan-42", "isHighQuality": True}}
     )
     session_get = _stub_http_session(provider)
 
-    assert await provider._get_stream_url("123") == "https://stream.test/track.m3u8"
-    assert session_get.call_args.kwargs["params"]["subCostplanIDAccessList"] == "plan-42"
+    await provider._get_stream_url("123")
+
+    assert session_get.call_args.kwargs["params"]["formats"] == "lossy"
+    assert session_get.call_count == 1
 
 
 @pytest.mark.asyncio
-async def test_stream_url_uses_regular_plan_id(provider: LivePhishProvider) -> None:
-    """A subscription that only has plan.id passes that id as the cost plan access list."""
-    _stub_account_info(provider, {**SUBSCRIPTION_BASE, "plan": {"id": "plan-42"}})
+async def test_lossless_without_hifi_requests_only_lossy(provider: LivePhishProvider) -> None:
+    """A plan that is not HiFi is requested as lossy even when lossless is selected."""
+    _stub_account_info(
+        provider, {**SUBSCRIPTION_BASE, "plan": {"id": "plan-42", "isHighQuality": False}}
+    )
     session_get = _stub_http_session(provider)
 
-    assert await provider._get_stream_url("123") == "https://stream.test/track.m3u8"
-    assert session_get.call_args.kwargs["params"]["subCostplanIDAccessList"] == "plan-42"
+    await provider._get_stream_url("123")
+
+    assert session_get.call_args.kwargs["params"]["formats"] == "lossy"
 
 
 @pytest.mark.asyncio
 async def test_stream_url_falls_back_to_promo_plan(provider: LivePhishProvider) -> None:
-    """A trial/promo subscription has plan set to None and its plan id under promo."""
+    """A trial subscription has plan set to None and its plan under promo."""
     _stub_account_info(
         provider,
-        {**SUBSCRIPTION_BASE, "plan": None, "promo": {"plan": {"id": "promo-7"}}},
+        {
+            **SUBSCRIPTION_BASE,
+            "plan": None,
+            "promo": {"plan": {"id": "promo-7", "isHighQuality": True}},
+        },
     )
     session_get = _stub_http_session(provider)
 
-    assert await provider._get_stream_url("123") == "https://stream.test/track.m3u8"
-    assert session_get.call_args.kwargs["params"]["subCostplanIDAccessList"] == "promo-7"
+    await provider._get_stream_url("123")
+
+    assert session_get.call_args.kwargs["params"]["formats"] == "lossless,lossy"
 
 
 @pytest.mark.asyncio
@@ -175,29 +192,19 @@ async def test_stream_url_without_any_plan_raises(provider: LivePhishProvider) -
 
 
 @pytest.mark.asyncio
-async def test_stream_url_uses_the_player_request(provider: LivePhishProvider) -> None:
-    """Playback calls subplayer with the show id, track id, and player proof."""
-    _stub_account_info(provider, {**SUBSCRIPTION_BASE, "plan": {"id": "p", "isHighQuality": True}})
-    session_get = _stub_http_session(provider)
-
-    await provider._get_stream_url("7284")
-    _assert_player_request(session_get.call_args.kwargs["params"], "7284")
-
-
-@pytest.mark.asyncio
 async def test_subscription_list_uses_the_accessible_plan(provider: LivePhishProvider) -> None:
     """A v3 subscription list is reduced to the content-accessible plan before playback."""
     _install_cache_miss(provider)
-    _stub_show(provider)
+    _logged_in(provider)
     accessible = {
         **SUBSCRIPTION_BASE,
-        "plan": {"planId": "plan-42"},
+        "plan": {"planId": "plan-42", "isHighQuality": True},
         "isContentAccessible": True,
     }
     other = {
         **SUBSCRIPTION_BASE,
         "legacySubscriptionId": "other",
-        "plan": {"planId": "other"},
+        "plan": {"planId": "other", "isHighQuality": False},
         "isContentAccessible": False,
     }
 
@@ -208,36 +215,40 @@ async def test_subscription_list_uses_the_accessible_plan(provider: LivePhishPro
     session_get = _stub_http_session(provider)
 
     await provider._get_stream_url("7284")
-    params = session_get.call_args.kwargs["params"]
-    assert params["subCostplanIDAccessList"] == "plan-42"
-    assert params["subscriptionID"] == "legacy-1"
+
+    assert session_get.call_args.kwargs["params"]["formats"] == "lossless,lossy"
 
 
 @pytest.mark.asyncio
-async def test_stream_url_reads_iso_subscription_dates(provider: LivePhishProvider) -> None:
-    """Subscription dates in ISO form are sent as unix stamps."""
-    _stub_account_info(
-        provider,
-        {
-            "startedAt": "2026-08-01T00:00:00Z",
-            "endsAt": "2026-09-01T00:00:00+00:00",
-            "legacySubscriptionId": "legacy-1",
-            "plan": {"id": "plan-42"},
-        },
-    )
-    session_get = _stub_http_session(provider)
+async def test_rate_limit_stops_playback(provider: LivePhishProvider) -> None:
+    """A 429 raises RateLimited and does not send another playback request."""
+    _stub_account_info(provider, {**SUBSCRIPTION_BASE, "plan": {"id": "p", "isHighQuality": True}})
+    session_get = _stub_http_session(provider, status=429, body={}, headers={"Retry-After": "7"})
 
-    await provider._get_stream_url("123")
-    params = session_get.call_args.kwargs["params"]
-    assert params["startDateStamp"] == 1785542400
-    assert params["endDateStamp"] == 1788220800
+    with pytest.raises(RateLimited) as raised:
+        await provider._get_stream_url("123")
+
+    assert raised.value.backoff_time == 7
+    assert session_get.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_forbidden_playback_is_not_retried(provider: LivePhishProvider) -> None:
+    """A 403 is a missing stream, not a reason to ask for another format."""
+    _stub_account_info(provider, {**SUBSCRIPTION_BASE, "plan": {"id": "p", "isHighQuality": True}})
+    session_get = _stub_http_session(provider, status=403, body={"url": None, "access": False})
+
+    with pytest.raises(MediaNotFoundError):
+        await provider._get_stream_url("123")
+
+    assert session_get.call_count == 1
 
 
 @pytest.mark.asyncio
 async def test_stream_url_without_any_stream_raises(provider: LivePhishProvider) -> None:
-    """A track without a stream in any quality raises a media not found error."""
+    """A playback response without a url raises media not found."""
     _stub_account_info(provider, {**SUBSCRIPTION_BASE, "plan": {"id": "p", "isHighQuality": True}})
-    _stub_http_session(provider, '{"streamLink": ""}', '{"streamLink": ""}')
+    _stub_http_session(provider, body={"url": ""})
 
     with pytest.raises(MediaNotFoundError):
         await provider._get_stream_url("123")
@@ -254,7 +265,7 @@ async def test_stream_details_keep_the_audio_address_on_the_stream(
     details = await provider.get_stream_details("123", MediaType.TRACK)
 
     assert details.stream_type == StreamType.HTTP
-    assert details.path == "https://stream.test/track.m3u8"
+    assert details.path == "https://stream.test/track.m4a"
     assert details.item_id == "123"
     assert details.provider == provider.instance_id
 
@@ -265,31 +276,10 @@ async def test_stream_url_rewrites_the_player_cdn_host(provider: LivePhishProvid
     _stub_account_info(provider, {**SUBSCRIPTION_BASE, "plan": {"id": "p", "isHighQuality": True}})
     _stub_http_session(
         provider,
-        '{"streamLink": "http://nugs2.edgesuite.net/shows/504/8869/master.m3u8?hdnea=1"}',
+        body={"url": "http://nugs2.edgesuite.net/shows/504/8869/master.m3u8?hdnea=1"},
     )
 
     assert (
         await provider._get_stream_url("8869")
         == "https://securestream02.akamaized.net/shows/504/8869/master.m3u8?hdnea=1"
     )
-
-
-@pytest.mark.asyncio
-async def test_empty_media_path_retries_with_the_product_sku(provider: LivePhishProvider) -> None:
-    """A link with no media directory is discarded and the product sku is tried."""
-    _stub_account_info(provider, {**SUBSCRIPTION_BASE, "plan": {"id": "p"}})
-    cache: Any = provider.mass.cache
-    cache.get = AsyncMock(return_value="9612")
-    session_get = _stub_http_session(
-        provider,
-        '{"streamLink": "https://securestream02.akamaized.net//master.m3u8?hdnea=1"}',
-        '{"streamLink": "https://securestream02.akamaized.net/shows/504/9612/master.m3u8?hdnea=1"}',
-    )
-
-    url = await provider._get_stream_url("8869")
-
-    assert url.endswith("/shows/504/9612/master.m3u8?hdnea=1")
-    assert [call.kwargs["params"]["skuID"] for call in session_get.call_args_list] == [
-        "8869",
-        "9612",
-    ]

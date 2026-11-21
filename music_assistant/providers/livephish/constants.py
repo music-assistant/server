@@ -14,8 +14,9 @@ After the token is issued, that client calls Live Phish hosts:
 - ``GET https://subscriptions.livephish.com/api/v3/me/subscriptions``
 - ``GET https://stash.livephish.com/api/v1/stash``
 - ``https://catalog.livephish.com/api/v1`` for search, shows, and recommendations
-- ``https://stash.livephish.com/api/v1/me`` for library artists, releases, and playlists
-- ``https://streamapi.livephish.com/bigriver/subplayer.aspx`` for playback
+- ``https://stash.livephish.com/api/v1/me`` for favourite artists, releases, and playlists
+- ``https://stash.livephish.com/api/v1/stash/items`` for purchased shows and albums
+- ``https://playback.livephish.com/api/v1`` for playback
 - ``https://streamapi.livephish.com/api.aspx`` for legacy song search
 
 The identity server lists ``password`` in ``grant_types_supported``, but this
@@ -54,8 +55,10 @@ STASH_HOST = "https://stash.livephish.com"
 STASH_API = f"{STASH_HOST}/api/v1"
 STASH_URL = f"{STASH_API}/stash"
 
-# Legacy stream and search endpoints the player still ships.
-STREAM_API_URL = "https://streamapi.livephish.com/bigriver/subplayer.aspx"
+# Playback host the player uses for a track url. The query selects the format.
+PLAYBACK_API = "https://playback.livephish.com/api/v1"
+
+# Legacy search endpoint the player still ships.
 LEGACY_API_URL = "https://streamapi.livephish.com/api.aspx"
 
 # Relative cover paths in show payloads are resolved against this CDN.

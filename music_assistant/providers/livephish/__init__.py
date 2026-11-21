@@ -18,7 +18,6 @@ from urllib.parse import parse_qs, urljoin, urlparse
 from aiohttp import (
     ClientConnectionError,
     ClientPayloadError,
-    ClientResponseError,
     ClientTimeout,
     ContentTypeError,
 )
@@ -72,7 +71,7 @@ from music_assistant.helpers.throttle_retry import (
     throttle_with_retries,
 )
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT, MusicProvider
 from music_assistant.providers.livephish.constants import (
     ACCOUNT_URL,
     AUTHORIZE_URL,
@@ -82,11 +81,11 @@ from music_assistant.providers.livephish.constants import (
     GRANT_TYPE,
     IMAGE_CDN,
     LEGACY_API_URL,
+    PLAYBACK_API,
     REDIRECT_URI,
     SCOPE,
     STASH_API,
     STASH_URL,
-    STREAM_API_URL,
     TOKEN_URL,
 )
 
@@ -150,6 +149,7 @@ class LivePhishProvider(MusicProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._auth_token: str | None = None
         self._token_expiry = 0.0
+        self._plan_quality_logged = False
 
     @property
     def supported_media_types(self) -> set[MediaType]:
@@ -207,25 +207,28 @@ class LivePhishProvider(MusicProvider):
         return SearchResults(artists=artists, albums=albums, tracks=tracks)
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
-        """Retrieve artists from the Live Phish public catalog."""
-        catalog = await self._get_legacy_catalog("catalog.artists")
-        artists = catalog.get("artists") if isinstance(catalog, dict) else None
-        if not isinstance(artists, list):
-            return
-        for item in artists:
-            if not isinstance(item, dict):
+        """Retrieve the account's followed artists."""
+        seen: set[str] = set()
+        for item in await self._get_all_items("stash", "artists/favorite", sortBy="nameAsc"):
+            artist = self._account_artist(item)
+            if artist is None or artist.item_id in seen:
                 continue
-            artist_id = item.get("artistID") or item.get("id")
-            if artist_id and (item.get("artistName") or item.get("name")):
-                yield self._parse_artist(item)
+            seen.add(artist.item_id)
+            yield artist
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
-        """Retrieve catalog shows for each Live Phish artist."""
-        async for artist in self.get_library_artists():
-            releases = await self._get_all_items("catalog", "releases", artistIds=artist.item_id)
-            for item in releases:
-                if item and item.get("id"):
-                    yield self._parse_album(item)
+        """Retrieve favourite releases and purchased shows."""
+        seen: set[str] = set()
+        for album in await self._favorite_albums():
+            if album.item_id in seen:
+                continue
+            seen.add(album.item_id)
+            yield album
+        for album in await self._purchased_albums():
+            if album.item_id in seen:
+                continue
+            seen.add(album.item_id)
+            yield album
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from the provider."""
@@ -244,14 +247,16 @@ class LivePhishProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist."""
+        """Get a list of albums for the given artist."""
         params = {
             "artistIds": prov_artist_id,
             "contentType": "any",
         }
         return [
             self._parse_album(item)
-            for item in await self._get_all_items("catalog", "releases/recent", **params)
+            for item in await self._get_all_items(
+                "catalog", "releases/recent", max_items=ARTIST_ALBUMS_LIMIT, **params
+            )
             if (item and item["id"])
         ]
 
@@ -291,15 +296,7 @@ class LivePhishProvider(MusicProvider):
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
-        tracks = await self._load_album_tracks(prov_album_id)
-        # The library list is numbered in catalog order, while Live Phish artist ids are not.
-        # A playing track has to name the library artist, or the now-playing marker lands
-        # on whichever library row shares the catalog id.
-        for track in tracks:
-            track.artists = UniqueList(
-                [await self._library_artist(artist) for artist in track.artists]
-            )
-        return tracks
+        return await self._load_album_tracks(prov_album_id)
 
     @use_cache(3600, allow_expired_cache=True)  # Cache for 1 hour
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -335,7 +332,7 @@ class LivePhishProvider(MusicProvider):
             return []
         child = rest[0] if rest else None
         if section == "artist" and child is None:
-            return [item async for item in self.get_library_artists()]
+            return await self._browse_artists()
         if section == "years":
             return await self._browse_years(child)
         if section == "songs":
@@ -1055,97 +1052,140 @@ class LivePhishProvider(MusicProvider):
                 continue
             track = self._parse_track(item, artist=artist, album=album, image_url=image)
             tracks.append(track)
-            # The stream call's skuID is the product sku when the show has one,
-            # and the track id when it does not.
-            if sku := _product_sku(item):
-                await self.mass.cache.set(
-                    f"livephish_sku_{track.item_id}",
-                    sku,
-                    expiration=3600 * 24 * 14,
-                    provider=self.instance_id,
-                )
         await self._cache_tracks(tracks)
         return tracks
 
-    async def _library_artist(self, artist: Artist | ItemMapping) -> Artist | ItemMapping:
-        """
-        Return the library artist for a Live Phish artist when it has been saved.
+    async def _favorite_albums(self) -> list[Album]:
+        """Return the account's favourite releases."""
+        return [
+            self._parse_album(item)
+            for item in await self._get_all_items("stash", "releases/favorite")
+            if _release_id(item)
+        ]
 
-        :param artist: The artist on a provider track.
-        """
-        if artist.provider == "library":
-            return artist
-        library_artist = await self.mass.music.artists.get_library_item_by_prov_id(
-            artist.item_id, self.instance_id
+    async def _purchased_albums(self) -> list[Album]:
+        """Return purchased audio shows, keyed by the release id."""
+        albums: list[Album] = []
+        rows = await self._get_all_items(
+            "purchases",
+            "",
+            itemTypes="audio",
+            productTypes="release",
+            sorting="purchaseDateDesc",
+            includePhysical="true",
         )
-        if library_artist is None:
-            return artist
-        return ItemMapping.from_item(library_artist)
+        for row in rows:
+            release = _purchase_release(row)
+            if release is not None and _release_id(release):
+                albums.append(self._parse_album(release))
+        return albums
 
-    async def _container_id(self, track_id: str) -> str:
-        """
-        Return the show id the stream API expects alongside a track.
+    def _account_artist(self, item: Any) -> Artist | None:
+        """Return an artist parsed from a favourite-artist row."""
+        if not isinstance(item, dict):
+            return None
+        artist_id = item.get("artistID") or item.get("id")
+        artist_name = item.get("artistName") or item.get("name")
+        if not artist_id or not artist_name:
+            return None
+        return self._parse_artist(item)
 
-        :param track_id: The Live Phish track id.
-        """
-        track = await self.get_track(track_id)
-        album_id = track.album.item_id if track.album is not None else None
-        if not album_id:
-            raise MediaNotFoundError(f"No show found for track {track_id}")
-        return str(album_id)
+    async def _browse_artists(self) -> list[Artist]:
+        """Return the public artist catalog for the Artist browse folder."""
+        catalog = await self._get_legacy_catalog("catalog.artists")
+        artists = catalog.get("artists") if isinstance(catalog, dict) else None
+        if not isinstance(artists, list):
+            return []
+        return [
+            self._parse_artist(item)
+            for item in artists
+            if isinstance(item, dict)
+            and (item.get("artistID") or item.get("id"))
+            and (item.get("artistName") or item.get("name"))
+        ]
 
     async def _get_stream_url(self, item_id: str) -> str:
         """
-        Return the HLS stream url for a track.
+        Return the stream url for a track in the configured quality.
 
-        The player requests ``subplayer.aspx`` with the track as ``skuID`` and the
-        show as ``containerID``. The plan decides the stream; the call does not
-        send a quality id.
+        A plan without HiFi is requested as lossy. The service chooses the file
+        when both formats are offered.
 
         :param item_id: The Live Phish track id.
         """
         subscription_info = await self._get_subscription_info()
-        access_id = self._subscription_access(subscription_info)[1]
-        container_id = await self._container_id(item_id)
-        account: dict[str, Any] = {
-            "subCostplanIDAccessList": access_id,
-            "startDateStamp": _unix_stamp(subscription_info["startedAt"]),
-            "endDateStamp": _unix_stamp(subscription_info["endsAt"]),
-            "nn_userID": await self._get_user_id(),
-            "subscriptionID": subscription_info["legacySubscriptionId"],
-            "app": 1,
-        }
-        if stream_url := await self._request_stream_link(
-            {**account, "skuID": item_id, "containerID": container_id, "v": 2}
-        ):
-            return stream_url
-        product_sku = await self._cached_sku(item_id) or await self._sku_from_show(
-            container_id, item_id
-        )
-        if product_sku and product_sku != item_id:
-            if stream_url := await self._request_stream_link(
-                {**account, "skuID": product_sku, "containerID": container_id, "v": 2}
+        plan, _access_id = self._subscription_access(subscription_info)
+        payload = await self._request_playback_url(item_id, self._stream_formats(plan))
+        url = _playable_stream_link(payload.get("url") if isinstance(payload, dict) else None)
+        if not url:
+            raise MediaNotFoundError(f"No stream found for song {item_id}.")
+        return url
+
+    def _stream_formats(self, plan: dict[str, Any]) -> str:
+        """
+        Return the formats query for the configured quality and the account plan.
+
+        :param plan: The plan object of the user's Live Phish subscription.
+        """
+        quality = str(self.config.get_value(CONF_QUALITY))
+        if quality != QUALITY_LOSSY and plan.get("isHighQuality") is True:
+            return f"{QUALITY_LOSSLESS},{QUALITY_LOSSY}"
+        if quality != QUALITY_LOSSY and not self._plan_quality_logged:
+            self.logger.info(
+                "Your Live Phish plan does not include lossless streaming, using lossy instead"
+            )
+            self._plan_quality_logged = True
+        return QUALITY_LOSSY
+
+    async def _request_playback_url(self, item_id: str, formats: str) -> dict[str, Any]:
+        """
+        Request the playback url for one track.
+
+        A rate limit stops the request. It is not retried as another format.
+
+        :param item_id: The Live Phish track id.
+        :param formats: The formats query, such as ``lossy`` or ``lossless,lossy``.
+        """
+        if not item_id or "/" in item_id:
+            raise MediaNotFoundError(f"Track {item_id} not found")
+        token = await self.login()
+        timeout = ClientTimeout(total=120)
+        try:
+            async with (
+                self.throttler.acquire(),
+                self.mass.http_session.get(
+                    f"{PLAYBACK_API}/tracks/{item_id}/url",
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={"formats": formats, "forceFlac": "true"},
+                    ssl=True,
+                    timeout=timeout,
+                ) as response,
             ):
-                return stream_url
-        # The player SDK also resolves audio with method=subPlayer and the track id.
-        if stream_url := await self._request_stream_link(
-            {
-                **account,
-                "platformID": 1,
-                "HLS": 1,
-                "orgn": "websdk",
-                "method": "subPlayer",
-                "trackId": item_id,
-            }
-        ):
-            return stream_url
-        raise MediaNotFoundError(f"No stream found for song {item_id}.")
+                if response.status == 429:
+                    raise RateLimited(
+                        "Live Phish API rate limited",
+                        backoff_time=parse_retry_after(response.headers.get("Retry-After")),
+                    )
+                if response.status in (500, 502, 503, 504):
+                    raise ResourceTemporarilyUnavailable("Live Phish API temporarily unavailable")
+                if response.status == 401:
+                    self._auth_token = None
+                    raise LoginFailed("Live Phish authentication expired or was rejected")
+                if response.status >= 400:
+                    return {}
+                payload = await response.json()
+        except (ClientConnectionError, ClientPayloadError, TimeoutError) as err:
+            raise ResourceTemporarilyUnavailable("Live Phish playback connection failed") from err
+        except (ContentTypeError, ValueError) as err:
+            raise InvalidDataError("Invalid Live Phish playback response") from err
+        return payload if isinstance(payload, dict) else {}
 
     def _subscription_access(self, subscription_info: dict[str, Any]) -> tuple[dict[str, Any], str]:
         """
-        Return the plan object and the cost-plan id the stream API expects.
+        Return the plan object and the plan id of the active subscription.
 
         The player reads ``plan.planId`` first, then a promo plan id, then ``plan.id``.
+        Playback quality reads ``isHighQuality`` from the plan object.
 
         :param subscription_info: The account subscription payload.
         """
@@ -1161,73 +1201,6 @@ class LivePhishProvider(MusicProvider):
             msg = "No active Live Phish subscription found for this account"
             raise AudioError(msg)
         return active, str(access_id)
-
-    async def _cached_sku(self, track_id: str) -> str | None:
-        """Return a product sku cached while loading the show, when one exists."""
-        cached = await self.mass.cache.get(f"livephish_sku_{track_id}", provider=self.instance_id)
-        if isinstance(cached, str) and cached:
-            return cached
-        return None
-
-    async def _sku_from_show(self, show_id: str, track_id: str) -> str | None:
-        """
-        Return the product sku for a track on a show.
-
-        :param show_id: The Live Phish show id.
-        :param track_id: The Live Phish track id.
-        """
-        try:
-            response = await self._get_data("catalog", f"shows/{show_id}")
-        except (
-            InvalidDataError,
-            LoginFailed,
-            MediaNotFoundError,
-            RateLimited,
-            ResourceTemporarilyUnavailable,
-        ):
-            return None
-        album = response.get("Response") if isinstance(response, dict) else None
-        if not isinstance(album, dict):
-            return None
-        for item in album.get("tracks") or []:
-            if not isinstance(item, dict) or str(item.get("trackID")) != track_id:
-                continue
-            sku = _product_sku(item)
-            if sku:
-                await self.mass.cache.set(
-                    f"livephish_sku_{track_id}",
-                    sku,
-                    expiration=3600 * 24 * 14,
-                    provider=self.instance_id,
-                )
-            return sku
-        return None
-
-    async def _request_stream_link(self, params: dict[str, Any]) -> str | None:
-        """
-        Request a stream link from the Live Phish stream API, returning None when there is none.
-
-        :param params: The query parameters for the player stream request.
-        """
-        timeout = ClientTimeout(total=120)
-        try:
-            async with self.mass.http_session.get(
-                STREAM_API_URL,
-                params={**params, **_subplayer_proof()},
-                ssl=True,
-                timeout=timeout,
-            ) as response:
-                try:
-                    response.raise_for_status()
-                except ClientResponseError:
-                    return None
-                body = await response.text()
-        except ClientConnectionError, ClientPayloadError, TimeoutError:
-            return None
-        stream = _stream_payload(body)
-        if not isinstance(stream, dict):
-            return None
-        return _playable_stream_link(stream.get("streamLink"))
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
@@ -1277,7 +1250,9 @@ class LivePhishProvider(MusicProvider):
         if response.status >= 400:
             raise InvalidDataError(f"Live Phish API request failed with HTTP {response.status}")
 
-    async def _get_all_items(self, api: str, endpoint: str, **kwargs: Any) -> list[dict[str, Any]]:
+    async def _get_all_items(
+        self, api: str, endpoint: str, max_items: int | None = None, **kwargs: Any
+    ) -> list[dict[str, Any]]:
         limit = 100
         offset = 0
         all_items: list[dict[str, Any]] = []
@@ -1287,10 +1262,10 @@ class LivePhishProvider(MusicProvider):
             result = await self._get_data(api, endpoint, **kwargs)
             total = result["total"]
             all_items += result["items"]
-            if total <= offset + limit:
+            if total <= offset + limit or (max_items is not None and len(all_items) >= max_items):
                 break
             offset += limit
-        return all_items
+        return all_items[:max_items]
 
     @use_cache(3600 * 4, base_class=RecommendationFolder)  # Cache for 4 hours
     async def _get_recommendation_folder(self, item_id: str) -> RecommendationFolder | None:
@@ -1487,30 +1462,6 @@ def _select_subscription(payload: Any) -> dict[str, Any]:
     raise AudioError("No active Live Phish subscription found for this account")
 
 
-def _unix_stamp(value: Any) -> int:
-    """Return a subscription date as a unix timestamp."""
-    if isinstance(value, bool):
-        raise InvalidDataError("Live Phish subscription dates could not be read")
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    text = str(value).strip()
-    for fmt in ("%m/%d/%Y %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
-        try:
-            parsed = datetime.strptime(text[:19], fmt).replace(tzinfo=UTC)
-        except ValueError:
-            continue
-        return int(parsed.timestamp())
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError as err:
-        raise InvalidDataError("Live Phish subscription dates could not be read") from err
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return int(parsed.timestamp())
-
-
 def _verification_token(html: str) -> str | None:
     """Return the antiforgery token from the identity login page."""
     match = _VERIFICATION_TOKEN.search(html)
@@ -1558,14 +1509,6 @@ def _cover_url(url: str | None) -> str | None:
     return f"{IMAGE_CDN}/{url}"
 
 
-def _product_sku(track_obj: dict[str, Any]) -> str | None:
-    """Return the show track's product sku, when the catalog lists one."""
-    for product in track_obj.get("products") or []:
-        if isinstance(product, dict) and product.get("skuID"):
-            return str(product["skuID"])
-    return None
-
-
 def _rewrite_stream_link(url: str) -> str:
     """Rewrite a stream host the way the player does before playback."""
     replacements = (
@@ -1590,27 +1533,28 @@ def _playable_stream_link(url: Any) -> str | None:
     return rewritten
 
 
-def _stream_payload(body: str) -> Any:
-    """Return the stream response object from JSON or a JSONP wrapper."""
-    try:
-        return json_loads(body)
-    except ValueError:
-        start = body.find("{")
-        end = body.rfind("}")
-        if start < 0 or end <= start:
-            return None
-        try:
-            return json_loads(body[start : end + 1])
-        except ValueError:
-            return None
+def _release_id(item: Any) -> str | None:
+    """Return the release id a catalog or favourite row can be stored under."""
+    if not isinstance(item, dict):
+        return None
+    for key in ("releaseId", "id", "containerID"):
+        if item.get(key):
+            return str(item[key])
+    return None
 
 
-def _subplayer_proof() -> dict[str, str]:
-    """Return the short-lived proof the Live Phish player attaches to subplayer requests."""
-    # lxp is a millisecond timestamp 60s ahead; tk is md5 of the player's fixed prefix plus lxp.
-    expires = f"{int(time() * 1000) + 60_000}.000000"
-    digest = hashlib.md5(f"jdfirj8475jf_{expires}".encode(), usedforsecurity=False).hexdigest()
-    return {"lxp": expires, "tk": digest}
+def _purchase_release(row: Any) -> dict[str, Any] | None:
+    """Return the audio release inside a stash purchase, when the row has one."""
+    if not isinstance(row, dict):
+        return None
+    product = row.get("product")
+    if not isinstance(product, dict):
+        return None
+    content = product.get("contentType")
+    if isinstance(content, str) and content.lower() != "audio":
+        return None
+    release = product.get("release")
+    return release if isinstance(release, dict) else None
 
 
 def _api_url(api: str, endpoint: str) -> str:
@@ -1620,6 +1564,8 @@ def _api_url(api: str, endpoint: str) -> str:
         return f"{CATALOG_API}/{endpoint}" if endpoint else CATALOG_API
     if api == "stash":
         return f"{STASH_API}/me/{endpoint}" if endpoint else f"{STASH_API}/me"
+    if api == "purchases":
+        return f"{STASH_URL}/items/{endpoint}" if endpoint else f"{STASH_URL}/items"
     if api == "subscription":
         return ACCOUNT_URL
     if api == "user":
