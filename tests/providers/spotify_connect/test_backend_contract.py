@@ -804,10 +804,10 @@ def test_audio_source_declares_ordering_with_queue_control() -> None:
     provider, daemon, _mass = _make_provider(backend)
     provider.config.name = "Spotify Connect Test"
 
-    source = provider._build_audio_source(daemon, "Player 1")
+    source = provider._build_audio_source(daemon)
 
     assert source.item_id == _PLAYER_ID
-    assert source.name == "Spotify Connect Test (Player 1)"
+    assert (source.name, source.owner_player_id) == ("Spotify Connect Test", _PLAYER_ID)
     assert source.can_shuffle is True
     assert source.can_repeat is True
     # account verification arrives with the play redirect
@@ -820,7 +820,7 @@ def test_audio_source_stays_transport_only_without_queue_control() -> None:
     provider, daemon, _mass = _make_provider(backend)
     provider.config.name = "Spotify Connect Test"
 
-    source = provider._build_audio_source(daemon, "Player 1")
+    source = provider._build_audio_source(daemon)
 
     assert source.can_shuffle is False
     assert source.can_repeat is False

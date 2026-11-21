@@ -2505,9 +2505,15 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
                 player.on_queue_updated(queue_id)
 
     async def _on_player_config_updated(self, event: MassEvent) -> None:
-        """Let the bridges of a player follow a saved config, such as an output switched off."""
+        """
+        Let a player follow its saved config.
+
+        That reaches its bridges, such as an output switched off, and an input of it that
+        plays, such as one that takes the new name of its player.
+        """
         if self._unloading or self.mass.closing or (player_id := event.object_id) is None:
             return
+        self.sources.on_player_config_updated(player_id)
         await evaluate_bridges_of_player(self.mass, player_id)
 
     async def _on_player_removed(self, event: MassEvent) -> None:

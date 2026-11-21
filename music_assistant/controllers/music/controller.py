@@ -7,6 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from contextlib import aclosing, suppress
 from copy import deepcopy
+from dataclasses import replace
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
@@ -1094,7 +1095,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 if not initiable:
                     continue
                 if len(initiable) == 1:
-                    root_items.append(initiable[0])
+                    root_items.append(self._client_audio_source(initiable[0]))
                 else:
                     root_items.append(
                         BrowseFolder(
@@ -1151,7 +1152,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             and ProviderFeature.AUDIO_SOURCE in browse_prov.supported_features
         ):
             initiable_items: list[MediaItemType | BrowseFolder] = [
-                source
+                self._client_audio_source(source)
                 for source in await self._get_provider_audio_sources(browse_prov, player_id)
                 if source.can_initiate
             ]
@@ -1606,16 +1607,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 name=item_id,
             )
         if media_type == MediaType.AUDIO_SOURCE:
-            # AudioSources are not library-backed; resolve them through the sources
-            # the owning provider lists for the calling user. Returning the live
-            # MediaItem lets play_media create a queue item the standard way.
-            prov = self.mass.get_provider(provider_instance_id_or_domain)
-            if isinstance(prov, AudioSourceMixin):
-                for source in await self._get_provider_audio_sources(prov, None):
-                    if source.item_id == item_id:
-                        return source
-            raise MediaNotFoundError(
-                f"AudioSource {provider_instance_id_or_domain}/{item_id} not found"
+            return self._client_audio_source(
+                await self.get_audio_source(item_id, provider_instance_id_or_domain)
             )
         if media_type == MediaType.SOUND_EFFECT:
             # Sound effects are not library-backed; resolve them live from the
@@ -1637,6 +1630,32 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
             allow_update_metadata=allow_update_metadata,
+        )
+
+    async def get_audio_source(
+        self, item_id: str, provider_instance_id_or_domain: str
+    ) -> AudioSource:
+        """
+        Return a live audio source as its provider delivers it, with its plain name.
+
+        Only a source the calling user may use is returned: not one of a player the user
+        has no access to, nor an input of the device of such a player. A client gets the
+        source from the item commands instead, named for outside any player.
+
+        :param item_id: Id of the source at its provider.
+        :param provider_instance_id_or_domain: The provider that delivers it.
+        :raises MediaNotFoundError: When the provider delivers no such source, or none the
+            calling user may use.
+        """
+        # AudioSources are not library-backed; resolve them through the sources
+        # the owning provider lists for the calling user
+        prov = self.mass.get_provider(provider_instance_id_or_domain)
+        if isinstance(prov, AudioSourceMixin):
+            for source in await self._get_provider_audio_sources(prov, None):
+                if source.item_id == item_id:
+                    return source
+        raise MediaNotFoundError(
+            f"AudioSource {provider_instance_id_or_domain}/{item_id} not found"
         )
 
     @api_command(
@@ -3178,6 +3197,24 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for device_id in {player.player_id, *player.protocol_ids}:
                 hidden.update(x.item_id for x in provider.get_player_input_sources(device_id))
         return [x for x in sources if x.item_id not in hidden]
+
+    def _client_audio_source(self, source: AudioSource) -> AudioSource:
+        """
+        Return a live audio source as a client gets it.
+
+        It is named for outside any player, and names the player it belongs to by its id.
+
+        :param source: The source as its provider delivers it.
+        """
+        if source.owner_player_id is None:
+            return source
+        owner = self.mass.players.get_audio_source_owner(source)
+        return replace(
+            source,
+            name=self.mass.players.get_audio_source_name(source),
+            sort_name=None,
+            owner_player_id=owner.player_id if owner else None,
+        )
 
     async def _link_genres_if_unmapped(self, item: MediaItemType) -> None:
         """Link a library item to the genres it carries, if it has no genre links yet."""

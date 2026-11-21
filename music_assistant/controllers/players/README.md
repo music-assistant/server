@@ -720,7 +720,9 @@ and still waits for another one, holds that off.
   provider type can deliver them by mixing in `AudioSourceMixin`
   (`music_assistant/models/media_capabilities.py`). The controller keeps the session per player
   and passes the transport commands for it to the provider that owns it; the queue keeps its
-  items and goes inactive meanwhile.
+  items and goes inactive meanwhile. A source carries its own name and the player it belongs to;
+  `get_audio_source_name` composes the name for where it is shown: the name alone on that player,
+  with the player's name after it elsewhere.
 - **An app from outside**: an app Music Assistant did not start can play on an audio protocol of the
   player, such as a stream cast from a phone to its Chromecast receiver. The player shows it unless
   an audio protocol is its active output, its own protocol plays (a paused player keeps its place
