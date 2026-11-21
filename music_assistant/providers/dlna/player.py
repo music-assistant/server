@@ -20,7 +20,7 @@ from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.helpers.upnp import create_didl_metadata
+from music_assistant.helpers.upnp import create_didl_metadata, get_sonos_zone
 from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.models.player_protocol import PlayerProtocol
 
@@ -32,6 +32,23 @@ if TYPE_CHECKING:
     from music_assistant_models.player import PlayerMedia
 
     from .provider import DLNAPlayerProvider
+
+
+def udn_identifiers(udn: str) -> list[tuple[IdentifierType, str]]:
+    """
+    Return the identifiers a renderer reports for matching with other protocols.
+
+    :param udn: The UDN of the renderer, with or without its "uuid:" prefix.
+    """
+    uuid_value = udn[5:] if udn.lower().startswith("uuid:") else udn
+    # the UDN of a Sonos renderer is the UUID of its Sonos player plus "_MR"
+    uuid_value = uuid_value.removesuffix("_MR")
+    identifiers = [(IdentifierType.UUID, uuid_value)]
+    # a Sonos Amp or soundbar with a headphone zone serves a renderer for that zone on
+    # the same MAC address and IP, which must not be linked to the speaker itself
+    if zone := get_sonos_zone(uuid_value):
+        identifiers.append((IdentifierType.ZONE, zone))
+    return identifiers
 
 
 def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
@@ -480,15 +497,8 @@ class DLNAPlayer(PlayerProtocol):
                 model=self.device.model_name,
                 manufacturer=self.device.manufacturer,
             )
-            # Add UDN (protocol_id) as UUID identifier for matching with other protocols
-            # Strip the "uuid:" prefix if present for proper matching
-            uuid_value = self.protocol_id
-            if uuid_value.lower().startswith("uuid:"):
-                uuid_value = uuid_value[5:]
-            # the UDN of a Sonos renderer is the UUID of its Sonos player plus "_MR"
-            self._attr_device_info.add_identifier(
-                IdentifierType.UUID, uuid_value.removesuffix("_MR")
-            )
+            for identifier_type, value in udn_identifiers(self.protocol_id):
+                self._attr_device_info.add_identifier(identifier_type, value)
             # MAC address is NOT extracted from UUID because the last 12 chars
             # of UPnP UUIDs are unreliable — many devices put random/model
             # values there, not the real hardware MAC. Instead, the player
