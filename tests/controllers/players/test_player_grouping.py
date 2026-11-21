@@ -1246,7 +1246,7 @@ class TestAdHocLeadershipTransfer:
         leader_protocol.set_members.assert_awaited_once_with(
             player_ids_to_add=None, player_ids_to_remove=[_device("visualizer")]
         )
-        queue_stop.assert_awaited_once_with("leader")
+        queue_stop.assert_awaited_once_with("leader", keep_sleep_timer=False)
         controller._handle_cmd_stop.assert_not_awaited()
 
     async def test_handle_set_members_dissolves_leader_when_idle(
@@ -1273,7 +1273,7 @@ class TestAdHocLeadershipTransfer:
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
         # an idle queue is where leftovers hide: its session and item buffers outlive
         # the playback that already ended, so the dissolve tears them down too
-        queue_stop.assert_awaited_once_with("leader")
+        queue_stop.assert_awaited_once_with("leader", keep_sleep_timer=False)
         controller._handle_cmd_stop.assert_not_awaited()
 
     async def test_transfer_stops_nothing_on_the_way_out(self, mock_mass: MagicMock) -> None:
@@ -1339,7 +1339,7 @@ class TestDissolvedLeaderEndsTheQueue:
 
         await controller._handle_set_members(leader, player_ids_to_remove=["leader"])
 
-        queue_stop.assert_awaited_once_with("leader")
+        queue_stop.assert_awaited_once_with("leader", keep_sleep_timer=False)
         # the queue stop issues the device stop itself
         device_stop.assert_not_awaited()
 

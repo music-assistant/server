@@ -461,6 +461,28 @@ async def test_an_announcement_keeps_the_sleep_timer() -> None:
     )
 
 
+async def test_a_pause_made_with_a_stop_keeps_the_sleep_timer() -> None:
+    """A player that cannot pause stops instead, the timer still waits for its target."""
+    ctrl, queue, mass = _controller()
+    ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_CHAPTER)
+    mass.players.get_group_and_player_lock = Mock(return_value=nullcontext())
+    mass.players._handle_cmd_stop = AsyncMock()
+    # set by the pause command before the player turns it into a stop
+    ctrl._queue_data["q1"].halted_by_command = True
+
+    await ctrl._handle_stop("q1", keep_sleep_timer=True)
+    queue.state = PlaybackState.IDLE
+    ctrl._handle_sleep_timer(queue, *_states(PlaybackState.IDLE, "item_1", prev_elapsed=50))
+
+    _scheduled(mass)
+    assert ctrl._queue_data["q1"].sleep_timer_target == SleepTimerTarget(
+        SleepTimerMode.END_OF_CHAPTER, "item_1", 100
+    )
+    mass.players.reset_sleep_timer.assert_not_called()
+    # the countdown of the playing queue gives way to the end it waits for
+    mass.players.update_sleep_timer.assert_called_with("q1", SleepTimerMode.END_OF_CHAPTER, None)
+
+
 @pytest.mark.parametrize(
     ("prev_elapsed", "elapsed_time", "stops"),
     [
