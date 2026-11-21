@@ -290,7 +290,7 @@ class StationConverter(BaseConverter):
 
         return Radio(
             item_id=station.id,
-            name=full_station_name(station),
+            name=full_station_name(station=station),
             provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
                 image_url, self.context.provider.instance_id, station.description
@@ -304,7 +304,7 @@ class StationConverter(BaseConverter):
 
         return Radio(
             item_id=station.id,
-            name=full_station_name(station),
+            name=full_station_name(station=station),
             provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
                 image_url, self.context.provider.instance_id, station.description
@@ -316,7 +316,7 @@ class StationConverter(BaseConverter):
         """Convert StationSearchResult object."""
         return Radio(
             item_id=station.service_id,
-            name=full_station_name(station),
+            name=full_station_name(station=station),
             provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
                 station.station_image_url, self.context.provider.instance_id

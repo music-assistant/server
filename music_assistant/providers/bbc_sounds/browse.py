@@ -414,7 +414,7 @@ class BrowseManager:
                     if show_current_programme and isinstance(station, LiveStation)
                     else None
                 )
-                display_name = full_station_name(station)
+                display_name = full_station_name(station=station)
                 metadata = MediaItemMetadata(
                     description=description,
                     images=(
@@ -433,7 +433,7 @@ class BrowseManager:
                     ),
                 )
             elif isinstance(station, Station) and station.international:
-                display_name = full_station_name(station)
+                display_name = full_station_name(station=station)
                 metadata = MediaItemMetadata(description=station.description)
             else:
                 continue

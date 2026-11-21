@@ -25,7 +25,7 @@ UNKNOWN_TITLE = "Unknown programme"
 UNKNOWN_STATION = "Unknown station"
 LIVE_MARKER = "«LIVE»"
 REWOUND_MARKER = "«Rewound»"
-UNPREFIXED_STATIONS = frozenset({"cbeebies_radio"})
+UNPREFIXED_STATIONS = frozenset({"CBeebies Radio"})
 TITLE_END_PUNCTUATION = ("!", "?", ".", ":")
 # Networks that name no station, e.g. the BBC News website's clips, which every other
 # title in a BBC app would share
@@ -167,7 +167,11 @@ def station_name(station: Station | LiveStation | StationSearchResult) -> str:
     return name or UNKNOWN_STATION
 
 
-def full_station_name(station: Station | LiveStation | StationSearchResult) -> str:
+def full_station_name(
+    *,
+    station: Station | LiveStation | StationSearchResult | None = None,
+    station_name_string: str | None = None,
+) -> str:
     """
     Return a full station name with the BBC prefix, if appropriate.
 
@@ -175,14 +179,24 @@ def full_station_name(station: Station | LiveStation | StationSearchResult) -> s
     of radio stations in Music Assistant, "BBC Radio 1" is more useful as a display name
     than "Radio 1".
 
+    Can be called with a station object, or an existing station name.
+
     e.g. CBeebies, BBC Radio Four
     """
-    name = station_name(station)
+    if station is not None and station_name_string is not None:
+        raise TypeError("full_station_name() takes station or station_name_string, not both")
+    if station is not None:
+        name = station_name(station)
+    elif station_name_string is not None:
+        name = station_name_string
+    else:
+        raise TypeError("full_station_name() requires station or station_name_string")
+
     if name == UNKNOWN_STATION:
         return name
     if (
         name.startswith(STATION_PREFIX)
-        or station.item_id in UNPREFIXED_STATIONS
+        or name in UNPREFIXED_STATIONS
         or not name.isascii()  # These titles already have the equivalent of 'BBC' in
     ):
         return name
@@ -202,7 +216,7 @@ def programme_source(item: PlayableItem) -> str | None:
     if item.container and item.container.title:
         return item.container.title
     if item.network and item.network.id not in GENERIC_NETWORKS:
-        return item.network.short_title
+        return full_station_name(station_name_string=item.network.short_title)
     return None
 
 
