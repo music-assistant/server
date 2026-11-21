@@ -423,6 +423,7 @@ class SendspinAirPlayBridge:
                 on_mute_change=self._on_mute_change,
                 on_stream_start=self._on_bridge_stream_start,
                 on_stream_end=self._on_bridge_stream_end,
+                on_stream_clear=self._on_bridge_stream_clear,
                 on_explicit_stop=self._on_bridge_explicit_stop,
                 initial_volume=self.airplay_player.volume_level or 25,
                 initial_muted=bool(self.airplay_player.volume_muted),
@@ -648,6 +649,10 @@ class SendspinAirPlayBridge:
         # to get wrong, but it would come straight back through the role, and an
         # unchanged mute is not a command the controller drops.
         self.mass.create_task(self.airplay_player.volume_mute(muted))
+
+    def _on_bridge_stream_clear(self) -> None:
+        """Drop the audio kept for the stream: Sendspin cleared it, so its group will not play it."""
+        self._unplayed.clear()
 
     def _on_bridge_stream_end(self) -> None:
         """

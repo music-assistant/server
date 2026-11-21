@@ -4604,6 +4604,28 @@ def test_a_homepod_back_while_its_room_plays_starts_where_the_room_plays() -> No
     assert list(back._held_chunks) == [*kept, following]
 
 
+def test_a_homepod_back_after_sendspin_cleared_the_stream_starts_on_what_follows() -> None:
+    """
+    A HomePod that comes back after Sendspin cleared the stream starts on none of the cleared audio.
+
+    A seek or a track change can clear the audio delivered so far while the stream goes on, and
+    the room will not play what the bridge held of it.
+    """
+    bridge, homepods, _ = _make_room_bridge(speakers=2, homepods_only=True)
+    for homepod in homepods:
+        _play_anchored(bridge._transports[homepod.protocol_id], _make_kept_stream())
+    _deliver_chunks(bridge, SENDSPIN_EPOCH_US, SENDSPIN_EPOCH_US + SENDSPIN_BUFFER_US)
+
+    bridge._on_bridge_stream_clear()
+
+    assert not bridge._unplayed
+    with patch.object(_BridgeTransport, "_start_protocol_from_chunk", MagicMock()):
+        back = _homepod_back(bridge, homepods)
+    # armed for the next chunk Sendspin delivers, as at the start of a stream
+    assert back.starting is False
+    assert not back._held_chunks
+
+
 def test_an_apple_tv_back_while_its_room_plays_starts_where_its_speakers_play() -> None:
     """
     The Apple TV added back to a room that plays starts on none of the audio the bridge holds.
