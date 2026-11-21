@@ -1633,8 +1633,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Link a library item to the music providers MusicBrainz knows it on.
 
-        Only providers the item has no mapping for yet are linked, and a linked item that
-        another library item already holds is left alone rather than merged.
+        Only providers the item has no mapping for yet are linked. A linked item that another
+        library item already holds is left alone, unless MusicBrainz says that library item is
+        the same one, which is then merged into this one.
 
         :param db_item: The library item to link.
         :param urls: The item's URLs on MusicBrainz (its URL relations).
@@ -1649,7 +1650,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             for candidate in candidates
             if await self._verify_musicbrainz_mapping(db_item, candidate)
         ]
-        added = await self.add_unclaimed_provider_mappings(db_item.item_id, verified)
+        merged = [
+            candidate
+            for candidate in verified
+            if await self._merge_musicbrainz_duplicate(db_item, candidate)
+        ]
+        added = merged + await self.add_unclaimed_provider_mappings(db_item.item_id, verified)
         db_item.provider_mappings.update(added)
         self.logger.debug(
             "Linked %s %s via MusicBrainz to: %s (already mapped: %s, unavailable: %s)",
@@ -2469,6 +2475,41 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param db_item: The library item the mapping would be added to.
         :param mapping: The candidate mapping, built from a MusicBrainz URL relation.
         """
+        return True
+
+    def _is_musicbrainz_duplicate(self, db_item: ItemCls, holder: ItemCls) -> bool:
+        """
+        Return True if another library item holding a linked provider item is the same item.
+
+        Override in a subclass whose MusicBrainz identity tells two library items apart.
+
+        :param db_item: The library item being linked.
+        :param holder: The other library item that holds the linked provider item.
+        """
+        return False
+
+    async def _merge_musicbrainz_duplicate(
+        self, db_item: ItemCls, mapping: ProviderMapping
+    ) -> bool:
+        """Merge the library item holding a linked mapping into the item if it is the same."""
+        holder = await self.get_library_item_by_prov_id(mapping.item_id, mapping.provider_instance)
+        if (
+            holder is None
+            or int(holder.item_id) == int(db_item.item_id)
+            or not self._is_musicbrainz_duplicate(db_item, holder)
+        ):
+            return False
+        self.logger.debug(
+            "Merging %s item id %s into item id %s: MusicBrainz links both to %s/%s",
+            self.media_type.value,
+            holder.item_id,
+            db_item.item_id,
+            mapping.provider_domain,
+            mapping.item_id,
+        )
+        merged_item = await self.merge_library_items(db_item.item_id, holder.item_id)
+        db_item.provider_mappings.update(merged_item.provider_mappings)
+        db_item.date_added = merged_item.date_added
         return True
 
     def _musicbrainz_link_provider(self) -> MusicbrainzProvider | None:

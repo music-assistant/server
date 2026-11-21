@@ -1208,6 +1208,11 @@ class AlbumsController(MediaControllerBase[Album]):
             return False
         return True
 
+    def _is_musicbrainz_duplicate(self, db_item: Album, holder: Album) -> bool:
+        """Return True if the album holding a linked album is not identified as another release."""
+        # an identified album is the release whose links are being added
+        return bool(db_item.mbid) and holder.mbid in (None, db_item.mbid)
+
     async def _link_tracks_to_release(
         self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease
     ) -> set[str]:
