@@ -264,6 +264,7 @@ AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 # that the group still plays and the player was not repurposed meanwhile, and
 # the whole schedule is abandoned as soon as either no longer holds.
 AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5, 15, 30, 60, 120)
+AIRPLAY_SOLO_RESUME_GUARD_SECONDS: Final[float] = 30.0
 
 # Shared audible instant for a native announcement over a live stream: now +
 # the largest member span + this margin. A member can only mix the clip into

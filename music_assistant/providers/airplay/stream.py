@@ -1566,7 +1566,7 @@ class AirPlayStream:
                         player.schedule_group_rejoin(rejoin_candidates)
                     if was_leader:
                         return
-                player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
+                self._set_idle_and_maybe_resume()
             finally:
                 if self._input_ended:
                     # the binary reports eof only once its drain is done, yet keeps the
@@ -1575,6 +1575,23 @@ class AirPlayStream:
                     self.mass.create_task(self.stop())
                 else:
                     await self.commands_pipe.remove()
+
+    def _set_idle_and_maybe_resume(self) -> None:
+        """Transition the player to IDLE and schedule bounded resume for solo queue drops."""
+        solo_resume_queue_id: str | None = None
+        if (
+            self.session is not None
+            and not self.ended_cleanly
+            and not self._receiver_closed
+            and not self.superseded
+            and not self.prevent_playback
+        ):
+            solo_resume_queue_id = self.player.get_resumable_solo_queue_id(
+                expected_state=PlaybackState.PLAYING
+            )
+        self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
+        if solo_resume_queue_id is not None:
+            self.player.schedule_solo_resume(solo_resume_queue_id)
 
     def _handle_status_line(self, line: str) -> bool:  # noqa: C901, PLR0912, PLR0915
         """Dispatch one cliairplay status line; True ends the stderr loop."""

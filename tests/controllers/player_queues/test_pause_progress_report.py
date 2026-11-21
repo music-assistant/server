@@ -146,3 +146,16 @@ async def test_pause_keeps_the_last_played_position(
         ctrl._resolve_default_toggles = Mock()  # type: ignore[method-assign]
         await ctrl.transfer_queue(QUEUE_ID, "target", auto_play=False)
         assert target.resume_pos == played_until
+
+
+async def test_pause_while_idle_marks_active_queue_halted() -> None:
+    """A pause request while the active queue is IDLE still records halted_by_command."""
+    ctrl = _controller(_book())
+    ctrl.mass.players._handle_cmd_pause = AsyncMock()
+    await ctrl.play_index(QUEUE_ID, 0)
+    _player_reports(ctrl, PlaybackState.IDLE, 0)
+    assert ctrl._queue_data[QUEUE_ID].queue.state == PlaybackState.IDLE
+    assert ctrl._queue_data[QUEUE_ID].halted_by_command is False
+
+    await ctrl.pause(QUEUE_ID)
+    assert ctrl._queue_data[QUEUE_ID].halted_by_command is True

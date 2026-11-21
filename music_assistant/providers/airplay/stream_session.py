@@ -182,12 +182,17 @@ class AirPlayStreamSession:
             self.use_shared_ptp = await self._resolve_shared_ptp(ap2_members)
             self._shared_ptp_resolved = True
         position_ms = int((self.media.elapsed_time or 0) * 1000)
+        for client in self.sync_clients:
+            client.cancel_recovery()
+        self._starting = True
         try:
             async with asyncio.TaskGroup() as task_group:
                 for player in self.sync_clients:
                     task_group.create_task(
                         self._member_start_step(
-                            player, "spawn its cli", self._start_client(player, self.use_shared_ptp)
+                            player,
+                            "spawn its cli",
+                            self._start_client(player, self.use_shared_ptp),
                         )
                     )
             await asyncio.gather(
@@ -239,6 +244,8 @@ class AirPlayStreamSession:
             if (specific := _first_music_assistant_error(err)) is not None:
                 raise specific from err
             raise PlayerCommandFailed("Playback failed to start") from err
+        finally:
+            self._starting = False
 
     def can_replace(self, sync_clients: list[AirPlayPlayer], pcm_format: AudioFormat) -> bool:
         """
@@ -1132,8 +1139,9 @@ class AirPlayStreamSession:
         :param use_shared_ptp: The session-wide shared-PTP decision applied to
             this member so the whole group shares one timing source.
         """
-        # joining a session supersedes any pending automatic group re-join
-        airplay_player.cancel_group_rejoin()
+        if not getattr(self, "_starting", False):
+            # late-joining a session supersedes any pending automatic group re-join or solo resume
+            airplay_player.cancel_recovery()
         airplay_player.release_foreign_mute_latch()
         # Held from the decision to displace whatever is published until the new
         # process is connected and published, so a Sendspin bridge start cannot

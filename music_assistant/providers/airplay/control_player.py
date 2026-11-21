@@ -270,6 +270,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def play(self) -> None:
         """Resume Music Assistant or external playback."""
+        self.cancel_recovery()
         await self._wake_for_playback()
         if self._stream_active:
             await super().play()
@@ -285,6 +286,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def pause(self) -> None:
         """Pause Music Assistant or external playback."""
+        self.cancel_recovery()
         if self._stream_active:
             await super().pause()
             return
@@ -299,9 +301,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def stop(self) -> None:
         """Stop Music Assistant playback, or return the device to its home screen."""
+        self.cancel_recovery()
         if self._stream_active:
             await super().stop()
             return
+        self._last_solo_resume_at = None
         # For external playback there is no real "stop"; returning to the home
         # screen backgrounds the current app, which is the closest equivalent.
         device = self._device_for_feature(FeatureName.Home)
@@ -320,6 +324,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Wake the controlled device and start Music Assistant playback."""
+        self.cancel_recovery()
         await self._wake_for_playback()
         await super().play_media(media)
 

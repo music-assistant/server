@@ -87,6 +87,7 @@ def _make_player() -> MagicMock:
     # A real None: a stream only speaks for the player while it is the published
     # one, and a bare MagicMock reads as some other stream having taken over.
     player.stream = None
+    player.get_resumable_solo_queue_id.return_value = None
 
     airplay_info = MagicMock()
     airplay_info.port = 7000
@@ -3380,6 +3381,95 @@ async def test_unexpected_death_of_superseded_stream_leaves_the_group_alone() ->
     player.schedule_group_rejoin.assert_not_called()
     player.set_state_from_stream.assert_not_called()
     assert stream._stopped is True
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_solo_player_schedules_resume() -> None:
+    """A solo player whose process dies while playing a queue schedules a bounded resume."""
+    player = _make_player()
+    call_order: list[str] = []
+
+    def _get_queue_id(*, expected_state: PlaybackState) -> str:
+        assert expected_state == PlaybackState.PLAYING
+        call_order.append("get_resumable_solo_queue_id")
+        return "plplayera0001"
+
+    player.get_resumable_solo_queue_id.side_effect = _get_queue_id
+    player.set_state_from_stream.side_effect = lambda **_: call_order.append("set_state_from_stream")
+    player.schedule_solo_resume.side_effect = lambda _qid: call_order.append("schedule_solo_resume")
+
+    stream = AirPlayStream(player)
+    stream._leave_group = MagicMock()  # type: ignore[method-assign]
+    stream.session = MagicMock()
+    player.stream = stream
+    process = MagicMock()
+    stream._cli_proc = process
+
+    async def _stderr_lines() -> AsyncGenerator[str]:
+        yield "some final log line"
+
+    with (
+        patch.object(process, "iter_stderr", return_value=_stderr_lines()),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream._stderr_reader()
+
+    player.schedule_group_rejoin.assert_not_called()
+    player.get_resumable_solo_queue_id.assert_called_once_with(expected_state=PlaybackState.PLAYING)
+    player.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE, elapsed_time=0, stream=stream
+    )
+    player.schedule_solo_resume.assert_called_once_with("plplayera0001")
+    assert call_order == [
+        "get_resumable_solo_queue_id",
+        "set_state_from_stream",
+        "schedule_solo_resume",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_sendspin_bridge_skips_solo_resume() -> None:
+    """A stream with no AirPlayStreamSession (Sendspin bridge) does not schedule solo resume."""
+    player = _make_player()
+    player.get_resumable_solo_queue_id.return_value = "plplayera0001"
+
+    stream = await _run_unexpected_process_death(player)
+
+    player.get_resumable_solo_queue_id.assert_not_called()
+    player.schedule_solo_resume.assert_not_called()
+    player.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE, elapsed_time=0, stream=stream
+    )
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_with_prevent_playback_skips_solo_resume() -> None:
+    """A stream stopped due to DACP device-prevent-playback does not schedule solo resume."""
+    player = _make_player()
+    player.get_resumable_solo_queue_id.return_value = "plplayera0001"
+
+    stream = AirPlayStream(player)
+    stream._leave_group = MagicMock()  # type: ignore[method-assign]
+    stream.session = MagicMock()
+    stream.prevent_playback = True
+    player.stream = stream
+    process = MagicMock()
+    stream._cli_proc = process
+
+    async def _stderr_lines() -> AsyncGenerator[str]:
+        yield "some final log line"
+
+    with (
+        patch.object(process, "iter_stderr", return_value=_stderr_lines()),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream._stderr_reader()
+
+    player.get_resumable_solo_queue_id.assert_not_called()
+    player.schedule_solo_resume.assert_not_called()
+    player.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE, elapsed_time=0, stream=stream
+    )
 
 
 @pytest.mark.asyncio
