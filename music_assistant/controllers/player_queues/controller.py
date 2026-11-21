@@ -1146,6 +1146,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # action of the queue still plays its track and keeps it
             self._end_stream_slot_reservations(queue_id)
 
+        def _is_paused(player: Player) -> bool:
+            # a player that cannot pause stops instead, and its queue stays halted by the pause
+            return player.playback_state == PlaybackState.PAUSED or (
+                player.playback_state == PlaybackState.IDLE
+                and (queue_data := self._queue_data.get(queue_id)) is not None
+                and queue_data.halted_by_command
+            )
+
         async def _watch_pause(player: Player) -> None:
             count = 0
             # wait for pause
@@ -1153,11 +1161,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 count += 1
                 await asyncio.sleep(1)
             # wait for unpause
-            if player.playback_state != PlaybackState.PAUSED:
+            if not _is_paused(player):
                 return
             count = 0
             pause_timeout = self._get_pause_timeout()
-            while player.playback_state == PlaybackState.PAUSED:
+            while _is_paused(player):
                 if self.mass.players._has_waiting_start(player):
                     # a start that waits for players to start up is about to play: the
                     # stop below would call it off, so the timeout counts from its end
@@ -1170,6 +1178,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # if player is still paused when the limit is reached, send stop
             if player.playback_state == PlaybackState.PAUSED:
                 await self.stop(queue_id)
+            elif _is_paused(player):
+                # the queue stopped at the pause already, only its sleep timer is left to end
+                self._clear_sleep_timer(queue_id)
 
         # we auto stop a player from paused when its paused for the configured pause timeout
         if (
