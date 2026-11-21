@@ -6,7 +6,7 @@ import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Audiobook, ProviderMapping
 
-from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.mass import MusicAssistant
 
@@ -172,3 +172,66 @@ async def test_older_provider_report_keeps_newer_progress(
 
     row = await mass.music.database.get_row(DB_TABLE_MEDIA_PROGRESS, row_key)
     assert (row and (row["seconds_played"], row["timestamp"])) == expected_row
+
+
+async def test_timestamped_provider_replay_updates_timestamp_and_history(
+    mass: MusicAssistant,
+) -> None:
+    """A timestamped provider replay updates timestamp, play_history, and play_count."""
+    listener = await mass.webserver.auth.create_user("replaylistener")
+    audiobook = await _add_audiobook(mass, "replay_book")
+    row_key = {
+        "item_id": audiobook.item_id,
+        "provider": "library",
+        "media_type": MediaType.AUDIOBOOK.value,
+        "userid": listener.user_id,
+    }
+
+    await mass.music.mark_item_played(
+        audiobook,
+        fully_played=True,
+        seconds_played=180,
+        user_initiated=False,
+        userid=listener.user_id,
+        progress_timestamp=1000,
+    )
+    # Re-polling the exact same timestamp is a no-op
+    await mass.music.mark_item_played(
+        audiobook,
+        fully_played=True,
+        seconds_played=180,
+        user_initiated=False,
+        userid=listener.user_id,
+        progress_timestamp=1000,
+    )
+    # A strictly newer timestamped completion records a second play
+    await mass.music.mark_item_played(
+        audiobook,
+        fully_played=True,
+        seconds_played=180,
+        user_initiated=False,
+        userid=listener.user_id,
+        progress_timestamp=2000,
+    )
+
+    row = await mass.music.database.get_row(DB_TABLE_MEDIA_PROGRESS, row_key)
+    assert row is not None
+    assert row["timestamp"] == 2000
+
+    history_rows = await mass.music.database.get_rows(
+        DB_TABLE_PLAY_HISTORY,
+        {
+            "item_id": audiobook.item_id,
+            "provider": "library",
+            "media_type": MediaType.AUDIOBOOK.value,
+            "userid": listener.user_id,
+        },
+    )
+    assert [int(r["timestamp"]) for r in history_rows] == [1000, 2000]
+
+    lib_row = await mass.music.database.get_row(
+        mass.music.audiobooks.db_table, {"item_id": int(audiobook.item_id)}
+    )
+    assert lib_row is not None
+    assert int(lib_row["play_count"]) == 2
+    assert int(lib_row["last_played"]) == 2000

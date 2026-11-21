@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import aiohttp
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -30,6 +31,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
@@ -57,6 +59,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
+from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.external_ids import (
     barcode_to_upc,
     is_valid_barcode,
@@ -69,6 +72,7 @@ from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     ThrottlerManager,
     current_priority,
+    request_priority,
 )
 from music_assistant.helpers.util import lock
 from music_assistant.models.music_provider import (
@@ -89,6 +93,7 @@ from .backends import (
 )
 from .constants import (
     BACKEND_SOLOIST,
+    CACHE_KEY_RECENTLY_PLAYED_CURSOR,
     CONF_ACCOUNT_COUNTRY,
     CONF_ACCOUNT_ID,
     CONF_ACCOUNT_NAME,
@@ -101,9 +106,11 @@ from .constants import (
     CONF_SPOTIFY_NORMALIZATION,
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
+    CONF_SYNC_RECENTLY_PLAYED,
     CREDENTIALS_FILE,
     GLOBAL_SEARCH_TIMEOUT,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
+    RECENTLY_PLAYED_CACHE_EXPIRATION,
     SOLOIST_DATA_DIR_NAME,
 )
 from .helpers import get_spotify_token
@@ -150,6 +157,8 @@ class SpotifyProvider(MusicProvider):
     _dev_session: SpotifySession
     # monotonic time until which the fallback to the global session is not logged again
     _dev_fallback_logged_until: float = 0.0
+    _recently_played_lock: asyncio.Lock
+    _recently_played_task_registered: bool = False
     backend: SpotifyPlaybackBackend
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -195,12 +204,19 @@ class SpotifyProvider(MusicProvider):
                 category="sync_options",
                 hidden=not audiobooks_supported,
             ),
+            ConfigEntry(
+                key=CONF_SYNC_RECENTLY_PLAYED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                category="sync_options",
+            ),
         )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
         self._playlist_pagination_states = OrderedDict()
+        self._recently_played_lock = asyncio.Lock()
         # global session (heavy rate limited) and developer session (custom client id)
         self._global_session = self._create_session(
             "global",
@@ -274,9 +290,35 @@ class SpotifyProvider(MusicProvider):
                 await self.backend.unload()
             raise
 
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
+        if self.recently_played_sync_enabled:
+            self.mass.tasks.register_scheduled_task(
+                task_id=self._recently_played_task_id,
+                name="Sync recently played from Spotify",
+                handler=self._sync_recently_played,
+                schedule=TaskSchedule.hourly(every=1),
+                initial_delay=60,
+                translation_key="sync_recently_played",
+                translation_owner=self.translation_owner,
+            )
+            self._recently_played_task_registered = True
+        else:
+            self.mass.tasks.unregister_scheduled_task(
+                self._recently_played_task_id, clear_persisted_state=True
+            )
+            self._recently_played_task_registered = False
+
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
         try:
+            if getattr(self, "_recently_played_task_registered", False):
+                await self.mass.tasks.unregister_scheduled_task_and_wait(
+                    self._recently_played_task_id,
+                    clear_persisted_state=is_removed or not self.recently_played_sync_enabled,
+                )
+                self._recently_played_task_registered = False
             if (backend := getattr(self, "backend", None)) is not None:
                 await backend.unload()
         finally:
@@ -346,6 +388,12 @@ class SpotifyProvider(MusicProvider):
     def podcast_progress_sync_enabled(self) -> bool:
         """Check if played status sync is enabled."""
         value = self.config.get_value(CONF_SYNC_PODCAST_PROGRESS, True)
+        return bool(value) if value is not None else True
+
+    @property
+    def recently_played_sync_enabled(self) -> bool:
+        """Check if syncing recently played tracks from Spotify is enabled."""
+        value = self.config.get_value(CONF_SYNC_RECENTLY_PLAYED, True)
         return bool(value) if value is not None else True
 
     @property
@@ -456,6 +504,19 @@ class SpotifyProvider(MusicProvider):
         ):
             if item and item["id"]:
                 yield parse_playlist(item, self)
+
+    async def sync_library(self, media_type: MediaType) -> None:
+        """
+        Run library sync for this provider.
+
+        :param media_type: The media type to sync.
+        """
+        await super().sync_library(media_type)
+        if media_type == MediaType.TRACK and self.recently_played_sync_enabled:
+            try:
+                await self._sync_recently_played()
+            except (MusicAssistantError, aiohttp.ClientError) as err:
+                self.logger.warning("Failed to sync Spotify recently played tracks: %s", err)
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
@@ -2151,6 +2212,186 @@ class SpotifyProvider(MusicProvider):
         if not stored_token:
             return False
         return stored_token != used_token
+
+    @property
+    def _recently_played_task_id(self) -> str:
+        """Return the background task id used for Spotify recently played sync."""
+        return f"spotify_recently_played_{self.instance_id}"
+
+    async def _sync_recently_played(self) -> None:
+        """Fetch recently played tracks from Spotify and record new plays in the playlog."""
+        if not self.recently_played_sync_enabled or self._sp_user is None:
+            return
+        sync_lock = getattr(self, "_recently_played_lock", None)
+        if sync_lock is None:
+            sync_lock = asyncio.Lock()
+            self._recently_played_lock = sync_lock
+        async with sync_lock:
+            raw_cursor = await self.mass.cache.get(
+                CACHE_KEY_RECENTLY_PLAYED_CURSOR, provider=self.instance_id
+            )
+            cursor_ms = raw_cursor if isinstance(raw_cursor, int) and raw_cursor > 0 else None
+            params: dict[str, Any] = {"limit": 50}
+            if cursor_ms is not None:
+                params["after"] = cursor_ms
+            with request_priority(RequestPriority.LOW):
+                response = await self._get_data("me/player/recently-played", **params)
+            items = response.get("items") if isinstance(response, dict) else None
+            if not isinstance(items, list) or not items:
+                return
+
+            entries: list[tuple[int, int, dict[str, Any]]] = []
+            for entry in items:
+                if not isinstance(entry, dict):
+                    continue
+                played_at_str = entry.get("played_at")
+                track_obj = entry.get("track")
+                if (
+                    not isinstance(played_at_str, str)
+                    or not isinstance(track_obj, dict)
+                    or not track_obj.get("id")
+                    or track_obj.get("is_local")
+                ):
+                    continue
+                try:
+                    played_at_dt = from_iso_string(played_at_str)
+                except ValueError, TypeError:
+                    continue
+                played_at_ts = int(played_at_dt.timestamp())
+                played_at_ms = int(played_at_dt.timestamp() * 1000)
+                if cursor_ms is not None and played_at_ms <= cursor_ms:
+                    continue
+                entries.append((played_at_ms, played_at_ts, entry))
+
+            if not entries:
+                return
+
+            # Process oldest-first so play_history and last_played advance chronologically.
+            entries.sort(key=lambda item: item[0])
+            context_updates: dict[tuple[str, str], tuple[int, Album | None]] = {}
+            max_played_at_ms = cursor_ms or 0
+
+            for played_at_ms, played_at_ts, entry in entries:
+                await self._process_recently_played_entry(entry, played_at_ts, context_updates)
+                max_played_at_ms = max(max_played_at_ms, played_at_ms)
+
+            for (context_type, context_id), (ctx_ts, fallback_album) in context_updates.items():
+                await self._mark_recently_played_container(
+                    context_type, context_id, ctx_ts, fallback_album
+                )
+
+            if max_played_at_ms > (cursor_ms or 0):
+                await self.mass.cache.set(
+                    CACHE_KEY_RECENTLY_PLAYED_CURSOR,
+                    max_played_at_ms,
+                    expiration=RECENTLY_PLAYED_CACHE_EXPIRATION,
+                    provider=self.instance_id,
+                    persistent=True,
+                    allow_expired_cache=True,
+                )
+
+    async def _process_recently_played_entry(
+        self,
+        entry: dict[str, Any],
+        played_at_ts: int,
+        context_updates: dict[tuple[str, str], tuple[int, Album | None]],
+    ) -> None:
+        """
+        Record one Spotify recently-played track and collect any parent playback context.
+
+        :param entry: Raw item from Spotify's me/player/recently-played payload.
+        :param played_at_ts: Play completion time in epoch seconds.
+        :param context_updates: Accumulator mapping ``(context_type, context_id)`` to the newest
+            play timestamp and optional embedded album fallback.
+        """
+        track_obj = entry["track"]
+        track_id = str(track_obj["id"])
+        lib_track = await self.mass.music.tracks.get_library_item_by_prov_id(
+            track_id, self.instance_id
+        )
+        parsed_track: Track | None = None
+        if lib_track is not None:
+            track_item: Track = lib_track
+        else:
+            parsed_track = parse_track(track_obj, self)
+            track_item = parsed_track
+
+        await self.mass.music.mark_item_played(
+            track_item,
+            fully_played=True,
+            seconds_played=track_item.duration if isinstance(track_item.duration, int) else None,
+            user_initiated=False,
+            provider_instance_id=self.instance_id,
+            progress_timestamp=played_at_ts,
+        )
+
+        if not isinstance(context := entry.get("context"), dict):
+            return
+        context_type = context.get("type")
+        context_uri = context.get("uri")
+        if not isinstance(context_type, str) or not isinstance(context_uri, str):
+            return
+        if context_type in ("album", "playlist") and context_uri.startswith(
+            f"spotify:{context_type}:"
+        ):
+            context_id = context_uri.rsplit(":", 1)[-1]
+            fallback_album: Album | None = None
+            if context_type == "album":
+                if parsed_track and isinstance(parsed_track.album, Album):
+                    if parsed_track.album.item_id == context_id:
+                        fallback_album = parsed_track.album
+                elif isinstance(raw_album := track_obj.get("album"), dict) and (
+                    raw_album.get("id") == context_id
+                ):
+                    fallback_album = parse_album(raw_album, self)
+            prev = context_updates.get((context_type, context_id))
+            if prev is None or played_at_ts >= prev[0]:
+                context_updates[(context_type, context_id)] = (
+                    played_at_ts,
+                    fallback_album or (prev[1] if prev else None),
+                )
+        elif context_type == "collection" and context_uri.endswith(":collection"):
+            liked_id = self._get_liked_songs_playlist_id()
+            prev = context_updates.get(("playlist", liked_id))
+            if prev is None or played_at_ts >= prev[0]:
+                context_updates[("playlist", liked_id)] = (played_at_ts, None)
+
+    async def _mark_recently_played_container(
+        self,
+        context_type: str,
+        context_id: str,
+        timestamp: int,
+        fallback_album: Album | None,
+    ) -> None:
+        """
+        Mark a resolved Spotify album or playlist context as user-initiated in the playlog.
+
+        :param context_type: Spotify context type (``"album"`` or ``"playlist"``).
+        :param context_id: Spotify item id (or fake liked-songs playlist id).
+        :param timestamp: Newest play timestamp in epoch seconds.
+        :param fallback_album: Parsed album metadata from the track payload when not in library.
+        """
+        container: Album | Playlist | None = None
+        if context_type == "album":
+            container = (
+                await self.mass.music.albums.get_library_item_by_prov_id(
+                    context_id, self.instance_id
+                )
+                or fallback_album
+            )
+        elif context_type == "playlist":
+            container = await self.mass.music.playlists.get_library_item_by_prov_id(
+                context_id, self.instance_id
+            )
+        if container is None:
+            return
+        await self.mass.music.mark_item_played(
+            container,
+            fully_played=True,
+            user_initiated=True,
+            provider_instance_id=self.instance_id,
+            progress_timestamp=timestamp,
+        )
 
 
 def _spotify_uri(streamdetails: StreamDetails) -> str:

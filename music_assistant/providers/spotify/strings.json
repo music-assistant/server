@@ -11,6 +11,10 @@
       "label": "Sync Audiobook Progress from Spotify",
       "description": "Automatically sync audiobook progress from Spotify to Music Assistant. Progress from Spotify app will sync to MA when audiobooks are accessed. Only enable this if you use both the Spotify app and Music Assistant for audiobook playback."
     },
+    "sync_recently_played": {
+      "label": "Sync Recently Played from Spotify",
+      "description": "Periodically sync tracks played directly in Spotify into Music Assistant's play history and recently played lists."
+    },
     "playback_auth_method": {
       "label": "How do you want to allow playback?",
       "options": {
@@ -163,6 +167,9 @@
     "soloist_session_busy": "{0} is already playing something else. Spotify Soloist plays one thing at a time, so stop the other player first.",
     "soloist_app_took_over": "The Spotify app took over playback, so {0} stopped playing here. Try again in a moment to bring it back.",
     "soloist_app_paused": "Playback was paused from the Spotify app, so {0} stopped playing here. Try again in a moment to continue."
+  },
+  "background_task": {
+    "sync_recently_played": "Sync recently played from Spotify"
   },
   "manifest": {
     "description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem."
