@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -163,6 +164,8 @@ FINISHED_CLIP_STATES = (
 # playback states in which a session holds its speaker
 RENDERING_STATES = (PlaybackState.PLAYING, PlaybackState.PAUSED)
 SESSION_EVICTED_ERROR = "ERROR_SESSION_EVICTED"
+# the suffix of an id that serves a queue item again in a later round of repeat
+REPEAT_ROUND_SUFFIX = re.compile(r"~r(\d+)")
 
 
 class SonosPlayer(PlayerProtocol):
@@ -995,7 +998,8 @@ class SonosPlayer(PlayerProtocol):
         Return the requested item, the one before it and the items after it, as the queue is now.
 
         The items are addressed by queue position, each under an id the speaker reports back;
-        an item the speaker already holds an id for at another position gets an id of its own.
+        an item the speaker already holds an id for at another position gets an id of its own,
+        and so does every round of a queue (or track) that repeats.
 
         :param item_id: The id the speaker asked about, as it reports it; an omitted or empty
             one asks for the start of the queue.
@@ -1041,6 +1045,7 @@ class SonosPlayer(PlayerProtocol):
         # the speaker discards a window without the id it asked about and plays on out of the
         # one it holds: the position it asked about goes out under that id, whatever sits there
         asked = (center_index, item_id) if item_id and self.from_current_load(item_id) else None
+        repeat_round = self._repeat_round(asked[1]) if asked else 0
 
         items: list[PlayerMedia] = []
         wire_ids: list[str] = []
@@ -1050,12 +1055,15 @@ class SonosPlayer(PlayerProtocol):
             queue_item = self.mass.player_queues.get_item(queue_id, idx)
             if queue_item and queue_item.available:
                 items.append(await self._player_media_for_speaker(queue_item, idx))
-                wire_ids.append(self._wire_id_at(queue_item.queue_item_id, idx, generation, asked))
+                wire_ids.append(
+                    self._wire_id_at(queue_item.queue_item_id, idx, generation, asked, repeat_round)
+                )
                 positions[idx] = wire_ids[-1]
 
         # get_next_item accounts for repeat mode, so this is the item that will really
         # play next rather than whatever sits at the next index
         last_index: int | str = center_index
+        last_position = center_index
         for _ in range(min(UPCOMING_ITEMS, max_upcoming)):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
@@ -1063,9 +1071,14 @@ class SonosPlayer(PlayerProtocol):
             next_index = self.mass.player_queues.index_by_id(queue_id, next_item.queue_item_id)
             if next_index is None:
                 break
+            if next_index <= last_position:
+                # repeat starts the queue (or the track) over
+                repeat_round += 1
             items.append(await self._player_media_for_speaker(next_item, next_index))
             wire_ids.append(
-                self._wire_id_at(next_item.queue_item_id, next_index, generation, asked)
+                self._wire_id_at(
+                    next_item.queue_item_id, next_index, generation, asked, repeat_round
+                )
             )
             positions[next_index] = wire_ids[-1]
             if next_item.queue_item_id in (x.queue_item_id for x in items[-3:-1]):
@@ -1074,6 +1087,7 @@ class SonosPlayer(PlayerProtocol):
                 # it, so it would keep repeating them after repeat was switched off
                 break
             last_index = next_item.queue_item_id
+            last_position = next_index
 
         window = SonosQueueWindow(
             items=items,
@@ -1841,6 +1855,7 @@ class SonosPlayer(PlayerProtocol):
         index: int,
         generation: int | None,
         asked: tuple[int, str] | None,
+        repeat_round: int,
     ) -> str:
         """
         Return the id to serve a queue item under at a queue position.
@@ -1849,11 +1864,16 @@ class SonosPlayer(PlayerProtocol):
         :param index: The queue position.
         :param generation: The load generation to serve under; the current one when omitted.
         :param asked: The position the speaker asked about and the id it asked about there,
-            which that position is served under.
+            which that position is served under in the repeat round of that id.
+        :param repeat_round: How many times repeat started the queue over before this item.
         """
-        if asked is not None and asked[0] == index:
+        if asked is not None and asked[0] == index and self._repeat_round(asked[1]) == repeat_round:
             return asked[1]
         wire_id = self.wire_item_id(queue_item_id, generation) or queue_item_id
+        if repeat_round:
+            # the speaker keys what it fetched on the item id: a round that repeats the id of
+            # the round before is not fetched cleanly (skipped, or fetched twice at once)
+            wire_id = f"{wire_id}~r{repeat_round}"
         binding = self._served_bindings.get(wire_id)
         if binding is None or binding[0] == index:
             return wire_id
@@ -1861,6 +1881,12 @@ class SonosPlayer(PlayerProtocol):
         # moved the item since): the item itself gets an identity of its own where it sits now,
         # so a report on either cannot be read as the other
         return f"{wire_id}~{index}"
+
+    @staticmethod
+    def _repeat_round(wire_item_id: str) -> int:
+        """Return the repeat round an id the speaker reports was served in, 0 for the first."""
+        match = REPEAT_ROUND_SUFFIX.search(wire_item_id)
+        return int(match.group(1)) if match else 0
 
     def _playing_item_id(self, wire_item_id: str) -> str:
         """Return the queue item the speaker plays under a reported id, logging a stale one once."""
