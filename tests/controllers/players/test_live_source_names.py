@@ -267,6 +267,27 @@ def test_the_own_player_lists_its_sources_by_their_names() -> None:
     assert _entry_name(home.kitchen, SPOTIFY) == "Spotify Connect"
 
 
+def test_the_input_of_a_device_is_listed_by_its_name_as_an_input() -> None:
+    """The line-in of Living Room is listed there under its name, as an input."""
+    home = _Home()
+
+    entries = [x for x in home.living_room.source_list if x.id == LINE_IN.uri]
+
+    assert [(x.name, x.is_input) for x in entries] == [("Line-in", True)]
+
+
+def test_the_entry_of_an_input_is_named_by_the_naming_rule() -> None:
+    """An input of the device is named for the player like every other source."""
+    home = _Home()
+    home.controller.get_audio_source_name = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda source, shown_on=None: f"{source.name} on {shown_on}"
+    )
+
+    home.refresh()
+
+    assert _entry_name(home.living_room, LINE_IN) == "Line-in on living_room"
+
+
 @pytest.mark.parametrize("own_session", [True, False], ids=["playing", "not_playing"])
 def test_a_source_on_its_own_player_shows_by_its_name(own_session: bool) -> None:
     """The entry of the session and the title name the source alone on its own player."""
