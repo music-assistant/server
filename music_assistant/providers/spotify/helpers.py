@@ -22,7 +22,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import AsyncProcess, check_output
-from music_assistant.helpers.throttle_retry import parse_retry_after
+from music_assistant.helpers.throttle_retry import parse_retry_after, rate_limit_translation
 from music_assistant.providers.spotify_connect.soloist import SoloistBinaryManager
 
 from .constants import (
@@ -295,9 +295,13 @@ async def get_spotify_token(
     }
     async with http_session.post("https://accounts.spotify.com/api/token", data=params) as response:
         if response.status == 429:
+            retry_after = parse_retry_after(response.headers.get("Retry-After"))
+            translation_key, translation_args = rate_limit_translation(retry_after)
             raise RateLimited(
                 f"Spotify rate limits the {session_name} token refresh",
-                backoff_time=parse_retry_after(response.headers.get("Retry-After")),
+                backoff_time=retry_after,
+                translation_key=translation_key,
+                translation_args=translation_args,
             )
         if response.status >= 500:
             raise ResourceTemporarilyUnavailable(

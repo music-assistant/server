@@ -422,13 +422,21 @@ async def test_audiobook_support_stores_the_answer(monkeypatch: pytest.MonkeyPat
     update.assert_called_once_with(CONF_AUDIOBOOKS_SUPPORTED, True, immediate=False)
 
 
-async def test_token_endpoint_rate_limit_is_temporary() -> None:
-    """A rate limited token refresh raises RateLimited with the wait Spotify asked for."""
-    http_session = _token_endpoint(429, headers={"Retry-After": "120"})
+@pytest.mark.parametrize(
+    ("retry_after", "translation_key", "translation_args"),
+    [(120, "rate_limited_minutes", [2]), (61500, "rate_limited_hours", [17])],
+)
+async def test_token_endpoint_rate_limit_is_temporary(
+    retry_after: int, translation_key: str, translation_args: list[int]
+) -> None:
+    """A rate limited token refresh raises RateLimited that names the wait Spotify asked for."""
+    http_session = _token_endpoint(429, headers={"Retry-After": str(retry_after)})
 
     with pytest.raises(RateLimited) as err:
         await get_spotify_token(http_session, "client", USED_TOKEN)
-    assert err.value.backoff_time == 120
+    assert err.value.backoff_time == retry_after
+    assert err.value.translation_key == translation_key
+    assert err.value.translation_args == translation_args
 
 
 async def test_token_endpoint_server_error_is_temporary() -> None:
