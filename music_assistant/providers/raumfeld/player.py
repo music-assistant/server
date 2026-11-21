@@ -1045,6 +1045,7 @@ class RaumfeldPlayer(PlayerProtocol):
                 id=SOURCE_LINE_IN,
                 name="Line-in",
                 passive=False,
+                is_input=True,
                 can_play_pause=False,
                 can_next_previous=False,
                 can_seek=False,

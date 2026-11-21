@@ -24,6 +24,8 @@ from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, PlayerMedia, PlayerSource
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.bluesound.const import (
+    BLUETOOTH_CAPTURE_URL_PREFIX,
+    CAPTURE_URL_PREFIX,
     IDLE_POLL_INTERVAL,
     MAX_CONNECTING_POLLS,
     PLAYBACK_POLL_INTERVAL,
@@ -287,6 +289,7 @@ class BluesoundPlayer(PlayerProtocol):
                 id=source_name,
                 name=source_name,
                 passive=True,
+                is_input=True,
                 can_play_pause=False,
                 can_next_previous=False,
                 can_seek=False,
@@ -480,6 +483,9 @@ class BluesoundPlayer(PlayerProtocol):
                 id=f"input-{bluos_input.url}",
                 name=f"Input: {bluos_input.text}",
                 passive=False,
+                # the list also holds Bluetooth and services such as Spotify
+                is_input=bluos_input.url.startswith(CAPTURE_URL_PREFIX)
+                and not bluos_input.url.startswith(BLUETOOTH_CAPTURE_URL_PREFIX),
                 can_play_pause=False,
                 can_seek=False,
                 can_next_previous=False,

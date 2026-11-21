@@ -169,6 +169,7 @@ def test_bound_source_gets_a_standing_entry(mock_mass: MagicMock, provider: Mock
     assert source is not None
     assert source.passive is False
     assert source.can_play_pause is True
+    assert source.is_input is False
 
 
 def test_source_bound_to_another_player_is_not_listed(
@@ -186,7 +187,10 @@ def test_device_input_gets_a_standing_entry(mock_mass: MagicMock, provider: Mock
     player, _ = attach_mock(provider, "protocol_1", "Player", player_id=PLAYER_ID)
     _input_plugin(mock_mass, _audio_source(can_initiate=True), PLAYER_ID)
 
-    assert _live_source(player) is not None
+    source = _live_source(player)
+
+    assert source is not None
+    assert source.is_input is True
 
 
 def test_input_of_a_player_provider_gets_a_standing_entry(
@@ -213,7 +217,10 @@ def test_input_reported_on_a_linked_protocol_lands_on_the_visible_player(
     )
     _input_plugin(mock_mass, _audio_source(can_initiate=True), "sendspin_x")
 
-    assert _live_source(player) is not None
+    source = _live_source(player)
+
+    assert source is not None
+    assert source.is_input is True
 
 
 def test_input_of_another_device_is_not_listed(

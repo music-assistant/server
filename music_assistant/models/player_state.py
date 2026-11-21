@@ -245,10 +245,12 @@ class StateInputs:
         plays on.
     :param followed_source_names: Names of the sources of those sessions as shown on
         the player, by the same id.
-    :param standing_sources: Audio sources that are selectable on the player without
-        a session being active.
-    :param source_names: Names of the standing sources and of the source of its own
-        session as shown on the player, by uri.
+    :param standing_sources: Audio sources bound to the player, selectable without a
+        session being active.
+    :param input_sources: Audio sources that are inputs of the player's own device,
+        selectable without a session being active.
+    :param source_names: Names of the standing sources, the inputs and the source of its
+        own session as shown on the player, by uri.
     """
 
     player_id: str
@@ -307,6 +309,7 @@ class StateInputs:
     followed_sessions: Mapping[str, AudioSourceSession]
     followed_source_names: Mapping[str, str]
     standing_sources: tuple[AudioSource, ...]
+    input_sources: tuple[AudioSource, ...]
     source_names: Mapping[str, str]
 
 
@@ -800,6 +803,7 @@ def _source_list(
     """Return the sources of the player."""
     player_id = inputs.player_id
     sources = UniqueList(inputs.own.source_list)
+    input_uris = {x.uri for x in inputs.input_sources}
     # always ensure the Music Assistant Queue is in the source list
     mass_source = next((x for x in sources if x.id == player_id), None)
     if mass_source is None:
@@ -828,6 +832,7 @@ def _source_list(
                 id=source_uri,
                 name=inputs.source_names.get(source_uri, session.source.name),
                 passive=not session.source.can_initiate,
+                is_input=source_uri in input_uris,
                 can_play_pause=session.source.can_play_pause,
                 can_seek=session.source.can_seek,
                 can_next_previous=session.source.can_next_previous,
@@ -851,7 +856,7 @@ def _source_list(
     # an already listed uri is skipped: the live session entry above carries the
     # live shuffle/repeat state and must win
     present_ids = {x.id for x in sources}
-    for source in inputs.standing_sources:
+    for source in (*inputs.standing_sources, *inputs.input_sources):
         if not (uri := source.uri) or uri in present_ids:
             continue
         present_ids.add(uri)
@@ -860,6 +865,7 @@ def _source_list(
                 id=uri,
                 name=inputs.source_names.get(uri, source.name),
                 passive=not source.can_initiate,
+                is_input=uri in input_uris,
                 can_play_pause=source.can_play_pause,
                 can_seek=source.can_seek,
                 can_next_previous=source.can_next_previous,

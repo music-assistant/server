@@ -51,6 +51,7 @@ from music_assistant.providers.musiccast.constants import (
     MC_DEVICE_UPNP_CTRL_ENDPOINT,
     MC_DEVICE_UPNP_PORT,
     MC_DEVICE_UPNP_USER_AGENT,
+    MC_LINK_SOURCES,
     MC_NETUSB_SOURCE_IDS,
     MC_PASSIVE_SOURCE_IDS,
     MC_POLL_INTERVAL,
@@ -246,6 +247,9 @@ class MusicCastPlayer(PlayerProtocol):
                     id=source_id,
                     name=source_name,
                     passive=passive,
+                    # what the device plays itself (network, USB, tuner) or takes from
+                    # another MusicCast device is not an input
+                    is_input=not control and source_id not in MC_LINK_SOURCES,
                     can_play_pause=control,
                     can_seek=False,
                     can_next_previous=control,

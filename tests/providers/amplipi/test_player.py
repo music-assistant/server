@@ -389,6 +389,26 @@ class TestSelectSource:
         assert by_id["stream=3"].name == "Turntable"
         assert by_id["stream=7"].name == "AirPlay (AirPlay)"
 
+    def test_line_inputs_are_marked_as_inputs(self, mock_provider: MagicMock) -> None:
+        """The RCA and aux inputs are inputs; a native stream such as Bluetooth is not."""
+        mock_provider.selectable_streams = MagicMock(
+            return_value=[
+                SimpleNamespace(id=3, name="Turntable", type="rca"),
+                SimpleNamespace(id=4, name="Aux", type="aux"),
+                SimpleNamespace(id=7, name="AirPlay", type="airplay"),
+                SimpleNamespace(id=8, name="Phone", type="bluetooth"),
+            ]
+        )
+        mock_provider.status = _status(zones=[_zone(0, source_id=SOURCE_DISCONNECTED)], sources=[])
+        player = _make_player(mock_provider, 0)
+        player.update_from_status(mock_provider.status)
+        assert {s.id: s.is_input for s in player.source_list} == {
+            "stream=3": True,
+            "stream=4": True,
+            "stream=7": False,
+            "stream=8": False,
+        }
+
     async def test_select_source_sets_input_and_attaches(self, mock_provider: MagicMock) -> None:
         """Selecting a source should point an AmpliPi source at the stream and attach the zone."""
         mock_provider.status = _status(

@@ -2436,6 +2436,7 @@ class Player:
         session = self.mass.players.get_audio_source_session(self.player_id)
         followed_sessions = self._collect_followed_sessions(groups, synced_to)
         standing_sources = self._collect_standing_sources()
+        input_sources = self._collect_input_sources()
         source_ids = {self._active_mass_source, own.active_source}
         queues = {
             queue_id: QueueSnapshot(queue=queue)
@@ -2518,8 +2519,13 @@ class Player:
                 for holder_id, x in followed_sessions.items()
             },
             standing_sources=standing_sources,
+            input_sources=input_sources,
             source_names=self._source_names(
-                [*standing_sources, *([session.source] if session is not None else [])]
+                [
+                    *standing_sources,
+                    *input_sources,
+                    *([session.source] if session is not None else []),
+                ]
             ),
         )
         # stream metadata and artwork are only looked up for the queue the player takes its
@@ -2615,10 +2621,16 @@ class Player:
         return tuple(groups)
 
     def _collect_standing_sources(self) -> tuple[AudioSource, ...]:
-        """Collect the audio sources providers bound to the player or report as its inputs."""
+        """Collect the audio sources providers bound to the player."""
         sources: list[AudioSource] = []
         for prov in self.mass.players.get_audio_source_providers():
             sources += prov.get_player_audio_sources(self.player_id) or ()
+        return tuple(sources)
+
+    def _collect_input_sources(self) -> tuple[AudioSource, ...]:
+        """Collect the audio sources providers report as inputs of the player's own device."""
+        sources: list[AudioSource] = []
+        for prov in self.mass.players.get_audio_source_providers():
             # a device's own inputs may be reported for one of its protocols
             for device_id in {self.player_id, *self._protocols}:
                 sources += prov.get_player_input_sources(device_id)

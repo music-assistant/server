@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState
+from pyblu.parse import parse_inputs
 
 from music_assistant.providers.bluesound.const import PLAYER_SOURCE_MAP
 from music_assistant.providers.bluesound.player import BluesoundPlayer
@@ -151,3 +153,49 @@ async def test_a_grouped_zone_reports_the_player_of_its_leader_as_source() -> No
 
     assert leader_player.player_id != "leader_zone"
     assert fake._attr_active_source == leader_player.player_id
+
+
+async def test_only_the_captured_inputs_of_the_player_are_marked_as_inputs() -> None:
+    """The input list also holds Bluetooth and services, which are no inputs, like presets."""
+    # the inputs of a player as the BluOS API documents them
+    inputs = parse_inputs(
+        b'<radiotime service="Capture">'
+        b'<item text="Bluetooth" inputType="bluetooth" id="input2" URL="Capture%3Abluez%3Abluetooth"'
+        b' image="/images/BluetoothIcon.png" type="audio"/>'
+        b'<item text="Analog Input" inputType="analog" id="input0"'
+        b' URL="Capture%3Aplughw%3Aimxnadadc%2C0%2F48000%2F24%2F2%3Fid%3Dinput0"'
+        b' image="/images/capture/ic_analoginput.png" type="audio"/>'
+        b'<item text="Optical Input" inputType="spdif" id="input1"'
+        b' URL="Capture%3Ahw%3Aimxspdif%2C0%2F1%2F25%2F2%3Fid%3Dinput1"'
+        b' image="/images/capture/ic_opticalinput.png" type="audio"/>'
+        b'<item text="Spotify" id="Spotify" URL="Spotify%3Aplay"'
+        b' image="/Sources/images/SpotifyIcon.png" serviceType="CloudService" type="audio"/>'
+        b"</radiotime>"
+    )
+    fake = MagicMock()
+    fake.client.presets = AsyncMock(return_value=[SimpleNamespace(id=1, name="Radio")])
+    fake.client.inputs = AsyncMock(return_value=inputs)
+
+    sources = await BluesoundPlayer._get_bluesound_sources(cast("BluesoundPlayer", fake))
+
+    assert {x.name: x.is_input for x in sources} == {
+        "Preset 01: Radio": False,
+        "Input: Bluetooth": False,
+        "Input: Analog Input": True,
+        "Input: Optical Input": True,
+        "Input: Spotify": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "is_input"),
+    [("Analog Input", True), ("Digital Input 1", True), ("HDMI ARC", True), ("Bluetooth", False)],
+)
+def test_a_playing_input_is_marked_as_input(name: str, is_input: bool) -> None:
+    """The entry of an input the player plays is an input, Bluetooth is not."""
+    fake = _player(service=None)
+    fake.status.name = name
+
+    BluesoundPlayer._resolve_source(cast("BluesoundPlayer", fake))
+
+    assert fake._attr_source_list[-1].is_input is is_input

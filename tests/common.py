@@ -864,6 +864,7 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "followed_sessions": {},
         "followed_source_names": {},
         "standing_sources": (),
+        "input_sources": (),
         "source_names": {},
     }
     return StateInputs(**(defaults | values))

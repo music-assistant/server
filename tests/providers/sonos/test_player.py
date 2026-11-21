@@ -29,6 +29,7 @@ from music_assistant.providers.sonos.const import (
     SOURCE_AIRPLAY,
     SOURCE_LINE_IN,
     SOURCE_SPOTIFY,
+    SOURCE_TV,
 )
 from music_assistant.providers.sonos.player import SonosPlayer, _is_wakeable
 
@@ -1051,6 +1052,11 @@ def test_a_service_we_did_not_map_leaves_the_templates_untouched() -> None:
     assert PLAYER_SOURCE_MAP[SOURCE_LINE_IN].shuffle_enabled is None
     assert PLAYER_SOURCE_MAP[SOURCE_SPOTIFY].can_shuffle is False
     assert set(PLAYER_SOURCE_MAP) == templates
+
+
+def test_line_in_and_tv_are_the_inputs() -> None:
+    """Line-in and TV are inputs of the speaker; AirPlay and the music services are not."""
+    assert [x.id for x in PLAYER_SOURCE_MAP.values() if x.is_input] == [SOURCE_LINE_IN, SOURCE_TV]
 
 
 def test_the_entry_of_a_service_we_did_not_map_follows_what_the_speaker_reports() -> None:

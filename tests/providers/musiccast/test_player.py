@@ -175,3 +175,33 @@ async def test_end_of_track_advance_switches_no_member_of_a_group_on(
 def test_a_musiccast_player_gets_the_gapless_burst(network: MusicCastNetwork) -> None:
     """A MusicCast device only plays a track gapless once it holds a whole opening chunk of it."""
     assert network.player("A___main").needs_gapless_burst
+
+
+async def test_inputs_of_the_receiver_are_marked_as_inputs(network: MusicCastNetwork) -> None:
+    """The inputs of a zone are inputs; network, USB, tuner and MusicCast link sources are not."""
+    player = network.player("A___zone2")
+    player.zone_device.zone_data.input_list = [
+        "hdmi1",
+        "optical",
+        "usb_dac",
+        "usb",
+        "bluetooth",
+        "spotify",
+        "tuner",
+        "mc_link",
+        "main_sync",
+    ]
+
+    await player.set_static_attributes()
+
+    assert {x.id: x.is_input for x in player._attr_source_list} == {
+        "hdmi1": True,
+        "optical": True,
+        "usb_dac": True,
+        "usb": False,
+        "bluetooth": False,
+        "spotify": False,
+        "tuner": False,
+        "mc_link": False,
+        "main_sync": False,
+    }
