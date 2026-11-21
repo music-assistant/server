@@ -404,6 +404,7 @@ class AirPlayStreamSession:
                     player.protocol_id,
                 )
                 return False
+            stream.start_pending = False
             player.set_state_from_stream(state=PlaybackState.PAUSED, stream=stream)
         # a parked session has no live timeline; the resume re-anchors it
         self.seconds_streamed = 0
