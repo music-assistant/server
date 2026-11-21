@@ -237,7 +237,7 @@ class StateInputs:
     :param session_image_url: Url of the image of that audio source. Only given where
         it counts: for a source that reports no image of what it is playing.
     :param followed_sessions: Live audio sources playing on the players it can follow:
-        its groups and the player it is synced to, by the id of that player.
+        the group players and the player it is synced to, by uri.
     :param standing_sources: Audio sources that are selectable on the player without
         a session being active.
     :param source_names: Names of the audio sources above as shown on the player, by uri.
@@ -1053,7 +1053,7 @@ def _current_media(
     # if the player is grouped/synced, use the current_media of the group/parent player
     if parent_id := (active_group or synced_to):
         if parent_id != inputs.player_id and (parent := inputs.peers.get(parent_id)):
-            return _followed_media(inputs, parent.state.current_media, parent_id)
+            return _followed_media(inputs, parent.state.current_media)
         return None  # if parent player not found, return None for current media
     # a live external source reports what it plays itself
     if inputs.session is not None:
@@ -1218,17 +1218,13 @@ def _session_media(
     )
 
 
-def _followed_media(
-    inputs: StateInputs, media: PlayerMedia | None, parent_id: str
-) -> PlayerMedia | None:
+def _followed_media(inputs: StateInputs, media: PlayerMedia | None) -> PlayerMedia | None:
     """
     Return the current media of the player the player follows, as shown on the player.
 
     :param media: The current media of the player it follows.
-    :param parent_id: Id of the player it follows.
     """
-    session = inputs.followed_sessions.get(parent_id)
-    if media is None or session is None or media.uri != session.source_uri:
+    if media is None or (session := inputs.followed_sessions.get(media.uri)) is None:
         return media
     # a live source that reports no title shows by its name, which differs per player
     title = _session_title(inputs, session)

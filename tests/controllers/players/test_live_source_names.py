@@ -78,7 +78,11 @@ class _SourcePlugin(PluginProvider):
 
 
 class _Home:
-    """A players controller with Living Room, Kitchen, a record player and a group of both."""
+    """
+    A players controller with Living Room, Kitchen and a record player.
+
+    Downstairs groups Living Room and Kitchen, and Everywhere groups Downstairs.
+    """
 
     def __init__(self) -> None:
         """Create the players, the providers of the sources and the group Downstairs."""
@@ -128,8 +132,18 @@ class _Home:
             player_type=PlayerType.GROUP,
         )
         self.group_protocol._attr_group_members = ["living_room", "kitchen"]
-        # the group holds its members only while it plays
+        self.everywhere, self.everywhere_protocol = attach_mock(
+            provider,
+            "proto_everywhere",
+            "Everywhere",
+            role=ProtocolRole.VIRTUAL,
+            player_id="everywhere",
+            player_type=PlayerType.GROUP,
+        )
+        self.everywhere_protocol._attr_group_members = ["downstairs"]
+        # a group holds its members only while it plays
         self.group_protocol._attr_powered = False
+        self.everywhere_protocol._attr_powered = False
         self.refresh()
 
     def play(self, player: Player, source: AudioSource, title: str | None = None) -> None:
@@ -140,7 +154,9 @@ class _Home:
         :param source: The source.
         :param title: The title the source reports.
         """
-        if player is self.group:
+        if player is self.everywhere:
+            self.everywhere_protocol._attr_powered = True
+        if player in (self.group, self.everywhere):
             self.group_protocol._attr_powered = True
         session = self.controller._start_audio_source_session(
             player.player_id, source, source.provider
@@ -150,8 +166,14 @@ class _Home:
         self.refresh()
 
     def refresh(self) -> None:
-        """Derive the state of every player, the group before its members."""
-        for player in (self.record_player, self.group, self.living_room, self.kitchen):
+        """Derive the state of every player, a group before its members."""
+        for player in (
+            self.record_player,
+            self.everywhere,
+            self.group,
+            self.living_room,
+            self.kitchen,
+        ):
             player.refresh_state(signal_event=False)
 
 
@@ -284,6 +306,27 @@ def test_each_member_of_a_group_names_the_source_for_itself() -> None:
     assert home.living_room.active_group == "downstairs"
     assert _title(home.living_room) == "Line-in"
     assert _title(home.kitchen) == "Line-in (Living Room)"
+
+
+def test_a_member_of_a_group_in_a_group_names_the_source_for_itself() -> None:
+    """
+    A member finds the source of the group that plays it, also through a group in between.
+
+    Everywhere plays the line-in of Living Room, and holds Downstairs, which holds Living Room
+    and Kitchen.
+    """
+    home = _Home()
+
+    home.play(home.everywhere, LINE_IN)
+
+    assert home.living_room.active_group == "downstairs"
+    assert home.group.active_group == "everywhere"
+    assert [_title(x) for x in (home.everywhere, home.group, home.living_room, home.kitchen)] == [
+        "Line-in (Living Room)",
+        "Line-in (Living Room)",
+        "Line-in",
+        "Line-in (Living Room)",
+    ]
 
 
 def test_a_title_the_source_reports_shows_on_every_player() -> None:

@@ -1442,7 +1442,7 @@ class TestCurrentMedia:
         state = _derive(
             groups=(group,),
             peers={"group_1": _group_peer(group)},
-            followed_sessions={"group_1": _session()},
+            followed_sessions={SOURCE_URI: _session()},
             source_names={SOURCE_URI: "Spotify Connect"},
         )
 
@@ -1457,7 +1457,7 @@ class TestCurrentMedia:
         state = _derive(
             groups=(group,),
             peers={"group_1": _group_peer(group)},
-            followed_sessions={"group_1": _session()},
+            followed_sessions={SOURCE_URI: _session()},
             source_names={SOURCE_URI: "Spotify Connect"},
         )
 

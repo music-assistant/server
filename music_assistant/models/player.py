@@ -2627,9 +2627,12 @@ class Player:
         self, groups: Iterable[GroupSnapshot], synced_to: str | None
     ) -> dict[str, AudioSourceSession]:
         """
-        Collect the live audio sources playing on the players the player can follow.
+        Collect the live audio sources playing on the players the player can follow, by uri.
 
-        :param groups: The group players that can hold the player.
+        Every group player counts, so a source a group plays reaches its members also
+        through a group in between.
+
+        :param groups: The group players.
         :param synced_to: Id of the player it is synced to.
         """
         sessions: dict[str, AudioSourceSession] = {}
@@ -2638,8 +2641,9 @@ class Player:
                 parent_id
                 and parent_id != self.player_id
                 and (session := self.mass.players.get_audio_source_session(parent_id))
+                and session.source_uri
             ):
-                sessions[parent_id] = session
+                sessions[session.source_uri] = session
         return sessions
 
     def _source_names(self, sources: Iterable[AudioSource]) -> dict[str, str]:
