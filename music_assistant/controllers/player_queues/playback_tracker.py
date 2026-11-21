@@ -798,6 +798,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             if prev_state["state"] != PlaybackState.PLAYING or queue_data.halted_by_command:
                 # an idle paused player (a pause timeout), or a pause made with a stop on a
                 # player that cannot pause, still stops at the target once resumed
+                self._update_player_sleep_timer(queue)
                 return
             if (
                 prev_state["current_item_id"] == target.queue_item_id

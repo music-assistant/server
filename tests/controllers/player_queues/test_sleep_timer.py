@@ -479,6 +479,8 @@ async def test_a_pause_made_with_a_stop_keeps_the_sleep_timer() -> None:
         SleepTimerMode.END_OF_CHAPTER, "item_1", 100
     )
     mass.players.reset_sleep_timer.assert_not_called()
+    # the countdown of the playing queue gives way to the end it waits for
+    mass.players.update_sleep_timer.assert_called_with("q1", SleepTimerMode.END_OF_CHAPTER, None)
 
 
 @pytest.mark.parametrize(
