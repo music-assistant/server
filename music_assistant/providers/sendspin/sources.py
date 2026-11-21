@@ -407,6 +407,23 @@ class SendspinSources:
                 # point would fabricate silence into the timeline, so re-anchor instead.
                 next_deadline = loop.time()
 
+    def on_player_config_updated(self, player_id: str) -> None:
+        """
+        Let the input of a player that is playing follow the saved config of that player.
+
+        A device that only captures names its input after its player, which has published
+        its new name by the time the saved config is announced.
+
+        :param player_id: ID of the player whose config was saved.
+        """
+        for client_id, state in self._clients.items():
+            if (
+                state.session is not None
+                and (player := self._client_player(client_id)) is not None
+                and player.player_id == player_id
+            ):
+                self.on_client_config_updated(client_id)
+
     def on_client_config_updated(self, client_id: str) -> None:
         """
         Let the input of a client that is playing follow its changed settings.

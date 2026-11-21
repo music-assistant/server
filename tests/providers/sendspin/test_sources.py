@@ -265,6 +265,27 @@ async def test_a_playing_line_in_follows_a_new_name() -> None:
     assert (player_id, source.name) == ("queue-1", "Record player")
 
 
+async def test_a_playing_capture_only_device_follows_a_new_player_name(
+    fake_client: _FakeClient,
+) -> None:
+    """The saved config of a renamed player hands the input it names the new name."""
+    sources = await make_sources(
+        [fake_client, _FakeClient("client-2", name="Other", has_player_role=True)]
+    )
+    await sources.on_source_selected("client-1", "player-1", "queue-1", "session-A")
+    players = get_players(sources)
+    # the player publishes its new name before the saved config is announced
+    players.players["client-1"].name = "Den"
+
+    sources.on_player_config_updated("client-2")
+    assert players.refreshed == []
+
+    sources.on_player_config_updated("client-1")
+    assert [(player_id, source.name) for player_id, source in players.refreshed] == [
+        ("queue-1", "Den")
+    ]
+
+
 async def test_line_in_is_listed_on_its_own_player_while_connected() -> None:
     """A speaker's line-in stays in its own source list between streams until it disconnects."""
     client = _FakeClient("client-1", name="Cast Pro", has_player_role=True)
