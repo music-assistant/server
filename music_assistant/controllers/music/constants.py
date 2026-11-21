@@ -71,6 +71,9 @@ RECOMMENDATIONS_ROWS_TIMEOUT: Final[int] = 5
 # browse scheme under which every recommendation row can be opened in full
 RECOMMENDATIONS_BROWSE_SCHEME: Final[str] = "discover"
 
+# browse scheme of the folder that holds the live sources
+LIVE_SOURCES_BROWSE_SCHEME: Final[str] = "live_sources"
+
 # max items a library recommendation row returns when browsed in full,
 # instead of the handful its Discover row shows
 RECOMMENDATIONS_BROWSE_LIMIT: Final[int] = 500
