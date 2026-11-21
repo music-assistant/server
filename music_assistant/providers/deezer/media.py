@@ -46,6 +46,9 @@ from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT
 
 from .constants import (
     AUDIOBOOK_CHAPTERS_PAGE_SIZE,
+    AUDIOBOOK_METADATA_VERSION,
+    AUTHOR_ARTIST_PREFIX,
+    AUTHOR_NEWEST_RELEASES,
     FAVORITES_PAGE_SIZE,
     PERSONAL_ALBUM_PREFIX,
     PERSONAL_ARTIST_PREFIX,
@@ -59,6 +62,7 @@ from .parsers import (
     parse_audiobook,
     parse_audiobook_chapters,
     parse_audiobook_from_album,
+    parse_author,
     parse_bookmark_time,
     parse_date,
     parse_gw_track,
@@ -70,6 +74,9 @@ from .parsers import (
 )
 
 if TYPE_CHECKING:
+    from deezer_python_gql.generated.get_artist import GetArtistArtistAlbumsEdgesNode
+    from deezer_python_gql.generated.search import SearchSearchResultsArtistsEdgesNode
+
     from .provider import DeezerProvider
 
 
@@ -107,7 +114,6 @@ class DeezerMediaManager:
         self.instance_id = provider.instance_id
         self.domain = provider.domain
         self.logger = provider.logger
-        self._audiobook_ids_in_favorites: set[str] | None = None
 
     # -- External ID lookups --
 
@@ -184,6 +190,8 @@ class DeezerMediaManager:
         :param media_type: Media type of the item.
         :param favorite: False to ban, True or None to unban.
         """
+        # an author is the same artist on Deezer
+        prov_item_id = prov_item_id.removeprefix(AUTHOR_ARTIST_PREFIX)
         if media_type == MediaType.TRACK and favorite is False:
             await self.provider.gql_client.ban_track_from_recommendation(track_id=prov_item_id)
         elif media_type == MediaType.TRACK:
@@ -220,6 +228,19 @@ class DeezerMediaManager:
             msg = f"Deezer did not move track {track_id} in playlist {prov_playlist_id}"
             raise InvalidDataError(msg)
         await self.provider.browse_manager.invalidate_playlist_cache(prov_playlist_id)
+
+    # -- Audiobook authors --
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True, cache_checksum=AUDIOBOOK_METADATA_VERSION)
+    async def get_author_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
+        """Get audiobooks by an author."""
+        artist_id = prov_artist_id.removeprefix(AUTHOR_ARTIST_PREFIX)
+        releases, audiobook_ids = await self._get_artist_releases(artist_id)
+        return [
+            parse_audiobook_from_album(self.provider, node)
+            for node in releases
+            if node.id in audiobook_ids
+        ]
 
     # -- Pagination helper --
 
@@ -265,14 +286,47 @@ class DeezerMediaManager:
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Deezer."""
-        async for edge in self._iter_paged(
-            self.provider.gql_client.get_favorite_artists,
-            lambda r: r.user_favorites.artists,
-        ):
-            item = parse_artist(self.provider, edge.node)
-            if edge.favorited_at:
-                item.date_added = parse_date(edge.favorited_at)
-            yield item
+        edges = [
+            edge
+            async for edge in self._iter_paged(
+                self.provider.gql_client.get_favorite_artists,
+                lambda r: r.user_favorites.artists,
+            )
+        ]
+        try:
+            authors, authors_without_music = await self._get_authors(
+                {
+                    edge.node.id: [
+                        release.node.id for release in edge.node.albums.edges if release.node
+                    ]
+                    for edge in edges
+                }
+            )
+        except (
+            ClientError,
+            GraphQLClientError,
+            InvalidDataError,
+            RetriesExhausted,
+            TimeoutError,
+        ) as err:
+            # without the check the type is unknown, so the library stays as it is
+            self.provider.report_skipped_sync_item(MediaType.ARTIST, None, err)
+            edges, authors, authors_without_music = [], set(), set()
+        seen_author_ids: set[str] = set()
+        for edge in edges:
+            singer = parse_artist(self.provider, edge.node)
+            # one Deezer favorite is the artist and, with audiobooks, also the author
+            items = [] if edge.node.id in authors_without_music else [singer]
+            if edge.node.id in authors:
+                favorite_author = parse_author(
+                    self.provider, edge.node.id, edge.node.name, singer.metadata, singer.favorite
+                )
+                seen_author_ids.add(favorite_author.item_id)
+                items.append(favorite_author)
+            for item in items:
+                if edge.favorited_at:
+                    item.date_added = parse_date(edge.favorited_at)
+                yield item
         # Also include artists from user-uploaded personal songs
         personal_songs = await self._get_personal_songs()
         seen_artist_names: set[str] = set()
@@ -282,16 +336,18 @@ class DeezerMediaManager:
                 if isinstance(artist, Artist) and artist.name not in seen_artist_names:
                     seen_artist_names.add(artist.name)
                     yield artist
+        # Authors come and go with the audiobooks in the library
+        async for audiobook in self.get_library_audiobooks():
+            for author in audiobook.authors:
+                if isinstance(author, Artist) and author.item_id not in seen_author_ids:
+                    seen_author_ids.add(author.item_id)
+                    yield author
 
     async def _get_audiobook_ids_in_albums(self) -> set[str]:
         """Identify which favorite album IDs are actually audiobooks."""
         # Deezer stores audiobook favorites in the albums list, not in the
         # dedicated (deprecated) audiobook favorites endpoint. We use
-        # check_audiobook_ids to tell them apart. Result is cached for the
-        # lifetime of this manager instance so both get_library_albums and
-        # get_library_audiobooks can share it without extra API calls.
-        if self._audiobook_ids_in_favorites is not None:
-            return self._audiobook_ids_in_favorites
+        # check_audiobook_ids to tell them apart.
         album_ids: list[str] = []
         async for edge in self._iter_paged(
             self.provider.gql_client.get_favorite_albums,
@@ -299,12 +355,8 @@ class DeezerMediaManager:
         ):
             album_ids.append(edge.node.id)
         if not album_ids:
-            self._audiobook_ids_in_favorites = set()
-        else:
-            self._audiobook_ids_in_favorites = await self.provider.gql_client.check_audiobook_ids(
-                album_ids
-            )
-        return self._audiobook_ids_in_favorites
+            return set()
+        return await self.provider.gql_client.check_audiobook_ids(album_ids)
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Deezer."""
@@ -316,16 +368,12 @@ class DeezerMediaManager:
             lambda r: r.user_favorites.albums,
         ):
             all_edges.append(edge)
-        # Populate the favorites-audiobook cache (shared with get_library_audiobooks)
-        if self._audiobook_ids_in_favorites is None:
-            album_ids = [edge.node.id for edge in all_edges]
-            self._audiobook_ids_in_favorites = (
-                await self.provider.gql_client.check_audiobook_ids(album_ids)
-                if album_ids
-                else set()
-            )
+        album_ids = [edge.node.id for edge in all_edges]
+        audiobook_ids = (
+            await self.provider.gql_client.check_audiobook_ids(album_ids) if album_ids else set()
+        )
         for edge in all_edges:
-            if edge.node.id in self._audiobook_ids_in_favorites:
+            if edge.node.id in audiobook_ids:
                 continue
             item = parse_album(self.provider, edge.node)
             if edge.favorited_at:
@@ -426,6 +474,8 @@ class DeezerMediaManager:
         self.logger.debug("search called with media_types=%s", media_types)
         need_albums = MediaType.ALBUM in media_types
         need_audiobooks = MediaType.AUDIOBOOK in media_types
+        # the audiobook hits also tell which artists are authors
+        find_audiobooks = need_audiobooks or MediaType.ARTIST in media_types
 
         # Try with full limit first; on complexity error, retry with reduced limits.
         attempts = [limit, max(limit // 2, 5), 5]
@@ -435,7 +485,7 @@ class DeezerMediaManager:
                 result = await self.provider.gql_client.search(
                     query=search_query,
                     tracks_first=attempt_limit if MediaType.TRACK in media_types else 0,
-                    albums_first=attempt_limit if (need_albums or need_audiobooks) else 0,
+                    albums_first=attempt_limit if (need_albums or find_audiobooks) else 0,
                     artists_first=attempt_limit if MediaType.ARTIST in media_types else 0,
                     playlists_first=attempt_limit if MediaType.PLAYLIST in media_types else 0,
                     livestreams_first=attempt_limit if MediaType.RADIO in media_types else 0,
@@ -462,30 +512,38 @@ class DeezerMediaManager:
                 for edge in result.results.tracks.edges
                 if edge.node is not None
             ]
-        if need_albums or need_audiobooks:
+        audiobooks: list[Audiobook] = []
+        if need_albums or find_audiobooks:
             album_nodes = [e.node for e in result.results.albums.edges if e.node is not None]
-            if album_nodes and need_audiobooks:
+            if album_nodes and find_audiobooks:
                 album_ids = [n.id for n in album_nodes]
                 audiobook_ids = await self.provider.gql_client.check_audiobook_ids(album_ids)
                 if need_albums:
                     search_results.albums = [
                         parse_album(self.provider, n)
                         for n in album_nodes
-                        if n.id not in audiobook_ids
+                        if not need_audiobooks or n.id not in audiobook_ids
                     ]
-                search_results.audiobooks = [
+                audiobooks = [
                     parse_audiobook_from_album(self.provider, n)
                     for n in album_nodes
                     if n.id in audiobook_ids
                 ]
+                if need_audiobooks:
+                    search_results.audiobooks = audiobooks
             elif need_albums:
                 search_results.albums = [parse_album(self.provider, n) for n in album_nodes]
         if MediaType.ARTIST in media_types:
-            search_results.artists = [
-                parse_artist(self.provider, edge.node)
-                for edge in result.results.artists.edges
-                if edge.node is not None
-            ]
+            author_ids = {
+                author.item_id
+                for audiobook in audiobooks
+                for author in audiobook.authors
+                if isinstance(author, Artist)
+            }
+            search_results.artists = await self._search_artists(
+                [edge.node for edge in result.results.artists.edges if edge.node is not None],
+                author_ids,
+            )
         if MediaType.PLAYLIST in media_types:
             search_results.playlists = [
                 parse_playlist(self.provider, edge.node)
@@ -520,10 +578,13 @@ class DeezerMediaManager:
             if not isinstance(artist, Artist):
                 raise MediaNotFoundError(f"Personal artist {prov_artist_id} not found")
             return artist
-        result = await self.provider.gql_client.get_artist(artist_id=prov_artist_id)
+        artist_id = prov_artist_id.removeprefix(AUTHOR_ARTIST_PREFIX)
+        result = await self.provider.gql_client.get_artist(artist_id=artist_id)
         if result is None:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Deezer")
         item = parse_artist(self.provider, result)
+        if prov_artist_id.startswith(AUTHOR_ARTIST_PREFIX):
+            item = parse_author(self.provider, result.id, result.name, item.metadata, item.favorite)
         apply_web_url(item, result)
         return item
 
@@ -615,7 +676,7 @@ class DeezerMediaManager:
         )
         return parse_podcast_episode(self.provider, result, podcast_mapping, 0, podcast_image_url)
 
-    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True, cache_checksum=AUDIOBOOK_METADATA_VERSION)
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
         result = await self.provider.gql_client.get_audiobook(
@@ -746,28 +807,15 @@ class DeezerMediaManager:
             episode.position = position
         return episodes
 
-    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True, cache_checksum=AUDIOBOOK_METADATA_VERSION)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
-        if prov_artist_id.startswith(PERSONAL_ARTIST_PREFIX):
-            # Personal artist has no real Deezer artist page
+        if prov_artist_id.startswith((PERSONAL_ARTIST_PREFIX, AUTHOR_ARTIST_PREFIX)):
+            # Personal artist has no real Deezer artist page, an author has audiobooks
             return []
-        result = await self.provider.gql_client.get_artist(artist_id=prov_artist_id)
-        if result is None:
-            return []
-        all_edges = list(result.albums.edges)
-        while result.albums.page_info.has_next_page and len(all_edges) < ARTIST_ALBUMS_LIMIT:
-            result = await self.provider.gql_client.get_artist(
-                artist_id=prov_artist_id,
-                albums_after=result.albums.page_info.end_cursor,
-            )
-            if result is None:
-                break
-            all_edges.extend(result.albums.edges)
+        releases, audiobook_ids = await self._get_artist_releases(prov_artist_id)
         return [
-            parse_album(self.provider, edge.node)
-            for edge in all_edges[:ARTIST_ALBUMS_LIMIT]
-            if edge.node is not None
+            parse_album(self.provider, node) for node in releases if node.id not in audiobook_ids
         ]
 
     async def get_artist_topalbums(self, prov_artist_id: str) -> list[Album]:
@@ -775,11 +823,11 @@ class DeezerMediaManager:
         albums = await self.get_artist_albums(prov_artist_id)
         return sorted(albums, key=lambda album: album.metadata.popularity or 0, reverse=True)
 
-    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True, cache_checksum=AUDIOBOOK_METADATA_VERSION)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks of an artist."""
-        if prov_artist_id.startswith(PERSONAL_ARTIST_PREFIX):
-            # Personal artist has no real Deezer artist page
+        if prov_artist_id.startswith((PERSONAL_ARTIST_PREFIX, AUTHOR_ARTIST_PREFIX)):
+            # Personal artist has no real Deezer artist page, an author has audiobooks
             return []
         result = await self.provider.gql_client.get_artist(artist_id=prov_artist_id)
         if result is None or result.top_tracks is None:
@@ -793,8 +841,15 @@ class DeezerMediaManager:
             if result is None or result.top_tracks is None:
                 break
             all_edges.extend(result.top_tracks.edges)
+        tracks = [edge.node for edge in all_edges if edge.node is not None]
+        # chapters of an audiobook count as tracks on Deezer
+        audiobook_ids = await self.provider.gql_client.check_audiobook_ids(
+            list({track.album.id for track in tracks if track.album is not None})
+        )
         return [
-            parse_track(self.provider, edge.node) for edge in all_edges if edge.node is not None
+            parse_track(self.provider, track)
+            for track in tracks
+            if track.album is None or track.album.id not in audiobook_ids
         ]
 
     @use_cache(3600 * 24, allow_expired_cache=True)
@@ -808,7 +863,7 @@ class DeezerMediaManager:
     @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
         """Retrieve a list of artists similar to the provided artist."""
-        if prov_artist_id.startswith(PERSONAL_ARTIST_PREFIX):
+        if prov_artist_id.startswith((PERSONAL_ARTIST_PREFIX, AUTHOR_ARTIST_PREFIX)):
             return []
         result = await self.provider.gql_client.get_similar_artists(
             artist_id=prov_artist_id, first=limit
@@ -826,7 +881,10 @@ class DeezerMediaManager:
     async def library_add(self, item: MediaItemType) -> bool:
         """Add an item to the provider's library/favorites."""
         if item.media_type == MediaType.ARTIST:
-            await self.provider.gql_client.add_artist_to_favorite(artist_id=item.item_id)
+            # an author is the same artist on Deezer
+            await self.provider.gql_client.add_artist_to_favorite(
+                artist_id=item.item_id.removeprefix(AUTHOR_ARTIST_PREFIX)
+            )
         elif item.media_type == MediaType.ALBUM:
             await self.provider.gql_client.add_album_to_favorite(album_id=item.item_id)
         elif item.media_type == MediaType.TRACK:
@@ -846,7 +904,10 @@ class DeezerMediaManager:
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove an item from the provider's library/favorites."""
         if media_type == MediaType.ARTIST:
-            await self.provider.gql_client.remove_artist_from_favorite(artist_id=prov_item_id)
+            artist_id = prov_item_id.removeprefix(AUTHOR_ARTIST_PREFIX)
+            # an author is the same artist on Deezer, unless only an audiobook lists it
+            if artist_id == prov_item_id or await self._is_favorite_author(artist_id):
+                await self.provider.gql_client.remove_artist_from_favorite(artist_id=artist_id)
         elif media_type == MediaType.ALBUM:
             await self.provider.gql_client.remove_album_from_favorite(album_id=prov_item_id)
         elif media_type == MediaType.TRACK:
@@ -925,3 +986,95 @@ class DeezerMediaManager:
             else:
                 personal_albums[album_key] = track.album
         return personal_albums
+
+    async def _get_artist_releases(
+        self, artist_id: str
+    ) -> tuple[list[GetArtistArtistAlbumsEdgesNode], set[str]]:
+        """Get the newest releases of an artist and the ids of those that are audiobooks."""
+        result = await self.provider.gql_client.get_artist(artist_id=artist_id)
+        if result is None:
+            return [], set()
+        all_edges = list(result.albums.edges)
+        while result.albums.page_info.has_next_page and len(all_edges) < ARTIST_ALBUMS_LIMIT:
+            result = await self.provider.gql_client.get_artist(
+                artist_id=artist_id,
+                albums_after=result.albums.page_info.end_cursor,
+            )
+            if result is None:
+                break
+            all_edges.extend(result.albums.edges)
+        releases = [edge.node for edge in all_edges[:ARTIST_ALBUMS_LIMIT] if edge.node is not None]
+        # Deezer lists audiobooks among the releases of their author
+        audiobook_ids = await self.provider.gql_client.check_audiobook_ids(
+            [node.id for node in releases]
+        )
+        return releases, audiobook_ids
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    async def _is_author_only(self, artist_id: str) -> bool:
+        """Tell whether a Deezer artist has audiobooks but no music."""
+        result = await self.provider.gql_client.get_artist(artist_id=artist_id)
+        if result is None:
+            return False
+        release_ids = [edge.node.id for edge in result.albums.edges if edge.node is not None]
+        _, authors_without_music = await self._get_authors({artist_id: release_ids})
+        return artist_id in authors_without_music
+
+    async def _is_favorite_author(self, artist_id: str) -> bool:
+        """Tell whether a Deezer artist is in the library as author through its favorite."""
+        result = await self.provider.gql_client.get_artist(artist_id=artist_id)
+        if result is None or not result.is_favorite:
+            return False
+        release_ids = [edge.node.id for edge in result.albums.edges if edge.node is not None]
+        authors, _ = await self._get_authors({artist_id: release_ids})
+        return artist_id in authors
+
+    async def _get_authors(self, releases: dict[str, list[str]]) -> tuple[set[str], set[str]]:
+        """Return the artists with an audiobook among their newest releases, and those without music."""
+        check_audiobook_ids = self.provider.gql_client.check_audiobook_ids
+        newest = await check_audiobook_ids(
+            [i for ids in releases.values() for i in ids[:AUTHOR_NEWEST_RELEASES]]
+        )
+        authors = {
+            artist_id
+            for artist_id, ids in releases.items()
+            if newest.intersection(ids[:AUTHOR_NEWEST_RELEASES])
+        }
+        # only an author needs the other releases checked
+        audiobooks = newest | await check_audiobook_ids(
+            [
+                i
+                for artist_id in releases
+                if artist_id in authors
+                for i in releases[artist_id][AUTHOR_NEWEST_RELEASES:]
+            ]
+        )
+        return authors, {a for a in authors if set(releases[a]) <= audiobooks}
+
+    async def _search_artists(
+        self, nodes: list[SearchSearchResultsArtistsEdgesNode], author_ids: set[str]
+    ) -> list[Artist]:
+        """List the artist hits, and an author of an audiobook hit as author too."""
+        artists: list[Artist] = []
+        for node in nodes:
+            artist = parse_artist(self.provider, node)
+            if f"{AUTHOR_ARTIST_PREFIX}{node.id}" not in author_ids:
+                artists.append(artist)
+                continue
+            # an author is listed as artist too only if the artist page has music
+            try:
+                has_music = not await self._is_author_only(node.id)
+            except (
+                ClientError,
+                GraphQLClientError,
+                InvalidDataError,
+                RetriesExhausted,
+                TimeoutError,
+            ):
+                has_music = True
+            if has_music:
+                artists.append(artist)
+            artists.append(
+                parse_author(self.provider, node.id, node.name, artist.metadata, artist.favorite)
+            )
+        return artists
