@@ -12,6 +12,7 @@ CONF_REFRESH_TOKEN_GLOBAL = "refresh_token_global"  # noqa: S105 - config key
 CONF_REFRESH_TOKEN_DEV = "refresh_token_dev"  # noqa: S105 - config key
 CONF_SYNC_PODCAST_PROGRESS = "sync_podcast_progress"
 CONF_SYNC_AUDIOBOOK_PROGRESS = "sync_audiobook_progress"
+CONF_SYNC_RECENTLY_PLAYED = "sync_recently_played"
 CONF_LIBRESPOT_CREDENTIALS = "librespot_credentials"  # librespot's reusable stored credential
 CONF_ACCOUNT_ID = "account_id"  # Spotify user id this instance serves (one instance per account)
 # account details of the last successful login, so a load goes ahead while Spotify does not answer
@@ -95,3 +96,5 @@ SCOPE = [
 
 # Other Constants
 LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX = "liked_songs"
+CACHE_KEY_RECENTLY_PLAYED_CURSOR = "recently_played_cursor_ms"
+RECENTLY_PLAYED_CACHE_EXPIRATION = 86400 * 90  # match MA playlog retention (90 days)

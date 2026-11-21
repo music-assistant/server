@@ -2155,7 +2155,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if db_item:
             await self.database.execute(
                 f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
-                f"last_played = {timestamp} WHERE item_id = {db_item.item_id}"
+                f"last_played = MAX(COALESCE(last_played, 0), {timestamp}) "
+                f"WHERE item_id = {db_item.item_id}"
             )
             if isinstance(media_item, Track):
                 self.logger.debug("Credited play for track '%s'", media_item.name)
@@ -4156,7 +4157,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             entry["timestamp"] = stored_timestamp
             recorded_play = await self._record_completed_play(
-                entry, user_is_resolved=user is not None
+                entry,
+                user_is_resolved=user is not None,
+                timestamp_reported=timestamp_reported,
             )
             await self._upsert_playlog(entry)
             play_history_written = recorded_play or play_history_written
@@ -4187,20 +4190,33 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ):
             return timestamp
         if (
-            provider_report
+            not timestamp_reported
+            and provider_report
             and bool(row["fully_played"]) == entry["fully_played"]
             and row["seconds_played"] == entry["seconds_played"]
         ):
-            # provider syncs repeat unchanged progress, which must not stamp it as just
-            # played: the timestamp orders the in progress items
+            # provider syncs without a timestamp repeat unchanged progress, which must not stamp
+            # it as just played: the timestamp orders the in progress items
             return cast("float", row["timestamp"])
-        if timestamp_reported and row["timestamp"] > timestamp:
-            # the stored progress is newer than the one reported
+        if timestamp_reported and (
+            row["timestamp"] > timestamp
+            or (
+                "fully_played" in entry
+                and row["timestamp"] == timestamp
+                and bool(row["fully_played"]) == entry["fully_played"]
+                and row["seconds_played"] == entry.get("seconds_played")
+            )
+        ):
+            # the stored progress is newer than (or an unchanged duplicate of) the reported one
             return None
         return timestamp
 
     async def _record_completed_play(
-        self, progress: dict[str, Any], *, user_is_resolved: bool
+        self,
+        progress: dict[str, Any],
+        *,
+        user_is_resolved: bool,
+        timestamp_reported: bool = False,
     ) -> bool:
         """Append a completed queue play or a provider's transition to completed."""
         if not user_is_resolved or not progress["fully_played"]:
@@ -4209,6 +4225,25 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if progress["queue_id"] is None:
             if progress["user_initiated"]:
                 return False
+            if timestamp_reported:
+                # Timestamped provider syncs can report repeat completions at newer timestamps;
+                # deduplicate atomically so retried or concurrent syncs only log each play once.
+                cursor = await self.database.execute(
+                    f"INSERT INTO {DB_TABLE_PLAY_HISTORY} "
+                    "(item_id, provider, media_type, userid, queue_id, timestamp, "
+                    "user_initiated, name, image, artists) "
+                    "SELECT :item_id, :provider, :media_type, :userid, :queue_id, :timestamp, "
+                    ":user_initiated, :name, :image, :artists "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM {DB_TABLE_PLAY_HISTORY} "
+                    "WHERE item_id = :item_id AND provider = :provider "
+                    "AND media_type = :media_type AND userid = :userid "
+                    "AND timestamp = :timestamp)",
+                    progress,
+                )
+                try:
+                    return bool(cursor.rowcount > 0)
+                finally:
+                    await cursor.close()
             conflict_params = {key: progress[key] for key in PLAYLOG_CONFLICT_KEYS}
             conflict_clause = " AND ".join(f"{key} = :{key}" for key in PLAYLOG_CONFLICT_KEYS)
             cursor = await self.database.execute(
@@ -4289,7 +4324,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             await self.database.execute(
                 f"UPDATE {self.artists.db_table} SET play_count = play_count + 1, "
-                f"last_played = {timestamp} WHERE item_id = {db_artist.item_id}"
+                f"last_played = MAX(COALESCE(last_played, 0), {timestamp}) "
+                f"WHERE item_id = {db_artist.item_id}"
             )
             self.logger.debug("Credited play for artist '%s'", db_artist.name)
             playlog_entry: dict[str, Any] = {
