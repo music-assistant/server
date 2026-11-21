@@ -77,6 +77,7 @@ from music_assistant.providers.sonos.const import (
     PREVIOUS_ITEMS,
     SOURCE_AIRPLAY,
     SOURCE_LINE_IN,
+    SOURCE_LINE_IN_OF,
     SOURCE_MUSIC_ASSISTANT,
     SOURCE_RADIO,
     SOURCE_SPOTIFY,
@@ -241,16 +242,25 @@ class SonosPlayer(PlayerProtocol):
         self._own_airplay_session = False
         # the other speakers of this speaker's set, as last reported to the players controller
         self._reported_bonded_ids: set[str] = set()
+        # the line-in this speaker loaded last: Sonos does not report whose line-in plays
+        self._loaded_line_in = SOURCE_LINE_IN
 
     @property
     def source_list(self) -> list[PlayerSource]:
-        """Return this player's sources; a service we did not map is listed only while it plays."""
+        """
+        Return this player's sources, with the line-in of the other speakers of its household.
+
+        A service we did not map is listed only while it plays.
+        """
         # the entry of such a service can outlive the source it stands for: once a paused
         # session is given up on, the speaker keeps reporting it and rebuilds the entry
         return [
-            x
-            for x in self._attr_source_list
-            if x.id in PLAYER_SOURCE_MAP or x.id == self._attr_active_source
+            *(
+                x
+                for x in self._attr_source_list
+                if x.id in PLAYER_SOURCE_MAP or x.id == self._attr_active_source
+            ),
+            *self._household_line_ins(),
         ]
 
     @property
@@ -817,8 +827,12 @@ class SonosPlayer(PlayerProtocol):
         # whatever the source turns out to be, it is not our queue any more
         self._forget_queue()
         self._announcement_media = None
-        if source == SOURCE_LINE_IN:
-            await self.group_controller.load_line_in(play_on_completion=True)
+        if source == SOURCE_LINE_IN or _line_in_device_id(source):
+            # set before loading: the speaker may report the line-in before the command returns
+            self._loaded_line_in = source
+            await self.group_controller.load_line_in(
+                device_id=_line_in_device_id(source), play_on_completion=True
+            )
         elif source == SOURCE_TV:
             await self.client.player.load_home_theater_playback()
         else:
@@ -1343,8 +1357,14 @@ class SonosPlayer(PlayerProtocol):
         elif playing and not was_playing:
             # an AirPlay sender of its own, such as a phone, started playing on the speaker
             self._own_airplay_session = False
+        if (
+            container_type != ContainerType.LINEIN
+            and self._attr_active_source == self._loaded_line_in
+        ):
+            # the line-in we loaded stopped playing: one the speaker reports later is its own
+            self._loaded_line_in = SOURCE_LINE_IN
         if container_type == ContainerType.LINEIN:
-            self._attr_active_source = SOURCE_LINE_IN
+            self._attr_active_source = self._loaded_line_in
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
             self._attr_active_source = SOURCE_TV
         elif container_type == ContainerType.AIRPLAY:
@@ -1577,9 +1597,11 @@ class SonosPlayer(PlayerProtocol):
             None,
         )
         if source_index is None:
-            if self._attr_active_source in PLAYER_SOURCE_MAP:
+            if self._attr_active_source in PLAYER_SOURCE_MAP or _line_in_device_id(
+                self._attr_active_source
+            ):
                 # a mapped source this player does not offer itself, such as the line-in of
-                # the coordinator it is synced to
+                # the coordinator it is synced to, or the line-in of another speaker
                 return
             # a service we did not map: the user can not start it from MA and its transport
             # is whatever the speaker reports for it
@@ -2469,6 +2491,29 @@ class SonosPlayer(PlayerProtocol):
     def _on_rendering_change(self, changes: dict[str, str]) -> None:
         if self.connected and not OPTION_EVENT_VARIABLES.isdisjoint(changes):
             self._schedule_options_read()
+
+    def _household_line_ins(self) -> list[PlayerSource]:
+        """Return the line-in of every other speaker of the household that has one."""
+        household_id = self.discovery_info.get("householdId")
+        speakers = cast("list[SonosPlayer]", self.provider.protocols)
+        return [
+            replace(
+                PLAYER_SOURCE_MAP[SOURCE_LINE_IN],
+                id=f"{SOURCE_LINE_IN_OF}{speaker.protocol_id}",
+                owner_player_id=speaker.protocol_id,
+            )
+            for speaker in sorted(speakers, key=lambda x: x.display_name)
+            if speaker is not self
+            and speaker.discovery_info.get("householdId") == household_id
+            and SonosCapability.LINE_IN in speaker.discovery_info["device"]["capabilities"]
+        ]
+
+
+def _line_in_device_id(source_id: str) -> str | None:
+    """Return the speaker whose line-in a source id names, None for the speaker's own."""
+    if source_id.startswith(SOURCE_LINE_IN_OF):
+        return source_id.removeprefix(SOURCE_LINE_IN_OF)
+    return None
 
 
 def _is_wakeable(discovery_info: SonosDiscoveryInfo) -> bool:

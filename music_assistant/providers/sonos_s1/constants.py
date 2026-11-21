@@ -28,6 +28,8 @@ PLAYER_FEATURES = (
 
 # Source Mapping
 SOURCE_LINEIN = "Line-in"
+# the line-in of another speaker, followed by the id of that speaker
+SOURCE_LINEIN_OF = f"{SOURCE_LINEIN}@"
 SOURCE_TV = "TV"
 
 # Line-in and TV are the only sources this provider can report or switch to.

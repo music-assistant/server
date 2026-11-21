@@ -71,6 +71,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._airplay_rejoin_members = set()
     player._own_airplay_session = False
     player._reported_bonded_ids = set()
+    player._loaded_line_in = SOURCE_LINE_IN
     player.upnp = MagicMock(
         follow=AsyncMock(), unfollow=AsyncMock(), follows=False, player_ip="192.168.1.20"
     )

@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 import pytest
 from music_assistant_models.enums import MediaType, PlayerType, ProtocolRole, ProviderFeature
 from music_assistant_models.media_items import AudioSource, ProviderMapping
+from music_assistant_models.player import PlayerSource
 from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.controllers.music import MusicController
@@ -455,3 +456,59 @@ async def test_a_selected_source_plays_with_its_own_name() -> None:
 
     assert resolved is not None
     assert resolved[0].name == "Line-in"
+
+
+# the line-in of Living Room's speaker as Kitchen's speaker lists it, by the protocol id
+LINE_IN_OF_LIVING_ROOM = PlayerSource(
+    id="line_in@lr", name="Line-in", is_input=True, owner_player_id="proto_living_room"
+)
+
+
+@pytest.mark.parametrize(
+    ("shown_on", "expected"),
+    [("living_room", "Line-in"), ("kitchen", "Line-in (Living Room)")],
+    ids=["own_player", "other_player"],
+)
+def test_an_input_of_another_player_is_named_by_the_same_rule(shown_on: str, expected: str) -> None:
+    """An entry of a source list that names its player is named like a live source."""
+    home = _Home()
+
+    assert home.controller.get_audio_source_owner(LINE_IN_OF_LIVING_ROOM) is home.living_room
+    assert home.controller.get_audio_source_name(LINE_IN_OF_LIVING_ROOM, shown_on) == expected
+
+
+def test_a_player_lists_an_input_of_another_player_with_that_player() -> None:
+    """
+    Kitchen lists the line-in of Living Room's speaker with Living Room after it, as an input.
+
+    The id stays the one the speaker selects it by, and the entry names Living Room by its
+    player id. Its own line-in keeps its name.
+    """
+    home = _Home()
+    protocol = home.kitchen.own_protocol
+    assert protocol is not None
+    own_line_in = PlayerSource(id="line_in", name="Line-in", is_input=True)
+    protocol._attr_source_list = [own_line_in, LINE_IN_OF_LIVING_ROOM]
+
+    home.refresh()
+
+    entries = [x for x in home.kitchen.source_list if x.id.startswith("line_in")]
+    assert [(x.id, x.name, x.is_input, x.owner_player_id) for x in entries] == [
+        ("line_in", "Line-in", True, None),
+        ("line_in@lr", "Line-in (Living Room)", True, "living_room"),
+    ]
+    # what the speaker lists is left as it is
+    assert protocol._attr_source_list == [own_line_in, LINE_IN_OF_LIVING_ROOM]
+    assert LINE_IN_OF_LIVING_ROOM.name == "Line-in"
+
+
+def test_an_input_of_a_player_music_assistant_does_not_have_is_left_out() -> None:
+    """An input that names no player Music Assistant has, such as a disabled one, is not listed."""
+    home = _Home()
+    protocol = home.kitchen.own_protocol
+    assert protocol is not None
+    protocol._attr_source_list = [replace(LINE_IN_OF_LIVING_ROOM, owner_player_id="proto_gone")]
+
+    home.refresh()
+
+    assert not [x for x in home.kitchen.source_list if x.id == LINE_IN_OF_LIVING_ROOM.id]

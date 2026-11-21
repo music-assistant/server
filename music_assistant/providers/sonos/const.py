@@ -28,6 +28,8 @@ PLAYER_FEATURES_BASE = {
 }
 
 SOURCE_LINE_IN = "line_in"
+# the line-in of another speaker of the household, followed by the id of that speaker
+SOURCE_LINE_IN_OF = f"{SOURCE_LINE_IN}@"
 SOURCE_AIRPLAY = "airplay"
 SOURCE_SPOTIFY = "spotify"
 SOURCE_UNKNOWN = "unknown"

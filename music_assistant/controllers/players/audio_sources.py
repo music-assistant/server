@@ -49,6 +49,7 @@ from .helpers import handle_player_command
 if TYPE_CHECKING:
     from music_assistant_models.audio_processing import ActiveSourceAudioDetails
     from music_assistant_models.media_items import AudioSource
+    from music_assistant_models.player import PlayerSource
     from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 
@@ -205,26 +206,28 @@ class PlayerAudioSourcesMixin(_PlayerControllerBase):
             return None
         return session.source, provider
 
-    def get_audio_source_owner(self, source: AudioSource) -> Player | None:
+    def get_audio_source_owner(self, source: AudioSource | PlayerSource) -> Player | None:
         """
-        Return the player a live audio source belongs to, None when it belongs to none.
+        Return the player a source belongs to, None when it names none.
 
-        :param source: The audio source.
+        :param source: A live audio source, or an input a player offers from another player.
         """
         if (owner_id := source.owner_player_id) is None:
             return None
         # a provider may name the player by one of its protocols
         return self.get_player_or_protocol_player(owner_id)
 
-    def get_audio_source_name(self, source: AudioSource, player_id: str | None = None) -> str:
+    def get_audio_source_name(
+        self, source: AudioSource | PlayerSource, player_id: str | None = None
+    ) -> str:
         """
-        Return the name of a live audio source as shown on a player, or outside any player.
+        Return the name of a source as shown on a player, or outside any player.
 
         On the player the source belongs to it is the name of the source. Elsewhere the
         name of that player follows in parentheses, unless the player is only an input.
         A source that belongs to no player shows by its name everywhere.
 
-        :param source: The audio source.
+        :param source: A live audio source, or an input a player offers from another player.
         :param player_id: The player it is shown on, None for outside any player.
         """
         owner = self.get_audio_source_owner(source)

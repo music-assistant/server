@@ -497,3 +497,95 @@ async def test_inputs_of_the_device_are_marked_as_inputs() -> None:
         "Optical In 1": True,
         "Tuner": False,
     }
+
+
+DEN_ID = 2
+
+
+def _kitchen_with_den(now_playing: MagicMock | None = None) -> HeosPlayer:
+    """
+    Return Kitchen (device 1), in a HEOS system with Den (device 2).
+
+    HEOS names each input after its device: "Den - Line In 1".
+    """
+    protocol = _make_player(now_playing or _url_stream_now_playing())
+    provider = cast("Any", protocol.provider)
+    provider.music_source_list = []
+    provider.input_source_list = [
+        SimpleNamespace(source_id=source_id, media_id=media_id, name=name)
+        for source_id, media_id, name in (
+            (1, heos_const.INPUT_LINE_IN_1, "Kitchen - Line In 1"),
+            (DEN_ID, heos_const.INPUT_LINE_IN_1, "Den - Line In 1"),
+            (DEN_ID, heos_const.INPUT_OPTICAL_IN_1, "Den - Optical In 1"),
+            (DEN_ID, heos_const.INPUT_TUNER, "Den - Tuner"),
+            # a device whose name HEOS did not put in front of its input
+            (3, heos_const.INPUT_AUX_IN_1, "Phono"),
+        )
+    ]
+    cast("Any", protocol._heos).players = {
+        1: SimpleNamespace(name="Kitchen"),
+        DEN_ID: SimpleNamespace(name="Den"),
+        3: SimpleNamespace(name="Attic"),
+    }
+    return protocol
+
+
+async def test_the_inputs_of_the_other_devices_are_listed_as_their_inputs() -> None:
+    """
+    Kitchen lists the inputs of Den and the attic, each naming its device.
+
+    Den's tuner is a radio, not an input, and is left out. The name drops the device, which
+    the naming rule adds back where it is shown; Kitchen's own input keeps its name.
+    """
+    protocol = _kitchen_with_den()
+
+    await protocol.build_source_list()
+
+    assert [(x.id, x.name, x.is_input, x.owner_player_id) for x in protocol._attr_source_list] == [
+        (heos_const.INPUT_LINE_IN_1, "Kitchen - Line In 1", True, None),
+        (f"{heos_const.INPUT_LINE_IN_1}@2", "Line In 1", True, "2"),
+        (f"{heos_const.INPUT_OPTICAL_IN_1}@2", "Optical In 1", True, "2"),
+        (f"{heos_const.INPUT_AUX_IN_1}@3", "Phono", True, "3"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_args"),
+    [
+        (f"{heos_const.INPUT_LINE_IN_1}@2", (heos_const.INPUT_LINE_IN_1, DEN_ID)),
+        (heos_const.INPUT_LINE_IN_1, (heos_const.INPUT_LINE_IN_1,)),
+    ],
+    ids=["other_device", "own"],
+)
+async def test_an_input_plays_from_the_device_it_belongs_to(
+    source: str, expected_args: tuple[str | int, ...]
+) -> None:
+    """The input of Den is played from Den, Kitchen's own input from Kitchen."""
+    protocol = _kitchen_with_den()
+    device = cast("MagicMock", protocol._device)
+    device.play_input_source = AsyncMock()
+
+    await protocol.select_source(source)
+
+    device.play_input_source.assert_awaited_once_with(*expected_args)
+
+
+@pytest.mark.parametrize(
+    ("station", "expected"),
+    [
+        ("Den - Line In 1", f"{heos_const.INPUT_LINE_IN_1}@2"),
+        ("Kitchen - Line In 1", heos_const.INPUT_LINE_IN_1),
+    ],
+    ids=["other_device", "own"],
+)
+def test_the_input_that_plays_is_found_by_the_station(station: str, expected: str) -> None:
+    """HEOS reports the input of another device by its full name as the station."""
+    now_playing = _url_stream_now_playing()
+    now_playing.source_id = heos_const.MUSIC_SOURCE_AUX_INPUT
+    now_playing.media_id = heos_const.INPUT_LINE_IN_1
+    now_playing.station = station
+    protocol = _kitchen_with_den(now_playing)
+
+    protocol._update_player_current_media()
+
+    assert protocol._attr_active_source == expected
