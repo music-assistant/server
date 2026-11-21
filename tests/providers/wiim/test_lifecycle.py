@@ -59,6 +59,7 @@ def _native_groups() -> MagicMock:
     groups = MagicMock()
     groups.role_of.return_value = NativeGroupRole.STANDALONE
     groups.members_of.return_value = []
+    groups.channel_layout_of.return_value = None
     groups.can_group_with.return_value = set()
     groups.is_unknown_leader_follower.return_value = False
     groups.refresh_leader = AsyncMock()

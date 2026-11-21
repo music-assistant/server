@@ -5,6 +5,11 @@ from music_assistant_models.player import PlayerSource
 # Player ID prefix to avoid colliding with DLNA (which uses the raw UDN)
 PLAYER_ID_PREFIX = "wiim_"
 
+# The slaves of each native set (a stereo pair made in the WiiM app), kept per leader so the
+# set is known after a restart while the pair is part of a larger group.
+CACHE_CATEGORY_NATIVE_SETS = 1
+NATIVE_SET_CACHE_EXPIRATION = 86400 * 3650
+
 # Backend markers so either player class can recognise a group member's backend without a
 # circular import, and so detect a cross-backend (mixed) group that must stay read-only.
 BACKEND_OFFICIAL = "official"
