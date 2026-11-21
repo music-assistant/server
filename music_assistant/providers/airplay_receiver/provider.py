@@ -521,7 +521,8 @@ class AirPlayReceiverProvider(PluginProvider):
             # the player id is stable across renames, so the source uri survives them
             item_id=player_id,
             provider=self.instance_id,
-            name=f"{self.name} ({player.name})",
+            name=self.name,
+            owner_player_id=player_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=player_id,
@@ -549,7 +550,8 @@ class AirPlayReceiverProvider(PluginProvider):
             ),
             config_file=f"{runtime_path}/ma_shairport_sync_{receiver_key}.conf",
             audio_source=audio_source,
-            stream_metadata=StreamMetadata(title=f"AirPlay | {airplay_name}"),
+            # no title until a track plays, so the source shows by its own name
+            stream_metadata=StreamMetadata(title=""),
         )
         self._daemons[player_id] = daemon
         self._setup_shairport_daemon(daemon)

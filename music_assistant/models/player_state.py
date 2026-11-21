@@ -236,8 +236,11 @@ class StateInputs:
     :param session: Live audio source playing on the player.
     :param session_image_url: Url of the image of that audio source. Only given where
         it counts: for a source that reports no image of what it is playing.
+    :param followed_sessions: Live audio sources playing on the players it can follow:
+        its groups and the player it is synced to, by the id of that player.
     :param standing_sources: Audio sources that are selectable on the player without
         a session being active.
+    :param source_names: Names of the audio sources above as shown on the player, by uri.
     """
 
     player_id: str
@@ -293,7 +296,9 @@ class StateInputs:
     mass_sources: frozenset[str]
     session: AudioSourceSession | None
     session_image_url: str | None
+    followed_sessions: Mapping[str, AudioSourceSession]
     standing_sources: tuple[AudioSource, ...]
+    source_names: Mapping[str, str]
 
 
 @dataclass(slots=True, kw_only=True)
@@ -812,7 +817,7 @@ def _source_list(
         sources.append(
             PlayerSource(
                 id=source_uri,
-                name=session.source.name,
+                name=inputs.source_names.get(source_uri, session.source.name),
                 passive=not session.source.can_initiate,
                 can_play_pause=session.source.can_play_pause,
                 can_seek=session.source.can_seek,
@@ -844,7 +849,7 @@ def _source_list(
         sources.append(
             PlayerSource(
                 id=uri,
-                name=source.name,
+                name=inputs.source_names.get(uri, source.name),
                 passive=not source.can_initiate,
                 can_play_pause=source.can_play_pause,
                 can_seek=source.can_seek,
@@ -1048,7 +1053,7 @@ def _current_media(
     # if the player is grouped/synced, use the current_media of the group/parent player
     if parent_id := (active_group or synced_to):
         if parent_id != inputs.player_id and (parent := inputs.peers.get(parent_id)):
-            return parent.state.current_media
+            return _followed_media(inputs, parent.state.current_media, parent_id)
         return None  # if parent player not found, return None for current media
     # a live external source reports what it plays itself
     if inputs.session is not None:
@@ -1181,9 +1186,9 @@ def _session_media(
     """
     Describe what a live external source is playing on the player.
 
-    Falls back to the source's own name and artwork for the parts it has not
-    reported, so a source that reports nothing still shows as itself rather
-    than as an empty player.
+    Falls back to the source's own name (as shown on the player) and artwork for the
+    parts it has not reported, so a source that reports nothing still shows as itself
+    rather than as an empty player.
 
     :param session: The live source session on the player.
     :param elapsed_time: Playback position the player publishes.
@@ -1194,7 +1199,7 @@ def _session_media(
     return PlayerMedia(
         uri=session.source_uri or session.source_id,
         media_type=MediaType.AUDIO_SOURCE,
-        title=(metadata.title if metadata else None) or session.source.name,
+        title=_session_title(inputs, session),
         artist=metadata.artist if metadata else None,
         album=(metadata.album or metadata.description) if metadata else None,
         image_url=image_url,
@@ -1211,6 +1216,32 @@ def _session_media(
         elapsed_time=int(elapsed_time) if elapsed_time is not None else None,
         elapsed_time_last_updated=elapsed_time_last_updated,
     )
+
+
+def _followed_media(
+    inputs: StateInputs, media: PlayerMedia | None, parent_id: str
+) -> PlayerMedia | None:
+    """
+    Return the current media of the player the player follows, as shown on the player.
+
+    :param media: The current media of the player it follows.
+    :param parent_id: Id of the player it follows.
+    """
+    session = inputs.followed_sessions.get(parent_id)
+    if media is None or session is None or media.uri != session.source_uri:
+        return media
+    # a live source that reports no title shows by its name, which differs per player
+    title = _session_title(inputs, session)
+    return media if title == media.title else replace(media, title=title)
+
+
+def _session_title(inputs: StateInputs, session: AudioSourceSession) -> str:
+    """Return the title the live source reports, else its name as shown on the player."""
+    if (metadata := session.stream_metadata) is not None and metadata.title:
+        return metadata.title
+    if (uri := session.source_uri) is not None and uri in inputs.source_names:
+        return inputs.source_names[uri]
+    return session.source.name
 
 
 def _resolved_palette(inputs: StateInputs, image_url: str | None) -> MediaItemPalette | None:

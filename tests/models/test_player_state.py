@@ -1435,6 +1435,34 @@ class TestCurrentMedia:
 
         assert state.current_media is media
 
+    def test_member_names_the_live_source_of_its_group_for_itself(self) -> None:
+        """A source that reports no title shows on a member by the name that holds there."""
+        group = _group(current_media=PlayerMedia(uri=SOURCE_URI, title="Spotify Connect (Den)"))
+
+        state = _derive(
+            groups=(group,),
+            peers={"group_1": _group_peer(group)},
+            followed_sessions={"group_1": _session()},
+            source_names={SOURCE_URI: "Spotify Connect"},
+        )
+
+        assert state.current_media is not None
+        assert state.current_media.title == "Spotify Connect"
+
+    def test_member_shares_group_media_that_is_not_of_its_session(self) -> None:
+        """Media of the group that its session does not play stays the very object."""
+        media = PlayerMedia(uri="group://media", title="Group song")
+        group = _group(current_media=media)
+
+        state = _derive(
+            groups=(group,),
+            peers={"group_1": _group_peer(group)},
+            followed_sessions={"group_1": _session()},
+            source_names={SOURCE_URI: "Spotify Connect"},
+        )
+
+        assert state.current_media is media
+
     def test_synced_player_shares_the_media_of_its_leader(self) -> None:
         """A synced player publishes the very media object of its leader."""
         media = PlayerMedia(uri="leader://media", title="Leader song")

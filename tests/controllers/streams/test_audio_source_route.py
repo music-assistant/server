@@ -89,6 +89,7 @@ def _controller(
         store._source_sessions[session.player_id] = session
     ctrl.mass.players.get_audio_source_session = store.get_audio_source_session
     ctrl.mass.players.claim_audio_source_session = store.claim_audio_source_session
+    ctrl.mass.players.get_audio_source_name = store.get_audio_source_name
     player = MagicMock()
     player.protocol_id = CONSUMER_ID
     ctrl.mass.players.get_output_protocol = MagicMock(return_value=player)

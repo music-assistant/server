@@ -42,7 +42,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
-from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_ALLOW_AUDIO_ANALYSIS
 from music_assistant.helpers.player import get_available_player
@@ -215,7 +215,7 @@ class SendspinSources:
             or "player" not in {role_family(role_id) for role_id in client.negotiated_role_ids}
         ):
             return []
-        return [self._audio_source(client, name=self._input_name(player_id))]
+        return [self._audio_source(client)]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -242,9 +242,6 @@ class SendspinSources:
             audio_format=audio_format,
             media_type=media_type,
             stream_type=StreamType.CUSTOM,
-            stream_metadata=StreamMetadata(
-                title=self._input_name(item_id) or self._device_name(item_id)
-            ),
         )
 
     async def on_source_selected(
@@ -431,11 +428,11 @@ class SendspinSources:
         roles = client.roles_by_family("source")
         return cast("SourceV1Role", roles[0]) if roles else None
 
-    def _audio_source(self, client: SendspinClient, name: str | None = None) -> AudioSource:
+    def _audio_source(self, client: SendspinClient) -> AudioSource:
         return AudioSource(
             item_id=client.client_id,
             provider=self.provider.instance_id,
-            name=name or self._source_name(client.client_id),
+            name=self._source_name(client.client_id),
             provider_mappings={
                 ProviderMapping(
                     item_id=client.client_id,
@@ -454,6 +451,8 @@ class SendspinSources:
             allow_audio_analysis=self._protocol_config_value(
                 client.client_id, CONF_ALLOW_AUDIO_ANALYSIS, True
             ),
+            # the client's protocol id, which the server resolves to its player
+            owner_player_id=client.client_id,
         )
 
     def _protocol_config_value[T: ConfigValueType](self, client_id: str, key: str, default: T) -> T:
@@ -824,9 +823,8 @@ class SendspinSources:
             self.mass.cancel_task(task_id)
 
     def _source_name(self, client_id: str) -> str:
-        """Return the name of the input where it is listed apart from its device, such as Browse."""
-        input_name = self._input_name(client_id) or self.provider.name
-        return f"{input_name} ({self._device_name(client_id)})"
+        """Return the name of the input, or that of its player for a device that only captures."""
+        return self._input_name(client_id) or self._device_name(client_id)
 
     def _input_name(self, client_id: str) -> str | None:
         """Return the name the user gave the input, or None for a device that only captures."""

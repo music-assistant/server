@@ -177,7 +177,7 @@ def _volume_normalization_preference_options() -> list[ConfigValueOption]:
     ]
 
 
-def _audio_source_headers(session: AudioSourceSession, output_format_str: str) -> dict[str, str]:
+def _audio_source_headers(source_name: str, output_format_str: str) -> dict[str, str]:
     """
     Return the response headers for a live audio source stream.
 
@@ -185,12 +185,12 @@ def _audio_source_headers(session: AudioSourceSession, output_format_str: str) -
     flags. ``icy-name`` is sanitized of every control character, not just
     newlines, because aiohttp rejects the rest as a header injection attempt.
 
-    :param session: The session whose source is being streamed.
+    :param source_name: Name of the source as shown on the player it plays on.
     :param output_format_str: Output format to derive the content type from.
     """
     return {
         **DEFAULT_STREAM_HEADERS,
-        "icy-name": sanitize_http_header_value(session.source.name),
+        "icy-name": sanitize_http_header_value(source_name),
         "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
         "Content-Type": get_mime_type(output_format_str),
     }
@@ -326,7 +326,7 @@ class AudioSourceStream:
                 streamdetails=self.streamdetails,
                 pcm_format=pcm_format,
                 raise_on_error=False,
-                display_name=session.source.name,
+                display_name=players.get_audio_source_name(session.source, session.player_id),
                 source_session=session,
                 stream_session_id=self._stream_session_id,
             ):
@@ -2269,8 +2269,9 @@ class StreamsController(CoreController):
             # most DLNA renderers pick a decoder from the HEAD content type and
             # cannot handle raw PCM
             head_fmt = ContentType.WAV.value
+        source_name = self.mass.players.get_audio_source_name(session.source, session.player_id)
         resp = web.StreamResponse(
-            status=200, reason="OK", headers=_audio_source_headers(session, head_fmt)
+            status=200, reason="OK", headers=_audio_source_headers(source_name, head_fmt)
         )
         await resp.prepare(request)
         return resp
@@ -2308,10 +2309,11 @@ class StreamsController(CoreController):
             content_bit_depth=pcm_format.bit_depth,
             media_type=MediaType.AUDIO_SOURCE,
         )
+        source_name = self.mass.players.get_audio_source_name(session.source, session.player_id)
         resp = web.StreamResponse(
             status=200,
             reason="OK",
-            headers=_audio_source_headers(session, output_format.output_format_str),
+            headers=_audio_source_headers(source_name, output_format.output_format_str),
         )
         resp.content_type = get_mime_type(output_format.output_format_str)
         if player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False):
@@ -2323,7 +2325,7 @@ class StreamsController(CoreController):
             streamdetails=streamdetails,
             pcm_format=pcm_format,
             raise_on_error=False,
-            display_name=session.source.name,
+            display_name=source_name,
             source_session=session,
             stream_session_id=stream_session_id,
         )

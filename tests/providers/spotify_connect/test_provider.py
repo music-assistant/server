@@ -639,6 +639,35 @@ async def test_soloist_data_dir_matches_the_migration_target(tmp_path: Path) -> 
     )
 
 
+async def test_a_started_daemon_has_no_title_until_a_track_plays(tmp_path: Path) -> None:
+    """The source carries the provider's name and its player, and no title of its own."""
+    provider = _provider_with_stored_config(
+        {
+            CONF_BACKEND: BACKEND_SOLOIST,
+            CONF_API_KEY: "soloist-api-key-0123456789abcdef",
+            CONF_SOLOIST_CONSENT: True,
+        },
+        tmp_path,
+    )
+    provider.manifest = MagicMock()
+    provider.manifest.domain = "spotify_connect"
+    provider._daemons = {}
+    player = MagicMock()
+    player.player_id = "kitchen"
+    player.name = "Kitchen"
+
+    with patch.object(SoloistBackend, "start", new=AsyncMock()):
+        await provider._start_daemon("kitchen", player, "Kitchen | Music Assistant")
+
+    daemon = provider._daemons["kitchen"]
+    assert (daemon.audio_source.name, daemon.audio_source.owner_player_id) == (
+        provider.name,
+        "kitchen",
+    )
+    # the server shows the source by its name while the title is empty
+    assert daemon.stream_metadata.title == ""
+
+
 # --- Daemon reconciliation -----------------------------------------------------
 
 
