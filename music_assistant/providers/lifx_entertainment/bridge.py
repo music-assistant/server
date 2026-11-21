@@ -175,7 +175,7 @@ class LifxEntertainmentBridge(SendspinLightBridge):
             for attempt in range(_SESSION_START_ATTEMPTS):
                 try:
                     await session.start()
-                except Exception as err:
+                except OSError as err:
                     self.logger.warning(
                         "LIFX session start attempt %d failed for '%s': %s",
                         attempt + 1,
@@ -326,8 +326,8 @@ class LifxEntertainmentBridgeManager:
             bridge = LifxEntertainmentBridge(self.provider, sendspin_provider, area)
             try:
                 await bridge.start()
-            except Exception:
-                self.logger.warning("Failed to start bridge for LIFX area '%s'", area.name)
+            except Exception as err:
+                self.logger.warning("Failed to start bridge for LIFX area '%s': %s", area.name, err)
                 with suppress(Exception):
                     await bridge.stop()
                 continue

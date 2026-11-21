@@ -82,7 +82,7 @@ async def run_setup(session: SetupSession) -> None:
         except StepExpiredError, TimeoutError:
             errors = {"base": "no_lights_found"}
             continue
-        except Exception as err:
+        except OSError as err:
             errors = {"base": str(err)}
             continue
         if not devices:
