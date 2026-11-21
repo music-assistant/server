@@ -69,7 +69,7 @@ def _controller(
     ctrl.mass = MagicMock()
     ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     # the queue's player is not in a group
-    ctrl.mass.players._resolve_playback_owner = Mock(side_effect=lambda player: player)
+    ctrl.mass.players._audio_source_owner = Mock(side_effect=lambda player: player)
     ctrl.logger = MagicMock()
     return ctrl, load_mock, stop_mock
 
