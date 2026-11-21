@@ -358,6 +358,8 @@
   "common.errors.provider_unavailable": "The provider is currently unavailable.",
   "common.errors.queue_empty": "The queue is empty.",
   "common.errors.rate_limited": "Rate limit reached. Please try again later.",
+  "common.errors.rate_limited_hours": "Rate limit reached. Please try again in about {0} hours.",
+  "common.errors.rate_limited_minutes": "Rate limit reached. Please try again in about {0} minutes.",
   "common.errors.required": "This field is required.",
   "common.errors.resource_busy": "This resource is currently in use elsewhere.",
   "common.errors.resource_temporarily_unavailable": "This resource is temporarily unavailable. Please try again later.",
