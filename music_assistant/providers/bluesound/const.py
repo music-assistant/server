@@ -35,11 +35,12 @@ PLAYBACK_STATE_MAP = {
 SOURCE_TIDAL = "Tidal"
 SOURCE_AIRPLAY = "AirPlay"
 SOURCE_SPOTIFY = "Spotify"
-SOURCE_RADIOPARADISE = "RadioParadise"
+SOURCE_RADIOPARADISE = "Radio Paradise"
 SOURCE_TUNEIN = "TuneIn"
 SOURCE_HTTP = "http"
 SOURCE_BLUETOOTH = "Bluetooth"
 SOURCE_TV = "HDMI ARC"
+SOURCE_LOCALMUSIC = "LocalMusic"
 
 PLAYER_SOURCE_MAP = {
     SOURCE_HTTP: PlayerSource(
@@ -101,6 +102,14 @@ PLAYER_SOURCE_MAP = {
     SOURCE_TUNEIN: PlayerSource(
         id=SOURCE_TUNEIN,
         name="TuneIn",
+        passive=True,
+        can_play_pause=True,
+        can_next_previous=False,
+        can_seek=False,
+    ),
+    SOURCE_LOCALMUSIC: PlayerSource(
+        id=SOURCE_LOCALMUSIC,
+        name="Local Music",
         passive=True,
         can_play_pause=True,
         can_next_previous=False,
