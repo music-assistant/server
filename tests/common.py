@@ -862,6 +862,7 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "session": None,
         "session_image_url": None,
         "followed_sessions": {},
+        "followed_source_names": {},
         "standing_sources": (),
         "source_names": {},
     }

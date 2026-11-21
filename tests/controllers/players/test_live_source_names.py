@@ -329,6 +329,55 @@ def test_a_member_of_a_group_in_a_group_names_the_source_for_itself() -> None:
     ]
 
 
+def _upstairs_holding(home: _Home, source: AudioSource, title: str | None = None) -> None:
+    """
+    Let the group Upstairs, which holds neither Living Room nor Kitchen, hold a source.
+
+    :param home: The players.
+    :param source: The source it still holds, as while it moves to another group.
+    :param title: The title it reported last.
+    """
+    upstairs, _ = attach_mock(
+        MockProvider("upstairs", instance_id="upstairs", mass=home.mass),
+        "proto_upstairs",
+        "Upstairs",
+        role=ProtocolRole.VIRTUAL,
+        player_id="upstairs",
+        player_type=PlayerType.GROUP,
+    )
+    session = home.controller._start_audio_source_session("upstairs", source, source.provider)
+    if title is not None:
+        session.stream_metadata = StreamMetadata(title=title)
+    upstairs.refresh_state(signal_event=False)
+
+
+def test_a_member_follows_the_source_of_its_own_group_during_a_handoff() -> None:
+    """
+    A member shows the source as its own group plays it, not as another group still does.
+
+    While the line-in moves from Upstairs to Downstairs, Upstairs still holds it with the
+    title it reported last.
+    """
+    home = _Home()
+    _upstairs_holding(home, LINE_IN, title="Blue in Green")
+
+    home.play(home.group, LINE_IN)
+
+    assert _title(home.living_room) == "Line-in"
+    assert _title(home.kitchen) == "Line-in (Living Room)"
+
+
+def test_a_member_names_the_source_as_its_own_group_holds_it_during_a_handoff() -> None:
+    """A source renamed while it moves shows by the name the session of its own group has."""
+    home = _Home()
+    _upstairs_holding(home, LINE_IN)
+
+    home.play(home.group, replace(LINE_IN, name="Record player"))
+
+    assert _title(home.living_room) == "Record player"
+    assert _title(home.kitchen) == "Record player (Living Room)"
+
+
 def test_a_title_the_source_reports_shows_on_every_player() -> None:
     """What the source reports is the title on the group and on each of its members."""
     home = _Home()

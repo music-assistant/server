@@ -1442,8 +1442,8 @@ class TestCurrentMedia:
         state = _derive(
             groups=(group,),
             peers={"group_1": _group_peer(group)},
-            followed_sessions={SOURCE_URI: _session()},
-            source_names={SOURCE_URI: "Spotify Connect"},
+            followed_sessions={"group_1": _session()},
+            followed_source_names={"group_1": "Spotify Connect"},
         )
 
         assert state.current_media is not None
@@ -1457,8 +1457,25 @@ class TestCurrentMedia:
         state = _derive(
             groups=(group,),
             peers={"group_1": _group_peer(group)},
-            followed_sessions={SOURCE_URI: _session()},
-            source_names={SOURCE_URI: "Spotify Connect"},
+            followed_sessions={"group_1": _session()},
+            followed_source_names={"group_1": "Spotify Connect"},
+        )
+
+        assert state.current_media is media
+
+    def test_member_of_a_loop_of_groups_keeps_the_media_of_its_group(self) -> None:
+        """A chain of followed players that loops ends the search for the live source."""
+        media = PlayerMedia(uri=SOURCE_URI, title="Spotify Connect (Den)")
+        group = _group(current_media=media, active_group="group_2")
+
+        state = _derive(
+            groups=(group,),
+            peers={
+                "group_1": _group_peer(group),
+                "group_2": _peer("group_2", active_group="group_1"),
+            },
+            followed_sessions={"group_1": _session(), "group_2": _session()},
+            followed_source_names={"group_1": "Spotify Connect", "group_2": "Spotify Connect"},
         )
 
         assert state.current_media is media

@@ -2513,12 +2513,13 @@ class Player:
                 else None
             ),
             followed_sessions=followed_sessions,
+            followed_source_names={
+                holder_id: self.mass.players.get_audio_source_name(x.source, self.player_id)
+                for holder_id, x in followed_sessions.items()
+            },
             standing_sources=standing_sources,
             source_names=self._source_names(
-                [
-                    *standing_sources,
-                    *(x.source for x in (session, *followed_sessions.values()) if x is not None),
-                ]
+                [*standing_sources, *([session.source] if session is not None else [])]
             ),
         )
         # stream metadata and artwork are only looked up for the queue the player takes its
@@ -2627,10 +2628,10 @@ class Player:
         self, groups: Iterable[GroupSnapshot], synced_to: str | None
     ) -> dict[str, AudioSourceSession]:
         """
-        Collect the live audio sources playing on the players the player can follow, by uri.
+        Collect the live audio sources playing on the players the player can follow.
 
-        Every group player counts, so a source a group plays reaches its members also
-        through a group in between.
+        Every group player counts, as a group can hold the group that holds the player.
+        Returned by the id of the player each plays on.
 
         :param groups: The group players.
         :param synced_to: Id of the player it is synced to.
@@ -2641,9 +2642,8 @@ class Player:
                 parent_id
                 and parent_id != self.player_id
                 and (session := self.mass.players.get_audio_source_session(parent_id))
-                and session.source_uri
             ):
-                sessions[session.source_uri] = session
+                sessions[parent_id] = session
         return sessions
 
     def _source_names(self, sources: Iterable[AudioSource]) -> dict[str, str]:
