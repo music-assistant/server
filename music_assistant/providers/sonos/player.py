@@ -27,8 +27,8 @@ from aiosonos.api.models import (
     SonosCapability,
 )
 from aiosonos.client import SonosLocalApiClient
+from aiosonos.const import LOCAL_API_PORT, SonosEvent
 from aiosonos.const import EventType as SonosEventType
-from aiosonos.const import SonosEvent
 from aiosonos.exceptions import (
     CannotConnect,
     CommandTimeout,
@@ -82,6 +82,7 @@ from music_assistant.providers.sonos.const import (
     SOURCE_TV,
     UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS,
     UPCOMING_ITEMS,
+    UPNP_PORT,
 )
 from music_assistant.providers.sonos.helpers import get_channel_layout
 from music_assistant.providers.sonos.options import (
@@ -178,10 +179,22 @@ class SonosPlayer(PlayerProtocol):
         prov: SonosPlayerProvider,
         protocol_id: str,
         discovery_info: SonosDiscoveryInfo,
+        api_port: int = LOCAL_API_PORT,
+        upnp_port: int = UPNP_PORT,
     ) -> None:
-        """Initialize the SonosPlayer."""
+        """
+        Initialize the SonosPlayer.
+
+        :param prov: The Sonos provider.
+        :param protocol_id: The Sonos player ID.
+        :param discovery_info: The discovery info the speaker returned.
+        :param api_port: The port of the speaker's local API.
+        :param upnp_port: The port of the speaker's UPnP services.
+        """
         super().__init__(prov, protocol_id)
         self.discovery_info = discovery_info
+        self._api_port = api_port
+        self._upnp_port = upnp_port
         self.connected: bool = False
         self._listen_task: asyncio.Task[None] | None = None
         self._connect_lock = asyncio.Lock()
@@ -271,10 +284,12 @@ class SonosPlayer(PlayerProtocol):
         assert self.device_info.ip_address is not None  # for type checking
         # connect the player first so we can fail early
         self.client = SonosLocalApiClient(
-            self.device_info.ip_address, self.mass.http_session_no_ssl
+            self.device_info.ip_address, self.mass.http_session_no_ssl, self._api_port
         )
         provider = cast("SonosPlayerProvider", self._provider)
-        self.upnp = SonosSpeakerUpnp(provider.upnp, self.device_info.ip_address, self.logger)
+        self.upnp = SonosSpeakerUpnp(
+            provider.upnp, self.device_info.ip_address, self._upnp_port, self.logger
+        )
         await self._connect(False)
 
         # collect supported features
@@ -1457,7 +1472,9 @@ class SonosPlayer(PlayerProtocol):
             self.mass.create_task(self.upnp.unfollow())
             if self.upnp.player_ip != self.client.player_ip:
                 provider = cast("SonosPlayerProvider", self._provider)
-                self.upnp = SonosSpeakerUpnp(provider.upnp, self.client.player_ip, self.logger)
+                self.upnp = SonosSpeakerUpnp(
+                    provider.upnp, self.client.player_ip, self._upnp_port, self.logger
+                )
             if self._marked_asleep:
                 self._attr_powered = True
                 self._marked_asleep = False
@@ -2328,8 +2345,10 @@ class SonosPlayer(PlayerProtocol):
         """Return whether the player API port answers a TCP connect."""
         try:
             async with asyncio.timeout(1):
-                # 1443 is the port aiosonos' websocket connects to
-                _, writer = await asyncio.open_connection(self.device_info.ip_address, 1443)
+                # the port aiosonos' websocket connects to
+                _, writer = await asyncio.open_connection(
+                    self.device_info.ip_address, self.client.port
+                )
         except OSError, TimeoutError:
             return False
         writer.close()

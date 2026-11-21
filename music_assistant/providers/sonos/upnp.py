@@ -2,8 +2,9 @@
 UPnP of the Sonos speakers: the settings the websocket api cannot change, and their events.
 
 The websocket api reads most settings but sets only the home theater options, and sends no
-event when a setting changes. The UPnP services of a speaker (port 1400) do both. Events are
-received on Music Assistant's stream server, which the speakers reach anyway to fetch the audio.
+event when a setting changes. The UPnP services of a speaker (port 1400, a port per zone on an
+Amp Multi) do both. Events are received on Music Assistant's stream server, which the speakers
+reach anyway to fetch the audio.
 """
 
 from __future__ import annotations
@@ -27,7 +28,6 @@ from .const import (
     EVENT_SUBSCRIPTION_TIMEOUT,
     EVENTS_PATH,
     RENDERING_CONTROL_SERVICE,
-    UPNP_PORT,
     UPNP_TIMEOUT,
     UPNP_TIMEOUT_LIMIT,
 )
@@ -96,18 +96,19 @@ class SonosSpeakerUpnp:
     After UPNP_TIMEOUT_LIMIT timeouts in a row nothing is sent until reset_timeouts.
     """
 
-    def __init__(self, upnp: SonosUpnp, player_ip: str, logger: logging.Logger) -> None:
+    def __init__(self, upnp: SonosUpnp, player_ip: str, port: int, logger: logging.Logger) -> None:
         """
         Initialize; the speaker's description is read on first use.
 
         :param upnp: The UPnP of all speakers.
         :param player_ip: The speaker's IP address.
+        :param port: The port of the speaker's UPnP services.
         :param logger: The player's logger.
         """
         self._upnp = upnp
         self._logger = logger
         self.player_ip = player_ip
-        self.location = f"http://{player_ip}:{UPNP_PORT}/xml/device_description.xml"
+        self.location = f"http://{player_ip}:{port}/xml/device_description.xml"
         self._device: UpnpDevice | None = None
         self._device_lock = asyncio.Lock()
         self._timeouts = 0
