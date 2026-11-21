@@ -955,6 +955,9 @@
       "libraries": {
         "name": "Libraries"
       },
+      "live_sources": {
+        "name": "Live sources"
+      },
       "recommendations": {
         "name": "Recommendations"
       },
