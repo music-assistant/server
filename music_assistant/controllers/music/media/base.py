@@ -124,9 +124,11 @@ from music_assistant.helpers.external_ids import (
 )
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import (
+    EXPLICIT_FLAGGED_MEDIA_TYPES,
     exact_provider,
     has_visible_source,
     hidden_music_sources,
+    restricts_explicit,
     visible_music_sources,
 )
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
@@ -738,16 +740,20 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
         return items
 
-    def listing_filter(self, query_params: dict[str, Any]) -> list[str]:
+    def listing_filter(self, query_params: dict[str, Any], *, explicit: bool = True) -> list[str]:
         """
         Return the SQL conditions that narrow listings of this type for the calling user.
 
         For callers that build their own listing query with `get_library_items_by_query`.
 
         :param query_params: Query params dict; the conditions' bound params are added to it.
+        :param explicit: Also leave out the explicit items a restricted user may not see.
         """
-        clause = self._listing_filter_clause(query_params)
-        return [clause] if clause else []
+        clauses = [
+            self._listing_filter_clause(query_params),
+            self._explicit_filter_clause() if explicit else None,
+        ]
+        return [clause for clause in clauses if clause]
 
     @final
     def resolve_sort(
@@ -2991,6 +2997,17 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param query_params: Query params dict; the condition's bound params are added to it.
         """
         return None
+
+    @final
+    def _explicit_filter_clause(self) -> str | None:
+        """Return the SQL condition that keeps a restricted caller from explicit items."""
+        if self.media_type not in EXPLICIT_FLAGGED_MEDIA_TYPES or not restricts_explicit(
+            get_current_user()
+        ):
+            return None
+        # an item without a flag counts as allowed
+        explicit = f"json_extract({self.db_table}.metadata, '$.explicit')"
+        return f"({explicit} IS NULL OR {explicit} = 0)"
 
     def _search_filter_clause(self, search: str, query_params: dict[str, Any]) -> str:
         """Return the SQL WHERE clause fragment used for search filtering."""

@@ -3560,3 +3560,43 @@ async def test_exclude_favorites_cache_evaluation_restores_user(
     assert result == []
     mass.webserver.auth.get_user.assert_awaited_once_with("user-a")
     assert mass.music.database.get_rows_from_query.await_args.args[1]["user_id"] == "user-a"
+
+
+async def test_get_playlist_tracks_dynamic_sample_is_kept_apart_without_explicit(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member kept from explicit content gets a sample of their own, narrowed after the read."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=100, is_dynamic=True)
+    # a background refresh runs without the member, so the cached sample may hold anything
+    sample = [
+        Track(
+            item_id=item_id,
+            provider="library",
+            name=name,
+            metadata=MediaItemMetadata(explicit=name == "explicit"),
+            provider_mappings=set(),
+        )
+        for item_id, name in (("1", "clean"), ("2", "explicit"))
+    ]
+    cached_dynamic_sample_mock = AsyncMock(return_value=sample)
+    monkeypatch.setattr(plugin, "_cached_dynamic_sample", cached_dynamic_sample_mock)
+    set_music_source_access(mass, {})
+    mass.music.database.get_rows_from_query = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        "music_assistant.providers.smart_playlist.get_current_user",
+        lambda: User(user_id="kid", username="kid", role=UserRole.USER, allow_explicit=False),
+    )
+
+    result = await plugin.get_playlist_tracks("abc", 0)
+
+    cached_dynamic_sample_mock.assert_awaited_once_with("abc", (), without_explicit=True)
+    assert [track.name for track in result] == ["clean"]

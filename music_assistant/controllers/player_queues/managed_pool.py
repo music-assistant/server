@@ -47,6 +47,8 @@ from music_assistant.controllers.player_queues.helpers import (
     space_by_artist,
 )
 from music_assistant.controllers.player_queues.smart_fade_ordering import order_tracks
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.provider_access import without_disallowed_explicit
 from music_assistant.helpers.track_filter import track_filter
 
 if TYPE_CHECKING:
@@ -259,6 +261,12 @@ class ManagedPool:
                     materialized[uri] = source
                 else:
                     source.multiplicity = counts[uri]
+                    # the queue may have changed hands since the source was materialized
+                    source.tracks = deque(
+                        await without_disallowed_explicit(
+                            self.mass, source.tracks, get_current_user()
+                        )
+                    )
                 candidates = list(source.tracks)
             sources.append(
                 DynamicSource(
@@ -284,6 +292,7 @@ class ManagedPool:
         """Fetch a TRACKS source's own (playable) tracks, honoring the user's selection prefs."""
         with suppress(MusicAssistantError):
             tracks = await self.queues.get_tracks_for_playback(media_item)
+            tracks = await without_disallowed_explicit(self.mass, tracks, get_current_user())
             return [
                 track for track in tracks if isinstance(track, Track) and can_be_enqueued(track)
             ]

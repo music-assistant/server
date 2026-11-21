@@ -66,12 +66,20 @@ from music_assistant.controllers.streams.stream_sources import (
     read_stream_source_policy,
     select_container_source,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    ImpersonatedUser,
+    get_current_user,
+)
 from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_item_media_type_from_item_id,
 )
-from music_assistant.helpers.provider_access import playback_instance_for, playback_sources_for
+from music_assistant.helpers.provider_access import (
+    explicit_allowed,
+    playback_instance_for,
+    playback_sources_for,
+    without_disallowed_explicit,
+)
 from music_assistant.helpers.util import is_disc_dir
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
@@ -338,7 +346,10 @@ class MediaResolver:
         :param item: The dynamic source to fetch the next batch for.
         """
         if isinstance(item, Radio):
-            return await self.mass.music.radio.dynamic_tracks(item)
+            # the station's service picks the tracks, so they are narrowed here for the user
+            # the batch is for (a playlist's tracks below already are)
+            batch = await self.mass.music.radio.dynamic_tracks(item)
+            return await without_disallowed_explicit(self.mass, batch, get_current_user())
         if isinstance(item, Playlist):
             tracks = await self.get_playlist_tracks(item, start_item=None)
             return [track for track in tracks if isinstance(track, Track)]
@@ -370,6 +381,8 @@ class MediaResolver:
             "Fetching tracks to play for playlist %s",
             playlist.name,
         )
+        user = get_current_user()
+        podcasts: dict[tuple[str, str], bool] = {}
         # an unsupported sort is rejected before the playlist is fetched
         sort_field, sort_direction = resolve_listing_sort(
             ListingType.PLAYLIST_TRACKS, sort_field, sort_direction
@@ -388,7 +401,9 @@ class MediaResolver:
                 force_refresh=force_refresh,
                 allow_dynamic_tracks=playlist.is_dynamic,
             ):
-                if not playlist_track.available:
+                if not playlist_track.available or not await explicit_allowed(
+                    self.mass, playlist_track, user, podcasts
+                ):
                     continue
                 if start_item is not None and _start_item_matches(start_item, playlist_track):
                     start_item_found = True
@@ -404,7 +419,9 @@ class MediaResolver:
                 force_refresh=force_refresh,
                 allow_dynamic_tracks=playlist.is_dynamic,
             ):
-                if not playlist_track.available:
+                if not playlist_track.available or not await explicit_allowed(
+                    self.mass, playlist_track, user, podcasts
+                ):
                     continue
                 result.append(playlist_track)
         else:
@@ -421,6 +438,7 @@ class MediaResolver:
                     limit=None,
                 )
                 if playlist_track.available
+                and await explicit_allowed(self.mass, playlist_track, user, podcasts)
             ]
         if start_item is not None:
             for idx, track in enumerate(result):
@@ -916,7 +934,46 @@ class MediaResolver:
         albums = await self.mass.music.artists.albums(library_artist.item_id, "library", limit=None)
         return await self._album_tracks_in_turn(albums)
 
-    async def _resolve_media_items(  # noqa: PLR0915
+    async def _resolve_media_items(
+        self,
+        media_item: MediaItemType | ItemMapping | BrowseFolder,
+        start_item: str | None = None,
+        userid: str | None = None,
+        queue_id: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        keep_preceding_items: bool = False,
+        artist_tracks: list[Track] | None = None,
+        played_copy: tuple[str, str] | None = None,
+        start_position: float | None = None,
+    ) -> list[ResolvedItem]:
+        """
+        Resolve/unwrap media items to enqueue, without the explicit ones the member may not play.
+
+        The parameters are those of :meth:`_resolve_unfiltered_media_items`.
+        """
+        resolved = await self._resolve_unfiltered_media_items(
+            media_item,
+            start_item=start_item,
+            userid=userid,
+            queue_id=queue_id,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            keep_preceding_items=keep_preceding_items,
+            artist_tracks=artist_tracks,
+            played_copy=played_copy,
+            start_position=start_position,
+        )
+        # a container plays the tracks of it the member may play
+        user = get_current_user()
+        podcasts: dict[tuple[str, str], bool] = {}
+        return [
+            entry
+            for entry in resolved
+            if await explicit_allowed(self.mass, entry.item, user, podcasts)
+        ]
+
+    async def _resolve_unfiltered_media_items(  # noqa: PLR0915
         self,
         media_item: MediaItemType | ItemMapping | BrowseFolder,
         start_item: str | None = None,

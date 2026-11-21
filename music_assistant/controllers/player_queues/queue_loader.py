@@ -85,9 +85,14 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.provider_access import (
+    EXPLICIT_FLAGGED_MEDIA_TYPES,
+    ensure_explicit_allowed,
+    explicit_allowed,
     playback_sources,
     resolve_playback_user,
     resolve_playback_user_or_stand_in,
+    restricts_explicit,
+    without_disallowed_explicit,
 )
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
@@ -148,6 +153,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # the queue keeps the item and stops for an unavailable source, as it does
                 # for one that asks to back off
                 raise ResourceTemporarilyUnavailable(str(err)) from err
+        # the item had no explicit flag to judge until its track was found
+        await ensure_explicit_allowed(self.mass, track, user)
         if queue_item.media_item is not external_track:
             # the load that shared this lookup already put the track in place
             return
@@ -784,7 +791,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 "Autoplay failed to fetch the item following %s: %s", last_item.name, err
             )
             return
-        if next_item is None or not next_item.available:
+        if (
+            next_item is None
+            or not next_item.available
+            or not await explicit_allowed(self.mass, next_item, get_current_user())
+        ):
             self.logger.debug("Autoplay found nothing to play after %s", last_item.name)
             return
         if any(
@@ -1272,6 +1283,18 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # never enqueue what this user has no music source for; failing here keeps
         # the caller from finding out only when the item is about to be streamed
         self.mass.music.check_item_playable_for_user(media_item, user)
+        stored_item = media_item
+        if (
+            media_item is entry
+            and restricts_explicit(user)
+            and media_item.media_type in {*EXPLICIT_FLAGGED_MEDIA_TYPES, MediaType.PODCAST_EPISODE}
+        ):
+            # an item object the caller sent is not reloaded above, so its explicit flag is
+            # only the caller's word: the stored item is checked instead
+            if media_item.uri is None:
+                raise InvalidDataError("Media item has no URI")
+            stored_item = await self._item_by_uri(media_item.uri)
+        await ensure_explicit_allowed(self.mass, stored_item, user)
         return media_item
 
     @guard_single_request
@@ -1531,6 +1554,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # Drop anything already queued/played, also when queued as another provider's copy
         queued_keys = {key for item in queue_track_items for key in _track_keys(item)}
         tracks = [track for track in dynamic_tracks if queued_keys.isdisjoint(_track_keys(track))]
+        # the refill runs as the queue owner, who may be kept from explicit tracks
+        tracks = await without_disallowed_explicit(self.mass, tracks, get_current_user())
         if allowed is None:
             return tracks
         # steering is only a preference, so drop what the user has no music source for

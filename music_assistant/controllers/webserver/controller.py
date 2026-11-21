@@ -586,7 +586,7 @@ class WebserverController(CoreController):
 
     def update_active_user(self, user: User) -> None:
         """
-        Apply the stored profile, preferences and player filter of a user to its live sessions.
+        Apply the stored profile, preferences and access settings of a user to its live sessions.
 
         Call this after the user was changed in the database, so the change takes effect
         right away instead of only on the next connection. A changed role, or a disabled
@@ -604,6 +604,7 @@ class WebserverController(CoreController):
             live_user.avatar_url = user.avatar_url
             live_user.preferences = dict(user.preferences)
             live_user.player_filter[:] = user.player_filter
+            live_user.allow_explicit = user.allow_explicit
             self.logger.debug("Updated a live session of %s", live_user.username)
 
     def set_sendspin_player_for_token(self, token: str, player_id: str) -> None:

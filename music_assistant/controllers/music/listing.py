@@ -28,6 +28,8 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.music.constants import LEGACY_SORT_KEYS
 from music_assistant.controllers.music.sorting import LISTING_SORT_OPTIONS
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.provider_access import explicit_allowed_by_flag
 
 # anything a listing holds: a media item, a bare reference to one or a browse folder
 type ListingItem = MediaItem | ItemMapping | BrowseFolder
@@ -92,7 +94,9 @@ def apply_listing[ItemT: ListingItem](
     Search, sort and page a listing assembled in memory.
 
     Items that sort the same keep the order the source lists them in, the tracks of one album
-    their disc and track order, and albums released on the same date their name order.
+    their disc and track order, and albums released on the same date their name order. The
+    items the calling user may not see and play for being explicit are left out first, so a
+    page stays full.
 
     :param items: The whole listing, in the order the source lists it.
     :param listing: The listing the items belong to, which decides the sort options.
@@ -106,8 +110,10 @@ def apply_listing[ItemT: ListingItem](
     :raises InvalidDataError: When the listing does not offer the sort field.
     """
     field, direction = resolve_listing_sort(listing, sort_field, sort_direction)
+    user = get_current_user()
+    items = [item for item in items if explicit_allowed_by_flag(item, user)]
     term = _normalize(search) if search else ""
-    result = [item for item in items if _matches(item, term)] if term else list(items)
+    result = [item for item in items if _matches(item, term)] if term else items
     if field == SortField.RANDOM:
         if random_seed is None:
             random.shuffle(result)

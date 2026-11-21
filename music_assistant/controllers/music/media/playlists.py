@@ -80,7 +80,11 @@ from music_assistant.helpers.playlists import (
     generate_m3u,
     media_item_to_playlist_item,
 )
-from music_assistant.helpers.provider_access import access_allows, visible_music_sources
+from music_assistant.helpers.provider_access import (
+    access_allows,
+    visible_music_sources,
+    without_disallowed_explicit,
+)
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import (
@@ -296,6 +300,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 item_id, provider.instance_id, force_refresh, strict_provider_instance
             )
             items = await with_user_favorites(self.mass, get_current_user(), listing.items)
+            # as cached_listing does: an episode is judged by its podcast, which may need a lookup
+            items = await without_disallowed_explicit(self.mass, items, get_current_user())
         else:
             # a refresh assembles the listing anew and replaces the cached one; the fill is
             # pinned to the resolved account, so no other account answers for it dropping
