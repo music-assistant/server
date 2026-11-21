@@ -446,6 +446,7 @@ class SendspinSources:
         return cast("SourceV1Role", roles[0]) if roles else None
 
     def _audio_source(self, client: SendspinClient) -> AudioSource:
+        player = self._client_player(client.client_id)
         return AudioSource(
             item_id=client.client_id,
             provider=self.provider.instance_id,
@@ -468,8 +469,9 @@ class SendspinSources:
             allow_audio_analysis=self._protocol_config_value(
                 client.client_id, CONF_ALLOW_AUDIO_ANALYSIS, True
             ),
-            # the client's protocol id, which the server resolves to its player
-            owner_player_id=client.client_id,
+            # the player the client's protocol is attached to, as after an unlink the protocol
+            # keeps the id of its former player; the protocol itself while it is on no player
+            owner_player_id=player.player_id if player is not None else client.client_id,
         )
 
     def _protocol_config_value[T: ConfigValueType](self, client_id: str, key: str, default: T) -> T:

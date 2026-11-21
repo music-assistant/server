@@ -215,8 +215,25 @@ async def test_source_name_falls_back_to_the_device_name(fake_client: _FakeClien
 
 
 async def test_a_source_belongs_to_the_player_of_its_client(fake_client: _FakeClient) -> None:
-    """The source names the protocol of its client as its owner, which the server resolves."""
+    """
+    The source belongs to the player the protocol of its client is attached to.
+
+    After an unlink the protocol keeps the id of its former player, which is still there.
+    """
     sources = await make_sources([fake_client])
+    attach_client(sources, "client-1", "pl0123456789ab", name="Kitchen")
+    assert get_players(sources).players["client-1"].player_id == "client-1"
+
+    assert [s.owner_player_id for s in await sources.get_audio_sources()] == ["pl0123456789ab"]
+
+
+async def test_a_source_of_a_protocol_on_no_player_names_the_protocol(
+    fake_client: _FakeClient,
+) -> None:
+    """A source whose protocol is attached to no player names the protocol as its owner."""
+    sources = await make_sources([fake_client])
+    get_players(sources).protocols["client-1"].player = None
+
     assert [s.owner_player_id for s in await sources.get_audio_sources()] == ["client-1"]
 
 
