@@ -136,19 +136,19 @@ class FakeSpeaker:
 
 
 @pytest.fixture
-async def speaker(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeSpeaker]:
+async def speaker() -> AsyncIterator[FakeSpeaker]:
     """Serve a fake speaker and return it with its UPnP."""
     fake = FakeSpeaker()
     app = web.Application()
     app.router.add_route("*", "/{tail:.*}", fake.handle)
     server = TestServer(app)
     await server.start_server()
-    monkeypatch.setattr("music_assistant.providers.sonos.upnp.UPNP_PORT", server.port)
+    assert server.port is not None  # for type checking
     async with aiohttp.ClientSession() as session:
         fake.mass.http_session_no_ssl = session
         fake.mass.streams.base_url = "http://192.168.1.10:8097"
         logger = logging.getLogger("test.sonos.upnp")
-        fake.upnp = SonosSpeakerUpnp(SonosUpnp(fake.mass, logger), "127.0.0.1", logger)
+        fake.upnp = SonosSpeakerUpnp(SonosUpnp(fake.mass, logger), "127.0.0.1", server.port, logger)
         yield fake
     await server.close()
 
