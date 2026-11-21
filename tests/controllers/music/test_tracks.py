@@ -689,7 +689,11 @@ async def test_matches_compatible_reuses_hydrated_album_evidence(
 
 @pytest.mark.parametrize(
     "error",
-    [TimeoutError(), ResourceTemporarilyUnavailable("Provider temporarily unavailable")],
+    [
+        TimeoutError(),
+        ResourceTemporarilyUnavailable("Provider temporarily unavailable"),
+        RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
+    ],
 )
 async def test_full_track_album_falls_back_after_transient_failure(
     music: MusicController,
@@ -2930,10 +2934,18 @@ async def test_enrich_provider_mappings_drops_unavailable_source_mappings(
     assert result.track.provider_mappings == set()
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        ResourceTemporarilyUnavailable("Search timed out"),
+        RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
+    ],
+)
 async def test_enrich_provider_mappings_stops_after_provider_failure(
     music: MusicController,
+    error: Exception,
 ) -> None:
-    """A timed-out provider is not queried again for every remaining migration track."""
+    """A temporarily failing provider is not queried again for every remaining migration track."""
     source = create_track("spotify_1", "source")
     provider = MagicMock(spec=MusicProvider)
     provider.name = "Qobuz"
@@ -2957,7 +2969,7 @@ async def test_enrich_provider_mappings_stops_after_provider_failure(
         patch.object(
             music.tracks,
             "find_provider_match",
-            AsyncMock(side_effect=ResourceTemporarilyUnavailable("Search timed out")),
+            AsyncMock(side_effect=error),
         ) as find_match,
         patch.object(
             music.mass,
