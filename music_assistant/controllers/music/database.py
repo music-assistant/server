@@ -576,6 +576,15 @@ class MusicDatabaseSetupMixin:
             UNIQUE(media_type, external_id, external_id_type, item_id)
             );"""
         )
+        # index for the lookups by item (library listings, the MusicBrainz link run, the
+        # per-item delete/rewrite path). Queries name it, so it is created with its table and
+        # exists before an upgrade step reads the library. The typed and untyped external id
+        # lookups are served by the table's unique index, which is deliberately ordered
+        # (media_type,external_id,...) for that
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_EXTERNAL_ID_LOOKUP}_item_id_idx "
+            f"on {DB_TABLE_EXTERNAL_ID_LOOKUP}(media_type,item_id);"
+        )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}(
             [track_id] INTEGER NOT NULL,
@@ -696,14 +705,6 @@ class MusicDatabaseSetupMixin:
             "CREATE INDEX IF NOT EXISTS "
             f"{DB_TABLE_PROVIDER_MAPPINGS}_media_type_provider_instance_library_idx "
             f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_instance,in_library);"
-        )
-
-        # index on external_id_lookup table to serve the per-item delete/rewrite path;
-        # the typed and untyped external id lookups are served by the table's unique
-        # index, which is deliberately ordered (media_type,external_id,...) for that
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_EXTERNAL_ID_LOOKUP}_item_id_idx "
-            f"on {DB_TABLE_EXTERNAL_ID_LOOKUP}(media_type,item_id);"
         )
 
         # indexes on track_artists table
