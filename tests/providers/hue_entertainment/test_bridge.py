@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Coroutine
 from types import SimpleNamespace
 from typing import Any
@@ -30,6 +31,7 @@ class FakeTarget:
         self.start_allowed = asyncio.Event()
         self.start_allowed.set()
         self.start_error: Exception | None = None
+        self.streams_on_start = True
         self.start_calls = 0
         self.close_calls = 0
         self.streaming = False
@@ -46,7 +48,7 @@ class FakeTarget:
         await self.start_allowed.wait()
         if self.start_error is not None:
             raise self.start_error
-        self.streaming = True
+        self.streaming = self.streams_on_start
 
     def send(self, commands: list[Any]) -> None:
         """Ignore the frame."""
@@ -189,6 +191,26 @@ async def test_started_target_streams_until_the_stream_ends(
     assert target.close_calls == 1
     assert not target.streaming
     assert bridge._render_handle is None
+
+
+@pytest.mark.parametrize("streams", [True, False])
+async def test_streaming_active_is_only_logged_when_the_target_streams(
+    bridge: HueEntertainmentBridge,
+    target: FakeTarget,
+    caplog: pytest.LogCaptureFixture,
+    streams: bool,
+) -> None:
+    """A target that waits for busy lamps is kept, without claiming that it streams."""
+    target.streams_on_start = streams
+    caplog.set_level(logging.INFO)
+
+    bridge._on_stream_start()
+    assert bridge._start_task is not None
+    await bridge._start_task
+
+    assert bridge._is_streaming
+    assert target.close_calls == 0
+    assert ("Entertainment streaming active" in caplog.text) is streams
 
 
 async def test_frames_are_only_queued_while_the_target_streams(

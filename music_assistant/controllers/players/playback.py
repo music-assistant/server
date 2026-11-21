@@ -196,10 +196,20 @@ class PlaybackMixin(_PlayerControllerBase):
                 f"The active source ({active_source.name}) on player "
                 f"{player.name} does not support seeking"
             )
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="source_control_unsupported",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
         if PlayerFeature.SEEK not in player.supported_features:
             msg = f"Player {player.name} does not support seeking"
-            raise UnsupportedFeaturedException(msg)
+            raise UnsupportedFeaturedException(
+                msg,
+                translation_key="player_cannot_seek",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
         # handle command on player directly
         await self._get_transport_protocol(player).seek(position)
 
@@ -232,11 +242,21 @@ class PlaybackMixin(_PlayerControllerBase):
             # the source belongs to the player itself (its own Spotify Connect, a device input)
             if not active_source.can_shuffle:
                 msg = "This action is (currently) unavailable for this source."
-                raise PlayerCommandFailed(msg)
+                raise PlayerCommandFailed(
+                    msg,
+                    translation_key="source_control_unsupported",
+                    translation_owner=self.translation_owner,
+                    translation_args=[player.name],
+                )
             await self._get_transport_protocol(player).set_shuffle(shuffle_enabled)
             return
         msg = f"There is nothing playing on {player.name} to shuffle."
-        raise PlayerCommandFailed(msg)
+        raise PlayerCommandFailed(
+            msg,
+            translation_key="nothing_playing",
+            translation_owner=self.translation_owner,
+            translation_args=[player.name],
+        )
 
     @api_command("players/cmd/repeat", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(to_playback_owner=True)
@@ -270,11 +290,21 @@ class PlaybackMixin(_PlayerControllerBase):
             # the source belongs to the player itself (its own Spotify Connect, a device input)
             if not active_source.can_repeat:
                 msg = "This action is (currently) unavailable for this source."
-                raise PlayerCommandFailed(msg)
+                raise PlayerCommandFailed(
+                    msg,
+                    translation_key="source_control_unsupported",
+                    translation_owner=self.translation_owner,
+                    translation_args=[player.name],
+                )
             await self._get_transport_protocol(player).set_repeat(repeat_mode)
             return
         msg = f"There is nothing playing on {player.name} to repeat."
-        raise PlayerCommandFailed(msg)
+        raise PlayerCommandFailed(
+            msg,
+            translation_key="nothing_playing",
+            translation_owner=self.translation_owner,
+            translation_args=[player.name],
+        )
 
     @api_command("players/cmd/next", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(to_playback_owner=True)
@@ -295,10 +325,20 @@ class PlaybackMixin(_PlayerControllerBase):
                 await self._get_transport_protocol(player).next_track()
                 return
             msg = "This action is (currently) unavailable for this source."
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="source_control_unsupported",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
         # Player does not support next/previous feature
         msg = f"Player {player.name} does not support skipping to the next track."
-        raise UnsupportedFeaturedException(msg)
+        raise UnsupportedFeaturedException(
+            msg,
+            translation_key="player_cannot_skip_tracks",
+            translation_owner=self.translation_owner,
+            translation_args=[player.name],
+        )
 
     @api_command("players/cmd/previous", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(to_playback_owner=True)
@@ -319,10 +359,20 @@ class PlaybackMixin(_PlayerControllerBase):
                 await self._get_transport_protocol(player).previous_track()
                 return
             msg = "This action is (currently) unavailable for this source."
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="source_control_unsupported",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
         # Player does not support next/previous feature
         msg = f"Player {player.name} does not support skipping to the previous track."
-        raise UnsupportedFeaturedException(msg)
+        raise UnsupportedFeaturedException(
+            msg,
+            translation_key="player_cannot_skip_tracks",
+            translation_owner=self.translation_owner,
+            translation_args=[player.name],
+        )
 
     @handle_player_command(switched_off=SwitchedOffAction.POWER_ON)
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
@@ -382,7 +432,10 @@ class PlaybackMixin(_PlayerControllerBase):
         protocol = player.own_protocol
         if protocol is None or PlayerFeature.SELECT_SOUND_MODE not in protocol.supported_features:
             raise UnsupportedFeaturedException(
-                f"Player {player.name} does not support sound mode selection"
+                f"Player {player.name} does not support sound mode selection",
+                translation_key="player_no_sound_modes",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
             )
 
         prev_sound_mode = protocol.active_sound_mode
@@ -392,7 +445,10 @@ class PlaybackMixin(_PlayerControllerBase):
         # basic check if sound mode is valid for player
         if not any(x for x in protocol.sound_mode_list if x.id == sound_mode):
             raise PlayerCommandFailed(
-                f"{sound_mode} is an invalid sound_mode for player {player.name}"
+                f"{sound_mode} is an invalid sound_mode for player {player.name}",
+                translation_key="sound_mode_not_found",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name, sound_mode],
             )
 
         # forward to player
@@ -500,9 +556,19 @@ class PlaybackMixin(_PlayerControllerBase):
             set_current_user(playback_user)
         # guard for player with no active source
         if not mass_queue and not player.active_source:
-            raise PlayerCommandFailed("Player has no active source")
+            raise PlayerCommandFailed(
+                "Player has no active source",
+                translation_key="nothing_playing",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
         if not (item := await self._resolve_currently_playing(player, mass_queue)):
-            raise PlayerCommandFailed("No current item to add to favorites")
+            raise PlayerCommandFailed(
+                "No current item to add to favorites",
+                translation_key="favorite_track_unknown",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
         await self.mass.music.add_item_to_favorites(item)
 
     def _play_media_overrides_group(self, player_id: str) -> bool:
@@ -604,11 +670,15 @@ class PlaybackMixin(_PlayerControllerBase):
                 )
                 await self._handle_cmd_stop(group.player_id)
 
-    async def _stop_player_or_its_queue(self, player: Player) -> None:
+    async def _stop_player_or_its_queue(
+        self, player: Player, keep_sleep_timer: bool = False
+    ) -> None:
         """
         Stop the player, ending its queue when it is playing one of its own.
 
         :param player: The player to stop.
+        :param keep_sleep_timer: The stop stands in for a pause, so the sleep timer of the
+            player's queue still waits for its target once the queue resumes.
         """
         # End the queue itself, exactly as a stop command does: stopping only the device
         # leaves the queue session open, so its preloading keeps pulling audio and a
@@ -620,7 +690,9 @@ class PlaybackMixin(_PlayerControllerBase):
         if (
             active_queue := self.get_active_queue(player)
         ) and active_queue.queue_id == player.player_id:
-            await self.mass.player_queues._handle_stop(player.player_id)
+            await self.mass.player_queues._handle_stop(
+                player.player_id, keep_sleep_timer=keep_sleep_timer
+            )
             return
         await self._handle_cmd_stop(player.player_id)
 
@@ -855,7 +927,12 @@ class PlaybackMixin(_PlayerControllerBase):
                     f"The active source ({active_source.name}) on player "
                     f"{player.name} does not support play/pause"
                 )
-                raise PlayerCommandFailed(msg)
+                raise PlayerCommandFailed(
+                    msg,
+                    translation_key="source_control_unsupported",
+                    translation_owner=self.translation_owner,
+                    translation_args=[player.name],
+                )
             # Delegate to the active audio protocol if one is active
             if target_player := player.foreign_protocol or self._get_control_target(
                 player, PlayerFeature.PAUSE, require_active=True
@@ -915,7 +992,12 @@ class PlaybackMixin(_PlayerControllerBase):
                 f"The active source ({active_source.name}) on player "
                 f"{player.name} does not support play/pause"
             )
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="source_control_unsupported",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
         # Delegate to the active audio protocol if one is active
         if target_player := player.foreign_protocol or self._get_control_target(
             player, PlayerFeature.PAUSE, require_active=True
@@ -940,7 +1022,7 @@ class PlaybackMixin(_PlayerControllerBase):
             "Player/protocol %s does not support pause, using STOP instead",
             player.name,
         )
-        await self._stop_player_or_its_queue(player)
+        await self._stop_player_or_its_queue(player, keep_sleep_timer=True)
 
     async def _resolve_currently_playing(
         self, player: Player, mass_queue: PlayerQueue | None, library_only: bool = False

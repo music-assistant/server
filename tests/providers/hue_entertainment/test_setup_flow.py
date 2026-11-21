@@ -216,9 +216,12 @@ async def test_empty_lamp_choice_is_refused() -> None:
     assert session.finished[CONF_ZIGBEE_LIGHTS] == ["bb/1"]
 
 
-async def test_unreachable_ziggurat_returns_to_the_lamps_step(segments: AsyncMock) -> None:
-    """When Ziggurat can not be reached, the lamps step shows again with the entered values."""
-    segments.side_effect = [ZigguratError("connection refused"), {0x000B: 1}]
+@pytest.mark.parametrize("error", [ZigguratError("connection refused"), TimeoutError()])
+async def test_unreachable_ziggurat_returns_to_the_lamps_step(
+    segments: AsyncMock, error: Exception
+) -> None:
+    """When Ziggurat or Home Assistant does not answer, the lamps step shows again."""
+    segments.side_effect = [error, {0x000B: 1}]
     session = FakeSetupSession(
         FakeMass(_zha_hass()),
         [

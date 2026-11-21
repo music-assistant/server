@@ -211,10 +211,22 @@ def use_real_bridge_holders(sendspin_provider: Any) -> None:
     """
     Give a stand-in of the Sendspin provider its real record of which bridge holds a client.
 
+    With it comes the real lock under which the bridges of a player hand its output over.
+
     :param sendspin_provider: The mocked or fake Sendspin provider.
     """
     sendspin_provider._bridge_holders = {}
-    for name in ("hold_bridge_client", "get_bridge_holder", "release_bridge_client"):
+    sendspin_provider._bridge_waiters = {}
+    sendspin_provider._bridge_locks = {}
+    for name in (
+        "hold_bridge_client",
+        "get_bridge_holder",
+        "release_bridge_client",
+        "wait_for_bridge_client",
+        "stop_waiting_for_bridge_client",
+        "wake_bridge_waiters",
+        "bridge_lock",
+    ):
         method = MethodType(getattr(SendspinProvider, name), sendspin_provider)
         setattr(sendspin_provider, name, method)
 
@@ -330,6 +342,8 @@ def use_player_registry(mass: MagicMock | MusicAssistant) -> MagicMock:
         "get_output_protocol",
         "iter_players",
         "iter_protocols",
+        "get_audio_source_owner",
+        "get_audio_source_name",
     ):
         setattr(players, lookup, MethodType(getattr(PlayerController, lookup), players))
     players.get_audio_source_session = MagicMock(return_value=None)
@@ -797,6 +811,7 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "player_id": player_id,
         "provider": "test_prov",
         "player_type": PlayerType.PLAYER,
+        "channel_layout": None,
         "now": 1000.0,
         "previous_state": make_player_state(player_id),
         "enabled": True,
@@ -846,7 +861,11 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "mass_sources": frozenset(),
         "session": None,
         "session_image_url": None,
+        "followed_sessions": {},
+        "followed_source_names": {},
         "standing_sources": (),
+        "input_sources": (),
+        "source_names": {},
     }
     return StateInputs(**(defaults | values))
 

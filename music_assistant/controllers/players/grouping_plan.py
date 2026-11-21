@@ -464,6 +464,8 @@ class Ungroup:
     protocol_id: str
     failure: Failure = Failure.RAISE
     message: str = ""
+    translation_key: str | None = None
+    translation_args: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -1483,6 +1485,8 @@ class _Planner(GroupRules):
             self._refuse(
                 UnsupportedFeaturedException,
                 f"Player {target.name} does not support group commands",
+                "player_cannot_group",
+                (target.name,),
             )
         # if the target player is a member of an active group player (e.g. a syncgroup),
         # redirect the command to that group player so it can manage the member change
@@ -1629,7 +1633,7 @@ class _Planner(GroupRules):
             "and could not leave the group on its own"
         )
         if target is None:
-            self._refuse(PlayerUnavailableError, message)
+            self._refuse(PlayerUnavailableError, message, "group_leave_failed", (member.name,))
         assert target is not None  # for type checking
         self._note(
             logging.DEBUG,
@@ -1639,7 +1643,13 @@ class _Planner(GroupRules):
             target.protocol_id,
         )
         self.steps.append(
-            Ungroup(protocol_id=target.protocol_id, failure=Failure.UNAVAILABLE, message=message)
+            Ungroup(
+                protocol_id=target.protocol_id,
+                failure=Failure.UNAVAILABLE,
+                message=message,
+                translation_key="group_leave_failed",
+                translation_args=(member.name,),
+            )
         )
 
     def _leave(self) -> None:

@@ -1,4 +1,5 @@
-# Turns the repository references of the development image into owner/repo@ref.
+# Turns the repository references of the development image into owner/repo@ref, and finds the
+# providers of a fetched provider repository.
 # Sourced by entrypoint.sh; every function prints its result and aborts on a reference it refuses.
 
 # Function to parse repository reference and return owner/repo@ref
@@ -86,6 +87,16 @@ parse_provider_ref() {
             echo "${repo}${ref}"
             ;;
     esac
+}
+
+# Function to print the provider folders (a folder with a manifest.json) of a repository
+# checkout: the top-level ones and those in providers/, as the server loads them
+provider_folders() {
+    for manifest in "$1"/*/manifest.json "$1"/providers/*/manifest.json; do
+        if [ -f "$manifest" ]; then
+            dirname "$manifest"
+        fi
+    done
 }
 
 # Function to report the branch a repository points HEAD at

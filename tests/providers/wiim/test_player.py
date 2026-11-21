@@ -654,6 +654,28 @@ class TestSourceList:
         source_ids = [s.id for s in player._attr_source_list]
         assert "aux_in" in source_ids
 
+    @pytest.mark.asyncio
+    async def test_setup_marks_the_physical_inputs(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """The physical inputs are inputs; Bluetooth and the streaming sources are not."""
+        mock_wiim_device.supported_input_modes = tuple(INPUT_MODE_SOURCES)
+        player = _wiim_player(
+            provider=mock_provider, protocol_id="uuid:test", device=mock_wiim_device
+        )
+        await _connect(player)
+        assert {s.id: s.is_input for s in player._attr_source_list} == {
+            "bluetooth": False,
+            "line_in": True,
+            "optical": True,
+            "hdmi": True,
+            "phono_in": True,
+            "aux_in": True,
+            "airplay": False,
+            "spotify": False,
+            "unknown": False,
+        }
+
 
 class TestVolumeCommand:
     """Test the volume command reaches the device."""

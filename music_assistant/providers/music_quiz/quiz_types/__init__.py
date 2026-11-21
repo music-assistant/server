@@ -10,6 +10,7 @@ from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.quiz_types.base import QuizType
 from music_assistant.providers.music_quiz.quiz_types.guess_the_song import GuessTheSongQuizType
 from music_assistant.providers.music_quiz.quiz_types.music_timeline import MusicTimelineQuizType
+from music_assistant.providers.music_quiz.quiz_types.title_reveal import TitleRevealQuizType
 from music_assistant.providers.music_quiz.quiz_types.trivia import TriviaQuizType
 
 if TYPE_CHECKING:
@@ -19,6 +20,7 @@ QUIZ_TYPES: dict[str, type[QuizType]] = {
     "guess_the_song": GuessTheSongQuizType,
     "music_timeline": MusicTimelineQuizType,
     "trivia": TriviaQuizType,
+    "title_reveal": TitleRevealQuizType,
 }
 
 

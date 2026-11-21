@@ -91,20 +91,27 @@ class AudioBufferDiscarded(Exception):
     """
 
 
+class AudioNotWanted(Exception):
+    """Raised when a buffer is asked for whose audio nothing wants any more."""
+
+
 class BufferUser:
     """
     A party that waits for the audio of an AudioBuffer or reads it.
 
-    A buffer keeps its source for as long as it has a user.
+    A buffer keeps its audio for as long as a user reads it or waits to read it.
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, reads: bool = True) -> None:
         """
         Initialize BufferUser.
 
         :param name: Who this is, for log lines.
+        :param reads: Whether this party reads the audio or waits to read it. False for one
+            that only waits for the audio to arrive, which keeps no buffer.
         """
         self.name = name
+        self.reads = reads
         self._buffer: AudioBuffer | None = None
 
     def attach(self, buffer: AudioBuffer) -> None:
@@ -185,8 +192,10 @@ class AudioBuffer:
         self.playback_position: Callable[[AudioBuffer], float | None] | None = None
         self._users: list[BufferUser] = []
         self._release_task: asyncio.Task[None] | None = None
-        # whether this buffer may give up its source once it has no user; None means never
+        # whether this buffer may give up its audio while nobody reads it; None means never
         self.may_release: Callable[[AudioBuffer], bool] | None = None
+        # the queue this buffer was made for, if any
+        self.queue_id: str | None = None
 
     # -- Properties --
 
@@ -256,26 +265,32 @@ class AudioBuffer:
 
     def release_if_unneeded(self) -> asyncio.Task[None] | None:
         """
-        Stop the source of this buffer when it still fills and nothing needs it.
+        Give up the audio of this buffer, and its source, when nothing needs it.
 
-        A buffer with a user is needed. One without is kept or given up as ``may_release``
-        says. A buffer that gives its source up is no longer valid from that moment, also
-        while the source still takes its time to stop.
+        A buffer that is read, or that a party waits to read, is needed. Any other is kept
+        or given up as ``may_release`` says. A buffer that gives its audio up is no longer
+        valid from that moment, also while its source still takes its time to stop.
 
-        :return: The task that stops the source, or None when the buffer keeps it.
+        :return: The task that releases the audio, or None when the buffer keeps it.
         """
         if self._release_task is not None and not self._release_task.done():
             return self._release_task
         producer = self._producer_task
-        if self._users or producer is None or producer.done() or producer.cancelling():
-            # in use, or no source left that is not being stopped already
+        if (
+            self.cancelled
+            or any(user.reads for user in self._users)
+            or (producer is not None and producer.cancelling())
+        ):
+            # given up already, in use, or its source is being stopped
             return None
         if self.may_release is None or not self.may_release(self):
             return None
-        LOGGER.debug("Releasing the source of %s, which nothing needs", self._source_name)
+        LOGGER.debug("Releasing the audio of %s, which nothing needs", self._source_name)
         # no longer valid from here on: the source takes a moment to stop, and nobody may
         # take the buffer in the meantime
         self._cancelled = True
+        # whoever waits for the first audio has nothing left to wait for
+        self.ready.set()
         self._release_task = asyncio.get_running_loop().create_task(self.clear())
         return self._release_task
 
@@ -445,6 +460,10 @@ class AudioBuffer:
                         chunk_count += 1
                         await self._put(chunk)
                         await asyncio.sleep(0)
+                if self._cancelled:
+                    # given up before its source was opened, so it delivered nothing
+                    status = "released"
+                    return
                 await self._set_eof()
                 if on_complete is not None:
                     # isolated like the cancel callbacks in clear(): a failing
@@ -519,7 +538,7 @@ class AudioBuffer:
             self._space_available.notify_all()
 
     @staticmethod
-    async def get_buffer(
+    async def get_buffer(  # noqa: PLR0913
         mass: MusicAssistant,
         streamdetails: StreamDetails,
         seek_position_ms: int = 0,
@@ -529,6 +548,8 @@ class AudioBuffer:
         on_complete: Callable[[], None] | None = None,
         user: BufferUser | None = None,
         may_release: Callable[[AudioBuffer], bool] | None = None,
+        on_created: Callable[[AudioBuffer], None] | None = None,
+        wanted: Callable[[], bool] | None = None,
     ) -> AudioBuffer:
         """
         Get or create an AudioBuffer for the given streamdetails.
@@ -547,9 +568,15 @@ class AudioBuffer:
         :param on_complete: Called once the source of a newly created buffer has delivered
             all of its audio. Not called when an existing buffer is reused.
         :param user: The party the buffer is for, which uses it from here until it calls
-            ``release``. Without one the buffer only counts as used while this call waits.
-        :param may_release: Tells whether a newly created buffer may give up its source
-            once it has no user. Not applied when an existing buffer is reused.
+            ``release``. Without one this call only waits for the buffer, which keeps nothing.
+        :param may_release: Tells whether a newly created buffer may give up its audio
+            while nobody reads it. Not applied when an existing buffer is reused.
+        :param on_created: Called with a newly created buffer before its source starts to
+            fill it. Not called when an existing buffer is reused.
+        :param wanted: Tells whether the audio is still wanted, asked before a new buffer is
+            made and before its source is probed. Not asked when an existing buffer is reused.
+        :raises AudioNotWanted: If the audio is no longer wanted before a buffer is made, or
+            the buffer gave its audio up while this call waited for it.
         :raises AudioError: If the buffer does not become ready, wrapping the typed
             producer error (e.g. ProviderStreamLimitError) when there is one.
         :raises ProviderStreamLimitError: If a source in an unknown format can not get a
@@ -582,10 +609,12 @@ class AudioBuffer:
                     and provider.max_concurrent_streams is not None
                     and not provider.has_available_stream_slot
                 )
-                if must_release_slot or time.time() - existing_buffer._last_access_time > 30:
+                if must_release_slot:
                     await asyncio.shield(existing_buffer.clear())
-                # else: an active consumer is still reading via its local reference;
-                # the inactivity monitor will clean up after it finishes
+                else:
+                    # nothing reads it through the stream details any more; a consumer
+                    # that still reads it via its local reference keeps it until it leaves
+                    existing_buffer.release_if_unneeded()
             else:
                 LOGGER.debug(
                     "%s: Reusing buffer for %s - available: %ss, seek_ms: %s, discarded: %s",
@@ -603,10 +632,16 @@ class AudioBuffer:
                 return existing_buffer
 
         if _needs_format_probe(streamdetails):
-            await _probe_source_format(mass, streamdetails, source_wait_timeout)
+            await _probe_source_format(mass, streamdetails, source_wait_timeout, wanted)
+        # asked after every wait above, and nothing waits between here and the start of
+        # the source below
+        if wanted is not None and not wanted():
+            raise AudioNotWanted(streamdetails.uri)
         audio_buffer, buffer_seek_seconds = _new_buffer(
             mass, streamdetails, seek_position_ms, log_prefix, session_start=reason == "prepare"
         )
+        if on_created is not None:
+            on_created(audio_buffer)
 
         # start filling from the media stream (seek in seconds for FFmpeg)
         audio_source = mass.streams.audio.get_media_stream(
@@ -633,24 +668,24 @@ class AudioBuffer:
         self._users.append(user)
 
     def _drop_user(self, user: BufferUser) -> None:
-        """Remove a user, which gives the source up when nothing needs it any more."""
+        """Remove a user, which gives the audio up when nothing needs it any more."""
         self._users.remove(user)
         self.release_if_unneeded()
 
     @contextmanager
     def _used_by(self, user: BufferUser | None, reason: str) -> Iterator[None]:
         """
-        Count this buffer as used for the duration of the context.
+        List who the buffer is for, for the duration of the context or beyond.
 
         :param user: The party the buffer is for, which goes on using it afterwards.
-            Without one, a user of its own stands in until the context ends.
+            Without one, a stand-in that only waits is listed until the context ends.
         :param reason: Caller context, which names that stand-in.
         """
         if user is not None:
             user.attach(self)
             yield
             return
-        waiter = BufferUser(reason or "waiting")
+        waiter = BufferUser(reason or "waiting", reads=False)
         waiter.attach(self)
         try:
             yield
@@ -666,6 +701,7 @@ class AudioBuffer:
         :param streamdetails: Stream details currently referencing this buffer.
         :param ready_timeout: Maximum seconds to wait for enough buffered audio.
         :param log_prefix: Caller context for logging.
+        :raises AudioNotWanted: If the buffer gave its audio up because nothing needed it.
         """
         async with self._ready_wait_lock:
             if not self.ready.is_set():
@@ -690,6 +726,9 @@ class AudioBuffer:
                     if isinstance(producer_error, AudioError):
                         raise producer_error from err
                     raise AudioError("Timeout waiting for audio data") from (producer_error or err)
+            if self._release_task is not None:
+                # given up while this call waited for it
+                raise AudioNotWanted(streamdetails.uri)
             # ready was signaled but check if it was due to a producer error
             # (ready is also set by _notify_on_producer_error)
             if not self.has_error:
@@ -1123,7 +1162,10 @@ def _needs_format_probe(streamdetails: StreamDetails) -> bool:
 
 
 async def _probe_source_format(
-    mass: MusicAssistant, streamdetails: StreamDetails, source_wait_timeout: float | None
+    mass: MusicAssistant,
+    streamdetails: StreamDetails,
+    source_wait_timeout: float | None,
+    wanted: Callable[[], bool] | None = None,
 ) -> None:
     """
     Detect the arriving format of a source that does not declare it.
@@ -1135,6 +1177,8 @@ async def _probe_source_format(
     :param streamdetails: The stream details of the source.
     :param source_wait_timeout: Maximum seconds to wait for a free source-stream slot,
         or None to wait without a timeout.
+    :param wanted: Tells whether the audio is still wanted, asked once the source may be
+        opened; the source is left alone when it is not.
     :raises ProviderStreamLimitError: If the provider has no free slot within the timeout.
     """
     input_path = streamdetails.path
@@ -1142,16 +1186,18 @@ async def _probe_source_format(
     # the probe opens the source just like the producer does, so it needs a slot as well
     provider = mass.get_provider(streamdetails.provider, return_unavailable=True)
     stream_slot = (
-        provider.acquire_stream_slot(source_wait_timeout)
+        provider.acquire_stream_slot(source_wait_timeout, queue_id=streamdetails.queue_id)
         if isinstance(provider, MusicProvider)
         else nullcontext()
     )
     async with stream_slot:
+        if wanted is not None and not wanted():
+            return
         if streamdetails.stream_type == StreamType.HLS:
             try:
                 async with asyncio.timeout(AUDIO_PROBE_TIMEOUT):
                     input_path = (await mass.streams.audio.get_hls_substream(input_path)).path
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the source just stays unprobed
                 LOGGER.debug("Unable to resolve HLS substream of %s: %s", streamdetails.uri, err)
                 return
         try:

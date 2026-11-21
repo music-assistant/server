@@ -43,7 +43,8 @@ from music_assistant.helpers.config_entries import (
     resolve_publish_name,
 )
 from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
-from music_assistant.models.plugin import PluginProvider, SourceControlValue
+from music_assistant.models.media_capabilities import SourceControlValue
+from music_assistant.models.plugin import PluginProvider
 
 from .base import (
     AUDIO_QUALITY_LOSSLESS,
@@ -758,10 +759,11 @@ class SpotifyConnectProvider(PluginProvider):
             player_id=player_id,
             safe_player_id=re.sub(r"[^A-Za-z0-9_.-]", "_", player_id),
             publish_name=publish_name,
-            stream_metadata=StreamMetadata(title=f"Spotify Connect | {publish_name}"),
+            # no title until a track plays, so the source shows by its own name
+            stream_metadata=StreamMetadata(title=""),
         )
         daemon.backend = self._create_backend(daemon, player.name)
-        daemon.audio_source = self._build_audio_source(daemon, player.name)
+        daemon.audio_source = self._build_audio_source(daemon)
         self._daemons[player_id] = daemon
         try:
             await daemon.backend.start()
@@ -890,7 +892,7 @@ class SpotifyConnectProvider(PluginProvider):
             translation_owner=self.translation_owner,
         )
 
-    def _build_audio_source(self, daemon: _PlayerDaemon, player_name: str) -> AudioSource:
+    def _build_audio_source(self, daemon: _PlayerDaemon) -> AudioSource:
         """
         Construct the AudioSource MediaItem for a daemon.
 
@@ -901,13 +903,13 @@ class SpotifyConnectProvider(PluginProvider):
         queue-session verbs.
 
         :param daemon: The daemon state the source belongs to.
-        :param player_name: The connected player's display name.
         """
         return AudioSource(
             # the player id is stable across renames, so the source uri survives them
             item_id=daemon.player_id,
             provider=self.instance_id,
-            name=f"{self.name} ({player_name})",
+            name=self.name,
+            owner_player_id=daemon.player_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=daemon.player_id,

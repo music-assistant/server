@@ -6,6 +6,7 @@
   "type": "music",
   "requirements": [],
   "codeowners": ["@OzGav"],
+  "provides": ["artist", "album", "track", "audiobook", "podcast"],
   "multi_instance": false,
   "stage": "stable"
 }

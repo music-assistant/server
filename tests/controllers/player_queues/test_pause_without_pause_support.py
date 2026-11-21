@@ -15,11 +15,12 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState, SleepTimerMode
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.player_queues.constants import CONF_PAUSE_TIMEOUT
+from music_assistant.controllers.player_queues.state import PlayerQueueData, SleepTimerTarget
 from music_assistant.controllers.players import PlayerController
 from music_assistant.models.player import Player
 from tests.common import MockProtocol, MockProvider, attach_mock
@@ -41,7 +42,11 @@ def _setup() -> tuple[PlayerQueuesController, MockProtocol, PlayerQueueData]:
     mass.closing = False
     mass.loop = None
     mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
+    mass.config.get_raw_core_config_value = MagicMock(
+        side_effect=lambda _domain, key, default=None: (
+            default if key == CONF_PAUSE_TIMEOUT else "GLOBAL"
+        )
+    )
 
     def _player_config(_player_id: str, _key: str, default: Any = None) -> Any:
         return default
@@ -152,3 +157,29 @@ async def test_play_after_the_pause_starts_the_queue_at_the_paused_position() ->
     await ctrl._handle_play(QUEUE_ID)
 
     ctrl.play_index.assert_awaited_once_with(QUEUE_ID, "item-1", 42, False)
+
+
+@pytest.mark.parametrize("resumed", [False, True], ids=["timed-out", "resumed"])
+async def test_pause_keeps_the_sleep_timer_until_the_pause_timeout(resumed: bool) -> None:
+    """The timer waits for the queue to play again, until the pause timeout ends it."""
+    ctrl, protocol, queue_data = _setup()
+    target = SleepTimerTarget(SleepTimerMode.END_OF_CHAPTER, "item-1", 100)
+    queue_data.sleep_timer_target = target
+
+    await ctrl.pause(QUEUE_ID)
+
+    assert queue_data.sleep_timer_target == target
+
+    async def _play_at_10_seconds(_seconds: float) -> None:
+        if resumed and sleep.await_count == 10:
+            # loading the item to play again ends the halt of the pause
+            queue_data.halted_by_command = False
+
+    sleep = AsyncMock(side_effect=_play_at_10_seconds)
+    with patch("music_assistant.controllers.player_queues.controller.asyncio.sleep", new=sleep):
+        await _take_pause_watcher(ctrl)
+
+    assert sleep.await_count == (10 if resumed else 30)
+    assert queue_data.sleep_timer_target == (target if resumed else None)
+    # the queue already stopped at the pause
+    cast("AsyncMock", protocol.stop).assert_awaited_once()

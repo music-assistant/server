@@ -2,7 +2,7 @@
 A rig for tests on who uses an audio source and who holds a provider's stream slot.
 
 It runs the real queue controller, the real streams audio side, real audio buffers and the
-provider's own slot semaphore over sources the test controls. Only the audio decoding, the
+provider's own stream slots over sources the test controls. Only the audio decoding, the
 crossfade mixer and the players are left out.
 """
 
@@ -24,7 +24,6 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerType,
     ProviderType,
-    QueueOption,
     RepeatMode,
     StreamType,
     VolumeNormalizationMode,
@@ -37,11 +36,10 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
-from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.controllers.streams.audio import StreamsAudio, _ItemClaim
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.music_quiz import MusicQuizPlugin
 
 if TYPE_CHECKING:
     import pytest
@@ -287,55 +285,6 @@ class SlotRig:
         )
         return items
 
-    def idle_queue(self, queue_id: str = QUEUE_ID) -> PlayerQueueData:
-        """
-        Put a queue on the rig that holds no items and is not playing.
-
-        :param queue_id: The queue to put on the rig.
-        """
-        queue_data = PlayerQueueData(
-            queue=PlayerQueue(
-                queue_id=queue_id,
-                active=True,
-                display_name=f"Queue {queue_id[-1].upper()}",
-                available=True,
-                items=0,
-            )
-        )
-        self.queues._queue_data[queue_id] = queue_data
-        return queue_data
-
-    async def warm_first_quiz_track(self, name: str, queue_id: str = QUEUE_ID) -> QueueItem:
-        """
-        Let the music quiz stage and buffer the first track of a round, as it does in its lobby.
-
-        The quiz's own staging runs over the queue's real clear and enqueue paths.
-
-        :param name: Neutral name of the round's track.
-        :param queue_id: The queue of the quiz's playback target, which is not playing.
-        :return: The queue item the quiz staged.
-        """
-        staged = self.track(name, queue_id=queue_id)
-
-        async def _play_media(target_id: str, _uri: str, option: QueueOption) -> None:
-            # the track is resolved up front; the queue's own enqueue does the rest
-            await self.queues._enqueue_with_option(target_id, [staged], option)
-
-        self.queues.play_media = _play_media  # type: ignore[method-assign,assignment]
-        self.queues.is_smart_shuffle_active = MagicMock(return_value=False)  # type: ignore[method-assign]
-        self.queues._managed_pool = MagicMock()
-        quiz = SimpleNamespace(
-            mass=self.mass,
-            logger=MagicMock(),
-            _game=SimpleNamespace(config=SimpleNamespace(playback_mode=None)),
-            _get_playback_session=AsyncMock(return_value=SimpleNamespace(queue_id=queue_id)),
-            _snapshot_venue_queue=MagicMock(),
-            _is_round_track=AsyncMock(return_value=True),
-        )
-        await MusicQuizPlugin._warm_first_track(cast("MusicQuizPlugin", quiz), staged.uri)
-        await self.settle()
-        return staged
-
     def track(self, name: str, realtime: bool = True, queue_id: str = QUEUE_ID) -> QueueItem:
         """
         Build a queue item the rig cleans up after the test.
@@ -377,12 +326,19 @@ class SlotRig:
         """
         Let the speaker ask for the audio of the given item, as its stream request does.
 
+        The request claims the item for the playback session of its queue while it asks.
+
         :param item: The queue item the speaker asks for.
         :param wait: Seconds the request may wait for a source slot.
         """
-        return await self.audio.get_audio_buffer(
-            item, reason="streaming", capacity_wait_timeout=wait
-        )
+        claim = _ItemClaim(f"request for {item.name}", self.audio._playback_session(item))
+        self.audio._claim_item(claim, item)
+        try:
+            return await self.audio.get_audio_buffer(
+                item, reason="streaming", capacity_wait_timeout=wait
+            )
+        finally:
+            self.audio._claim_item(claim, None)
 
     def buffer(self, item: QueueItem) -> AudioBuffer:
         """
@@ -495,6 +451,42 @@ class SlotRig:
         return self.sources.get(name, realtime_capture)()
 
 
+def count_starts(rig: SlotRig, name: str) -> list[str]:
+    """
+    Record every time the source of the given track really starts to deliver.
+
+    :param rig: The rig whose source to watch.
+    :param name: Neutral name of the track.
+    :return: A list that gets the name for every start of the source.
+    """
+    started: list[str] = []
+    inner = rig.sources.get(name)
+
+    async def _source() -> AsyncGenerator[bytes]:
+        started.append(name)
+        async for chunk in (inner or partial(source, 3, 0, asyncio.Event()))():
+            yield chunk
+
+    rig.sources[name] = _source
+    return started
+
+
+def allow_commands(rig: SlotRig) -> None:
+    """Let the rig's queue take commands without players, users or settings behind it."""
+    rig.queues._check_player_permission = MagicMock()  # type: ignore[method-assign]
+    rig.queues._resolve_queue_id = lambda queue_id: queue_id  # type: ignore[method-assign]
+    rig.queues._resolve_default_toggles = MagicMock()  # type: ignore[method-assign]
+    rig.queues._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
+
+
+def allow_starts(rig: SlotRig) -> None:
+    """Let the rig's queue start a track without a player behind it."""
+    allow_commands(rig)
+    rig.queues.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
+    rig.mass.players.get_player.return_value.offline_by_power_control = False
+    rig.mass.players.play_media = AsyncMock()
+
+
 def install_mixer(
     rig: SlotRig,
     monkeypatch: pytest.MonkeyPatch,
@@ -536,6 +528,14 @@ def install_mixer(
 
     monkeypatch.setattr(rig.audio.smart_fades_mixer, "build", AsyncMock(side_effect=_build))
     monkeypatch.setattr(rig.audio.smart_fades_mixer, "mix", _concat_mix)
+
+
+async def given_up(buffer: AudioBuffer) -> bool:
+    """Return whether the buffer gave its audio up, once that release has run."""
+    if (release := buffer._release_task) is None:
+        return False
+    await release
+    return buffer.cancelled and buffer.seconds_available == 0
 
 
 async def drain(stream: AsyncGenerator[bytes]) -> int:

@@ -378,8 +378,8 @@ class AppleMusicAPIClient:
 
     def _headers_for(self, endpoint: str) -> dict[str, str]:
         """Return the auth headers for a request to the given endpoint."""
-        headers = {"Authorization": f"Bearer {self.provider._music_app_token}"}
+        headers = {"Authorization": f"Bearer {self.provider.music_app_token}"}
         # Without the user token, all installs share one Akamai cache variant per catalog URL
         if not endpoint.startswith("catalog/"):
-            headers["Music-User-Token"] = cast("str", self.provider._music_user_token)
+            headers["Music-User-Token"] = cast("str", self.provider.music_user_token)
         return headers

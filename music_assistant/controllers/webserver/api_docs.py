@@ -338,7 +338,7 @@ def _get_type_schema(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 # Resolve type hints to handle forward references from __future__ annotations
                 try:
                     resolved_hints = get_type_hints(type_hint)
-                except Exception:
+                except Exception:  # noqa: BLE001 - evaluating annotations can raise anything
                     resolved_hints = {}
 
                 # Use dataclass fields to get proper info including defaults and metadata

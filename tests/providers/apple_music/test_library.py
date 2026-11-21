@@ -153,7 +153,7 @@ def _make_manager(
     provider = MagicMock()
     provider.domain = "apple_music"
     provider.instance_id = "apple_music--test"
-    provider._storefront = "us"
+    provider.storefront = "us"
     api = provider.api_client
     state: dict[str, Any] = {"streamed": 0, "first_enrich_at": None}
 
@@ -213,7 +213,7 @@ async def test_per_window_search_limit_enforced() -> None:
     provider = MagicMock()
     provider.domain = "apple_music"
     provider.instance_id = "apple_music--test"
-    provider._storefront = "us"
+    provider.storefront = "us"
 
     # Setup API client
     api = provider.api_client
@@ -515,7 +515,7 @@ def _make_library_only_manager(
     provider = MagicMock()
     provider.domain = "apple_music"
     provider.instance_id = "apple_music--test"
-    provider._storefront = "us"
+    provider.storefront = "us"
     api = provider.api_client
     calls: list[tuple[str, dict[str, Any]]] = []
 
@@ -973,7 +973,7 @@ async def test_search_replacement_track_inherits_date_added_from_library_row() -
     provider = MagicMock()
     provider.domain = "apple_music"
     provider.instance_id = "apple_music--test"
-    provider._storefront = "us"
+    provider.storefront = "us"
     api = provider.api_client
 
     item = {

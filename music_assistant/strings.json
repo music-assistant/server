@@ -218,7 +218,7 @@
     },
     "output_codec": {
       "label": "Output codec to use for streaming audio to the player",
-      "description": "Select the codec to use for streaming audio to this player. \nBy default, Music Assistant sends lossless, high quality audio to all players and prefers the FLAC codec because it offers some compression while still remaining lossless \n\nSome players however do not support FLAC and require the stream to be packed into e.g. a lossy mp3 codec or you like to save some network bandwidth. \n\n Choosing a lossy codec saves some bandwidth at the cost of audio quality.",
+      "description": "Select the codec to use for streaming audio to this player. \nMost players get lossless, high quality FLAC by default, which offers some compression while still remaining lossless. \n\nSome players default to a lossy codec such as MP3 instead, because they do not support FLAC or stop playing a long FLAC stream after a while. \n\nChoosing a lossy codec also saves some network bandwidth, at the cost of audio quality.",
       "options": {
         "flac": "FLAC (lossless, compressed)",
         "mp3": "MP3 (lossy)",
@@ -433,6 +433,10 @@
       "action_label": "Reset authentication",
       "description": "Clear the current authentication details."
     },
+    "allow_audio_analysis": {
+      "label": "Allow analysis of the audio input",
+      "description": "Lets the audio analysis you added in the settings listen to this input while it plays, for example to recognize the song that is playing. Nothing it hears is stored. Disable this for an input that should not be listened to, such as a microphone."
+    },
     "verify_ssl": {
       "label": "Verify SSL",
       "description": "Whether or not to verify the certificate of SSL/TLS connections."
@@ -443,24 +447,36 @@
     },
     "ai_engine": {
       "label": "AI engine",
-      "description": "The AI engine used for this feature."
+      "description": "The AI engine used for this feature. Unless you pick one, it uses the default AI engine from the AI settings.",
+      "option_descriptions": {
+        "global": "Follows the default engine in the AI settings."
+      }
     },
     "ai_engine_unavailable": {
       "label": "No AI engine is available. Set up a plugin that provides AI, for example the Home Assistant plugin with an AI task entity."
     },
     "tts_engine": {
       "label": "Text-to-speech engine",
-      "description": "The text-to-speech engine used for this feature."
+      "description": "The text-to-speech engine used for this feature. Unless you pick one, it uses the default text-to-speech engine from the AI settings.",
+      "option_descriptions": {
+        "global": "Follows the default engine in the AI settings."
+      }
     },
     "tts_engine_unavailable": {
       "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
     },
     "image_engine": {
       "label": "Image engine",
-      "description": "The image generation engine used for this feature."
+      "description": "The image generation engine used for this feature. Unless you pick one, it uses the default image engine from the AI settings.",
+      "option_descriptions": {
+        "global": "Follows the default engine in the AI settings."
+      }
     },
     "image_engine_unavailable": {
       "label": "No image engine is available. Set up a plugin that can generate images, for example the Home Assistant plugin with an AI task entity that supports images, or the OpenAI Compatible plugin with an image model selected."
+    },
+    "default_engine_unavailable": {
+      "label": "The default engine is not available. Choose another default engine in the AI settings, or pick an engine here."
     }
   },
   "config_categories": {
@@ -471,21 +487,21 @@
     "sync_options": "Sync/import options",
     "builtin_playlists": "Builtin Playlists",
     "web_player": "Web Player",
-    "playback": "Queue Playback",
+    "playback": "Playback",
     "source_selection": "Source selection",
     "items_to_select": "Items to select",
     "default_enqueue_option": "Default enqueue option",
     "click_actions": "Click actions",
     "autoplay": "Autoplay",
     "crossfade": "Crossfade",
+    "volume_normalization": "Volume normalization",
     "smart_shuffle": "Smart shuffle",
     "protocol_settings": "Output Protocol(s)",
     "protocol_output_settings": "Enable {0} support",
     "protocol_output_settings_via": "Enable {0} support (over {1})",
-    "plugins": "Plugins",
+    "audio_sources": "Audio sources",
     "dsp": "Digital Signal Processing (DSP)",
     "options": "Player options",
-    "audio": "Audio",
     "preferences": "Preferences",
     "display_settings": "Display",
     "airplay": "AirPlay specific settings",
@@ -499,7 +515,8 @@
     "discover": "Discover",
     "debug": "Debug",
     "server": "Server",
-    "recommendations": "Recommendations"
+    "recommendations": "Recommendations",
+    "account_access": "Account access"
   },
   "media": {
     "genre": {
@@ -1277,10 +1294,10 @@
     "community_provider_not_listed": "This is no longer in the community catalog, so it no longer runs. You can remove it.",
     "community_provider_not_for_this_version": "This is not available for this version of Music Assistant, so it does not run. You can remove it.",
     "community_provider_requirements_clash": "This needs versions of Python packages that clash with Music Assistant or with something else from the community catalog, so it does not run.",
-    "community_provider_reinstall_failed": "The files of this were changed on your server and could not be downloaded again ({0}), so it does not run. Restart Music Assistant to try again.",
-    "community_provider_went_back": "Version {0} of this failed to load, and the version before it is no longer available, so it does not run.",
-    "community_provider_restart_to_go_back": "Version {0} of this failed to load. Restart Music Assistant to finish going back to the version before it.",
-    "community_provider_restart_to_update": "Version {0} of this is ready. Restart Music Assistant to finish the update.",
+    "community_provider_reinstall_failed": "Its files were changed on your server and could not be downloaded again ({0}), so it does not run. Restart Music Assistant to try again.",
+    "community_provider_went_back": "Version {0} failed to load, and the version before it is no longer available, so it does not run.",
+    "community_provider_restart_to_go_back": "Version {0} failed to load. Restart Music Assistant to finish going back to the version before it.",
+    "community_provider_restart_to_update": "Version {0} is ready. Restart Music Assistant to finish the update.",
     "community_provider_moved": "This moved to the community catalog. Music Assistant installs it from there by itself as soon as the catalog offers it for this version and your server can reach it.",
     "community_provider_move_failed": "This moved to the community catalog, but Music Assistant could not install it from there ({0}). It tries again at every start and whenever it checks the catalog.",
     "community_provider_not_installed": "This is no longer installed. An administrator can install it again from the Marketplace, or you can remove it here.",

@@ -41,6 +41,7 @@ from music_assistant.constants import (
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_VOLUME_CONTROL,
 )
+from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
@@ -351,13 +352,17 @@ class TestProtocolAwareLeaderSelection:
         leader = sgp._select_sync_leader()
         assert leader is player_a
 
-    def test_select_leader_skips_non_playback_member(self) -> None:
-        """A light member listed first is never picked as sync leader."""
+    @pytest.mark.parametrize(
+        "player_type",
+        [PlayerType.DISPLAY, PlayerType.VISUALIZER, PlayerType.LIGHT, PlayerType.CONTROLLER],
+    )
+    def test_select_leader_skips_non_playback_member(self, player_type: PlayerType) -> None:
+        """A member that can not play audio is never picked as sync leader, even when first."""
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
-        _make_member(mass, "light", "sendspin", player_type=PlayerType.LIGHT)
+        _make_member(mass, "non_audio", "sendspin", player_type=player_type)
         player_b = _make_member(mass, "player_b")
-        sgp._attr_group_members = ["light", "player_b"]
+        sgp._attr_group_members = ["non_audio", "player_b"]
 
         leader = sgp._select_sync_leader()
         assert leader is player_b
@@ -1441,6 +1446,8 @@ class _LoadingQueue:
 
     def _drop_pending_step(self, queue_id: str) -> None:
         """Hold no step to drop."""
+
+    _show_play_action = PlayerQueuesController._show_play_action
 
 
 class TestRejoinLeavesABusyMemberAlone:

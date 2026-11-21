@@ -26,7 +26,7 @@ from .constants import (
 from .helpers import chat_completion, image_generation, list_models
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -41,6 +41,57 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return OpenAICompatibleProvider(mass, manifest, config, SUPPORTED_FEATURES)
+
+
+def model_config_entries(
+    discovered: list[str], models: list[str], image_models: list[str]
+) -> tuple[ConfigEntry, ConfigEntry]:
+    """
+    Return the config entries to pick the text and the image models with.
+
+    :param discovered: The models the endpoint advertises.
+    :param models: The text models currently picked.
+    :param image_models: The image models currently picked.
+    """
+    # the listing is the natural source for the options, but it is optional in the
+    # OpenAI API: with no options at all the frontend accepts freely typed names,
+    # and keeping the current selection in the list survives a model disappearing
+    return (
+        ConfigEntry(
+            key=CONF_MODELS,
+            type=ConfigEntryType.STRING,
+            multi_value=True,
+            required=False,
+            default_value=[],
+            options=[
+                ConfigValueOption(model, title=model) for model in sorted({*discovered, *models})
+            ],
+            category="features",
+        ),
+        ConfigEntry(
+            key=CONF_IMAGE_MODELS,
+            type=ConfigEntryType.STRING,
+            multi_value=True,
+            required=False,
+            default_value=[],
+            options=[
+                ConfigValueOption(model, title=model)
+                for model in sorted({*discovered, *image_models})
+            ],
+            category="features",
+        ),
+    )
+
+
+def parse_models(value: ConfigValueType) -> list[str]:
+    """
+    Return the model names held by a stored model selection, in a stable order.
+
+    :param value: The stored value of a model selection entry.
+    """
+    if not isinstance(value, list):
+        return []
+    return sorted({model.strip() for model in value if isinstance(model, str) and model.strip()})
 
 
 class OpenAICompatibleProvider(PluginProvider):
@@ -63,31 +114,10 @@ class OpenAICompatibleProvider(PluginProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the (options) config entries to configure this provider instance."""
-        discovered = await self._discover_models()
-        # the listing is the natural source for the options, but it is optional in the
-        # OpenAI API: with no options at all the frontend accepts freely typed names,
-        # and keeping the current selection in the list survives a model disappearing
-        models = sorted({*discovered, *self._configured_models()})
-        image_models = sorted({*discovered, *self._configured_models(CONF_IMAGE_MODELS)})
-        return (
-            ConfigEntry(
-                key=CONF_MODELS,
-                type=ConfigEntryType.STRING,
-                multi_value=True,
-                required=False,
-                default_value=[],
-                options=[ConfigValueOption(model, title=model) for model in models],
-                category="features",
-            ),
-            ConfigEntry(
-                key=CONF_IMAGE_MODELS,
-                type=ConfigEntryType.STRING,
-                multi_value=True,
-                required=False,
-                default_value=[],
-                options=[ConfigValueOption(model, title=model) for model in image_models],
-                category="features",
-            ),
+        return model_config_entries(
+            await self._discover_models(),
+            self._configured_models(),
+            self._configured_models(CONF_IMAGE_MODELS),
         )
 
     async def get_ai_engines(self) -> list[AIEngine]:
@@ -159,12 +189,7 @@ class OpenAICompatibleProvider(PluginProvider):
 
         :param key: The config entry holding the selection.
         """
-        value = self.get_config_value(key)
-        if not isinstance(value, list):
-            return []
-        return sorted(
-            {model.strip() for model in value if isinstance(model, str) and model.strip()}
-        )
+        return parse_models(self.get_config_value(key))
 
     async def _discover_models(self) -> list[str]:
         """Return the models the endpoint advertises, empty when it cannot be asked."""

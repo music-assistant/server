@@ -19,7 +19,10 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat, AudioSource
 
-from music_assistant.controllers.players.audio_sources import AudioSourceMixin, AudioSourceSession
+from music_assistant.controllers.players.audio_sources import (
+    AudioSourceSession,
+    PlayerAudioSourcesMixin,
+)
 from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.models.player import PlayerMedia
@@ -40,7 +43,7 @@ def _session(player_id: str = OWNER_ID) -> AudioSourceSession:
     )
 
 
-class _SessionStore(AudioSourceMixin):
+class _SessionStore(PlayerAudioSourcesMixin):
     """Real session bookkeeping for the mocked player controller."""
 
     def __init__(self) -> None:
@@ -86,6 +89,7 @@ def _controller(
         store._source_sessions[session.player_id] = session
     ctrl.mass.players.get_audio_source_session = store.get_audio_source_session
     ctrl.mass.players.claim_audio_source_session = store.claim_audio_source_session
+    ctrl.mass.players.get_audio_source_name = store.get_audio_source_name
     player = MagicMock()
     player.protocol_id = CONSUMER_ID
     ctrl.mass.players.get_output_protocol = MagicMock(return_value=player)
@@ -175,6 +179,34 @@ async def test_a_head_probe_does_not_trigger_the_plugin() -> None:
 
     assert result == "head-response"
     provider.on_source_selected.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("fetching_player", "shown_on"),
+    [("living_room", "living_room"), (None, OWNER_ID)],
+    ids=["player_of_the_protocol", "protocol_of_no_player"],
+)
+async def test_the_stream_names_the_source_for_the_player_fetching_it(
+    monkeypatch: pytest.MonkeyPatch, fetching_player: str | None, shown_on: str
+) -> None:
+    """A member fetching the stream of its group gets the name that holds on that member."""
+    session = _session()
+    ctrl, _provider, player, _store = _controller(session)
+    player.player = MagicMock(player_id=fetching_player) if fetching_player else None
+    ctrl.mass.players.get_audio_source_name = MagicMock(
+        side_effect=lambda source, player_id=None: f"{source.name} on {player_id}"
+    )
+    response = MagicMock()
+    response.prepare = AsyncMock()
+    stream_response = MagicMock(return_value=response)
+    monkeypatch.setattr(web, "StreamResponse", stream_response)
+
+    await ctrl._serve_audio_source_head(
+        SimpleNamespace(match_info={"fmt": "flac"}), session, player
+    )
+
+    headers = stream_response.call_args.kwargs["headers"]
+    assert headers["icy-name"] == f"Spotify Connect on {shown_on}"
 
 
 async def test_http_output_is_registered_to_the_source_session(

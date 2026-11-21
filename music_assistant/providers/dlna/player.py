@@ -397,14 +397,16 @@ class DLNAPlayer(PlayerProtocol):
                 raise PlayerUnavailableError from err
 
         assert self.device is not None
+        # the device can be disconnected while it updates, e.g. when setup ignores the renderer
+        device = self.device
 
         try:
             now = time.time()
             do_ping = self.force_poll or (now - self.last_seen) > 60
             with suppress(ValueError, ParseError):
-                await self.device.async_update(do_ping=do_ping)
+                await device.async_update(do_ping=do_ping)
             self.last_seen = now if do_ping else self.last_seen
-            if not self.device.profile_device.available:
+            if not device.profile_device.available:
                 await self._resubscribe()
         except UpnpError as err:
             # Some devices (e.g. Denon HEOS) return SOAP responses containing

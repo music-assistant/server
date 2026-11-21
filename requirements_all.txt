@@ -14,15 +14,15 @@ aiojellyfin==0.14.1
 aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive
 aiomusiccast==0.15.0
 aiosendspin[server]==10.3.0
-aioslimproto==3.6.2
-aiosonos==0.2.0
+aioslimproto==3.6.8
+aiosonos==0.4.0
 aiosqlite==0.22.1
 aiosxm==0.3.1
 aiovban==1.1.0
 alexapy==1.30.0
 async-upnp-client==0.49.0
 audible==0.13.1
-auntie-sounds==3.0.1
+auntie-sounds==3.1.0
 av==19.0.2
 awesomeversion>=24.6.0
 bandcamp-async-api==0.3.0
@@ -32,7 +32,7 @@ certifi==2026.10.19
 chardet==7.6.0
 colorlog==6.12.0
 cryptography==50.0.0
-deezer-python-gql==0.23.0
+deezer-python-gql==0.24.0
 defusedxml==0.7.1
 deno==2.9.6
 duration-parser==1.0.1
@@ -41,7 +41,7 @@ getmac==0.9.6
 gql[all]==4.0.0
 hass-client==1.4.1
 hue-entertainment==0.6.0
-huggingface-hub==1.30.0
+huggingface-hub==2.4.0
 ibroadcastaio==0.8.0
 ifaddr==0.2.0
 kaldi-native-fbank==1.22.3
@@ -51,8 +51,8 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.22
 modern_colorthief==0.3.0
-music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/2.17.373/music_assistant_frontend-2.17.373-py3-none-any.whl#sha256=5ee4f94374ba62b81c5340a761b5f5ca89e5b814da937db3bc8a41f379f67413
-music-assistant-models==1.1.243
+music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/2.17.377/music_assistant_frontend-2.17.377-py3-none-any.whl#sha256=221c922817554f8bdfa30ee42500037e0c7b1d76e91975e818e050978e2707bc
+music-assistant-models==1.1.249
 mutagen==1.48.1
 niconico.py-ma==3.0.0
 nnAudio==0.3.4
@@ -65,7 +65,7 @@ plexapi==4.18.2
 podcastparser==0.6.11
 propcache>=0.2.1
 psutil==7.2.2
-py-opensonic==10.4.1
+py-opensonic==11.0.0
 pyacoustid==1.3.1
 pyamplipi==0.4.12
 pyatv==0.18.0
@@ -98,7 +98,7 @@ torch==2.13.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torchaudio==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchlibrosa==0.1.0
-transformers==5.14.1
+transformers==5.23.0
 usearch==2.26.6
 uv>=0.8.0
 websocket-client==1.9.2

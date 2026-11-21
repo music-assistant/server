@@ -11,7 +11,14 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 from async_upnp_client.exceptions import UpnpActionError, UpnpError
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, RepeatMode
+from music_assistant_models.enums import (
+    ChannelLayout,
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    RepeatMode,
+)
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import PlayerMedia
 
@@ -375,6 +382,7 @@ def _host_room_player() -> RaumfeldPlayer:
         return_value="Raumfeld Soundbar"
     )
     provider.room_software_version = MagicMock(return_value="2.21.0")  # type: ignore[attr-defined]
+    provider.room_speaker_count = MagicMock(return_value=1)  # type: ignore[attr-defined]
     host = MagicMock()
     host.power_state.return_value = "MANUAL_STANDBY"
     provider.host = host  # type: ignore[attr-defined]
@@ -403,6 +411,22 @@ def test_a_software_version_read_later_is_shown() -> None:
         player.set_software_version("2.22.0")
     assert player.device_info.software_version == "2.22.0"
     update_state.assert_called_once()
+
+
+def test_a_room_follows_the_number_of_its_speakers() -> None:
+    """A room that gets a second speaker is a stereo set, and a single player again without it."""
+    player = _host_room_player()
+    assert (player.type, player.channel_layout) == (PlayerType.PLAYER, None)
+    with patch.object(player, "update_state") as update_state:
+        player.set_speaker_count(2)
+        player.set_speaker_count(2)
+        assert (player.type, player.channel_layout) == (
+            PlayerType.MULTI_CHANNEL,
+            ChannelLayout.STEREO,
+        )
+        player.set_speaker_count(1)
+    assert (player.type, player.channel_layout) == (PlayerType.PLAYER, None)
+    assert update_state.call_count == 2
 
 
 _RENDERER = "http://192.168.1.42:54730/renderer.xml"
@@ -949,7 +973,10 @@ async def test_zone_playback_from_the_raumfeld_app_is_followed() -> None:
     """Playback the host started is reported, without the address it streams from."""
     player, _ = _external_player()
     track_uri = "https://audio.example.com/track.flac?token=secret"
-    with patch.object(player, "_read_zone_actions", AsyncMock(return_value="Pause,Next")):
+    with (
+        patch.object(player, "_read_zone_actions", AsyncMock(return_value="Pause,Next")),
+        patch.object(player, "_read_zone_play_mode", AsyncMock(return_value=None)),
+    ):
         await player._update_zone_source({"TrackURI": track_uri, "TrackMetaData": ""}, ["Bar"], 0)
     assert player._attr_active_source == "raumfeld"
     assert PlayerFeature.PAUSE in player._attr_supported_features
@@ -1036,7 +1063,10 @@ async def test_a_stopped_zone_source_stays_loaded() -> None:
     """A source the host still has loaded stays the active source while it is stopped."""
     player, _ = _external_player()
     player._attr_playback_state = PlaybackState.IDLE
-    with patch.object(player, "_read_zone_actions", AsyncMock(return_value="Play")):
+    with (
+        patch.object(player, "_read_zone_actions", AsyncMock(return_value="Play")),
+        patch.object(player, "_read_zone_play_mode", AsyncMock(return_value=None)),
+    ):
         await player._update_zone_source(
             {"TrackURI": "https://radio.example.com/stream", "TrackMetaData": ""},
             ["Bar"],
@@ -1209,6 +1239,7 @@ async def test_a_reading_older_than_a_play_command_is_not_adopted() -> None:
 
     with (
         patch.object(player, "_read_zone_actions", side_effect=actions_while_play_media_runs),
+        patch.object(player, "_read_zone_play_mode", AsyncMock(return_value=None)),
         patch.object(player, "_clear_next") as clear_next,
     ):
         await player._update_zone_source(
@@ -1536,7 +1567,10 @@ async def test_a_poll_during_a_play_command_is_not_applied() -> None:
     """Readings a poll takes while MA is still starting its own item are discarded."""
     player, _ = _external_player()
     player._playback_changes = 1
-    with patch.object(player, "_read_zone_actions", AsyncMock(return_value="Pause")):
+    with (
+        patch.object(player, "_read_zone_actions", AsyncMock(return_value="Pause")),
+        patch.object(player, "_read_zone_play_mode", AsyncMock(return_value=None)),
+    ):
         await player._update_zone_source(
             {"TrackURI": "https://radio.example.com/stream", "TrackMetaData": ""},
             ["Bar"],

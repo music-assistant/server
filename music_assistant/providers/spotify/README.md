@@ -32,7 +32,8 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   with a Premium account) → `soloist --pair` against a flow-private data dir, which the
   provider adopts into `<storage>/spotify/<instance_id>/soloist-data` on the next load.
   A fresh setup preselects Soloist; existing configs without a backend value keep using
-  librespot, and a reconfigure preselects that for them.
+  librespot, and a reconfigure preselects that for them. Consent and key are skipped when
+  another Soloist setup on the server has a key to take over (`find_reusable_api_key`).
 - **The pairing has to be the same account as the sign-in**, or the library and the audio
   come from different places. The engine records the paired account as its per-user state
   directory (`settings/Users/<username>-user`, the canonical username, i.e. the signed-in

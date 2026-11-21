@@ -8,6 +8,7 @@ from music_assistant_models.enums import ConfigEntryType
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_OUTPUT_CODEC,
+    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     create_sample_rates_config_entry,
 )
@@ -47,16 +48,6 @@ SENDSPIN_CAST_EXPERIMENTAL_NOTE = "sendspin_cast_experimental"
 # Kept on the Cast player rather than on the bridge, which is removed for good once set.
 CONF_SENDSPIN_UNSUPPORTED = "sendspin_unsupported"
 
-# Marker on a Cast player that was never offered the Sendspin bridge before, so its
-# output has to end up switched off. Persisted the moment the device is first bridged,
-# because applying the opt-out needs the protocol link, which may not be in place before
-# the run that decided it ends.
-CONF_SENDSPIN_OPT_OUT_PENDING = "sendspin_opt_out_pending"
-
-# Bounded wait for the protocol link of a freshly registered Sendspin Cast bridge to
-# be persisted, before the bridge is switched off again for the user to opt in.
-SENDSPIN_LINK_WAIT_INTERVAL = 0.5
-SENDSPIN_LINK_WAIT_TRIES = 20
 
 # Seconds to wait for a Cast device to report which app runs, before playback over
 # Sendspin goes ahead on the last status it reported.
@@ -72,7 +63,6 @@ SENDSPIN_CAST_BLOCKLIST: set[tuple[str, str]] = {
 }
 
 CAST_PLAYER_CONFIG_ENTRIES = (
-    CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     # enable flow mode by default as cast devices handle a continuous
     # flow stream more reliably than enqueueing individual tracks
@@ -120,6 +110,11 @@ CAST_MODEL_STATIC_DELAY: dict[tuple[str, str], int] = {
 }
 CAST_FALLBACK_STATIC_DELAY = 330
 
+# Cast models that played lossless (FLAC) flow streams for hours without a dropout. Every other
+# Cast device streams MP3 by default: several receivers (Samsung's Cast Lite speakers, Google
+# Nest Mini and Nest Audio) stop playing a long lossless stream after a while.
+CAST_LOSSLESS_MODELS: set[str] = {"Chromecast Audio", "Google Nest Hub"}
+
 
 def get_cast_model_static_delay(manufacturer: str, model: str) -> int:
     """
@@ -129,3 +124,14 @@ def get_cast_model_static_delay(manufacturer: str, model: str) -> int:
     :param model: Device model name (e.g., "Google Nest Mini").
     """
     return CAST_MODEL_STATIC_DELAY.get((manufacturer, model), CAST_FALLBACK_STATIC_DELAY)
+
+
+def get_cast_output_codec_entry(model: str) -> ConfigEntry:
+    """
+    Return the output codec config entry for a Cast device model, with its default codec.
+
+    :param model: Device model name (e.g., "Google Nest Mini").
+    """
+    if model in CAST_LOSSLESS_MODELS:
+        return CONF_ENTRY_OUTPUT_CODEC
+    return CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3

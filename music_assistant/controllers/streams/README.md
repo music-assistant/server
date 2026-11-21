@@ -118,7 +118,7 @@ Supporting modules in `helpers/`:
 - `AudioBuffer.fill()` - Start filling from an async generator of PCM chunks
 - `AudioBuffer.ready` - Event set when enough chunks are buffered past the seek point (threshold-based)
 - `AudioBuffer.users` - The parties that wait for the buffer's audio or read it
-- `AudioBuffer.release_if_unneeded()` - Stop the source of a buffer that still fills, has no user and is not needed by its queue
+- `AudioBuffer.release_if_unneeded()` - Give up the audio and the source of a buffer that nobody reads and that left its queue's scope
 
 ### Buffer Lifecycle
 
@@ -129,7 +129,8 @@ Supporting modules in `helpers/`:
 4. Player requests stream -> get_queue_item_stream() calls buffer.get_stream()
 5. prepare_next_audio_buffer() pre-fills the item after the streamed one: 60s before the end of
    its stream, or for a realtime source once its audio has fully arrived
-6. _cleanup_stale_queue_buffers() clears old buffers to free memory
+6. The queue's release_unneeded_audio() gives up every buffer that left its scope and that
+   nothing reads
 ```
 
 A player that moves on to another track by itself, after a skip on the speaker or a track it gave up
@@ -137,20 +138,26 @@ on, leaves the old track's buffer filling. On a provider with a stream limit tha
 slot the new track needs, so the single-item route cancels it once the player asks for another track
 and no open request still streams the old one.
 
-A buffer keeps track of its users. `get_buffer()` counts whoever waits for the first audio,
+A buffer keeps track of its users. `get_buffer()` lists whoever only waits for the first audio,
 `get_raw_stream()` every open read stream, and `get_queue_item_stream()` holds one `BufferUser` from
 the moment it takes the buffer until it ends, so the wait for a source slot and the time before its
 first read count as well. A stream also claims the queue item it decided to play, which holds the
 item's buffer before the stream has it and when someone else creates it: the item stream for its
-whole life, the flow stream from the moment it selects a track. A claim counts for the playback
+whole life, the flow stream from the moment it selects a track. The route that serves a single item
+to a speaker claims it as well (`claim_item()`), from the moment it accepts the request until the
+request ends: the item is held while the response is set up. A claim counts for the playback
 session its stream is part of, and no longer once the queue the item is on plays in another session
 or in none. The source of a buffer that still fills holds a stream slot of its provider, which lists
-those buffers in `stream_slot_holders`. `release_if_unneeded()` stops the source of a buffer that has
-no user and that neither a claim nor its queue needs (the player queues README says when that is),
-but only when its provider has no slot to spare, and makes the buffer invalid on the spot, so nobody
-takes it while its source unwinds. It runs when the last user of a buffer leaves, when a claim ends,
-and for every holder of a provider's slots when a track needs one and none is free; when none of them
-gives way, a debug line names the holders, their users and the streams that claim their items.
+those buffers in `stream_slot_holders`. The slot is taken in the name of the buffer's queue, and a
+source that delivers at playback pace can leave it reserved for that queue when it gives it back
+(the player queues README says when). `release_if_unneeded()` gives up the audio and the source of
+a buffer that no stream reads or holds to read and that left its queue's scope (the player queues
+README says when that is), whether its source still fills or has delivered everything. It makes the
+buffer invalid on the spot, so nobody takes it while its source unwinds, and a caller that only
+waited for its first audio gets no buffer. It runs when a user of a buffer leaves, when a claim
+ends, when the scope of its queue can have changed, and for every holder of a provider's slots when
+a track needs one and none is free; when none of them gives way, a debug line names the holders,
+their users and the streams that claim their items.
 
 ### Error Handling
 
@@ -209,7 +216,7 @@ When a buffer starts from the beginning of an item (not for audio sources or sou
 
 A provider declares the media types it is offered in `media_types` (tracks only by default). `_start_analysis_on_providers()` offers a session, live or background, only to the providers that declared its media type.
 
-A live source (`MediaType.AUDIO_SOURCE`) has no buffer. `get_audio_source_stream()` hands its audio to `AudioAnalysisController.start_source_analysis()`, which offers it only to providers that declared `AUDIO_SOURCE`, and only when the source allows it (`AudioSource.allow_audio_analysis`, set by the plugin for a live input such as a line-in; off for what a streaming service delivers to a receiver). With no such provider nothing is started and the stream copies no audio. The session runs while the stream does and in realtime: audio is fed in one-second blocks without ever waiting, dropped beyond `LIVE_SOURCE_BACKLOG_SECONDS` while a provider falls behind, and a failure of the analysis switches it off for the rest of the stream instead of failing the stream. One worker owns the session from the providers' start to the end of the stream, and releases all of it at whatever stage it ends. Nothing of it is stored: no result, no failure, no place in the background scan.
+A live source (`MediaType.AUDIO_SOURCE`) has no buffer. `get_audio_source_stream()` hands its audio to `AudioAnalysisController.start_source_analysis()`, which offers it only to providers that declared `AUDIO_SOURCE`, and only when the source allows it (`AudioSource.allow_audio_analysis`, set by the plugin for a live input such as a line-in, unless the user disabled it in the settings of that input; off for what a streaming service delivers to a receiver). With no such provider nothing is started and the stream copies no audio. The session runs in realtime while the stream does and the source its session holds allows it (a plugin whose setting changes hands the session the rebuilt source with `PlayerController.refresh_source()`): audio is fed in one-second blocks without ever waiting, dropped beyond `LIVE_SOURCE_BACKLOG_SECONDS` while a provider falls behind, and a failure of the analysis switches it off for the rest of the stream instead of failing the stream. One worker owns the session from the providers' start to the end of the stream, and releases all of it at whatever stage it ends. Nothing of it is stored: no result, no failure, no place in the background scan.
 
 A radio station has one session, shared by every buffer that plays it: a later buffer of the station joins it, the reader goes on with another buffer when the one it reads ends, and skips ahead when it falls behind the played audio.
 

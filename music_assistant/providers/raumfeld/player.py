@@ -51,6 +51,7 @@ from .helpers import (
     parse_play_mode,
     play_mode_for,
     query_last_change,
+    room_player_type,
 )
 from .upnp import SERVICE_AV_TRANSPORT, SERVICE_RENDERING_CONTROL, get_action
 
@@ -318,6 +319,9 @@ class RaumfeldPlayer(PlayerProtocol):
             manufacturer="Teufel",
             software_version=provider.room_software_version(room),
         )
+        self._attr_type, self._attr_channel_layout = room_player_type(
+            provider.room_speaker_count(room)
+        )
         # Expose the room's media-renderer UUID (and IP) so Music Assistant links this
         # native player to the same renderer's DLNA/Chromecast/Sendspin representation
         # instead of showing them as duplicate players.
@@ -444,6 +448,18 @@ class RaumfeldPlayer(PlayerProtocol):
         if model is None or model == self._attr_device_info.model:
             return
         self._attr_device_info.model = model
+        self.update_state()
+
+    def set_speaker_count(self, speakers: int) -> None:
+        """
+        Follow the speakers of the room: a room of several is one multi-channel player.
+
+        :param speakers: The number of speakers the host lists in the room now.
+        """
+        player_type = room_player_type(speakers)
+        if player_type == (self._attr_type, self._attr_channel_layout):
+            return
+        self._attr_type, self._attr_channel_layout = player_type
         self.update_state()
 
     async def set_renderer(self, renderer_uuid: str | None, renderer_ip: str | None) -> None:
@@ -1029,6 +1045,7 @@ class RaumfeldPlayer(PlayerProtocol):
                 id=SOURCE_LINE_IN,
                 name="Line-in",
                 passive=False,
+                is_input=True,
                 can_play_pause=False,
                 can_next_previous=False,
                 can_seek=False,

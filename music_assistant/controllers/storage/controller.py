@@ -1208,7 +1208,7 @@ class StorageController(CoreController):
             return
         try:
             states = await mounter.get_states(specs)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failing backend must not stop the other backends
             self.logger.warning(
                 "Unable to check the network shares mounted by %s: %s", backend, err
             )
@@ -1240,7 +1240,7 @@ class StorageController(CoreController):
         operation = mounter.reload if state == ShareState.FAILED else mounter.add
         try:
             await operation(spec, self._get_password(spec))
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - records any mount failure on the share, never raises
             self.logger.warning("Unable to mount network share %s: %s", spec.name, err)
             self._share_errors[spec.name] = _as_share_error(err)
             return False
@@ -1300,7 +1300,7 @@ class StorageController(CoreController):
                 try:
                     async with asyncio.timeout(SHARE_STATES_TIMEOUT):
                         states = await mounter.get_states(specs)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - a background remount must not kill the server
                     self.logger.debug(
                         "Unable to check the network shares mounted by %s: %s", backend, err
                     )
@@ -1438,7 +1438,7 @@ class StorageController(CoreController):
         """
         try:
             await mounter.remove(spec)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - cleanup after a failed mount must not raise
             self.logger.warning(
                 "Unable to remove the mount of network share %s: %s", spec.name, err
             )
@@ -1461,7 +1461,7 @@ class StorageController(CoreController):
             # the last probe of the path went to the settings that did not mount
             if not await self._is_share_mounted(spec):
                 raise self._share_not_mounted(spec)  # noqa: TRY301 - handled by except below
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - restoring is best effort and must not raise
             self.logger.warning(
                 "Unable to mount network share %s with its previous settings: %s", spec.name, err
             )

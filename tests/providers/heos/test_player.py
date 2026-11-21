@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import partial
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.player import PlayerSource
 from pyheos import PlayState as HeosPlayState
 from pyheos import const as heos_const
 
@@ -471,3 +473,27 @@ def test_sample_rates_follow_heos_generation(
     player.set_device_info()
 
     assert player._attr_supported_sample_rates == expected_rates
+
+
+async def test_inputs_of_the_device_are_marked_as_inputs() -> None:
+    """The inputs of the device are inputs; its music services and radio tuner are not."""
+    protocol = _make_player(_url_stream_now_playing())
+    provider = cast("Any", protocol.provider)
+    provider.music_source_list = [PlayerSource(id="1", name="Pandora", can_play_pause=True)]
+    provider.input_source_list = [
+        SimpleNamespace(source_id=int(protocol.protocol_id), media_id=media_id, name=name)
+        for media_id, name in (
+            (heos_const.INPUT_LINE_IN_1, "Line In 1"),
+            (heos_const.INPUT_OPTICAL_IN_1, "Optical In 1"),
+            (heos_const.INPUT_TUNER, "Tuner"),
+        )
+    ]
+
+    await protocol.build_source_list()
+
+    assert {x.name: x.is_input for x in protocol._attr_source_list} == {
+        "Pandora": False,
+        "Line In 1": True,
+        "Optical In 1": True,
+        "Tuner": False,
+    }

@@ -13,6 +13,7 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import (
+    ChannelLayout,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -245,7 +246,8 @@ class TestPublishedValues:
 
         state = _derive(
             provider="test_prov--1",
-            player_type=PlayerType.STEREO_PAIR,
+            player_type=PlayerType.MULTI_CHANNEL,
+            channel_layout=ChannelLayout.LAYOUT_5_1,
             name="Living room",
             enabled=True,
             hide_in_ui=True,
@@ -271,7 +273,8 @@ class TestPublishedValues:
 
         assert state.player_id == PLAYER_ID
         assert state.provider == "test_prov--1"
-        assert state.type == PlayerType.STEREO_PAIR
+        assert state.type == PlayerType.MULTI_CHANNEL
+        assert state.channel_layout == ChannelLayout.LAYOUT_5_1
         assert state.name == "Living room"
         assert state.hide_in_ui is True
         assert state.expose_to_ha is False
@@ -1075,9 +1078,36 @@ class TestSourceList:
         """A source reported both as bound and as a device input gets a single entry."""
         source = _audio_source(can_initiate=True)
 
-        state = _derive(standing_sources=(source, source))
+        state = _derive(standing_sources=(source,), input_sources=(source,))
 
-        assert [x.id for x in state.source_list].count(SOURCE_URI) == 1
+        entries = [x for x in state.source_list if x.id == SOURCE_URI]
+        assert len(entries) == 1
+        assert entries[0].is_input is True
+
+    def test_input_of_the_device_is_marked_as_input(self) -> None:
+        """An input of the player's own device is listed as an input."""
+        source = _source(_derive(input_sources=(_audio_source(can_initiate=True),)), SOURCE_URI)
+
+        assert source is not None
+        assert source.is_input is True
+
+    def test_bound_source_is_not_an_input(self) -> None:
+        """A receiver bound to the player is listed, but not as an input."""
+        source = _source(_derive(standing_sources=(_audio_source(can_initiate=True),)), SOURCE_URI)
+
+        assert source is not None
+        assert source.is_input is False
+
+    @pytest.mark.parametrize("own_input", [True, False])
+    def test_playing_source_is_an_input_on_its_own_device_only(self, own_input: bool) -> None:
+        """While an input plays, its entry stays an input on its own device and not elsewhere."""
+        source = _audio_source(can_initiate=True)
+
+        state = _derive(session=_session(source), input_sources=(source,) if own_input else ())
+
+        entry = _source(state, SOURCE_URI)
+        assert entry is not None
+        assert entry.is_input is own_input
 
 
 class TestSupportedFeatures:
@@ -1428,6 +1458,51 @@ class TestCurrentMedia:
             groups=(group,),
             peers={"group_1": _group_peer(group)},
             own=_own(current_media=PlayerMedia(uri="own://media")),
+        )
+
+        assert state.current_media is media
+
+    def test_member_names_the_live_source_of_its_group_for_itself(self) -> None:
+        """A source that reports no title shows on a member by the name that holds there."""
+        group = _group(current_media=PlayerMedia(uri=SOURCE_URI, title="Spotify Connect (Den)"))
+
+        state = _derive(
+            groups=(group,),
+            peers={"group_1": _group_peer(group)},
+            followed_sessions={"group_1": _session()},
+            followed_source_names={"group_1": "Spotify Connect"},
+        )
+
+        assert state.current_media is not None
+        assert state.current_media.title == "Spotify Connect"
+
+    def test_member_shares_group_media_that_is_not_of_its_session(self) -> None:
+        """Media of the group that its session does not play stays the very object."""
+        media = PlayerMedia(uri="group://media", title="Group song")
+        group = _group(current_media=media)
+
+        state = _derive(
+            groups=(group,),
+            peers={"group_1": _group_peer(group)},
+            followed_sessions={"group_1": _session()},
+            followed_source_names={"group_1": "Spotify Connect"},
+        )
+
+        assert state.current_media is media
+
+    def test_member_of_a_loop_of_groups_keeps_the_media_of_its_group(self) -> None:
+        """A chain of followed players that loops ends the search for the live source."""
+        media = PlayerMedia(uri=SOURCE_URI, title="Spotify Connect (Den)")
+        group = _group(current_media=media, active_group="group_2")
+
+        state = _derive(
+            groups=(group,),
+            peers={
+                "group_1": _group_peer(group),
+                "group_2": _peer("group_2", active_group="group_1"),
+            },
+            followed_sessions={"group_1": _session(), "group_2": _session()},
+            followed_source_names={"group_1": "Spotify Connect", "group_2": "Spotify Connect"},
         )
 
         assert state.current_media is media
@@ -2014,9 +2089,11 @@ class TestGroupVolume:
         assert state.group_volume is None
         assert state.group_volume_muted is None
 
-    def test_leader_counts_its_own_new_volume(self) -> None:
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.MULTI_CHANNEL])
+    def test_leader_counts_its_own_new_volume(self, player_type: PlayerType) -> None:
         """The loudest member decides, and the leader counts with the level it has now."""
         state = _derive(
+            player_type=player_type,
             previous_state=make_player_state(
                 PLAYER_ID, volume_control=PLAYER_CONTROL_NATIVE, volume_level=20
             ),

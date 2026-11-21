@@ -61,7 +61,7 @@ def _plugin_entries(
     """Build the plugin toggle entries for a player with the given loaded providers."""
     # mass_minimal loads no providers, so serve the mocks through the providers property
     with patch.object(type(mass), "providers", new_callable=PropertyMock, return_value=providers):
-        return mass.config._create_plugin_provider_config_entries(player or _make_player())
+        return mass.config._create_audio_source_config_entries(player or _make_player())
 
 
 async def test_player_bound_plugin_renders_a_toggle(mass_minimal: MusicAssistant) -> None:
@@ -72,7 +72,7 @@ async def test_player_bound_plugin_renders_a_toggle(mass_minimal: MusicAssistant
     entry = entries[0]
     assert entry.key == _PLUGIN_KEY
     assert entry.type == ConfigEntryType.BOOLEAN
-    assert entry.category == "plugins"
+    assert entry.category == "audio_sources"
     # the key is per-plugin (dynamic), so the entry pins a static catalog key
     assert entry.translation_key == "plugin_enable"
     assert entry.translation_params == ["Spotify Connect"]
@@ -121,7 +121,7 @@ def test_referenced_strings_exist() -> None:
     """The toggle's translation key and its category are authored in the common strings."""
     strings = json.loads(_STRINGS_PATH.read_text(encoding="utf-8"))
     assert "plugin_enable" in strings["config_entries"]
-    assert "plugins" in strings["config_categories"]
+    assert "audio_sources" in strings["config_categories"]
 
 
 async def test_toggle_on_adds_the_player_to_the_plugin(mass_minimal: MusicAssistant) -> None:
@@ -131,7 +131,7 @@ async def test_toggle_on_adds_the_player_to_the_plugin(mass_minimal: MusicAssist
     with patch.object(
         mass_minimal.config, "_update_provider_config", new_callable=AsyncMock
     ) as update_call:
-        result = await mass_minimal.config._update_plugin_provider_config(_PLAYER_ID, values)
+        result = await mass_minimal.config._update_audio_source_config(_PLAYER_ID, values)
     update_call.assert_awaited_once_with(
         _PLUGIN_INSTANCE_ID, {CONF_CONNECTED_PLAYERS: ["other_player", _PLAYER_ID]}
     )
@@ -148,7 +148,7 @@ async def test_toggle_off_removes_the_player_from_the_plugin(
     with patch.object(
         mass_minimal.config, "_update_provider_config", new_callable=AsyncMock
     ) as update_call:
-        result = await mass_minimal.config._update_plugin_provider_config(_PLAYER_ID, values)
+        result = await mass_minimal.config._update_audio_source_config(_PLAYER_ID, values)
     update_call.assert_awaited_once_with(
         _PLUGIN_INSTANCE_ID, {CONF_CONNECTED_PLAYERS: ["other_player"]}
     )
@@ -164,7 +164,7 @@ async def test_toggle_off_removes_the_id_of_a_player_merged_into_it(
     with patch.object(
         mass_minimal.config, "_update_provider_config", new_callable=AsyncMock
     ) as update_call:
-        await mass_minimal.config._update_plugin_provider_config(_PLAYER_ID, values)
+        await mass_minimal.config._update_audio_source_config(_PLAYER_ID, values)
     update_call.assert_awaited_once_with(
         _PLUGIN_INSTANCE_ID, {CONF_CONNECTED_PLAYERS: ["other_player"]}
     )
@@ -179,7 +179,7 @@ async def test_toggle_on_adds_no_second_entry_for_a_merged_player(
     with patch.object(
         mass_minimal.config, "_update_provider_config", new_callable=AsyncMock
     ) as update_call:
-        await mass_minimal.config._update_plugin_provider_config(_PLAYER_ID, values)
+        await mass_minimal.config._update_audio_source_config(_PLAYER_ID, values)
     update_call.assert_not_awaited()
 
 
@@ -190,7 +190,7 @@ async def test_unchanged_toggle_makes_no_provider_call(mass_minimal: MusicAssist
     with patch.object(
         mass_minimal.config, "_update_provider_config", new_callable=AsyncMock
     ) as update_call:
-        result = await mass_minimal.config._update_plugin_provider_config(_PLAYER_ID, values)
+        result = await mass_minimal.config._update_audio_source_config(_PLAYER_ID, values)
     update_call.assert_not_awaited()
     # the toggle key is still stripped so it can never end up in the player's stored values
     assert result == {"some_setting": 5}
@@ -204,5 +204,5 @@ async def test_plugin_values_are_extracted_from_the_entries(
         ConfigEntry(key=_PLUGIN_KEY, type=ConfigEntryType.BOOLEAN, default_value=False, value=True),
         ConfigEntry(key="some_setting", type=ConfigEntryType.INTEGER, default_value=5, value=3),
     ]
-    values = mass_minimal.config._get_plugin_provider_config_values(entries)
+    values = mass_minimal.config._get_audio_source_config_values(entries)
     assert values == {_PLUGIN_KEY: True}

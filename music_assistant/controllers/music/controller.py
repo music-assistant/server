@@ -7,6 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from contextlib import aclosing, suppress
 from copy import deepcopy
+from dataclasses import replace
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
@@ -37,7 +38,9 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import get_global_cache_value
@@ -178,17 +181,20 @@ from music_assistant.helpers.provider_access import (
     visible_provider,
 )
 from music_assistant.helpers.tags import split_artists
-from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    is_rate_limit_error,
+    request_priority,
+)
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.media_capabilities import MediaCatalogMixin
+from music_assistant.models.media_capabilities import AudioSourceMixin, MediaCatalogMixin
 from music_assistant.models.music_provider import (
     LIBRARY_FEATURE_BY_MEDIA_TYPE,
     MusicProvider,
     NothingToSync,
 )
-from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.api import SortOptionInfo
@@ -968,6 +974,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             media_types,
             limit=limit,
             strict_provider_instance=True,
+            # the caller resolves one item against many providers and pauses a rate
+            # limited one, so a rate limit must not arrive as a plain failure
+            raise_rate_limited=True,
         )
         if result is None:
             raise ResourceTemporarilyUnavailable(
@@ -1086,29 +1095,24 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # AudioSource providers surface at root like regular providers; a
             # provider with a single user-initiable source is promoted to that
             # source directly so it's playable in one tap.
-            audio_source_providers = self.mass.get_providers_supporting_feature(
-                ProviderFeature.AUDIO_SOURCE
-            )
-            for prov in self._apply_user_provider_filter(audio_source_providers):
-                if not isinstance(prov, PluginProvider):
-                    continue
+            for source_prov in self.mass.players.get_audio_source_providers():
                 initiable = [
                     source
-                    for source in await self._get_plugin_audio_sources(prov, player_id)
+                    for source in await self._get_provider_audio_sources(source_prov, player_id)
                     if source.can_initiate
                 ]
                 if not initiable:
                     continue
                 if len(initiable) == 1:
-                    root_items.append(initiable[0])
+                    root_items.append(self._client_audio_source(initiable[0]))
                 else:
                     root_items.append(
                         BrowseFolder(
                             item_id="root",
-                            provider=prov.domain,
-                            path=f"{prov.instance_id}://",
-                            uri=f"{prov.instance_id}://",
-                            name=prov.name,
+                            provider=source_prov.domain,
+                            path=f"{source_prov.instance_id}://",
+                            uri=f"{source_prov.instance_id}://",
+                            name=source_prov.name,
                         )
                     )
             return _listed([], root_items)
@@ -1153,12 +1157,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         # AudioSource providers don't implement browse(); list their initiable sources directly
         if (
-            isinstance(browse_prov, PluginProvider)
+            isinstance(browse_prov, AudioSourceMixin)
             and ProviderFeature.AUDIO_SOURCE in browse_prov.supported_features
         ):
             initiable_items: list[MediaItemType | BrowseFolder] = [
-                source
-                for source in await self._get_plugin_audio_sources(browse_prov, player_id)
+                self._client_audio_source(source)
+                for source in await self._get_provider_audio_sources(browse_prov, player_id)
                 if source.can_initiate
             ]
             return _listed(prepend_items, initiable_items)
@@ -1612,16 +1616,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 name=item_id,
             )
         if media_type == MediaType.AUDIO_SOURCE:
-            # AudioSources are not library-backed; resolve them through the owning
-            # plugin provider's get_audio_sources() catalog. Returning the live
-            # MediaItem lets play_media create a queue item the standard way.
-            prov = self.mass.get_provider(provider_instance_id_or_domain)
-            if isinstance(prov, PluginProvider):
-                for source in await prov.get_audio_sources():
-                    if source.item_id == item_id:
-                        return source
-            raise MediaNotFoundError(
-                f"AudioSource {provider_instance_id_or_domain}/{item_id} not found"
+            return self._client_audio_source(
+                await self.get_audio_source(item_id, provider_instance_id_or_domain)
             )
         if media_type == MediaType.SOUND_EFFECT:
             # Sound effects are not library-backed; resolve them live from the
@@ -1643,6 +1639,32 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
             allow_update_metadata=allow_update_metadata,
+        )
+
+    async def get_audio_source(
+        self, item_id: str, provider_instance_id_or_domain: str
+    ) -> AudioSource:
+        """
+        Return a live audio source as its provider delivers it, with its plain name.
+
+        Only a source the calling user may use is returned: not one of a player the user
+        has no access to, nor an input of the device of such a player. A client gets the
+        source from the item commands instead, named for outside any player.
+
+        :param item_id: Id of the source at its provider.
+        :param provider_instance_id_or_domain: The provider that delivers it.
+        :raises MediaNotFoundError: When the provider delivers no such source, or none the
+            calling user may use.
+        """
+        # AudioSources are not library-backed; resolve them through the sources
+        # the owning provider lists for the calling user
+        prov = self.mass.get_provider(provider_instance_id_or_domain)
+        if isinstance(prov, AudioSourceMixin):
+            for source in await self._get_provider_audio_sources(prov, None):
+                if source.item_id == item_id:
+                    return source
+        raise MediaNotFoundError(
+            f"AudioSource {provider_instance_id_or_domain}/{item_id} not found"
         )
 
     @api_command(
@@ -3137,34 +3159,71 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         page.extend(items)
         return page
 
-    async def _get_plugin_audio_sources(
-        self, provider: PluginProvider, player_id: str | None
+    async def _get_provider_audio_sources(
+        self, provider: AudioSourceMixin, player_id: str | None
     ) -> list[AudioSource]:
         """
-        Return the AudioSources of a plugin to list, scoped to a player when given.
+        Return the AudioSources of a provider to list, scoped to a player when given.
 
-        Player-bound plugins yield only the sources bound to the given player;
+        Player-bound providers yield only the sources bound to the given player;
         without a player scope all their sources bound to a player the calling
-        user may see are yielded. Player-unbound plugins always yield all sources.
+        user may see are yielded. Player-unbound providers yield all sources, except
+        the inputs of player devices the calling user may not see.
         """
         # probing with the (possibly empty) scope tells bound and unbound apart:
-        # a player-bound plugin returns a list for any player id, unbound returns None
+        # a player-bound provider returns a list for any player id, unbound returns None
         if provider.get_player_audio_sources(player_id or "") is None:
-            return await provider.get_audio_sources()
+            return self._without_hidden_player_inputs(provider, await provider.get_audio_sources())
         # bound sources honor the calling user's player access filter, so a
         # restricted user cannot discover sources of players hidden from them
         current_user = get_current_user()
         if player_id is not None:
-            if not has_player_access(current_user, player_id):
+            if not has_player_access(
+                current_user, player_id, self.mass.players.get_player(player_id)
+            ):
                 return []
             return provider.get_player_audio_sources(player_id) or []
-        player_filter = player_access_filter(current_user)
-        if player_filter is None:
+        if player_access_filter(current_user) is None:
             return await provider.get_audio_sources()
         sources: list[AudioSource] = []
-        for allowed_player_id in player_filter:
-            sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
+        for player in self.mass.players.iter_players():
+            if has_player_access(current_user, player.player_id, player):
+                sources.extend(provider.get_player_audio_sources(player.player_id) or [])
         return sources
+
+    def _without_hidden_player_inputs(
+        self, provider: AudioSourceMixin, sources: list[AudioSource]
+    ) -> list[AudioSource]:
+        """Return the sources without the inputs of player devices the calling user may not see."""
+        current_user = get_current_user()
+        if player_access_filter(current_user) is None:
+            return sources
+        hidden: set[str] = set()
+        for player in self.mass.players.iter_players(return_disabled=True):
+            if has_player_access(current_user, player.player_id, player):
+                continue
+            # a device's own inputs may be reported for one of its protocols
+            for device_id in {player.player_id, *player.protocol_ids}:
+                hidden.update(x.item_id for x in provider.get_player_input_sources(device_id))
+        return [x for x in sources if x.item_id not in hidden]
+
+    def _client_audio_source(self, source: AudioSource) -> AudioSource:
+        """
+        Return a live audio source as a client gets it.
+
+        It is named for outside any player, and names the player it belongs to by its id.
+
+        :param source: The source as its provider delivers it.
+        """
+        if source.owner_player_id is None:
+            return source
+        owner = self.mass.players.get_audio_source_owner(source)
+        return replace(
+            source,
+            name=self.mass.players.get_audio_source_name(source),
+            sort_name=None,
+            owner_player_id=owner.player_id if owner else None,
+        )
 
     async def _link_genres_if_unmapped(self, item: MediaItemType) -> None:
         """Link a library item to the genres it carries, if it has no genre links yet."""
@@ -3340,6 +3399,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         skip_item_ids: set[tuple[MediaType, str, str]] | None = None,
         strict_provider_instance: bool = False,
         soft_timeout: float | None = None,
+        raise_rate_limited: bool = False,
     ) -> SearchResults | None:
         """
         Perform search on given provider, returns None if the search failed or timed out.
@@ -3354,6 +3414,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param strict_provider_instance: Do not fall back to another provider instance.
         :param soft_timeout: Seconds to wait before returning None while the search
                              continues in the background; None waits for it to finish.
+        :param raise_rate_limited: Raise the rate limit error instead of returning None
+                                   when the provider asked us to wait. For a caller that
+                                   searches provider after provider and pauses a rate
+                                   limited one.
         """
         prov = visible_provider(
             self.mass, provider_instance_id_or_domain, get_current_user(), strict_provider_instance
@@ -3387,6 +3451,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         task = self.mass.create_task(
             self._execute_provider_search(prov, search_query, media_types, limit, cache_key),
             task_id=f"provider_search_{prov.instance_id}_{cache_key}",
+            log_exceptions=False,
         )
         try:
             async with asyncio.timeout(soft_timeout):
@@ -3398,6 +3463,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 prov.name,
             )
             return None
+        except RateLimited, RetriesExhausted:
+            # the search task raises nothing but a rate limit. For a plain search a
+            # limited provider simply contributes nothing
+            if not raise_rate_limited:
+                return None
+            raise
         if prov_search_results is None:
             return None
         return self._visible_search_results(
@@ -3415,9 +3486,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         Execute the actual search on a provider and cache the result.
 
-        Returns None if the provider search failed or timed out. All errors are
-        handled here (and not raised) as this coroutine runs as a background task
-        that may outlive the request that started it.
+        Returns None if the provider search failed or timed out. Errors are handled
+        here (and not raised) as this coroutine runs as a background task that may
+        outlive the request that started it; a rate limit error is raised instead, so a
+        caller that searches provider after provider can pause the limited one.
         """
         try:
             async with asyncio.timeout(SEARCH_PROVIDER_HARD_TIMEOUT):
@@ -3426,6 +3498,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             self.logger.warning("Search on provider %s timed out", prov.name)
             return None
         except MusicAssistantError as err:
+            if is_rate_limit_error(err):
+                self.logger.info("Search on provider %s is rate limited: %s", prov.name, str(err))
+                raise
             self.logger.warning("Search on provider %s failed: %s", prov.name, str(err))
             return None
         except Exception as err:
@@ -3457,7 +3532,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 provider=provider,
                 category=CACHE_CATEGORY_SEARCH_RESULTS,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failed cache write must not break the search
             self.logger.warning("Failed to cache search results for %s: %s", provider, str(err))
 
     def _get_covered_media_types(
@@ -4525,13 +4600,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if item.provider == "library" and not item.provider_mappings:
             # a genre has no source of its own: it expands to source-filtered tracks
             return True
-        # plugin providers (such as smart_playlist and radio_playlist) carry no access
-        # record, so their items stay reachable for everyone
-        plugin_instances = {
-            prov.instance_id for prov in self.mass.providers if prov.type == ProviderType.PLUGIN
+        # only music sources carry an access record: items of any other provider (a plugin
+        # such as smart_playlist, the audio sources of a player provider) stay reachable
+        non_music_instances = {
+            prov.instance_id for prov in self.mass.providers if prov.type != ProviderType.MUSIC
         }
         if item.provider != "library":
-            if item.provider in plugin_instances:
+            if item.provider in non_music_instances:
                 return True
             # the builtin provider addresses its items by domain, its mapping holds the instance
             source = next(
@@ -4548,7 +4623,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 return False
             return playback_instance_for(self.mass, source, allowed) is not None
         return any(
-            mapping.provider_instance in plugin_instances
+            mapping.provider_instance in non_music_instances
             or playback_instance_for(self.mass, mapping.provider_instance, allowed) is not None
             for mapping in item.provider_mappings
         )
