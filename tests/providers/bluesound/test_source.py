@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState
+from pyblu.parse import parse_presets
 
 from music_assistant.providers.bluesound.const import PLAYER_SOURCE_MAP
 from music_assistant.providers.bluesound.player import BluesoundPlayer
@@ -151,3 +152,14 @@ async def test_a_grouped_zone_reports_the_player_of_its_leader_as_source() -> No
 
     assert leader_player.player_id != "leader_zone"
     assert fake._attr_active_source == leader_player.player_id
+
+
+async def test_an_empty_preset_list_leaves_the_inputs_as_sources() -> None:
+    """The secondary of a stereo pair answers its presets with an empty body, which is no error."""
+    fake = MagicMock()
+    fake.client.presets = AsyncMock(side_effect=lambda **_: parse_presets(b""))
+    fake.client.inputs = AsyncMock(return_value=[MagicMock(url="Capture:hw:1", text="Optical")])
+
+    sources = await BluesoundPlayer._get_bluesound_sources(cast("BluesoundPlayer", fake))
+
+    assert [source.id for source in sources] == ["input-Capture:hw:1"]
