@@ -32,14 +32,13 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
     AVAILABILITY_TIMEOUT,
     COMMAND_POLL_DELAY,
     DURATION_SECONDS,
-    LINEIN_SOURCE_IDS,
     LINEIN_SOURCE_MAPPING,
     NEVER_TIME,
     PLAYER_FEATURES,
@@ -74,6 +73,9 @@ class SonosSubscriptionsFailed(PlayerCommandFailed):
 
 class SonosPlayer(PlayerProtocol):
     """Sonos Player implementation for S1 speakers."""
+
+    # the speaker reports only the line-in or TV input it plays as its source
+    _attr_trusts_reported_source = True
 
     def __init__(
         self,
@@ -122,6 +124,22 @@ class SonosPlayer(PlayerProtocol):
         self._resub_cooldown_expires_at: float | None = None
         self._poll_task_id: str = f"sonos_poll_{self.protocol_id}"
         self._unloaded: bool = False
+
+    @property
+    def source_list(self) -> list[PlayerSource]:
+        """Return the inputs the speaker played, with its line-in while its group plays it."""
+        own_line_in = f"{SOURCE_LINEIN_OF}{self.soco.uid}"
+        if (
+            (leader_id := self.synced_to)
+            and (leader := self.provider.get_protocol(leader_id))
+            and leader.active_source == own_line_in
+            and own_line_in not in (x.id for x in self._attr_source_list)
+        ):
+            return [
+                *self._attr_source_list,
+                replace(PLAYER_SOURCE_MAP[SOURCE_LINEIN], id=own_line_in),
+            ]
+        return self._attr_source_list
 
     @property
     def missing_subscriptions(self) -> set[str]:
@@ -320,8 +338,8 @@ class SonosPlayer(PlayerProtocol):
             await self.stop()
             return
         line_in_of: SonosPlayer | None = None
-        if source.startswith(SOURCE_LINEIN_OF):
-            device_id = source.removeprefix(SOURCE_LINEIN_OF)
+        device_id = source.removeprefix(SOURCE_LINEIN_OF)
+        if source.startswith(SOURCE_LINEIN_OF) and device_id != self.soco.uid:
             line_in_of = cast("SonosPlayer | None", self.provider.get_protocol(device_id))
             if line_in_of is None:
                 msg = f"The speaker {device_id} with this line-in is not available"
@@ -860,16 +878,17 @@ class SonosPlayer(PlayerProtocol):
             self._attr_current_media = None
             source = PLAYER_SOURCE_MAP[source_id]
             # the uri names the speaker whose input plays
-            if self.soco.uid not in uri:
-                if source_id == SOURCE_LINEIN:
-                    # x-rincon-stream:<speaker id>, which this speaker can switch to as well
-                    device_id = uri.partition(":")[2]
-                    source = replace(
-                        source, id=f"{SOURCE_LINEIN_OF}{device_id}", owner_player_id=device_id
-                    )
-                else:
-                    # the TV input of another speaker is no input of this one
-                    source = replace(source, is_input=False)
+            if source_id == SOURCE_LINEIN:
+                # x-rincon-stream:<speaker id>
+                device_id = uri.partition(":")[2]
+                source = replace(
+                    source,
+                    id=f"{SOURCE_LINEIN_OF}{device_id}",
+                    owner_player_id=None if device_id == self.soco.uid else device_id,
+                )
+            elif self.soco.uid not in uri:
+                # the TV input of another speaker is no input of this one
+                source = replace(source, is_input=False)
             self._attr_active_source = source.id
             source_ids = [x.id for x in self._attr_source_list]
             if source.id in source_ids:
@@ -975,5 +994,5 @@ def _timespan_secs(timespan: str | None) -> int | None:
 def _is_line_in_or_tv(source_id: str | None) -> bool:
     """Return whether a source id names the line-in or TV input of a speaker."""
     return source_id is not None and (
-        source_id in LINEIN_SOURCE_IDS or source_id.startswith(SOURCE_LINEIN_OF)
+        source_id == SOURCE_TV or source_id.startswith(SOURCE_LINEIN_OF)
     )

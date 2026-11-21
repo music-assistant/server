@@ -17,7 +17,6 @@ music_assistant/providers/digitally_incorporated/__init__.py	2
 music_assistant/providers/emby/__init__.py	16
 music_assistant/providers/gpodder/client.py	4
 music_assistant/providers/heos/player.py	11
-music_assistant/providers/heos/provider.py	5
 music_assistant/providers/ibroadcast/__init__.py	4
 music_assistant/providers/internet_archive/helpers.py	6
 music_assistant/providers/internet_archive/provider.py	13

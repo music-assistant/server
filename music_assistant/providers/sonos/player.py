@@ -242,13 +242,14 @@ class SonosPlayer(PlayerProtocol):
         self._own_airplay_session = False
         # the other speakers of this speaker's set, as last reported to the players controller
         self._reported_bonded_ids: set[str] = set()
-        # the line-in this speaker loaded last: Sonos does not report whose line-in plays
-        self._loaded_line_in = SOURCE_LINE_IN
+        # the line-in this speaker loaded last, None for its own: Sonos does not report
+        # whose line-in plays
+        self._loaded_line_in: str | None = None
 
     @property
     def source_list(self) -> list[PlayerSource]:
         """
-        Return this player's sources, with the line-in of the other speakers of its household.
+        Return this player's sources, with the line-in of every speaker of its household.
 
         A service we did not map is listed only while it plays.
         """
@@ -343,8 +344,6 @@ class SonosPlayer(PlayerProtocol):
         if mac_address and is_valid_mac_address(mac_address):
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
 
-        if SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]:
-            self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_LINE_IN])
         if SonosCapability.HT_PLAYBACK in self.discovery_info["device"]["capabilities"]:
             self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_TV])
         if SonosCapability.AIRPLAY in self.discovery_info["device"]["capabilities"]:
@@ -827,11 +826,12 @@ class SonosPlayer(PlayerProtocol):
         # whatever the source turns out to be, it is not our queue any more
         self._forget_queue()
         self._announcement_media = None
-        if source == SOURCE_LINE_IN or _line_in_device_id(source):
+        if device_id := _line_in_device_id(source):
+            own = device_id == self.protocol_id
             # set before loading: the speaker may report the line-in before the command returns
-            self._loaded_line_in = source
+            self._loaded_line_in = None if own else source
             await self.group_controller.load_line_in(
-                device_id=_line_in_device_id(source), play_on_completion=True
+                device_id=None if own else device_id, play_on_completion=True
             )
         elif source == SOURCE_TV:
             await self.client.player.load_home_theater_playback()
@@ -1362,9 +1362,10 @@ class SonosPlayer(PlayerProtocol):
             and self._attr_active_source == self._loaded_line_in
         ):
             # the line-in we loaded stopped playing: one the speaker reports later is its own
-            self._loaded_line_in = SOURCE_LINE_IN
+            self._loaded_line_in = None
         if container_type == ContainerType.LINEIN:
-            self._attr_active_source = self._loaded_line_in
+            # a member plays the line-in its coordinator loaded
+            self._attr_active_source = (group_parent or self)._playing_line_in()
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
             self._attr_active_source = SOURCE_TV
         elif container_type == ContainerType.AIRPLAY:
@@ -1601,7 +1602,7 @@ class SonosPlayer(PlayerProtocol):
                 self._attr_active_source
             ):
                 # a mapped source this player does not offer itself, such as the line-in of
-                # the coordinator it is synced to, or the line-in of another speaker
+                # the coordinator it is synced to, or a line-in, listed for the household
                 return
             # a service we did not map: the user can not start it from MA and its transport
             # is whatever the speaker reports for it
@@ -2492,19 +2493,26 @@ class SonosPlayer(PlayerProtocol):
         if self.connected and not OPTION_EVENT_VARIABLES.isdisjoint(changes):
             self._schedule_options_read()
 
+    def _playing_line_in(self) -> str:
+        """Return the source id of the line-in the speaker plays when it reports one."""
+        return self._loaded_line_in or f"{SOURCE_LINE_IN_OF}{self.protocol_id}"
+
     def _household_line_ins(self) -> list[PlayerSource]:
-        """Return the line-in of every other speaker of the household that has one."""
+        """Return the line-in of every speaker of the household that has one, its own first."""
         household_id = self.discovery_info.get("householdId")
-        speakers = cast("list[SonosPlayer]", self.provider.protocols)
+        protocols = cast("list[SonosPlayer]", self.provider.protocols)
+        speakers = [
+            self,
+            *sorted((x for x in protocols if x is not self), key=lambda x: x.display_name),
+        ]
         return [
             replace(
                 PLAYER_SOURCE_MAP[SOURCE_LINE_IN],
                 id=f"{SOURCE_LINE_IN_OF}{speaker.protocol_id}",
-                owner_player_id=speaker.protocol_id,
+                owner_player_id=None if speaker is self else speaker.protocol_id,
             )
-            for speaker in sorted(speakers, key=lambda x: x.display_name)
-            if speaker is not self
-            and speaker.discovery_info.get("householdId") == household_id
+            for speaker in speakers
+            if speaker.discovery_info.get("householdId") == household_id
             and SonosCapability.LINE_IN in speaker.discovery_info["device"]["capabilities"]
         ]
 

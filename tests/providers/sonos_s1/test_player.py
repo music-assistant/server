@@ -21,7 +21,6 @@ from music_assistant.providers.sonos_s1 import player as player_module
 from music_assistant.providers.sonos_s1.constants import (
     AVAILABILITY_TIMEOUT,
     POLL_INTERVAL,
-    SOURCE_LINEIN,
     SOURCE_LINEIN_OF,
     SOURCE_TV,
     SUBSCRIPTION_SERVICES,
@@ -36,6 +35,7 @@ if TYPE_CHECKING:
 STREAM_URL = "http://192.168.1.2:8097/single/sessionabc/queue1/item1/player1.flac"
 OTHER_SPEAKER = "RINCON_000E58BBBBBB01400"
 LINE_IN_OF_OTHER = f"{SOURCE_LINEIN_OF}{OTHER_SPEAKER}"
+OWN_LINE_IN = f"{SOURCE_LINEIN_OF}RINCON_000E58AAAAAA01400"
 
 
 def _make_soco(uid: str = "RINCON_000E58AAAAAA01400", name: str = "Test Sonos") -> MagicMock:
@@ -274,14 +274,14 @@ def test_line_in_is_reported_as_the_active_source(sonos_player: SonosPlayer) -> 
 
     sonos_player._set_basic_track_info()
 
-    assert sonos_player._attr_active_source == SOURCE_LINEIN
-    assert [source.id for source in sonos_player._attr_source_list] == [SOURCE_LINEIN]
+    assert sonos_player._attr_active_source == OWN_LINE_IN
+    assert [source.id for source in sonos_player._attr_source_list] == [OWN_LINE_IN]
 
 
 @pytest.mark.parametrize(
     ("uri", "source_id"),
     [
-        ("x-rincon-stream:RINCON_000E58AAAAAA01400", SOURCE_LINEIN),
+        ("x-rincon-stream:RINCON_000E58AAAAAA01400", OWN_LINE_IN),
         ("x-sonos-htastream:RINCON_000E58AAAAAA01400:spdif", SOURCE_TV),
     ],
 )
@@ -320,10 +320,10 @@ def test_the_own_line_in_keeps_its_entry_next_to_the_one_of_another_speaker(
     _set_track_info(sonos_player, "x-rincon-stream:RINCON_000E58AAAAAA01400")
     sonos_player._set_basic_track_info()
 
-    assert sonos_player._attr_active_source == SOURCE_LINEIN
+    assert sonos_player._attr_active_source == OWN_LINE_IN
     assert [(x.id, x.is_input, x.owner_player_id) for x in sonos_player._attr_source_list] == [
         (LINE_IN_OF_OTHER, True, OTHER_SPEAKER),
-        (SOURCE_LINEIN, True, None),
+        (OWN_LINE_IN, True, None),
     ]
 
 
@@ -339,7 +339,7 @@ def test_the_tv_input_of_another_speaker_is_not_an_input(sonos_player: SonosPlay
 
 @pytest.mark.parametrize(
     ("source", "line_in_of"),
-    [(LINE_IN_OF_OTHER, OTHER_SPEAKER), (SOURCE_LINEIN, None)],
+    [(LINE_IN_OF_OTHER, OTHER_SPEAKER), (OWN_LINE_IN, None)],
     ids=["other_speaker", "own"],
 )
 async def test_selecting_a_line_in_switches_to_the_speaker_it_belongs_to(
@@ -358,6 +358,32 @@ async def test_selecting_a_line_in_switches_to_the_speaker_it_belongs_to(
     sonos_player.soco.switch_to_line_in.assert_called_once_with(other.soco if line_in_of else None)
     if line_in_of:
         provider.get_protocol.assert_called_once_with(line_in_of)
+
+
+@pytest.mark.parametrize(
+    ("coordinator_source", "listed"),
+    [(OWN_LINE_IN, True), (LINE_IN_OF_OTHER, False), (None, False)],
+    ids=["its_line_in", "another_line_in", "nothing"],
+)
+def test_a_member_lists_its_line_in_while_its_group_plays_it(
+    sonos_player: SonosPlayer, coordinator_source: str | None, listed: bool
+) -> None:
+    """A speaker that joins the group playing its own line-in has it in its list, as its own."""
+    coordinator = SonosPlayer(
+        provider=MagicMock(), soco=_make_soco(OTHER_SPEAKER, "Den"), fixed_volume=False
+    )
+    coordinator._attr_active_source = coordinator_source
+    cast("MagicMock", sonos_player.provider).get_protocol = MagicMock(return_value=coordinator)
+
+    with patch.object(SonosPlayer, "synced_to", OTHER_SPEAKER):
+        entries = [(x.id, x.owner_player_id) for x in sonos_player.source_list]
+
+    assert entries == ([(OWN_LINE_IN, None)] if listed else [])
+
+
+def test_the_input_the_speaker_reports_counts_as_its_source(sonos_player: SonosPlayer) -> None:
+    """The speaker reports only the input it plays, so the line-in of any speaker counts."""
+    assert sonos_player.trusts_reported_source is True
 
 
 async def test_the_line_in_of_a_speaker_that_is_gone_can_not_be_selected(

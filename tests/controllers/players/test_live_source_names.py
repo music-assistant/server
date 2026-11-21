@@ -13,7 +13,14 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.enums import MediaType, PlayerType, ProtocolRole, ProviderFeature
+from music_assistant_models.enums import (
+    MediaType,
+    PlaybackState,
+    PlayerType,
+    ProtocolRole,
+    ProviderFeature,
+)
+from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.media_items import AudioSource, ProviderMapping
 from music_assistant_models.player import PlayerSource
 from music_assistant_models.streamdetails import StreamMetadata
@@ -22,7 +29,7 @@ from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.models.player import Player
 from music_assistant.models.plugin import PluginProvider
-from tests.common import MockProvider, attach_mock, mock_player_mass
+from tests.common import MockProvider, as_user, attach_mock, mock_player_mass
 
 
 def _source(provider: str, item_id: str, name: str, owner: str | None) -> AudioSource:
@@ -512,3 +519,67 @@ def test_an_input_of_a_player_music_assistant_does_not_have_is_left_out() -> Non
     home.refresh()
 
     assert not [x for x in home.kitchen.source_list if x.id == LINE_IN_OF_LIVING_ROOM.id]
+
+
+@pytest.mark.parametrize(
+    ("player_filter", "allowed"),
+    [(["kitchen"], False), (["kitchen", "living_room"], True), ([], True)],
+    ids=["kitchen_only", "both_players", "unrestricted"],
+)
+async def test_an_input_of_another_player_needs_access_to_that_player(
+    player_filter: list[str], allowed: bool
+) -> None:
+    """
+    Selecting Living Room's line-in on Kitchen needs access to Living Room as well.
+
+    A user who may only use Kitchen is refused before anything happens to Kitchen.
+    """
+    home = _Home()
+    protocol = home.kitchen.own_protocol
+    assert protocol is not None
+    protocol._attr_source_list = [LINE_IN_OF_LIVING_ROOM]
+    home.refresh()
+    home.controller._handle_select_source = AsyncMock()  # type: ignore[method-assign]
+    drop_pending_step = home.mass.player_queues._drop_pending_step
+
+    with as_user(player_filter):
+        if allowed:
+            await home.controller.select_source("kitchen", LINE_IN_OF_LIVING_ROOM.id)
+        else:
+            with pytest.raises(InsufficientPermissions):
+                await home.controller.select_source("kitchen", LINE_IN_OF_LIVING_ROOM.id)
+
+    if allowed:
+        home.controller._handle_select_source.assert_awaited_once_with(
+            "kitchen", LINE_IN_OF_LIVING_ROOM.id
+        )
+    else:
+        home.controller._handle_select_source.assert_not_awaited()
+        drop_pending_step.assert_not_called()
+
+
+def test_a_member_finds_the_input_its_leader_plays_by_the_same_id() -> None:
+    """
+    Living Room follows Kitchen, which plays Living Room's line-in, so both rooms hear it.
+
+    Living Room takes the source of Kitchen and lists it by the same id, by its name alone;
+    Kitchen lists it with Living Room after it.
+    """
+    home = _Home()
+    living_room = home.living_room.own_protocol
+    kitchen = home.kitchen.own_protocol
+    assert living_room is not None
+    assert kitchen is not None
+    living_room._attr_source_list = [replace(LINE_IN_OF_LIVING_ROOM, owner_player_id=None)]
+    kitchen._attr_source_list = [LINE_IN_OF_LIVING_ROOM]
+    kitchen._attr_group_members = ["proto_kitchen", "proto_living_room"]
+    kitchen._attr_active_source = LINE_IN_OF_LIVING_ROOM.id
+    kitchen._attr_playback_state = PlaybackState.PLAYING
+
+    home.kitchen.refresh_state(signal_event=False)
+    home.living_room.refresh_state(signal_event=False)
+
+    assert home.living_room.synced_to == "kitchen"
+    for player, name in ((home.kitchen, "Line-in (Living Room)"), (home.living_room, "Line-in")):
+        assert player.active_source == LINE_IN_OF_LIVING_ROOM.id
+        assert [x.name for x in player.source_list if x.id == player.active_source] == [name]

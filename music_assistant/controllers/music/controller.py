@@ -151,7 +151,6 @@ from music_assistant.controllers.tasks.context import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
-    player_access_filter,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
@@ -3242,18 +3241,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         :param sources: Live audio sources, or inputs a player offers from other players.
         """
-        current_user = get_current_user()
-        if player_access_filter(current_user) is None:
-            return sources
         return [
             source
             for source in sources
-            # an owner that is not a known player, such as a disabled one, fails closed
-            if source.owner_player_id is None
-            or (
-                (owner := self.mass.players.get_audio_source_owner(source)) is not None
-                and has_player_access(current_user, owner.player_id, owner)
-            )
+            if source.owner_player_id is None or self.mass.players.may_use_audio_source(source)
         ]
 
     def _client_audio_source(self, source: AudioSource) -> AudioSource:
