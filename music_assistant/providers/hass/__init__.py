@@ -20,7 +20,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, TypedDict, cast
 from urllib.parse import unquote, urlsplit
 
-from aiohttp import ClientResponseError
+from aiohttp import ClientConnectionError, ClientResponseError
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import (
     BaseHassClientError,
@@ -736,6 +736,9 @@ class HomeAssistantProvider(PluginProvider):
         entity_id = engine_id or next((engine.id for engine in self._image_engines), None)
         if entity_id is None:
             raise UnsupportedFeaturedException("No AI Task entity that generates images")
+        internal_url = (
+            await self._get_internal_ha_url() if self.mass.running_as_hass_addon else None
+        )
         try:
             result = await self.hass.send_command(
                 "call_service",
@@ -768,9 +771,10 @@ class HomeAssistantProvider(PluginProvider):
             msg = f"AI Task returned an unexpected image link: {parts.path}"
             raise MusicAssistantError(msg)
         try:
-            return await self._fetch_image(
-                f"{parts.path}?{parts.query}" if parts.query else parts.path
-            )
+            path = f"{parts.path}?{parts.query}" if parts.query else parts.path
+            if internal_url is not None:
+                return await self._fetch_image(path, internal_url=internal_url)
+            return await self._fetch_image(path)
         except ClientResponseError as err:
             # its message names the full (signed) URL
             msg = f"Home Assistant answered the image request with {err.status}"
@@ -782,6 +786,10 @@ class HomeAssistantProvider(PluginProvider):
                 # Home Assistant is down or overloaded, rather than refusing this image
                 raise ProviderUnavailableError(msg) from None
             raise MusicAssistantError(msg) from None
+        except ClientConnectionError, TimeoutError:
+            raise ProviderUnavailableError(
+                "Home Assistant could not be reached to fetch the generated image"
+            ) from None
 
     async def play_announcement_on_entity(self, entity_id: str, announcement: PlayerMedia) -> None:
         """
@@ -1110,18 +1118,32 @@ class HomeAssistantProvider(PluginProvider):
             for entity_id, compressed_state in compressed_states.items()
         ]
 
-    async def _fetch_image(self, path: str) -> bytes:
+    async def _fetch_image(self, path: str, *, internal_url: str | None = None) -> bytes:
         """
         Fetch an image from the connected Home Assistant instance.
 
         :param path: The HA-relative image path.
+        :param internal_url: Validated internal HA URL for a direct AI Task image request.
         :raises FileNotFoundError: When HA does not answer with an image within the size limit.
         """
         # the HTTP client resolves percent-encoded dot segments, so check the decoded form
         if ".." in unquote(path.split("?", 1)[0]).split("/"):
             raise FileNotFoundError("Image not found")
-        ha_url, headers, http_session = self._get_ha_http()
-        async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
+        direct = self.mass.running_as_hass_addon and path.startswith(AI_TASK_IMAGE_PATH_PREFIX)
+        if direct:
+            ha_url = internal_url or await self._get_internal_ha_url()
+            headers: dict[str, str] = {}
+            http_session = self.mass.http_session
+        else:
+            ha_url, headers, http_session = self._get_ha_http()
+        request = (
+            http_session.get(f"{ha_url}{path}", headers=headers, allow_redirects=False)
+            if direct
+            else http_session.get(f"{ha_url}{path}", headers=headers)
+        )
+        async with request as response:
+            if direct and 300 <= response.status < 400:
+                raise MusicAssistantError("Home Assistant redirected the generated image request")
             response.raise_for_status()
             if not response.content_type.startswith("image/"):
                 raise FileNotFoundError("Image not found")
@@ -1134,6 +1156,42 @@ class HomeAssistantProvider(PluginProvider):
                 if len(data) > IMAGE_MAX_BYTES:
                     raise FileNotFoundError("Image too large")
             return bytes(data)
+
+    async def _get_internal_ha_url(self) -> str:
+        """Return the direct HA origin for signed images outside the Supervisor API proxy."""
+        try:
+            network_urls = await self.hass.send_command("network/url")
+        except BaseHassClientError:
+            raise ProviderUnavailableError(
+                "Home Assistant's internal URL could not be retrieved"
+            ) from None
+        internal = network_urls.get("internal") if isinstance(network_urls, dict) else None
+        if not isinstance(internal, str) or not internal:
+            raise MusicAssistantError(
+                "Set Home Assistant's internal URL in Settings > System > Network "
+                "to fetch AI Task images from the Music Assistant app"
+            )
+        try:
+            parts = urlsplit(internal)
+            valid = (
+                parts.scheme in ("http", "https")
+                and bool(parts.hostname)
+                and parts.username is None
+                and parts.password is None
+                and parts.path in ("", "/")
+                and not parts.query
+                and not parts.fragment
+                and not any(char.isspace() for char in internal)
+                and (parts.port is None or 0 < parts.port <= 65535)
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise MusicAssistantError(
+                "Home Assistant's internal URL must be an HTTP(S) origin without "
+                "credentials, a path, query or fragment"
+            )
+        return internal.rstrip("/")
 
     def _get_ha_http(self) -> tuple[str, dict[str, str], ClientSession]:
         """Return HA base URL (without trailing /api), auth headers, and the HTTP session."""
