@@ -11,7 +11,7 @@ from aiosendspin.models.types import UndefinedField
 from aiosendspin.models.visualizer import ClientHelloVisualizerSpectrum, VisualizerStatePayload
 from lifx_entertainment import EntertainmentSession, LightColorCommand, area_client_id
 
-from music_assistant.providers.light_sync.analyzer import AudioAnalyzer
+from music_assistant.providers.sendspin_lights.analyzer import AudioAnalyzer
 from music_assistant.providers.sendspin_lights.base import SendspinLightBridge
 
 from .constants import (

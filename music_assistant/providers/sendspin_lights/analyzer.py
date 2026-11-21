@@ -1,5 +1,5 @@
 """
-Beat-driven audio analyzer shared by the light sync providers.
+Beat-driven audio analyzer shared by the Sendspin light plugins.
 
 Cycles palette colors smoothly between beats. The schedule of upcoming beats
 arrives from the server in advance, so each segment between two beats can be

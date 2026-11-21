@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Final
 
-from music_assistant.providers.light_sync.analyzer import COLOR_MODES as ANALYZER_COLOR_MODES
+from music_assistant.providers.sendspin_lights.analyzer import COLOR_MODES as ANALYZER_COLOR_MODES
 
 CONF_BROADCAST: Final[str] = "broadcast_address"
 CONF_EXTRA_HOSTS: Final[str] = "extra_hosts"

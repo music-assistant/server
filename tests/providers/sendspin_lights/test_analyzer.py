@@ -1,4 +1,4 @@
-"""Tests for the shared light sync AudioAnalyzer (beat-driven palette cycling)."""
+"""Tests for the shared Sendspin lights AudioAnalyzer (beat-driven palette cycling)."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from dataclasses import dataclass
 import pytest
 from aiosendspin.models.visualizer import BeatTiming
 
-from music_assistant.providers.light_sync.analyzer import (
+from music_assistant.providers.sendspin_lights.analyzer import (
     _NEUTRAL_GRADIENT,
     DEFAULT_MODE,
     AudioAnalyzer,
     _distinct_hue_count,
     _ScheduledBeat,
 )
-from music_assistant.providers.light_sync.models import LightColor
+from music_assistant.providers.sendspin_lights.models import LightColor
 
 
 @dataclass(frozen=True)
