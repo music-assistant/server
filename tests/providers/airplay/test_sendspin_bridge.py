@@ -2342,6 +2342,149 @@ async def test_superseded_start_failure_leaves_the_newer_stream_alone() -> None:
     cast("MagicMock", bridge.mass).create_task.assert_not_called()
 
 
+# --- A seek or track change: the device stops playing the audio before it ---
+
+
+async def _wait_forever(*_args: object, **_kwargs: object) -> None:
+    """Stand in for a call that does not return within the test."""
+    await asyncio.Event().wait()
+
+
+def _make_fed_warm_bridge() -> tuple[SendspinAirPlayBridge, MagicMock, list[asyncio.Task[None]]]:
+    """
+    Return a bridge whose writer feeds a warm stream, that stream, and the tasks the bridge schedules.
+
+    The device takes its audio as it plays it, so the writer waits on a write and older audio
+    waits in the queue behind it.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    scheduled = _run_bridge_tasks_for_real(bridge)
+    stream = _make_anchor_stream()
+    stream.running = True
+    stream.connected = True
+    stream.ended_cleanly = False
+    stream.receiver_closed = False
+    stream.write_audio = AsyncMock(side_effect=_wait_forever)
+    transport = _transport(bridge)
+    _play_anchored(transport, stream)
+    transport._airplay_stream_ready.set()
+    transport._writer_task = asyncio.create_task(transport._cli_writer())
+    _deliver_chunks(bridge, SENDSPIN_EPOCH_US, SENDSPIN_EPOCH_US + 1_000_000)
+    return bridge, stream, scheduled
+
+
+async def test_a_new_sendspin_stream_silences_the_stream_it_keeps() -> None:
+    """
+    A next stream stops the kept stream playing the audio before it as soon as it is announced.
+
+    The binary plays out what it buffered until it is flushed. Left to the warm start, the
+    device would play the old audio until the next stream delivers its first chunk.
+    """
+    bridge, stream, scheduled = _make_fed_warm_bridge()
+    writer = _transport(bridge)._writer_task
+    assert writer is not None
+
+    async def flush() -> bool:
+        # a flush only removes what was written before it
+        assert writer.done()
+        return True
+
+    stream.flush = AsyncMock(side_effect=flush)
+
+    bridge._on_bridge_stream_end()
+    await asyncio.sleep(0)
+    # a stream that ended plays out: it can be the end of the queue
+    stream.flush.assert_not_awaited()
+
+    bridge._on_stream_start(MagicMock())
+    await asyncio.gather(*scheduled, return_exceptions=True)
+
+    stream.flush.assert_awaited_once_with()
+    assert _transport(bridge)._write_queue.empty()
+    # still connected, for the next stream to ride
+    assert _transport(bridge)._airplay_stream is stream
+    assert _transport(bridge).can_reuse_warm()
+
+
+async def test_sendspin_clearing_the_stream_silences_the_stream_it_keeps() -> None:
+    """A stream/clear drops the queued audio and flushes the kept stream at once, and only once."""
+    bridge, stream, scheduled = _make_fed_warm_bridge()
+    # the writer takes the first chunk and waits on the device with it
+    await asyncio.sleep(0)
+
+    bridge._on_bridge_stream_clear()
+
+    assert _transport(bridge)._write_queue.empty()
+    await asyncio.gather(*scheduled, return_exceptions=True)
+    stream.flush.assert_awaited_once_with()
+    assert _transport(bridge).can_reuse_warm()
+
+    # the next stream announcing itself finds nothing written since
+    bridge._on_stream_start(MagicMock())
+    await asyncio.gather(*scheduled, return_exceptions=True)
+    stream.flush.assert_awaited_once_with()
+
+
+async def test_a_recovery_under_way_plays_none_of_the_audio_sendspin_cleared() -> None:
+    """
+    A transport that recovers when Sendspin clears the stream drops its start and what it held.
+
+    Its START would otherwise hand the device the cleared audio it holds.
+    """
+    bridge, lost_stream = _make_anchored_bridge(running=True)
+    delivered = _deliver_chunks(
+        bridge, SENDSPIN_EPOCH_US + 50_000, SENDSPIN_EPOCH_US + SENDSPIN_BUFFER_US
+    )
+    lost_stream.running = False
+    scheduled = _run_bridge_tasks_for_real(bridge)
+    fresh_stream = _make_anchor_stream()
+    fresh_stream.connect = AsyncMock(side_effect=_wait_forever)
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+        return_value=fresh_stream,
+    ):
+        bridge._on_audio_chunk(_pcm_chunk(delivered[-1].timestamp_us + 100_000))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        fresh_stream.connect.assert_awaited_once()
+        assert _transport(bridge)._held_chunks
+
+        bridge._on_bridge_stream_clear()
+
+        assert not _transport(bridge).starting
+        assert not _transport(bridge)._held_chunks
+        await asyncio.gather(*scheduled, return_exceptions=True)
+
+    # the connecting process is torn down without ever being started
+    fresh_stream.start.assert_not_awaited()
+    fresh_stream.stop.assert_awaited()
+
+
+async def test_the_next_stream_rides_the_flushed_stream_warm() -> None:
+    """After a seek the next stream still rides the kept stream: flushed once more, then started."""
+    bridge, stream, scheduled = _make_fed_warm_bridge()
+    bridge._on_bridge_stream_clear()
+    bridge._on_stream_start(MagicMock())
+    bridge._on_bridge_stream_start()
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
+        return_value=UNIX_NOW_S,
+    ):
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + WARM_LEAD_MS * 1_000))
+        await asyncio.wait_for(_transport(bridge)._airplay_stream_ready.wait(), timeout=1)
+
+    # the warm start flushes for a fresh splice head before its START
+    assert stream.flush.await_count == 2
+    stream.start.assert_awaited_once()
+    stream.connect.assert_not_awaited()
+    assert _transport(bridge)._airplay_stream is stream
+    for task in scheduled:
+        task.cancel()
+    await asyncio.gather(*scheduled, return_exceptions=True)
+
+
 # --- Startup lead: how far ahead Sendspin schedules the first chunk ---
 
 

@@ -651,8 +651,10 @@ class SendspinAirPlayBridge:
         self.mass.create_task(self.airplay_player.volume_mute(muted))
 
     def _on_bridge_stream_clear(self) -> None:
-        """Drop the audio kept for the stream: Sendspin cleared it, so its group will not play it."""
+        """Drop the audio Sendspin cleared, so no device plays what its group will not."""
         self._unplayed.clear()
+        for transport in self._transports.values():
+            transport.reset_for_stream()
 
     def _on_bridge_stream_end(self) -> None:
         """
@@ -1349,7 +1351,11 @@ class _BridgeTransport:
         self.joining_late = False
 
     def reset_for_stream(self) -> None:
-        """Release what the previous Sendspin stream left, except a stream to reuse warm."""
+        """
+        Release what the previous Sendspin stream left, except a stream to reuse warm.
+
+        A stream kept for reuse stops playing what it buffered of the previous stream.
+        """
         # Capture and detach old stream resources before scheduling their cleanup.
         # This prevents the async cleanup from accidentally destroying the new
         # stream's resources, which reuse the same instance variables. A warm-
@@ -1388,6 +1394,14 @@ class _BridgeTransport:
         self._anchor_settled = False
         self._held_chunks.clear()
         self._held_us = 0
+        while not self._write_queue.empty():
+            self._write_queue.get_nowait()
+        if keep_stream and old_writer_task is not None and self._airplay_stream is not None:
+            # The binary plays out what it buffered until it is flushed, which the warm start
+            # only does once the next stream delivers its first chunk.
+            self._cleanup_task = self.mass.create_task(
+                self._flush_kept_stream(self._airplay_stream, self._cleanup_task)
+            )
 
     def restart(self) -> None:
         """
@@ -1945,6 +1959,27 @@ class _BridgeTransport:
                 # Restore the IDLE reset that stop() dropped over the clear above
                 if self.endpoint.stream is None:
                     self.endpoint.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
+
+    async def _flush_kept_stream(
+        self, stream: AirPlayStream, prev_cleanup: asyncio.Task[None] | None
+    ) -> None:
+        """
+        Flush a stream kept for the next Sendspin stream, once the writer that fed it is gone.
+
+        :param stream: The kept stream.
+        :param prev_cleanup: The cleanup that stops that writer, awaited first.
+        """
+        if prev_cleanup and not prev_cleanup.done():
+            with suppress(Exception):
+                await prev_cleanup
+        if self._airplay_stream is not stream:
+            # released meanwhile: its teardown silences the device
+            return
+        if not await stream.flush():
+            self.logger.debug(
+                "Could not flush %s, it plays out what it buffered of the previous stream",
+                self.endpoint.display_name,
+            )
 
     def _absorb_playout_shift(self) -> None:
         """
