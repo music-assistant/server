@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, Any
 
@@ -207,22 +207,18 @@ class AirPlayStreamSession:
             self._shared_ptp_resolved = True
         position_ms = int((self.media.elapsed_time or 0) * 1000)
         try:
-            async with asyncio.TaskGroup() as task_group:
-                for player in self.sync_clients:
-                    task_group.create_task(
-                        self._member_start_step(
-                            player, "spawn its cli", self._start_client(player, self.use_shared_ptp)
-                        )
-                    )
-            await asyncio.gather(
-                *[
-                    self._member_start_step(
-                        player, "connect to its device", player.stream.wait_for_connection()
-                    )
-                    for player in self.sync_clients
-                    if player.stream
-                ]
+            step = "spawn its cli"
+            failed = await self._run_start_step(
+                step, lambda player: self._start_client(player, self.use_shared_ptp)
             )
+            await self._drop_failed_members(failed, step)
+            step = "connect to its device"
+            failed = await self._run_start_step(
+                step,
+                self._wait_for_connection,
+                members=[player for player in self.sync_clients if player.stream],
+            )
+            await self._drop_failed_members(failed, step)
             # The binary buffers stdin into its ring from process start; feed
             # audio first and wait for every member to confirm it flowing, then
             # anchor with a short lead. Readiness is fully event-driven
@@ -260,7 +256,7 @@ class AirPlayStreamSession:
             # A member can fail for a specific, user-actionable reason (a device
             # that needs its password configured, for example). That error must
             # reach the caller intact instead of being flattened into the generic
-            # message; the TaskGroup above nests it inside an exception group.
+            # message; a later start step can still nest it inside an exception group.
             if (specific := _first_music_assistant_error(err)) is not None:
                 raise specific from err
             raise PlayerCommandFailed("Playback failed to start") from err
@@ -1254,6 +1250,69 @@ class AirPlayStreamSession:
                 return_exceptions=True,
             )
 
+    async def _run_start_step(
+        self,
+        step: str,
+        make_step: Callable[[AirPlayPlayer], Coroutine[Any, Any, None]],
+        members: list[AirPlayPlayer] | None = None,
+    ) -> list[AirPlayPlayer]:
+        """
+        Run one start step on every member at once and return the members that failed it.
+
+        A member refusing the stream must not take the rest of the group down with
+        it, so its failure is only collected. The start still fails as a whole, at
+        once, when the group leader or a speaker of a set fails, or when every member
+        does: the steps still running are cancelled then.
+
+        :param step: What the members are doing, for the failure message.
+        :param make_step: Returns the step to run for a member.
+        :param members: The members to run it on (default: all sync clients).
+        :return: The members that failed the step.
+        """
+        members = list(self.sync_clients) if members is None else members
+        tasks = {
+            asyncio.create_task(self._member_start_step(player, step, make_step(player))): player
+            for player in members
+        }
+        failed: list[AirPlayPlayer] = []
+        try:
+            pending = set(tasks)
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_EXCEPTION)
+                for task in done:
+                    if (err := task.exception()) is None:
+                        continue
+                    player = tasks[task]
+                    failed.append(player)
+                    follows_a_leader = player.owner is player and player.synced_to is not None
+                    everyone_failed = len(failed) == len(members)
+                    if not follows_a_leader or everyone_failed:
+                        raise err
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return failed
+
+    async def _drop_failed_members(self, failed: list[AirPlayPlayer], step: str) -> None:
+        """
+        Leave the members that failed a start step out of the session.
+
+        Each is removed from the session and ungrouped with its re-join scheduled,
+        so it comes back once it answers again.
+
+        :param failed: The members that failed the step.
+        :param step: The step they failed, for the removal reason.
+        """
+        for player in failed:
+            self.prov.logger.warning(
+                "AirPlay group start: going on without %s", player.display_name
+            )
+            stream = player.stream
+            await self.remove_client(player, reason=f"failed to {step} at group start")
+            if stream is not None:
+                stream.handle_stream_loss()
+
     async def _member_start_step(
         self, airplay_player: AirPlayPlayer, step: str, awaitable: Coroutine[Any, Any, None]
     ) -> None:
@@ -1281,6 +1340,11 @@ class AirPlayStreamSession:
                 err,
             )
             raise
+
+    async def _wait_for_connection(self, airplay_player: AirPlayPlayer) -> None:
+        """Wait for a member's stream to connect to its device."""
+        if airplay_player.stream:
+            await airplay_player.stream.wait_for_connection()
 
     async def _start_client(self, airplay_player: AirPlayPlayer, use_shared_ptp: bool) -> None:
         """

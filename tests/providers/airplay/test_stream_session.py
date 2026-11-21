@@ -133,11 +133,14 @@ def _captured_start_at(player: MagicMock) -> float:
 
 
 @pytest.mark.asyncio
-async def test_initial_client_failure_stops_started_clients() -> None:
-    """A partial group startup failure cancels siblings before session teardown."""
+async def test_a_leader_that_fails_to_spawn_cancels_the_other_members() -> None:
+    """A leader whose cli fails to spawn stops the start, cancelling the members still starting."""
     session = _make_session(time.time(), 0)
     first_player: Any = session.sync_clients[0]
-    second_player = MagicMock()
+    second_player = MagicMock(protocol_id="second")
+    second_player.owner = second_player
+    second_player.synced_to = None
+    second_player.group_members = ["second", "leader"]
     session.sync_clients.append(second_player)
     first_started = asyncio.Event()
     first_cancelled = asyncio.Event()
@@ -575,13 +578,17 @@ async def test_initial_single_player_starts_after_connect(
 
 
 @pytest.mark.asyncio
-async def test_initial_connection_failure_never_starts_partial_group() -> None:
-    """If any member fails to connect, no member receives START and the group is stopped."""
+async def test_a_set_speaker_that_fails_to_connect_never_starts_partial_set() -> None:
+    """A speaker of a set that fails to connect stops the start: no member receives START."""
     session = _make_session(0, 0)
     first_player: Any = session.sync_clients[0]
     first_player.protocol = StreamingProtocol.RAOP
+    first_player.owner = MagicMock(protocol_id="apple_tv")
     second_player = MagicMock(protocol_id="second")
     second_player.protocol = StreamingProtocol.RAOP
+    second_player.owner = first_player.owner
+    second_player.synced_to = None
+    second_player.group_members = []
     session.sync_clients.append(second_player)
 
     async def start_client(player: MagicMock, _use_shared_ptp: bool) -> None:
@@ -604,6 +611,51 @@ async def test_initial_connection_failure_never_starts_partial_group() -> None:
         stream: Any = player.stream
         stream.start.assert_not_awaited()
     stop_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_member_that_fails_to_connect_is_left_out_and_the_rest_start() -> None:
+    """A member synced to the leader that fails to connect is dropped; START goes to the rest."""
+    session = _make_session(0, 0)
+    leader: Any = session.sync_clients[0]
+    leader.owner = leader
+    leader.synced_to = None
+    leader.group_members = ["leader", "second"]
+    leader.sync_offset_ms = 0
+    second_player = MagicMock(protocol_id="second", protocol=StreamingProtocol.RAOP)
+    second_player.owner = second_player
+    second_player.synced_to = "leader"
+    second_player.group_members = []
+    second_player.sync_offset_ms = 0
+    session.sync_clients.append(second_player)
+
+    async def start_client(player: MagicMock, _use_shared_ptp: bool) -> None:
+        stream = _stream_defaults(MagicMock(running=True))
+        stream.wait_audio_present = AsyncMock(return_value=True)
+        if player is second_player:
+            stream.wait_for_connection = AsyncMock(side_effect=TimeoutError("connect timeout"))
+        else:
+            stream.wait_for_connection = AsyncMock()
+        player.stream = stream
+
+    async def remove_client(player: MagicMock, **_kwargs: Any) -> None:
+        session.sync_clients.remove(player)
+
+    with (
+        patch.object(session, "_start_client", side_effect=start_client),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
+        patch.object(session, "remove_client", side_effect=remove_client),
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
+    ):
+        await session.start(MagicMock())
+
+    assert session.sync_clients == [leader]
+    leader.stream.start.assert_awaited_once()
+    second_player.stream.start.assert_not_awaited()
+    second_player.stream.handle_stream_loss.assert_called_once_with()
 
 
 @pytest.mark.asyncio
