@@ -4424,6 +4424,7 @@ def test_the_apple_tv_of_a_room_that_fails_is_added_once_more_then_left_out() ->
     silent = bridge._transports[apple_tv.protocol_id]
     silent._airplay_stream_start_task = _make_completed_start_task(failed=True)
     speaker._airplay_stream_start_task = MagicMock()
+    speaker._drop_until_us = SENDSPIN_EPOCH_US
     _anchor_started(speaker)
     monotonic = "music_assistant.providers.airplay.sendspin_bridge.time.monotonic"
 
