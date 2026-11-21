@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.errors import (
     LoginFailed,
     ProviderUnavailableError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 from zvuk_music.exceptions import (
@@ -16,11 +18,12 @@ from zvuk_music.exceptions import (
     GraphQLError,
     NetworkError,
     NotFoundError,
+    RateLimitError,
     TimedOutError,
     UnauthorizedError,
 )
 
-from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.zvuk_music.api_client import ZvukMusicClient, handle_zvuk_errors
 
 # ---------------------------------------------------------------------------
@@ -78,7 +81,7 @@ class TestHandleZvukErrors:
             raise NetworkError("connection reset")
 
         with pytest.raises(ResourceTemporarilyUnavailable):
-            await failing(None)
+            await failing(_make_client())
 
     @pytest.mark.asyncio
     async def test_timed_out_error_raises_resource_temporarily_unavailable(self) -> None:
@@ -89,7 +92,7 @@ class TestHandleZvukErrors:
             raise TimedOutError("timeout")
 
         with pytest.raises(ResourceTemporarilyUnavailable):
-            await failing(None)
+            await failing(_make_client())
 
     @pytest.mark.asyncio
     async def test_bad_request_error_raises_resource_temporarily_unavailable(self) -> None:
@@ -170,15 +173,41 @@ class TestHandleZvukErrorsRateLimit:
 
     @pytest.mark.asyncio
     async def test_rate_limit_network_error_raises_with_backoff(self) -> None:
-        """NetworkError with 429 raises ResourceTemporarilyUnavailable(backoff_time=60)."""
+        """A 429 without Retry-After raises RateLimited and holds back requests for 60s."""
+        client, inner = _make_connected_client()
+        inner.get_tracks = AsyncMock(side_effect=RateLimitError("Unknown error", retry_after=None))
 
-        @handle_zvuk_errors()
-        async def failing(_self: object) -> None:
-            raise NetworkError("HTTP 429 Too Many Requests")
+        with pytest.raises(RateLimited) as exc_info:
+            await client.get_tracks(["1"])
 
-        with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
-            await failing(None)
         assert exc_info.value.backoff_time == 60
+        assert client._throttler.cooldown_remaining == pytest.approx(60, abs=1)
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_uses_the_server_retry_after(self) -> None:
+        """A 429 with Retry-After holds back requests for as long as the server asked."""
+        client, inner = _make_connected_client()
+        inner.get_tracks = AsyncMock(side_effect=RateLimitError("Unknown error", retry_after=120))
+
+        with pytest.raises(RateLimited) as exc_info:
+            await client.get_tracks(["1"])
+
+        assert exc_info.value.backoff_time == 120
+        assert client._throttler.cooldown_remaining == pytest.approx(120, abs=1)
+
+    @pytest.mark.asyncio
+    async def test_call_during_rate_limit_cooldown_does_not_reach_api(self) -> None:
+        """A call made while the rate limit cooldown runs is not sent to Zvuk."""
+        client, inner = _make_connected_client()
+        inner.get_tracks = AsyncMock(side_effect=RateLimitError("Unknown error"))
+        inner.get_lyrics = AsyncMock(return_value=None)
+        with pytest.raises(RateLimited):
+            await client.get_tracks(["1"])
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(client.get_lyrics("1"), timeout=0.1)
+
+        inner.get_lyrics.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_generic_network_error_raises_without_backoff(self) -> None:
@@ -188,9 +217,11 @@ class TestHandleZvukErrorsRateLimit:
         async def failing(_self: object) -> None:
             raise NetworkError("connection reset")
 
+        client = _make_client()
         with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
-            await failing(None)
+            await failing(client)
         assert getattr(exc_info.value, "backoff_time", None) != 60
+        assert client._throttler.cooldown_remaining == 0
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +478,7 @@ class TestThrottler:
         """ZvukMusicClient should have a _throttler attribute after construction."""
         client = _make_client()
         assert hasattr(client, "_throttler")
-        assert isinstance(client._throttler, Throttler)
+        assert isinstance(client._throttler, ThrottlerManager)
 
 
 class TestGetClient:
@@ -457,20 +488,17 @@ class TestGetClient:
     async def test_get_client_acquires_throttle_slot(self) -> None:
         """_get_client() must call throttler.acquire() before returning client."""
         client, inner = _make_connected_client()
-        client._throttler = MagicMock()
-        client._throttler.acquire = AsyncMock()
 
-        result = await client._get_client()
+        with patch.object(client._throttler, "acquire", wraps=client._throttler.acquire) as acquire:
+            result = await client._get_client()
 
-        client._throttler.acquire.assert_awaited_once()
+        acquire.assert_called_once()
         assert result is inner
 
     @pytest.mark.asyncio
     async def test_get_client_raises_when_not_connected(self) -> None:
         """_get_client() raises ProviderUnavailableError if client not connected."""
         client = _make_client()
-        client._throttler = MagicMock()
-        client._throttler.acquire = AsyncMock()
 
         with pytest.raises(ProviderUnavailableError):
             await client._get_client()
@@ -509,6 +537,17 @@ class TestLikeUnlikeTrack:
         result = await client.like_track("123")
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_like_track_returns_false_and_cools_down_on_rate_limit(self) -> None:
+        """like_track() returns False on a 429 and holds back further requests."""
+        client, inner = _make_connected_client()
+        inner.like_track = AsyncMock(side_effect=RateLimitError("Unknown error"))
+
+        result = await client.like_track("123")
+
+        assert result is False
+        assert client._throttler.cooldown_remaining > 0
 
     @pytest.mark.asyncio
     async def test_like_track_returns_false_on_graphql_error(self) -> None:

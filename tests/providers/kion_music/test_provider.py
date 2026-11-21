@@ -19,7 +19,7 @@ from unittest import mock
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from music_assistant_models.errors import RateLimited, ResourceTemporarilyUnavailable
 from yandex_music import Track as YandexTrack
 
 from music_assistant.models.music_provider import SYNC_RUN_STATE, SyncRunState
@@ -200,6 +200,18 @@ async def test_failed_shared_fetch_is_not_cached(
     mock_client.get_playlist.return_value = type("PL", (), {"tracks": [], "track_count": 0})()
     assert await provider.get_playlist_tracks("12345:67") == []
     assert mock_client.get_playlist.await_count == 2
+
+
+async def test_rate_limit_on_missing_playlist_tracks_reaches_the_caller(
+    cached_provider: tuple[KionMusicProvider, mock.AsyncMock],
+) -> None:
+    """A rate limit while fetching tracks the playlist came without is raised as is."""
+    provider, mock_client = cached_provider
+    mock_client.get_playlist.return_value = type("PL", (), {"tracks": [], "track_count": 3})()
+    mock_client.fetch_playlist_tracks.side_effect = RateLimited("rate limited", backoff_time=60)
+
+    with pytest.raises(RateLimited):
+        await provider.get_playlist_tracks("12345:67")
 
 
 async def test_cancelled_waiter_does_not_cancel_shared_fetch(
