@@ -65,7 +65,7 @@ def manager(mock_api: MagicMock) -> AppleMusicMediaManager:
     provider = MagicMock()
     provider.instance_id = "apple_music_test"
     provider.domain = "apple_music"
-    provider._storefront = "us"
+    provider.storefront = "us"
     provider.logger = MagicMock()
     provider.mass.cache.get = AsyncMock(return_value=None)
     provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
@@ -191,7 +191,7 @@ def purchases_manager() -> tuple[AppleMusicMediaManager, MagicMock]:
     provider = MagicMock()
     provider.instance_id = "apple_music_test"
     provider.domain = "apple_music"
-    provider._storefront = "us"
+    provider.storefront = "us"
     provider.mass.cache = _DictCache()
     use_real_create_task(provider.mass)
     library_items = [_purchase("i.sold", SOLD), _purchase("i.revoked", REVOKED)]
