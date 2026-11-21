@@ -90,14 +90,21 @@ def programme_title(item: PlayableItem, parts: TitleParts = TitleParts.LISTING) 
     has_season = bool(titles.tertiary) and not isinstance(item, LiveStation)
 
     episode = titles.entity_title or (titles.tertiary if has_season else titles.secondary)
-    brand = titles.primary
-    # An episode title can already name its brand, e.g. "BBC News 20:00" of "BBC News",
-    # or repeat it outright for a one-off programme
-    if TitleParts.EPISODE in parts and brand and episode and episode.startswith(brand):
-        brand = None
+
     # A clip's titles often hold only its headline, so say where it was published instead
-    if brand is None and isinstance(item, RadioClip):
-        brand = programme_source(item)
+    brand = programme_source(item) if isinstance(item, RadioClip) else titles.primary
+
+    # Prevent adding the brand (station/network) to the clip title if it already
+    # starts with it, and the following character isn't alphanumeric.
+    # E.g. "BBC Four" Matches "BBC Four: Title", but not "BBC Fourth in recent poll"
+    if (
+        TitleParts.EPISODE in parts
+        and brand
+        and episode
+        and episode.startswith(brand)
+        and not episode[len(brand) : len(brand) + 1].isalnum()
+    ):
+        brand = None
     names = [
         name
         for flag, name in (
