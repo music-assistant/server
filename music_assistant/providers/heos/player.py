@@ -199,7 +199,7 @@ class HeosPlayer(PlayerProtocol):
             self._attr_source_list.append(
                 PlayerSource(
                     id=input_source.media_id,
-                    name=input_source.name,
+                    name=self._input_name(input_source),
                     is_input=input_source.media_id not in HEOS_TUNER_INPUTS,
                     can_play_pause=True,
                 )
@@ -208,7 +208,7 @@ class HeosPlayer(PlayerProtocol):
         self._attr_source_list += [
             PlayerSource(
                 id=_input_of_device_id(input_source),
-                name=self._input_name_without_device(input_source),
+                name=self._input_name(input_source),
                 is_input=True,
                 owner_player_id=str(input_source.source_id),
                 can_play_pause=True,
@@ -611,8 +611,8 @@ class HeosPlayer(PlayerProtocol):
             and str(input_source.source_id) != self.protocol_id
         ]
 
-    def _input_name_without_device(self, input_source: MediaItem) -> str:
-        """Return the name of an input of another device without the name of that device."""
+    def _input_name(self, input_source: MediaItem) -> str:
+        """Return the name of an input without the name of the device it belongs to."""
         # HEOS names an input "<device name> - <input name>"
         if device := self._heos.players.get(input_source.source_id):
             return input_source.name.removeprefix(f"{device.name} - ")

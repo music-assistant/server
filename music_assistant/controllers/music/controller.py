@@ -1601,10 +1601,21 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ):
             return entries
         listed = {entry.id for entry in entries}
-        entries += [
-            replace(entry, owner_player_id=entry.owner_player_id or player.player_id)
+        inputs = [
+            entry
             for entry in player.source_list
             if entry.is_input and not entry.passive and entry.id not in listed
+        ]
+        # an input of another player carries its own name, as the provider delivers it
+        own = player.own_protocol
+        names = {x.id: x.name for x in own.source_list} if own else {}
+        entries += [
+            replace(
+                entry,
+                name=names.get(entry.id, entry.name),
+                owner_player_id=entry.owner_player_id or player.player_id,
+            )
+            for entry in self._without_inaccessible_audio_sources(inputs)
         ]
         return entries
 
@@ -3223,8 +3234,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             sources = await provider.get_audio_sources()
         return self._without_inaccessible_audio_sources(sources)
 
-    def _without_inaccessible_audio_sources(self, sources: list[AudioSource]) -> list[AudioSource]:
-        """Return the sources without those of a player the calling user may not use."""
+    def _without_inaccessible_audio_sources[T: (AudioSource, PlayerSource)](
+        self, sources: list[T]
+    ) -> list[T]:
+        """
+        Return the sources without those of a player the calling user may not use.
+
+        :param sources: Live audio sources, or inputs a player offers from other players.
+        """
         current_user = get_current_user()
         if player_access_filter(current_user) is None:
             return sources

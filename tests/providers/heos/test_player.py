@@ -534,15 +534,15 @@ async def test_the_inputs_of_the_other_devices_are_listed_as_their_inputs() -> N
     """
     Kitchen lists the inputs of Den and the attic, each naming its device.
 
-    Den's tuner is a radio, not an input, and is left out. The name drops the device, which
-    the naming rule adds back where it is shown; Kitchen's own input keeps its name.
+    Den's tuner is a radio, not an input, and is left out. Every name drops the device, which
+    the naming rule adds back where the input is shown on another device.
     """
     protocol = _kitchen_with_den()
 
     await protocol.build_source_list()
 
     assert [(x.id, x.name, x.is_input, x.owner_player_id) for x in protocol._attr_source_list] == [
-        (heos_const.INPUT_LINE_IN_1, "Kitchen - Line In 1", True, None),
+        (heos_const.INPUT_LINE_IN_1, "Line In 1", True, None),
         (f"{heos_const.INPUT_LINE_IN_1}@2", "Line In 1", True, "2"),
         (f"{heos_const.INPUT_OPTICAL_IN_1}@2", "Optical In 1", True, "2"),
         (f"{heos_const.INPUT_AUX_IN_1}@3", "Phono", True, "3"),
