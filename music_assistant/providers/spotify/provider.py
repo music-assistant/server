@@ -520,11 +520,10 @@ class SpotifyProvider(MusicProvider):
             return searchresult
 
         search_query = search_query.replace("'", "")
-        on_global_session = self._session_for(use_global_session=False) is self._global_session
-        if on_global_session:
+        if not self.dev_session_active:
             limit = min(limit, GLOBAL_SEARCH_LIMIT)
         searches: list[tuple[list[MediaType], bool]] = [(media_types, False)]
-        if not on_global_session and MediaType.PLAYLIST in media_types:
+        if self.dev_session_active and MediaType.PLAYLIST in media_types:
             # Spotify returns the playlists a developer app may not access (its own
             # editorial ones) as null search items, which can leave a playlist search
             # almost empty. Search playlists on the global session, which sees them.
