@@ -140,6 +140,8 @@ class FFMpeg(AsyncProcess):
         # Source duration in (whole) seconds as detected from the ffmpeg input log line,
         # or None if not yet parsed / not reported (e.g. live radio streams).
         self.parsed_duration: int | None = None
+        # ffmpeg only guessed the duration from the bitrate, as it does without a header
+        self.duration_estimated = False
         self._stdin_feeder_task: asyncio.Task[None] | None = None
         self._stdin_feeder_exception: Exception | None = None
         self._stderr_reader_task: asyncio.Task[None] | None = None
@@ -263,6 +265,8 @@ class FFMpeg(AsyncProcess):
 
             # Source duration is reported separately from the stream info. Useful when
             # the provider didn't supply one (some podcast feeds report total_time=0).
+            if "Estimating duration from bitrate" in line:
+                self.duration_estimated = True
             if self.parsed_duration is None:
                 duration = parse_ffmpeg_duration(line)
                 if duration is not None:
@@ -685,10 +689,7 @@ def get_ffmpeg_args(
                 # that would trigger Range-less restarts from byte 0. MA-initiated seeks
                 # still work via -ss decode-and-discard.
                 input_args += ["-seekable", "0"]
-            if "-ss" in input_args and {
-                input_format.content_type,
-                input_format.codec_type,
-            } & {ContentType.MP3, ContentType.MPEG}:
+            if seeks_by_byte_offset(input_path, input_format, extra_input_args):
                 # without a Xing TOC ffmpeg parses every frame up to the target; fastseek
                 # jumps there by byte offset via a Range request instead
                 add_input_fflag(input_args, "+fastseek")
@@ -809,6 +810,30 @@ def get_ffmpeg_channel_args(audio_format: AudioFormat) -> list[str]:
     if layout := _get_channel_layout_name(audio_format.channels):
         args += ["-channel_layout", layout]
     return args
+
+
+def seeks_by_byte_offset(
+    input_path: str, input_format: AudioFormat, extra_input_args: Sequence[str]
+) -> bool:
+    """
+    Return whether ffmpeg jumps to a seek position by byte offset.
+
+    :param input_path: The path ffmpeg reads from, or "-" for stdin.
+    :param input_format: The format of the input.
+    :param extra_input_args: The input args of the launch, including the seek.
+    """
+    if "-ss" not in extra_input_args:
+        return False
+    if any("+fastseek" in arg for arg in extra_input_args):
+        return True
+    return (
+        "-f" not in extra_input_args
+        and input_path.startswith("http")
+        and bool(
+            {input_format.content_type, input_format.codec_type}
+            & {ContentType.MP3, ContentType.MPEG}
+        )
+    )
 
 
 def add_input_fflag(input_args: list[str], flag: str) -> None:

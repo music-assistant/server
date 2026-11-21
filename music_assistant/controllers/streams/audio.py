@@ -172,6 +172,7 @@ from music_assistant.helpers.ffmpeg import (
     add_input_fflag,
     get_ffmpeg_overlay_stream,
     get_ffmpeg_stream,
+    seeks_by_byte_offset,
 )
 from music_assistant.helpers.mp3 import (
     NO_SEEK_HINTS,
@@ -278,6 +279,15 @@ SPEAKER_CHANNEL_OUTPUT = {
     SpeakerChannel.FRONT_LEFT: "left",
     SpeakerChannel.FRONT_RIGHT: "right",
 }
+
+# A full playthrough ends slightly short of the metadata length, so only a larger
+# shortfall counts as a source that stopped early.
+DURATION_SHORTFALL_SECONDS = 2.0
+DURATION_SHORTFALL_RATIO = 0.01
+DURATION_SHORTFALL_MAX_SECONDS = 10.0
+# A length ffmpeg estimated from the stream (a bitrate guess for a feed without a header)
+# is only that accurate.
+DURATION_ESTIMATE_RATIO = 0.2
 
 
 @dataclass
@@ -392,6 +402,124 @@ def tail_hold_target(queue_item: QueueItem, max_bytes: int, frame_size: int) -> 
         # better off played out than held back for one
         return 0
     return max_bytes // frame_size * frame_size
+
+
+def _delivered_media_covers_item(
+    streamdetails: StreamDetails,
+    delivered_seconds: float,
+    source_duration: int | None = None,
+    *,
+    duration_estimated: bool = False,
+    resumed: bool = False,
+) -> bool:
+    """
+    Return whether the delivered audio matches the item's length.
+
+    :param streamdetails: The item's stream details.
+    :param delivered_seconds: Media-time delivered, counted from the start of the item.
+    :param source_duration: The length the source itself reports, when it does.
+    :param duration_estimated: Whether the item's length is the source's estimate.
+    :param resumed: Whether the item was resumed by a seek, so where the delivered audio
+        started is only as exact as that seek.
+    """
+    lengths = [length for length in (streamdetails.duration, source_duration) if length]
+    if not lengths:
+        return True
+    if resumed and streamdetails.duration:
+        # a seek that landed early or was ignored delivers more than the item holds
+        if delivered_seconds > streamdetails.duration + _duration_tolerance(
+            streamdetails.duration, estimated=duration_estimated
+        ):
+            return False
+    return any(
+        delivered_seconds >= length - _duration_tolerance(length, estimated=duration_estimated)
+        for length in lengths
+    )
+
+
+def _duration_tolerance(length: float, *, estimated: bool = False) -> float:
+    """
+    Return how far a full playthrough may end from the given length.
+
+    :param length: The length in seconds.
+    :param estimated: Whether the length is an estimate of the source.
+    """
+    tolerance = min(
+        DURATION_SHORTFALL_MAX_SECONDS,
+        max(DURATION_SHORTFALL_SECONDS, length * DURATION_SHORTFALL_RATIO),
+    )
+    if estimated:
+        return max(tolerance, length * DURATION_ESTIMATE_RATIO)
+    return tolerance
+
+
+def _take_source_length(
+    streamdetails: StreamDetails,
+    ffmpeg_proc: FFMpeg,
+    *,
+    approximate_seek: bool,
+) -> bool:
+    """
+    Take the length ffmpeg read from the source where the item's own is missing or off.
+
+    :param streamdetails: The item's stream details.
+    :param ffmpeg_proc: The process that has read the source's header.
+    :param approximate_seek: Whether ffmpeg resumed the item by a seek by byte offset.
+    :return: Whether the length that was taken is only ffmpeg's estimate.
+    """
+    probed = ffmpeg_proc.parsed_duration
+    if probed is None:
+        return False
+    if not streamdetails.duration:
+        streamdetails.duration = probed
+        return ffmpeg_proc.duration_estimated
+    if (
+        approximate_seek
+        and probed
+        and not ffmpeg_proc.duration_estimated
+        and abs(probed - streamdetails.duration) > _duration_tolerance(streamdetails.duration)
+    ):
+        # nothing measured after a seek by byte offset can be trusted, so the length of
+        # the file as ffmpeg read it from its header stands in
+        streamdetails.duration = probed
+    return False
+
+
+def _store_measured_duration(
+    streamdetails: StreamDetails,
+    delivered_seconds: float,
+    *,
+    queue_item: QueueItem | None = None,
+    play_log_entry: PlayLogEntry | None = None,
+    source_duration: int | None = None,
+    duration_estimated: bool = False,
+    resumed: bool = False,
+) -> None:
+    """
+    Store the measured length on the item, unless it does not match what the item holds.
+
+    :param streamdetails: The item's stream details.
+    :param delivered_seconds: Media-time delivered, counted from the start of the item.
+    :param queue_item: The queue item to update as well.
+    :param play_log_entry: The play log entry to update as well.
+    :param source_duration: The length the source itself reports, when it does.
+    :param duration_estimated: Whether the item's length is the source's estimate.
+    :param resumed: Whether the item was resumed by a seek.
+    """
+    if not _delivered_media_covers_item(
+        streamdetails,
+        delivered_seconds,
+        source_duration,
+        duration_estimated=duration_estimated,
+        resumed=resumed,
+    ):
+        return
+    streamdetails.duration = int(delivered_seconds)
+    # propagate accurate duration to queue_item so UI displays it
+    if queue_item is not None:
+        queue_item.duration = streamdetails.duration
+    if play_log_entry is not None:
+        play_log_entry.duration = streamdetails.duration
 
 
 async def _incoming_overlap_stream(
@@ -2293,6 +2421,8 @@ class StreamsAudio:
             claimed_for = tail_overlap.next_queue_item_id
             self._crossfade_pending[queue.queue_id] = (claimed_for, handoff)
 
+        # a crossfade moves the position too, but only a seek of the request resumes the item
+        resumed = handover is None and bool(streamdetails.seek_position)
         # pin the body to DYNAMIC when the intro was baked DYNAMIC,
         # else a late measurement flips it and causes a volume jump
         norm_override: VolumeNormalizationMode | None = None
@@ -2700,12 +2830,16 @@ class StreamsAudio:
             uncredited_tail_seconds = uncredited_tail_bytes / pcm_format.pcm_sample_size
             # streamdetails.duration is in media-time; seconds_streamed is stream-time
             # (post-atempo), so we scale by playback_speed to recover media-time.
-            streamdetails.duration = int(
+            written_seconds = (
                 streamdetails.seek_position
                 + (seconds_streamed + uncredited_tail_seconds) * playback_speed
             )
-            # propagate accurate duration to queue_item so UI displays it
-            queue_item.duration = streamdetails.duration
+            _store_measured_duration(
+                streamdetails,
+                written_seconds,
+                queue_item=queue_item,
+                resumed=resumed,
+            )
         self.logger.debug(
             "Finished Streaming queue track: %s (%s) on queue %s "
             "- crossfade data prepared for next track: %s",
@@ -3454,13 +3588,17 @@ class StreamsAudio:
                     # streamdetails.duration is in media-time; seconds_streamed is stream-time
                     # (post-atempo), so we scale by the track's playback_speed to recover media-time.
                     assert play_log_entry.seek_position is not None
-                    queue_track.streamdetails.duration = int(
+                    written_seconds = (
                         play_log_entry.seek_position
                         + (seconds_streamed + tail_seconds) * track_playback_speed
                     )
-                    # propagate accurate duration to queue_item so UI displays it
-                    queue_track.duration = queue_track.streamdetails.duration
-                    play_log_entry.duration = queue_track.streamdetails.duration
+                    _store_measured_duration(
+                        queue_track.streamdetails,
+                        written_seconds,
+                        queue_item=queue_track,
+                        play_log_entry=play_log_entry,
+                        resumed=bool(raw_seek_position),
+                    )
                 if last_play_log_entry is play_log_entry and last_fadeout_part:
                     # Pre-count the full crossfade tail so the queue index calculation
                     # doesn't undercount while waiting for the next track's crossfade mix.
@@ -3495,16 +3633,11 @@ class StreamsAudio:
                 await asyncio.sleep(0)
             # correct seconds streamed - the duration already includes the tail
             last_part_seconds = len(last_fadeout_part) / pcm_sample_size
-            streamdetails = queue_track.streamdetails
+            streamdetails = last_streamdetails
             assert streamdetails is not None
             streamdetails.seconds_streamed = (
                 streamdetails.seconds_streamed or 0
             ) + last_part_seconds
-            # also update the play log entry so elapsed time tracking stays in sync
-            if last_play_log_entry:
-                assert last_play_log_entry.seconds_streamed is not None
-                # full tail was pre-counted and is now yielded as-is
-                last_play_log_entry.duration = streamdetails.duration
             last_fadeout_part = b""
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
         # only signal completion if we are still the active producer — a later
@@ -5165,19 +5298,30 @@ class StreamsAudio:
             extra_input_args += ["-readrate", "1", "-readrate_initial_burst", "0.5"]
 
         # skip a remote MP3's ID3 tag on every launch and handle seek support
+        ffmpeg_seek_position = 0
+        approximate_seek = False
+        ffmpeg_input_format = arriving_audio_format(streamdetails)
         if streamdetails.duration and streamdetails.allow_seek:
             await self._add_remote_mp3_input_args(
                 streamdetails, audio_source, extra_input_args, seeking=bool(seek_position)
             )
             if seek_position:
                 extra_input_args += ["-ss", str(int(seek_position))]
+                # a seek by byte offset lands near the position, so where the stream
+                # started is not known and nothing measured from it can be trusted
+                approximate_seek = seeks_by_byte_offset(
+                    audio_source if isinstance(audio_source, str) else "-",
+                    ffmpeg_input_format,
+                    extra_input_args,
+                )
+                ffmpeg_seek_position = 0 if approximate_seek else int(seek_position)
 
         bytes_sent = 0
         finished = False
         cancelled = False
         first_chunk_received = False
+        duration_estimated = False
         ffmpeg_loglevel = "debug" if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else "info"
-        ffmpeg_input_format = arriving_audio_format(streamdetails)
         pass_fds: tuple[int, ...] = ()
         if isinstance(audio_source, str):
             inputs, pass_fds = await self.open_local_files(streamdetails, [audio_source])
@@ -5244,8 +5388,9 @@ class StreamsAudio:
                     # Some providers omit (or report 0 for) the item duration; ffmpeg can
                     # usually probe it from the source. Only apply when missing so we
                     # don't clobber an accurate provider value with a rounded one.
-                    if ffmpeg_proc.parsed_duration is not None and not streamdetails.duration:
-                        streamdetails.duration = ffmpeg_proc.parsed_duration
+                    duration_estimated = _take_source_length(
+                        streamdetails, ffmpeg_proc, approximate_seek=approximate_seek
+                    )
                     logger.debug(
                         "First chunk received after %.2f seconds (codec detected: %s)",
                         mass.loop.time() - stream_start,
@@ -5303,10 +5448,22 @@ class StreamsAudio:
             # determine how many seconds we've received
             # for pcm output we can calculate this easily
             seconds_received = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-            # store accurate duration, but only for a playthrough from the very start:
-            # a seeked stream yields the remaining audio, not the item's full length
-            if finished and not requested_seek_position and seconds_received:
-                streamdetails.duration = int(seconds_received)
+            # seconds_received is media-time: the buffer applies playback speed when reading
+            # store accurate duration, but only where it is known how far into the item the
+            # stream started: a seek the source took itself yields just the remaining audio
+            if (
+                finished
+                and seconds_received
+                and (ffmpeg_seek_position or not requested_seek_position)
+            ):
+                _store_measured_duration(
+                    streamdetails,
+                    ffmpeg_seek_position + seconds_received,
+                    source_duration=(
+                        None if ffmpeg_proc.duration_estimated else ffmpeg_proc.parsed_duration
+                    ),
+                    duration_estimated=duration_estimated,
+                )
 
             logger.log(
                 VERBOSE_LOG_LEVEL,
