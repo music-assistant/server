@@ -132,6 +132,7 @@ def test_published_source_after_ma_to_library_switch(own_stream: bool) -> None:
         status.stream_url = "http://mass.example:8097/flow/test.flac"
     protocol.status = status
     protocol.client = MagicMock(base_url="http://player.example:11000")
+    protocol._input_source_ids = {}
     BluesoundPlayer._resolve_source(protocol)
     BluesoundPlayer._resolve_media(protocol)
     player.update_state(signal_event=False)
@@ -206,9 +207,10 @@ async def test_a_playing_input_keeps_its_entry(input_id: str, name: str, url: st
     assert len(inputs) == 3
 
 
-async def test_a_playing_input_without_an_id_is_found_by_its_url() -> None:
-    """An input the list gives no id is matched by the url the player streams."""
-    fake = _player(input_id="analog", service="Capture")
+@pytest.mark.parametrize("input_id", ["analog", None], ids=["unknown_id", "no_id"])
+async def test_a_playing_input_is_found_by_its_url(input_id: str | None) -> None:
+    """An input the status names by no known id is matched by the url the player streams."""
+    fake = _player(input_id=input_id, service="Capture")
     fake.status.name = "Analog Input"
     fake.status.stream_url = "Capture:plughw:0,0"
     fake.client.presets = AsyncMock(return_value=[])

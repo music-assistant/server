@@ -293,14 +293,25 @@ def test_an_input_of_the_speaker_is_listed_as_an_input(
     assert [(x.id, x.is_input) for x in sonos_player._attr_source_list] == [(source_id, True)]
 
 
-def test_the_line_in_of_another_speaker_is_not_listed(sonos_player: SonosPlayer) -> None:
-    """Playing the line-in of another speaker is reported, but is no source of this speaker."""
+def test_the_line_in_of_another_speaker_is_not_an_input(sonos_player: SonosPlayer) -> None:
+    """The line-in of another speaker is listed while it plays, but not as an input."""
     _set_track_info(sonos_player, "x-rincon-stream:RINCON_000E58BBBBBB01400")
 
     sonos_player._set_basic_track_info()
 
     assert sonos_player._attr_active_source == SOURCE_LINEIN
-    assert sonos_player._attr_source_list == []
+    assert [(x.id, x.is_input) for x in sonos_player._attr_source_list] == [(SOURCE_LINEIN, False)]
+
+
+def test_the_own_line_in_is_an_input_again_after_a_remote_one(sonos_player: SonosPlayer) -> None:
+    """Once the speaker plays its own line-in after another speaker's, its entry is an input."""
+    _set_track_info(sonos_player, "x-rincon-stream:RINCON_000E58BBBBBB01400")
+    sonos_player._set_basic_track_info()
+
+    _set_track_info(sonos_player, "x-rincon-stream:RINCON_000E58AAAAAA01400")
+    sonos_player._set_basic_track_info()
+
+    assert [(x.id, x.is_input) for x in sonos_player._attr_source_list] == [(SOURCE_LINEIN, True)]
 
 
 def test_source_is_cleared_once_the_speaker_has_nothing_loaded(sonos_player: SonosPlayer) -> None:

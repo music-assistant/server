@@ -300,8 +300,8 @@ class BluesoundPlayer(PlayerProtocol):
         mass_url = self.mass.streams.base_url
         if self.status.stream_url and mass_url in self.status.stream_url:
             self._attr_active_source = None
-        elif (input_id := self.status.input_id) and (
-            source_id := self._input_source_ids.get(input_id)
+        elif source_id := (
+            self._input_source_ids.get(self.status.input_id or "")
             or self._input_source_ids.get(self.status.stream_url or "")
         ):
             # an input of the player, already listed with its own entry
