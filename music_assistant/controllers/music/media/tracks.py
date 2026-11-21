@@ -1749,11 +1749,6 @@ class TracksController(MediaControllerBase[Track]):
         for provider in providers:
             if provider_failures.blocked(provider.instance_id):
                 continue
-            if provider_failures.rate_limited(provider.instance_id):
-                # the provider asked to be left alone, so this item is reported as
-                # skipped instead of costing a request the provider would refuse
-                rate_limited_providers.append(provider.name)
-                continue
             if provider.domain in existing_domains:
                 continue
             if (
@@ -1761,6 +1756,11 @@ class TracksController(MediaControllerBase[Track]):
                 and not search_non_streaming_without_mapping
                 and not self._get_provider_mapping(mapping_source, provider)
             ):
+                continue
+            if provider_failures.rate_limited(provider.instance_id):
+                # the provider asked to be left alone, so this item is reported as
+                # skipped instead of costing a request the provider would refuse
+                rate_limited_providers.append(provider.name)
                 continue
             if not base_album_loaded:
                 base_album = await self._get_full_track_album(

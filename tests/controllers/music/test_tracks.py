@@ -1927,6 +1927,37 @@ async def test_enrich_provider_mappings_skips_album_lookup_for_existing_domains(
     find_provider_match.assert_not_awaited()
 
 
+async def test_enrich_provider_mappings_ignores_a_pause_of_a_provider_it_does_not_ask(
+    music: MusicController,
+) -> None:
+    """A rate limited provider is not reported for an item that needs no lookup on it."""
+    source = create_track("spotify_1", "source")
+    provider = MagicMock(spec=MusicProvider)
+    provider.name = "Spotify"
+    provider.instance_id = "spotify_1"
+    provider.domain = "spotify"
+    provider.available = True
+    provider.is_streaming_provider = True
+    provider_failures = ProviderMatchFailures()
+    provider_failures.record_failure("spotify_1", RateLimited("Spotify rate limit"))
+    find_provider_match = AsyncMock()
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "find_provider_match", find_provider_match),
+        patch.object(music.mass, "get_provider", return_value=provider),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"spotify_1"},
+            provider_failures=provider_failures,
+        )
+
+    assert result.rate_limited_providers == ()
+    assert result.track.provider_mappings == source.provider_mappings
+    find_provider_match.assert_not_awaited()
+
+
 async def test_enrich_provider_mappings_skips_unmapped_non_streaming_provider_by_default(
     music: MusicController,
 ) -> None:
