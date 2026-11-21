@@ -142,22 +142,24 @@ def _acking_write_cli_command(
     stream: AirPlayStream, at_unix_ms: int | None = None
 ) -> Callable[[str], Coroutine[Any, Any, bool]]:
     """
-    Build a ``_write_cli_command`` replacement that acks a START like the binary.
+    Build a ``_write_cli_command`` replacement that acks a START and a STOP like the binary.
 
-    :param stream: The stream whose START commands are answered.
+    :param stream: The stream whose START and STOP commands are answered.
     :param at_unix_ms: Scheduled audible instant to report back; defaults to the
         commanded instant, i.e. the binary found it feasible.
     """
 
     async def write_command(command: str) -> bool:
-        # A START nothing acks otherwise pays the real ack timeout in wall clock;
-        # feeding the ack here leaves start()'s wait already released.
+        # A START or STOP nothing acks otherwise pays the real ack timeout in wall
+        # clock; feeding the ack here leaves the wait for it already released.
         if "ACTION=START" in command:
             requested = int(command.split("START_UNIX_MS=")[1].split("\n", 1)[0])
             stream._handle_status_line(
                 f"[STATUS] started requested_unix_ms={requested} "
                 f"at_unix_ms={requested if at_unix_ms is None else at_unix_ms}"
             )
+        elif "ACTION=STOP" in command:
+            stream._handle_status_line("[STATUS] stopped")
         return True
 
     return write_command
