@@ -178,16 +178,19 @@ def test_a_musiccast_player_gets_the_gapless_burst(network: MusicCastNetwork) ->
 
 
 async def test_inputs_of_the_receiver_are_marked_as_inputs(network: MusicCastNetwork) -> None:
-    """The inputs of a zone are inputs; network, USB, tuner and MusicCast link sources are not."""
+    """The inputs of a zone are inputs; what the receiver plays itself or links in is not."""
     player = network.player("A___zone2")
     player.zone_device.zone_data.input_list = [
         "hdmi1",
         "optical",
         "usb_dac",
+        "audio_cd",
+        "line_cd",
         "usb",
         "bluetooth",
         "spotify",
         "tuner",
+        "cd",
         "mc_link",
         "main_sync",
     ]
@@ -198,10 +201,13 @@ async def test_inputs_of_the_receiver_are_marked_as_inputs(network: MusicCastNet
         "hdmi1": True,
         "optical": True,
         "usb_dac": True,
+        "audio_cd": True,
+        "line_cd": True,
         "usb": False,
         "bluetooth": False,
         "spotify": False,
         "tuner": False,
+        "cd": False,
         "mc_link": False,
         "main_sync": False,
     }

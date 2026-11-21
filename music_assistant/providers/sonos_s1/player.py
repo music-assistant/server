@@ -850,7 +850,9 @@ class SonosPlayer(PlayerProtocol):
             self._attr_elapsed_time_last_updated = None
             self._attr_active_source = source_id
             self._attr_current_media = None
-            if source_id not in [x.id for x in self._attr_source_list]:
+            # the uri names the speaker whose input plays: the line-in of another speaker
+            # is no source of this one, which can only switch to its own
+            if self.soco.uid in uri and source_id not in [x.id for x in self._attr_source_list]:
                 self._attr_source_list.append(PLAYER_SOURCE_MAP[source_id])
             return
 
