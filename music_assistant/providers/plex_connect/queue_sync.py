@@ -15,7 +15,7 @@ from plexapi.playqueue import PlayQueue
 
 from music_assistant.controllers.player_queues.helpers import committed_index
 
-from .parsing import plex_item_fields, plex_key_for_item
+from .parsing import PLEX_FETCH_ERRORS, plex_item_fields, plex_key_for_item
 
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
@@ -134,7 +134,7 @@ class QueueSyncMixin:
                     try:
                         track = await self.provider.get_track(track_key)
                         return plex_idx, track, play_queue_item_id
-                    except Exception as e:
+                    except PLEX_FETCH_ERRORS as e:
                         LOGGER.debug("Could not fetch track %s: %s", track_key, e)
                 return plex_idx, None, None
 
@@ -203,7 +203,7 @@ class QueueSyncMixin:
                     all_tracks.append(track)
                     if play_queue_item_id:
                         self.play_queue_item_ids[len(all_tracks) - 1] = play_queue_item_id
-                except Exception as e:
+                except PLEX_FETCH_ERRORS as e:
                     LOGGER.debug("Could not fetch track %s: %s", track_key, e)
                     continue
 
@@ -319,7 +319,7 @@ class QueueSyncMixin:
                     remaining_tracks.append(track)
                     if play_queue_item_id:
                         new_item_mappings[base_index + len(remaining_tracks)] = play_queue_item_id
-                except Exception as e:
+                except PLEX_FETCH_ERRORS as e:
                     LOGGER.debug("Could not fetch track %s: %s", track_key, e)
                     continue
 
@@ -360,7 +360,7 @@ class QueueSyncMixin:
                     return plex_server.fetchItem(plex_key)
 
                 return await asyncio.to_thread(fetch_item)
-            except Exception as e:
+            except PLEX_FETCH_ERRORS as e:
                 LOGGER.debug("Failed to fetch Plex item %s: %s", plex_key, e)
                 return None
 
@@ -447,7 +447,7 @@ class QueueSyncMixin:
         try:
             await self._create_plex_playqueue_from_ma()
             self._remember_synced_queue(self._ma_player_id)
-        except Exception as e:
+        except PLEX_FETCH_ERRORS as e:
             LOGGER.debug("Failed to sync initial queue to Plex on startup: %s", e)
 
     async def _handle_state_event(self, event: MassEvent) -> None:
@@ -460,7 +460,7 @@ class QueueSyncMixin:
 
         try:
             await self._broadcast_timeline()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - event handler, a failed broadcast must not reach the event bus
             LOGGER.debug("Error handling state event: %s", e)
 
     async def _handle_queue_items_updated(self, event: MassEvent) -> None:
@@ -490,10 +490,10 @@ class QueueSyncMixin:
         try:
             await self._create_plex_playqueue_from_ma()
             self._remember_synced_queue(self._ma_player_id, current_keys)
-        except Exception as e:
+        except PLEX_FETCH_ERRORS as e:
             LOGGER.debug("Error creating Plex PlayQueue: %s", e)
 
         try:
             await self._broadcast_timeline()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - a failed broadcast must not undo the queue sync
             LOGGER.debug("Error broadcasting timeline: %s", e)

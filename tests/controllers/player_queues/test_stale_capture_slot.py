@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
 from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING
@@ -29,7 +28,6 @@ from tests.controllers.streams.stream_slot_rig import (
     PCM_FORMAT,
     QUEUE_ID,
     SESSION_ID,
-    SingleStreamProvider,
     SlotRig,
     TwoStreamProvider,
     UnlimitedProvider,
@@ -41,17 +39,6 @@ from tests.controllers.streams.stream_slot_rig import (
 
 if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
-
-
-@pytest.fixture
-async def rig(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> AsyncGenerator[SlotRig]:
-    """Build the rig with every music source open to the queue's playback."""
-    monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
-    rig = SlotRig(getattr(request, "param", SingleStreamProvider))
-    yield rig
-    await rig.close()
 
 
 # --- the track that plays next after a queue change gets the slot

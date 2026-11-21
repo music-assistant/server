@@ -73,6 +73,8 @@ def airplay_provider(
     provider._bridge_manager = MagicMock()
     provider._bridge_manager.get_transport_command_target.return_value = None
     provider._speakers = {}
+    provider._pair_records = {}
+    provider._pair_carriers = {}
     return provider
 
 

@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.enums import ExternalID, ImageType, MediaType, PlaylistMatchPolicy
 from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderID,
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -458,9 +460,16 @@ async def test_transient_stream_failure_retains_original_without_confirmation() 
     assert "| Retained | 1 |" in report_markdown
 
 
-async def test_transient_source_failure_is_not_reprobed_per_entry() -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        ResourceTemporarilyUnavailable("Timed out"),
+        RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
+    ],
+)
+async def test_transient_source_failure_is_not_reprobed_per_entry(error: Exception) -> None:
     """A transient source-provider error is remembered, not retried once per entry."""
-    get_provider_item = AsyncMock(side_effect=ResourceTemporarilyUnavailable("Timed out"))
+    get_provider_item = AsyncMock(side_effect=error)
     prov = _make_provider(
         loaded_provider_domains={"builtin"},
         provider_entries=[("spotify", "spotify_1", True)],

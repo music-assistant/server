@@ -796,6 +796,22 @@ def test_a_set_announces_on_its_speakers_at_its_own_volume() -> None:
     assert announce._volume_target(speaker) is airplay_set.player
 
 
+def test_a_bridged_set_announces_on_its_speakers() -> None:
+    """A set the Sendspin bridge feeds mixes the clip into the streams of its speakers."""
+    airplay_set = _make_player("set", stream=_make_stream())
+    airplay_set.stream.session = None
+    airplay_set.session = None
+    speaker = _make_player("speaker", stream=_make_stream())
+    speaker.stream.session = None
+    speaker.owner = airplay_set
+    airplay_set.endpoints = [speaker]
+    airplay_set.provider.bridge_manager.get_bridge = MagicMock(
+        return_value=MagicMock(owns_airplay_stream=True)
+    )
+
+    assert announce._live_members(airplay_set) == [speaker]
+
+
 def test_the_apple_tv_of_a_set_takes_no_announcement() -> None:
     """
     A set that leads its session announces on its speakers only, timed by them alone.

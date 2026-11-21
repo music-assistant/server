@@ -32,6 +32,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -1322,6 +1323,7 @@ class BuiltinProvider(MusicProvider):
                 continue
             except (
                 ResourceTemporarilyUnavailable,
+                RetriesExhausted,
                 ProviderUnavailableError,
                 ClientError,
                 OSError,

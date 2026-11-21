@@ -34,6 +34,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     ResourceBusyError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -1268,6 +1269,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 )
             except (
                 ResourceTemporarilyUnavailable,
+                RetriesExhausted,
                 ProviderUnavailableError,
                 MediaNotFoundError,
                 ClientError,

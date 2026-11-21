@@ -200,8 +200,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
         # handle replace: swap the queue's contents for the new items in one step
         if option == QueueOption.REPLACE:
-            # a prewarm still running for the old next track would otherwise resume after the
-            # swap and warm audio for an item that is no longer on the queue
+            # a prewarm still running for the old next track has nothing left to prepare once the
+            # swap took that item off the queue
             self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
             # the replace starts playback: from the release of the outgoing audio until its
             # track plays it is the queue's own play action
@@ -1436,7 +1436,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 queue.ended = False
             discarded = [] if option == QueueOption.REPLACE else queue_data.items[insert_at:]
             if queue_data.next_item_id_preparing in {item.queue_item_id for item in discarded}:
-                # a prewarm of an item the swap drops would hold its source for nothing
+                # a prewarm of an item the swap drops would otherwise go on with the item that
+                # takes its place
                 self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
             # the managed pool already interleaved the sources in a recency-aware order; load as-is,
             # in one swap of the items so no reader sees the queue without its tail
@@ -1447,12 +1448,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 keep_remaining=False,
                 keep_played=option != QueueOption.REPLACE,
             )
-            for item in discarded:
-                # off the queue now, so no cleanup reaches its audio any more; detached before
-                # releasing, as everywhere a buffer is cleared
-                if (details := item.streamdetails) and (buffer := details.buffer):
-                    details.buffer = None
-                    await buffer.clear()
             if start_playing:
                 await self.play_index(queue_id, insert_at)
             else:

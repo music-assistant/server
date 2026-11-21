@@ -3,20 +3,34 @@ Tests that rebuilding a playing dynamic queue keeps its items in place while the
 
 Players read the queue by position (a cloud queue, the stream server), so the upcoming items must
 stay where they are while the dynamic sources are fetched, which can take many seconds when a
-provider throttles. The new pool only takes the tail's place once it is in.
+provider throttles. The new pool only takes the tail's place once it is in. The audio of an item
+the rebuild drops goes with it, unless a stream still reads it or decided to play it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import random
+from collections.abc import AsyncGenerator
+from functools import partial
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
+import pytest
 from music_assistant_models.enums import QueueOption
 
+import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.controllers.player_queues.constants import MANAGED_POOL_TARGET
+from tests.controllers.streams.stream_slot_rig import (
+    QUEUE_ID,
+    SESSION_ID,
+    SlotRig,
+    allow_commands,
+    realtime_capture,
+    source,
+    track_item,
+)
 
 from .test_play_next_on_dynamic_queue import (
     NOW,
@@ -32,6 +46,7 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.controllers.player_queues import PlayerQueuesController
+    from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 
 UPCOMING = [_track(f"u{i}", artist=f"U{i}") for i in range(10)]
 FRESH = [_track(f"d{i}", artist=f"D{i}") for i in range(40)]
@@ -201,28 +216,123 @@ async def test_a_replace_keeps_the_old_queue_playing_until_the_pool_is_in() -> N
     play_index.assert_awaited_once_with("q1", 0)
 
 
-async def test_an_add_releases_the_audio_of_the_items_it_drops() -> None:
+def _playing_with_the_next_track_fetched(rig: SlotRig) -> list[QueueItem]:
+    """Play the first of four tracks on the rig, with the second one fetched by the player."""
+    tracks = rig.play("track 0", "track 1", "track 2", "track 3")
+    queue = rig.queues._queue_data[QUEUE_ID].queue
+    queue.is_dynamic = True
+    queue.index_in_buffer = 1
+    return tracks
+
+
+async def _rebuild(rig: SlotRig) -> None:
+    """Rebuild the upcoming tail of the rig's queue from a fresh pool, as an add does."""
+    pool = [track_item(f"fresh {index}").media_item for index in range(3)]
+    rig.queues._managed_pool = MagicMock(fill=AsyncMock(return_value=pool))
+    allow_commands(rig)
+    await rig.queues._enter_dynamic_mode(QUEUE_ID, QueueOption.ADD)
+    await rig.settle()
+
+
+async def _released(rig: SlotRig, buffer: AudioBuffer) -> bool:
+    """Return whether a buffer gave its audio up and its source its stream slot."""
+    if (release := buffer._release_task) is not None:
+        # a release that was started runs to its end first
+        await release
+    return (
+        buffer.cancelled
+        and buffer.seconds_available == 0
+        and not rig.fills(buffer)
+        and rig.slot_free()
+    )
+
+
+async def test_an_add_releases_the_audio_of_the_items_it_drops(rig: SlotRig) -> None:
     """A dropped item's warmed audio is released and its prewarm ended; kept items keep theirs."""
-    random.seed(4)
-    ctrl = _controller(RecencySnapshot(now=NOW))
-    before = _playing_queue_with_tail(ctrl)
-    kept_buffer, dropped_buffer = Mock(clear=AsyncMock()), Mock(clear=AsyncMock())
-    before[1].streamdetails = Mock(buffer=kept_buffer)
-    before[2].streamdetails = Mock(buffer=dropped_buffer)
-    # the next old tail item was warmed up while the pool was being fetched
-    ctrl._queue_data["q1"].next_item_id_preparing = before[2].queue_item_id
-    cancel_task = Mock()
-    ctrl.mass.cancel_task = cancel_task  # type: ignore[method-assign]
-    _hold_fetch(ctrl, FRESH)[1].set()
+    tracks = _playing_with_the_next_track_fetched(rig)
+    rig.sources["track 1"] = partial(source, 5)
+    kept = await rig.ask(tracks[1])
+    assert kept is not None
+    await rig.delivered(tracks[1])
+    opened = asyncio.Event()
 
-    await ctrl._handle_play_media("q1", _track("added", artist="Add"), QueueOption.ADD)
+    async def _slow_to_start() -> AsyncGenerator[bytes]:
+        opened.set()
+        await asyncio.Event().wait()
+        yield b""
 
-    assert before[2] not in ctrl._queue_data["q1"].items
-    dropped_buffer.clear.assert_awaited_once()
-    assert before[2].streamdetails.buffer is None
-    cancel_task.assert_any_call("prepare_next_audio_buffer_q1")
-    kept_buffer.clear.assert_not_awaited()
-    assert before[1].streamdetails.buffer is kept_buffer
+    # the next old tail item is still being warmed up when the pool comes in
+    rig.sources["track 2"] = _slow_to_start
+    prewarm = rig.queues.prepare_next_audio_buffer(QUEUE_ID, tracks[1].queue_item_id)
+    assert prewarm is not None
+    await asyncio.wait_for(opened.wait(), 1)
+    dropped = rig.buffer(tracks[2])
+
+    await _rebuild(rig)
+
+    assert tracks[2] not in rig.queues._queue_data[QUEUE_ID].items
+    assert await _released(rig, dropped)
+    assert prewarm.done()
+    assert rig.buffer(tracks[1]) is kept
+    assert not kept.cancelled
+    assert kept.seconds_available == 5
+
+
+@pytest.mark.parametrize("complete", [False, True], ids=["still filling", "fully loaded"])
+async def test_an_add_releases_the_audio_of_a_dropped_item_nobody_reads(
+    rig: SlotRig, complete: bool
+) -> None:
+    """Audio that was prepared for a dropped item goes at the rebuild, loaded or not."""
+    tracks = _playing_with_the_next_track_fetched(rig)
+    rig.sources["track 2"] = partial(source, 5) if complete else realtime_capture
+    prepared = await rig.prepare_next(tracks[1])
+    if complete:
+        await rig.delivered(tracks[2])
+        assert prepared.seconds_available == 5
+
+    await _rebuild(rig)
+
+    assert tracks[2] not in rig.queues._queue_data[QUEUE_ID].items
+    assert await _released(rig, prepared)
+
+
+async def test_an_add_spares_the_audio_of_a_dropped_item_a_stream_still_reads(
+    rig: SlotRig,
+) -> None:
+    """A stream that reads a track the rebuild drops is not cut off; the audio goes when it ends."""
+    tracks = _playing_with_the_next_track_fetched(rig)
+    prepared = await rig.prepare_next(tracks[1])
+    reader = prepared.get_raw_stream()
+    await anext(reader)
+
+    await _rebuild(rig)
+
+    assert tracks[2] not in rig.queues._queue_data[QUEUE_ID].items
+    assert not prepared.cancelled
+    assert rig.fills(prepared)
+    await anext(reader)
+    await reader.aclose()
+    await rig.settle()
+    assert await _released(rig, prepared)
+
+
+async def test_an_add_spares_the_audio_of_a_dropped_item_a_stream_decided_to_play(
+    rig: SlotRig,
+) -> None:
+    """A track a stream took for its next transition keeps its audio until that stream lets go."""
+    tracks = _playing_with_the_next_track_fetched(rig)
+    prepared = await rig.prepare_next(tracks[1])
+    claim = audio_mod._ItemClaim("flow stream of Queue A", SESSION_ID)
+    rig.audio._claim_item(claim, tracks[2])
+
+    await _rebuild(rig)
+
+    assert tracks[2] not in rig.queues._queue_data[QUEUE_ID].items
+    assert not prepared.cancelled
+    assert rig.fills(prepared)
+    rig.audio._claim_item(claim, None)
+    await rig.settle()
+    assert await _released(rig, prepared)
 
 
 async def test_the_next_item_is_the_one_that_replaced_an_item_dropped_while_it_loaded() -> None:

@@ -13,6 +13,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     ProviderUnavailableError,
     RateLimited,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import Playlist, ProviderMapping, Radio, Track
 
@@ -810,8 +811,14 @@ async def test_migration_reports_unsupported_source_items(
         (
             True,
             ["tidal-one", "tidal-two", "tidal-one"],
-            None,
+            TimeoutError(),
             ["Could not verify destination playlist: Verification failed (TimeoutError)"],
+        ),
+        (
+            True,
+            ["tidal-one", "tidal-two", "tidal-one"],
+            RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
+            ["Could not verify destination playlist: Not retrying, asked to wait 3600 seconds"],
         ),
         (
             True,
@@ -828,7 +835,7 @@ async def test_streaming_migration_handles_provider_duplicate_policy(  # noqa: P
     music: MusicController,
     duplicates_supported: bool,
     expected_target_ids: list[str],
-    actual_target_ids: list[str] | None,
+    actual_target_ids: list[str] | Exception,
     expected_verification_failures: list[str],
 ) -> None:
     """A provider migration preserves supported duplicates and reports unsupported ones."""
@@ -864,8 +871,8 @@ async def test_streaming_migration_handles_provider_duplicate_policy(  # noqa: P
                 source_missing,
             )
         else:
-            if actual_target_ids is None:
-                raise TimeoutError
+            if isinstance(actual_target_ids, Exception):
+                raise actual_target_ids
             target_tracks = {
                 "tidal-one": target_one,
                 "tidal-two": target_two,

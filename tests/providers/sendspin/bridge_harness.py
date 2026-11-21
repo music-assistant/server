@@ -575,9 +575,7 @@ class BridgedDevice:
         """Create a protocol of the device, with the provider and real bridge manager of it."""
         provider = MagicMock(mass=self.mass, domain=domain, instance_id=domain)
         provider.logger = logging.getLogger(f"test.{domain}")
-        protocol = MagicMock(
-            protocol_id=protocol_id, provider=provider, player=None, carries_set=False
-        )
+        protocol = MagicMock(protocol_id=protocol_id, provider=provider, player=None)
         protocol.display_name = f"Den ({domain})"
         protocol._on_detach_callbacks = []
         provider.protocols = [protocol]

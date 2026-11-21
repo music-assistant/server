@@ -9,6 +9,7 @@ import plistlib
 import re
 import time
 from dataclasses import dataclass
+from enum import StrEnum
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any, Final
 
@@ -254,26 +255,39 @@ def get_decoded_property(discovery_info: AsyncServiceInfo, key: str) -> str | No
     return None
 
 
+class SetKind(StrEnum):
+    """The kind of set of AirPlay devices that plays as one player."""
+
+    # an Apple TV with one HomePod or a stereo pair of them as its speakers
+    HOME_THEATER = "home_theater"
+    # a stereo pair of HomePods without an Apple TV
+    STEREO_PAIR = "stereo_pair"
+
+
 @dataclass(frozen=True)
 class SetMembership:
-    """The place of an AirPlay device in the home theater set of an Apple TV."""
+    """The place of an AirPlay device in a set of devices that plays as one player."""
 
-    # id of the set, shared by the Apple TV and its speakers
+    # id of the set, shared by all of its devices
     set_id: str
-    # 0 for the Apple TV that carries the set, above 0 for one of its speakers
-    position: int
-    # number of devices in the set, the Apple TV included
+    # 0 for the device that carries the set, above 0 for one of its speakers. A record of a
+    # stereo pair tells no role: there it is the digit of the idle pair form of its group id,
+    # None while a sender plays to the pair
+    position: int | None
+    # number of devices in the set, the one that carries it included
     size: int
     # name of the room the set is in
     name: str | None
+    kind: SetKind = SetKind.HOME_THEATER
 
 
 def parse_set_membership(discovery_info: AsyncServiceInfo | None) -> SetMembership | None:
     """
-    Return the place of a device in the home theater set of an Apple TV, None outside one.
+    Return the place of a device in a set of devices that plays as one player, None outside one.
 
-    Only the keys that stay the same while any sender plays to the set are read, so the
-    result does not change with a session.
+    That is the home theater set of an Apple TV, read from the keys that stay the same while
+    any sender plays to it, or a stereo pair of HomePods. A HomePod in both belongs to the
+    set of its Apple TV.
 
     :param discovery_info: The _airplay._tcp record of the device.
     """
@@ -281,7 +295,7 @@ def parse_set_membership(discovery_info: AsyncServiceInfo | None) -> SetMembersh
         return None
     set_id = get_decoded_property(discovery_info, "psgid")
     if not set_id or get_decoded_property(discovery_info, "psgtp") != "1":
-        return None
+        return _parse_stereo_pair(discovery_info)
     try:
         position = int(get_decoded_property(discovery_info, "pgmid") or "")
     except ValueError:
@@ -406,6 +420,27 @@ async def get_cli_binary() -> str:
     raise RuntimeError(msg)
 
 
+def get_protocol_id(device_id: str) -> str:
+    """
+    Return the protocol id of an AirPlay device.
+
+    :param device_id: The deviceid of its _airplay record, or the MAC address its RAOP
+        instance name starts with.
+    """
+    return f"ap{device_id.replace(':', '').lower()}"
+
+
+def is_airplay_record_of(discovery_info: AsyncServiceInfo, protocol_id: str) -> bool:
+    """
+    Return whether an _airplay record is advertised by the device with this protocol id.
+
+    :param discovery_info: The _airplay record.
+    :param protocol_id: The protocol id of the device.
+    """
+    device_id = discovery_info.decoded_properties.get("deviceid")
+    return device_id is not None and get_protocol_id(device_id) == protocol_id
+
+
 def player_id_to_mac_address(player_id: str) -> str:
     """Convert a player_id to a MAC address-like string."""
     # the player_id is the mac address prefixed with "ap"
@@ -500,3 +535,31 @@ def _get_cli_binary_name(system: str, machine: str) -> str | None:
     if normalized_system not in ("linux", "macos"):
         return None
     return f"cliairplay-{normalized_system}-{architecture}"
+
+
+def _parse_stereo_pair(discovery_info: AsyncServiceInfo) -> SetMembership | None:
+    """
+    Return the membership of a HomePod in a stereo pair, None outside one.
+
+    Both speakers carry the id of the pair. While nobody plays to the pair, the group id has
+    its idle pair form ``<pair id>+<digit>+<id>``, which tells no role: both HomePods of a
+    settled pair read the same one. The position only tells whether the record is in that form.
+
+    :param discovery_info: The _airplay._tcp record of the device.
+    """
+    if not (pair_id := get_decoded_property(discovery_info, "tsid")):
+        return None
+    pair_id = pair_id.upper()
+    group_id = (get_decoded_property(discovery_info, "gid") or "").upper().split("+")
+    position = (
+        int(group_id[1])
+        if len(group_id) == 3 and group_id[0] == pair_id and group_id[1].isdigit()
+        else None
+    )
+    return SetMembership(
+        set_id=pair_id,
+        position=position,
+        size=2,
+        name=get_decoded_property(discovery_info, "gpn") or None,
+        kind=SetKind.STEREO_PAIR,
+    )

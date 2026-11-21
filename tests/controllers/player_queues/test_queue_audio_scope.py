@@ -10,7 +10,6 @@ every provider and whether its source still fills or has delivered everything.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
 from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -41,6 +40,7 @@ from tests.controllers.streams.stream_slot_rig import (
     allow_starts,
     count_starts,
     drain,
+    given_up,
     install_mixer,
     source,
 )
@@ -48,7 +48,6 @@ from tests.controllers.streams.stream_slot_rig import (
 if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
-    from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 
 EVERY_PROVIDER = pytest.mark.parametrize(
     "rig",
@@ -57,25 +56,6 @@ EVERY_PROVIDER = pytest.mark.parametrize(
     indirect=True,
 )
 NO_LIMIT = pytest.mark.parametrize("rig", [UnlimitedProvider], indirect=True)
-
-
-@pytest.fixture
-async def rig(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> AsyncGenerator[SlotRig]:
-    """Build the rig with every music source open to the queue's playback."""
-    monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
-    rig = SlotRig(getattr(request, "param", SingleStreamProvider))
-    yield rig
-    await rig.close()
-
-
-async def _given_up(buffer: AudioBuffer) -> bool:
-    """Return whether the buffer gave its audio up, once that release has run."""
-    if (release := buffer._release_task) is None:
-        return False
-    await release
-    return buffer.cancelled and buffer.seconds_available == 0
 
 
 def _move_to(rig: SlotRig, index: int) -> None:
@@ -119,7 +99,7 @@ async def test_a_prepared_track_that_no_longer_plays_next_gives_its_audio_up_at_
 
     await _edit(rig, edit, prepared)
 
-    assert await _given_up(capture)
+    assert await given_up(capture)
     assert not rig.fills(capture)
 
 
@@ -158,7 +138,7 @@ async def test_a_track_a_stream_decided_to_play_keeps_its_audio_until_that_strea
     assert rig.fills(capture)
     rig.audio._claim_item(claim, None)
 
-    assert await _given_up(capture)
+    assert await given_up(capture)
 
 
 # --- a buffer that another one replaces
@@ -179,7 +159,7 @@ async def test_a_replaced_buffer_that_is_read_goes_when_its_reader_leaves(rig: S
     assert not first.cancelled
     await anext(reader)
     await reader.aclose()
-    assert await _given_up(first)
+    assert await given_up(first)
     assert second is not None
     assert rig.fills(second)
 
@@ -198,9 +178,36 @@ async def test_a_replaced_buffer_nobody_reads_goes_at_once(rig: SlotRig) -> None
 
     second = await rig.audio.get_audio_buffer(track, seek_position_ms=60_000, reason="prepare")
 
-    assert await _given_up(first)
+    assert await given_up(first)
     assert second is not None
     assert rig.fills(second)
+
+
+@NO_LIMIT
+async def test_a_replaced_buffer_whose_source_broke_off_long_ago_goes_at_once(
+    rig: SlotRig,
+) -> None:
+    """Audio a failed source left behind is given up when the track gets a new buffer."""
+    (track,) = rig.play("track 0")
+    breaks_off = asyncio.Event()
+    rig.sources["track 0"] = partial(source, 3, 0, breaks_off, fails=True)
+    failed = await rig.ask(track)
+    assert failed is not None
+    breaks_off.set()
+    while not failed.has_error:
+        await asyncio.sleep(0)
+    assert failed.seconds_available == 3
+    failed._last_access_time -= 3600
+    rig.sources["track 0"] = partial(source, 3)
+
+    second = await rig.ask(track)
+    await rig.settle()
+
+    assert second is not None
+    assert second is not failed
+    assert failed.cancelled
+    assert failed.seconds_available == 0
+    assert not rig.fills(failed)
 
 
 # --- no source is opened for a track that left the scope
@@ -278,7 +285,7 @@ async def test_a_track_removed_while_its_source_waits_for_a_slot_is_let_go_at_th
 
     await _edit(rig, "replace next", prepared)
 
-    assert await _given_up(waiting)
+    assert await given_up(waiting)
     await asyncio.wait_for(preparation, 1)
     ended.set()
     await rig.settle()
@@ -322,7 +329,7 @@ async def test_a_source_that_gets_its_slot_after_its_track_left_is_not_opened(
     waiting = rig.buffer(prepared)
     # the track leaves the queue behind the queue's back
     rig.queues._queue_data[QUEUE_ID].items = [playing, later]
-    assert not await _given_up(waiting)
+    assert not await given_up(waiting)
 
     ended.set()
     await rig.settle()
@@ -330,7 +337,7 @@ async def test_a_source_that_gets_its_slot_after_its_track_left_is_not_opened(
     assert started == []
     # only the track that played reports that all of its audio arrived
     assert arrived == [playing.queue_item_id]
-    assert await _given_up(waiting)
+    assert await given_up(waiting)
     assert rig.slot_free()
 
 
@@ -348,7 +355,7 @@ async def test_audio_that_left_the_scope_unnoticed_goes_before_the_queue_gets_ot
     buffer = await rig.ask(later)
 
     assert buffer is not None
-    assert await _given_up(capture)
+    assert await given_up(capture)
 
 
 # --- a queue that does not play
@@ -392,7 +399,7 @@ async def test_the_end_of_a_session_releases_a_removed_track_a_stream_had_decide
 
     rig.queues._end_session(rig.queues._queue_data[QUEUE_ID], SESSION_ID)
 
-    assert await _given_up(capture)
+    assert await given_up(capture)
     rig.audio._claim_item(claim, None)
     await rig.settle()
 
@@ -418,8 +425,56 @@ async def test_a_player_that_jumps_back_lets_go_of_the_track_before_the_one_it_l
     # the player starts fetching the first track by itself
     rig.queues.track_loaded_in_buffer(QUEUE_ID, tracks[0].queue_item_id)
 
-    assert await _given_up(before)
+    assert await given_up(before)
     await rig.settle()
+
+
+@NO_LIMIT
+async def test_a_player_that_fetches_the_next_track_lets_go_of_the_track_two_back(
+    rig: SlotRig,
+) -> None:
+    """Of the tracks behind the one the player fetches, only the last keeps its audio."""
+    tracks = rig.play("track 0", "track 1", "track 2", "track 3", realtime=False)
+    for name in ("track 0", "track 1"):
+        rig.sources[name] = partial(source, 5)
+    two_back = await rig.ask(tracks[0])
+    assert two_back is not None
+    await rig.delivered(tracks[0])
+    _move_to(rig, 1)
+    before = await rig.ask(tracks[1])
+    assert before is not None
+    await rig.delivered(tracks[1])
+    assert not two_back.cancelled
+
+    rig.queues.track_loaded_in_buffer(QUEUE_ID, tracks[2].queue_item_id)
+
+    assert await given_up(two_back)
+    assert not before.cancelled
+    assert before.seconds_available == 5
+    await rig.settle()
+
+
+@NO_LIMIT
+async def test_a_track_two_back_that_is_still_read_keeps_its_audio_until_its_reader_leaves(
+    rig: SlotRig,
+) -> None:
+    """A stream that still reads a track the player moved on from is not cut off."""
+    tracks = rig.play("track 0", "track 1", "track 2", "track 3", realtime=False)
+    rig.sources["track 0"] = partial(source, 5)
+    two_back = await rig.ask(tracks[0])
+    assert two_back is not None
+    await rig.delivered(tracks[0])
+    reader = two_back.get_raw_stream()
+    await anext(reader)
+    _move_to(rig, 1)
+
+    rig.queues.track_loaded_in_buffer(QUEUE_ID, tracks[2].queue_item_id)
+    await rig.settle()
+
+    assert not two_back.cancelled
+    await anext(reader)
+    await reader.aclose()
+    assert await given_up(two_back)
 
 
 @NO_LIMIT
@@ -452,7 +507,7 @@ async def test_a_track_whose_source_still_fills_goes_when_the_player_reports_the
     rig.queues._update_queue_from_player(player)
 
     assert queue_data.queue.current_index == 1
-    assert await _given_up(capture)
+    assert await given_up(capture)
 
 
 @NO_LIMIT
@@ -481,7 +536,7 @@ async def test_a_fade_into_the_next_track_lets_go_of_the_track_before_the_playin
     )
 
     assert rig.queues._queue_data[QUEUE_ID].queue.index_in_buffer == 2
-    assert await _given_up(earlier)
+    assert await given_up(earlier)
     assert not rig.buffer(incoming).cancelled
     rig.audio.clear_crossfade_handover(QUEUE_ID)
     await rig.settle()
@@ -518,7 +573,7 @@ async def test_a_fade_into_a_track_that_was_already_prepared_lets_go_of_the_trac
     # the fade read the audio that was there: no source was opened a second time
     assert rig.opened["track 2"] == 1
     assert rig.buffer(incoming) is prepared
-    assert await _given_up(earlier)
+    assert await given_up(earlier)
     rig.audio.clear_crossfade_handover(QUEUE_ID)
     await rig.settle()
 
@@ -538,7 +593,7 @@ async def test_repeating_the_playing_track_releases_the_track_prepared_to_follow
     await rig.queues.set_repeat(QUEUE_ID, RepeatMode.ONE)
 
     assert rig.queues.get_next_item(QUEUE_ID, playing.queue_item_id) is playing
-    assert await _given_up(capture)
+    assert await given_up(capture)
 
 
 @NO_LIMIT
@@ -552,7 +607,7 @@ async def test_a_sleep_timer_at_the_end_of_the_track_releases_the_prepared_track
     rig.queues.set_sleep_timer_target(QUEUE_ID, SleepTimerMode.END_OF_ITEM)
 
     assert rig.queues.get_next_item(QUEUE_ID, playing.queue_item_id) is None
-    assert await _given_up(capture)
+    assert await given_up(capture)
 
 
 @NO_LIMIT
@@ -571,7 +626,7 @@ async def test_a_sleep_timer_that_moves_to_the_playing_track_releases_the_prepar
     rig.queues._repin_sleep_timer(QUEUE_ID)
 
     assert queue_data.sleep_timer_target.queue_item_id == playing.queue_item_id
-    assert await _given_up(capture)
+    assert await given_up(capture)
 
 
 # --- the start of a track
@@ -594,7 +649,7 @@ async def test_a_start_releases_what_only_a_stream_of_the_playback_before_it_hel
     await rig.queues.play_index(QUEUE_ID, 0)
 
     assert rig.queues._queue_data[QUEUE_ID].session_id != SESSION_ID
-    assert await _given_up(held)
+    assert await given_up(held)
     rig.audio._claim_item(claim, None)
 
 

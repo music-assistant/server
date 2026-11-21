@@ -1023,6 +1023,9 @@ class SonosPlayer(PlayerProtocol):
                 if queue.current_index is not None
                 else (queue.index_in_buffer or 0)
             )
+        # the speaker discards a window without the id it asked about and plays on out of the
+        # one it holds: the position it asked about goes out under that id, whatever sits there
+        asked = (center_index, item_id) if item_id and self.from_current_load(item_id) else None
 
         items: list[PlayerMedia] = []
         wire_ids: list[str] = []
@@ -1032,7 +1035,7 @@ class SonosPlayer(PlayerProtocol):
             queue_item = self.mass.player_queues.get_item(queue_id, idx)
             if queue_item and queue_item.available:
                 items.append(await self._player_media_for_speaker(queue_item, idx))
-                wire_ids.append(self._wire_id_at(queue_item.queue_item_id, idx, generation))
+                wire_ids.append(self._wire_id_at(queue_item.queue_item_id, idx, generation, asked))
                 positions[idx] = wire_ids[-1]
 
         # get_next_item accounts for repeat mode, so this is the item that will really
@@ -1046,7 +1049,9 @@ class SonosPlayer(PlayerProtocol):
             if next_index is None:
                 break
             items.append(await self._player_media_for_speaker(next_item, next_index))
-            wire_ids.append(self._wire_id_at(next_item.queue_item_id, next_index, generation))
+            wire_ids.append(
+                self._wire_id_at(next_item.queue_item_id, next_index, generation, asked)
+            )
             positions[next_index] = wire_ids[-1]
             if next_item.queue_item_id in (x.queue_item_id for x in items[-3:-1]):
                 # a track or a pair that repeats itself gets one more round, not a window
@@ -1813,8 +1818,24 @@ class SonosPlayer(PlayerProtocol):
         # stop or an eviction
         return group.active_session_id is not None or self._playing_queue_id() is not None
 
-    def _wire_id_at(self, queue_item_id: str, index: int, generation: int | None) -> str:
-        """Return the id to serve a queue item under at a queue position."""
+    def _wire_id_at(
+        self,
+        queue_item_id: str,
+        index: int,
+        generation: int | None,
+        asked: tuple[int, str] | None,
+    ) -> str:
+        """
+        Return the id to serve a queue item under at a queue position.
+
+        :param queue_item_id: The queue item served at the position.
+        :param index: The queue position.
+        :param generation: The load generation to serve under; the current one when omitted.
+        :param asked: The position the speaker asked about and the id it asked about there,
+            which that position is served under.
+        """
+        if asked is not None and asked[0] == index:
+            return asked[1]
         wire_id = self.wire_item_id(queue_item_id, generation) or queue_item_id
         binding = self._served_bindings.get(wire_id)
         if binding is None or binding[0] == index:

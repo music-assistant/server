@@ -499,7 +499,7 @@ class AppleMusicLibraryManager:
                 unknown.append(purchased_id)
             elif cached:
                 on_sale.add(purchased_id)
-        endpoint = f"catalog/{self.provider._storefront}/songs"
+        endpoint = f"catalog/{self.provider.storefront}/songs"
         for offset in range(0, len(unknown), _DETAIL_BATCH_SIZE):
             batch = unknown[offset : offset + _DETAIL_BATCH_SIZE]
             try:

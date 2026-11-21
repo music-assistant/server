@@ -833,10 +833,8 @@ async def test_get_buffer_releases_a_slot_limited_producer_before_replacing_it(
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     streamdetails.buffer = stale_buffer
-    # the producer is still charging a source slot and the consumer is active right now,
-    # so the 30s inactivity heuristic must not be what decides this
+    # the producer is still charging a source slot
     assert stale_buffer.is_buffering
-    assert time.time() - stale_buffer._last_access_time < 30
 
     # a forward seek far past the buffered window can not be served by this buffer
     assert not stale_buffer.is_valid((SEEK_WAIT_THRESHOLD + 60) * 1000)

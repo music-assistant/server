@@ -8,7 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-from aiohttp import ClientTimeout
+from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.enums import PlaybackState, RepeatMode
 
 from .parsing import plex_key_for_item
@@ -226,7 +226,7 @@ class TimelineMixin:
             ) as resp:
                 if resp.status < 400:
                     subscription["last_update"] = time.time()
-        except Exception as e:
+        except (ClientError, TimeoutError) as e:
             LOGGER.debug("Failed to send timeline to %s: %s", client_id, e)
 
     def _play_queue_params(self) -> dict[str, str]:

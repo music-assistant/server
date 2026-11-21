@@ -1346,6 +1346,7 @@ class PlayerConfigMixin:
                 key=CONF_PRE_ANNOUNCE_CHIME_URL,
                 type=ConfigEntryType.STRING,
                 category="announcements",
+                advanced=True,
                 required=False,
                 depends_on=CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
                 depends_on_value=True,

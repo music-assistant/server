@@ -2984,10 +2984,18 @@ async def test_enrich_provider_mappings_drops_unavailable_source_mappings(
     assert result.track.provider_mappings == set()
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        ResourceTemporarilyUnavailable("Search timed out"),
+        RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
+    ],
+)
 async def test_enrich_provider_mappings_stops_after_consecutive_provider_failures(
     music: MusicController,
+    error: Exception,
 ) -> None:
-    """A timed-out provider keeps serving the next items until it fails one too many."""
+    """A temporarily failing provider keeps serving the next items until it fails one too many."""
     source = create_track("spotify_1", "source")
     provider = MagicMock(spec=MusicProvider)
     provider.name = "Qobuz"
@@ -3011,7 +3019,7 @@ async def test_enrich_provider_mappings_stops_after_consecutive_provider_failure
         patch.object(
             music.tracks,
             "find_provider_match",
-            AsyncMock(side_effect=ResourceTemporarilyUnavailable("Search timed out")),
+            AsyncMock(side_effect=error),
         ) as find_match,
         patch.object(
             music.mass,

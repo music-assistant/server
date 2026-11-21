@@ -1098,6 +1098,8 @@ async def test_setup_player_flags_shairport_on_this_host(
     prov.mass.players.register = AsyncMock()
     prov._is_own_airplay_receiver = AsyncMock(return_value=False)  # type: ignore[method-assign]
     prov._bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
+    prov._pair_records = {}
+    prov._pair_carriers = {}
     info = _discovery_info([address], properties={"am": model})
     info.type = "_airplay._tcp.local."
     info.ip_addresses_by_version.return_value = [ip_address(address)]
@@ -1109,6 +1111,98 @@ async def test_setup_player_flags_shairport_on_this_host(
         await prov._setup_player("apdb1ff0aae80e", "Shairport", info)
 
     assert player_cls.call_args.kwargs["is_local_shairport"] is expected
+
+
+HOMEPOD_RAOP_NAME = "AA11BB22CC33@Office._raop._tcp.local."
+HOMEPOD_AIRPLAY_NAME = "Office (2)._airplay._tcp.local."
+SONOS_AIRPLAY_NAME = "Office._airplay._tcp.local."
+
+
+def _record(name: str, properties: dict[str, str]) -> MagicMock:
+    """
+    Build an mdns record of a device on 192.168.1.40.
+
+    :param name: The full service name of the record.
+    :param properties: The TXT properties of the record.
+    """
+    info = _discovery_info(["192.168.1.40"], properties=properties)
+    info.name = name
+    info.type = name.split(".", 1)[1]
+    info.async_request = AsyncMock(return_value=True)
+    return info
+
+
+@pytest.mark.parametrize(
+    ("by_name", "cached", "expected"),
+    [
+        # the name lookup finds the record of the device itself
+        ("homepod", ["sonos", "homepod"], "homepod"),
+        # the name lookup finds another device that took the name
+        ("sonos", ["sonos", "homepod"], "homepod"),
+        ("sonos", ["sonos"], None),
+        (None, ["sonos", "homepod"], "homepod"),
+    ],
+    ids=["own-record", "foreign-record", "foreign-record-own-missing", "nothing-by-name"],
+)
+async def test_raop_first_setup_takes_the_airplay_record_of_the_device_itself(
+    by_name: str | None, cached: list[str], expected: str | None
+) -> None:
+    """A device set up from its RAOP record never takes the _airplay record of another device."""
+    records = {
+        "homepod": _record(
+            HOMEPOD_AIRPLAY_NAME,
+            {"deviceid": "AA:11:BB:22:CC:33", "model": "AudioAccessory5,1"},
+        ),
+        "sonos": _record(
+            SONOS_AIRPLAY_NAME,
+            {"deviceid": "54:2A:1B:00:11:22", "manufacturer": "Sonos", "model": "Era 100"},
+        ),
+    }
+    raop_info = _record(HOMEPOD_RAOP_NAME, {"am": "AudioAccessory5,1"})
+    prov = AirPlayProvider.__new__(AirPlayProvider)
+    prov.mass = MagicMock()
+    prov.logger = logging.getLogger("test.airplay.provider")
+    prov.mass.config.get_protocol_value.side_effect = lambda _player_id, _key, default=None: default
+    prov.mass.discovery.async_find_mdns_service = AsyncMock(
+        return_value=records[by_name] if by_name else None
+    )
+    prov.mass.discovery.aiozc.zeroconf.cache.cache = {
+        "_airplay._tcp.local.": {},
+        **{records[key].name.lower(): {} for key in cached},
+    }
+    prov.mass.players.wants_protocol.return_value = True
+    prov.mass.players.get_protocol.return_value = None
+    prov.mass.players.register = AsyncMock()
+    prov._is_own_airplay_receiver = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    prov._get_related_discovery_info = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    prov._companion_info_by_address = {}
+    prov._mrp_info_by_address = {}
+    prov._set_carriers = {}
+    prov._pair_records = {}
+    prov._pair_carriers = {}
+    prov._bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
+    prov.dashboards = MagicMock()
+    cached_by_name = {record.name.lower(): record for record in records.values()}
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.provider.AsyncServiceInfo",
+            side_effect=lambda _type, name: cached_by_name[name],
+        ),
+        patch(
+            "music_assistant.providers.airplay.provider.get_primary_ip_address_from_zeroconf",
+            return_value="192.168.1.40",
+        ),
+        patch("music_assistant.providers.airplay.provider.AirPlayControlPlayer") as control_cls,
+        patch("music_assistant.providers.airplay.provider.GenericAirPlayPlayer") as generic_cls,
+    ):
+        await prov._setup_player("apaa11bb22cc33", "Office", raop_info)
+
+    generic_cls.assert_not_called()
+    kwargs = control_cls.call_args.kwargs
+    assert kwargs["airplay_discovery_info"] is (records[expected] if expected else None)
+    assert kwargs["raop_discovery_info"] is raop_info
+    assert (kwargs["manufacturer"], kwargs["model"]) == ("Apple", "HomePod Mini")
 
 
 def _password_marker_provider(

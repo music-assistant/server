@@ -50,7 +50,7 @@ def _create_provider_mock() -> MagicMock:
     provider.instance_id = "apple_music_test"
     provider.domain = "apple_music"
     provider.logger = MagicMock()
-    provider._storefront = "us"
+    provider.storefront = "us"
     provider.mass.cache.get = AsyncMock(return_value=None)
     provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()

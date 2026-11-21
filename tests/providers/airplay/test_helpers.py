@@ -14,6 +14,7 @@ from music_assistant.providers.airplay.constants import (
 )
 from music_assistant.providers.airplay.helpers import (
     _CLI_BINARY_CHECK_TIMEOUT,
+    SetKind,
     SetMembership,
     cli_clock_time,
     default_buffer_depth,
@@ -347,3 +348,49 @@ def test_the_set_of_a_device_stays_the_same_whoever_plays_to_it(
 def test_a_device_outside_a_set_has_no_place_in_one(record: MagicMock | None) -> None:
     """Only an _airplay record with the keys of an Apple TV's set names a place in one."""
     assert parse_set_membership(record) is None
+
+
+# The TXT keys of a stereo pair of HomePods without an Apple TV (ids made up): both carry
+# the id of the pair, and while nobody plays to it the group id has its idle pair form.
+_PAIR_ID = "7C1E5A20-3B4D-4F6A-9E8C-1D2F3A4B5C6D"
+_PAIR_KEYS = {"tsid": _PAIR_ID, "gpn": "Loft", "igl": "1", "gcgl": "1"}
+
+
+@pytest.mark.parametrize(
+    ("group_id", "position"),
+    [
+        (f"{_PAIR_ID}+0+5A1B2C3D-0000-4000-8000-000000000001", 0),
+        (f"{_PAIR_ID.lower()}+1+5A1B2C3D-0000-4000-8000-000000000002", 1),
+        # settled, both HomePods read the same group id
+        (f"{_PAIR_ID}+0+B3C4D5E6-0000-4000-8000-0000000000AA", 0),
+        # a form a HomePod can show while its pair settles
+        (f"{_PAIR_ID}+1", None),
+        # while a sender plays to the pair, its group id is the one of that session
+        (_OUR_GROUP, None),
+        (f"{_OUR_GROUP}+5A1B2C3D-0000-4000-8000-000000000002", None),
+        (f"{_OUR_GROUP}+1+5A1B2C3D-0000-4000-8000-000000000002", None),
+        (None, None),
+    ],
+)
+def test_a_homepod_of_a_pair_is_in_its_idle_pair_form_only_with_that_group_id(
+    group_id: str | None, position: int | None
+) -> None:
+    """A pair is keyed on its id; the position only tells whether the group id has that form."""
+    properties = dict(_PAIR_KEYS)
+    if group_id is not None:
+        properties["gid"] = group_id
+    record = _txt_record(AIRPLAY_DISCOVERY_TYPE, properties)
+
+    assert parse_set_membership(record) == SetMembership(
+        _PAIR_ID, position, 2, "Loft", SetKind.STEREO_PAIR
+    )
+
+
+def test_a_homepod_of_a_pair_that_an_apple_tv_uses_belongs_to_its_set() -> None:
+    """A HomePod in both a pair and the set of an Apple TV plays in the set of the Apple TV."""
+    record = _txt_record(
+        AIRPLAY_DISCOVERY_TYPE,
+        {**_SET_KEYS, **_HOMEPOD_IDLE, "psgsz": "3", "tsid": _PAIR_ID},
+    )
+
+    assert parse_set_membership(record) == SetMembership(_SET_ID, 1, 3, "Study")

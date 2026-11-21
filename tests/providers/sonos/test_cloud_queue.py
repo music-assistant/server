@@ -228,7 +228,7 @@ async def test_window_items_are_addressed_by_queue_position() -> None:
     player, _ = _make_player(items)
     resolve = cast("AsyncMock", player.mass.streams.resolve_stream_url)
 
-    window = await player.build_cloud_queue_window("track5")
+    window = await player.build_cloud_queue_window("track5@0")
 
     assert [call.kwargs["queue_index"] for call in resolve.await_args_list] == list(range(4, 16))
     # the ids stay those of the items, which is what the speaker reports back
@@ -307,6 +307,78 @@ async def test_a_window_is_centred_on_the_position_the_speaker_plays() -> None:
         "track2",
         "track3",
     ]
+
+
+async def test_a_window_asked_around_a_lost_id_holds_it_at_the_playing_position() -> None:
+    """
+    Test a window asked around an id the queue lost serves the playing track under that id.
+
+    The speaker discards a window without the id it asked about, and stops at the end of
+    the window it holds.
+    """
+    items = [_make_queue_item(f"track{i}") for i in range(5)]
+    player, _ = _make_player(items, current_index=1)
+
+    window = await player.build_cloud_queue_window("gone@0")
+
+    assert window.wire_ids == ["track0@0", "gone@0", "track2@0", "track3@0", "track4@0"]
+    assert window.items[1].title == "track1"
+    assert player._window_item_ids[1] == "gone@0"
+
+
+async def test_a_window_asked_around_a_bound_id_holds_it_at_its_position() -> None:
+    """
+    Test a window asked around a fetched id keeps it at its position, whatever sits there now.
+
+    The tracks after the playing one were replaced before the speaker fetched position 1
+    under the id it cached there.
+    """
+    player = _make_player_on_real_queues(4, RepeatMode.OFF)
+    queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
+    await player.build_cloud_queue_window("track0@0")
+    queue_data.items[1:] = [_make_queue_item(f"new{i}") for i in range(1, 4)]
+    player.on_queue_position_served(1, "new1")
+
+    window = await player.build_cloud_queue_window("track1@0")
+
+    assert [x.queue_item_id for x in window.items] == ["track0", "new1", "new2", "new3"]
+    assert window.wire_ids == ["track0@0", "track1@0", "new2@0", "new3@0"]
+    assert player._window_item_ids[1] == "track1@0"
+    assert player.served_item_id("track1@0") == "new1"
+
+
+async def test_a_report_on_the_asked_id_resolves_to_the_item_served_there() -> None:
+    """Test the speaker fetching the position it asked about binds the id it asked about."""
+    player = _make_player_on_real_queues(4, RepeatMode.OFF)
+    player.mass.player_queues._queue_data[QUEUE_ID].queue.current_index = 1
+    await player.build_cloud_queue_window("gone@0")
+
+    player.on_queue_position_served(1, "track1")
+
+    assert player.served_item_id("gone@0") == "track1"
+
+
+async def test_a_repeated_position_keeps_the_asked_id() -> None:
+    """Test a track repeating itself is listed again under the id the speaker asked about."""
+    player = _make_player_on_real_queues(3, RepeatMode.ONE)
+
+    window = await player.build_cloud_queue_window("gone@0")
+
+    assert window.wire_ids == ["gone@0", "gone@0"]
+    assert player._window_item_ids == {0: "gone@0"}
+
+
+async def test_a_window_asked_around_an_id_of_an_earlier_load_keeps_the_ids_of_this_load() -> None:
+    """Test an id from before the current load is not echoed: the speaker moves to the new load."""
+    items = [_make_queue_item(f"track{i}") for i in range(3)]
+    player, _ = _make_player(items, current_index=1)
+    player.cloud_queue_item_generation = 1
+
+    moved = await player.build_cloud_queue_window("track2@0")
+    lost = await player.build_cloud_queue_window("gone@0")
+
+    assert moved.wire_ids == ["track1@1", "track2@1"]
+    assert lost.wire_ids == ["track0@1", "track1@1", "track2@1"]
 
 
 async def test_unavailable_items_are_left_out() -> None:
@@ -624,7 +696,7 @@ async def test_a_track_repeating_itself_is_listed_once_more(
     """
     player = _make_player_on_real_queues(count, repeat_mode)
 
-    window = await player.build_cloud_queue_window("track0")
+    window = await player.build_cloud_queue_window("track0@0")
 
     assert [x.queue_item_id for x in window.items] == ["track0", "track0"]
     assert window.wire_ids == ["track0@0", "track0@0"]
@@ -649,7 +721,7 @@ async def test_a_short_queue_on_repeat_all_still_fills_the_window() -> None:
     """Test repeat all wraps round a short queue, so the speaker does not run dry early."""
     player = _make_player_on_real_queues(3, RepeatMode.ALL)
 
-    window = await player.build_cloud_queue_window("track0")
+    window = await player.build_cloud_queue_window("track0@0")
 
     assert [x.queue_item_id for x in window.items] == [f"track{i % 3}" for i in range(11)]
     assert window.wire_ids == [f"track{i % 3}@0" for i in range(11)]

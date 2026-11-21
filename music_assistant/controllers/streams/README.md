@@ -129,7 +129,8 @@ Supporting modules in `helpers/`:
 4. Player requests stream -> get_queue_item_stream() calls buffer.get_stream()
 5. prepare_next_audio_buffer() pre-fills the item after the streamed one: 60s before the end of
    its stream, or for a realtime source once its audio has fully arrived
-6. _cleanup_stale_queue_buffers() clears old buffers to free memory
+6. The queue's release_unneeded_audio() gives up every buffer that left its scope and that
+   nothing reads
 ```
 
 A player that moves on to another track by itself, after a skip on the speaker or a track it gave up

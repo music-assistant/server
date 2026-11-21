@@ -6,6 +6,7 @@ import hashlib
 import socket
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin
 
@@ -25,6 +26,8 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
+    AudioFormat,
     ItemMapping,
     MediaItemType,
     Playlist,
@@ -32,7 +35,7 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.mass import MusicAssistant
@@ -41,19 +44,29 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.emby.const import (
     ALBUM_FIELDS,
     ARTIST_FIELDS,
+    AUDIOBOOK_FIELDS,
+    AUDIOBOOK_PART_FIELDS,
     AUTH_ACCESS_TOKEN,
     AUTH_USER,
     ITEM_KEY_COLLECTION_TYPE,
     ITEM_KEY_ID,
+    ITEM_KEY_INDEX_NUMBER,
     ITEM_KEY_MEDIA_STREAMS,
+    ITEM_KEY_NAME,
+    ITEM_KEY_PARENT_INDEX_NUMBER,
     ITEM_KEY_RUNTIME_TICKS,
+    ITEM_KEY_USER_DATA,
     ITEM_LIMIT,
     ITEMS,
     TRACK_FIELDS,
+    USER_DATA_KEY_LAST_PLAYED_DATE,
+    USER_DATA_KEY_PLAYBACK_POSITION_TICKS,
+    USER_DATA_KEY_PLAYED,
 )
 from music_assistant.providers.emby.parsers import (
     parse_album,
     parse_artist,
+    parse_audiobook,
     parse_playlist,
     parse_stream_details,
     parse_track,
@@ -80,6 +93,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_AUDIOBOOKS,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
@@ -184,6 +198,83 @@ class EmbyProvider(MusicProvider):
             return
         self.mass.config.remove(heal_key)
 
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
+        """Yield all audiobooks from the audiobook libraries."""
+        libs = await self._get_audiobook_libraries()
+        for lib in libs:
+            params = {
+                "ParentId": lib[ITEM_KEY_ID],
+                # Emby indexes audiobooks as album-like items whose part files are
+                # their child audio items.
+                "IncludeItemTypes": "MusicAlbum",
+                "EnableUserData": "true",
+                "Fields": ",".join(AUDIOBOOK_FIELDS),
+                "Recursive": "true",
+            }
+            page = 0
+            while True:
+                params["StartIndex"] = str(page * ITEM_LIMIT)
+                params["Limit"] = ITEM_LIMIT
+                resp = await self._get(f"Users/{self._user_id}/Items", params=params)
+                items = self._get_response_items(resp, "audiobook")
+                if not items:
+                    break
+                for audiobook in items:
+                    if not isinstance(audiobook, dict):
+                        self.report_skipped_sync_item(
+                            MediaType.AUDIOBOOK,
+                            None,
+                            InvalidDataError("Emby audiobook listing contains a non-object entry"),
+                        )
+                        continue
+                    item_id = audiobook.get(ITEM_KEY_ID)
+                    if not isinstance(item_id, str) or not item_id.strip():
+                        self.report_skipped_sync_item(
+                            MediaType.AUDIOBOOK,
+                            None,
+                            InvalidDataError("Emby audiobook listing entry has no id"),
+                        )
+                        continue
+                    yield parse_audiobook(self.instance_id, self, audiobook)
+                page += 1
+
+    @use_cache(3600)
+    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
+        """Get full audiobook details (including parts/chapters) by id."""
+        item = await self._get(
+            f"Users/{self._user_id}/Items/{prov_audiobook_id}",
+            params={"EnableUserData": "true", "Fields": ",".join(AUDIOBOOK_FIELDS)},
+        )
+
+        return await self._parse_audiobook_item(item)
+
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
+        """
+        Get the progress (resume point) Emby has stored for an audiobook.
+
+        :param item_id: The provider item id of the audiobook.
+        :param media_type: The media type (AUDIOBOOK).
+        :return: (fully_played, position_ms, timestamp)
+        """
+        if media_type != MediaType.AUDIOBOOK:
+            msg = f"Unsupported media type for resume position: {media_type}"
+            raise NotImplementedError(msg)
+        item = await self._get(
+            f"Users/{self._user_id}/Items/{item_id}",
+            params={"EnableUserData": "true"},
+        )
+        user_data = item.get(ITEM_KEY_USER_DATA, {})
+        fully_played = bool(user_data.get(USER_DATA_KEY_PLAYED))
+        position_ms = int(user_data.get(USER_DATA_KEY_PLAYBACK_POSITION_TICKS, 0) / 10000)
+        timestamp = (
+            datetime.fromisoformat(last_played_date)
+            if (last_played_date := user_data.get(USER_DATA_KEY_LAST_PLAYED_DATE))
+            else None
+        )
+        return fully_played, position_ms, timestamp
+
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         url = urljoin(self._base_url, path.lstrip("/"))
         try:
@@ -256,6 +347,7 @@ class EmbyProvider(MusicProvider):
         albums = None
         tracks = None
         playlists = None
+        audiobooks = None
 
         async with TaskGroup() as tg:
             if MediaType.ARTIST in media_types:
@@ -266,6 +358,8 @@ class EmbyProvider(MusicProvider):
                 tracks = tg.create_task(self._search_track(search_query, limit))
             if MediaType.PLAYLIST in media_types:
                 playlists = tg.create_task(self._search_playlist(search_query, limit))
+            if MediaType.AUDIOBOOK in media_types:
+                audiobooks = tg.create_task(self._search_audiobook(search_query, limit))
 
         search_results = SearchResults()
         if artists:
@@ -276,6 +370,8 @@ class EmbyProvider(MusicProvider):
             search_results.tracks = tracks.result()
         if playlists:
             search_results.playlists = playlists.result()
+        if audiobooks:
+            search_results.audiobooks = audiobooks.result()
         return search_results
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
@@ -547,23 +643,15 @@ class EmbyProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for given item id and media type."""
+        if media_type == MediaType.AUDIOBOOK:
+            return await self._get_audiobook_stream_details(item_id)
+
         track_data = await self._get(
             f"Users/{self._user_id}/Items/{item_id}",
             params={"EnableUserData": "true", "Fields": ",".join(TRACK_FIELDS)},
         )
 
         audio_format = parse_stream_details(track_data)
-
-        url = urljoin(self._base_url, f"Audio/{item_id}/universal")
-        params = {
-            "Container": audio_format.content_type,
-            "AudioCodec": audio_format.codec_type,
-            "AudioSampleRate": audio_format.sample_rate,
-            "AudioChannels": audio_format.channels,
-            "Static": "true",
-            "api_key": self._token,
-        }
-        query = "&".join([f"{k}={v}" for k, v in params.items()])
 
         duration = int(
             track_data.get(ITEM_KEY_RUNTIME_TICKS, 0) / 10000000
@@ -575,7 +663,7 @@ class EmbyProvider(MusicProvider):
             audio_format=audio_format,
             stream_type=StreamType.HTTP,
             duration=duration,
-            path=f"{url}?{query}",
+            path=self._audio_url(item_id, audio_format),
             can_seek=True,
             allow_seek=True,
         )
@@ -591,17 +679,41 @@ class EmbyProvider(MusicProvider):
         return [parse_track(self.instance_id, self, t) for t in resp.get(ITEMS, [])]
 
     async def _get_music_libraries(self) -> list[dict[str, Any]]:
+        return await self._get_libraries_by_collection_type("music")
+
+    async def _get_audiobook_libraries(self) -> list[dict[str, Any]]:
+        return await self._get_libraries_by_collection_type("audiobooks")
+
+    async def _get_libraries_by_collection_type(self, collection_type: str) -> list[dict[str, Any]]:
         resp = await self._get("Library/MediaFolders")
-        libs = self._get_response_items(resp, "music library")
+        libs = self._get_response_items(resp, "library")
         result = []
         for library in libs:
             if not isinstance(library, dict):
-                raise InvalidDataError("Emby music-library response contains a non-object entry")
-            if ITEM_KEY_COLLECTION_TYPE in library:
-                collection_type = library.get(ITEM_KEY_COLLECTION_TYPE, "").lower()
-                if collection_type == "music":
-                    result.append(library)
+                raise InvalidDataError("Emby media-library response contains a non-object entry")
+            if str(library.get(ITEM_KEY_COLLECTION_TYPE, "")).lower() == collection_type:
+                result.append(library)
         return result
+
+    async def _search_audiobook(self, search_query: str, limit: int) -> list[Audiobook]:
+        items: list[dict[str, Any]] = []
+        for lib in await self._get_audiobook_libraries():
+            params = {
+                "ParentId": lib[ITEM_KEY_ID],
+                "SearchTerm": search_query,
+                "IncludeItemTypes": "MusicAlbum",
+                "EnableUserData": "true",
+                "Fields": ",".join(AUDIOBOOK_FIELDS),
+                "Limit": str(limit),
+                "Recursive": "true",
+            }
+            resp = await self._get(f"Users/{self._user_id}/Items", params=params)
+            items.extend(
+                item
+                for item in self._get_response_items(resp, "audiobook")
+                if isinstance(item, dict)
+            )
+        return [parse_audiobook(self.instance_id, self, item) for item in items]
 
     async def on_played(
         self,
@@ -613,17 +725,106 @@ class EmbyProvider(MusicProvider):
         is_playing: bool = False,
     ) -> None:
         """Handle media item played event."""
-        if media_type != MediaType.TRACK:
+        if media_type not in (MediaType.TRACK, MediaType.AUDIOBOOK):
             return
         if fully_played:
             await self._post(f"Users/{self._user_id}/PlayedItems/{prov_item_id}")
-        if is_playing:
+        if is_playing or (media_type == MediaType.AUDIOBOOK and position > 0 and not fully_played):
+            # audiobooks also report their stop position when playback ends,
+            # which is the last position Emby gets if the 30s heartbeats never fired.
+            # A finished book is reported at its very end, which is no position to
+            # resume from and would undo the played mark posted just above.
             await self._post(
                 f"/Users/{self._user_id}/Items/{prov_item_id}/UserData",
                 json={"PlaybackPositionTicks": position * 10000000},
             )
         if not fully_played and position == 0:
             await self._post(f"/Users/{self._user_id}/PlayedItems/{prov_item_id}/Delete")
+
+    def _audio_url(self, item_id: str, audio_format: AudioFormat) -> str:
+        """Build the (static) Emby audio stream url for the given item."""
+        url = urljoin(self._base_url, f"Audio/{item_id}/universal")
+        params = {
+            "Container": audio_format.content_type,
+            "AudioCodec": audio_format.codec_type,
+            "AudioSampleRate": audio_format.sample_rate,
+            "AudioChannels": audio_format.channels,
+            "Static": "true",
+            "api_key": self._token,
+        }
+        query = "&".join([f"{k}={v}" for k, v in params.items()])
+        return f"{url}?{query}"
+
+    async def _parse_audiobook_item(self, item: dict[str, Any]) -> Audiobook:
+        """Parse an audiobook item together with its part files."""
+        parts = await self._get_audiobook_part_items(str(item.get(ITEM_KEY_ID)))
+        return parse_audiobook(self.instance_id, self, item, parts)
+
+    async def _get_audiobook_part_items(self, prov_audiobook_id: str) -> list[dict[str, Any]]:
+        """Return the ordered child audio items that make up an audiobook."""
+        params = {
+            "ParentId": prov_audiobook_id,
+            "IncludeItemTypes": "Audio",
+            "Fields": ",".join(AUDIOBOOK_PART_FIELDS),
+            "Limit": ITEM_LIMIT,
+            "Recursive": "true",
+        }
+        result: list[dict[str, Any]] = []
+        page = 0
+        while True:
+            params["StartIndex"] = str(page * ITEM_LIMIT)
+            resp = await self._get(f"Users/{self._user_id}/Items", params=params)
+            items = self._get_response_items(resp, "audiobook part")
+            result.extend(item for item in items if isinstance(item, dict))
+            if len(items) < ITEM_LIMIT:
+                break
+            page += 1
+        # Emby does not guarantee the order of the child listing; disc and track numbers
+        # order the files when tagged, the otherwise-ascending file names do when not.
+        # The disc number leads because track numbers restart on every disc.
+        result.sort(
+            key=lambda part: (
+                0 if part.get(ITEM_KEY_INDEX_NUMBER) else 1,
+                int(part.get(ITEM_KEY_PARENT_INDEX_NUMBER) or 0),
+                int(part.get(ITEM_KEY_INDEX_NUMBER) or 0),
+                str(part.get(ITEM_KEY_NAME)),
+            )
+        )
+        return result
+
+    async def _get_audiobook_stream_details(self, item_id: str) -> StreamDetails:
+        """Build (possibly multi-part) stream details for an audiobook."""
+        parts = await self._get_audiobook_part_items(item_id)
+
+        stream_parts: list[MultiPartPath] = []
+        for part in parts:
+            part_format = parse_stream_details(part)
+            # kept as a fraction: summed part durations locate the resume/seek point
+            duration = part.get(ITEM_KEY_RUNTIME_TICKS, 0) / 10000000  # ticks to seconds
+            stream_parts.append(
+                MultiPartPath(
+                    path=self._audio_url(str(part.get(ITEM_KEY_ID)), part_format),
+                    duration=duration,
+                )
+            )
+        if not stream_parts:
+            msg = f"Audiobook {item_id} has no playable parts"
+            raise MediaNotFoundError(msg)
+        if len(stream_parts) == 1:
+            path: str | list[MultiPartPath] = stream_parts[0].path
+        else:
+            path = stream_parts
+        return StreamDetails(
+            item_id=item_id,
+            provider=self.instance_id,
+            media_type=MediaType.AUDIOBOOK,
+            audio_format=parse_stream_details(parts[0]),
+            stream_type=StreamType.HTTP,
+            duration=int(sum(p.duration or 0 for p in stream_parts)),
+            path=path,
+            can_seek=True,
+            allow_seek=True,
+        )
 
     @staticmethod
     def _get_response_items(response: dict[str, Any], item_type: str) -> list[Any]:
