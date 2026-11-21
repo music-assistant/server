@@ -11,5 +11,5 @@
   "dependencies": [],
   "config_entries": [],
   "codeowners": ["@DButter"],
-  "media_types": ["radio", "podcast"]
+  "provides": ["radio", "podcast"]
 }

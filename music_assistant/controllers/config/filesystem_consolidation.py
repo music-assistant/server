@@ -206,7 +206,7 @@ def _read_removed_sources(
             continue
         try:
             sources[instance_id] = _read_removed_source(mass, raw_conf)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - one unreadable source must not stop the others
             LOGGER.warning(
                 "Leaving music source %s as it is, %s. The next start tries again.",
                 instance_id,
@@ -569,7 +569,7 @@ async def _clear_cached_items(mass: MusicAssistant, instance_ids: list[str]) -> 
         await mass.cache.delete(
             None, category=CACHE_CATEGORY_SEARCH_RESULTS, provider=mass.music.domain
         )
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - a conversion step must never stop startup
         LOGGER.warning(
             "Unable to remove the cached items of music sources %s (%s)",
             ", ".join(instance_ids),
@@ -638,7 +638,7 @@ def _update_playlist(path: Path, instance_ids: set[str], domains: set[str]) -> N
         changed = False
         for entry in entries:
             changed |= _point_at_local_files(entry, instance_ids, domains)
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - a playlist file can hold anything
         LOGGER.warning(
             "Leaving playlist %s as it is, it can not be read (%s)", filename, type(err).__name__
         )
@@ -656,7 +656,7 @@ def _update_playlist(path: Path, instance_ids: set[str], domains: set[str]) -> N
     content = generate_m3u(name, entries, image)
     try:
         _replace_file(path, content if text == data else content.replace("\n", "\r\n"))
-    except Exception as err:
+    except (OSError, ValueError) as err:
         LOGGER.warning(
             "Leaving playlist %s as it is, it can not be written (%s)",
             filename,

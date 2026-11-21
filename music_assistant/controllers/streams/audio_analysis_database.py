@@ -80,6 +80,11 @@ async def create_analysis_tables(database: DatabaseConnection, schema: str = "ma
                 [payload] BLOB NOT NULL,
                 UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
     )
+    # lets the coverage and candidate counts check analysis_version without reading the records
+    await database.execute(
+        f"CREATE INDEX IF NOT EXISTS {schema}.{DB_TABLE_AUDIO_ANALYSIS}_version_idx "
+        f"ON {DB_TABLE_AUDIO_ANALYSIS}(item_id,provider,aa_provider_domain,media_type,analysis_version);"
+    )
     await database.execute(
         f"""CREATE TABLE IF NOT EXISTS {schema}.{DB_TABLE_AUDIO_ANALYSIS_FAILURES}(
                 [id] INTEGER PRIMARY KEY AUTOINCREMENT,

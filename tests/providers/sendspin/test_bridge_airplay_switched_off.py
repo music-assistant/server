@@ -485,3 +485,25 @@ async def test_airplay_switched_on_while_the_cast_bridge_stops_carries_the_outpu
 
     assert device.manager_of(device.cast).get_bridge(CAST_ID) is None
     assert device.state() == ("airplay", CAST_CLIENT, "airplay", "on")
+
+
+@pytest.mark.parametrize("at_start", [False, True])
+async def test_an_airplay_player_that_plays_a_set_keeps_its_bridge(at_start: bool) -> None:
+    """
+    An Apple TV that is the player of a home theater set is bridged like any AirPlay player.
+
+    Its bridge feeds the speakers of the set, whether the set is found while the bridge runs
+    or before the protocol attaches.
+    """
+    device = _device(squeezelite=False)
+    if at_start:
+        device.airplay.carries_set = True
+        await device.attach(device.airplay)
+    else:
+        await _bridged(device, "airplay")
+        device.airplay.carries_set = True
+        await device.manager_of(device.airplay).evaluate_bridge(device.airplay)
+    await device.settle()
+
+    assert device.manager_of(device.airplay).get_bridge(AIRPLAY_ID) is not None
+    assert device.state() == ("airplay", AIRPLAY_CLIENT, "airplay", "on")

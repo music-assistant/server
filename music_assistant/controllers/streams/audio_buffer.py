@@ -194,9 +194,8 @@ class AudioBuffer:
         self._release_task: asyncio.Task[None] | None = None
         # whether this buffer may give up its audio while nobody reads it; None means never
         self.may_release: Callable[[AudioBuffer], bool] | None = None
-        # the queue and the queue item this buffer was made for, if any
+        # the queue this buffer was made for, if any
         self.queue_id: str | None = None
-        self.queue_item_id: str | None = None
 
     # -- Properties --
 
@@ -610,7 +609,7 @@ class AudioBuffer:
                     and provider.max_concurrent_streams is not None
                     and not provider.has_available_stream_slot
                 )
-                if must_release_slot or time.time() - existing_buffer._last_access_time > 30:
+                if must_release_slot:
                     await asyncio.shield(existing_buffer.clear())
                 else:
                     # nothing reads it through the stream details any more; a consumer

@@ -100,9 +100,9 @@ SUPPORTED_FEATURES = {
     # that your music provider supports or an empty set if none.
     # for example 'ProviderFeature.BROWSE' if you can browse the provider's items.
     # see the ProviderFeature enum for all available features
-    # list the media types of the LIBRARY_* features, and any the provider only delivers
-    # through search or browse, in the 'media_types' of manifest.json, so the app knows them
-    # before the provider is loaded. leave out what depends on the config or account.
+    # the 'provides' of manifest.json lists the media types a user looks for the provider
+    # under, for discovery only, before the provider is loaded; these features decide what
+    # it does. leave out what depends on the config or account.
 }
 
 

@@ -16,7 +16,7 @@ from aiohttp import web
 from music_assistant_models.enums import QueueOption
 from plexapi.playqueue import PlayQueue
 
-from .parsing import plex_item_fields
+from .parsing import PLEX_FETCH_ERRORS, plex_item_fields
 
 if TYPE_CHECKING:
     from music_assistant.providers.plex import PlexProvider
@@ -285,7 +285,7 @@ class QueueCommandsMixin:
                 _apply_shuffle_deferred(), task_name=f"plex_apply_shuffle_{player_id}"
             )
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - any failure falls back to the queue as sent
             LOGGER.debug("Could not resolve source for shuffled queue, falling back: %s", e)
             return False
 
@@ -298,17 +298,17 @@ class QueueCommandsMixin:
         if "/library/metadata/" in key:
             try:
                 return await self.provider.get_track(key)
-            except Exception as exc:
+            except PLEX_FETCH_ERRORS as exc:
                 LOGGER.debug("Failed to resolve Plex item as track for key '%s': %s", key, exc)
 
             try:
                 return await self.provider.get_album(key)
-            except Exception as exc:
+            except PLEX_FETCH_ERRORS as exc:
                 LOGGER.debug("Failed to resolve Plex item as album for key '%s': %s", key, exc)
 
             try:
                 return await self.provider.get_artist(key)
-            except Exception:
+            except PLEX_FETCH_ERRORS:
                 raise ValueError(f"Could not resolve Plex item: {key}") from None
 
         elif "/playlists/" in key:

@@ -113,6 +113,7 @@ def _sendspin(scenario: Scenario) -> Any:
     provider._bridge_holders = {}
     provider._bridge_waiters = {}
     provider._bridge_locks = {}
+    provider._multi_channel_speakers = {}
     return provider
 
 

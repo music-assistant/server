@@ -66,7 +66,6 @@ from music_assistant.constants import (
     DEFAULT_HOST,
     INGRESS_SERVER_PORT,
     RESOURCES_DIR,
-    SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
     WILDCARD_BIND_IPS,
 )
@@ -124,6 +123,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.api import APICommandHandler
+    from music_assistant.providers.sendspin.provider import SendspinProvider
 
 DEFAULT_SERVER_PORT = 8095
 CONF_BASE_URL = "base_url"
@@ -142,6 +142,13 @@ PREVIEW_TOKEN_TTL = 60
 # Ceiling on live preview tokens. LIBRARY_READ is a guest scope, so minting is reachable by
 # every signed-in client; the cap keeps a chatty or hostile one from growing the store.
 MAX_PREVIEW_TOKENS = 500
+# The public setup endpoint creates the first admin for whoever reaches it first, so it only
+# stays open for a short while after the server starts.
+SETUP_WINDOW_MINUTES = 15
+SETUP_TIMED_OUT_MESSAGE = (
+    f"Setup was not completed within {SETUP_WINDOW_MINUTES} minutes of Music Assistant "
+    "starting. Restart Music Assistant to try again."
+)
 
 
 def _get_publish_addresses(
@@ -233,6 +240,7 @@ class WebserverController(CoreController):
         self.provider_pages = ProviderPageManager(self)
         # the first-time setup makes exactly one admin, however many attempts arrive at once
         self._setup_lock = asyncio.Lock()
+        self._setup_deadline = time.monotonic() + SETUP_WINDOW_MINUTES * 60
         # Preview tokens keyed on the token in the URL, value is
         # (provider instance id or domain, item id, monotonic expiry).
         self._preview_tokens: dict[str, tuple[str, str, float]] = {}
@@ -308,14 +316,17 @@ class WebserverController(CoreController):
         return self.base_url
 
     @property
-    def internal_sendspin_url(self) -> str:
-        """Return the URL to reach the in-process Sendspin server from this host."""
+    def internal_sendspin_url(self) -> str | None:
+        """Return the URL to reach the in-process Sendspin server from this host, while it is loaded."""
+        sendspin = cast("SendspinProvider | None", self.mass.get_provider("sendspin"))
+        if sendspin is None:
+            return None
         # the advertised address is not necessarily dialable here (e.g. a container or
         # NAT setup), so derive the address from what the Sendspin server actually binds to
         connect_ip = _get_internal_connect_ip(
             self.mass.streams.bind_ip, str(self.mass.streams.publish_ip)
         )
-        return f"ws://{format_ip_for_url(connect_ip)}:{SENDSPIN_SERVER_PORT}/sendspin"
+        return f"ws://{format_ip_for_url(connect_ip)}:{sendspin.server_port}/sendspin"
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
@@ -492,8 +503,12 @@ class WebserverController(CoreController):
                 "\n"
                 "    %s/setup\n"
                 "\n"
+                "The setup page stays open for %s minutes. If it times out,\n"
+                "restart Music Assistant to try again.\n"
+                "\n"
                 "################################################################################\n",
                 base_url,
+                SETUP_WINDOW_MINUTES,
             )
         else:
             self.logger.info(
@@ -569,28 +584,27 @@ class WebserverController(CoreController):
         )
         self.provider_pages.drop_user(user_id)
 
-    def update_active_user_filters(
-        self,
-        user_id: str,
-        player_filter: list[str] | None = None,
-    ) -> None:
+    def update_active_user(self, user: User) -> None:
         """
-        Apply updated access filters to the live sessions of a user.
+        Apply the stored profile, preferences and player filter of a user to its live sessions.
 
-        Call this after the filters of a user were changed in the database, so the
-        change takes effect right away instead of only on the next connection.
+        Call this after the user was changed in the database, so the change takes effect
+        right away instead of only on the next connection. A changed role, or a disabled
+        user, instead needs `disconnect_websockets_for_user`.
 
-        :param user_id: ID of the user whose sessions must be updated.
-        :param player_filter: The new player filter, or None to leave it untouched.
+        :param user: The user as just read back from the database.
         """
         for client in list(self.clients):
-            user = client.authenticated_user
-            if user is None or user.user_id != user_id:
+            live_user = client.authenticated_user
+            if live_user is None or live_user.user_id != user.user_id:
                 continue
             # updated in place: the connection's context holds this very object
-            if player_filter is not None:
-                user.player_filter[:] = player_filter
-            self.logger.debug("Updated the access filters of a live session of %s", user.username)
+            live_user.username = user.username
+            live_user.display_name = user.display_name
+            live_user.avatar_url = user.avatar_url
+            live_user.preferences = dict(user.preferences)
+            live_user.player_filter[:] = user.player_filter
+            self.logger.debug("Updated a live session of %s", live_user.username)
 
     def set_sendspin_player_for_token(self, token: str, player_id: str) -> None:
         """
@@ -1467,6 +1481,9 @@ class WebserverController(CoreController):
             # this should not happen, but guard anyways
             return await self._render_error_page("Setup has already been completed.")
 
+        if not self._setup_window_open():
+            return await self._render_error_page(SETUP_TIMED_OUT_MESSAGE)
+
         # the frontend recognizes the setup page by its path and opens the setup
         # wizard on the account step, so serve the app itself here
         return await self._server.serve_static(self._index_path, request)
@@ -1478,6 +1495,11 @@ class WebserverController(CoreController):
             # instead of another attempt
             return web.json_response(
                 {"success": False, "error": "Setup already completed"}, status=409
+            )
+
+        if not self._setup_window_open():
+            return web.json_response(
+                {"success": False, "error": SETUP_TIMED_OUT_MESSAGE}, status=403
             )
 
         if not request.can_read_body:
@@ -1595,6 +1617,10 @@ class WebserverController(CoreController):
             return await provider.create_user_with_password(
                 username, password, role=UserRole.ADMIN, display_name=display_name
             )
+
+    def _setup_window_open(self) -> bool:
+        """Return whether the first-time setup still accepts the first admin."""
+        return time.monotonic() < self._setup_deadline
 
     def _resolve_preview_token(self, token: str) -> tuple[str, str] | None:
         """Return the provider and item a preview token grants, or None when it is not valid."""

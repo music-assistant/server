@@ -425,15 +425,18 @@ async def test_async_find_mdns_service_matches_exact_device_name(mass: MusicAssi
     )
 
 
-async def test_async_find_mdns_service_no_substring_match(mass: MusicAssistant) -> None:
+async def test_async_find_mdns_service_no_substring_match(mass_minimal: MusicAssistant) -> None:
     """Looking up a name that is only a substring of a discovered name should not match."""
-    mass.discovery.aiozc.zeroconf.cache.cache = {
+    # a started server advertises itself in background tasks that also build an
+    # AsyncServiceInfo, which would land in the patch below while the lookup waits
+    mass_minimal.discovery._aiozc = MagicMock()
+    mass_minimal.discovery.aiozc.zeroconf.cache.cache = {
         "atv kelder._raop._tcp.local.": {},
     }
     with patch(
         "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
     ) as mock_service_info:
-        result = await mass.discovery.async_find_mdns_service(
+        result = await mass_minimal.discovery.async_find_mdns_service(
             "_raop._tcp.local.", "Kelder", timeout=0.1
         )
 

@@ -583,7 +583,7 @@ class AsyncProcess:
             await asyncio.wait_for(asyncio.gather(*drains), 2)
         except TimeoutError:
             pass  # the escalation below takes over
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - cleanup must not abort, the kill below still runs
             self.logger.warning("Failed to drain the pipes of PID %s: %s", pid, err)
 
         # Wait for process to actually terminate
@@ -747,7 +747,7 @@ class AsyncProcess:
             await task
         except asyncio.CancelledError:
             pass  # expected when we cancel the task
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the task can fail in any way, logged here
             # retrieving the failure is what keeps asyncio from reporting it as
             # unhandled once the task is collected, so log it here rather than
             # dropping the only trace of it

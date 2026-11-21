@@ -36,7 +36,11 @@ from music_assistant import mass as mass_module
 from music_assistant.constants import CONF_ALLOW_AUDIO_ANALYSIS
 from music_assistant.controllers.players import PlayerController
 from music_assistant.mass import MusicAssistant
-from music_assistant.providers.sendspin.constants import CONF_SOURCE_AUTOSTART_TARGET
+from music_assistant.providers.sendspin.constants import (
+    CONF_SOURCE_AUTOSTART_TARGET,
+    CONF_SOURCE_NAME,
+    DEFAULT_SOURCE_NAME,
+)
 from music_assistant.providers.sendspin.provider import SendspinProvider
 from music_assistant.providers.sendspin.sources import OUTPUT_FORMAT, TARGET_LATENCY_MS
 
@@ -53,6 +57,8 @@ from .source_fakes import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+    from music_assistant.providers.sendspin.sources import SendspinSources
 
 MARKER_BYTE = b"\x7f"
 NATIVE_FORMAT = SendspinAudioFormat(sample_rate=48000, bit_depth=16, channels=2)
@@ -194,7 +200,7 @@ async def test_source_name_follows_a_player_rename(fake_client: _FakeClient) -> 
     assert [s.name for s in await sources.get_audio_sources()] == ["Sendspin (Den)"]
     details = await sources.get_stream_details("client-1", MediaType.AUDIO_SOURCE)
     assert details.stream_metadata is not None
-    assert details.stream_metadata.title == "Sendspin (Den)"
+    assert details.stream_metadata.title == "Den"
 
 
 async def test_source_name_uses_the_player_of_the_client(fake_client: _FakeClient) -> None:
@@ -209,6 +215,50 @@ async def test_source_name_falls_back_to_the_device_name(fake_client: _FakeClien
     sources = await make_sources([fake_client])
     get_players(sources).protocols["client-1"].player = None
     assert [s.name for s in await sources.get_audio_sources()] == ["Sendspin (Turntable)"]
+
+
+async def _speaker_with_line_in(name: str | None = None) -> SendspinSources:
+    """Return the sources of a speaker named Living Room whose line-in is named as given."""
+    sources = await make_sources([_FakeClient("client-1", name="Cast Pro", has_player_role=True)])
+    get_players(sources).players["client-1"].name = "Living Room"
+    get_config(sources).defaults[("client-1", CONF_SOURCE_NAME)] = DEFAULT_SOURCE_NAME
+    if name is not None:
+        get_config(sources).values[("client-1", CONF_SOURCE_NAME)] = name
+    return sources
+
+
+@pytest.mark.parametrize("name", [None, "Record player"], ids=["default", "set_by_the_user"])
+async def test_a_line_in_is_named_alone_on_its_own_player(name: str | None) -> None:
+    """The device's own source list shows the input by its name, Line-in until the user sets one."""
+    sources = await _speaker_with_line_in(name)
+    expected = name or DEFAULT_SOURCE_NAME
+    assert [s.name for s in sources.get_player_input_sources("client-1")] == [expected]
+
+
+@pytest.mark.parametrize("name", [None, "Record player"], ids=["default", "set_by_the_user"])
+async def test_a_line_in_is_named_with_its_player_elsewhere(name: str | None) -> None:
+    """Browse and other players show the input with the player it belongs to."""
+    sources = await _speaker_with_line_in(name)
+    expected = name or DEFAULT_SOURCE_NAME
+    assert [s.name for s in await sources.get_audio_sources()] == [f"{expected} (Living Room)"]
+
+
+async def test_a_line_in_plays_with_its_own_name_as_title() -> None:
+    """Now playing titles the stream with the input, so the source below it adds the player."""
+    sources = await _speaker_with_line_in("Record player")
+    details = await sources.get_stream_details("client-1", MediaType.AUDIO_SOURCE)
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.title == "Record player"
+
+
+async def test_a_playing_line_in_follows_a_new_name() -> None:
+    """A new name reaches the input that plays, without restarting it."""
+    sources = await _speaker_with_line_in()
+    await sources.on_source_selected("client-1", "player-1", "queue-1", "session-A")
+    get_config(sources).values[("client-1", CONF_SOURCE_NAME)] = "Record player"
+    sources.on_client_config_updated("client-1")
+    [(player_id, source)] = get_players(sources).refreshed
+    assert (player_id, source.name) == ("queue-1", "Record player (Living Room)")
 
 
 async def test_line_in_is_listed_on_its_own_player_while_connected() -> None:

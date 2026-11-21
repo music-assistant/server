@@ -601,7 +601,7 @@ def is_request_from_ingress(request: web.Request) -> bool:
                 expected_ip, expected_port = ingress_site_params
                 # Request must match the ingress site's bind address and port
                 return bool(server_ip == expected_ip and server_port == expected_port)
-    except Exception:  # noqa: S110
+    except TypeError, ValueError:
         pass
 
     return False

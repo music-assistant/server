@@ -197,6 +197,8 @@ def audio_format(track: JellyTrack) -> AudioFormat:
     sources = track.get(ITEM_KEY_MEDIA_SOURCES, [])
     container = sources[0].get(ITEM_KEY_CONTAINER) if sources else None
     codec = audio_stream.get(ITEM_KEY_MEDIA_CODEC)
+    if container and container.lower() == "asf" and (codec or "").lower().startswith("wma"):
+        container = "wma"
 
     return AudioFormat(
         content_type=(ContentType.try_parse(container) if container else ContentType.UNKNOWN),
