@@ -2383,10 +2383,10 @@ async def test_a_new_sendspin_stream_silences_the_stream_it_keeps() -> None:
     bridge, stream, scheduled = _make_fed_warm_bridge()
     writer = _transport(bridge)._writer_task
     assert writer is not None
+    writer_gone_at_flush: list[bool] = []
 
     async def flush() -> bool:
-        # a flush only removes what was written before it
-        assert writer.done()
+        writer_gone_at_flush.append(writer.done())
         return True
 
     stream.flush = AsyncMock(side_effect=flush)
@@ -2397,9 +2397,10 @@ async def test_a_new_sendspin_stream_silences_the_stream_it_keeps() -> None:
     stream.flush.assert_not_awaited()
 
     bridge._on_stream_start(MagicMock())
-    await asyncio.gather(*scheduled, return_exceptions=True)
+    await asyncio.gather(*scheduled)
 
-    stream.flush.assert_awaited_once_with()
+    # flushed once, after the writer: a flush only removes what was written before it
+    assert writer_gone_at_flush == [True]
     assert _transport(bridge)._write_queue.empty()
     # still connected, for the next stream to ride
     assert _transport(bridge)._airplay_stream is stream
@@ -2415,13 +2416,13 @@ async def test_sendspin_clearing_the_stream_silences_the_stream_it_keeps() -> No
     bridge._on_bridge_stream_clear()
 
     assert _transport(bridge)._write_queue.empty()
-    await asyncio.gather(*scheduled, return_exceptions=True)
+    await asyncio.gather(*scheduled)
     stream.flush.assert_awaited_once_with()
     assert _transport(bridge).can_reuse_warm()
 
     # the next stream announcing itself finds nothing written since
     bridge._on_stream_start(MagicMock())
-    await asyncio.gather(*scheduled, return_exceptions=True)
+    await asyncio.gather(*scheduled)
     stream.flush.assert_awaited_once_with()
 
 
