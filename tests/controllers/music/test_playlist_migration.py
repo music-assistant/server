@@ -12,6 +12,7 @@ from music_assistant_models.enums import MediaType, PlaylistMatchPolicy, Provide
 from music_assistant_models.errors import (
     InvalidDataError,
     ProviderUnavailableError,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import Playlist, ProviderMapping, Radio, Track
 
@@ -803,8 +804,14 @@ async def test_migration_reports_unsupported_source_items(
         (
             True,
             ["tidal-one", "tidal-two", "tidal-one"],
-            None,
+            TimeoutError(),
             ["Could not verify destination playlist: Verification failed (TimeoutError)"],
+        ),
+        (
+            True,
+            ["tidal-one", "tidal-two", "tidal-one"],
+            RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
+            ["Could not verify destination playlist: Not retrying, asked to wait 3600 seconds"],
         ),
         (
             True,
@@ -821,7 +828,7 @@ async def test_streaming_migration_handles_provider_duplicate_policy(  # noqa: P
     music: MusicController,
     duplicates_supported: bool,
     expected_target_ids: list[str],
-    actual_target_ids: list[str] | None,
+    actual_target_ids: list[str] | Exception,
     expected_verification_failures: list[str],
 ) -> None:
     """A provider migration preserves supported duplicates and reports unsupported ones."""
@@ -857,8 +864,8 @@ async def test_streaming_migration_handles_provider_duplicate_policy(  # noqa: P
                 source_missing,
             )
         else:
-            if actual_target_ids is None:
-                raise TimeoutError
+            if isinstance(actual_target_ids, Exception):
+                raise actual_target_ids
             target_tracks = {
                 "tidal-one": target_one,
                 "tidal-two": target_two,
@@ -1094,3 +1101,45 @@ async def test_builtin_resolution_does_not_return_unfiltered_track_on_failure(
 
     assert result.track is None
     assert result.error == "Matching failed on Music Assistant (TimeoutError)"
+
+
+async def test_streaming_resolution_skips_rate_limited_destination(
+    music: MusicController,
+) -> None:
+    """A rate-limited destination fails the track and is not queried for the remaining tracks."""
+    source = create_track("spotify_1", "source")
+    target_provider = MagicMock(spec=MusicProvider)
+    target_provider.instance_id = "tidal_1"
+    target_provider.domain = "tidal"
+    target_provider.name = "Tidal"
+    failed_provider_instances: set[str] = set()
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(side_effect=RetriesExhausted("Not retrying, asked to wait 3600 seconds")),
+        ) as find_match,
+    ):
+        first_result = await music.playlists._resolve_migration_track(
+            source,
+            target_provider,
+            TrackMatchConfidence.LIKELY,
+            {"spotify_1", "tidal_1"},
+            False,
+            failed_provider_instances,
+        )
+        second_result = await music.playlists._resolve_migration_track(
+            source,
+            target_provider,
+            TrackMatchConfidence.LIKELY,
+            {"spotify_1", "tidal_1"},
+            False,
+            failed_provider_instances,
+        )
+
+    assert first_result.error == "Not retrying, asked to wait 3600 seconds"
+    assert second_result.error == "Matching unavailable on Tidal after an earlier failure"
+    assert failed_provider_instances == {"tidal_1"}
+    assert find_match.await_count == 1

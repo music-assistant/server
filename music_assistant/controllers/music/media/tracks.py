@@ -28,6 +28,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -1483,6 +1484,7 @@ class TracksController(MediaControllerBase[Track]):
                 MediaNotFoundError,
                 ProviderUnavailableError,
                 ResourceTemporarilyUnavailable,
+                RetriesExhausted,
                 ClientError,
                 OSError,
                 TimeoutError,
@@ -1647,6 +1649,7 @@ class TracksController(MediaControllerBase[Track]):
                 )
             except (
                 ResourceTemporarilyUnavailable,
+                RetriesExhausted,
                 ProviderUnavailableError,
                 ClientError,
                 OSError,
