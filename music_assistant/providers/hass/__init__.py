@@ -735,6 +735,9 @@ class HomeAssistantProvider(PluginProvider):
         entity_id = engine_id or next((engine.id for engine in self._image_engines), None)
         if entity_id is None:
             raise UnsupportedFeaturedException("No AI Task entity that generates images")
+        internal_url = (
+            await self._get_internal_ha_url() if self.mass.running_as_hass_addon else None
+        )
         try:
             result = await self.hass.send_command(
                 "call_service",
@@ -767,9 +770,10 @@ class HomeAssistantProvider(PluginProvider):
             msg = f"AI Task returned an unexpected image link: {parts.path}"
             raise MusicAssistantError(msg)
         try:
-            return await self._fetch_image(
-                f"{parts.path}?{parts.query}" if parts.query else parts.path
-            )
+            path = f"{parts.path}?{parts.query}" if parts.query else parts.path
+            if internal_url is not None:
+                return await self._fetch_image(path, internal_url=internal_url)
+            return await self._fetch_image(path)
         except ClientResponseError as err:
             # its message names the full (signed) URL
             msg = f"Home Assistant answered the image request with {err.status}"
@@ -1113,11 +1117,12 @@ class HomeAssistantProvider(PluginProvider):
             for entity_id, compressed_state in compressed_states.items()
         ]
 
-    async def _fetch_image(self, path: str) -> bytes:
+    async def _fetch_image(self, path: str, *, internal_url: str | None = None) -> bytes:
         """
         Fetch an image from the connected Home Assistant instance.
 
         :param path: The HA-relative image path.
+        :param internal_url: Validated internal HA URL for a direct AI Task image request.
         :raises FileNotFoundError: When HA does not answer with an image within the size limit.
         """
         # the HTTP client resolves percent-encoded dot segments, so check the decoded form
@@ -1125,9 +1130,9 @@ class HomeAssistantProvider(PluginProvider):
             raise FileNotFoundError("Image not found")
         direct = self.mass.running_as_hass_addon and path.startswith(AI_TASK_IMAGE_PATH_PREFIX)
         if direct:
-            ha_url = await self._get_internal_ha_url()
+            ha_url = internal_url or await self._get_internal_ha_url()
             headers: dict[str, str] = {}
-            _, _, http_session = self._get_ha_http()
+            http_session = self.mass.http_session
         else:
             ha_url, headers, http_session = self._get_ha_http()
         request = (

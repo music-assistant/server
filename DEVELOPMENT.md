@@ -39,20 +39,6 @@ With this repository cloned locally, execute the following commands in a termina
 
 NOTE: Always re-run the setup script after you fetch the latest code because requirements could have changed.
 
-### Testing Home Assistant AI Task images
-
-When Music Assistant runs as a Home Assistant app, signed AI Task images are fetched
-directly from Home Assistant, because their `/ai_task/image/` path is outside the
-Supervisor API proxy. Set an internal HTTP(S) URL in Home Assistant under
-**Settings > System > Network** that the app can reach. It must not contain
-credentials, a subpath, a query or a fragment. Image requests preserve the signed
-query, do not send the Supervisor token and do not follow redirects.
-
-The provider tests use synthetic image responses and do not generate images.
-A real app test still requires a configured Home Assistant AI Task image entity;
-generation may incur charges depending on its provider. A failed download does not
-automatically generate another image.
-
 ### Using Devcontainer/Codespace
 We removed support for devcontainers because we do not have anyone willing to maintain it.
 It also is not very convenient due to all the port requirements, binaries etc.

@@ -823,12 +823,11 @@ async def test_addon_ai_image_uses_the_internal_url_without_supervisor_auth() ->
         provider.mass.running_as_hass_addon = True
         hass.send_command = AsyncMock(
             side_effect=[
-                {"response": {"url": "/ai_task/image/x.png?authSig=abc"}},
                 {"internal": "http://homeassistant.local:8123"},
+                {"response": {"url": "/ai_task/image/x.png?authSig=abc"}},
             ]
         )
         get = _mock_image_response(provider, [b"png"], content_type="image/png")
-        cast("MagicMock", provider.mass.http_session_no_ssl).get = get
 
         assert await provider.ai_generate_image("A sunset") == b"png"
         get.assert_called_once_with(
@@ -836,7 +835,9 @@ async def test_addon_ai_image_uses_the_internal_url_without_supervisor_auth() ->
             headers={},
             allow_redirects=False,
         )
-        assert hass.send_command.call_args_list[-1] == (("network/url",), {})
+        assert hass.send_command.await_args_list[0] == (("network/url",), {})
+        assert hass.send_command.await_count == 2
+        cast("MagicMock", provider.mass.http_session_no_ssl.get).assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -857,13 +858,30 @@ async def test_addon_ai_image_uses_the_internal_url_without_supervisor_auth() ->
 )
 async def test_addon_ai_image_rejects_missing_or_invalid_internal_url(internal: Any) -> None:
     """Do not fall back to the proxy or expose a malformed internal URL."""
-    async with _start_provider([]) as (provider, hass):
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+    async with _start_provider(states) as (provider, hass):
         provider.mass.running_as_hass_addon = True
         hass.send_command = AsyncMock(return_value={"internal": internal})
         with pytest.raises(MusicAssistantError) as caught:
-            await provider._fetch_image("/ai_task/image/x.png?authSig=secret")
+            await provider.ai_generate_image("A sunset")
         assert "secret" not in str(caught.value)
+        hass.send_command.assert_awaited_once_with("network/url")
         cast("MagicMock", provider.mass.http_session.get).assert_not_called()
+        cast("MagicMock", provider.mass.http_session_no_ssl.get).assert_not_called()
+
+
+async def test_addon_ai_image_uses_verified_session_for_https() -> None:
+    """Direct HTTPS must not inherit the Supervisor's disabled certificate verification."""
+    async with _start_provider([], **{CONF_VERIFY_SSL: False}) as (provider, hass):
+        provider.mass.running_as_hass_addon = True
+        hass.send_command = AsyncMock(return_value={"internal": "https://ha.local"})
+        get = _mock_image_response(provider, [b"png"])
+        assert await provider._fetch_image("/ai_task/image/x.png?authSig=abc") == b"png"
+        get.assert_called_once_with(
+            "https://ha.local/ai_task/image/x.png?authSig=abc",
+            headers={},
+            allow_redirects=False,
+        )
         cast("MagicMock", provider.mass.http_session_no_ssl.get).assert_not_called()
 
 
@@ -922,11 +940,13 @@ async def test_ai_image_connection_errors_are_sanitized_without_regeneration() -
 
 async def test_addon_ai_image_reports_unavailable_url_lookup() -> None:
     """A failed websocket lookup is explicit rather than silently using the proxy."""
-    async with _start_provider([]) as (provider, hass):
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+    async with _start_provider(states) as (provider, hass):
         provider.mass.running_as_hass_addon = True
         hass.send_command = AsyncMock(side_effect=NotConnected("unavailable"))
         with pytest.raises(ProviderUnavailableError, match="internal URL"):
-            await provider._fetch_image("/ai_task/image/x.png?authSig=secret")
+            await provider.ai_generate_image("A sunset")
+        hass.send_command.assert_awaited_once_with("network/url")
 
 
 async def test_ai_generate_image_keeps_the_signature_out_of_errors() -> None:
