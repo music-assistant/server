@@ -9,7 +9,13 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import aiohttp
-from music_assistant_models.enums import ArtistType, ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    AlbumType,
+    ArtistType,
+    ExternalID,
+    MediaType,
+    ProviderFeature,
+)
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -20,6 +26,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.controllers.music.constants import MATCH_REFERENCE_LIMIT, MATCH_SEARCH_LIMIT
 from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
@@ -459,6 +466,50 @@ async def test_credit_owned_by_another_library_artist_does_not_match() -> None:
         matches = await harness.match(_library_artist())
 
     assert matches == []
+
+
+# ---------------------------------------------------------------------------
+# search budget
+# ---------------------------------------------------------------------------
+
+
+async def test_unmatched_artist_searches_a_limited_number_of_references() -> None:
+    """An artist the provider does not have costs a bounded number of shallow searches."""
+    with _harness(
+        ref_tracks=[
+            _track(f"lib-track-{i}", "library", name=f"Track {i}", mappings=(BASE_MAPPING,))
+            for i in range(MATCH_REFERENCE_LIMIT + 5)
+        ],
+        ref_albums=[
+            _album(f"lib-album-{i}", "library", name=f"Album {i}", mappings=(BASE_MAPPING,))
+            for i in range(MATCH_REFERENCE_LIMIT + 5)
+        ],
+    ) as harness:
+        matches = await harness.match(_library_artist())
+
+    assert matches == []
+    assert harness.track_search.await_count == MATCH_REFERENCE_LIMIT
+    assert harness.album_search.await_count == MATCH_REFERENCE_LIMIT
+    for call in [*harness.track_search.await_args_list, *harness.album_search.await_args_list]:
+        assert call.kwargs["limit"] == MATCH_SEARCH_LIMIT
+
+
+async def test_compilations_do_not_use_up_the_reference_albums() -> None:
+    """Compilations are skipped before the reference albums are limited."""
+    compilations = [
+        _album(f"lib-comp-{i}", "library", name=f"Hits {i}", mappings=(BASE_MAPPING,))
+        for i in range(MATCH_REFERENCE_LIMIT)
+    ]
+    for compilation in compilations:
+        compilation.album_type = AlbumType.COMPILATION
+    with _harness(
+        ref_albums=[*compilations, _album("lib-album", "library", mappings=(BASE_MAPPING,))],
+    ) as harness:
+        await harness.match(_library_artist())
+
+    harness.album_search.assert_awaited_once_with(
+        "Main Artist - Album X", "spotify", limit=MATCH_SEARCH_LIMIT
+    )
 
 
 # ---------------------------------------------------------------------------
