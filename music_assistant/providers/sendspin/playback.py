@@ -1463,7 +1463,8 @@ class SendspinPlaybackSession:
                 channel=channel,
             )
             filter_params = tuple(output_plan.filter_params)
-        except Exception:
+        except Exception as err:  # noqa: BLE001 - any failure means no dedicated dsp channel
+            self.player.logger.debug("Could not build the output plan for %s: %s", player_id, err)
             filter_params = ()
             output_plan = None
         # a ComplexFilter (e.g. convolution) is never a plain string, so it always counts

@@ -329,7 +329,7 @@ class AirPlayReceiverProvider(PluginProvider):
             )
             try:
                 await self.mass.players.cmd_stop(prev_player_id)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failing stop must not block the new source
                 self.logger.debug("Failed to stop previous player %s: %s", prev_player_id, err)
 
         # Claim ownership for this queue. The lock lives here (not in
@@ -956,7 +956,7 @@ class AirPlayReceiverProvider(PluginProvider):
             # stream is claimed) all await the same stop instead of racing past it.
             try:
                 await pending_stop_task
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failed stop must not block the next session
                 self.logger.warning("Failed to stop previous AirPlay playback: %s", err)
             # Don't clear a newer stop that replaced ours while we were awaiting.
             if daemon.pending_stop_task is pending_stop_task:

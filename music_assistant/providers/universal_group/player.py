@@ -366,7 +366,7 @@ class UniversalGroupPlayer(PlayerProtocol):
             for member_id, member_media in held_members:
                 try:
                     await self._play_media_on_member(member_id, member_media)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - see the comment below
                     # like a member played in a task of its own: one that fails does not stop
                     # the others
                     self.logger.warning(

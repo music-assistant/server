@@ -537,7 +537,7 @@ async def _restore_announcement_volume(player: AirPlayPlayer, bumped: dict[str, 
     for player_id in list(bumped):
         try:
             await player.mass.players.cmd_volume_set(player_id, bumped[player_id])
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failing player must not stop restoring the others
             player.logger.warning(
                 "Could not restore the volume of %s after the announcement: %r", player_id, err
             )

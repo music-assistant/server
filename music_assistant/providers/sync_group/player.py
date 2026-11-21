@@ -1049,7 +1049,7 @@ class SyncGroupPlayer(PlayerProtocol):
                             await self.mass.players._handle_set_members(
                                 group_leader, player_ids_to_remove=sync_children
                             )
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001 - the dissolve carries on either way
                         self.logger.log(
                             logging.WARNING if _is_online(group_leader) else logging.DEBUG,
                             "Could not ungroup the members of %s while dissolving group %s: %s",
@@ -1398,7 +1398,7 @@ class SyncGroupPlayer(PlayerProtocol):
                     await self.mass.players._handle_cmd_stop(leader.player_id)
             else:
                 await self.mass.players._handle_cmd_stop(leader.player_id)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the dissolve carries on either way
             self.logger.log(
                 logging.WARNING if _is_online(leader) else logging.DEBUG,
                 "Could not stop departing leader %s of group %s: %s",
@@ -1466,7 +1466,7 @@ class SyncGroupPlayer(PlayerProtocol):
                 await self.mass.players._detach_member(member)
         except asyncio.CancelledError:
             raise
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the stuck state is checked right after
             self.logger.debug("stale-parent removal recovery for %s raised: %s", member.name, err)
         member = self.mass.players.get_player(member_id)
         if member is None or member.synced_to is None:

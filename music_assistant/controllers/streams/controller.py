@@ -1112,7 +1112,7 @@ class StreamsController(CoreController):
                     queue_item.streamdetails = await self.audio.get_stream_details(
                         queue_item=queue_item
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - provider code, any failure is answered as not found
                     self.logger.error(
                         "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                     )

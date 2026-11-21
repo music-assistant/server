@@ -1197,7 +1197,7 @@ async def _probe_source_format(
             try:
                 async with asyncio.timeout(AUDIO_PROBE_TIMEOUT):
                     input_path = (await mass.streams.audio.get_hls_substream(input_path)).path
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the source just stays unprobed
                 LOGGER.debug("Unable to resolve HLS substream of %s: %s", streamdetails.uri, err)
                 return
         try:

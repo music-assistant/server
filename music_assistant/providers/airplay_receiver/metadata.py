@@ -80,7 +80,7 @@ class MetadataReader:
         while not self._stop:
             try:
                 await self._read_metadata()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the reader loop must keep running
                 # Only the first failure of a streak is worth an error, retries are noise.
                 log = self.logger.error if backoff == 1 else self.logger.debug
                 log("Metadata reader failed, retrying in %ss: %s", backoff, err)
@@ -187,7 +187,7 @@ class MetadataReader:
                 else:
                     # Wait for more data
                     break
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the reader must survive malformed metadata
                 self.logger.error("Unexpected error processing buffer: %s", err)
                 # Clear the buffer on unexpected error
                 self._buffer = ""
@@ -235,7 +235,7 @@ class MetadataReader:
                         else:
                             # Text metadata: decode to UTF-8
                             data = decoded_data.decode("utf-8", errors="ignore")
-                    except Exception as err:
+                    except ValueError as err:
                         self.logger.debug("Error decoding base64 data: %s", err)
 
             # Process the metadata item
@@ -249,7 +249,7 @@ class MetadataReader:
 
             task.add_done_callback(_on_task_done)
 
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the reader must survive malformed metadata
             self.logger.debug("Error parsing XML item: %s", err)
 
     async def _process_metadata_item(

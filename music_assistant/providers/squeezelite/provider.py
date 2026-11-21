@@ -119,7 +119,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         self.slimproto.subscribe(self._handle_slimproto_event)
         try:
             await self.slimproto.start()
-        except Exception as err:
+        except OSError as err:
             # ports were validated during setup, so a failure here is unlikely
             self.unload_with_error(err)
             return
@@ -205,7 +205,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         if self.slimproto:
             try:
                 await self.slimproto.stop()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - cleanup must not hide the setup error
                 self.logger.warning("Error stopping SlimProto server during cleanup: %s", err)
             finally:
                 self.slimproto = None

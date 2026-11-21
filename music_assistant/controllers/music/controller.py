@@ -3470,7 +3470,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 provider=provider,
                 category=CACHE_CATEGORY_SEARCH_RESULTS,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a failed cache write must not break the search
             self.logger.warning("Failed to cache search results for %s: %s", provider, str(err))
 
     def _get_covered_media_types(

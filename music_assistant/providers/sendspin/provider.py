@@ -1674,7 +1674,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             device_infos = await hass.get_media_player_device_infos(
                 [mac_address for _, mac_address in mac_players], platform="esphome"
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - the home assistant enrichment is optional
             self.logger.warning("Failed to apply Home Assistant enrichment: %s", err)
             return
         for player, mac_address in mac_players:
@@ -1912,7 +1912,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             self.logger.debug("PIN pairing with %s aborted: %s", session.client_id, err)
             session.retryable = True
             self._arm_pin_idle_timeout(session)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - library code, any other failure ends the pairing
             # A non-abort failure: the server has already disconnected the client.
             session.error = err
             self.logger.debug("PIN pairing with %s failed: %s", session.client_id, err)
@@ -1959,7 +1959,7 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         """End pairing on a client, tolerating an already-gone connection."""
         try:
             await self.server_api.end_pairing(client_id)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - ending the pairing is best effort
             self.logger.debug("Ending pairing for %s failed: %s", client_id, err)
 
     def _management_session_or_raise(self, client_id: str) -> ManagementSession:
