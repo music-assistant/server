@@ -3150,15 +3150,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # restricted user cannot discover sources of players hidden from them
         current_user = get_current_user()
         if player_id is not None:
-            if not has_player_access(current_user, player_id):
+            if not has_player_access(
+                current_user, player_id, self.mass.players.get_player(player_id)
+            ):
                 return []
             return provider.get_player_audio_sources(player_id) or []
-        player_filter = player_access_filter(current_user)
-        if player_filter is None:
+        if player_access_filter(current_user) is None:
             return await provider.get_audio_sources()
         sources: list[AudioSource] = []
-        for allowed_player_id in player_filter:
-            sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
+        for player in self.mass.players.iter_players():
+            if has_player_access(current_user, player.player_id, player):
+                sources.extend(provider.get_player_audio_sources(player.player_id) or [])
         return sources
 
     def _without_hidden_player_inputs(
