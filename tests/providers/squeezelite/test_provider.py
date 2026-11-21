@@ -273,6 +273,33 @@ async def test_the_slimproto_server_runs_on_the_clock_of_sendspin() -> None:
     assert server_time() == 5_000_000.25
 
 
+async def test_a_bridge_stream_pins_the_rate_of_the_timeline_clock() -> None:
+    """While a bridge streams to its player, the rate of the timeline clock waits."""
+    provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
+    provider.mass = MagicMock()
+    provider.mass.timeline_clock = clock = TimelineClock()
+    provider.config = MagicMock()
+    provider.logger = MagicMock()
+    with (
+        patch("music_assistant.providers.squeezelite.provider.logging"),
+        patch("music_assistant.providers.squeezelite.provider.SlimServer"),
+        patch.object(provider, "_validate_all_ports", new=AsyncMock()),
+    ):
+        await provider.handle_async_init()
+    bridge = MagicMock(owns_stream=False, stop=AsyncMock())
+    provider.bridge_manager._bridges["sq01"] = bridge
+
+    pinned = [clock.rate_pinned]
+    bridge.owns_stream = True
+    pinned.append(clock.rate_pinned)
+    await provider.unload()
+    provider.bridge_manager._bridges["sq01"] = bridge
+    pinned.append(clock.rate_pinned)
+
+    # an unloaded provider holds nothing back
+    assert pinned == [False, True, False]
+
+
 async def test_the_bridge_stream_route_follows_the_provider() -> None:
     """The route of the bridge streams is there while the provider is loaded."""
     provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)

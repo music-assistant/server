@@ -47,7 +47,25 @@ async def test_the_server_runs_on_the_timeline_clock(tmp_path: pathlib.Path) -> 
     ):
         await SendspinProvider.handle_async_init(provider)
 
-    assert server_cls.call_args.kwargs["clock"] is provider.mass.timeline_clock
+    clock = provider.mass.timeline_clock
+    assert server_cls.call_args.kwargs["clock"] is clock
+    # holding the rate of that clock while it streams, until the provider unloads
+    clock.add_rate_listener.assert_called_once_with(pinned=provider._streams_audio)
+    assert clock.add_rate_listener.return_value in provider.unregister_cbs
+
+
+def test_a_streaming_group_pins_the_rate_of_the_timeline_clock() -> None:
+    """The rate of the timeline clock waits while any group of the server has a stream."""
+    provider = MagicMock()
+    idle = MagicMock()
+    idle.group.has_active_stream = False
+    streaming = MagicMock()
+    streaming.group.has_active_stream = True
+
+    provider.server_api.clients = [idle, idle]
+    assert not SendspinProvider._streams_audio(provider)
+    provider.server_api.clients = [idle, streaming]
+    assert SendspinProvider._streams_audio(provider)
 
 
 async def test_server_start_failure_unloads_with_error() -> None:

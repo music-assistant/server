@@ -8,7 +8,7 @@ import random
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -159,9 +159,11 @@ def test_rate_is_pinned_while_a_user_cannot_follow_a_change() -> None:
     """The rate is pinned while any registered user says so."""
     clock = TimelineClock()
     running = {"a": False, "b": False}
-    clock.add_rate_listener(MagicMock())
+    listener = MagicMock()
+    clock.add_rate_listener(listener)
     remove_a = clock.add_rate_listener(MagicMock(), pinned=lambda: running["a"])
-    clock.add_rate_listener(MagicMock(), pinned=lambda: running["b"])
+    # a user that only holds the rate back
+    clock.add_rate_listener(pinned=lambda: running["b"])
 
     pinned = [clock.rate_pinned]
     running["a"] = True
@@ -170,8 +172,10 @@ def test_rate_is_pinned_while_a_user_cannot_follow_a_change() -> None:
     pinned.append(clock.rate_pinned)
     running["b"] = True
     pinned.append(clock.rate_pinned)
+    clock.set_rate(857_000)
 
     assert pinned == [False, True, False, True]
+    listener.assert_called_once_with()
 
 
 # --- the estimator ----------------------------------------------------------------------
@@ -286,27 +290,22 @@ def test_estimator_forgets_samples_older_than_its_window() -> None:
 # --- the keeper -------------------------------------------------------------------------
 
 
-def _player(state: PlaybackState) -> MagicMock:
-    """Build a player in the given playback state."""
-    player = MagicMock()
-    player.playback_state = state
-    return player
-
-
 def _keeper(
-    *states: PlaybackState, estimate: int | None = 857_000, stored: Any = 0
+    *, estimate: int | None = 857_000, settings: dict[str, Any] | None = None
 ) -> tuple[TimelineRateKeeper, MagicMock, MagicMock]:
     """
-    Build a keeper on a server with players in the given states and a set estimate.
+    Build a keeper with a set estimate, on a server that keeps its settings in a dict.
 
+    :param estimate: The rate the estimator gives, in ppb.
+    :param settings: The stored settings of the server, which a next start reads again.
     :return: The keeper, the server and a rate listener registered on its clock.
     """
+    stored = {} if settings is None else settings
     mass = MagicMock()
     mass.timeline_clock = TimelineClock()
-    mass.players = [_player(state) for state in states]
-    mass.config.get.side_effect = lambda key, default=None: (
-        stored if key == CONF_TIMELINE_RATE_PPB else default
-    )
+    mass.config.get.side_effect = stored.get
+    mass.config.set.side_effect = stored.__setitem__
+    mass.create_task.side_effect = lambda coro, **_kwargs: coro.close()
     keeper = TimelineRateKeeper(mass)
     keeper._estimator = MagicMock(rate_ppb=estimate)
     listener = MagicMock()
@@ -314,9 +313,9 @@ def _keeper(
     return keeper, mass, listener
 
 
-def test_keeper_applies_a_new_rate_when_nothing_plays() -> None:
-    """With nothing playing the estimate is applied, followed by its users, and stored."""
-    keeper, mass, listener = _keeper(PlaybackState.IDLE, PlaybackState.IDLE)
+def test_keeper_applies_and_stores_a_new_rate() -> None:
+    """With nothing pinning the rate the estimate is applied, followed by its users, and stored."""
+    keeper, mass, listener = _keeper()
 
     keeper._update_rate()
 
@@ -325,45 +324,93 @@ def test_keeper_applies_a_new_rate_when_nothing_plays() -> None:
     mass.config.set.assert_called_once_with(CONF_TIMELINE_RATE_PPB, 857_000)
 
 
-@pytest.mark.parametrize("state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
-def test_keeper_never_changes_the_rate_while_a_player_plays(state: PlaybackState) -> None:
-    """A playing or paused player keeps the rate as it is."""
-    keeper, mass, listener = _keeper(PlaybackState.IDLE, state)
+def test_keeper_ignores_players_off_the_timeline() -> None:
+    """A playing or paused player that does not run on the timeline holds nothing back."""
+    keeper, mass, _ = _keeper()
+    mass.players = [
+        MagicMock(playback_state=PlaybackState.PLAYING),
+        MagicMock(playback_state=PlaybackState.PAUSED),
+    ]
+
+    keeper._update_rate()
+
+    assert mass.timeline_clock.rate_ppb == 857_000
+
+
+def test_keeper_never_changes_a_pinned_rate() -> None:
+    """A user that runs something on the current rate keeps it, but the estimate is stored."""
+    keeper, mass, listener = _keeper()
+    mass.timeline_clock.add_rate_listener(pinned=lambda: True)
 
     keeper._update_rate()
 
     assert mass.timeline_clock.rate_ppb == 0
     listener.assert_not_called()
-    mass.config.set.assert_not_called()
+    mass.config.set.assert_called_once_with(CONF_TIMELINE_RATE_PPB, 857_000)
 
 
-def test_keeper_never_changes_a_pinned_rate() -> None:
-    """A user that runs something on the current rate keeps it, as an AirPlay stream does."""
-    keeper, mass, _ = _keeper(PlaybackState.IDLE)
-    mass.timeline_clock.add_rate_listener(MagicMock(), pinned=lambda: True)
-
-    keeper._update_rate()
-
-    assert mass.timeline_clock.rate_ppb == 0
-    mass.config.set.assert_not_called()
-
-
-def test_keeper_applies_the_rate_at_the_next_moment_nothing_plays() -> None:
-    """A new rate waits for playback to end, and is applied then."""
-    keeper, mass, _ = _keeper(PlaybackState.PLAYING)
+def test_keeper_applies_the_rate_once_nothing_pins_it() -> None:
+    """A new rate waits for its users, and is applied once they let go."""
+    keeper, mass, _ = _keeper()
+    pinned = {"stream": True}
+    mass.timeline_clock.add_rate_listener(pinned=lambda: pinned["stream"])
     keeper._update_rate()
     assert mass.timeline_clock.rate_ppb == 0
 
-    mass.players[0].playback_state = PlaybackState.IDLE
+    pinned["stream"] = False
     keeper._update_rate()
 
+    assert mass.timeline_clock.rate_ppb == 857_000
+    mass.config.set.assert_called_once_with(CONF_TIMELINE_RATE_PPB, 857_000)
+
+
+async def test_keeper_stores_a_pinned_rate_for_the_next_start() -> None:
+    """A rate that stays pinned while the server runs is in place from its next start."""
+    settings: dict[str, Any] = {}
+    keeper, mass, _ = _keeper(settings=settings)
+    mass.timeline_clock.add_rate_listener(pinned=lambda: True)
+    keeper._update_rate()
+    assert mass.timeline_clock.rate_ppb == 0
+
+    next_keeper, next_mass, _ = _keeper(estimate=None, settings=settings)
+    next_keeper.start()
+
+    assert next_mass.timeline_clock.rate_ppb == 857_000
+
+
+def test_keeper_stores_only_an_estimate_that_moved() -> None:
+    """The stored rate is only written again for an estimate 5 ppm or more off it."""
+    keeper, mass, _ = _keeper(estimate=857_000)
+    estimator = cast("MagicMock", keeper._estimator)
+    mass.timeline_clock.add_rate_listener(pinned=lambda: True)
+    keeper._update_rate()
+    for estimate in (858_000, 861_999, 856_000):
+        estimator.rate_ppb = estimate
+        keeper._update_rate()
+    estimator.rate_ppb = 862_000
+    keeper._update_rate()
+
+    assert [call.args for call in mass.config.set.call_args_list] == [
+        (CONF_TIMELINE_RATE_PPB, 857_000),
+        (CONF_TIMELINE_RATE_PPB, 862_000),
+    ]
+
+
+async def test_keeper_does_not_store_the_rate_it_started_on_again() -> None:
+    """An estimate close to the stored rate leaves the stored rate as it is."""
+    keeper, mass, _ = _keeper(estimate=858_000, settings={CONF_TIMELINE_RATE_PPB: 857_000})
+    keeper.start()
+
+    keeper._update_rate()
+
+    mass.config.set.assert_not_called()
     assert mass.timeline_clock.rate_ppb == 857_000
 
 
 @pytest.mark.parametrize(("estimate", "applied"), [(861_999, False), (862_000, True)])
 def test_keeper_ignores_a_change_under_five_ppm(estimate: int, applied: bool) -> None:
     """Only an estimate 5 ppm or more off the current rate is applied."""
-    keeper, mass, _ = _keeper(PlaybackState.IDLE, estimate=estimate)
+    keeper, mass, _ = _keeper(estimate=estimate)
     mass.timeline_clock.set_rate(857_000)
 
     keeper._update_rate()
@@ -373,16 +420,17 @@ def test_keeper_ignores_a_change_under_five_ppm(estimate: int, applied: bool) ->
 
 def test_keeper_waits_for_an_estimate() -> None:
     """Without an estimate yet, nothing changes."""
-    keeper, mass, _ = _keeper(PlaybackState.IDLE, estimate=None)
+    keeper, mass, _ = _keeper(estimate=None)
 
     keeper._update_rate()
 
     assert mass.timeline_clock.rate_ppb == 0
+    mass.config.set.assert_not_called()
 
 
 def test_keeper_refuses_a_rate_beyond_any_clock(caplog: pytest.LogCaptureFixture) -> None:
-    """An estimate past 2000 ppm is never applied, and is reported once."""
-    keeper, mass, _ = _keeper(PlaybackState.IDLE, estimate=MAX_RATE_PPB + 1)
+    """An estimate past 2000 ppm is never applied or stored, and is reported once."""
+    keeper, mass, _ = _keeper(estimate=MAX_RATE_PPB + 1)
 
     with caplog.at_level(logging.WARNING):
         keeper._update_rate()
@@ -406,7 +454,7 @@ def test_keeper_reports_an_applied_rate(
     caplog: pytest.LogCaptureFixture, rate_ppb: int, level: int, text: str
 ) -> None:
     """The applied rate is logged with its size and direction, as a warning when far off."""
-    keeper, _, _ = _keeper(PlaybackState.IDLE, estimate=rate_ppb)
+    keeper, _, _ = _keeper(estimate=rate_ppb)
 
     with caplog.at_level(logging.INFO):
         keeper._update_rate()
@@ -418,8 +466,7 @@ def test_keeper_reports_an_applied_rate(
 
 async def test_keeper_starts_on_the_stored_rate(caplog: pytest.LogCaptureFixture) -> None:
     """The rate measured before is in place before anything schedules on the timeline."""
-    keeper, mass, listener = _keeper(stored=857_000)
-    mass.create_task.side_effect = lambda coro, **_kwargs: coro.close()
+    keeper, mass, listener = _keeper(settings={CONF_TIMELINE_RATE_PPB: 857_000})
 
     with caplog.at_level(logging.INFO):
         keeper.start()
@@ -434,8 +481,7 @@ async def test_keeper_starts_on_the_stored_rate(caplog: pytest.LogCaptureFixture
 @pytest.mark.parametrize("stored", [0, None, "857000", MAX_RATE_PPB + 1, 1.5])
 async def test_keeper_ignores_a_stored_rate_it_cannot_use(stored: Any) -> None:
     """Without a usable stored rate the timeline starts without a correction."""
-    keeper, mass, _ = _keeper(stored=stored)
-    mass.create_task.side_effect = lambda coro, **_kwargs: coro.close()
+    keeper, mass, _ = _keeper(settings={CONF_TIMELINE_RATE_PPB: stored})
 
     keeper.start()
 
@@ -444,7 +490,7 @@ async def test_keeper_ignores_a_stored_rate_it_cannot_use(stored: Any) -> None:
 
 async def test_keeper_samples_both_clocks_every_ten_seconds() -> None:
     """Each round reads the raw clock and CLOCK_MONOTONIC and then looks at the estimate."""
-    keeper, _, _ = _keeper(PlaybackState.PLAYING)
+    keeper, _, _ = _keeper()
     sleep = AsyncMock(side_effect=[None, None, asyncio.CancelledError])
 
     with (

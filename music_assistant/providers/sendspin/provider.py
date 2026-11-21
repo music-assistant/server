@@ -557,6 +557,8 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
         )
         self.unregister_cbs = [
             self.server_api.add_event_listener(self.event_cb),
+            # the clients that play a stream would take minutes to settle on a new rate
+            self.mass.timeline_clock.add_rate_listener(pinned=self._streams_audio),
             self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED),
             self.mass.subscribe(self._on_queue_updated, EventType.QUEUE_UPDATED),
             self.mass.subscribe(self._on_player_config_updated, EventType.PLAYER_CONFIG_UPDATED),
@@ -1666,6 +1668,10 @@ class SendspinProvider(AudioSourceMixin, PlayerProvider):
             logging.getLogger("aiosendspin").setLevel(logging.DEBUG)
         else:
             logging.getLogger("aiosendspin").setLevel(self.logger.level + 10)
+
+    def _streams_audio(self) -> bool:
+        """Return whether the Sendspin server streams audio to any of its groups."""
+        return any(client.group.has_active_stream for client in self.server_api.clients)
 
     def _add_client_without_protocol(self, client_id: str) -> None:
         """Add a client that has no protocol, unless its player does not want one."""

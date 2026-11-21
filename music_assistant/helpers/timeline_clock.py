@@ -10,8 +10,6 @@ from collections import deque
 from statistics import linear_regression
 from typing import TYPE_CHECKING, Final
 
-from music_assistant_models.enums import PlaybackState
-
 from music_assistant.constants import CONF_TIMELINE_RATE_PPB, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
@@ -78,7 +76,7 @@ class TimelineClock:
         """Initialize the clock without a rate correction."""
         self._rate_ppb = 0
         self._offset_ns = 0
-        self._listeners: list[tuple[Callable[[], None], Callable[[], bool] | None]] = []
+        self._listeners: list[tuple[Callable[[], None] | None, Callable[[], bool] | None]] = []
         self._unix_offset_ns = time.time_ns() - self.now_ns()
 
     @property
@@ -114,7 +112,7 @@ class TimelineClock:
         """
         Change the rate correction, keeping the timeline continuous at this instant.
 
-        Call it only while nothing plays and :attr:`rate_pinned` is False.
+        Call it only while :attr:`rate_pinned` is False.
 
         :param rate_ppb: The new rate correction, in parts per billion.
         """
@@ -122,13 +120,16 @@ class TimelineClock:
         self._offset_ns += rate_term_ns(raw_ns, self._rate_ppb) - rate_term_ns(raw_ns, rate_ppb)
         self._rate_ppb = rate_ppb
         for listener, _ in list(self._listeners):
-            listener()
+            if listener is not None:
+                listener()
 
     def add_rate_listener(
-        self, listener: Callable[[], None], pinned: Callable[[], bool] | None = None
+        self,
+        listener: Callable[[], None] | None = None,
+        pinned: Callable[[], bool] | None = None,
     ) -> Callable[[], None]:
         """
-        Register a user of the timeline that has to act on a change of its rate.
+        Register a user of the timeline that acts on a change of its rate, or holds one back.
 
         :param listener: Called right after the rate changed.
         :param pinned: Returns True while the user runs something that cannot follow a
@@ -199,8 +200,8 @@ class TimelineRateKeeper:
     """
     Keep the timeline clock of the server at the true rate.
 
-    It measures how far the raw clock of the host runs off, corrects the timeline for it
-    at a moment nothing plays, and stores the rate for the next start of the server.
+    It measures how far the raw clock of the host runs off, stores that for the next start
+    of the server, and corrects the timeline for it at a moment nothing pins its rate.
     """
 
     def __init__(self, mass: MusicAssistant) -> None:
@@ -211,12 +212,14 @@ class TimelineRateKeeper:
         """
         self.mass = mass
         self._estimator = ClockRateEstimator()
+        self._stored_ppb = 0
         self._beyond_bound_warned = False
 
     def start(self) -> None:
         """Put the timeline on the stored rate and start measuring."""
         stored_ppb = self.mass.config.get(CONF_TIMELINE_RATE_PPB, 0)
         if isinstance(stored_ppb, int) and stored_ppb and abs(stored_ppb) <= MAX_RATE_PPB:
+            self._stored_ppb = stored_ppb
             self.mass.timeline_clock.set_rate(stored_ppb)
             _log_rate(stored_ppb)
         self.mass.create_task(self._measure(), task_name="timeline_rate_keeper")
@@ -229,7 +232,7 @@ class TimelineRateKeeper:
             self._update_rate()
 
     def _update_rate(self) -> None:
-        """Apply the estimated rate when it differs enough from the current one and nothing plays."""
+        """Store and apply the estimated rate when it differs enough from the current one."""
         if (rate_ppb := self._estimator.rate_ppb) is None:
             return
         if abs(rate_ppb) > MAX_RATE_PPB:
@@ -243,19 +246,16 @@ class TimelineRateKeeper:
                 )
             return
         self._beyond_bound_warned = False
+        # stored before it can be applied: a next start runs on it, also when the rate
+        # stays pinned until then
+        if abs(rate_ppb - self._stored_ppb) >= _APPLY_THRESHOLD_PPB:
+            self._stored_ppb = rate_ppb
+            self.mass.config.set(CONF_TIMELINE_RATE_PPB, rate_ppb)
         clock = self.mass.timeline_clock
-        if abs(rate_ppb - clock.rate_ppb) < _APPLY_THRESHOLD_PPB or not self._nothing_plays():
+        if abs(rate_ppb - clock.rate_ppb) < _APPLY_THRESHOLD_PPB or clock.rate_pinned:
             return
         clock.set_rate(rate_ppb)
-        self.mass.config.set(CONF_TIMELINE_RATE_PPB, rate_ppb)
         _log_rate(rate_ppb)
-
-    def _nothing_plays(self) -> bool:
-        """Return whether no player plays or is paused and nothing else pins the rate."""
-        return not self.mass.timeline_clock.rate_pinned and all(
-            player.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-            for player in self.mass.players
-        )
 
 
 def _log_rate(rate_ppb: int) -> None:

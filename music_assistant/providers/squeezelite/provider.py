@@ -46,6 +46,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
     clock: Clock
     bridge_manager: SendspinBridgeManager
     _unsub_queue_updated: Callable[[], None] | None = None
+    _unsub_timeline_rate: Callable[[], None] | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -93,6 +94,10 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
         self.clock = self.mass.timeline_clock
         self.bridge_manager = SendspinBridgeManager(self)
+        # a bridge stream maps the timeline onto the clock of its player
+        self._unsub_timeline_rate = self.mass.timeline_clock.add_rate_listener(
+            pinned=self.bridge_manager.has_stream
+        )
 
         # create the server here (also validates config and sets up the CLI) but defer
         # start() to loaded_in_mass, so we subscribe to events before accepting clients
@@ -150,6 +155,9 @@ class SqueezelitePlayerProvider(PlayerProvider):
         if self._unsub_queue_updated is not None:
             self._unsub_queue_updated()
             self._unsub_queue_updated = None
+        if self._unsub_timeline_rate is not None:
+            self._unsub_timeline_rate()
+            self._unsub_timeline_rate = None
         # Stop all Sendspin bridges
         bridge_manager = getattr(self, "bridge_manager", None)
         if bridge_manager:
