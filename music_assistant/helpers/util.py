@@ -538,6 +538,8 @@ english_by_pattern = re.compile(
     r'^"(?P<title>[^"]+)"\s+by\s+(?P<artist>.+?)(?:\s+from\s+"(?P<album>[^"]*)")?$',
     flags=re.IGNORECASE,
 )
+# &quot;, &#34; and &#x22;, for stations that entity-encode the quotes around fields
+encoded_quote_pattern = re.compile(r"&(?:quot|#0*34|#x0*22);", flags=re.IGNORECASE)
 multi_space_pattern = re.compile(r"\s{2,}")
 end_junk_pattern = re.compile(r"(.+?)(\s\W+)$")
 
@@ -958,21 +960,32 @@ def parse_station_stream_title(line: str) -> tuple[str, str, str | None] | None:
         these formats. ``album`` is None when the station omits it.
     """
     stripped = line.strip()
-    if match := english_by_pattern.match(stripped):
-        title = multi_strip(match.group("title"))
-        artist = multi_strip(match.group("artist")).strip('"')
+    # match the delimiters before decoding, so an encoded quote or "~" stays inside its field;
+    # stations that also encode the surrounding quotes only match once those are decoded
+    if parsed := _parse_station_fields(stripped):
+        return parsed
+    if (quotes_decoded := encoded_quote_pattern.sub('"', stripped)) != stripped:
+        return _parse_station_fields(quotes_decoded)
+    return None
+
+
+def _parse_station_fields(line: str) -> tuple[str, str, str | None] | None:
+    """Match a station format on its delimiters, then decode the entities in each field."""
+    if match := english_by_pattern.match(line):
+        title = multi_strip(html.unescape(match.group("title")))
+        artist = multi_strip(html.unescape(match.group("artist").strip('"')))
         album_raw = match.group("album")
-        album = multi_strip(album_raw).strip('"') if album_raw else None
+        album = multi_strip(html.unescape(album_raw)) if album_raw else None
         if title and artist:
             return title, artist, album or None
-    if match := german_von_pattern.match(stripped):
-        title = multi_strip(match.group("title"))
-        artist = multi_strip(match.group("artist")).strip('"')
+    if match := german_von_pattern.match(line):
+        title = multi_strip(html.unescape(match.group("title")))
+        artist = multi_strip(html.unescape(match.group("artist").strip('"')))
         if title and artist:
             return title, artist, None
     # at least four fields, so an ordinary title holding a "~" is left alone
-    if len(fields := stripped.split("~")) >= 4:
-        artist, title, album = (multi_strip(x) for x in fields[:3])
+    if len(fields := line.split("~")) >= 4:
+        artist, title, album = (multi_strip(html.unescape(x)) for x in fields[:3])
         if title and artist:
             return title, artist, album or None
     return None
@@ -987,13 +1000,14 @@ def clean_stream_title(line: str) -> str:
         if parsed := parse_station_stream_title(line):
             track_name, artist_name, _ = parsed
             return f"{artist_name} - {track_name}"
-        return multi_strip(line)
+        return multi_strip(html.unescape(line))
 
+    # decode after extracting the quoted fields, as an encoded quote would end them early
     if match := title_pattern.search(line):
-        title = multi_strip(match.group("title"))
+        title = multi_strip(html.unescape(match.group("title")))
 
     if match := artist_pattern.search(line):
-        possible_artist = multi_strip(match.group("artist"))
+        possible_artist = multi_strip(html.unescape(match.group("artist")))
         if possible_artist and possible_artist != title:
             artist = possible_artist
 

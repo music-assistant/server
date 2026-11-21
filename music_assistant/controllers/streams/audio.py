@@ -9,6 +9,7 @@ that do not need controller interaction live in helpers/audio.py.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import re
@@ -5902,9 +5903,9 @@ class StreamsAudio:
             streamdetails.stream_title = cleaned_title
             self._update_radio_stream_metadata(
                 streamdetails,
-                artist=artist or None,
-                title=title or cleaned_title,
-                album=album or None,
+                artist=html.unescape(artist) or None,
+                title=html.unescape(title) or cleaned_title,
+                album=html.unescape(album) or None,
             )
 
     def _record_inband_stream_title(self, streamdetails: StreamDetails, cleaned_title: str) -> bool:
@@ -6520,8 +6521,8 @@ class StreamsAudio:
                     streamdetails.stream_title = cleaned_title
                     self._update_radio_stream_metadata(
                         streamdetails,
-                        artist=artist or None,
-                        title=title or cleaned_title,
+                        artist=html.unescape(artist) or None,
+                        title=html.unescape(title) or cleaned_title,
                         image_url=image_url,
                     )
 
