@@ -102,6 +102,7 @@ from .constants import (
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
     CREDENTIALS_FILE,
+    GLOBAL_SEARCH_LIMIT,
     GLOBAL_SEARCH_TIMEOUT,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
     SOLOIST_DATA_DIR_NAME,
@@ -519,8 +520,11 @@ class SpotifyProvider(MusicProvider):
             return searchresult
 
         search_query = search_query.replace("'", "")
+        on_global_session = self._session_for(use_global_session=False) is self._global_session
+        if on_global_session:
+            limit = min(limit, GLOBAL_SEARCH_LIMIT)
         searches: list[tuple[list[MediaType], bool]] = [(media_types, False)]
-        if self.dev_session_active and MediaType.PLAYLIST in media_types:
+        if not on_global_session and MediaType.PLAYLIST in media_types:
             # Spotify returns the playlists a developer app may not access (its own
             # editorial ones) as null search items, which can leave a playlist search
             # almost empty. Search playlists on the global session, which sees them.
@@ -1314,24 +1318,25 @@ class SpotifyProvider(MusicProvider):
         limit: int,
         searchresult: SearchResults,
         use_global_session: bool,
+        offset: int = 0,
     ) -> None:
         """
         Page through Spotify search results for the given media types.
 
         :param search_query: Search query.
         :param media_types: The media types to search for.
-        :param limit: Number of items to return per media type.
+        :param limit: Number of results per media type to page up to, those before offset included.
         :param searchresult: The search result to add the found items to.
         :param use_global_session: Force use of global session (for features not available on dev).
+        :param offset: Index of the first result to fetch.
         """
         searchtype = self._build_search_types(media_types)
         if not searchtype:
             return
 
-        offset = 0
         page_limit = min(limit, 10)
 
-        while True:
+        while offset < limit:
             api_result = await self._get_data(
                 "search",
                 q=search_query,
@@ -1343,13 +1348,14 @@ class SpotifyProvider(MusicProvider):
             items_received = self._process_search_results(api_result, searchresult)
 
             offset += page_limit
-            if offset >= limit or items_received < page_limit:
+            if items_received < page_limit:
                 break
 
     async def _search_playlists_on_global_session(
         self, search_query: str, limit: int, searchresult: SearchResults
     ) -> None:
         """Search playlists on the global session, topped up by the dev session if it fails."""
+        limit = min(limit, GLOBAL_SEARCH_LIMIT)
         global_result = SearchResults()
         try:
             async with asyncio.timeout(GLOBAL_SEARCH_TIMEOUT):
@@ -1358,10 +1364,15 @@ class SpotifyProvider(MusicProvider):
                 )
         except RetriesExhausted, TimeoutError:
             self.logger.debug("Global session is slow or rate limited, topping up on the dev one")
-            if (missing := limit - len(UniqueList(global_result.playlists))) > 0:
-                await self._search_pages(
-                    search_query, [MediaType.PLAYLIST], missing, global_result, False
-                )
+            # continue after the playlists the global session did return
+            await self._search_pages(
+                search_query,
+                [MediaType.PLAYLIST],
+                limit,
+                global_result,
+                False,
+                offset=len(global_result.playlists),
+            )
         searchresult.playlists = UniqueList(global_result.playlists)[:limit]
 
     def _build_search_types(self, media_types: list[MediaType]) -> str:

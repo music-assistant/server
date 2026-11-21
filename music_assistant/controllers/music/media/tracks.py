@@ -49,7 +49,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACKS,
 )
 from music_assistant.controllers.metadata.constants import MUSICBRAINZ_LINK_DOMAINS
-from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
+from music_assistant.controllers.music.constants import MATCH_SEARCH_LIMIT, SIMILAR_ITEMS_LIMIT
 from music_assistant.controllers.music.helpers import (
     provider_mappings_for_update,
     search_name_match_clause,
@@ -1132,7 +1132,7 @@ class TracksController(MediaControllerBase[Track]):
             if matches:
                 break
             search_str = f"{artist.name} - {base_track.name}"
-            search_result = await self.search(search_str, provider.domain)
+            search_result = await self.search(search_str, provider.domain, limit=MATCH_SEARCH_LIMIT)
             for search_result_item in search_result:
                 if not search_result_item.available:
                     continue
