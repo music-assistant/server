@@ -324,13 +324,14 @@ class TestSharedCooldown:
     async def test_exhausted_retries_gate_without_retry_after(
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
-        """Without a Retry-After the gate closes on the backoff we escalated to."""
+        """Without a Retry-After the gate closes on the backoff we escalated to, still a rate limit."""
         provider.throttler = ThrottlerManager(
             rate_limit=100, period=0.01, retry_attempts=5, initial_backoff=2
         )
         provider.set_side_effects([RateLimited("rate limited")] * 5)
-        with pytest.raises(RetriesExhausted):
+        with pytest.raises(RetriesExhausted) as exc_info:
             await provider.api_call("test")
+        assert is_rate_limit_error(exc_info.value)
         exhausted_at = fake_clock.now
 
         provider.set_side_effects(["ok"])
