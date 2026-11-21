@@ -2862,16 +2862,20 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         return None
 
     @handle_play_action(switched_off=SwitchedOffAction.RUN)
-    async def _handle_stop(self, queue_id: str) -> None:
+    async def _handle_stop(self, queue_id: str, keep_sleep_timer: bool = False) -> None:
         """
         Handle stop without checking the caller's player permissions.
 
         :param queue_id: queue_id of the playerqueue to stop.
+        :param keep_sleep_timer: The stop stands in for a pause, so the sleep timer still
+            waits for its target once the queue resumes.
         """
         # a stop ends what a sleep timer waited for, except the one of an announcement, which
         # resumes the queue afterwards
         queue_player = self.mass.players.get_player(queue_id)
-        if not (queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)):
+        if not keep_sleep_timer and not (
+            queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        ):
             self._clear_sleep_timer(queue_id)
         self._cancel_pending_playback(queue_id)
         if not (queue_data := self._queue_data.get(queue_id)):
