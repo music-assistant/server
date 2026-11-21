@@ -216,7 +216,7 @@ class LifxEntertainmentProvider(PluginProvider):
             await asyncio.sleep(REDISCOVERY_INTERVAL_S)
             try:
                 await self._rediscover()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the background rediscovery must keep running
                 self.logger.debug("LIFX rediscovery failed: %s", err)
 
     async def _rediscover(self) -> None:

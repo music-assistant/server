@@ -326,7 +326,7 @@ class LifxEntertainmentBridgeManager:
             bridge = LifxEntertainmentBridge(self.provider, sendspin_provider, area)
             try:
                 await bridge.start()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one area that fails must not stop the others
                 self.logger.warning("Failed to start bridge for LIFX area '%s': %s", area.name, err)
                 with suppress(Exception):
                     await bridge.stop()
