@@ -28,6 +28,8 @@ HEOS_PLAY_STATE_TO_PLAYBACK_STATE: dict[HeosPlayState | None, PlaybackState] = {
 }
 
 HEOS_PASSIVE_SOURCES = [const.MUSIC_SOURCE_AUX_INPUT]
+# listed among the inputs of a device, but a radio built into it
+HEOS_TUNER_INPUTS = (const.INPUT_TUNER, const.INPUT_HD_RADIO)
 
 
 CONF_TIMEOUT: Final[str] = "timeout"

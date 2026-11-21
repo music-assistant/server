@@ -28,8 +28,10 @@ PLAYBACK_STATE_MAP: dict[WamPlaybackState, PlaybackState] = {
 PLAYER_SOURCE_MAP = {
     WamSource.WIFI: PlayerSource(id=WamSource.WIFI, name="Wi-Fi", passive=True),
     WamSource.BLUETOOTH: PlayerSource(id=WamSource.BLUETOOTH, name="Bluetooth", passive=False),
-    WamSource.AUX: PlayerSource(id=WamSource.AUX, name="AUX", passive=True),
-    WamSource.OPTICAL: PlayerSource(id=WamSource.OPTICAL, name="Optical", passive=True),
+    WamSource.AUX: PlayerSource(id=WamSource.AUX, name="AUX", passive=True, is_input=True),
+    WamSource.OPTICAL: PlayerSource(
+        id=WamSource.OPTICAL, name="Optical", passive=True, is_input=True
+    ),
     WamSource.TV_SOUNDCONNECT: PlayerSource(
         id=WamSource.TV_SOUNDCONNECT, name="TV SoundConnect", passive=False
     ),
