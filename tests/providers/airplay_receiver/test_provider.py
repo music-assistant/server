@@ -566,18 +566,25 @@ async def test_source_is_selectable_while_an_airplay_client_streams() -> None:
     """A player can switch back to the receiver for as long as the AirPlay client streams."""
     prov, mocks = _session_provider("p1", {"p1": "Kitchen"})
     daemon = prov._daemons["p1"]
+    trigger_player_update = mocks.mass.players.trigger_player_update
     assert not prov.get_player_audio_sources("p1")[0].can_initiate
 
     prov._handle_play_state_change(daemon, "playing")
     await asyncio.sleep(0.01)
+    # the player's cached source list follows
+    trigger_player_update.assert_called_once_with("p1")
     await prov.on_source_selected("p1", "p1", "p1", "session1")
     # the player switches to its own queue: its standing source entry stays selectable
     await prov.on_source_unselected("p1", "p1", "session1")
     assert prov.get_player_audio_sources("p1")[0].can_initiate
-    mocks.mass.players.trigger_player_update.assert_called_with("p1")
+    # and back to the source
+    await prov.on_source_selected("p1", "p1", "p1", "session2")
+    assert daemon.in_use_by_player == "p1"
 
+    trigger_player_update.reset_mock()
     prov._handle_play_state_change(daemon, "stopped")
     assert not prov.get_player_audio_sources("p1")[0].can_initiate
+    trigger_player_update.assert_called_once_with("p1")
 
 
 async def test_selecting_the_source_without_a_streaming_client_is_refused() -> None:
@@ -727,6 +734,29 @@ async def test_a_start_failing_after_the_client_stopped_leaves_nothing_waiting()
 
     assert daemon.pending_start_task is not None
     assert daemon.pending_start_task.exception() is None
+    mocks.mass.subscribe.assert_not_called()
+
+
+async def test_a_start_failing_after_another_player_took_over_leaves_nothing_waiting() -> None:
+    """A start that only fails once another player took the source does not wait for the player."""
+    prov, mocks = _session_provider("p1", {"p1": "Kitchen", "p2": "Bedroom"}, {"p1"})
+    daemon = prov._daemons["p1"]
+    release = asyncio.Event()
+
+    async def play_media(_player_id: str, _uri: str) -> None:
+        await release.wait()
+        raise PlayerUnavailableError("Player p1 is not available")
+
+    mocks.mass.player_queues.play_media = play_media
+    prov._handle_play_state_change(daemon, "playing")
+    await asyncio.sleep(0.01)
+    await prov.on_source_selected("p1", "p2", "p2", "session1")
+    release.set()
+    await asyncio.sleep(0.01)
+
+    assert daemon.pending_start_task is not None
+    assert daemon.pending_start_task.exception() is None
+    assert daemon.in_use_by_player == "p2"
     mocks.mass.subscribe.assert_not_called()
 
 

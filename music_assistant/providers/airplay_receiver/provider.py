@@ -273,7 +273,7 @@ class AirPlayReceiverProvider(PluginProvider):
         player_queues._load_item can fetch streamdetails without claiming the
         source and blocking a subsequent cross-queue handoff.
 
-        Raises AudioError when no AirPlay client is currently connected.
+        :raises AudioError: When no AirPlay client streams to the receiver.
         """
         daemon = self._daemons.get(item_id)
         if daemon is None:
@@ -994,8 +994,9 @@ class AirPlayReceiverProvider(PluginProvider):
             if self._can_play(target_player_id):
                 raise
             # the AirPlay client starts no new session while it keeps streaming, so the
-            # start waits for the player (or a member of a group player) to come back
-            if daemon.client_active:
+            # start waits for the player (or a member of a group player) to come back,
+            # unless another player took the source meanwhile
+            if daemon.client_active and not daemon.in_use_by_player:
                 self.logger.info(
                     "Player %s cannot play right now, AirPlay playback starts once it can",
                     target_player_id,
