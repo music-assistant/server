@@ -37,6 +37,7 @@ from music_assistant.providers.sendspin.constants import (
     CONF_SENDSPIN_STATIC_DELAY,
 )
 from music_assistant.providers.sendspin.provider import SendspinProvider
+from music_assistant.providers.sendspin.sources import SendspinSources
 
 from .bridge_harness import (
     AIRPLAY_CLIENT,
@@ -1018,6 +1019,7 @@ async def test_the_waits_of_bridges_go_with_the_sendspin_provider() -> None:
     sendspin._running_pairing_evictions = set()
     sendspin._server_start_failed = False
     sendspin.unregister_cbs = []
+    sendspin.sources = SendspinSources(sendspin)
 
     await SendspinProvider.unload(sendspin)
 

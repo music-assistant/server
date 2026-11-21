@@ -22,7 +22,7 @@ KEY_URI = "data:;base64,AAAAABep6CkAHStsI7gv/Q=="
 
 def _manager(monkeypatch: pytest.MonkeyPatch, answer: dict[str, Any]) -> tuple[Any, MagicMock]:
     """Return a streaming manager whose license server gives the given answer."""
-    provider: Any = MagicMock(_music_app_token="app", _music_user_token="user")
+    provider: Any = MagicMock(music_app_token="app", music_user_token="user")
     response = MagicMock()
     response.json = AsyncMock(return_value=answer)
     provider.mass.http_session.post.return_value.__aenter__.return_value = response

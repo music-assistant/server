@@ -76,7 +76,7 @@ class AppleMusicRecommendationManager:
     @use_cache(3600 * 24)
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
         """Retrieve a list of artists similar to the provided artist via Apple Music similar-artists view."""
-        storefront = self.provider._storefront
+        storefront = self.provider.storefront
         response = await self.api.get_data(
             f"catalog/{storefront}/artists/{prov_artist_id}",
             views="similar-artists",
@@ -97,7 +97,7 @@ class AppleMusicRecommendationManager:
         """Fetch name and artwork for a radio station and return it as a Radio."""
         try:
             station_response = await self.api.get_data(
-                f"catalog/{self.provider._storefront}/stations/{station_id}"
+                f"catalog/{self.provider.storefront}/stations/{station_id}"
             )
             station_obj = station_response["data"][0]
             station_obj["id"] = station_id
@@ -166,13 +166,13 @@ class AppleMusicRecommendationManager:
         station_name = self._station_id_to_name.get(stale_id)
         if not station_name:
             # Maps may be empty after a process restart; populate from the cached payload first.
-            self._populate_station_maps(await self.provider._recommendation_payload())
+            self._populate_station_maps(await self.provider.get_recommendation_payload())
             station_name = self._station_id_to_name.get(stale_id)
             if not station_name:
                 return None
         # Apple rotates station ids: refresh through the mixin cache so the fresh payload
         # (which rebuilds the maps) is also what rows/items serve afterwards.
-        await self.provider._refresh_recommendation_payload()
+        await self.provider.refresh_recommendation_payload()
         return self._station_name_to_id.get(station_name)
 
     async def browse_stations(self) -> list[ItemMapping | Radio]:
@@ -181,7 +181,7 @@ class AppleMusicRecommendationManager:
             "list[ItemMapping | Radio]",
             [
                 item
-                for folder in await self.provider._recommendation_payload()
+                for folder in await self.provider.get_recommendation_payload()
                 for item in folder.items
             ],
         )
@@ -197,7 +197,7 @@ class AppleMusicRecommendationManager:
             batch = station_ids[i : i + _STATION_BATCH_SIZE]
             try:
                 response = await self.api.get_data(
-                    f"catalog/{self.provider._storefront}/stations", ids=",".join(batch)
+                    f"catalog/{self.provider.storefront}/stations", ids=",".join(batch)
                 )
             except MediaNotFoundError:
                 response = {}

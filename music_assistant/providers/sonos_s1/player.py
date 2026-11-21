@@ -12,6 +12,7 @@ import contextlib
 import logging
 import time
 from collections.abc import Callable, Coroutine
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import (
@@ -850,8 +851,16 @@ class SonosPlayer(PlayerProtocol):
             self._attr_elapsed_time_last_updated = None
             self._attr_active_source = source_id
             self._attr_current_media = None
-            if source_id not in [x.id for x in self._attr_source_list]:
-                self._attr_source_list.append(PLAYER_SOURCE_MAP[source_id])
+            source = PLAYER_SOURCE_MAP[source_id]
+            if self.soco.uid not in uri:
+                # the uri names the speaker whose input plays: the line-in of another
+                # speaker is listed, but is no input of this one
+                source = replace(source, is_input=False)
+            source_ids = [x.id for x in self._attr_source_list]
+            if source_id in source_ids:
+                self._attr_source_list[source_ids.index(source_id)] = source
+            else:
+                self._attr_source_list.append(source)
             return
 
         current_media = PlayerMedia(

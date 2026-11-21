@@ -342,6 +342,8 @@ def use_player_registry(mass: MagicMock | MusicAssistant) -> MagicMock:
         "get_output_protocol",
         "iter_players",
         "iter_protocols",
+        "get_audio_source_owner",
+        "get_audio_source_name",
     ):
         setattr(players, lookup, MethodType(getattr(PlayerController, lookup), players))
     players.get_audio_source_session = MagicMock(return_value=None)
@@ -859,7 +861,11 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "mass_sources": frozenset(),
         "session": None,
         "session_image_url": None,
+        "followed_sessions": {},
+        "followed_source_names": {},
         "standing_sources": (),
+        "input_sources": (),
+        "source_names": {},
     }
     return StateInputs(**(defaults | values))
 

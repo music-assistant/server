@@ -11,12 +11,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.enums import ProviderIconVariant, ProviderTier
-from music_assistant_models.errors import AlreadyRegisteredError, InvalidDataError
+from music_assistant_models.errors import AlreadyRegisteredError
 
 from music_assistant import providers as providers_package
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.helpers.util import load_provider_module, purge_provider_modules
-from music_assistant.mass import PROVIDERS_PATH
+from music_assistant.mass import _PROVIDER_FOLDERS, PROVIDERS_PATH
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -83,18 +83,20 @@ async def _import(manifest: ProviderManifest) -> ModuleType:
 
 
 @pytest.fixture
-def location(tmp_path: Path) -> Iterator[Path]:
+def location(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Return a folder to add as provider location; what a test imports from it is undone."""
     folder = tmp_path / "community_providers"
     folder.mkdir()
     original_path = list(providers_package.__path__)
+    monkeypatch.setattr(_PROVIDER_FOLDERS, "_folders", {})
     imported_before = set(sys.modules)
     yield folder
     providers_package.__path__[:] = original_path
     for provider_dir in folder.iterdir():
+        domain = json.loads((provider_dir / "manifest.json").read_text())["domain"]
         # a shipped provider of the same name, imported elsewhere, stays imported
-        if f"{PACKAGE}.{provider_dir.name}" not in imported_before:
-            purge_provider_modules(provider_dir.name)
+        if f"{PACKAGE}.{domain}" not in imported_before:
+            purge_provider_modules(domain)
 
 
 async def test_provider_imports_from_added_location(
@@ -180,17 +182,42 @@ async def test_community_manifest_can_not_claim_to_be_builtin(
     assert manifest.allow_disable is True
 
 
-async def test_community_folder_must_be_named_after_domain(
+async def test_community_folder_imports_under_its_domain(
     mass_minimal: MusicAssistant, location: Path
 ) -> None:
-    """A community provider whose folder name differs from its domain is refused."""
-    provider_dir = _write_provider(location, "real_domain", folder="other_name", icon=True)
+    """A community provider whose folder is named otherwise imports from it under its domain."""
+    provider_dir = _write_provider(location, "real_domain", folder="provider", icon=True)
 
-    with pytest.raises(InvalidDataError):
-        await mass_minimal.register_provider_manifest(str(provider_dir), ProviderTier.COMMUNITY)
+    manifest = await mass_minimal.register_provider_manifest(
+        str(provider_dir), ProviderTier.COMMUNITY
+    )
+    module = await _import(manifest)
 
-    assert mass_minimal.get_provider_manifests() == []
-    assert mass_minimal.get_provider_icon("real_domain") is None
+    assert str(location) not in providers_package.__path__
+    assert module.__name__ == f"{PACKAGE}.real_domain"
+    assert module.__file__ == str(provider_dir / "__init__.py")
+    assert (module.ABSOLUTE, module.RELATIVE, module.NESTED) == ("1", "1", "1")
+    assert mass_minimal.get_provider_icon("real_domain") == ("image/svg+xml", ICON.encode())
+
+    await mass_minimal.unregister_provider_manifest("real_domain")
+    purge_provider_modules("real_domain")
+
+    with pytest.raises(ModuleNotFoundError):
+        await _import(manifest)
+
+
+async def test_community_folder_adds_its_location(
+    mass_minimal: MusicAssistant, location: Path
+) -> None:
+    """A community provider in a folder named after its domain imports from where it is."""
+    provider_dir = _write_provider(location, "own_location")
+
+    manifest = await mass_minimal.register_provider_manifest(
+        str(provider_dir), ProviderTier.COMMUNITY
+    )
+
+    assert str(location) in providers_package.__path__
+    assert (await _import(manifest)).__file__ == str(provider_dir / "__init__.py")
 
 
 async def test_purged_provider_imports_its_new_code(

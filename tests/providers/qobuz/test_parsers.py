@@ -112,7 +112,7 @@ def mock_provider() -> QobuzProvider:
     """Create a real QobuzProvider with mocked dependencies."""
     mass = Mock()
     mass.metadata.locale = "en_US"
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "qobuz"
     config = Mock()
     config.instance_id = "qobuz_test"

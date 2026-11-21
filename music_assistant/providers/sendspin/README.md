@@ -10,11 +10,76 @@ Sendspin enables:
 - **Real-time metadata** including artwork, track info, and playback state
 - **Bidirectional control** allowing clients to control playback
 
-## Source clients
+## Line-in sources
 
-This provider owns Sendspin client connections and output players. The separate
-[Sendspin Source](../sendspin_source/README.md) plugin exposes audio captured by
-source-role clients through Music Assistant's AudioSource interface.
+Besides its players, this provider delivers the inputs of Sendspin clients that
+implement the [source role](https://github.com/Sendspin-Protocol/spec) (line-in,
+turntable preamp, microphone, Bluetooth receiver) as Music Assistant audio
+sources, playable on any player or group. `SendspinSources` in `sources.py`
+implements them on the provider's own client connections.
+
+### How it works
+
+Every connected Sendspin client whose negotiated roles include the `source`
+family shows up as one AudioSource under Live Inputs. The source role only
+activates on paired connections, so an unpaired device never appears here.
+
+When a user plays a source, the provider sends the client a
+`server/command: start`. The client announces its native stream format,
+streams timestamped encoded audio up to the server, and the Sendspin server
+library decodes it back to PCM. The provider feeds that PCM into a clock
+bridge (`aiosendspin.audio.AsrcSourceBridge`) and serves Music Assistant a
+steady stream in the source's own format.
+
+### Design notes
+
+- **Output format.** A source's native format is only known once the
+  client starts streaming, so the stream details wait for its first audio
+  (falling back to 48 kHz / 24-bit / stereo when none arrives). The bridge
+  keeps converting to that declared format when the source later restarts
+  in another one, so the stream never changes format mid-play.
+- **Clock bridge.** The client's capture clock (its ADC) and the consuming
+  player's clock drift relative to each other, and capture timestamps can be
+  gappy. The bridge holds a target latency of 500 ms and folds drift
+  correction into a phase-continuous variable-rate resample (soxr).
+- **Silence-hold.** A real line-in goes silent when unplugged, it does not
+  stop. The stream mirrors that: when source audio stops flowing (stream
+  end, disconnect, client unavailable) it keeps playing silence rather
+  than ending. After the source timeout, the stream ends. This intentionally
+  differs from providers like Spotify Connect, which end the stream immediately
+  on pause: those have an upstream transport state to mirror, a line-in does not.
+- **Reconnect recovery.** A reconnect clears the client's start request, so the
+  provider re-sends it. The existing Music Assistant stream remains open with
+  silence and resumes live audio after the client reconnects and rebuilds its
+  latency buffer, provided audio returns before the source timeout. Audio
+  captured during the disconnect is lost. Recovery is scoped to reconnects: a
+  client that reports itself unavailable also has its start request cleared, but
+  announces nothing when it returns, so that stream runs out the source timeout
+  instead.
+- **Server-initiated streaming only.** Per the Sendspin spec, a source client
+  must not stream until the server asks. Streaming starts on source selection
+  and stops on unselection, so no bandwidth is spent while nobody listens.
+
+### Autostart
+
+Clients that advertise the `line_sense` feature report whether a signal is
+present on their input. Per the spec the server decides what to do with that,
+and this provider turns it into playback: pick a target under the device's own
+settings and the source starts there when a signal appears, and stops again
+after the signal has been gone for a minute. The target list covers everything
+that renders audio, groups and multi-channel players included, and a device
+that is a player itself defaults to playing its own line-in.
+
+Only transitions act, and the first report after a connect is recorded
+without acting, so a restart with the needle already down starts nothing. A
+source that is already streaming is never re-targeted, so moving it by hand
+survives the next transition. Autostop also closes a gap that exists without
+line-sense: a client keeps streaming silence after a record ends, so the
+no-audio timeout never fires and the queue would otherwise sit
+playing silence indefinitely.
+
+Devices without `line_sense` have no trigger to offer, so they get no setting
+and stay manual.
 
 ## Architecture
 
@@ -47,6 +112,8 @@ Hardware devices and local clients can connect directly to the Sendspin server:
 ```
 ws://<ma-server-ip>:8927/sendspin
 ```
+
+When 8927 is taken, the server uses the next free port and announces it over mDNS.
 
 This is suitable for:
 - Hardware players on the local network
@@ -205,6 +272,8 @@ Sendspin players support:
 | `provider.py` | Main provider class, handles WebRTC signaling and server lifecycle |
 | `player.py` | Player implementation with playback, grouping, and metadata handling |
 | `playback.py` | Playback pipeline with DSP channel processing and timed frame commits |
+| `sources.py` | Line-in sources of source-role clients, with their clock bridge and autostart |
+| `multi_channel.py` | Multi-channel players combined from Sendspin speakers |
 | `__init__.py` | Provider setup and configuration |
 | `manifest.json` | Provider metadata |
 
@@ -216,9 +285,10 @@ Sendspin players support:
 
 ## Players
 
-Every Sendspin client is a protocol (`SendspinBasePlayer`) whose id is its client id.
+Every Sendspin client is a protocol (`SendspinBasePlayer`) whose id is its client id, except a
+speaker of a [multi-channel player](#multi-channel-players).
 
-- A web or app player, a virtual player, a display, a visualizer, a light and an audio source exist only while they are connected (`session_only`): each is the native protocol of a player of its own, whose player id is its client id. Nothing is stored for one until its config is changed.
+- A web or app player, a virtual player, a display, a visualizer, a light, a controller and an audio source exist only while they are connected (`session_only`): each is the native protocol of a player of its own, whose player id is its client id. Nothing is stored for one until its config is changed.
 - Any other client is the native protocol of its player, unless that player has a protocol of its own from another provider: then it is an audio output of it. A client with a hardware MAC address that is seen for the first time joins the player of its device when there is one, as an audio output; it is the native protocol of a player of its own from its next connection on. A new client without one is the native protocol of a player of its own at once, as nothing else can tie it to a device.
 - A client reports the MAC address it uses as client id or reports in its hello. A client whose id is not its MAC address also reports its id as an instance id, so several clients on one host stay separate players; a device whose client id changes from its MAC address to its key id keeps its player and settings.
 
@@ -305,6 +375,46 @@ is changed. A stored configuration (including the owner marker) is reused when
 the same owner recreates the same player id; it is deleted on
 `remove_virtual_player` or swept at startup once the owner provider no longer
 exists.
+
+## Multi-channel players
+
+A multi-channel player combines Sendspin speakers into one player, each speaker on a channel of
+its own (`players/create_multi_channel_player`, offered through
+`ProviderFeature.CREATE_MULTI_CHANNEL_PLAYER`).
+
+- The player is a silent server-side client, like a virtual player, with a stored protocol
+  `sendspin_mc_<group id>`. Its record holds the group id (32 random bytes in base64url, as the
+  Sendspin spec defines it) and per speaker its client id, name, channel and output delay
+  (`speaker_<n>_*`). Combining removes the own Sendspin protocol of each speaker; a player that
+  has no other protocol left goes with it.
+- Only the player writes its record. Its group id and the client id, name and channel of each
+  speaker have no config entries, so a config save keeps them as they are. Each speaker has
+  these entries:
+  - `speaker_<n>_state`: a label that says whether the speaker is online.
+  - `speaker_<n>_display_name`: a label with the name of the speaker.
+  - `speaker_<n>_channel_setting`: the channel the user sets, which the player takes into its
+    record, swapping with the speaker that had that channel; a value that is no channel of the
+    layout changes nothing.
+  - `speaker_<n>_output_delay`: the output delay of the speaker, which also follows a delay the
+    speaker reports itself.
+- A speaker of a set is never a protocol. The provider knows the speakers of every stored set
+  before its server starts and hands a speaker that connects to its set, so it does not matter
+  whether the set or its speakers come first. The set takes its speakers into the Sendspin group
+  it plays in, also when it joins another leader. Group members and leaders leave the speakers
+  out: a group lists the set.
+- The session of the leader gives each speaker a pipeline of its own: the DSP of the set, then
+  the channel of the speaker, while it is in the group of the set. While a speaker is away the
+  others play every channel; such a change starts the stream again, as a DSP change does. The
+  silent client gets no pipeline and does not count for the sample rate of the session.
+- A speaker is away while it is disconnected, and while it is out of the group of its set. One
+  that leaves by itself, as it is unavailable or went to a group of its own, comes back at the
+  next playback session; one that the group of another player takes (its switch) is taken back
+  at once.
+- One volume: a level set on the set goes to every speaker, and a level a speaker reports itself
+  goes to the others. A speaker that reports back a level the set sent changes nothing.
+- Taking a set apart is removing its player: its speakers register as clients of their own again,
+  one that is away once it connects again. A speaker belongs to one set; a second request for it
+  is refused.
 
 ## Related Documentation
 

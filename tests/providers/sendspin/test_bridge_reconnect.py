@@ -31,6 +31,7 @@ from music_assistant.providers.sendspin.constants import (
 )
 from music_assistant.providers.sendspin.player import SendspinPlayer
 from music_assistant.providers.sendspin.provider import SendspinProvider
+from music_assistant.providers.sendspin.sources import SendspinSources
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
@@ -97,6 +98,7 @@ def _sendspin(scenario: Scenario) -> Any:
     provider.clients = {}
     provider.server_api = SimpleNamespace(get_client=provider.clients.get)
     provider.is_virtual_player = lambda _client_id: False
+    provider.sources = SendspinSources(provider)
     provider.is_held_unapproved = lambda _client_id: False
     provider.is_held_elsewhere = lambda _client_id: False
     provider._auto_trust_guest_access = AsyncMock()
@@ -111,6 +113,7 @@ def _sendspin(scenario: Scenario) -> Any:
     provider._bridge_holders = {}
     provider._bridge_waiters = {}
     provider._bridge_locks = {}
+    provider._multi_channel_speakers = {}
     return provider
 
 

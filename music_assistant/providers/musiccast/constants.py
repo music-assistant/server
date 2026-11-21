@@ -47,6 +47,8 @@ MC_DEVICE_UPNP_USER_AGENT = "MusicCast/6.00 (Android)"
 MC_NULL_GROUP = "00000000000000000000000000000000"
 MC_DEFAULT_ZONE = "main"
 
+# the built-in drive of a CD receiver; an analog input for a CD player has its own id
+MC_SOURCE_CD = "cd"
 MC_SOURCE_MC_LINK = "mc_link"
 MC_SOURCE_MAIN_SYNC = "main_sync"
 MC_LINK_SOURCES = [MC_SOURCE_MC_LINK, MC_SOURCE_MAIN_SYNC]

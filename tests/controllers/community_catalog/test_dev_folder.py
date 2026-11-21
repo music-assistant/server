@@ -15,8 +15,10 @@ from music_assistant import providers as providers_package
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.community_catalog import CommunityCatalogController, dependencies
 from music_assistant.controllers.community_catalog.dependencies import CommunityDependencies
-from music_assistant.helpers.util import purge_provider_modules
+from music_assistant.helpers.util import load_provider_module
+from music_assistant.mass import _PROVIDER_FOLDERS
 from music_assistant.testing import full_mass_context
+from tests.controllers.community_catalog.test_controller import _forget_imports
 from tests.controllers.community_catalog.test_dependencies import _build_wheel
 from tests.controllers.community_catalog.test_settings import _wait_for_start
 
@@ -54,14 +56,10 @@ def location(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     folder = tmp_path / "dev_providers"
     folder.mkdir()
     original_path = list(providers_package.__path__)
+    monkeypatch.setattr(_PROVIDER_FOLDERS, "_folders", {})
     yield folder
     providers_package.__path__[:] = original_path
-    sys.modules.pop(REQUIREMENT.replace("-", "_"), None)
-    for provider_dir in folder.iterdir():
-        module = sys.modules.get(f"{providers_package.__name__}.{provider_dir.name}")
-        # a folder named after a shipped provider never replaced it
-        if module is not None and str(module.__file__).startswith(str(folder)):
-            purge_provider_modules(provider_dir.name)
+    _forget_imports(tmp_path)
 
 
 @pytest.fixture
@@ -130,11 +128,34 @@ async def test_nothing_happens_without_the_folder(
     _assert_nothing_loaded(mass, location, uv)
 
 
+@pytest.mark.parametrize("folder", ["dev_one", "provider", "providers/dev_one"])
+async def test_folder_layouts(
+    location: Path, mass: MusicAssistant, caplog: pytest.LogCaptureFixture, folder: str
+) -> None:
+    """A provider loads under its domain from each folder the community catalog accepts."""
+    _write_provider(location, "dev_one", folder=folder, requirements=[REQUIREMENT])
+    mass.dev_mode = True
+    mass.dev_providers_path = str(location)
+
+    await _start(mass, caplog)
+
+    assert not _warnings(mass, caplog)
+    manifest = mass.get_provider_manifest("dev_one")
+    assert manifest.tier == ProviderTier.COMMUNITY
+    await load_provider_module(manifest)
+    module = sys.modules[f"{providers_package.__name__}.dev_one"]
+    assert module.__file__ == str(location / folder / "__init__.py")
+    assert module.REQUIREMENT_VERSION == "1.0"
+
+
 @pytest.mark.parametrize(
     ("folder", "domain", "reason"),
     [
         ("misnamed", "other_domain", "not named after its domain"),
+        ("providers/misnamed", "other_domain", "not named after its domain"),
+        ("providers/provider", "other_domain", "not named after its domain"),
         ("builtin", "builtin", "already has a provider named builtin"),
+        ("provider", "dev_one", "already has a provider named dev_one"),
     ],
 )
 async def test_refused_provider(
@@ -219,7 +240,7 @@ def _write_provider(
     :param requirements: Requirements in the manifest.
     """
     provider_dir = location / (folder or domain)
-    provider_dir.mkdir()
+    provider_dir.mkdir(parents=True)
     manifest = {
         "type": "plugin",
         "domain": domain,

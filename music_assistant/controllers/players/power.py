@@ -724,7 +724,7 @@ class PowerMixin(_PlayerControllerBase):
                     await (
                         protocol.on_power_restored() if power_is_back else protocol.on_power_cut()
                     )
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # deliberately broad: this is a raw provider call, which changes nothing here
                 self.logger.debug(
                     "Protocol %s of player %s did not handle that its power %s: %r",
@@ -851,7 +851,7 @@ class PowerMixin(_PlayerControllerBase):
             # the user's access was checked on the owner
             with system_auth_context():
                 await self._power_on_switched_off_player(member.player_id)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - see the comment below
             # deliberately broad: switching a power control is a raw provider call
             self.logger.log(
                 logging.DEBUG if isinstance(err, _PowerOnCalledOff) else logging.WARNING,

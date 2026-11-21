@@ -31,6 +31,7 @@ from .constants import (
     DEFAULT_PLAYBACK_TRANSITION_TIMEOUT,
     HEOS_MEDIA_TYPE_TO_MEDIA_TYPE,
     HEOS_PLAY_STATE_TO_PLAYBACK_STATE,
+    HEOS_TUNER_INPUTS,
     NON_HIRES_HEOS_MODELS,
     PLAYBACK_TRANSITION_STOP_GRACE,
 )
@@ -193,6 +194,7 @@ class HeosPlayer(PlayerProtocol):
                 PlayerSource(
                     id=input_source.media_id,
                     name=input_source.name,
+                    is_input=input_source.media_id not in HEOS_TUNER_INPUTS,
                     can_play_pause=True,
                 )
             )

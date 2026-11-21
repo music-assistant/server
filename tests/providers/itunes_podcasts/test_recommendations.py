@@ -98,7 +98,7 @@ def _http_response(status: int, body: bytes) -> MagicMock:
 @pytest.fixture
 def manifest_mock() -> Mock:
     """Return a mock provider manifest."""
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "itunes_podcasts"
     return manifest
 

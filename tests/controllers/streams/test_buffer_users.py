@@ -56,17 +56,6 @@ PLAYER_ID = "player1"
 ENDINGS = ("normal end", "disconnect", "error", "cancellation")
 
 
-@pytest.fixture
-async def rig(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> AsyncGenerator[SlotRig]:
-    """Build the rig with every music source open to the queue's playback."""
-    monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
-    rig = SlotRig(getattr(request, "param", SingleStreamProvider))
-    yield rig
-    await rig.close()
-
-
 def _track_source(ending: str, gate: asyncio.Event) -> partial[AsyncGenerator[bytes]]:
     """
     Return a source that delivers three seconds and then waits for the way the test ends.

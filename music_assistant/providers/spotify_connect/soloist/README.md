@@ -31,6 +31,10 @@ changes — at the cost of a managed binary download and a per-user API key.
   playback backend reuses it rather than shipping a second copy.
 - **`prefs.py`** — `write_audio_prefs`: the classic desktop-client prefs stores the engine
   reads at startup (crossfade, normalization, quality tier).
+- **`api_key.py`** — `find_reusable_api_key`: the key and download consent a new Soloist
+  setup takes over from another one, as the server counts as one Soloist user. The
+  caller's own personal Spotify instances come first, then the shared setups; another
+  user's personal key is never taken.
 
 ## Binary management (`SoloistBinaryManager`)
 

@@ -179,6 +179,7 @@ def _control_config_entries() -> tuple[ConfigEntry, ...]:
             required=True,
             default_value=[],
             category="player_controls",
+            immediate_apply=True,
         )
         for conf_key in (CONF_POWER_CONTROLS, CONF_VOLUME_CONTROLS, CONF_MUTE_CONTROLS)
     )

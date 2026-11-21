@@ -252,10 +252,7 @@ async def test_repeated_completion_is_submitted_once(
 ) -> None:
     """The same completed play reported twice is only checked in once."""
     provider = NeteaseScrobbleProvider(
-        mass,
-        Mock(domain="neteasecloudmusic_scrobble", features=set()),
-        _config(),
-        SUPPORTED_FEATURES,
+        mass, Mock(domain="neteasecloudmusic_scrobble"), _config(), SUPPORTED_FEATURES
     )
     await provider.loaded_in_mass()
 
@@ -271,10 +268,7 @@ async def test_hook_reports_to_the_account_of_the_playing_user(
 ) -> None:
     """The provider hook submits a played item to the account that served it."""
     provider = NeteaseScrobbleProvider(
-        mass,
-        Mock(domain="neteasecloudmusic_scrobble", features=set()),
-        _config(),
-        SUPPORTED_FEATURES,
+        mass, Mock(domain="neteasecloudmusic_scrobble"), _config(), SUPPORTED_FEATURES
     )
     await provider.loaded_in_mass()
 
@@ -291,10 +285,7 @@ async def test_plugin_has_no_source_selection_entry() -> None:
     mass.webserver.auth.list_users = AsyncMock(return_value=[])
     mass.players.all_players.return_value = []
     provider = NeteaseScrobbleProvider(
-        mass,
-        Mock(domain="neteasecloudmusic_scrobble", features=set()),
-        _config(),
-        SUPPORTED_FEATURES,
+        mass, Mock(domain="neteasecloudmusic_scrobble"), _config(), SUPPORTED_FEATURES
     )
 
     entries = await provider.get_config_entries()

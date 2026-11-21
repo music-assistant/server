@@ -13,8 +13,8 @@ from music_assistant_models.enums import EventType, PlaybackState
 from music_assistant_models.errors import ActionUnavailable
 
 from music_assistant import providers as providers_package
+from music_assistant.controllers.community_catalog import CommunityCatalogController, dependencies
 from music_assistant.controllers.community_catalog import controller as controller_module
-from music_assistant.controllers.community_catalog import dependencies
 from music_assistant.controllers.community_catalog.controller import _INDEX_CHECK, _UPDATE_RETRY
 from music_assistant.controllers.community_catalog.dependencies import DependencyConflict
 from music_assistant.controllers.community_catalog.gate import _REASONS, Verdict
@@ -119,6 +119,38 @@ async def test_update_reloads_a_dependent(
         _assert_runs(mass, DOMAIN, NEW)
         _assert_runs(mass, OTHER, OLD)
         assert sys.modules[f"{providers_package.__name__}.{OTHER}"] is not module
+
+
+@pytest.mark.parametrize(("setup", "runs"), [("pass", NEW), ('raise TypeError("broken")', OLD)])
+async def test_update_reloads_a_dependent_of_the_dev_folder(
+    tmp_path: Path, registry: Registry, github: GitHub, setup: str, runs: str
+) -> None:
+    """A dependent in the folder provider of the dev folder loads again from it, also on going back."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
+    await _install(tmp_path, registry, {DOMAIN: entry}, instances=[DOMAIN, OTHER])
+    dependent = tmp_path / "dev_providers" / "provider"
+    dependent.mkdir(parents=True)
+    for name, content in _files(OTHER, OLD, depends_on=DOMAIN).items():
+        (dependent / name).write_bytes(content)
+    original_start = CommunityCatalogController.start
+
+    async def start(self: CommunityCatalogController) -> None:
+        self.mass.dev_mode = True
+        self.mass.dev_providers_path = str(dependent.parent)
+        await original_start(self)
+
+    with patch.object(CommunityCatalogController, "start", start):
+        async with _server(tmp_path) as mass:
+            module = sys.modules[f"{providers_package.__name__}.{OTHER}"]
+            await _publish(mass, registry, github, {NEW: _files(DOMAIN, NEW, setup=setup)}, entry)
+
+            await mass.community_catalog.update_providers(DOMAIN)
+
+            _assert_runs(mass, DOMAIN, runs)
+            _assert_runs(mass, OTHER, OLD)
+            reloaded = sys.modules[f"{providers_package.__name__}.{OTHER}"]
+            assert reloaded is not module
+            assert reloaded.__file__ == str(dependent / "__init__.py")
 
 
 async def test_update_of_an_imported_package(

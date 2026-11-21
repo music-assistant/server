@@ -17,6 +17,7 @@ from music_assistant_models.enums import (
     EventType,
     ImageType,
     MediaType,
+    ProviderFeature,
     SourceControl,
     StreamType,
 )
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
 
+SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
 # seconds the silence nudge waits for the audio pipe's consumer to reattach
 AUDIO_PIPE_READER_TIMEOUT = 1.0
@@ -157,7 +159,7 @@ class AirPlayReceiverProvider(PluginProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self._shairport_bin: str | None = None
         self._daemons: dict[str, _ReceiverDaemon] = {}
         # players whose daemon gave up permanently; skipped by reconcile until the
@@ -327,7 +329,7 @@ class AirPlayReceiverProvider(PluginProvider):
             )
             try:
                 await self.mass.players.cmd_stop(prev_player_id)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failing stop must not block the new source
                 self.logger.debug("Failed to stop previous player %s: %s", prev_player_id, err)
 
         # Claim ownership for this queue. The lock lives here (not in
@@ -519,7 +521,8 @@ class AirPlayReceiverProvider(PluginProvider):
             # the player id is stable across renames, so the source uri survives them
             item_id=player_id,
             provider=self.instance_id,
-            name=f"{self.name} ({player.name})",
+            name=self.name,
+            owner_player_id=player_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=player_id,
@@ -547,7 +550,8 @@ class AirPlayReceiverProvider(PluginProvider):
             ),
             config_file=f"{runtime_path}/ma_shairport_sync_{receiver_key}.conf",
             audio_source=audio_source,
-            stream_metadata=StreamMetadata(title=f"AirPlay | {airplay_name}"),
+            # no title until a track plays, so the source shows by its own name
+            stream_metadata=StreamMetadata(title=""),
         )
         self._daemons[player_id] = daemon
         self._setup_shairport_daemon(daemon)
@@ -954,7 +958,7 @@ class AirPlayReceiverProvider(PluginProvider):
             # stream is claimed) all await the same stop instead of racing past it.
             try:
                 await pending_stop_task
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failed stop must not block the next session
                 self.logger.warning("Failed to stop previous AirPlay playback: %s", err)
             # Don't clear a newer stop that replaced ours while we were awaiting.
             if daemon.pending_stop_task is pending_stop_task:

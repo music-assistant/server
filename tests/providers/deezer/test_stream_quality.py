@@ -47,7 +47,7 @@ async def test_provider_passes_the_quality_setting() -> None:
     """The client gets the quality chosen in the settings."""
     mass = Mock()
     mass.config.get.return_value = {}
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "deezer"
     config = Mock()
     config.instance_id = "deezer--test"

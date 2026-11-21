@@ -84,6 +84,9 @@ STREAMING_MODE_AP2_NTP: Final[str] = "ap2_ntp"
 STREAMING_MODE_AP2_COMPAT: Final[str] = "ap2_compat"
 STREAMING_MODE_RAOP: Final[str] = "raop"
 CONF_STORED_VOLUME: Final[str] = "stored_volume"
+# Player option of an Apple TV with HomePods as its speakers, stored on its protocol (absent
+# is off): play on the HomePods only, without a session to the Apple TV.
+CONF_HOMEPODS_ONLY: Final[str] = "homepods_only"
 CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
 CONF_NATIVE_MRP_CREDENTIALS: Final[str] = "native_mrp_credentials"
@@ -283,6 +286,20 @@ AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 # that the group still plays and the player was not repurposed meanwhile, and
 # the whole schedule is abandoned as soon as either no longer holds.
 AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5, 15, 30, 60, 120)
+# Seconds before the one re-add of the Apple TV of a set that left the session of its
+# speakers: a session opened 5 s after the Apple TV reset one stayed up (measured).
+AIRPLAY_SILENT_MEMBER_REJOIN_DELAY: Final[int] = 5
+# A speaker of a set that sets up resets the session of the Apple TV of the set, which then
+# reports another sender took over (measured, about 1 s after that SETUP). For this long after
+# a speaker joined, that report is taken for the reset, not for another sender.
+AIRPLAY_SILENT_MEMBER_RESET_WINDOW: Final[float] = 10.0
+# How long the Apple TV of a set waits for all its speakers to play before it joins those
+# that do (it needs their timeline), and how often it looks.
+AIRPLAY_SILENT_MEMBER_JOIN_TIMEOUT: Final[float] = 10.0
+AIRPLAY_SILENT_MEMBER_JOIN_POLL_INTERVAL: Final[float] = 0.25
+# Longest the session waits on the Apple TV of a set (a flush, a START, or an audio write once
+# it was started) before it plays on without it.
+AIRPLAY_SILENT_MEMBER_TIMEOUT: Final[float] = 5.0
 
 # Shared audible instant for a native announcement over a live stream: now +
 # the largest member span + this margin. A member can only mix the clip into

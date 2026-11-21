@@ -34,6 +34,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     ResourceBusyError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -81,6 +82,7 @@ from music_assistant.helpers.playlists import (
     media_item_to_playlist_item,
 )
 from music_assistant.helpers.provider_access import access_allows, visible_music_sources
+from music_assistant.helpers.throttle_retry import is_rate_limit_error
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import (
@@ -92,7 +94,13 @@ from music_assistant.models.music_provider import (
 from .audiobooks import AudiobooksController
 from .base import MediaControllerBase
 from .radio import RadioController
-from .tracks import TrackProviderMatch, TracksController
+from .tracks import (
+    PROVIDER_MATCH_ERRORS,
+    ProviderMatchFailures,
+    TrackProviderMatch,
+    TracksController,
+    rate_limit_issue,
+)
 
 _PROVIDER_PLAYLIST_ADD_BATCH_SIZE: Final[int] = 100
 _MIGRATION_REPORT_DETAIL_LIMIT: Final[int] = 200
@@ -140,6 +148,7 @@ class _PlaylistMigrationTrackResult:
     provider_matches: tuple[TrackProviderMatch, ...] = ()
     ambiguous_providers: tuple[str, ...] = ()
     failed_providers: tuple[str, ...] = ()
+    rate_limited_providers: tuple[str, ...] = ()
     used_library_item: bool = False
     ambiguous: bool = False
     error: str | None = None
@@ -1065,7 +1074,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         minimum_confidence = match_policy_minimum_confidence(match_policy)
         unique_tracks = {self._migration_track_key(track): track for track in source_tracks}
         allowed_provider_instance_set = set(allowed_provider_instances)
-        failed_provider_instances: set[str] = set()
+        provider_failures = ProviderMatchFailures()
         completed = 0
 
         async def resolve_track(
@@ -1078,7 +1087,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 minimum_confidence,
                 allowed_provider_instance_set,
                 trust_source_mappings,
-                failed_provider_instances,
+                provider_failures,
             )
             completed += 1
             _update_stage_progress(
@@ -1110,6 +1119,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             "best_effort": 0,
             "skipped": len(unsupported_items),
             "ambiguous": 0,
+            "rate_limited": 0,
             "library_matches": 0,
             "provider_matches": 0,
         }
@@ -1134,6 +1144,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 issue = f"Ambiguous match on {provider_name}"
                 report_current_task_failure(f"{track_label}: {issue.lower()}")
                 provider_issues.append((track_label, issue))
+            for provider_name in result.rate_limited_providers:
+                issue = rate_limit_issue(provider_name)
+                report_current_task_failure(f"{track_label}: {issue.lower()}")
+                if provider.domain == "builtin":
+                    provider_issues.append((track_label, issue))
             if provider.domain == "builtin" and result.track:
                 continue
             if result.mapping:
@@ -1148,6 +1163,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 continue
             if result.error:
                 skipped_items.append((track_label, result.error))
+                continue
+            if result.rate_limited_providers:
+                skipped_items.append(
+                    (
+                        track_label,
+                        "; ".join(map(rate_limit_issue, result.rate_limited_providers)),
+                    )
+                )
                 continue
             reason = (
                 "multiple equally likely matches" if result.ambiguous else "no acceptable match"
@@ -1165,6 +1188,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 counts["skipped"] += 1
                 if result.ambiguous:
                     counts["ambiguous"] += 1
+                if result.rate_limited_providers:
+                    counts["rate_limited"] += 1
                 continue
             if (
                 not provider.playlist_duplicates_supported
@@ -1244,6 +1269,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 )
             except (
                 ResourceTemporarilyUnavailable,
+                RetriesExhausted,
                 ProviderUnavailableError,
                 MediaNotFoundError,
                 ClientError,
@@ -1340,13 +1366,16 @@ class PlaylistController(MediaControllerBase[Playlist]):
         minimum_confidence: TrackMatchConfidence,
         allowed_provider_instances: set[str],
         trust_source_mappings: bool,
-        failed_provider_instances: set[str],
+        provider_failures: ProviderMatchFailures,
     ) -> _PlaylistMigrationTrackResult:
         """Resolve one source track for a migration destination."""
-        if provider.domain != "builtin" and provider.instance_id in failed_provider_instances:
-            return _PlaylistMigrationTrackResult(
-                error=f"Matching unavailable on {provider.name} after an earlier failure"
-            )
+        if provider.domain != "builtin":
+            if provider_failures.blocked(provider.instance_id):
+                return _PlaylistMigrationTrackResult(
+                    error=f"Matching unavailable on {provider.name} after an earlier failure"
+                )
+            if provider_failures.rate_limited(provider.instance_id):
+                return _PlaylistMigrationTrackResult(rate_limited_providers=(provider.name,))
         try:
             if provider.domain == "builtin":
                 enrichment = await self.mass.music.tracks.enrich_provider_mappings(
@@ -1354,13 +1383,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     minimum_confidence=minimum_confidence,
                     provider_instance_ids=allowed_provider_instances,
                     trust_track_mappings=trust_source_mappings,
-                    failed_provider_instances=failed_provider_instances,
+                    provider_failures=provider_failures,
                 )
                 return _PlaylistMigrationTrackResult(
                     track=enrichment.track if enrichment.track.provider_mappings else None,
                     provider_matches=enrichment.matches,
                     ambiguous_providers=enrichment.ambiguous_providers,
                     failed_providers=enrichment.failed_providers,
+                    rate_limited_providers=enrichment.rate_limited_providers,
                     used_library_item=enrichment.used_library_item,
                 )
             library_track = await self.mass.music.tracks.get_library_match(track)
@@ -1372,6 +1402,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 allowed_provider_instances=allowed_provider_instances,
                 trust_base_mapping=trust_source_mappings,
             )
+            provider_failures.record_success(provider.instance_id)
             if not result.match:
                 return _PlaylistMigrationTrackResult(
                     used_library_item=library_track is not None,
@@ -1383,14 +1414,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 confidence=result.match.confidence,
                 used_library_item=library_track is not None,
             )
-        except (
-            ResourceTemporarilyUnavailable,
-            ProviderUnavailableError,
-            ClientError,
-            OSError,
-            TimeoutError,
-        ) as err:
-            failed_provider_instances.add(provider.instance_id)
+        except PROVIDER_MATCH_ERRORS as err:
+            if provider.domain != "builtin":
+                # the enrichment records the failure of each provider it asked itself, an
+                # error escaping it can not be charged to one of them
+                provider_failures.record_failure(provider.instance_id, err)
+            if is_rate_limit_error(err):
+                return _PlaylistMigrationTrackResult(rate_limited_providers=(provider.name,))
             return _PlaylistMigrationTrackResult(
                 error=self._migration_error_message(
                     err,
@@ -1539,6 +1569,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     f"| Existing library matches used | {counts['library_matches']} |",
                     f"| Additional provider mappings found | {counts['provider_matches']} |",
                     f"| Skipped | {counts['skipped']} |",
+                    f"| Rate limited | {counts['rate_limited']} |",
                 )
             )
         else:
@@ -1549,6 +1580,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     f"| Best effort | {counts['best_effort']} |",
                     f"| Skipped | {counts['skipped']} |",
                     f"| Ambiguous | {counts['ambiguous']} |",
+                    f"| Rate limited | {counts['rate_limited']} |",
                 )
             )
         cls._add_report_table(
@@ -2315,7 +2347,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """
         try:
             await provider.forget_playlist_tracks(prov_playlist_id)
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, the change itself already stands
             # the outcome of the change stands, only the kept copy may stay until it expires
             self.logger.warning(
                 "Provider %s could not forget the tracks it kept of playlist %s: %s",

@@ -22,7 +22,9 @@ from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     Throttler,
     ThrottlerManager,
+    _give_up,
     current_priority,
+    is_rate_limit_error,
     parse_retry_after,
     request_priority,
     set_request_priority,
@@ -1019,3 +1021,39 @@ class TestParseRetryAfter:
         assert parse_retry_after("not-a-number") == 0
         assert parse_retry_after("") == 0
         assert parse_retry_after("1.5") == 0  # floats are not valid per RFC 9110
+
+
+class TestIsRateLimitError:
+    """Tests for recognising a rate limit among the errors a call fails with."""
+
+    @pytest.mark.parametrize(
+        ("error", "expected"),
+        [
+            pytest.param(RateLimited("Rate limited", backoff_time=90), True, id="rate-limited"),
+            pytest.param(
+                _give_up(RateLimited("Rate limited", backoff_time=90), 90),
+                True,
+                id="given-up-rate-limit",
+            ),
+            # what Spotify raises itself for a rate limit
+            pytest.param(
+                RetriesExhausted("Rate limited", translation_key=RateLimited.translation_key),
+                True,
+                id="keyed-retries-exhausted",
+            ),
+            pytest.param(
+                RetriesExhausted("Retries exhausted, failed after 5 attempts"),
+                False,
+                id="retries-exhausted",
+            ),
+            # a 503 with a long Retry-After
+            pytest.param(
+                _give_up(ResourceTemporarilyUnavailable("Unavailable", backoff_time=120), 120),
+                False,
+                id="given-up-unavailable",
+            ),
+        ],
+    )
+    def test_recognises_a_rate_limit(self, error: Exception, expected: bool) -> None:
+        """A rate limit is recognised whether it was raised as is or given up on."""
+        assert is_rate_limit_error(error) is expected

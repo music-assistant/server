@@ -398,10 +398,11 @@ def test_the_heir_can_be_reached_on_the_groups_protocol(
 
 
 @pytest.mark.parametrize(
-    "player_type", [PlayerType.DISPLAY, PlayerType.VISUALIZER, PlayerType.LIGHT]
+    "player_type",
+    [PlayerType.DISPLAY, PlayerType.VISUALIZER, PlayerType.LIGHT, PlayerType.CONTROLLER],
 )
 def test_a_player_that_can_not_play_audio_never_leads(player_type: PlayerType) -> None:
-    """A display, visualizer or light is passed over even when it comes first."""
+    """A display, visualizer, light or controller is passed over even when it comes first."""
     world = _World()
     world.protocol("airplay_a", "a", "airplay")
     world.player("a", "airplay_a")

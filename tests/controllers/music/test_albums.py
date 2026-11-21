@@ -87,6 +87,27 @@ async def test_overwrite_update_replaces_artists(mass: MusicAssistant) -> None:
     assert [artist.name for artist in refreshed.artists] == ["Other Artist"]
 
 
+async def test_overwrite_update_keeps_artists_when_lookup_fails(mass: MusicAssistant) -> None:
+    """A failing artist lookup during an overwrite update must not clear the stored artists."""
+    db_album = await mass.music.albums.add_item_to_library(create_album("spotify_1", "album1"))
+
+    update = create_album(
+        "spotify_1", "album1", artist_name="Other Artist", artist_item_id="other_artist"
+    )
+    with (
+        patch.object(
+            mass.music.artists,
+            "get_or_add_library_artist_id",
+            AsyncMock(side_effect=MediaNotFoundError("lookup failed")),
+        ),
+        pytest.raises(MediaNotFoundError),
+    ):
+        await mass.music.albums.update_item_in_library(db_album.item_id, update, overwrite=True)
+
+    refreshed = await mass.music.albums.get_library_item(db_album.item_id)
+    assert [artist.name for artist in refreshed.artists] == ["Test Artist"]
+
+
 async def test_track_overwrite_keeps_album_artists(mass: MusicAssistant) -> None:
     """A track update carrying an artist-less album must not clear that album's artists."""
     db_album = await mass.music.albums.add_item_to_library(create_album("spotify_1", "album1"))

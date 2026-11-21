@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
     MediaType,
+    ProviderFeature,
     RepeatMode,
     SourceControl,
 )
@@ -95,6 +96,8 @@ VOLUME_MODE_OPTIONS: Final = [
     ConfigValueOption(VOLUME_MODE_PLAYER_ONLY),
     ConfigValueOption(VOLUME_MODE_SYNC_SPOTIFY),
 ]
+
+SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
 # When playback is paused the backend stops writing PCM. If no PCM arrives for
 # this long while we're not in a 'playing' state, end the stream (clean EOF) so
@@ -205,7 +208,7 @@ class SpotifyConnectProvider(PluginProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self._daemons: dict[str, _PlayerDaemon] = {}
         # players whose daemon gave up permanently; skipped by reconcile until the
         # player comes back or the provider reloads
@@ -756,10 +759,11 @@ class SpotifyConnectProvider(PluginProvider):
             player_id=player_id,
             safe_player_id=re.sub(r"[^A-Za-z0-9_.-]", "_", player_id),
             publish_name=publish_name,
-            stream_metadata=StreamMetadata(title=f"Spotify Connect | {publish_name}"),
+            # no title until a track plays, so the source shows by its own name
+            stream_metadata=StreamMetadata(title=""),
         )
         daemon.backend = self._create_backend(daemon, player.name)
-        daemon.audio_source = self._build_audio_source(daemon, player.name)
+        daemon.audio_source = self._build_audio_source(daemon)
         self._daemons[player_id] = daemon
         try:
             await daemon.backend.start()
@@ -888,7 +892,7 @@ class SpotifyConnectProvider(PluginProvider):
             translation_owner=self.translation_owner,
         )
 
-    def _build_audio_source(self, daemon: _PlayerDaemon, player_name: str) -> AudioSource:
+    def _build_audio_source(self, daemon: _PlayerDaemon) -> AudioSource:
         """
         Construct the AudioSource MediaItem for a daemon.
 
@@ -899,13 +903,13 @@ class SpotifyConnectProvider(PluginProvider):
         queue-session verbs.
 
         :param daemon: The daemon state the source belongs to.
-        :param player_name: The connected player's display name.
         """
         return AudioSource(
             # the player id is stable across renames, so the source uri survives them
             item_id=daemon.player_id,
             provider=self.instance_id,
-            name=f"{self.name} ({player_name})",
+            name=self.name,
+            owner_player_id=daemon.player_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=daemon.player_id,

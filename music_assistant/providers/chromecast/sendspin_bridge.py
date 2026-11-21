@@ -33,7 +33,6 @@ from music_assistant_models.errors import PlayerCommandFailed
 from pychromecast.controllers import BaseController
 from pychromecast.error import PyChromecastError
 
-from music_assistant.constants import SENDSPIN_SERVER_PORT
 from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
 from music_assistant.providers.chromecast.constants import get_cast_model_static_delay
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
@@ -705,7 +704,7 @@ class SendspinChromecastBridge:
                 "Timed out launching Sendspin Cast App on %s",
                 self.cast_player.display_name,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - library code, a failed launch is only logged
             self.logger.error(
                 "Failed to launch Sendspin Cast App on %s: %s",
                 self.cast_player.display_name,
@@ -738,7 +737,7 @@ class SendspinChromecastBridge:
             try:
                 await self._send_sendspin_config()
                 return
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failed attempt is retried
                 if attempt < max_attempts - 1:
                     self.logger.debug(
                         "Config send attempt %d/%d failed for %s: %s, retrying...",
@@ -766,9 +765,12 @@ class SendspinChromecastBridge:
         # The Sendspin server runs on its own port, NOT through
         # the MA webserver or streams server. Use publish_ip directly.
         publish_ip = self.mass.streams.publish_ip
+        sendspin = cast("SendspinProvider | None", self.mass.get_provider("sendspin"))
+        if sendspin is None:
+            raise PlayerCommandFailed("The Sendspin provider is not loaded")
         # sendspin-js's SendspinCore appends `/sendspin` to baseUrl when constructing
         # the WebSocket URL. Send the bare server URL here so it ends up correct.
-        server_url = f"ws://{format_ip_for_url(publish_ip)}:{SENDSPIN_SERVER_PORT}"
+        server_url = f"ws://{format_ip_for_url(publish_ip)}:{sendspin.server_port}"
         raw_delay = self.mass.config.get_protocol_value(
             self._bridge_client_id, CONF_SENDSPIN_STATIC_DELAY
         )

@@ -19,7 +19,7 @@ from music_assistant.providers.nugs import (
 def provider() -> NugsProvider:
     """Create a real NugsProvider with mocked dependencies."""
     mass = Mock()
-    manifest = Mock(features=set())
+    manifest = Mock()
     manifest.domain = "nugs"
     config = Mock()
     config.instance_id = "nugs--test123"

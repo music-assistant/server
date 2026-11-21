@@ -228,7 +228,8 @@ it computes the next index, pre-resolves that item's stream details via the Stre
 hands the next item to the player ahead of time. Warming the *next track's* audio buffer is not part
 of this enqueue path — it is triggered by the Streams Controller near the end of the streamed track,
 via a callback into the queue controller, and always targets the item after the streamed one.
-Stale buffers and crossfade data are cleaned up when the queue stops, is cleared, or advances. Every
+Buffers and crossfade data are released when the queue stops or is cleared; what the queue moves
+away from while it plays goes when it leaves the queue's scope (below). Every
 buffer records the session that claimed it, and a stop leaves alone only what the session playing
 *now* claimed, so playback that restarted before the stop got that far keeps its audio. Everything
 else goes, including what sessions that ended earlier left behind: sessions rotate without a stop,
@@ -253,11 +254,13 @@ is one the queue plays now or next (`plays_now_or_next`: the item the queue is o
 player has started fetching, and the item that follows either of them), one a stream of the queue's
 session claims, or the item right before the one its player fetches, once all of its audio has
 arrived. A queue without a playback session has no scope, and no audio is made for it. Whoever only
-waits for the first audio of a buffer, as the preparation of the next track does, does not keep it.
+waits for the first audio of a buffer, as the preparation of the next track does, does not keep it,
+and a preparation that is cancelled does not take it along: the buffer stays while it is in scope.
 A buffer that is out of scope gives its audio up, whether its source still fills or has delivered
 everything, and whether or not its provider has a slot to spare; whoever waits for it gets no audio.
 The queue asks its buffers whenever its scope can change: when a session starts or ends, when its
-items change, when its player fetches another item or reports another one as playing, when a fade
+items change (an edit, a load, a dynamic queue that rebuilds its upcoming tracks), when its player
+fetches another item or reports another one as playing, when a fade
 takes the next track, when the repeat mode or the sleep timer target changes, and before it gets
 audio for an item. A buffer is
 also asked when a user leaves it, when the claim on its item ends, when another buffer takes its
@@ -500,7 +503,7 @@ player_queues/
 ├── playback_tracker.py # PlaybackTrackerMixin: reconciles queue state from player updates, end-of-
 │                   #   queue, playback-progress reporting + user-initiated/album-credit play-counting
 ├── stream_feeder.py # StreamFeederMixin: enqueues the next item on the player, preloads/prepares its
-│                   #   audio buffer, and cleans up stale buffers
+│                   #   audio buffer, and releases a queue's audio when it stops or is cleared
 ├── state.py        # PlayerQueueData: the complete server-side per-queue record (the wire PlayerQueue
 │                   #   snapshot + items, source/enqueued media, user, stream-session + runtime fields)
 │                   #   and the cache (de)serialization the wire model no longer carries
