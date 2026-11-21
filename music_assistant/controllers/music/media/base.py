@@ -4368,6 +4368,48 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             await self._update_library_item_from_provider(db_id, update)
         return True
 
+    async def _set_main_artists(
+        self,
+        table: str,
+        item_column: str,
+        db_id: int,
+        artists: Iterable[Artist | ItemMapping],
+        overwrite: bool = False,
+    ) -> None:
+        """
+        Store the main artists of an album or track.
+
+        An empty set of artists never clears the stored rows.
+
+        :param table: The table holding the main artists of the item's media type.
+        :param item_column: The column of that table holding the item's library id.
+        :param db_id: Library id of the item.
+        :param artists: The main artists.
+        :param overwrite: Replace the stored main artists rather than adding to them.
+        """
+        all_artists = list(artists)
+        if not all_artists:
+            if overwrite:
+                # a caller asking to replace all artists with none is a bug,
+                # so keep the stored rows and make the attempt visible
+                self.logger.warning(
+                    "Ignoring request to clear all artists of %s id %s",
+                    self.media_type.value,
+                    db_id,
+                )
+            return
+        # look up all artists first so a failing lookup leaves the stored rows untouched
+        artist_ids = [
+            await self.mass.music.artists.get_or_add_library_artist_id(artist)
+            for artist in all_artists
+        ]
+        if overwrite:
+            await self.mass.music.database.delete(table, {item_column: db_id})
+        for artist_id in artist_ids:
+            await self.mass.music.database.insert_or_replace(
+                table, {item_column: db_id, "artist_id": artist_id}
+            )
+
     async def _copy_library_item_relations(self, target_id: int, source_id: int) -> None:
         """Copy the relations that reference the merged media item onto the target."""
         for table, item_column in self._library_item_relations():
