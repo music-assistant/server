@@ -18,6 +18,7 @@ from types import TracebackType
 from typing import Any, Concatenate, Protocol
 
 from music_assistant_models.errors import (
+    MusicAssistantError,
     RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
@@ -132,6 +133,20 @@ def parse_retry_after(value: str | None) -> int:
         return max(0, int(delta))
     except ValueError, TypeError:
         return 0
+
+
+def is_rate_limit_error(error: BaseException) -> bool:
+    """
+    Return whether a failed call was rate limited by the server.
+
+    :param error: The error the call failed with.
+    """
+    # a rate limit the retry helper gave up on arrives as RetriesExhausted, which carries
+    # the limit over as its translation key alone
+    return isinstance(error, RateLimited) or (
+        isinstance(error, MusicAssistantError)
+        and error.translation_key == RateLimited.translation_key
+    )
 
 
 class Throttler:

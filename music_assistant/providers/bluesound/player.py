@@ -25,6 +25,7 @@ from music_assistant.models.player import DeviceInfo, PlayerMedia, PlayerSource
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.bluesound.const import (
     IDLE_POLL_INTERVAL,
+    INPUT_URL_PREFIXES,
     MAX_CONNECTING_POLLS,
     PLAYBACK_POLL_INTERVAL,
     PLAYBACK_STATE_MAP,
@@ -67,6 +68,8 @@ class BluesoundPlayer(PlayerProtocol):
         self.dynamic_poll_count: int = 0
         self._connecting_polls: int = 0
         self._listen_task: asyncio.Task[None] | None = None
+        # the entries of the inputs of the player, by their BluOS id and by their url
+        self._input_source_ids: dict[str, str] = {}
         # Set base player attributes
         self._attr_supported_features = PLAYER_FEATURES_BASE.copy()
         self._attr_name = name
@@ -287,6 +290,7 @@ class BluesoundPlayer(PlayerProtocol):
                 id=source_name,
                 name=source_name,
                 passive=True,
+                is_input=True,
                 can_play_pause=False,
                 can_next_previous=False,
                 can_seek=False,
@@ -296,6 +300,12 @@ class BluesoundPlayer(PlayerProtocol):
         mass_url = self.mass.streams.base_url
         if self.status.stream_url and mass_url in self.status.stream_url:
             self._attr_active_source = None
+        elif source_id := (
+            self._input_source_ids.get(self.status.input_id or "")
+            or self._input_source_ids.get(self.status.stream_url or "")
+        ):
+            # an input of the player, already listed with its own entry
+            self._attr_active_source = source_id
         elif player_source := PLAYER_SOURCE_MAP.get(cast("str", self.status.input_id)):
             self._attr_active_source = self.status.input_id
             self._attr_source_list.append(player_source)
@@ -480,6 +490,8 @@ class BluesoundPlayer(PlayerProtocol):
                 id=f"input-{bluos_input.url}",
                 name=f"Input: {bluos_input.text}",
                 passive=False,
+                # the list also holds Bluetooth and services such as Spotify
+                is_input=bluos_input.url.startswith(INPUT_URL_PREFIXES),
                 can_play_pause=False,
                 can_seek=False,
                 can_next_previous=False,
@@ -488,6 +500,13 @@ class BluesoundPlayer(PlayerProtocol):
         presets = await self.client.presets(timeout=timeout)
         inputs = await self.client.inputs(timeout=timeout)
         inputs_as_sources = [_input_to_ma_source(bluos_input) for bluos_input in inputs]
+        self._input_source_ids = {
+            key: source.id
+            for bluos_input, source in zip(inputs, inputs_as_sources, strict=True)
+            if source.is_input
+            for key in (bluos_input.id, bluos_input.url)
+            if key
+        }
         return [_preset_to_ma_source(preset) for preset in presets] + inputs_as_sources
 
     def _set_polling_dynamic(self, poll_count: int = 6, poll_interval: float = 0.5) -> None:

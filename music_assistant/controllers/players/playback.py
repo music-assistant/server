@@ -670,11 +670,15 @@ class PlaybackMixin(_PlayerControllerBase):
                 )
                 await self._handle_cmd_stop(group.player_id)
 
-    async def _stop_player_or_its_queue(self, player: Player) -> None:
+    async def _stop_player_or_its_queue(
+        self, player: Player, keep_sleep_timer: bool = False
+    ) -> None:
         """
         Stop the player, ending its queue when it is playing one of its own.
 
         :param player: The player to stop.
+        :param keep_sleep_timer: The stop stands in for a pause, so the sleep timer of the
+            player's queue still waits for its target once the queue resumes.
         """
         # End the queue itself, exactly as a stop command does: stopping only the device
         # leaves the queue session open, so its preloading keeps pulling audio and a
@@ -686,7 +690,9 @@ class PlaybackMixin(_PlayerControllerBase):
         if (
             active_queue := self.get_active_queue(player)
         ) and active_queue.queue_id == player.player_id:
-            await self.mass.player_queues._handle_stop(player.player_id)
+            await self.mass.player_queues._handle_stop(
+                player.player_id, keep_sleep_timer=keep_sleep_timer
+            )
             return
         await self._handle_cmd_stop(player.player_id)
 
@@ -1016,7 +1022,7 @@ class PlaybackMixin(_PlayerControllerBase):
             "Player/protocol %s does not support pause, using STOP instead",
             player.name,
         )
-        await self._stop_player_or_its_queue(player)
+        await self._stop_player_or_its_queue(player, keep_sleep_timer=True)
 
     async def _resolve_currently_playing(
         self, player: Player, mass_queue: PlayerQueue | None, library_only: bool = False

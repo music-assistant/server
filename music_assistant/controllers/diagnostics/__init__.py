@@ -152,7 +152,7 @@ class DiagnosticsController(CoreController):
         ):
             try:
                 report[key] = await builder()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failing part must not fail the whole report
                 report[key] = {"error": sanitize_text(f"{type(err).__name__}: {err}")}
         if include_log_tail:
             report["log_tail"] = self._build_log_tail()
@@ -201,7 +201,7 @@ class DiagnosticsController(CoreController):
             try:
                 result = builder()
                 census[key] = await result if inspect.isawaitable(result) else result
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - a failing part must not fail the whole report
                 census[key] = {"error": sanitize_text(f"{type(err).__name__}: {err}")}
         return census
 
@@ -339,7 +339,7 @@ class DiagnosticsController(CoreController):
             # roundtrip through JSON to normalize (and validate) the data,
             # then sanitize all string values in the result
             return name, sanitize_data(json_loads(json_dumps(result)))
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - contributor code, a failing section must not fail the report
             return name, {"error": sanitize_text(f"{type(err).__name__}: {err}")}
 
     def _build_log_tail(self) -> list[dict[str, str]]:

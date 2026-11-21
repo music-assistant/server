@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from music_assistant.constants import MEDIA_ITEM_DB_TABLES
+from music_assistant.constants import DB_TABLE_EXTERNAL_ID_LOOKUP, MEDIA_ITEM_DB_TABLES
 from music_assistant.controllers.metadata.controller import _duplicate_album_sibling_guard
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.migrations import migrate_database
@@ -25,6 +25,17 @@ async def controller(tmp_path: Path) -> AsyncGenerator[MusicController]:
         yield controller
     finally:
         await database.close()
+
+
+async def test_item_id_index_of_the_id_lookup_exists_with_its_table(
+    controller: MusicController,
+) -> None:
+    """The index that library queries name exists before an upgrade step can read the library."""
+    indexes = await controller.database.get_rows_from_query(
+        f"PRAGMA index_list({DB_TABLE_EXTERNAL_ID_LOOKUP})", limit=0
+    )
+
+    assert f"{DB_TABLE_EXTERNAL_ID_LOOKUP}_item_id_idx" in {index["name"] for index in indexes}
 
 
 @pytest.mark.parametrize("legacy_column", [None, "name COLLATE NOCASE", "search_name"])
@@ -97,3 +108,48 @@ async def test_reconciliation_after_upgrade_avoids_quadratic_album_scan(
     finally:
         await database._db.set_progress_handler(progress, 0)
     assert rows == []
+
+
+@pytest.mark.parametrize(
+    ("shared_title", "shared_artist"), [(True, False), (False, True), (True, True)]
+)
+async def test_reconciliation_bounds_work_on_a_large_shared_title_or_artist(
+    controller: MusicController, shared_title: bool, shared_artist: bool
+) -> None:
+    """Bound SQLite work when thousands of albums share a title, an artist or both."""
+    database = controller.database
+    count = 3000
+    albums = []
+    album_artists = []
+    for index in range(1, count + 1):
+        name = "Greatest Hits" if shared_title else f"Album {index}"
+        albums.append((index, name, name.lower(), name.lower(), name.lower()))
+        album_artists.append((index, 1 if shared_artist else index))
+    await database._db.executemany(
+        "INSERT INTO albums(item_id,name,sort_name,album_type,metadata,search_name,"
+        "search_sort_name) VALUES (?,?,?,'album','{}',?,?)",
+        albums,
+    )
+    await database._db.executemany(
+        "INSERT INTO album_artists(album_id,artist_id) VALUES (?,?)", album_artists
+    )
+
+    progress_calls = 0
+
+    def progress() -> int:
+        nonlocal progress_calls
+        progress_calls += 1
+        return int(progress_calls > 5000)
+
+    # An instruction budget avoids timing assertions and interrupts a quadratic plan.
+    await database._db.set_progress_handler(progress, 1000)
+    try:
+        rows = await database.get_rows_from_query(
+            f"SELECT albums.item_id FROM albums WHERE {_duplicate_album_sibling_guard()} "
+            "ORDER BY RANDOM()",
+            limit=25,
+        )
+    finally:
+        await database._db.set_progress_handler(progress, 0)
+    # only albums sharing both the title and the artist are duplicate candidates
+    assert len(rows) == (25 if shared_title and shared_artist else 0)

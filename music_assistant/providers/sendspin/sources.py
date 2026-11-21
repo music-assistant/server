@@ -42,12 +42,17 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
-from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_ALLOW_AUDIO_ANALYSIS
 from music_assistant.helpers.player import get_available_player
 
-from .constants import CONF_SOURCE_AUTOSTART_TARGET, SOURCE_AUTOSTART_OFF
+from .constants import (
+    CONF_SOURCE_AUTOSTART_TARGET,
+    CONF_SOURCE_NAME,
+    DEFAULT_SOURCE_NAME,
+    SOURCE_AUTOSTART_OFF,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
@@ -237,7 +242,6 @@ class SendspinSources:
             audio_format=audio_format,
             media_type=media_type,
             stream_type=StreamType.CUSTOM,
-            stream_metadata=StreamMetadata(title=self._source_name(item_id)),
         )
 
     async def on_source_selected(
@@ -403,6 +407,23 @@ class SendspinSources:
                 # point would fabricate silence into the timeline, so re-anchor instead.
                 next_deadline = loop.time()
 
+    def on_player_config_updated(self, player_id: str) -> None:
+        """
+        Let the input of a player that is playing follow the saved config of that player.
+
+        A device that only captures names its input after its player, which has published
+        its new name by the time the saved config is announced.
+
+        :param player_id: ID of the player whose config was saved.
+        """
+        for client_id, state in self._clients.items():
+            if (
+                state.session is not None
+                and (player := self._client_player(client_id)) is not None
+                and player.player_id == player_id
+            ):
+                self.on_client_config_updated(client_id)
+
     def on_client_config_updated(self, client_id: str) -> None:
         """
         Let the input of a client that is playing follow its changed settings.
@@ -425,6 +446,7 @@ class SendspinSources:
         return cast("SourceV1Role", roles[0]) if roles else None
 
     def _audio_source(self, client: SendspinClient) -> AudioSource:
+        player = self._client_player(client.client_id)
         return AudioSource(
             item_id=client.client_id,
             provider=self.provider.instance_id,
@@ -447,6 +469,9 @@ class SendspinSources:
             allow_audio_analysis=self._protocol_config_value(
                 client.client_id, CONF_ALLOW_AUDIO_ANALYSIS, True
             ),
+            # the player the client's protocol is attached to, as after an unlink the protocol
+            # keeps the id of its former player; the protocol itself while it is on no player
+            owner_player_id=player.player_id if player is not None else client.client_id,
         )
 
     def _protocol_config_value[T: ConfigValueType](self, client_id: str, key: str, default: T) -> T:
@@ -817,7 +842,17 @@ class SendspinSources:
             self.mass.cancel_task(task_id)
 
     def _source_name(self, client_id: str) -> str:
-        return f"{self.provider.name} ({self._device_name(client_id)})"
+        """Return the name of the input, or that of its player for a device that only captures."""
+        return self._input_name(client_id) or self._device_name(client_id)
+
+    def _input_name(self, client_id: str) -> str | None:
+        """Return the name the user gave the input, or None for a device that only captures."""
+        client = self._get_client(client_id)
+        if client is None or "player" not in {
+            role_family(role_id) for role_id in client.negotiated_role_ids
+        }:
+            return None
+        return self._protocol_config_value(client_id, CONF_SOURCE_NAME, DEFAULT_SOURCE_NAME)
 
     def _device_name(self, client_id: str) -> str:
         """Return the name of the player the user sees for this client."""

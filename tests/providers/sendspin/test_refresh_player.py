@@ -46,11 +46,14 @@ def _make_provider(player: SendspinBasePlayer | None) -> SendspinProvider:
         "SendspinServer", SimpleNamespace(get_client=lambda _client_id: None)
     )
     provider._held_elsewhere = set()
+    provider._multi_channel_speakers = {}
     provider._held_unapproved = set()
     provider._held_paired = set()
     provider._refused_here = {}
     provider._unencrypted_clients = set()
+    provider._announced_clients = set()
     provider._hass_auto_pairer = Mock()
+    provider._local_auto_pairer = Mock()
     return provider
 
 
@@ -158,7 +161,8 @@ def _client(negotiated_role_ids: list[str]) -> SendspinClient:
         (["visualizer@v1"], PlayerType.VISUALIZER),
         (["artwork@v1"], PlayerType.DISPLAY),
         (["color@v1"], PlayerType.LIGHT),
-        (["controller@v1"], PlayerType.DISPLAY),
+        (["controller@v1"], PlayerType.CONTROLLER),
+        (["controller@v1", "color@v1"], PlayerType.LIGHT),
         (["controller@v1", "artwork@v1", "color@v1"], PlayerType.DISPLAY),
         ([], None),
     ],

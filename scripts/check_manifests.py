@@ -7,10 +7,12 @@ omits one of them — or whose ``domain`` does not match its folder, whose ``typ
 provider type, or whose ``codeowners`` are malformed — only fails once the server tries to load the
 provider. This pre-commit/CI guard scans every provider manifest up front and prints each problem.
 
-A manifest must not contain ``tier``: the server sets it from where the provider loads. An optional
-``support_url`` must be an ``https`` URL with a host. Declared ``media_types`` must be known
-``MediaType`` values, each listed once. Declared ``menu_actions``, ``mcp_tools`` and
-``page`` must follow the rules the server applies when it reads a manifest
+A manifest must not contain ``tier``: the server sets it from where the provider loads. Nor a
+top-level ``media_types``: the server does not read it, the media types go in ``provides``. An
+optional ``support_url`` must be an ``https`` URL with a host. Declared ``provides`` must be known
+``ProviderOffering`` values that fit the provider type, each listed once. Declared
+``menu_actions``, ``mcp_tools`` and ``page`` must follow the rules the server applies when it
+reads a manifest
 (``music_assistant.helpers.menu_actions``, ``music_assistant.helpers.mcp_tools``); the server
 leaves out an action, tool or page that breaks them, here it is an error.
 
@@ -29,7 +31,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ProviderOffering
 
 from music_assistant.helpers.mcp_tools import read_mcp_tools
 from music_assistant.helpers.menu_actions import read_menu_actions, read_page
@@ -44,9 +46,29 @@ PROVIDERS_PATH = REPO_ROOT / "music_assistant" / "providers"
 # music_assistant_models.provider.ProviderManifest.
 MANDATORY_KEYS = ("type", "domain", "name", "description", "codeowners")
 
-# Valid manifest media types (minus ``unknown``, the runtime fallback for an unknown value).
-VALID_MEDIA_TYPES = frozenset(media_type.value for media_type in MediaType) - {
-    MediaType.UNKNOWN.value
+# Valid ``provides`` values (minus ``unknown``, the runtime fallback for an unknown value).
+VALID_OFFERINGS = frozenset(offering.value for offering in ProviderOffering) - {
+    ProviderOffering.UNKNOWN.value
+}
+
+# The ``provides`` values each provider type may declare; the other types declare none.
+OFFERINGS_BY_TYPE: dict[str, frozenset[str]] = {
+    "music": frozenset(
+        {"artist", "album", "track", "playlist", "radio", "podcast", "audiobook", "sound_effect"}
+    ),
+    "player": frozenset({"audio_source"}),
+    "plugin": frozenset(
+        {
+            "audio_source",
+            "ai",
+            "tts",
+            "scrobble",
+            "assistant",
+            "visualizer",
+            "recommendations",
+            "fun",
+        }
+    ),
 }
 
 # Valid provider types, mirroring music_assistant_models.enums.ProviderType (minus ``unknown``,
@@ -144,10 +166,12 @@ def _validate(data: dict[str, object], folder_name: str) -> list[str]:
         issues.extend(_validate_codeowners(data["codeowners"]))
     if "tier" in data:
         issues.append("'tier' is set by the server and must not be in the manifest")
+    if "media_types" in data:
+        issues.append("'media_types' is not read by the server, use 'provides' instead")
     if "support_url" in data and not _is_https_url(data["support_url"]):
         issues.append("'support_url' must be an https URL with a host")
-    if "media_types" in data:
-        issues.extend(_validate_media_types(data["media_types"]))
+    if "provides" in data:
+        issues.extend(_validate_provides(data["provides"], provider_type))
     if "menu_actions" in data:
         issues.extend(read_menu_actions(data["menu_actions"])[1])
     if "mcp_tools" in data:
@@ -168,19 +192,28 @@ def _validate_codeowners(codeowners: object) -> list[str]:
     ]
 
 
-def _validate_media_types(media_types: object) -> list[str]:
-    """Return problems with the ``media_types`` field (a list of known, unique media types)."""
-    if not isinstance(media_types, list):
-        return ["'media_types' must be a list"]
+def _validate_provides(provides: object, provider_type: object) -> list[str]:
+    """
+    Return problems with the ``provides`` field (known, unique values that fit the type).
+
+    :param provides: The declared ``provides`` value.
+    :param provider_type: The declared provider type, only checked against when it is valid.
+    """
+    if not isinstance(provides, list):
+        return ["'provides' must be a list"]
+    check_fit = isinstance(provider_type, str) and provider_type in VALID_TYPES
+    allowed = OFFERINGS_BY_TYPE.get(str(provider_type), frozenset())
     issues: list[str] = []
     seen: set[str] = set()
-    for media_type in media_types:
-        if not isinstance(media_type, str) or media_type not in VALID_MEDIA_TYPES:
-            issues.append(f"media type '{media_type}' is not a known MediaType")
-        elif media_type in seen:
-            issues.append(f"media type '{media_type}' is listed more than once")
+    for offering in provides:
+        if not isinstance(offering, str) or offering not in VALID_OFFERINGS:
+            issues.append(f"offering '{offering}' is not a known ProviderOffering")
+        elif offering in seen:
+            issues.append(f"offering '{offering}' is listed more than once")
         else:
-            seen.add(media_type)
+            seen.add(offering)
+            if check_fit and offering not in allowed:
+                issues.append(f"offering '{offering}' does not fit provider type '{provider_type}'")
     return issues
 
 

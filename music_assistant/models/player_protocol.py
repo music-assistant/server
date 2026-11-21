@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     )
     from music_assistant_models.enums import RepeatMode
     from music_assistant_models.media_items import AudioFormat
+    from music_assistant_models.queue_item import QueueItem
 
     from .player import Player
     from .player_provider import PlayerProvider
@@ -238,6 +239,20 @@ class PlayerProtocol(ABC):
         that struggles with the realtime pacing otherwise plays in flow mode.
         """
         return False
+
+    def has_received_next_item(self, queue_item: QueueItem) -> bool:
+        """
+        Return whether the player already holds the given queue item as the one it plays next.
+
+        Outside flow mode, a crossfade into an item the player has not received yet is
+        skipped, so that boundary plays gapless instead. The default is True: a player that
+        takes its next item from `enqueue_next_media` gets it before the boundary. Override
+        this for a player that learns its next item another way, such as by reading a queue
+        itself.
+
+        :param queue_item: The queue item that follows the one playing out.
+        """
+        return True
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -1052,7 +1067,7 @@ class PlayerProtocol(ABC):
         for callback in callbacks:
             try:
                 callback()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one failing callback must not stop the others
                 self.logger.error(
                     "Error calling on_detach callback for protocol %s: %s",
                     self.protocol_id,
@@ -1068,7 +1083,9 @@ class PlayerProtocol(ABC):
         player implementation if the provider keeps something of its own about the
         device, such as an entry in its list of manually added devices. The players
         controller holds an object that is not attached only weakly, so a provider with
-        such a list keeps a reference to the object of every device on it.
+        such a list keeps a reference to the object of every device on it. What the
+        provider keeps about a device it holds no object for goes in
+        PlayerProvider.on_protocol_removed.
         """
         return
 

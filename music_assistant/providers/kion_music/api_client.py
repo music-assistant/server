@@ -28,7 +28,7 @@ from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedE
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
 from music_assistant.helpers.datetime import utc
-from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
@@ -44,6 +44,9 @@ from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_MIX
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
 # Prefer flac-mp4/aac-mp4 (Kion API moved to these formats around 2025)
 GET_FILE_INFO_CODECS = "flac-mp4,flac,aac-mp4,aac,he-aac,mp3,he-aac-mp4"
+
+# seconds every request is held back after a rate limit response
+_RATE_LIMIT_COOLDOWN = 60
 
 LOGGER = logging.getLogger(__name__)
 
@@ -66,7 +69,7 @@ class KionMusicClient:
         self._user_id: int | None = None
         self._last_reconnect_at: float = -30.0  # allow first reconnect immediately
         self._reconnect_lock = asyncio.Lock()
-        self._throttler = Throttler(rate_limit=5, period=1.0)
+        self._throttler = ThrottlerManager(rate_limit=5, period=1)
 
     @property
     def user_id(self) -> int:
@@ -247,7 +250,7 @@ class KionMusicClient:
         except BadRequestError as err:
             LOGGER.warning("Rotor feedback %s failed: %s", feedback_type, err)
             return False
-        except (NetworkError, ProviderUnavailableError) as err:
+        except (NetworkError, ProviderUnavailableError, RateLimited) as err:
             LOGGER.warning("Rotor feedback %s failed: %s", feedback_type, err)
             return False
 
@@ -454,12 +457,12 @@ class KionMusicClient:
                 LOGGER.debug("Lyrics not available for track %s", track_id)
                 return None, False
 
-            track_lyrics = await track.get_lyrics_async()
+            track_lyrics = await self._call_no_retry(lambda _c: track.get_lyrics_async())
             if not track_lyrics:
                 LOGGER.debug("Failed to get lyrics metadata for track %s", track_id)
                 return None, False
 
-            lyrics_text = await track_lyrics.fetch_lyrics_async()
+            lyrics_text = await self._call_no_retry(lambda _c: track_lyrics.fetch_lyrics_async())
             if not lyrics_text:
                 return None, False
 
@@ -666,6 +669,16 @@ class KionMusicClient:
         except (NetworkError, ProviderUnavailableError) as err:
             LOGGER.warning("Network error fetching playlist %s/%s: %s", user_id, playlist_id, err)
             raise ResourceTemporarilyUnavailable("Failed to fetch playlist") from err
+
+    async def fetch_playlist_tracks(self, playlist: KionPlaylist) -> list[TrackShort]:
+        """
+        Fetch the tracks of a playlist that the API returned without them.
+
+        :param playlist: Playlist object as returned by get_playlist.
+        :return: The tracks of the playlist.
+        :raises RateLimited: When KION answers with a rate limit.
+        """
+        return await self._call_no_retry(lambda _c: playlist.fetch_tracks_async())
 
     async def get_track_download_info(
         self, track_id: str, get_direct_links: bool = True
@@ -1181,6 +1194,17 @@ class KionMusicClient:
         msg = str(err).lower()
         return "429" in msg or "too many requests" in msg or "rate limit" in msg
 
+    def _raise_on_rate_limit(self, err: Exception) -> None:
+        """
+        Raise RateLimited and hold back every further request when err is a rate limit response.
+
+        :param err: The error a KION request failed with.
+        :raises RateLimited: When err is a rate limit response.
+        """
+        if self._is_rate_limit_error(err):
+            self._throttler.set_cooldown(_RATE_LIMIT_COOLDOWN)
+            raise RateLimited("KION Music rate limit", backoff_time=_RATE_LIMIT_COOLDOWN) from err
+
     async def _reconnect(self) -> None:
         """
         Disconnect and connect again to recover from Server disconnected / connection errors.
@@ -1203,13 +1227,12 @@ class KionMusicClient:
         :param func: Async callable that takes a ClientAsync and returns a result.
         :return: The result of the API call.
         """
-        await self._throttler.acquire()
-        client = await self._ensure_connected()
+        async with self._throttler.acquire():
+            client = await self._ensure_connected()
         try:
             return await func(client)
         except Exception as err:
-            if self._is_rate_limit_error(err):
-                raise RateLimited("KION Music rate limit", backoff_time=60) from err
+            self._raise_on_rate_limit(err)
             if not self._is_connection_error(err):
                 raise
             LOGGER.warning("Connection error, reconnecting and retrying: %s", err)
@@ -1218,8 +1241,12 @@ class KionMusicClient:
             except Exception as recon_err:
                 raise ProviderUnavailableError("Reconnect failed") from recon_err
             client = cast("ClientAsync", self._client)
-            await self._throttler.acquire()
-            return await func(client)
+            async with self._throttler.acquire():
+                try:
+                    return await func(client)
+                except NetworkError as retry_err:
+                    self._raise_on_rate_limit(retry_err)
+                    raise
 
     async def _call_no_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
         """
@@ -1229,14 +1256,19 @@ class KionMusicClient:
         should be silently dropped rather than triggering a reconnect cycle that
         could cause rate limiting. Note: _ensure_connected() is still called to
         establish the initial connection if needed; only the reconnect-on-error
-        path is skipped.
+        path is skipped. Also used for calls on objects the API returned: those use
+        the connection they were fetched with, so a reconnect would not help them.
 
         :param func: Async callable that takes a ClientAsync and returns a result.
         :return: The result of the API call.
         """
-        await self._throttler.acquire()
-        client = await self._ensure_connected()
-        return await func(client)
+        async with self._throttler.acquire():
+            client = await self._ensure_connected()
+        try:
+            return await func(client)
+        except NetworkError as err:
+            self._raise_on_rate_limit(err)
+            raise
 
     async def _get_landing_waves(self, block: str) -> list[dict[str, Any]] | None:
         """

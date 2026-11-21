@@ -12,20 +12,26 @@ from music_assistant_models.enums import MediaType, PlaylistMatchPolicy, Provide
 from music_assistant_models.errors import (
     InvalidDataError,
     ProviderUnavailableError,
+    RateLimited,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import Playlist, ProviderMapping, Radio, Track
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.playlists import (
+    _MIGRATION_RESOLVE_BATCH_SIZE,
     PlaylistController,
     _PlaylistMigrationTrackResult,
 )
 from music_assistant.controllers.music.media.tracks import (
+    MAX_CONSECUTIVE_PROVIDER_FAILURES,
+    ProviderMatchFailures,
     TrackProviderEnrichment,
     TrackProviderMatch,
     TrackProviderMatchResult,
 )
 from music_assistant.helpers.compare import TrackMatchConfidence
+from music_assistant.helpers.throttle_retry import _give_up
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
@@ -80,6 +86,7 @@ def test_migration_report_renders_substitutions_and_skips() -> None:
             "best_effort": 0,
             "skipped": 1,
             "ambiguous": 0,
+            "rate_limited": 0,
             "library_matches": 1,
             "provider_matches": 0,
         },
@@ -111,6 +118,7 @@ def test_migration_report_caps_detail_rows() -> None:
             "best_effort": 0,
             "skipped": 201,
             "ambiguous": 0,
+            "rate_limited": 0,
             "library_matches": 0,
             "provider_matches": 0,
         },
@@ -803,8 +811,14 @@ async def test_migration_reports_unsupported_source_items(
         (
             True,
             ["tidal-one", "tidal-two", "tidal-one"],
-            None,
+            TimeoutError(),
             ["Could not verify destination playlist: Verification failed (TimeoutError)"],
+        ),
+        (
+            True,
+            ["tidal-one", "tidal-two", "tidal-one"],
+            RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
+            ["Could not verify destination playlist: Not retrying, asked to wait 3600 seconds"],
         ),
         (
             True,
@@ -821,7 +835,7 @@ async def test_streaming_migration_handles_provider_duplicate_policy(  # noqa: P
     music: MusicController,
     duplicates_supported: bool,
     expected_target_ids: list[str],
-    actual_target_ids: list[str] | None,
+    actual_target_ids: list[str] | Exception,
     expected_verification_failures: list[str],
 ) -> None:
     """A provider migration preserves supported duplicates and reports unsupported ones."""
@@ -857,8 +871,8 @@ async def test_streaming_migration_handles_provider_duplicate_policy(  # noqa: P
                 source_missing,
             )
         else:
-            if actual_target_ids is None:
-                raise TimeoutError
+            if isinstance(actual_target_ids, Exception):
+                raise actual_target_ids
             target_tracks = {
                 "tidal-one": target_one,
                 "tidal-two": target_two,
@@ -1056,7 +1070,7 @@ async def test_builtin_migration_keeps_all_enriched_mappings(
         minimum_confidence=TrackMatchConfidence.LOOSE,
         provider_instance_ids={"builtin", "spotify_1"},
         trust_track_mappings=True,
-        failed_provider_instances=set(),
+        provider_failures=ProviderMatchFailures(),
     )
     assert create_builtin.await_args is not None
     entries = create_builtin.await_args.args[1]
@@ -1076,7 +1090,7 @@ async def test_builtin_resolution_does_not_return_unfiltered_track_on_failure(
     builtin_provider.instance_id = "builtin"
     builtin_provider.domain = "builtin"
     builtin_provider.name = "Music Assistant"
-    failed_provider_instances: set[str] = set()
+    provider_failures = ProviderMatchFailures()
 
     with patch.object(
         music.tracks,
@@ -1089,8 +1103,329 @@ async def test_builtin_resolution_does_not_return_unfiltered_track_on_failure(
             TrackMatchConfidence.LIKELY,
             {"builtin"},
             False,
-            failed_provider_instances,
+            provider_failures,
         )
 
     assert result.track is None
     assert result.error == "Matching failed on Music Assistant (TimeoutError)"
+
+
+async def test_builtin_migration_counts_only_skipped_tracks_as_rate_limited(
+    music: MusicController,
+) -> None:
+    """A rate limit on an extra provider is a lookup issue for a track that is included."""
+    source_playlist = _playlist("1", "Source", "spotify_1", "source")
+    destination_playlist = _playlist("2", "Migrated", "builtin", "migrated")
+    included = create_track("spotify_1", "included", name="Included")
+    skipped = create_track("spotify_1", "skipped", name="Skipped")
+    builtin_provider = MagicMock(spec=MusicProvider)
+    builtin_provider.instance_id = "builtin"
+    builtin_provider.domain = "builtin"
+    builtin_provider.name = "Music Assistant"
+    builtin_provider.available = True
+    source_provider = MagicMock(spec=MusicProvider)
+    source_provider.instance_id = "spotify_1"
+    source_provider.domain = "spotify"
+    source_provider.available = True
+
+    async def iter_source_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Track]:
+        yield included
+        yield skipped
+
+    async def enrich_track(track: Track, **_kwargs: object) -> TrackProviderEnrichment:
+        enriched = deepcopy(track)
+        if track is skipped:
+            # no mapping is left to store, so the track can not be included
+            enriched.provider_mappings = set()
+        return TrackProviderEnrichment(
+            track=enriched,
+            matches=(),
+            ambiguous_providers=(),
+            failed_providers=(),
+            used_library_item=False,
+            rate_limited_providers=("Tidal",),
+        )
+
+    with (
+        patch.object(music.playlists, "get_library_item", AsyncMock(return_value=source_playlist)),
+        patch.object(music.playlists, "iter_tracks", iter_source_tracks),
+        patch.object(music.tracks, "enrich_provider_mappings", AsyncMock(side_effect=enrich_track)),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "builtin": builtin_provider,
+                "spotify_1": source_provider,
+            }[provider_instance_id],
+        ),
+        patch.object(
+            music.playlists,
+            "_create_builtin_migration_playlist",
+            AsyncMock(return_value=destination_playlist),
+        ),
+        patch(
+            "music_assistant.controllers.music.media.playlists.set_current_task_report"
+        ) as set_report,
+    ):
+        await music.playlists._handle_migrate_playlist(
+            source_playlist.item_id,
+            "source",
+            "spotify_1",
+            builtin_provider.instance_id,
+            "Migrated",
+            PlaylistMatchPolicy.SAME_RECORDING,
+            ("builtin", "spotify_1", "tidal_1"),
+        )
+
+    final_report = set_report.call_args.args[0]
+    assert "| Included | 1 |" in final_report
+    assert "| Skipped | 1 |" in final_report
+    assert "| Rate limited | 1 |" in final_report
+    # the lookup issue is listed for every track, included or not
+    assert "| Test Artist - Included | Rate limited on Tidal |" in final_report
+    assert "| Test Artist - Skipped | Rate limited on Tidal |" in final_report
+
+
+def _migration_providers() -> tuple[MagicMock, MagicMock]:
+    """Build a streaming source and destination provider pair for a migration."""
+    source_provider = MagicMock(spec=MusicProvider)
+    source_provider.instance_id = "spotify_1"
+    source_provider.domain = "spotify"
+    source_provider.name = "Spotify"
+    source_provider.available = True
+    target_provider = MagicMock(spec=MusicProvider)
+    target_provider.instance_id = "tidal_1"
+    target_provider.domain = "tidal"
+    target_provider.name = "Tidal"
+    target_provider.available = True
+    target_provider.playlist_duplicates_supported = True
+    target_provider.add_playlist_tracks = AsyncMock()
+    return source_provider, target_provider
+
+
+async def test_migration_lookup_error_marks_only_its_own_track(
+    music: MusicController,
+) -> None:
+    """A lookup that fails for one track leaves the other tracks matching on the provider."""
+    source_playlist = _playlist("1", "Source", "spotify_1", "source")
+    destination_playlist = _playlist("2", "Migrated", "tidal_1", "target")
+    source_provider, target_provider = _migration_providers()
+    source_tracks = [
+        create_track("spotify_1", f"source-{index}", name=f"Track {index}") for index in range(4)
+    ]
+    target_tracks = {
+        f"source-{index}": create_track("tidal_1", f"tidal-{index}", name=f"Track {index}")
+        for index in range(4)
+    }
+    matched_keys = ["source-0", "source-2", "source-3"]
+
+    async def iter_playlist_tracks(*args: object, **_kwargs: object) -> AsyncGenerator[Track]:
+        if args == ("source", "spotify_1"):
+            for track in source_tracks:
+                yield track
+            return
+        for key in matched_keys:
+            yield target_tracks[key]
+
+    async def find_match(
+        track: Track, *_args: object, **_kwargs: object
+    ) -> TrackProviderMatchResult:
+        if track.item_id == "source-1":
+            raise TimeoutError
+        target = target_tracks[track.item_id]
+        return TrackProviderMatchResult(
+            match=TrackProviderMatch(
+                track=target,
+                mapping=next(iter(target.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            )
+        )
+
+    find_provider_match = AsyncMock(side_effect=find_match)
+
+    with (
+        patch.object(music.playlists, "get_library_item", AsyncMock(return_value=source_playlist)),
+        patch.object(music.playlists, "iter_tracks", iter_playlist_tracks),
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "find_provider_match", find_provider_match),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "spotify_1": source_provider,
+                "tidal_1": target_provider,
+            }[provider_instance_id],
+        ),
+        patch.object(
+            music.playlists, "create_playlist", AsyncMock(return_value=destination_playlist)
+        ),
+        patch.object(music.playlists, "_select_provider_id", return_value=("tidal_1", "target")),
+        patch.object(music.playlists, "update_item_in_library", AsyncMock()),
+        patch("music_assistant.controllers.music.media.playlists.invalidate_listings", AsyncMock()),
+        patch(
+            "music_assistant.controllers.music.media.playlists.set_current_task_report"
+        ) as set_report,
+    ):
+        await music.playlists._handle_migrate_playlist(
+            source_playlist.item_id,
+            "source",
+            "spotify_1",
+            target_provider.instance_id,
+            "Migrated",
+            PlaylistMatchPolicy.SAME_RECORDING,
+            ("spotify_1", "tidal_1"),
+        )
+
+    assert find_provider_match.await_count == len(source_tracks)
+    target_provider.add_playlist_tracks.assert_awaited_once_with(
+        "target",
+        [target_tracks[key].item_id for key in matched_keys],
+    )
+    final_report = set_report.call_args.args[0]
+    assert "Test Artist - Track 1 | Matching failed on Tidal (TimeoutError)" in final_report
+    assert "after an earlier failure" not in final_report
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(RateLimited("Tidal rate limit", backoff_time=120), id="rate-limited"),
+        # what a provider behind the retry helper reports for a long Retry-After
+        pytest.param(
+            _give_up(RateLimited("Tidal rate limit", backoff_time=3600), 3600),
+            id="given-up",
+        ),
+    ],
+)
+async def test_migration_holds_back_a_rate_limited_provider(
+    music: MusicController,
+    error: Exception,
+) -> None:
+    """A rate limit pauses the provider for the wait it asked for, without dropping it."""
+    source_playlist = _playlist("1", "Source", "spotify_1", "source")
+    destination_playlist = _playlist("2", "Migrated", "tidal_1", "target")
+    source_provider, target_provider = _migration_providers()
+    source_tracks = [
+        create_track("spotify_1", f"source-{index}", name=f"Track {index}") for index in range(6)
+    ]
+    target_track = create_track("tidal_1", "tidal-match", name="Track 0")
+    rate_limited = asyncio.Event()
+
+    async def iter_playlist_tracks(*args: object, **_kwargs: object) -> AsyncGenerator[Track]:
+        if args == ("source", "spotify_1"):
+            for track in source_tracks:
+                yield track
+            return
+        yield target_track
+
+    async def find_match(
+        track: Track, *_args: object, **_kwargs: object
+    ) -> TrackProviderMatchResult:
+        if track.item_id != "source-0":
+            rate_limited.set()
+            raise error
+        # the match of the same batch answers only after the other track ran into the limit
+        await rate_limited.wait()
+        return TrackProviderMatchResult(
+            match=TrackProviderMatch(
+                track=target_track,
+                mapping=next(iter(target_track.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            )
+        )
+
+    find_provider_match = AsyncMock(side_effect=find_match)
+
+    with (
+        patch.object(music.playlists, "get_library_item", AsyncMock(return_value=source_playlist)),
+        patch.object(music.playlists, "iter_tracks", iter_playlist_tracks),
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "find_provider_match", find_provider_match),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "spotify_1": source_provider,
+                "tidal_1": target_provider,
+            }[provider_instance_id],
+        ),
+        patch.object(
+            music.playlists, "create_playlist", AsyncMock(return_value=destination_playlist)
+        ),
+        patch.object(music.playlists, "_select_provider_id", return_value=("tidal_1", "target")),
+        patch.object(music.playlists, "update_item_in_library", AsyncMock()),
+        patch("music_assistant.controllers.music.media.playlists.invalidate_listings", AsyncMock()),
+        patch(
+            "music_assistant.controllers.music.media.playlists.set_current_task_report"
+        ) as set_report,
+    ):
+        await music.playlists._handle_migrate_playlist(
+            source_playlist.item_id,
+            "source",
+            "spotify_1",
+            target_provider.instance_id,
+            "Migrated",
+            PlaylistMatchPolicy.SAME_RECORDING,
+            ("spotify_1", "tidal_1"),
+        )
+
+    # the match, then the track that ran into the limit; the rest, the next batch
+    # included, are not asked at all
+    assert find_provider_match.await_count == 2
+    target_provider.add_playlist_tracks.assert_awaited_once_with("target", ["tidal-match"])
+    final_report = set_report.call_args.args[0]
+    # listed once per track, as a skipped item
+    assert final_report.count("Rate limited on Tidal") == len(source_tracks) - 1
+    assert f"| Rate limited | {len(source_tracks) - 1} |" in final_report
+    # a rate limit is not a provider failure, so the breaker stays out of it
+    assert "after an earlier failure" not in final_report
+
+
+async def test_migration_drops_provider_after_consecutive_failures(
+    music: MusicController,
+) -> None:
+    """A provider that keeps failing is no longer asked for the remaining tracks."""
+    source_playlist = _playlist("1", "Source", "spotify_1", "source")
+    source_provider, target_provider = _migration_providers()
+    source_tracks = [
+        create_track("spotify_1", f"source-{index}", name=f"Track {index}")
+        for index in range(_MIGRATION_RESOLVE_BATCH_SIZE + 3)
+    ]
+
+    async def iter_playlist_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Track]:
+        for track in source_tracks:
+            yield track
+
+    find_provider_match = AsyncMock(side_effect=TimeoutError)
+
+    with (
+        patch.object(music.playlists, "get_library_item", AsyncMock(return_value=source_playlist)),
+        patch.object(music.playlists, "iter_tracks", iter_playlist_tracks),
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "find_provider_match", find_provider_match),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "spotify_1": source_provider,
+                "tidal_1": target_provider,
+            }[provider_instance_id],
+        ),
+        patch(
+            "music_assistant.controllers.music.media.playlists.set_current_task_report"
+        ) as set_report,
+        pytest.raises(InvalidDataError, match="No tracks could be migrated"),
+    ):
+        await music.playlists._handle_migrate_playlist(
+            source_playlist.item_id,
+            "source",
+            "spotify_1",
+            target_provider.instance_id,
+            "Migrated",
+            PlaylistMatchPolicy.SAME_RECORDING,
+            ("spotify_1", "tidal_1"),
+        )
+
+    assert find_provider_match.await_count == MAX_CONSECUTIVE_PROVIDER_FAILURES
+    analysis_report = set_report.call_args.args[0]
+    assert "Matching unavailable on Tidal after an earlier failure" in analysis_report

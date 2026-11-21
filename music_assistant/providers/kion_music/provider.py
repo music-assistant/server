@@ -16,6 +16,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
@@ -2319,7 +2320,9 @@ class KionMusicProvider(MusicProvider):
                 track_count,
             )
             try:
-                tracks_list = await playlist.fetch_tracks_async()
+                tracks_list = await self.client.fetch_playlist_tracks(playlist)
+            except RateLimited:
+                raise
             except Exception as err:
                 self.logger.warning("fetch_tracks_async failed for %s/%s: %s", owner_id, kind, err)
             if not tracks_list:

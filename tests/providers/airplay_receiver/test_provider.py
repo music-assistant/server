@@ -642,6 +642,30 @@ def test_receiver_pipes_and_config_live_in_the_runtime_dir() -> None:
     }
 
 
+def test_receiver_source_is_named_by_the_provider_until_a_track_plays() -> None:
+    """The source carries the provider's name and its player, and no title of its own."""
+    prov, mocks = _reconcile_provider(("p1",), {})
+    mocks.mass.runtime_path = "/ma-runtime"
+    prov.config.instance_id = "airplay_receiver"
+    prov.config.name = "AirPlay Receiver"
+    prov.manifest = MagicMock(domain="airplay_receiver")
+    prov._ports = {"p1": 7000}
+    prov._audio_format = AudioFormat(content_type=ContentType.ALAC)
+    prov._setup_shairport_daemon = MagicMock()  # type: ignore[method-assign]
+    player = MagicMock(player_id="p1")
+    player.name = "Player A"
+
+    AirPlayReceiverProvider._start_receiver(prov, "p1", player, "Player A | Music Assistant")
+
+    daemon = prov._daemons["p1"]
+    assert (daemon.audio_source.name, daemon.audio_source.owner_player_id) == (
+        "AirPlay Receiver",
+        "p1",
+    )
+    # the server shows the source by its name while the title is empty
+    assert daemon.stream_metadata.title == ""
+
+
 def test_receiver_of_a_merged_player_keeps_the_port_and_pipes_of_its_stored_id() -> None:
     """A connected player merged into another keeps its port, pipes and config file."""
     prov, mocks = _reconcile_provider(
@@ -670,7 +694,11 @@ def test_receiver_of_a_merged_player_keeps_the_port_and_pipes_of_its_stored_id()
         "/ma-runtime/ma_airplay_metadata_airplay_receiver_p_old",
         "/ma-runtime/ma_shairport_sync_airplay_receiver_p_old.conf",
     }
-    assert daemon.audio_source.name == "AirPlay Receiver (Player A)"
+    # the server resolves the stored id of the merged player to the player it is now
+    assert (daemon.audio_source.name, daemon.audio_source.owner_player_id) == (
+        "AirPlay Receiver",
+        "p_old",
+    )
 
 
 async def test_session_hooks_reach_a_metadata_pipe_whose_path_has_spaces(tmp_path: Path) -> None:

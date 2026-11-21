@@ -220,13 +220,14 @@ def _provider() -> Any:
 
 
 async def test_a_saved_player_config_evaluates_the_bridges_of_that_player() -> None:
-    """The Sendspin provider lets the bridges of a player follow a saved config."""
+    """The Sendspin provider lets the bridges and a playing input of a player follow its config."""
     provider = _provider()
 
     with patch.object(provider_module, "evaluate_bridges_of_player", AsyncMock()) as evaluate:
         await SendspinProvider._on_player_config_updated(provider, MagicMock(object_id="pl01"))
 
     evaluate.assert_awaited_once_with(provider.mass, "pl01")
+    provider.sources.on_player_config_updated.assert_called_once_with("pl01")
 
 
 @pytest.mark.parametrize("case", ["unloading", "closing", "no player"])
@@ -253,6 +254,7 @@ async def test_the_provider_listens_for_saved_player_configs(tmp_path: Path) -> 
         patch("aiosendspin.noise.trust_store.FileServerPairingStore.open", AsyncMock()),
         patch.object(provider_module, "_evict_stale_pairings", AsyncMock(return_value=(0, 0))),
         patch.object(provider_module, "SendspinServer", MagicMock()),
+        patch.object(provider_module, "is_port_in_use", AsyncMock(return_value=False)),
     ):
         await SendspinProvider.handle_async_init(provider)
 

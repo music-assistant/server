@@ -1464,7 +1464,7 @@ class TestPowerOffEndsTheQueue:
 
         await controller._handle_cmd_power("player_1", False)
 
-        queue_stop.assert_awaited_once_with("player_1")
+        queue_stop.assert_awaited_once_with("player_1", keep_sleep_timer=False)
         # the queue stop issues the player stop itself
         player_stop.assert_not_awaited()
 
@@ -2899,7 +2899,9 @@ class TestProtocolOutputPlayPause:
         await controller._handle_cmd_pause("player_1")
 
         native.pause.assert_not_called()
-        mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1")
+        mock_mass.player_queues._handle_stop.assert_awaited_once_with(
+            "player_1", keep_sleep_timer=True
+        )
         # the queue stop issues the player stop itself
         controller._handle_cmd_stop.assert_not_awaited()
 
@@ -2960,7 +2962,9 @@ class TestPauseWithoutPauseSupport:
 
         await controller._handle_cmd_pause("player_1")
 
-        mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1")
+        mock_mass.player_queues._handle_stop.assert_awaited_once_with(
+            "player_1", keep_sleep_timer=True
+        )
         cast("AsyncMock", controller._handle_cmd_stop).assert_not_awaited()
 
 

@@ -310,6 +310,10 @@ class AudioSourceMixin(AudioStreamMixin):
         favorites). Each AudioSource is a regular MediaItem, playable via the standard
         play_media flow.
 
+        A source carries its own name, without the name of a player. One that belongs to
+        a player names it in ``owner_player_id``, and the server adds the name of that
+        player where the source is shown elsewhere.
+
         Streaming contract for AudioSources: ``get_stream_details`` must stay side-effect-free
         (MA also calls it from queue preload), so an exclusive source is claimed in
         ``on_source_selected``, paired with ``on_source_unselected``. In the returned

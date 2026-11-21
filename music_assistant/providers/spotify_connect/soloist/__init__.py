@@ -1,5 +1,6 @@
 """Spotify Soloist implementation of the Spotify Connect backend."""
 
+from .api_key import find_reusable_api_key
 from .backend import (
     VOLUME_MODE_PLAYER_ONLY,
     VOLUME_MODE_SYNC_SPOTIFY,
@@ -30,6 +31,7 @@ __all__ = [
     "SoloistClient",
     "SoloistError",
     "UnsupportedPlatformError",
+    "find_reusable_api_key",
     "verify_platform_supported",
     "write_audio_prefs",
 ]

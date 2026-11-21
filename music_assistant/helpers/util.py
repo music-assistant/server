@@ -6,6 +6,7 @@ import asyncio
 import codecs
 import functools
 import html
+import http.client
 import importlib
 import inspect
 import logging
@@ -1128,7 +1129,7 @@ def _enumerate_ip_addresses(include_ipv6: bool, publish_candidates_only: bool) -
         # doesn't even have to be reachable
         _sock.connect(("10.254.254.254", 1))
         primary_ip = _sock.getsockname()[0]
-    except Exception:
+    except OSError:
         primary_ip = ""
     finally:
         _sock.close()
@@ -1139,7 +1140,7 @@ def _enumerate_ip_addresses(include_ipv6: bool, publish_candidates_only: bool) -
         try:
             _sock6.connect(("2001:db8::1", 1))
             primary_ip = _sock6.getsockname()[0]
-        except Exception:
+        except OSError:
             primary_ip = ""
         finally:
             _sock6.close()
@@ -1297,7 +1298,7 @@ async def get_ip_from_host(dns_name: str) -> str | None:
             results = socket.getaddrinfo(dns_name, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
             if results:
                 return str(results[0][4][0])
-        except Exception:
+        except OSError, ValueError:
             # fail gracefully!
             return None
         return None
@@ -1491,7 +1492,7 @@ async def is_hass_supervisor() -> bool:
         except urllib.error.URLError as err:
             # this should return a 401 unauthorized if it exists
             return getattr(err, "code", 999) == 401
-        except Exception:
+        except OSError, http.client.HTTPException:
             return False
         return False
 
@@ -1826,7 +1827,7 @@ async def detect_charset(data: bytes, fallback: str = "utf-8", preferred: str | 
             prefer_superset=True,
             no_match_encoding=fallback,
         )
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - chardet raises undocumented errors
         LOGGER.debug("Failed to detect charset: %s", err)
         return fallback
     if not (encoding := detected["encoding"]):
@@ -1908,7 +1909,7 @@ def validate_announcement_chime_url(url: str) -> bool:
 
         return any(path_lower.endswith(ext) for ext in audio_extensions)
 
-    except Exception:
+    except ValueError:
         return False
 
 
@@ -1928,7 +1929,7 @@ async def get_mac_address(ip_address: str) -> str | None:
     except TimeoutError:
         LOGGER.debug("Timed out resolving MAC address for %s", ip_address)
         return None
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - getmac raises undocumented errors
         LOGGER.debug("Failed to resolve MAC address for %s: %s", ip_address, err)
         return None
 

@@ -204,3 +204,7 @@ FLOW_PLAYOUT_IDLE_TIMEOUT = FLOW_STREAM_MAX_LEAD_OUT_SECONDS + 60
 # seconds), so a player that keeps losing its stream does not restart playback over and over.
 LOST_FLOW_RESTART_LIMIT = 3
 LOST_FLOW_RESTART_WINDOW = 600
+
+# A queue stops once this many of its items in a row got no audio from their source, so it does
+# not run on through its items while a music service or the network is down.
+SOURCE_FAILURE_LIMIT = 3

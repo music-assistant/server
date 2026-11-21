@@ -1505,7 +1505,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.TRACK, prov_track.uri, err)
 
     # DO NOT OVERRIDE BELOW
@@ -1878,7 +1878,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.ARTIST, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.ARTIST, prov_item.item_id, db_id, cur_db_ids
@@ -1933,7 +1933,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.ALBUM, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.ALBUM, prov_item.item_id, db_id, cur_db_ids
@@ -1944,7 +1944,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             if sync_album_tracks:
                 try:
                     await self.import_album_tracks(prov_item.item_id, prov_item)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                     self._handle_sync_item_failure(MediaType.ALBUM, prov_item.uri, err)
         return cur_db_ids
 
@@ -2048,7 +2048,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     )
 
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.AUDIOBOOK, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.AUDIOBOOK, prov_item.item_id, db_id, cur_db_ids
@@ -2107,7 +2107,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                             self.instance_id, MediaType.PLAYLIST, db_id, prov_item.favorite
                         )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.PLAYLIST, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.PLAYLIST, prov_item.item_id, db_id, cur_db_ids
@@ -2121,7 +2121,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             ):
                 try:
                     await self._sync_playlist_tracks(prov_item)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                     self._handle_sync_item_failure(MediaType.PLAYLIST, prov_item.uri, err)
         return cur_db_ids
 
@@ -2173,7 +2173,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.TRACK, prov_track.uri, err)
 
     async def _sync_library_tracks(self) -> set[int]:
@@ -2240,7 +2240,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.TRACK, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.TRACK, prov_item.item_id, db_id, cur_db_ids
@@ -2301,7 +2301,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         fallback_genres,
                     )
                 await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.PODCAST, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.PODCAST, prov_item.item_id, db_id, cur_db_ids
@@ -2313,7 +2313,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                 # precache podcast episodes
                 async for _ in self.mass.music.podcasts.iter_episodes(str(db_id), "library"):
                     await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.PODCAST, prov_item.uri, err)
         return cur_db_ids
 
@@ -2369,7 +2369,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         )
                 await asyncio.sleep(0)  # yield to eventloop
 
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
                 self._handle_sync_item_failure(MediaType.RADIO, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.RADIO, prov_item.item_id, db_id, cur_db_ids

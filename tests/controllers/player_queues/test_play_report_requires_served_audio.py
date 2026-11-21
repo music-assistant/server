@@ -50,7 +50,6 @@ def _controller(items: list[QueueItem]) -> PlayerQueuesController:
     ctrl._queue_data = {QUEUE_ID: PlayerQueueData(queue=queue, items=items)}
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl._preload_next_item = Mock()  # type: ignore[method-assign]
-    ctrl._cleanup_stale_queue_buffers = Mock()  # type: ignore[method-assign]
     ctrl._load_item = AsyncMock()  # type: ignore[method-assign]
     ctrl._check_player_permission = Mock()  # type: ignore[method-assign]
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]

@@ -167,7 +167,7 @@ class ProviderLoader:
             provider_path = str(folder)
             try:
                 manifest = (await read_manifest_file(str(folder / "manifest.json")))[0]
-            except Exception as err:
+            except (OSError, ValueError, LookupError) as err:
                 reason = f"its manifest is invalid: {err}"
             else:
                 top_level = folder.parent == Path(location)

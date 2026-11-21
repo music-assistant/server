@@ -452,6 +452,7 @@ class AmpliPiZonePlayer(PlayerProtocol):
                 id=f"{SOURCE_ID_STREAM_PREFIX}{stream.id}",
                 name=self._source_label(stream),
                 passive=False,
+                is_input=stream.type in INPUT_STREAM_TYPES,
             )
             for stream in self._prov.selectable_streams()
         ]

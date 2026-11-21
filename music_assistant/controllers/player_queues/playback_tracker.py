@@ -501,7 +501,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         ):
             path_parts = protocol_player.current_media.uri[len(base_url) :].strip("/").split("/")
             # the path holds mode, session_id, queue_id, queue_item_id and player_id.fmt
-            if len(path_parts) >= 5:
+            # a stream of a superseded session, which a player can still report for a moment
+            # after a new load (e.g. after Next), says nothing about the current item
+            if len(path_parts) >= 5 and path_parts[1] == self._queue_data[queue_id].session_id:
                 current_item_id = path_parts[3]
                 if self.get_item(queue_id, current_item_id):
                     return current_item_id
@@ -793,8 +795,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             self._clear_sleep_timer(queue_id)
             return
         if new_state["state"] == PlaybackState.IDLE:
-            if prev_state["state"] != PlaybackState.PLAYING:
-                # an idle paused player (a pause timeout) still stops at the target once resumed
+            if prev_state["state"] != PlaybackState.PLAYING or queue_data.halted_by_command:
+                # an idle paused player (a pause timeout), or a pause made with a stop on a
+                # player that cannot pause, still stops at the target once resumed
+                self._update_player_sleep_timer(queue)
                 return
             if (
                 prev_state["current_item_id"] == target.queue_item_id

@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +13,7 @@ import aiofiles
 import pytest
 from aiohttp import ClientConnectionError, ClientResponseError, ClientSession
 from aiojellyfin import Connection
+from aiojellyfin.session import NotFound as SessionNotFound
 from aiojellyfin.session import SessionConfiguration
 from aiojellyfin.testing import FixtureBuilder
 from music_assistant_models.enums import MediaType
@@ -33,6 +34,7 @@ from tests.common import get_fixtures_dir, wait_for_sync_completion
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.media_items import Track
     from music_assistant_models.streamdetails import StreamDetails
 
 TRACK_FIXTURE = Path(__file__).parent / "fixtures" / "tracks" / "do_i_wanna_know.json"
@@ -282,6 +284,47 @@ async def test_get_stream_details_album_loudness(mass: MusicAssistant) -> None:
     )
 
 
+async def test_get_track_lyrics(mass: MusicAssistant, jellyfin_provider: ProviderConfig) -> None:
+    """Test get_track fills in plain and synced lyrics from Jellyfin's lyrics endpoint."""
+    response = {
+        "Lyrics": [
+            {"Text": "Hello", "Start": 10_000_000},
+            {"Text": "World", "Start": 25_000_000},
+        ]
+    }
+
+    track = await _get_track_with_lyrics_response(mass, jellyfin_provider, response)
+
+    assert track.metadata.lyrics == "Hello\nWorld"
+    assert track.metadata.lrc_lyrics == "[00:01.00]Hello\n[00:02.50]World"
+
+
+@pytest.mark.parametrize(
+    ("error", "logged"),
+    [
+        (SessionNotFound("Resource not found"), False),
+        (ClientResponseError(mock.MagicMock(), (), status=401), True),
+        (ClientResponseError(mock.MagicMock(), (), status=503), True),
+        (ClientConnectionError("connection refused"), True),
+    ],
+    ids=["no-lyrics", "unauthorized", "server-error", "connection-refused"],
+)
+async def test_get_track_lyrics_unavailable(
+    mass: MusicAssistant, jellyfin_provider: ProviderConfig, error: Exception, logged: bool
+) -> None:
+    """Test a failing lyrics request never breaks get_track, and only real errors are logged."""
+    provider = mass.get_provider(jellyfin_provider.instance_id)
+    assert isinstance(provider, JellyfinProvider)
+
+    with mock.patch.object(provider.logger, "debug") as debug:
+        track = await _get_track_with_lyrics_response(mass, jellyfin_provider, error)
+
+    assert track.item_id == TRACK_ID
+    assert track.metadata.lyrics is None
+    assert track.metadata.lrc_lyrics is None
+    assert debug.called is logged
+
+
 @pytest.mark.parametrize(
     ("error", "slug"),
     [
@@ -389,6 +432,26 @@ async def _setup_provider(
             await mass.music.start_sync()
 
         yield config
+
+
+async def _get_track_with_lyrics_response(
+    mass: MusicAssistant, config: ProviderConfig, response: dict[str, Any] | Exception
+) -> Track:
+    """Get a track while Jellyfin's lyrics endpoint returns the given response or raises it."""
+    provider = mass.get_provider(config.instance_id)
+    assert isinstance(provider, JellyfinProvider)
+    session = provider._client._session
+    original_get_json = session.get_json
+
+    async def get_json(url: str, params: Mapping[str, str]) -> dict[str, Any]:
+        if url.endswith("/Lyrics"):
+            if isinstance(response, Exception):
+                raise response
+            return response
+        return await original_get_json(url, params)
+
+    with mock.patch.object(session, "get_json", get_json):
+        return await provider.get_track(TRACK_ID)
 
 
 async def _get_stream_details_with_loudness(

@@ -430,7 +430,7 @@ class MusicAssistant:
         # database, neither of which is there while the library migrates.
         try:
             await self.music.favorites.settle_pending()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a startup step must not stop the server
             # the parked rows stay where they are and get another chance on the next start
             LOGGER.warning("Could not hand out the migrated favorites: %s", err)
         # repair sidebar shortcuts left pointing at a provider instance that no longer exists:
@@ -1623,15 +1623,6 @@ class MusicAssistant:
             if await self.config.create_builtin_provider_config(manifest.domain):
                 newly_created_defaults.add(manifest.domain)
             changes_made = True
-            # TEMP: migration - to be removed after 2.8 release
-            # enable all existing players of the default providers if they are not already enabled
-            # due to the linked protocol feature we introduced
-            for player_config in await self.config.get_player_configs(
-                provider=default_provider, include_disabled=True
-            ):
-                if player_config.enabled:
-                    continue
-                await self.config.save_player_config(player_config.player_id, {"enabled": True})
             default_providers_setup.add(default_provider)
         if changes_made:
             self.config.set(CONF_DEFAULT_PROVIDERS_SETUP, default_providers_setup)
