@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from music_assistant_models.auth import Scope
@@ -40,6 +41,13 @@ ALL_DASHBOARD_TYPES = frozenset(t for t in DashboardType if t != DashboardType.U
 # the frontend's router leaves these literal in a query value; escaped, it never matches
 ROUTE_SAFE_CHARS = ":!'()*@,;$/"
 
+# the only preference namespace a dashboard viewer is handed
+VIEWER_PREFERENCE_PREFIX = "visualizer_"
+
+# route query param carrying the per-session secret that authorizes viewer_preferences
+VIEWER_KEY_PARAM = "viewer_key"
+VIEWER_KEY_BYTES = 16
+
 
 @dataclass
 class _RegisteredDashboard:
@@ -65,6 +73,10 @@ class DashboardController(CoreController):
         self.manifest.documentation = CORE_DOCS_URL
         self._dashboards: dict[str, _RegisteredDashboard] = {}
         self._sessions: dict[str, DashboardSession] = {}
+        # who cast each session: dashboard viewers follow that user's visualizer preferences
+        self._session_owners: dict[str, str] = {}
+        # dashboard_id -> secret in the launched url; kept out of sessions, which are listed
+        self._viewer_keys: dict[str, str] = {}
 
     @api_command("dashboard/register")
     async def register_dashboard(
@@ -133,8 +145,9 @@ class DashboardController(CoreController):
             raise InvalidCommand(msg)
 
         del self._dashboards[dashboard_id]
+        had_session = self._forget_session(dashboard_id) is not None
         self._signal_dashboards_updated()
-        if self._sessions.pop(dashboard_id, None) is not None:
+        if had_session:
             self._signal_sessions_updated()
 
     @api_command("dashboard/dashboards")
@@ -188,12 +201,37 @@ class DashboardController(CoreController):
             player_id=player_id,
         )
 
-        if registration.on_show is not None:
-            # the consumer resolves its own url if needed; raises before showing on failure
-            await registration.on_show(dashboard, player_id)
-        else:
-            # API registration: url-based clients resolve their own url via `dashboard/get_url`
-            self.mass.signal_event(EventType.DASHBOARD_SHOW, object_id=dashboard_id, data=session)
+        # every show gets a fresh viewer key, so a replaced cast's url stops working;
+        # the endpoint's url resolution below mints it
+        previous_key = self._viewer_keys.pop(dashboard_id, None)
+        # bound before the launch: its new key is usable as soon as the url is out,
+        # and must never read the previous caster's preferences
+        previous_owner = self._session_owners.get(dashboard_id)
+        previous_session = self._sessions.get(dashboard_id)
+        user = get_current_user()
+        _set_or_pop(self._session_owners, dashboard_id, user.user_id if user else None)
+
+        shown = False
+        try:
+            if registration.on_show is not None:
+                # the consumer resolves its own url if needed; raises before showing on failure
+                await registration.on_show(dashboard, player_id)
+            else:
+                # API registration: url-based clients resolve their own url via `dashboard/get_url`
+                self.mass.signal_event(
+                    EventType.DASHBOARD_SHOW, object_id=dashboard_id, data=session
+                )
+            shown = True
+        finally:
+            # unless a hide or unregister during the launch cleared the dashboard,
+            # the previous cast is still on screen: give it back its key and owner
+            if (
+                not shown
+                and self._dashboards.get(dashboard_id) is registration
+                and self._sessions.get(dashboard_id) is previous_session
+            ):
+                _set_or_pop(self._viewer_keys, dashboard_id, previous_key)
+                _set_or_pop(self._session_owners, dashboard_id, previous_owner)
 
         self._sessions[dashboard_id] = session
         self._signal_sessions_updated()
@@ -219,8 +257,40 @@ class DashboardController(CoreController):
             else:
                 self.mass.signal_event(EventType.DASHBOARD_HIDE, object_id=dashboard_id)
 
-        self._sessions.pop(dashboard_id, None)
+        self._forget_session(dashboard_id)
         self._signal_sessions_updated()
+
+    @api_command("dashboard/viewer_preferences", required_scope=Scope.PROVIDERS_READ)
+    async def get_viewer_preferences(
+        self,
+        dashboard_id: str,
+        viewer_key: str,
+    ) -> dict[str, Any]:
+        """
+        Return the visualizer preferences a dashboard viewer should render with.
+
+        A dashboard session runs as the shared viewer user, which has no
+        preferences and no way to set any; it follows the preferences of the
+        user who cast it instead. PROVIDERS_READ (held by guests) so the
+        viewer itself can read this, and the viewer_key from its launched url is what
+        authorizes it; only visualizer settings are exposed.
+
+        :param dashboard_id: The viewer's own dashboard id, carried in the launched
+            url; identifies its session when several displays show the same dashboard.
+        :param viewer_key: The session's secret, carried in the launched url.
+        :raises InsufficientPermissions: If the dashboard has no viewer key or it does not match.
+        """
+        stored_key = self._viewer_keys.get(dashboard_id)
+        if stored_key is None or not secrets.compare_digest(stored_key, viewer_key):
+            msg = "Insufficient permissions to read viewer preferences"
+            raise InsufficientPermissions(msg)
+        owner_id = self._session_owners.get(dashboard_id)
+        if owner_id is None:
+            return {}
+        owner = await self.mass.webserver.auth.get_user(owner_id)
+        if owner is None:
+            return {}
+        return _viewer_preferences(owner.preferences)
 
     @api_command("dashboard/get_url")
     async def get_url_for_dashboard(
@@ -236,10 +306,13 @@ class DashboardController(CoreController):
         :raises InsufficientPermissions: If the caller has neither the required scope
             nor a matching active session of its own.
         """
-        if not self._can_resolve_url_for_caller(dashboard, player_id):
+        allowed, own_dashboard_id = self._can_resolve_url_for_caller(dashboard, player_id)
+        if not allowed:
             msg = "Insufficient permissions to resolve a dashboard url"
             raise InsufficientPermissions(msg)
-        return await self.resolve_dashboard_url(dashboard, player_id, prefer_local=prefer_local)
+        return await self.resolve_dashboard_url(
+            dashboard, player_id, dashboard_id=own_dashboard_id, prefer_local=prefer_local
+        )
 
     def register_dashboard_handler(
         self,
@@ -266,8 +339,9 @@ class DashboardController(CoreController):
 
         def unregister() -> None:
             self._dashboards.pop(dashboard_id, None)
+            had_session = self._forget_session(dashboard_id) is not None
             self._signal_dashboards_updated()
-            if self._sessions.pop(dashboard_id, None) is not None:
+            if had_session:
                 self._signal_sessions_updated()
 
         return unregister
@@ -285,11 +359,32 @@ class DashboardController(CoreController):
         sessions_changed = False
         for dashboard_id in stale_ids:
             del self._dashboards[dashboard_id]
-            if self._sessions.pop(dashboard_id, None) is not None:
+            if self._forget_session(dashboard_id) is not None:
                 sessions_changed = True
 
         self._signal_dashboards_updated()
         if sessions_changed:
+            self._signal_sessions_updated()
+
+    def notify_user_preferences_changed(
+        self,
+        user_id: str,
+        previous: dict[str, Any] | None,
+        current: dict[str, Any] | None,
+    ) -> None:
+        """
+        Signal active dashboard sessions when their owner's visualizer preferences changed.
+
+        Viewers re-fetch `dashboard/viewer_preferences` on the sessions-updated
+        event, so a preference change reaches a cast display live.
+
+        :param user_id: The user whose preferences were just updated.
+        :param previous: The user's preferences before the update.
+        :param current: The user's preferences after the update.
+        """
+        if _viewer_preferences(previous) == _viewer_preferences(current):
+            return
+        if user_id in self._session_owners.values():
             self._signal_sessions_updated()
 
     def end_session(self, dashboard_id: str, reason: str) -> None:
@@ -299,14 +394,19 @@ class DashboardController(CoreController):
         :param dashboard_id: Id of a registered dashboard endpoint.
         :param reason: Human-readable cause, logged as a warning.
         """
-        session = self._sessions.pop(dashboard_id, None)
+        session = self._forget_session(dashboard_id)
         if session is None:
             return
         self.logger.warning("Dashboard session on %s ended: %s", session.name, reason)
         self._signal_sessions_updated()
 
     async def resolve_dashboard_url(
-        self, dashboard: DashboardType, player_id: str | None, *, prefer_local: bool = False
+        self,
+        dashboard: DashboardType,
+        player_id: str | None,
+        *,
+        dashboard_id: str | None = None,
+        prefer_local: bool = False,
     ) -> str:
         """
         Build the fully-qualified URL a dashboard endpoint should load to show a dashboard.
@@ -320,11 +420,13 @@ class DashboardController(CoreController):
 
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
+        :param dashboard_id: The endpoint's registered dashboard id, carried in the url
+            so the viewer can identify its own session (e.g. for viewer_preferences).
         :param prefer_local: Return the plain local base url instead of the https/remote form.
         :raises ActionUnavailable: If no https base url, https external url or remote access is
             configured (never raised when ``prefer_local`` is set).
         """
-        route = self._dashboard_route(dashboard, player_id)
+        route = self._dashboard_route(dashboard, player_id, dashboard_id)
         base_url = self.mass.webserver.base_url
         if prefer_local:
             # native LAN apps talk straight to this server, no https/remote gate needed
@@ -356,30 +458,33 @@ class DashboardController(CoreController):
         channel = self._frontend_channel()
         return f"{APP_MA_HOST}/{channel}/?{urlencode(query)}"
 
-    def _can_resolve_url_for_caller(self, dashboard: DashboardType, player_id: str | None) -> bool:
+    def _can_resolve_url_for_caller(
+        self, dashboard: DashboardType, player_id: str | None
+    ) -> tuple[bool, str | None]:
         """
         Return whether the current caller may resolve a dashboard url for itself.
 
         :param dashboard: Dashboard the caller wants a url for.
         :param player_id: Player the caller wants a url for, when dashboard is NOW_PLAYING.
+        :return: (allowed, the caller's own dashboard id when it resolves the url for
+            its own active session, else None).
         """
+        client_id = get_current_client_id()
+        if client_id is not None:
+            for dashboard_id, registration in self._dashboards.items():
+                if registration.client_id != client_id:
+                    continue
+                session = self._sessions.get(dashboard_id)
+                if session is None or session.dashboard != dashboard:
+                    continue
+                if dashboard == DashboardType.NOW_PLAYING and session.player_id != player_id:
+                    continue
+                return True, dashboard_id
+
         user = get_current_user()
         if user is not None and has_scope(user, Scope.USERS_INVITE):
-            return True
-
-        client_id = get_current_client_id()
-        if client_id is None:
-            return False
-        for dashboard_id, registration in self._dashboards.items():
-            if registration.client_id != client_id:
-                continue
-            session = self._sessions.get(dashboard_id)
-            if session is None or session.dashboard != dashboard:
-                continue
-            if dashboard == DashboardType.NOW_PLAYING and session.player_id != player_id:
-                continue
-            return True
-        return False
+            return True, None
+        return False, None
 
     async def _get_dashboard_code(self) -> str:
         """Mint a fresh one-time code a cast receiver can exchange for a viewer token."""
@@ -395,27 +500,43 @@ class DashboardController(CoreController):
         )
         return code
 
-    def _dashboard_route(self, dashboard: DashboardType, player_id: str | None) -> str:
+    def _dashboard_route(
+        self, dashboard: DashboardType, player_id: str | None, dashboard_id: str | None = None
+    ) -> str:
         """
         Map a dashboard type to its frontend route.
 
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
+        :param dashboard_id: When given, carried as a route query param so the viewer
+            can identify its own session, plus its secret viewer key.
         :raises InvalidCommand: If dashboard is NOW_PLAYING without a player_id, or unsupported.
         """
+        query: dict[str, str] = {}
         if dashboard == DashboardType.PARTY:
-            return "/party"
-        if dashboard == DashboardType.NOW_PLAYING:
+            route = "/party"
+        elif dashboard == DashboardType.NOW_PLAYING:
             if not player_id:
                 msg = "player_id is required to show the now_playing dashboard"
                 raise InvalidCommand(msg)
-            return f"/now-playing?{urlencode({'player': player_id}, safe=ROUTE_SAFE_CHARS)}"
-        if dashboard == DashboardType.MUSIC_QUIZ:
+            route = "/now-playing"
+            query["player"] = player_id
+        elif dashboard == DashboardType.MUSIC_QUIZ:
             # the viewer-only kiosk view: the host page needs USERS_INVITE, which a
             # dashboard viewer never has
-            return "/music-quiz/dashboard"
-        msg = f"Unsupported dashboard type: {dashboard}"
-        raise InvalidCommand(msg)
+            route = "/music-quiz/dashboard"
+        else:
+            msg = f"Unsupported dashboard type: {dashboard}"
+            raise InvalidCommand(msg)
+        if dashboard_id is not None:
+            query["dashboard_id"] = dashboard_id
+            # setdefault: re-resolving must not invalidate the key a showing display carries
+            query[VIEWER_KEY_PARAM] = self._viewer_keys.setdefault(
+                dashboard_id, secrets.token_urlsafe(VIEWER_KEY_BYTES)
+            )
+        if not query:
+            return route
+        return f"{route}?{urlencode(query, safe=ROUTE_SAFE_CHARS)}"
 
     def _frontend_channel(self) -> str:
         """Derive the app.music-assistant.io frontend channel from the server version."""
@@ -433,3 +554,30 @@ class DashboardController(CoreController):
         self.mass.signal_event(
             EventType.DASHBOARD_SESSIONS_UPDATED, data=list(self._sessions.values())
         )
+
+    def _forget_session(self, dashboard_id: str) -> DashboardSession | None:
+        """Drop a dashboard's session, owner and viewer key, returning the session if any."""
+        self._session_owners.pop(dashboard_id, None)
+        self._viewer_keys.pop(dashboard_id, None)
+        return self._sessions.pop(dashboard_id, None)
+
+
+def _set_or_pop(mapping: dict[str, str], key: str, value: str | None) -> None:
+    """Store value under key, or drop the key when value is None."""
+    if value is None:
+        mapping.pop(key, None)
+    else:
+        mapping[key] = value
+
+
+def _viewer_preferences(preferences: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Return the visualizer subset of a user's preferences, the only part a viewer is shown.
+
+    :param preferences: A user's full preferences, or None when they have none.
+    """
+    return {
+        key: value
+        for key, value in (preferences or {}).items()
+        if key.startswith(VIEWER_PREFERENCE_PREFIX)
+    }
