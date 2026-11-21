@@ -39,6 +39,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     RateLimited,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import get_global_cache_value
@@ -972,8 +973,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             media_types,
             limit=limit,
             strict_provider_instance=True,
-            # the caller resolves one item against many providers and reports a rate
-            # limit apart from a failure, so it must not arrive as an empty result
+            # the caller resolves one item against many providers and pauses a rate
+            # limited one, so a rate limit must not arrive as a plain failure
             raise_rate_limited=True,
         )
         if result is None:
@@ -3357,9 +3358,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param strict_provider_instance: Do not fall back to another provider instance.
         :param soft_timeout: Seconds to wait before returning None while the search
                              continues in the background; None waits for it to finish.
-        :param raise_rate_limited: Raise RateLimited instead of returning None when the
-                                   provider asked us to wait. For a caller that walks
-                                   provider after provider and must know to stop.
+        :param raise_rate_limited: Raise the rate limit error instead of returning None
+                                   when the provider asked us to wait. For a caller that
+                                   searches provider after provider and pauses a rate
+                                   limited one.
         """
         prov = visible_provider(
             self.mass, provider_instance_id_or_domain, get_current_user(), strict_provider_instance
@@ -3393,6 +3395,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         task = self.mass.create_task(
             self._execute_provider_search(prov, search_query, media_types, limit, cache_key),
             task_id=f"provider_search_{prov.instance_id}_{cache_key}",
+            log_exceptions=False,
         )
         try:
             async with asyncio.timeout(soft_timeout):
@@ -3404,8 +3407,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 prov.name,
             )
             return None
-        except RateLimited:
-            # for a plain search a limited provider simply contributes nothing
+        except RateLimited, RetriesExhausted:
+            # the search task raises nothing but a rate limit. For a plain search a
+            # limited provider simply contributes nothing
             if not raise_rate_limited:
                 return None
             raise
@@ -3428,8 +3432,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         Returns None if the provider search failed or timed out. Errors are handled
         here (and not raised) as this coroutine runs as a background task that may
-        outlive the request that started it; a rate limit is the exception, since a
-        caller that searches provider after provider has to know to stop.
+        outlive the request that started it; a rate limit error is raised instead, so a
+        caller that searches provider after provider can pause the limited one.
         """
         try:
             async with asyncio.timeout(SEARCH_PROVIDER_HARD_TIMEOUT):

@@ -65,7 +65,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.favorites import with_user_favorites
 from music_assistant.controllers.music.media.tracks import (
     ProviderMatchFailures,
-    ProviderRateLimit,
+    rate_limit_issue,
 )
 from music_assistant.controllers.tasks.context import (
     get_current_task_id,
@@ -192,7 +192,7 @@ class _ImportTrackMatchResult:
     confidence: TrackMatchConfidence = TrackMatchConfidence.NO_MATCH
     ambiguous_providers: tuple[str, ...] = ()
     failed_providers: tuple[str, ...] = ()
-    rate_limited_providers: tuple[ProviderRateLimit, ...] = ()
+    rate_limited_providers: tuple[str, ...] = ()
     error: str | None = None
     # True when the error came from provider communication, not local validation.
     error_is_provider_issue: bool = False
@@ -1070,10 +1070,8 @@ class BuiltinProvider(MusicProvider):
             issue = f"Ambiguous match on {provider_name}"
             report_current_task_failure(f"{result.label}: {issue.lower()}")
             provider_issues.append((result.label, issue))
-        for rate_limit in result.rate_limited_providers:
-            issue = f"Rate limited on {rate_limit.provider_name}"
-            if rate_limit.retry_after:
-                issue = f"{issue}, retry in {rate_limit.retry_after} seconds"
+        for provider_name in result.rate_limited_providers:
+            issue = rate_limit_issue(provider_name)
             report_current_task_failure(f"{result.label}: {issue.lower()}")
             provider_issues.append((result.label, issue))
         if result.retained:
@@ -1092,6 +1090,9 @@ class BuiltinProvider(MusicProvider):
             if result.ambiguous_providers:
                 counts["ambiguous"] += 1
                 reason = "Ambiguous match"
+            elif result.rate_limited_providers:
+                counts["unmatched"] += 1
+                reason = "; ".join(map(rate_limit_issue, result.rate_limited_providers))
             else:
                 counts["unmatched"] += 1
                 reason = "No acceptable match"

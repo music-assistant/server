@@ -9,7 +9,6 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from enum import StrEnum
 from itertools import groupby
 from typing import TYPE_CHECKING, Any, Final, Never, cast
 
@@ -27,8 +26,10 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderID,
+    LoginFailed,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderPermissionDenied,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
@@ -77,8 +78,8 @@ from music_assistant.helpers.external_ids import is_valid_isrc, normalize_extern
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
 from music_assistant.helpers.provider_access import visible_items
-from music_assistant.helpers.throttle_retry import is_rate_limit_error, rate_limit_retry_after
-from music_assistant.models.music_provider import PROVIDER_UNUSABLE_ERRORS, MusicProvider
+from music_assistant.helpers.throttle_retry import is_rate_limit_error
+from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.musicbrainz.provider import recording_matches_track
 
 from .base import (
@@ -102,11 +103,19 @@ if TYPE_CHECKING:
 MAX_CONSECUTIVE_PROVIDER_FAILURES: Final[int] = 3
 # how long a rate limited provider is left alone when it named no Retry-After
 DEFAULT_RATE_LIMIT_PAUSE: Final[int] = 60
+# the failures that say the provider itself can serve no item at all: it is unreachable
+# or it does not accept our credentials. A caller that walks many items stops asking it
+# instead of paying the same failure once per remaining item
+PROVIDER_UNUSABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
+    LoginFailed,
+    ProviderUnavailableError,
+)
 # the ways a match attempt on one provider is expected to fail
 PROVIDER_MATCH_ERRORS: Final[tuple[type[Exception], ...]] = (
     *PROVIDER_UNUSABLE_ERRORS,
     ClientError,
     OSError,
+    ProviderPermissionDenied,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
     TimeoutError,
@@ -132,22 +141,6 @@ class TrackProviderMatchResult:
     ambiguous: bool = False
     # Highest confidence tier this provider could not disambiguate.
     ambiguous_confidence: TrackMatchConfidence | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderRateLimit:
-    """Provider that could not be asked for a match because it is rate limiting us."""
-
-    provider_name: str
-    # Seconds the provider asked to be left alone, 0 when it named none.
-    retry_after: int = 0
-
-
-class ProviderMatchFailureKind(StrEnum):
-    """How a failed match attempt on one provider is to be reported."""
-
-    RATE_LIMITED = "rate_limited"
-    ERROR = "error"
 
 
 @dataclass
@@ -180,23 +173,20 @@ class ProviderMatchFailures:
         """
         self.unusable.add(provider_instance_id)
 
-    def rate_limit_pause(
-        self, provider_instance_id: str, provider_name: str
-    ) -> ProviderRateLimit | None:
+    def rate_limited(self, provider_instance_id: str) -> bool:
         """
-        Return the rate limit still holding a provider back, None when it may be asked.
+        Return whether a provider is still held back by a rate limit.
 
         :param provider_instance_id: Provider instance to check.
-        :param provider_name: Display name for the report of the item that is skipped.
         """
         deadline = self.rate_limited_until.get(provider_instance_id)
         if deadline is None:
-            return None
-        if (remaining := deadline - time.monotonic()) <= 0:
+            return False
+        if deadline <= time.monotonic():
             # the wait is over, the provider takes part in the run again
             del self.rate_limited_until[provider_instance_id]
-            return None
-        return ProviderRateLimit(provider_name, round(remaining))
+            return False
+        return True
 
     def record_success(self, provider_instance_id: str) -> None:
         """
@@ -205,13 +195,10 @@ class ProviderMatchFailures:
         :param provider_instance_id: Provider instance that answered an attempt.
         """
         self.consecutive_failures.pop(provider_instance_id, None)
-        self.rate_limited_until.pop(provider_instance_id, None)
 
-    def record_failure(
-        self, provider_instance_id: str, error: BaseException
-    ) -> ProviderMatchFailureKind:
+    def record_failure(self, provider_instance_id: str, error: BaseException) -> None:
         """
-        Record one failed attempt and return how it is to be reported.
+        Record one failed attempt.
 
         :param provider_instance_id: Provider instance the attempt was made on.
         :param error: Error the attempt failed with.
@@ -220,19 +207,27 @@ class ProviderMatchFailures:
             # a rate limit lifts by itself, so the provider is held back for the wait it
             # asked for rather than dropped. Not every provider paces itself behind a
             # cooldown of its own, so the remaining items must not keep asking it
-            pause = rate_limit_retry_after(error) or DEFAULT_RATE_LIMIT_PAUSE
+            pause = getattr(error, "backoff_time", 0) or DEFAULT_RATE_LIMIT_PAUSE
             self.rate_limited_until[provider_instance_id] = max(
                 self.rate_limited_until.get(provider_instance_id, 0.0),
                 time.monotonic() + pause,
             )
-            return ProviderMatchFailureKind.RATE_LIMITED
+            return
         if isinstance(error, PROVIDER_UNUSABLE_ERRORS):
             self.mark_unusable(provider_instance_id)
-            return ProviderMatchFailureKind.ERROR
+            return
         self.consecutive_failures[provider_instance_id] += 1
         if self.consecutive_failures[provider_instance_id] >= MAX_CONSECUTIVE_PROVIDER_FAILURES:
             self.mark_unusable(provider_instance_id)
-        return ProviderMatchFailureKind.ERROR
+
+
+def rate_limit_issue(provider_name: str) -> str:
+    """
+    Return the report text for an item a rate limited provider was not asked about.
+
+    :param provider_name: Display name of the rate limited provider.
+    """
+    return f"Rate limited on {provider_name}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,7 +239,7 @@ class TrackProviderEnrichment:
     ambiguous_providers: tuple[str, ...]
     failed_providers: tuple[str, ...]
     used_library_item: bool
-    rate_limited_providers: tuple[ProviderRateLimit, ...] = ()
+    rate_limited_providers: tuple[str, ...] = ()
 
 
 class TracksController(MediaControllerBase[Track]):
@@ -1406,8 +1401,10 @@ class TracksController(MediaControllerBase[Track]):
                     limit=5,
                     allowed_provider_instances=allowed_provider_instances,
                 )
-            except ResourceTemporarilyUnavailable:
-                if candidates:
+            except ResourceTemporarilyUnavailable as err:
+                # a rate limit is raised even with a candidate in hand, so the caller
+                # pauses the provider instead of asking it again for the next item
+                if candidates and not is_rate_limit_error(err):
                     break
                 raise
             for search_result in search_results.tracks:
@@ -1735,7 +1732,7 @@ class TracksController(MediaControllerBase[Track]):
         list[tuple[MusicProvider, TrackProviderMatch]],
         list[str],
         TrackMatchConfidence | None,
-        list[ProviderRateLimit],
+        list[str],
     ]:
         """
         Query every allowed provider for a match, deferring accept/reject decisions.
@@ -1748,14 +1745,14 @@ class TracksController(MediaControllerBase[Track]):
         provider_matches: list[tuple[MusicProvider, TrackProviderMatch]] = []
         ambiguous_providers: list[str] = []
         ambiguous_confidence: TrackMatchConfidence | None = None
-        rate_limited_providers: list[ProviderRateLimit] = []
+        rate_limited_providers: list[str] = []
         for provider in providers:
             if provider_failures.blocked(provider.instance_id):
                 continue
-            if pause := provider_failures.rate_limit_pause(provider.instance_id, provider.name):
+            if provider_failures.rate_limited(provider.instance_id):
                 # the provider asked to be left alone, so this item is reported as
                 # skipped instead of costing a request the provider would refuse
-                rate_limited_providers.append(pause)
+                rate_limited_providers.append(provider.name)
                 continue
             if provider.domain in existing_domains:
                 continue
@@ -1782,19 +1779,15 @@ class TracksController(MediaControllerBase[Track]):
                     known_dead_mappings=known_dead_mappings,
                 )
             except PROVIDER_MATCH_ERRORS as err:
-                if (
-                    provider_failures.record_failure(provider.instance_id, err)
-                    is ProviderMatchFailureKind.RATE_LIMITED
-                ):
+                provider_failures.record_failure(provider.instance_id, err)
+                if is_rate_limit_error(err):
                     self.logger.info(
                         "Rate limited matching %s on provider %s: %s",
                         track.name,
                         provider.name,
                         err,
                     )
-                    rate_limited_providers.append(
-                        ProviderRateLimit(provider.name, rate_limit_retry_after(err))
-                    )
+                    rate_limited_providers.append(provider.name)
                     continue
                 self.logger.warning(
                     "Failed to match %s on provider %s: %s",

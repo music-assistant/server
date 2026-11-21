@@ -19,6 +19,7 @@ from music_assistant_models.errors import (
     InvalidProviderID,
     LoginFailed,
     MediaNotFoundError,
+    ProviderPermissionDenied,
     ProviderUnavailableError,
     RateLimited,
     ResourceTemporarilyUnavailable,
@@ -39,10 +40,9 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import DB_TABLE_TRACKS
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.tracks import (
+    DEFAULT_RATE_LIMIT_PAUSE,
     MAX_CONSECUTIVE_PROVIDER_FAILURES,
-    ProviderMatchFailureKind,
     ProviderMatchFailures,
-    ProviderRateLimit,
     TrackProviderMatch,
     TrackProviderMatchResult,
     TracksController,
@@ -1442,6 +1442,48 @@ async def test_find_provider_match_keeps_fallback_after_later_timeout(
     assert result.match is not None
     assert result.match.confidence == TrackMatchConfidence.LIKELY
     assert search_provider.await_count == 2
+
+
+async def test_find_provider_match_raises_a_later_rate_limit(
+    music: MusicController,
+) -> None:
+    """A rate limit on a later artist query is raised even with a candidate in hand."""
+    base = create_track("spotify_1", "base")
+    base.artists.append(
+        ItemMapping(
+            item_id="other-artist",
+            provider="spotify_1",
+            name="Other Artist",
+            media_type=MediaType.ARTIST,
+        )
+    )
+    candidate = create_track("qobuz_1", "candidate")
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+
+    with (
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(
+                side_effect=(
+                    SearchResults(tracks=[candidate]),
+                    RateLimited("Qobuz rate limit", backoff_time=60),
+                )
+            ),
+        ),
+        patch.object(music.tracks, "get_provider_item", AsyncMock(return_value=candidate)),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+        pytest.raises(RateLimited),
+    ):
+        await music.tracks.find_provider_match(
+            base,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LIKELY,
+        )
 
 
 async def test_find_provider_match_raises_on_later_hydration_failure(
@@ -3046,10 +3088,7 @@ async def test_enrich_provider_mappings_pauses_a_rate_limited_provider(
     # a rate limit is not a provider failure, so the breaker stays out of it
     assert provider_failures.unusable == set()
     assert all(result.failed_providers == () for result in results)
-    assert results[0].rate_limited_providers == (ProviderRateLimit("Qobuz", 90),)
-    for result in results[1:]:
-        assert [limit.provider_name for limit in result.rate_limited_providers] == ["Qobuz"]
-        assert 0 < result.rate_limited_providers[0].retry_after <= 90
+    assert all(result.rate_limited_providers == ("Qobuz",) for result in results)
 
 
 async def test_enrich_provider_mappings_asks_again_once_the_wait_is_over(
@@ -3087,29 +3126,79 @@ async def test_enrich_provider_mappings_asks_again_once_the_wait_is_over(
     assert find_match.await_count == 2
 
 
-def test_provider_match_failures_drops_a_provider_that_can_serve_nothing() -> None:
-    """An auth failure drops the provider at once, without a streak."""
+@pytest.mark.parametrize(
+    ("error", "pause"),
+    [
+        pytest.param(RateLimited("Qobuz rate limit", backoff_time=90), 90, id="retry-after"),
+        # a rate limit the retry helper gave up on names no wait of its own
+        pytest.param(
+            _give_up(RateLimited("Qobuz rate limit", backoff_time=90), 90),
+            DEFAULT_RATE_LIMIT_PAUSE,
+            id="given-up",
+        ),
+        # what Spotify raises itself for a rate limit
+        pytest.param(
+            RetriesExhausted("Rate limited", translation_key=RateLimited.translation_key),
+            DEFAULT_RATE_LIMIT_PAUSE,
+            id="no-retry-after",
+        ),
+    ],
+)
+def test_provider_match_failures_pauses_a_rate_limited_provider(
+    error: Exception, pause: int
+) -> None:
+    """A rate limit holds the provider back for its wait, also when another item succeeds."""
     failures = ProviderMatchFailures()
 
-    kind = failures.record_failure("qobuz_1", LoginFailed("Invalid token"))
+    failures.record_failure("qobuz_1", error)
+    # an item that was already under way answers after the limit
+    failures.record_success("qobuz_1")
 
-    assert kind is ProviderMatchFailureKind.ERROR
+    assert failures.rate_limited("qobuz_1")
+    assert not failures.blocked("qobuz_1")
+    remaining = failures.rate_limited_until["qobuz_1"] - time.monotonic()
+    assert remaining == pytest.approx(pause, abs=1)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [LoginFailed("Invalid token"), ProviderUnavailableError("Provider unavailable")],
+)
+def test_provider_match_failures_drops_a_provider_that_can_serve_nothing(
+    error: Exception,
+) -> None:
+    """A provider that can serve no item at all is dropped at once, without a streak."""
+    failures = ProviderMatchFailures()
+
+    failures.record_failure("qobuz_1", error)
+
     assert failures.blocked("qobuz_1")
 
 
-def test_provider_match_failures_streak_is_reset_by_a_success() -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError(),
+        # raised for a single item outside the account's scope
+        ProviderPermissionDenied("Track is outside this account's scope"),
+        # not a rate limit, so it counts like any other failure
+        RetriesExhausted("Retries exhausted, failed after 5 attempts"),
+    ],
+)
+def test_provider_match_failures_streak_is_reset_by_a_success(error: Exception) -> None:
     """Failures have to follow each other to drop a provider."""
     failures = ProviderMatchFailures()
 
     for _ in range(MAX_CONSECUTIVE_PROVIDER_FAILURES - 1):
-        failures.record_failure("qobuz_1", TimeoutError())
+        failures.record_failure("qobuz_1", error)
     failures.record_success("qobuz_1")
     for _ in range(MAX_CONSECUTIVE_PROVIDER_FAILURES - 1):
-        failures.record_failure("qobuz_1", TimeoutError())
+        failures.record_failure("qobuz_1", error)
 
     assert not failures.blocked("qobuz_1")
+    assert not failures.rate_limited("qobuz_1")
 
-    failures.record_failure("qobuz_1", TimeoutError())
+    failures.record_failure("qobuz_1", error)
 
     assert failures.blocked("qobuz_1")
 

@@ -149,15 +149,6 @@ def is_rate_limit_error(error: BaseException) -> bool:
     )
 
 
-def rate_limit_retry_after(error: BaseException) -> int:
-    """
-    Return the seconds a rate limited server asked for, 0 when it named none.
-
-    :param error: The error the call failed with.
-    """
-    return max(0, int(getattr(error, "backoff_time", 0)))
-
-
 class Throttler:
     """
     Rate limiter that grants at most rate_limit slots within any period.
@@ -437,16 +428,12 @@ def _give_up(err: ResourceTemporarilyUnavailable, wait: float) -> RetriesExhaust
     :param err: The error that asked for the wait, its localization is carried over.
     :param wait: The wait that was asked for, in seconds.
     """
-    give_up = RetriesExhausted(
+    return RetriesExhausted(
         f"Not retrying, asked to wait {wait:.0f} seconds",
         translation_key=err.translation_key,
         translation_args=err.translation_args,
         translation_owner=err.translation_owner,
     )
-    # RetriesExhausted holds no backoff of its own, while a caller reporting the failure
-    # still needs the wait it did not sit out to tell the user when to try again
-    give_up.backoff_time = round(wait)  # type: ignore[attr-defined]
-    return give_up
 
 
 @dataclass
