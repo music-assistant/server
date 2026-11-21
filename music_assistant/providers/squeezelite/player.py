@@ -12,6 +12,7 @@ from aioslimproto.models import VisualisationType as SlimVisualisationType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ContentType,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -646,6 +647,15 @@ class SqueezelitePlayer(PlayerProtocol):
         quality = {"samplerate": str(output_format.sample_rate)}
         if output_format.content_type.is_lossless():
             quality["samplesize"] = str(output_format.bit_depth)
+        # the codec and bitrate are those of the source, as LMS shows them
+        source = streamdetails.audio_format
+        codec = (
+            source.codec_type if source.codec_type != ContentType.UNKNOWN else source.content_type
+        )
+        if codec != ContentType.UNKNOWN:
+            quality["type"] = codec.value
+        if source.bit_rate:
+            quality["bitrate"] = f"{source.bit_rate}kbps"
         # the update replaces all metadata of the stream
         self.mass.create_task(
             self.client.update_metadata(cast("MediaMetadata", {**metadata, **quality}))
