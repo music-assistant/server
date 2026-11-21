@@ -340,7 +340,7 @@ class GoLibrespotBackend(SpotifyConnectBackend):
                     self.logger.debug("[%s] %s", self.name, line)
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - any daemon failure leads to a restart
                 self.logger.warning("go-librespot daemon error [%s]: %s", self.name, err)
             finally:
                 if proc:
@@ -383,7 +383,7 @@ class GoLibrespotBackend(SpotifyConnectBackend):
                 await self._client.listen_events(self._handle_event)
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - any drop is retried
                 self.logger.debug("go-librespot events websocket dropped: %s", err)
             if not self._stop_called:
                 await asyncio.sleep(2)

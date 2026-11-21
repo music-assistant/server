@@ -276,7 +276,7 @@ class ClapIndex:
         """Fetch and validate the stored 1024-dim vector for a label, or None."""
         try:
             vec = self._index.get(label)
-        except Exception:
+        except Exception:  # noqa: BLE001 - usearch raises undocumented errors
             return None
         if vec is None:
             return None

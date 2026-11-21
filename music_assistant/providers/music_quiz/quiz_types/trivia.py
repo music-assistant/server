@@ -324,7 +324,7 @@ class TriviaQuizType(QuizType):
             try:
                 async with asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS):
                     response = await engine.provider.ai_query(prompt, engine_id=engine.id)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - AI provider code, any failure is retried
                 LOGGER.debug(
                     "Trivia generation failed via %s (%s)",
                     engine.uid,

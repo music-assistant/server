@@ -633,7 +633,7 @@ class SoloistBackend(SpotifyConnectBackend):
                 await self._await_daemon_exit(proc)
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - any daemon failure leads to a restart
                 self.logger.warning("soloist daemon error [%s]: %s", self.name, err)
             finally:
                 if proc:
@@ -744,7 +744,7 @@ class SoloistBackend(SpotifyConnectBackend):
             self._spotify_volume = 100
             try:
                 await sink.set_volume(100)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 # fail closed: a stale reciprocal gain may still be active on
                 # the sink — recreate sink and daemon rather than clipping
                 self.logger.warning(
@@ -804,7 +804,7 @@ class SoloistBackend(SpotifyConnectBackend):
                 await self._close_daemon_for_respawn()
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - the periodic refresh must keep running
                 self.logger.warning("Periodic soloist binary refresh failed: %s", err)
 
     async def _events_runner(self) -> None:
@@ -891,7 +891,7 @@ class SoloistBackend(SpotifyConnectBackend):
                     self._pin_in_flight = True
                     try:
                         await self._client.set_volume(100)
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001 - retried on the next snapshot
                         self.logger.debug("Failed to reset soloist volume: %s", err)
                         # mark the volume unknown so the next snapshot
                         # reporting the same value still retries the pin
@@ -913,7 +913,7 @@ class SoloistBackend(SpotifyConnectBackend):
                 sink_pct = 0.0 if volume <= 0 else round(10000 / volume, 2)
                 try:
                     await self._sink.set_volume(sink_pct)
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - see the comment below
                     # fail closed: the compensation state is now unknown, so
                     # recreate sink and daemon and do NOT forward the volume —
                     # the player must not adopt a value whose compensation

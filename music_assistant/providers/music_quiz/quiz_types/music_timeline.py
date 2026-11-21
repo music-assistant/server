@@ -232,7 +232,7 @@ class MusicTimelineQuizType(QuizType):
         async def _resolve_track(track: Track) -> Track | None:
             try:
                 enriched = await self.mass.music.tracks.get(track.item_id, track.provider)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - see the comment below
                 LOGGER.debug("Could not enrich Music Quiz track %s: %s", track.uri, err)
                 # a failed lookup is no reason to drop a track that already carries a year
                 return track if self._track_is_eligible(track) else None
@@ -456,7 +456,7 @@ class MusicTimelineQuizType(QuizType):
                 provider_instance_id_or_domain=primary_artist.provider,
                 limit=BONUS_CANDIDATE_LIMIT,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, candidates are optional
             LOGGER.debug("Could not fetch artists similar to %s: %s", primary_artist.name, err)
         else:
             candidates.extend(self._artist_candidates(similar_artists))
@@ -468,7 +468,7 @@ class MusicTimelineQuizType(QuizType):
                 provider_instance_id_or_domain=track.provider,
                 limit=BONUS_CANDIDATE_LIMIT,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, candidates are optional
             LOGGER.debug("Could not fetch tracks similar to %s: %s", track.uri, err)
         else:
             for similar_track in similar_tracks:
@@ -533,7 +533,7 @@ class MusicTimelineQuizType(QuizType):
                 provider_instance_id_or_domain=artist.provider,
                 limit=None,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, candidates are optional
             LOGGER.debug("Could not fetch top tracks for %s: %s", artist.name, err)
             return []
         candidates = self._title_candidates_for_artist(top_tracks, artist)
@@ -555,7 +555,7 @@ class MusicTimelineQuizType(QuizType):
                 limit=BONUS_CANDIDATE_LIMIT,
                 library_only=False,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - provider code, candidates are optional
             LOGGER.debug("Could not search for tracks by %s: %s", artist.name, err)
             return []
         candidates = self._title_candidates_for_artist(search_results.tracks, artist)
