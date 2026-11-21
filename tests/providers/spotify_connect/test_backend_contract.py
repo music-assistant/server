@@ -501,8 +501,11 @@ async def test_session_inactive_stops_active_player() -> None:
     mass.call_later.assert_not_called()
 
 
-async def test_stream_teardown_while_playing_releases_spotify() -> None:
+async def test_stream_teardown_while_playing_releases_spotify(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """An MA-side stop/queue-clear releases the Spotify session so the app drops the device."""
+    monkeypatch.setattr(provider_mod, "STREAM_REOPEN_GRACE_S", 0)
     backend = FakeBackend()
     provider, daemon, _mass = _make_provider(
         backend,
@@ -513,10 +516,76 @@ async def test_stream_teardown_while_playing_releases_spotify() -> None:
     )
 
     await provider.on_source_unselected(_PLAYER_ID, "queue1", "sess1")
+    release = daemon.pending_release_task
+    assert release is not None
+    await release
 
     assert daemon.in_use_by_player is None
     assert daemon.active_session_id is None
     assert backend.calls == [("deactivate", None)]
+
+
+async def test_stream_reopened_within_grace_keeps_spotify() -> None:
+    """A renderer that drops its stream and reopens it at once keeps the Spotify session."""
+    backend = FakeBackend()
+    provider, daemon, mass = _make_provider(
+        backend,
+        playing=True,
+        session_active=True,
+        active_player_id="queue1",
+        in_use_by_queue="queue1",
+        active_session_id="sess1",
+    )
+    _player_with_volume(mass, 25)
+
+    await provider.on_source_unselected(_PLAYER_ID, "queue1", "sess1")
+    await provider.on_source_selected(_PLAYER_ID, "queue1", "queue1", "sess2")
+
+    assert ("deactivate", None) not in backend.calls
+    assert daemon.pending_release_task is None
+    assert daemon.active_session_id == "sess2"
+    assert daemon.in_use_by_player == "queue1"
+
+
+async def test_stream_teardown_holds_claim_during_grace() -> None:
+    """A 'playing' event during the grace period starts no playback on the player."""
+    backend = FakeBackend()
+    provider, daemon, _mass = _make_provider(
+        backend,
+        playing=True,
+        session_active=True,
+        active_player_id="queue1",
+        in_use_by_queue="queue1",
+        active_session_id="sess1",
+    )
+
+    await provider.on_source_unselected(_PLAYER_ID, "queue1", "sess1")
+    await provider._handle_backend_event(daemon, BackendEvent(type=BackendEventType.PLAYING))
+
+    assert daemon.in_use_by_player == "queue1"
+    assert daemon.pending_play_media_task is None
+    assert backend.calls == []
+    await provider._stop_daemon(daemon)
+
+
+async def test_stop_daemon_cancels_pending_release() -> None:
+    """A stopped daemon sends no release for a stream that ended just before."""
+    backend = FakeBackend()
+    provider, daemon, _mass = _make_provider(
+        backend,
+        playing=True,
+        session_active=True,
+        in_use_by_queue="queue1",
+        active_session_id="sess1",
+    )
+
+    await provider.on_source_unselected(_PLAYER_ID, "queue1", "sess1")
+    pending = daemon.pending_release_task
+    await provider._stop_daemon(daemon)
+
+    assert pending is not None
+    assert pending.cancelled()
+    assert backend.calls == [("stop", None)]
 
 
 async def test_stream_teardown_after_spotify_pause_does_not_pause_again() -> None:
