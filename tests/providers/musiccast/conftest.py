@@ -1,12 +1,21 @@
 """Fixtures for the MusicCast provider tests."""
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
+from aiomusiccast.capabilities import (
+    BinarySensor,
+    BinarySetter,
+    EntityType,
+    NumberSensor,
+    NumberSetter,
+    OptionSetter,
+    TextSensor,
+)
 from aiomusiccast.exceptions import MusicCastConnectionException
 
 from music_assistant.providers.musiccast.constants import (
@@ -28,6 +37,9 @@ from music_assistant.providers.musiccast.provider import MusicCastPlayerHelper, 
 # the real server with fake providers, for the tests of MusicCast zones on a running server
 from tests.scenarios.conftest import scenario  # noqa: F401
 
+if TYPE_CHECKING:
+    from music_assistant_models.player import PlayerMedia
+
 INPUT_LIST = ["server", "spotify", "audio1", "audio2", "main_sync", "mc_link"]
 
 
@@ -42,6 +54,8 @@ class FakeMusicCastDevice:
         self.upnp_description = upnp_description
         self.transport: object | None = None
         self.fetch_count = 0
+        # playback commands the device got through its own API
+        self.commands: list[str] = []
         self.group_reduce_by_source = False
         self.media_image_url = None
         self.device = self
@@ -61,6 +75,10 @@ class FakeMusicCastDevice:
             netusb_input="server",
             netusb_playback="play",
             netusb_track=None,
+            netusb_artist=None,
+            netusb_album=None,
+            netusb_play_time=None,
+            netusb_play_time_updated=None,
             group_role="none",
             group_id=MC_NULL_GROUP,
             group_client_list=[],
@@ -109,6 +127,34 @@ class FakeMusicCastDevice:
     async def select_source(self, zone: str, source: str, mode: str = "") -> None:
         """Select the zone input."""
         self.data.zones[zone].input = source
+
+    async def netusb_play(self) -> None:
+        """Play the net source."""
+        self.commands.append("netusb_play")
+
+    async def netusb_pause(self) -> None:
+        """Pause the net source."""
+        self.commands.append("netusb_pause")
+
+    async def netusb_stop(self) -> None:
+        """Stop the net source."""
+        self.commands.append("netusb_stop")
+
+    async def netusb_next_track(self) -> None:
+        """Skip to the next track of the net source."""
+        self.commands.append("netusb_next_track")
+
+    async def netusb_previous_track(self) -> None:
+        """Skip to the previous track of the net source."""
+        self.commands.append("netusb_previous_track")
+
+    async def tuner_next_station(self) -> None:
+        """Tune to the next station."""
+        self.commands.append("tuner_next_station")
+
+    async def tuner_previous_station(self) -> None:
+        """Tune to the previous station."""
+        self.commands.append("tuner_previous_station")
 
     async def zone_join(self, zone: str) -> None:
         """Join the zone to the group the device is a client of."""
@@ -163,6 +209,89 @@ def link(server: MusicCastZoneDevice, client: MusicCastZoneDevice) -> None:
     client.device.data.group_role = "client"
     client.device.data.group_id = "GROUP"
     client.device.data.zones[client.zone_name].input = MC_SOURCE_MC_LINK
+
+
+class FakeAVTransport:
+    """Stand-in for the UPnP AVTransport of a receiver that logs the requests it gets."""
+
+    def __init__(self) -> None:
+        """Init a renderer that reports no current uri."""
+        self.requests: list[str] = []
+        self.current_uri: str | None = None
+
+    async def play(self) -> None:
+        """Play."""
+        self.requests.append("play")
+
+    async def stop(self) -> None:
+        """Stop."""
+        self.requests.append("stop")
+
+    async def next(self) -> None:
+        """Next."""
+        self.requests.append("next")
+
+    async def previous(self) -> None:
+        """Previous."""
+        self.requests.append("previous")
+
+    async def set_url(self, player_media: PlayerMedia, enqueue: bool = False) -> None:
+        """Set the url to play, or with enqueue the url to play next."""
+        self.requests.append(f"{'set_next_url' if enqueue else 'set_url'} {player_media.uri}")
+
+    async def get_media_info(self) -> str:
+        """Return the GetMediaInfo response."""
+        return f"<CurrentURI>{self.current_uri}</CurrentURI>" if self.current_uri else ""
+
+
+def add_capabilities(zone_data: SimpleNamespace) -> dict[str, Any]:
+    """Give the zone one capability of each kind and return the values behind them."""
+    values: dict[str, Any] = {
+        "zone_PARTY_MODE": False,
+        "zone_ENHANCER": True,
+        "zone_DIALOGUE_LEVEL": 2,
+        "zone_TONE_CONTROL_bass": 0,
+        "zone_SOUND_FORMAT": "Dolby Atmos",
+        "zone_SLEEP": 0,
+    }
+
+    def _get(key: str) -> Callable[[], Any]:
+        return lambda: values[key]
+
+    def _set(key: str) -> Callable[[Any], Awaitable[None]]:
+        async def _store(value: Any) -> None:
+            values[key] = value
+
+        return _store
+
+    regular = EntityType.REGULAR
+    zone_data.capabilities = [
+        BinarySensor("zone_PARTY_MODE", "Party Mode", regular, _get("zone_PARTY_MODE")),
+        BinarySetter(
+            "zone_ENHANCER", "Enhancer", regular, _get("zone_ENHANCER"), _set("zone_ENHANCER")
+        ),
+        NumberSensor("zone_DIALOGUE_LEVEL", "Dialogue Level", regular, _get("zone_DIALOGUE_LEVEL")),
+        NumberSetter(
+            "zone_TONE_CONTROL_bass",
+            "Tone Control Bass",
+            regular,
+            _get("zone_TONE_CONTROL_bass"),
+            _set("zone_TONE_CONTROL_bass"),
+            min_value=-6,
+            max_value=6,
+            step=1,
+        ),
+        TextSensor("zone_SOUND_FORMAT", "Sound Format", regular, _get("zone_SOUND_FORMAT")),
+        OptionSetter(
+            "zone_SLEEP",
+            "Sleep Timer",
+            regular,
+            _get("zone_SLEEP"),
+            _set("zone_SLEEP"),
+            options={0: "Off", 30: "30 min"},
+        ),
+    ]
+    return values
 
 
 class MusicCastNetwork:
@@ -248,3 +377,11 @@ def network() -> MusicCastNetwork:
     network.add_device("192.168.1.10", "A")
     network.add_device("192.168.1.20", "B")
     return network
+
+
+@pytest.fixture
+def avt(monkeypatch: pytest.MonkeyPatch) -> FakeAVTransport:
+    """Return the UPnP AVTransport all receivers of the network share."""
+    fake = FakeAVTransport()
+    monkeypatch.setattr(MusicCastPlayer, "avt", property(lambda _: fake))
+    return fake

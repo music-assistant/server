@@ -1,19 +1,25 @@
 """Tests for the MusicCast player state updates and polling."""
 
 import time
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ClientError
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.player import PlayerOptionType
 
 from music_assistant.controllers.players.power import _CONTINUES_PLAYBACK
 from music_assistant.helpers.upnp import AVTransport
 from music_assistant.providers.musiccast.constants import CONF_PLAYER_AUTO_ADVANCE
-from music_assistant.providers.musiccast.player import MusicCastPlayer, UpnpUpdateHelper
+from music_assistant.providers.musiccast.player import (
+    MusicCastPlayer,
+    UpnpUpdateHelper,
+    get_player_option_translation_key,
+)
 from tests.common import bare_player_controller
 
-from .conftest import MusicCastNetwork
+from .conftest import FakeAVTransport, MusicCastNetwork, add_capabilities, link
 
 
 @pytest.mark.parametrize(
@@ -104,22 +110,196 @@ def _attach_to_new_player(player: MusicCastPlayer) -> None:
     player.set_player(MagicMock(player_id="pl_living"))
 
 
-async def test_playback_of_music_assistant_names_the_queue_of_the_player(
-    network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("zone_input", "current_uri", "controlled_by_mass", "expected_source"),
+    [
+        pytest.param(
+            "server",
+            "http://ma:8097/single/session/pl_living/item/A___main.flac",
+            True,
+            "pl_living",
+            id="stream-of-music-assistant",
+        ),
+        pytest.param(
+            "audio1",
+            "http://ma:8097/single/session/pl_living/item/A___main.flac",
+            False,
+            "audio1",
+            id="input-after-music-assistant",
+        ),
+        pytest.param(
+            "server", "http://192.168.1.5/song.mp3", False, "server", id="dlna-of-other-app"
+        ),
+        pytest.param(
+            "server",
+            "http://ma:8097/single/session/pl_patio/item/A___zone2.flac",
+            False,
+            "server",
+            id="stream-for-other-zone",
+        ),
+    ],
+)
+async def test_control_by_music_assistant_is_read_from_the_upnp_uri(
+    network: MusicCastNetwork,
+    avt: FakeAVTransport,
+    monkeypatch: pytest.MonkeyPatch,
+    zone_input: str,
+    current_uri: str,
+    controlled_by_mass: bool,
+    expected_source: str,
 ) -> None:
-    """While Music Assistant plays on the zone, its source is the queue of the zone's player."""
+    """Only a stream of Music Assistant for the zone on its server input is played by MA."""
     player = network.player("A___main")
     _attach_to_new_player(player)
+    player.zone_device.zone_data.input = zone_input
+    avt.current_uri = current_uri
+    monkeypatch.setattr(player, "update_state", MagicMock())
+
+    await player.set_dynamic_attributes()
+
+    assert player.upnp_update_helper is not None
+    assert player.upnp_update_helper.controlled_by_mass is controlled_by_mass
+    assert player._attr_active_source == expected_source
+    # MA stops instead of pausing, a pause of the receiver is not reliable
+    assert (PlayerFeature.PAUSE in player._attr_supported_features) is not controlled_by_mass
+
+
+@pytest.mark.parametrize(
+    ("zone_input", "power", "netusb_playback", "expected_state", "expected_elapsed_time"),
+    [
+        pytest.param("spotify", "on", "play", PlaybackState.PLAYING, 42, id="net-playing"),
+        pytest.param("spotify", "on", "pause", PlaybackState.PAUSED, None, id="net-paused"),
+        pytest.param("spotify", "on", "stop", PlaybackState.IDLE, None, id="net-stopped"),
+        pytest.param("audio1", "on", "stop", PlaybackState.PLAYING, None, id="input"),
+        pytest.param("spotify", "standby", "play", PlaybackState.IDLE, None, id="standby"),
+    ],
+)
+async def test_zone_state_maps_to_playback_state(
+    network: MusicCastNetwork,
+    monkeypatch: pytest.MonkeyPatch,
+    zone_input: str,
+    power: str,
+    netusb_playback: str,
+    expected_state: PlaybackState,
+    expected_elapsed_time: int | None,
+) -> None:
+    """A net source reports its playback and position, a powered input always plays."""
+    player = network.player("A___main")
+    data = player.physical_device.device.data
+    data.netusb_input = "spotify"
+    data.netusb_playback = netusb_playback
+    data.netusb_play_time = 42
+    data.netusb_play_time_updated = datetime(2026, 11, 22, tzinfo=UTC)
+    data.zones["main"].input = zone_input
+    data.zones["main"].power = power
     player.upnp_update_helper = UpnpUpdateHelper(
-        last_poll=time.time(),
-        controlled_by_mass=True,
-        current_uri=f"http://ma:8097/single/session/pl_living/item/{player.protocol_id}.flac",
+        last_poll=time.time(), controlled_by_mass=False, current_uri=None
     )
     monkeypatch.setattr(player, "update_state", MagicMock())
 
     await player.set_dynamic_attributes()
 
-    assert player._attr_active_source == "pl_living"
+    assert player._attr_playback_state == expected_state
+    assert player._attr_elapsed_time == expected_elapsed_time
+
+
+@pytest.mark.parametrize(
+    ("server_input", "server_controlled_by_mass", "expected_media", "expected_source"),
+    [
+        pytest.param(
+            "server",
+            True,
+            ("http://ma:8097/single/session/pl_living/item/A___main.flac", None),
+            None,
+            id="server-plays-music-assistant",
+        ),
+        pytest.param(
+            "spotify",
+            False,
+            ("A___main_spotify", "Song"),
+            "mc_link",
+            id="server-plays-own-source",
+        ),
+    ],
+)
+async def test_group_client_shows_what_its_server_plays(
+    network: MusicCastNetwork,
+    monkeypatch: pytest.MonkeyPatch,
+    server_input: str,
+    server_controlled_by_mass: bool,
+    expected_media: tuple[str, str | None],
+    expected_source: str | None,
+) -> None:
+    """A client of a MusicCast group shows the media of its server, not its own."""
+    server = network.player("A___main")
+    client = network.player("B___main")
+    link(server.zone_device, client.zone_device)
+    server_data = server.physical_device.device.data
+    server_data.netusb_input = server_input
+    server_data.netusb_track = "Song"
+    server_data.zones["main"].input = server_input
+    server.upnp_update_helper = UpnpUpdateHelper(
+        last_poll=time.time(),
+        controlled_by_mass=server_controlled_by_mass,
+        current_uri="http://ma:8097/single/session/pl_living/item/A___main.flac",
+    )
+    client.upnp_update_helper = UpnpUpdateHelper(
+        last_poll=time.time(), controlled_by_mass=False, current_uri=None
+    )
+    monkeypatch.setattr(client, "update_state", MagicMock())
+
+    await client.set_dynamic_attributes()
+
+    assert client.current_media is not None
+    assert (client.current_media.uri, client.current_media.title) == expected_media
+    assert client._attr_active_source == expected_source
+
+
+async def test_capabilities_become_player_options(
+    network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each capability of the zone is an option of the matching type, sensors read only."""
+    player = network.player("A___main")
+    add_capabilities(player.zone_device.zone_data)
+    player.upnp_update_helper = UpnpUpdateHelper(
+        last_poll=time.time(), controlled_by_mass=False, current_uri=None
+    )
+    monkeypatch.setattr(player, "update_state", MagicMock())
+
+    await player.set_dynamic_attributes()
+
+    options = {x.key: x for x in player._attr_options}
+    assert {
+        key: (x.translation_key, x.type, x.read_only, x.value) for key, x in options.items()
+    } == {
+        "zone_PARTY_MODE": ("party_mode", PlayerOptionType.BOOLEAN, True, False),
+        "zone_ENHANCER": ("enhancer", PlayerOptionType.BOOLEAN, False, True),
+        "zone_DIALOGUE_LEVEL": ("dialogue_level", PlayerOptionType.INTEGER, True, 2),
+        "zone_TONE_CONTROL_bass": ("bass", PlayerOptionType.INTEGER, False, 0),
+        "zone_SOUND_FORMAT": ("sound_format", PlayerOptionType.STRING, True, "Dolby Atmos"),
+        "zone_SLEEP": ("sleep", PlayerOptionType.STRING, False, "0"),
+    }
+    bass = options["zone_TONE_CONTROL_bass"]
+    assert (bass.min_value, bass.max_value, bass.step) == (-6, 6, 1)
+    assert options["zone_SLEEP"].options is not None
+    assert [(x.key, x.name) for x in options["zone_SLEEP"].options] == [
+        ("0", "Off"),
+        ("30", "30 min"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("capability_id", "expected_translation_key"),
+    [
+        pytest.param("zone_TONE_CONTROL_treble", "treble", id="treble"),
+        pytest.param("zone_SURR_DECODER_TYPE", "surround_decoder_type", id="surround-decoder"),
+    ],
+)
+def test_capability_names_match_shared_option_names(
+    capability_id: str, expected_translation_key: str
+) -> None:
+    """Capabilities with an option name shared by other players use that name."""
+    assert get_player_option_translation_key(capability_id) == expected_translation_key
 
 
 async def test_end_of_track_advances_the_queue_of_the_player(network: MusicCastNetwork) -> None:

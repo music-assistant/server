@@ -1,15 +1,18 @@
 """Tests for MusicCast device discovery and player registration."""
 
 import asyncio
-from typing import Any
-from unittest.mock import AsyncMock
+from ipaddress import ip_address
+from typing import Any, Self
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiohttp import ClientError
+from aiohttp import ClientError, ClientResponseError
 from aiomusiccast.exceptions import MusicCastConnectionException
+from zeroconf import IPVersion, ServiceStateChange
 
 from music_assistant.helpers.upnp import AVTransport
 from music_assistant.providers.musiccast import provider as provider_module
+from music_assistant.providers.musiccast.constants import MC_DEVICE_INFO_ENDPOINT
 from music_assistant.providers.musiccast.player import MusicCastPlayer
 
 from .conftest import FakeMusicCastDevice, MusicCastNetwork
@@ -225,3 +228,91 @@ async def test_removed_player_found_again_as_new_player(
         network.provider.musiccast_player_helpers["A"].physical_device,
         physical_device,
     ]
+
+
+class _FakeResponse:
+    """Response of a device that answers with a status and a json body, or not at all."""
+
+    def __init__(self, status: int, body: dict[str, Any] | None, raise_for_status: bool) -> None:
+        self.status = status
+        self._body = body
+        self._raise_for_status = raise_for_status
+
+    async def __aenter__(self) -> Self:
+        if self._body is None:
+            raise ClientError("unreachable")
+        if self._raise_for_status and self.status >= 400:
+            raise ClientResponseError(MagicMock(), (), status=self.status)
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+    async def json(self) -> dict[str, Any]:
+        assert self._body is not None
+        return self._body
+
+
+class _FakeSession:
+    """Session that serves the device info and the UPnP description of one receiver."""
+
+    def __init__(self, device_info: dict[str, Any] | None, description_status: int) -> None:
+        self.device_info = device_info
+        self.description_status = description_status
+
+    def get(self, url: str, raise_for_status: bool = False) -> _FakeResponse:
+        if url.endswith(MC_DEVICE_INFO_ENDPOINT):
+            return _FakeResponse(200, self.device_info, raise_for_status)
+        return _FakeResponse(self.description_status, {}, raise_for_status)
+
+
+@pytest.mark.parametrize(
+    ("ip", "device_info", "description_status", "expected_discovered"),
+    [
+        pytest.param(
+            "192.168.1.30",
+            {"device_id": "C"},
+            200,
+            [("C", "192.168.1.30", "http://192.168.1.30:49154/MediaRenderer/desc.xml")],
+            id="receiver",
+        ),
+        pytest.param(
+            "2001:db8::30",
+            {"device_id": "C"},
+            200,
+            [("C", "2001:db8::30", "http://[2001:db8::30]:49154/MediaRenderer/desc.xml")],
+            id="receiver-on-ipv6",
+        ),
+        pytest.param("192.168.1.30", None, 200, [], id="unreachable"),
+        pytest.param("192.168.1.30", {}, 200, [], id="no-device-id"),
+        pytest.param("192.168.1.30", {"device_id": "C"}, 404, [], id="no-upnp-description"),
+    ],
+)
+async def test_mdns_discovery_checks_the_device(
+    network: MusicCastNetwork,
+    monkeypatch: pytest.MonkeyPatch,
+    ip: str,
+    device_info: dict[str, Any] | None,
+    description_status: int,
+    expected_discovered: list[tuple[str, str, str]],
+) -> None:
+    """Only a device with a MusicCast id and a UPnP description is set up."""
+    network.mass.http_session = _FakeSession(device_info, description_status)
+    discovered: list[tuple[str, str, str]] = []
+
+    async def _device_discovered(device_id: str, device_ip: str, description_url: str) -> None:
+        discovered.append((device_id, device_ip, description_url))
+
+    monkeypatch.setattr(network.provider, "_device_discovered", _device_discovered)
+    address = ip_address(ip)
+    address_version = IPVersion.V4Only if address.version == 4 else IPVersion.V6Only
+    info = MagicMock()
+    info.ip_addresses_by_version.side_effect = lambda version: (
+        [address] if version == address_version else []
+    )
+
+    await network.provider.on_mdns_service_state_change(
+        "receiver._http._tcp.local.", ServiceStateChange.Added, info
+    )
+
+    assert discovered == expected_discovered
