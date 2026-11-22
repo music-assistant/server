@@ -42,6 +42,7 @@ def _provider() -> Any:
     provider._cue.companion_audio_stem = MethodType(
         CueSheetHandler.companion_audio_stem, provider._cue
     )
+    provider._cue.provider.resolve = AsyncMock(side_effect=_item)
     return provider
 
 
