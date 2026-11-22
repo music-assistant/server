@@ -42,6 +42,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
+from music_assistant.controllers.music.constants import MATCH_SEARCH_LIMIT
 from music_assistant.controllers.music.helpers import (
     fill_track_from_recording,
     metadata_for_update,
@@ -1434,7 +1435,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 if db_album.artists
                 else db_album.name
             )
-            search_results = await self.search(search_str, provider.instance_id)
+            search_results = await self.search(
+                search_str, provider.instance_id, limit=MATCH_SEARCH_LIMIT
+            )
         for search_result_item in search_results:
             if not search_result_item.available:
                 continue

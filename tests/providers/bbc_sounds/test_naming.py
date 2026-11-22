@@ -24,6 +24,8 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 import music_assistant.helpers.datetime as dt
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.live_rewind import LiveProgrammeId
+
+from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.naming import (
     UNKNOWN_STATION,
     TitleParts,
@@ -57,7 +59,7 @@ from music_assistant.providers.bbc_sounds.now_playing import NowPlaying
 )
 def test_full_station_name(station: Station | LiveStation, expected: str) -> None:
     """A station is named by its title, or its network for a live station."""
-    assert full_station_name(station) == expected
+    assert full_station_name(station=station) == expected
 
 
 # The same programme everywhere, so the table below compares like with like.
@@ -214,13 +216,13 @@ class TestDisplayNames:
             pytest.param(
                 LOCAL_CLIP,
                 TitleParts.PLAYLIST,
-                "Radio Oxford • Gas leak shuts Didcot line",
+                "BBC Radio Oxford • Gas leak shuts Didcot line",
                 id="clip-names-its-station:PLAYLIST",
             ),
             pytest.param(
                 LOCAL_CLIP,
                 TitleParts.LISTING,
-                "Radio Oxford • Gas leak shuts Didcot line: Severe disruption is expected"
+                "BBC Radio Oxford • Gas leak shuts Didcot line: Severe disruption is expected"
                 " · 23 Sep 2026",
                 id="clip-names-its-station:LISTING",
             ),

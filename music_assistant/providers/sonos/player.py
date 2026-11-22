@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -27,8 +28,8 @@ from aiosonos.api.models import (
     SonosCapability,
 )
 from aiosonos.client import SonosLocalApiClient
+from aiosonos.const import LOCAL_API_PORT, SonosEvent
 from aiosonos.const import EventType as SonosEventType
-from aiosonos.const import SonosEvent
 from aiosonos.exceptions import (
     CannotConnect,
     CommandTimeout,
@@ -82,6 +83,7 @@ from music_assistant.providers.sonos.const import (
     SOURCE_TV,
     UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS,
     UPCOMING_ITEMS,
+    UPNP_PORT,
 )
 from music_assistant.providers.sonos.helpers import get_channel_layout
 from music_assistant.providers.sonos.options import (
@@ -162,6 +164,7 @@ FINISHED_CLIP_STATES = (
 # playback states in which a session holds its speaker
 RENDERING_STATES = (PlaybackState.PLAYING, PlaybackState.PAUSED)
 SESSION_EVICTED_ERROR = "ERROR_SESSION_EVICTED"
+REPEAT_ROUND_SUFFIX = re.compile(r"~r(\d+)")
 
 
 class SonosPlayer(PlayerProtocol):
@@ -178,10 +181,22 @@ class SonosPlayer(PlayerProtocol):
         prov: SonosPlayerProvider,
         protocol_id: str,
         discovery_info: SonosDiscoveryInfo,
+        api_port: int = LOCAL_API_PORT,
+        upnp_port: int = UPNP_PORT,
     ) -> None:
-        """Initialize the SonosPlayer."""
+        """
+        Initialize the SonosPlayer.
+
+        :param prov: The Sonos provider.
+        :param protocol_id: The Sonos player ID.
+        :param discovery_info: The discovery info the speaker returned.
+        :param api_port: The port of the speaker's local API.
+        :param upnp_port: The port of the speaker's UPnP services.
+        """
         super().__init__(prov, protocol_id)
         self.discovery_info = discovery_info
+        self._api_port = api_port
+        self._upnp_port = upnp_port
         self.connected: bool = False
         self._listen_task: asyncio.Task[None] | None = None
         self._connect_lock = asyncio.Lock()
@@ -271,10 +286,12 @@ class SonosPlayer(PlayerProtocol):
         assert self.device_info.ip_address is not None  # for type checking
         # connect the player first so we can fail early
         self.client = SonosLocalApiClient(
-            self.device_info.ip_address, self.mass.http_session_no_ssl
+            self.device_info.ip_address, self.mass.http_session_no_ssl, self._api_port
         )
         provider = cast("SonosPlayerProvider", self._provider)
-        self.upnp = SonosSpeakerUpnp(provider.upnp, self.device_info.ip_address, self.logger)
+        self.upnp = SonosSpeakerUpnp(
+            provider.upnp, self.device_info.ip_address, self._upnp_port, self.logger
+        )
         await self._connect(False)
 
         # collect supported features
@@ -980,7 +997,8 @@ class SonosPlayer(PlayerProtocol):
         Return the requested item, the one before it and the items after it, as the queue is now.
 
         The items are addressed by queue position, each under an id the speaker reports back;
-        an item the speaker already holds an id for at another position gets an id of its own.
+        an item the speaker already holds an id for at another position gets an id of its own,
+        and so does every round of a queue (or track) that repeats.
 
         :param item_id: The id the speaker asked about, as it reports it; an omitted or empty
             one asks for the start of the queue.
@@ -1026,6 +1044,7 @@ class SonosPlayer(PlayerProtocol):
         # the speaker discards a window without the id it asked about and plays on out of the
         # one it holds: the position it asked about goes out under that id, whatever sits there
         asked = (center_index, item_id) if item_id and self.from_current_load(item_id) else None
+        repeat_round = self._repeat_round(asked[1]) if asked else 0
 
         items: list[PlayerMedia] = []
         wire_ids: list[str] = []
@@ -1035,12 +1054,16 @@ class SonosPlayer(PlayerProtocol):
             queue_item = self.mass.player_queues.get_item(queue_id, idx)
             if queue_item and queue_item.available:
                 items.append(await self._player_media_for_speaker(queue_item, idx))
-                wire_ids.append(self._wire_id_at(queue_item.queue_item_id, idx, generation, asked))
+                wire_ids.append(
+                    self._wire_id_at(queue_item.queue_item_id, idx, generation, asked, repeat_round)
+                )
                 positions[idx] = wire_ids[-1]
 
         # get_next_item accounts for repeat mode, so this is the item that will really
         # play next rather than whatever sits at the next index
+        upcoming_positions: dict[int, str] = {}
         last_index: int | str = center_index
+        last_position = center_index
         for _ in range(min(UPCOMING_ITEMS, max_upcoming)):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
@@ -1048,17 +1071,25 @@ class SonosPlayer(PlayerProtocol):
             next_index = self.mass.player_queues.index_by_id(queue_id, next_item.queue_item_id)
             if next_index is None:
                 break
+            if next_index <= last_position:
+                # repeat starts the queue (or the track) over
+                repeat_round += 1
             items.append(await self._player_media_for_speaker(next_item, next_index))
             wire_ids.append(
-                self._wire_id_at(next_item.queue_item_id, next_index, generation, asked)
+                self._wire_id_at(
+                    next_item.queue_item_id, next_index, generation, asked, repeat_round
+                )
             )
-            positions[next_index] = wire_ids[-1]
+            # the speaker fetches ahead of the item it plays: a position this window lists
+            # again in a later round is fetched for the round it reaches first
+            upcoming_positions.setdefault(next_index, wire_ids[-1])
             if next_item.queue_item_id in (x.queue_item_id for x in items[-3:-1]):
                 # a track or a pair that repeats itself gets one more round, not a window
                 # full: the speaker is never refused the track it plays or the one before
                 # it, so it would keep repeating them after repeat was switched off
                 break
             last_index = next_item.queue_item_id
+            last_position = next_index
 
         window = SonosQueueWindow(
             items=items,
@@ -1067,7 +1098,7 @@ class SonosPlayer(PlayerProtocol):
             # check after the loop in case the window filled exactly up to the last item
             includes_end=self.mass.player_queues.get_next_item(queue_id, last_index) is None,
         )
-        self._window_item_ids = positions
+        self._window_item_ids = positions | upcoming_positions
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Serving Sonos queue window for %s on player %s: %s",
@@ -1457,7 +1488,9 @@ class SonosPlayer(PlayerProtocol):
             self.mass.create_task(self.upnp.unfollow())
             if self.upnp.player_ip != self.client.player_ip:
                 provider = cast("SonosPlayerProvider", self._provider)
-                self.upnp = SonosSpeakerUpnp(provider.upnp, self.client.player_ip, self.logger)
+                self.upnp = SonosSpeakerUpnp(
+                    provider.upnp, self.client.player_ip, self._upnp_port, self.logger
+                )
             if self._marked_asleep:
                 self._attr_powered = True
                 self._marked_asleep = False
@@ -1824,6 +1857,7 @@ class SonosPlayer(PlayerProtocol):
         index: int,
         generation: int | None,
         asked: tuple[int, str] | None,
+        repeat_round: int,
     ) -> str:
         """
         Return the id to serve a queue item under at a queue position.
@@ -1832,11 +1866,16 @@ class SonosPlayer(PlayerProtocol):
         :param index: The queue position.
         :param generation: The load generation to serve under; the current one when omitted.
         :param asked: The position the speaker asked about and the id it asked about there,
-            which that position is served under.
+            which that position is served under in the repeat round of that id.
+        :param repeat_round: How many times repeat started the queue over before this item.
         """
-        if asked is not None and asked[0] == index:
+        if asked is not None and asked[0] == index and self._repeat_round(asked[1]) == repeat_round:
             return asked[1]
         wire_id = self.wire_item_id(queue_item_id, generation) or queue_item_id
+        if repeat_round:
+            # the speaker keys what it fetched on the item id: a round that repeats the id of
+            # the round before is not fetched cleanly (skipped, or fetched twice at once)
+            wire_id = f"{wire_id}~r{repeat_round}"
         binding = self._served_bindings.get(wire_id)
         if binding is None or binding[0] == index:
             return wire_id
@@ -1844,6 +1883,12 @@ class SonosPlayer(PlayerProtocol):
         # moved the item since): the item itself gets an identity of its own where it sits now,
         # so a report on either cannot be read as the other
         return f"{wire_id}~{index}"
+
+    @staticmethod
+    def _repeat_round(wire_item_id: str) -> int:
+        """Return the repeat round an id the speaker reports was served in, 0 for the first."""
+        match = REPEAT_ROUND_SUFFIX.search(wire_item_id)
+        return int(match.group(1)) if match else 0
 
     def _playing_item_id(self, wire_item_id: str) -> str:
         """Return the queue item the speaker plays under a reported id, logging a stale one once."""
@@ -2328,8 +2373,10 @@ class SonosPlayer(PlayerProtocol):
         """Return whether the player API port answers a TCP connect."""
         try:
             async with asyncio.timeout(1):
-                # 1443 is the port aiosonos' websocket connects to
-                _, writer = await asyncio.open_connection(self.device_info.ip_address, 1443)
+                # the port aiosonos' websocket connects to
+                _, writer = await asyncio.open_connection(
+                    self.device_info.ip_address, self.client.port
+                )
         except OSError, TimeoutError:
             return False
         writer.close()

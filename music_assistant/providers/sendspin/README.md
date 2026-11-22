@@ -380,7 +380,10 @@ exists.
 
 A multi-channel player combines Sendspin speakers into one player, each speaker on a channel of
 its own (`players/create_multi_channel_player`, offered through
-`ProviderFeature.CREATE_MULTI_CHANNEL_PLAYER`).
+`ProviderFeature.CREATE_MULTI_CHANNEL_PLAYER`). The layouts are a stereo pair, a stereo pair with
+a subwoofer (2.1) and one speaker on the center channel with a subwoofer (1.1); the speakers other
+than the subwoofer are its main speakers. `players/multi_channel_layouts` lists the layouts with
+their channels in order.
 
 - The player is a silent server-side client, like a virtual player, with a stored protocol
   `sendspin_mc_<group id>`. Its record holds the group id (32 random bytes in base64url, as the
@@ -394,24 +397,48 @@ its own (`players/create_multi_channel_player`, offered through
   - `speaker_<n>_display_name`: a label with the name of the speaker.
   - `speaker_<n>_channel_setting`: the channel the user sets, which the player takes into its
     record, swapping with the speaker that had that channel; a value that is no channel of the
-    layout changes nothing.
+    layout changes nothing, and neither do channels set in one save that make up no layout.
   - `speaker_<n>_output_delay`: the output delay of the speaker, which also follows a delay the
     speaker reports itself.
+- A set with a subwoofer has the settings of its crossover, above its speakers: whether the
+  subwoofer has a crossover of its own, whether the main speakers are high-passed, the crossover
+  frequency and the level of the subwoofer. Each is stored only once the user changes it, so a
+  set without them plays with the defaults. A change starts the stream again.
 - A speaker of a set is never a protocol. The provider knows the speakers of every stored set
   before its server starts and hands a speaker that connects to its set, so it does not matter
   whether the set or its speakers come first. The set takes its speakers into the Sendspin group
   it plays in, also when it joins another leader. Group members and leaders leave the speakers
   out: a group lists the set.
 - The session of the leader gives each speaker a pipeline of its own: the DSP of the set, then
-  the channel of the speaker, while it is in the group of the set. While a speaker is away the
-  others play every channel; such a change starts the stream again, as a DSP change does. The
-  silent client gets no pipeline and does not count for the sample rate of the session.
+  the channel of the speaker, while it is in the group of the set. The subwoofer and a center
+  speaker play the mono sum. The streams controller adds the crossover: the subwoofer is
+  low-passed at the crossover frequency, unless it has a crossover of its own, and plays at its
+  level; a main speaker is high-passed there while the subwoofer plays, unless the user lets the
+  main speakers play the full range. Both filters are Linkwitz-Riley filters of 24 dB/octave,
+  which sum flat; next to main speakers at full range the subwoofer gets one of 12 dB/octave,
+  which adds the least bass around the crossover. The level of the subwoofer goes no higher than
+  0 dB, as more clips loud bass. The signal path of the player is that of its main speakers:
+  it reports the mono sum of a center speaker, and a player that splits the bass is never shown
+  as bit perfect.
+- While a main speaker is away the other main speakers play every channel, and while the
+  subwoofer is away the main speakers play the full range; such a change starts the stream
+  again, as a DSP change does. A set is unavailable while none of its main speakers is
+  connected, and the playback it leads stops then. The subwoofer is in the group only while a
+  main speaker is, so it never plays on alone, also not for a player the set follows; it is
+  back with the first main speaker. The silent client gets no pipeline and does not count for
+  the sample rate of the session.
 - A speaker is away while it is disconnected, and while it is out of the group of its set. One
   that leaves by itself, as it is unavailable or went to a group of its own, comes back at the
-  next playback session; one that the group of another player takes (its switch) is taken back
-  at once.
+  next playback session, or when it moves back into the group by itself; its switch finds that
+  group only while another speaker or player is connected in it. One that the group of another
+  player takes (its switch) is taken back at once.
 - One volume: a level set on the set goes to every speaker, and a level a speaker reports itself
   goes to the others. A speaker that reports back a level the set sent changes nothing.
+- A speaker can be added to a set (`players/add_multi_channel_speaker`) and removed from it
+  (`players/remove_multi_channel_speaker`, by its number), as long as the speakers make up a
+  layout: a subwoofer goes into a stereo pair and out again. Adding takes the speaker as combining
+  does; removing lets it go as taking apart does, and the speakers after it move up a number with
+  all their `speaker_<n>_*` values, so the numbers stay without a gap.
 - Taking a set apart is removing its player: its speakers register as clients of their own again,
   one that is away once it connects again. A speaker belongs to one set; a second request for it
   is refused.

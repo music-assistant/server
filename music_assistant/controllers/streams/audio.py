@@ -38,6 +38,9 @@ from music_assistant_models.dsp import (
     DSPConfig,
     DSPFilter,
     DSPState,
+    HighLowPassFilter,
+    HighLowPassMode,
+    HighLowPassSlope,
 )
 from music_assistant_models.enums import (
     ContentType,
@@ -69,11 +72,15 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
+    CONF_CROSSOVER_FREQUENCY,
     CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_FLOW_MODE_SAMPLE_RATE,
+    CONF_HIGH_PASS_MAIN_SPEAKERS,
     CONF_OUTPUT_CHANNELS,
     CONF_PLAYER_QUEUES,
+    CONF_SUBWOOFER_LEVEL,
+    CONF_SUBWOOFER_OWN_CROSSOVER,
     CONF_VALUE_DISABLED,
     CONF_VALUE_ENABLED,
     CONF_VOLUME_NORMALIZATION,
@@ -82,6 +89,10 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
+    DEFAULT_CROSSOVER_FREQUENCY,
+    DEFAULT_HIGH_PASS_MAIN_SPEAKERS,
+    DEFAULT_SUBWOOFER_LEVEL,
+    DEFAULT_SUBWOOFER_OWN_CROSSOVER,
     DSP_IRS_DIRNAME,
     EXTERNAL_ID_PROVIDER,
     FLOW_MODE_SAMPLE_RATE_48000,
@@ -277,6 +288,8 @@ RADIO_RESTART_DELAY = 1.0
 SPEAKER_CHANNEL_OUTPUT = {
     SpeakerChannel.FRONT_LEFT: "left",
     SpeakerChannel.FRONT_RIGHT: "right",
+    SpeakerChannel.FRONT_CENTER: "mono",
+    SpeakerChannel.LFE: "mono",
 }
 
 
@@ -1387,6 +1400,7 @@ class StreamsAudio:
         session_id: str | None = None,
         queue_item_id: str | None = None,
         channel: SpeakerChannel | None = None,
+        with_subwoofer: bool = False,
     ) -> AudioOutputPlan:
         """
         Return executable filters and matching output details for a player.
@@ -1403,6 +1417,8 @@ class StreamsAudio:
         :param queue_item_id: Queue item for a single-item output path.
         :param channel: The channel a speaker of the multi-channel player plays, in place
             of the configured output channels.
+        :param with_subwoofer: Whether the subwoofer of that multi-channel player plays along,
+            which takes over the bass of this speaker.
         """
         filter_params: list[str | ComplexFilter] = []
         player = self.mass.players.get_output_protocol(protocol_id)
@@ -1484,6 +1500,13 @@ class StreamsAudio:
                 filter_params.append(f"pan=mono|c0={channel_mix}")
             else:
                 filter_params.append(f"pan=stereo|c0={channel_mix}|c1={channel_mix}")
+        splits_bass = channel == SpeakerChannel.LFE or with_subwoofer
+        if splits_bass:
+            filter_params.extend(
+                self._get_crossover_params(
+                    protocol_id, input_format, subwoofer=channel == SpeakerChannel.LFE
+                )
+            )
 
         output_details = AudioOutputDetails(
             player_ids=sorted(destination_player_ids),
@@ -1494,13 +1517,23 @@ class StreamsAudio:
                 output_gain=dsp.output_gain if dsp.enabled else 0.0,
                 preset_id=dsp.preset_id,
             ),
-            # together the speakers of a multi-channel player play every channel
-            source_channel=source_channel if channel is None else None,
+            # together the speakers of a multi-channel player play every channel, so of a
+            # speaker only the mono sum is reported
+            source_channel=(
+                source_channel if channel is None or source_channel == AudioChannel.ALL else None
+            ),
             output_format=output_format,
         )
         output_plan = AudioOutputPlan(
             filter_params=filter_params,
             output_details=output_details,
+            # the crossover is no filter of the user, so it is not listed with those. It
+            # counts for every speaker of the player, also for one it leaves as it is
+            alters_audio=splits_bass
+            and any(
+                self._get_crossover_params(protocol_id, input_format, subwoofer=subwoofer)
+                for subwoofer in (True, False)
+            ),
             input_format=input_format,
             handoff_format=handoff_format,
             dsp_config_id=dsp_config_id,
@@ -6181,6 +6214,52 @@ class StreamsAudio:
         return self.mass.config.get_protocol_value(
             player.protocol_id if player else protocol_id, CONF_OUTPUT_CHANNELS, fallback
         )
+
+    def _get_crossover_params(
+        self, protocol_id: str, audio_format: AudioFormat, *, subwoofer: bool
+    ) -> list[str | ComplexFilter]:
+        """
+        Return the filters that split the bass between a subwoofer and the main speakers.
+
+        :param protocol_id: The id of the protocol of the multi-channel player.
+        :param audio_format: The PCM format the filters run at.
+        :param subwoofer: True for the subwoofer, False for a main speaker that plays with it.
+        """
+        config = self.mass.config
+        frequency = config.get_protocol_value(
+            protocol_id, CONF_CROSSOVER_FREQUENCY, DEFAULT_CROSSOVER_FREQUENCY
+        )
+        high_pass_mains = config.get_protocol_value(
+            protocol_id, CONF_HIGH_PASS_MAIN_SPEAKERS, DEFAULT_HIGH_PASS_MAIN_SPEAKERS
+        )
+        # two 12 dB/oct sections make the Linkwitz-Riley low-pass and high-pass that sum
+        # flat; next to main speakers that play the full range, one section adds the least
+        # bass around the crossover
+        if subwoofer:
+            mode = HighLowPassMode.LOW_PASS
+            own_crossover = config.get_protocol_value(
+                protocol_id, CONF_SUBWOOFER_OWN_CROSSOVER, DEFAULT_SUBWOOFER_OWN_CROSSOVER
+            )
+            sections = 0 if own_crossover else 2 if high_pass_mains else 1
+        else:
+            mode = HighLowPassMode.HIGH_PASS
+            sections = 2 if high_pass_mains else 0
+        section = HighLowPassFilter(
+            enabled=True, mode=mode, frequency=frequency, slope=HighLowPassSlope.DB12
+        )
+        # a high-pass or low-pass reads no impulse response
+        params = filter_to_ffmpeg_params(section, audio_format, ir_dir="") * sections
+        if subwoofer and (
+            # a gain above 0 dB clips loud bass
+            level := min(
+                config.get_protocol_value(
+                    protocol_id, CONF_SUBWOOFER_LEVEL, DEFAULT_SUBWOOFER_LEVEL
+                ),
+                0,
+            )
+        ):
+            params.append(f"volume={level}dB")
+        return params
 
     def _pick_pcm_bit_depth(
         self,

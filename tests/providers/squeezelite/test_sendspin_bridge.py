@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
-from aiosendspin.clock import ManualClock, RawMonotonicClock
+from aiosendspin.clock import ManualClock
 from aiosendspin.models.types import AudioCodec, PlayerCommand
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.events import ClientGroupChangedEvent
@@ -42,6 +42,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import CONF_OUTPUT_CODEC, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.timeline_clock import TimelineClock
 from music_assistant.providers.sendspin.bridge_role import BRIDGE_SAMPLE_RATE
 from music_assistant.providers.squeezelite.bridge_flac import BLOCK_FRAMES, HELD_BACK_BYTES
 from music_assistant.providers.squeezelite.bridge_role import (
@@ -1131,14 +1132,23 @@ async def test_no_bridge_on_another_clock_than_that_of_sendspin(rig: _Rig) -> No
     assert rig.protocol.sendspin_bridge is None
 
 
-async def test_two_raw_monotonic_clocks_are_one_clock(rig: _Rig) -> None:
-    """The squeezelite provider and Sendspin each make their own clock of the same kind."""
-    rig.server.clock = RawMonotonicClock()
-    rig.bridge._clock = RawMonotonicClock()
+async def test_the_timeline_clock_of_the_server_is_one_clock(rig: _Rig) -> None:
+    """The squeezelite provider and Sendspin both run on the timeline clock of the server."""
+    rig.server.clock = rig.bridge._clock = TimelineClock()
 
     await rig.bridge.start()
 
     assert rig.bridge.is_registered
+
+
+async def test_two_timeline_clocks_are_not_one_clock(rig: _Rig) -> None:
+    """A timeline clock has a rate of its own, so only the very same one will do."""
+    rig.server.clock = TimelineClock()
+    rig.bridge._clock = TimelineClock()
+
+    await rig.bridge.start()
+
+    assert not rig.bridge.is_registered
 
 
 async def test_a_volume_from_sendspin_goes_to_the_protocol_itself(rig: _Rig) -> None:

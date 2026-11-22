@@ -290,7 +290,7 @@ class StationConverter(BaseConverter):
 
         return Radio(
             item_id=station.id,
-            name=full_station_name(station),
+            name=full_station_name(station=station),
             provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
                 image_url, self.context.provider.instance_id, station.description
@@ -304,7 +304,7 @@ class StationConverter(BaseConverter):
 
         return Radio(
             item_id=station.id,
-            name=full_station_name(station),
+            name=full_station_name(station=station),
             provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
                 image_url, self.context.provider.instance_id, station.description
@@ -316,7 +316,7 @@ class StationConverter(BaseConverter):
         """Convert StationSearchResult object."""
         return Radio(
             item_id=station.service_id,
-            name=full_station_name(station),
+            name=full_station_name(station=station),
             provider=self.context.provider.instance_id,
             metadata=ImageProvider.create_metadata_with_image(
                 station.station_image_url, self.context.provider.instance_id
@@ -838,11 +838,13 @@ class Adaptor:
                 except AttributeError:
                     self.logger.exception("Error converting object %s", source_obj)
                     return None
+                self.provider.logger.log(VERBOSE_LOG_LEVEL, source_obj)
                 self.provider.logger.debug(
                     "Successfully converted %s to %s",
                     type(source_obj).__name__,
                     type(stream_details).__name__,
                 )
+                self.provider.logger.log(VERBOSE_LOG_LEVEL, stream_details)
                 return stream_details
         self.provider.logger.warning(
             "No stream converter found for type %s", type(source_obj).__name__
@@ -917,6 +919,9 @@ class Adaptor:
                         f"{type(result)} using {type(converter)}"
                     )
                     raise ConversionError(msg)
+
+                self.provider.logger.log(VERBOSE_LOG_LEVEL, source_obj)
+
                 msg = "Successfully converted %s to %s"
                 args: list[Any] = [type(source_obj).__name__, type(result).__name__]
                 if hasattr(result, "item_id") and result.item_id is not None:

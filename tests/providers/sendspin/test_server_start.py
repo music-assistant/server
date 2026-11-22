@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
+from music_assistant.providers.sendspin import provider as provider_module
 from music_assistant.providers.sendspin.constants import DEFAULT_SERVER_PORT
 from music_assistant.providers.sendspin.provider import SendspinProvider
 from music_assistant.testing import bound_sendspin_port, full_mass_context
@@ -30,6 +31,41 @@ def _make_provider(start_server: AsyncMock) -> tuple[SendspinProvider, MagicMock
     provider.server_api = server_api
     provider._remove_orphan_virtual_player_configs = AsyncMock()  # type: ignore[method-assign]
     return provider, mass, server_api
+
+
+async def test_the_server_runs_on_the_timeline_clock(tmp_path: pathlib.Path) -> None:
+    """The Sendspin server timestamps on the clock every audio timeline of the server shares."""
+    provider = MagicMock()
+    provider.mass.storage_path = str(tmp_path)
+
+    with (
+        patch.object(provider_module, "get_or_create_server_identity", MagicMock()),
+        patch("aiosendspin.noise.trust_store.FileServerPairingStore.open", AsyncMock()),
+        patch.object(provider_module, "_evict_stale_pairings", AsyncMock(return_value=(0, 0))),
+        patch.object(provider_module, "SendspinServer", MagicMock()) as server_cls,
+        patch.object(provider_module, "is_port_in_use", AsyncMock(return_value=False)),
+    ):
+        await SendspinProvider.handle_async_init(provider)
+
+    clock = provider.mass.timeline_clock
+    assert server_cls.call_args.kwargs["clock"] is clock
+    # holding the rate of that clock while it streams, until the provider unloads
+    clock.add_rate_listener.assert_called_once_with(pinned=provider._streams_audio)
+    assert clock.add_rate_listener.return_value in provider.unregister_cbs
+
+
+def test_a_streaming_group_pins_the_rate_of_the_timeline_clock() -> None:
+    """The rate of the timeline clock waits while any group of the server has a stream."""
+    provider = MagicMock()
+    idle = MagicMock()
+    idle.group.has_active_stream = False
+    streaming = MagicMock()
+    streaming.group.has_active_stream = True
+
+    provider.server_api.clients = [idle, idle]
+    assert not SendspinProvider._streams_audio(provider)
+    provider.server_api.clients = [idle, streaming]
+    assert SendspinProvider._streams_audio(provider)
 
 
 async def test_server_start_failure_unloads_with_error() -> None:

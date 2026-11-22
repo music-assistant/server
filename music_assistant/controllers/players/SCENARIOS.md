@@ -470,6 +470,22 @@ also when they were told while that power on was under way.
   - `test_power_control.py::test_a_switch_on_that_fails_leaves_the_power_cut_as_it_was`
   - `test_power_control.py::test_a_switch_on_that_fails_keeps_a_power_cut_that_was_told_meanwhile`
 
+### AWAY-35 · A multi-channel player plays on without its subwoofer, not without its main speakers
+
+Kitchen is a multi-channel player of a left and a right Sendspin speaker and a subwoofer. The
+subwoofer drops off the network: Kitchen stays available, its left and right speaker play the full
+range, and it says the subwoofer is offline. The right speaker drops off: the left one plays both
+channels and still leaves the bass to the subwoofer. Once both main speakers are away, Kitchen is
+unavailable, although its subwoofer is still there, and it stops playing. So does a player of one
+speaker with a subwoofer without that speaker.
+
+- End-to-end: **possible with** three virtual Sendspin speakers combined into Kitchen in the lab,
+  and the bass and the channels checked in the captured audio.
+- Proven by:
+  - `tests/providers/sendspin/test_multi_channel.py::test_a_set_with_a_subwoofer_plays_on_while_a_speaker_is_away`
+  - `tests/providers/sendspin/test_multi_channel.py::test_a_set_whose_main_speakers_are_away_is_unavailable`
+  - `tests/providers/sendspin/test_multi_channel.py::test_a_playing_set_stops_once_none_of_its_main_speakers_is_left`
+
 ## Several devices on one host
 
 One host, such as a Raspberry Pi, can run several players behind one MAC and one IP address.
@@ -1899,14 +1915,10 @@ to switch on, and Den is a member again once it has stopped (GROUP-25).
 Downstairs plays on Kitchen and Office, without Den, whose plug works again. Kitchen and Office
 play the track out, or Kitchen plays something of its own instead: Downstairs still reads as
 playing while its queue does not play. A resume of its queue switches Den's plug on, and
-Downstairs plays on all three once Den has started up. The same holds for a universal group
-that was played while none of its plugs answered: it started on no speaker and reads as playing,
-and the next play switches all three plugs on and waits for them.
+Downstairs plays on all three once Den has started up.
 
 - End-to-end: **possible with** a power control the lab can switch and can make refuse.
-- Proven by:
-  - `test_group_power_on.py::test_a_resume_of_a_group_that_still_reads_as_playing_waits_for_its_members`
-  - `test_group_power_on.py::test_a_universal_group_that_started_without_a_member_waits_for_them_at_its_next_start`
+- Proven by: `test_group_power_on.py::test_a_resume_of_a_group_that_still_reads_as_playing_waits_for_its_members`
 
 ### GROUP-39 · A play on a member that goes to its group waits for the members of the group
 
@@ -2207,6 +2219,27 @@ plays. Kitchen plays the stream of Everywhere as any member does, and its speake
 - End-to-end: **possible with** two virtual Sendspin speakers combined into Kitchen in the lab, and
   the left and right channel checked in the captured audio.
 - Proven by: `tests/providers/sendspin/test_multi_channel.py::test_a_set_plays_in_a_universal_group`
+
+### GROUP-64 · A multi-channel player with a subwoofer splits the bass only between its own speakers
+
+Kitchen, a multi-channel player of a left and a right Sendspin speaker and a subwoofer, leads the
+Sendspin player Den. The subwoofer of Kitchen plays the bass and its other speakers leave it to the
+subwoofer, while Den plays the full range as it does on its own.
+
+- End-to-end: **possible with** three virtual Sendspin speakers combined into Kitchen and a fourth
+  as Den in the lab, and the bass checked in the captured audio of each.
+- Proven by: `tests/providers/sendspin/test_multi_channel.py::test_a_set_with_a_subwoofer_splits_the_bass_only_between_its_own_speakers`
+
+### GROUP-65 · A group none of whose members can play fails to start
+
+Downstairs, a sync group with a fixed member list or not, or a universal group of Kitchen, Office
+and Den, is played while all three are switched off and their plugs do not answer. The play fails:
+no speaker gets a command, and Downstairs and its queue stay idle, with all three as members. The
+plugs work again and the user plays another track: the plugs are switched on, and Downstairs
+plays on all three once they have started up.
+
+- End-to-end: **possible with** a power control the lab can switch and can make refuse.
+- Proven by: `test_group_power_on.py::test_a_group_none_of_whose_members_can_play_fails_and_waits_for_them_at_its_next_start`
 
 ## Where playback goes
 

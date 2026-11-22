@@ -25,7 +25,7 @@ UNKNOWN_TITLE = "Unknown programme"
 UNKNOWN_STATION = "Unknown station"
 LIVE_MARKER = "«LIVE»"
 REWOUND_MARKER = "«Rewound»"
-UNPREFIXED_STATIONS = frozenset({"cbeebies_radio"})
+UNPREFIXED_STATIONS = frozenset({"CBeebies Radio"})
 TITLE_END_PUNCTUATION = ("!", "?", ".", ":")
 # Networks that name no station, e.g. the BBC News website's clips, which every other
 # title in a BBC app would share
@@ -90,14 +90,21 @@ def programme_title(item: PlayableItem, parts: TitleParts = TitleParts.LISTING) 
     has_season = bool(titles.tertiary) and not isinstance(item, LiveStation)
 
     episode = titles.entity_title or (titles.tertiary if has_season else titles.secondary)
-    brand = titles.primary
-    # An episode title can already name its brand, e.g. "BBC News 20:00" of "BBC News",
-    # or repeat it outright for a one-off programme
-    if TitleParts.EPISODE in parts and brand and episode and episode.startswith(brand):
-        brand = None
+
     # A clip's titles often hold only its headline, so say where it was published instead
-    if brand is None and isinstance(item, RadioClip):
-        brand = programme_source(item)
+    brand = programme_source(item) if isinstance(item, RadioClip) else titles.primary
+
+    # Prevent adding the brand (station/network) to the clip title if it already
+    # starts with it, and the following character isn't alphanumeric.
+    # E.g. "BBC Four" Matches "BBC Four: Title", but not "BBC Fourth in recent poll"
+    if (
+        TitleParts.EPISODE in parts
+        and brand
+        and episode
+        and episode.startswith(brand)
+        and not episode[len(brand) : len(brand) + 1].isalnum()
+    ):
+        brand = None
     names = [
         name
         for flag, name in (
@@ -160,7 +167,11 @@ def station_name(station: Station | LiveStation | StationSearchResult) -> str:
     return name or UNKNOWN_STATION
 
 
-def full_station_name(station: Station | LiveStation | StationSearchResult) -> str:
+def full_station_name(
+    *,
+    station: Station | LiveStation | StationSearchResult | None = None,
+    station_name_string: str | None = None,
+) -> str:
     """
     Return a full station name with the BBC prefix, if appropriate.
 
@@ -168,14 +179,24 @@ def full_station_name(station: Station | LiveStation | StationSearchResult) -> s
     of radio stations in Music Assistant, "BBC Radio 1" is more useful as a display name
     than "Radio 1".
 
+    Can be called with a station object, or an existing station name.
+
     e.g. CBeebies, BBC Radio Four
     """
-    name = station_name(station)
+    if station is not None and station_name_string is not None:
+        raise TypeError("full_station_name() takes station or station_name_string, not both")
+    if station is not None:
+        name = station_name(station)
+    elif station_name_string is not None:
+        name = station_name_string
+    else:
+        raise TypeError("full_station_name() requires station or station_name_string")
+
     if name == UNKNOWN_STATION:
         return name
     if (
         name.startswith(STATION_PREFIX)
-        or station.item_id in UNPREFIXED_STATIONS
+        or name in UNPREFIXED_STATIONS
         or not name.isascii()  # These titles already have the equivalent of 'BBC' in
     ):
         return name
@@ -194,8 +215,12 @@ def programme_source(item: PlayableItem) -> str | None:
     """Return the programme an item is from, else its station, if either says anything."""
     if item.container and item.container.title:
         return item.container.title
-    if item.network and item.network.id not in GENERIC_NETWORKS:
-        return item.network.short_title
+    if (
+        item.network
+        and item.network.id not in GENERIC_NETWORKS
+        and item.network.short_title is not None
+    ):
+        return full_station_name(station_name_string=item.network.short_title)
     return None
 
 

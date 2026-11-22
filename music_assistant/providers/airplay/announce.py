@@ -62,6 +62,7 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.players.helpers import AnnounceData
     from music_assistant.controllers.streams.announcements import AnnouncementRender
+    from music_assistant.helpers.timeline_clock import TimelineClock
     from music_assistant.models.player import Player
 
     from .player import AirPlayPlayer
@@ -138,6 +139,7 @@ async def _announce_over_live_session(
     :raises PlayerCommandFailed: If the player stopped playing before the clip
         could be armed, or if no member armed it.
     """
+    clock = player.mass.timeline_clock
     clip_files: dict[str, str] = {}
     bumped: dict[str, int] = {}
     try:
@@ -193,7 +195,7 @@ async def _announce_over_live_session(
                     sent,
                 )
         started_timeout = (
-            max(0.0, at_unix_ms / 1000 - cli_clock_time())
+            max(0.0, at_unix_ms / 1000 - cli_clock_time(clock))
             + AIRPLAY_ANNOUNCE_STARTED_TIMEOUT_MS / 1000
         )
         acks = await asyncio.gather(
@@ -243,13 +245,14 @@ async def _announce_over_live_session(
         # read as the user reaching for the volume mid-announcement
         for member in armed:
             member.suppress_volume_reports(
-                max(0.0, latest_end_unix_ms / 1000 - cli_clock_time()) + AIRPLAY_VOLUME_ECHO_GRACE_S
+                max(0.0, latest_end_unix_ms / 1000 - cli_clock_time(clock))
+                + AIRPLAY_VOLUME_ECHO_GRACE_S
             )
         # the done reports arrive while the volume timeline below runs its course
         done_task = asyncio.gather(
             *[
                 streams[member_id].wait_announce_done(
-                    max(0.0, (ack_at or at_unix_ms) / 1000 - cli_clock_time())
+                    max(0.0, (ack_at or at_unix_ms) / 1000 - cli_clock_time(clock))
                     + (ack_duration / 1000 if ack_duration else file_seconds)
                     + AIRPLAY_ANNOUNCE_DONE_TIMEOUT_MS / 1000
                 )
@@ -281,7 +284,7 @@ async def _announce_over_live_session(
         # would let the caller restore mutes (and arm a follow-up
         # announcement) over the audible tail, so hold the return until the
         # latest audible end across the started members.
-        await _hold_until(latest_end_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS)
+        await _hold_until(latest_end_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS, clock)
     finally:
         if bumped:
             # A failed or cancelled announcement leaves the music playing, so whatever
@@ -362,11 +365,12 @@ def _resolve_announce_instant(
     )
     if len(members) >= len(session_members):
         return _shared_announce_instant(
-            member.stream for member in members if member.stream is not None
+            (member.stream for member in members if member.stream is not None),
+            player.mass.timeline_clock,
         )
     provider = cast("AirPlayProvider", player.provider)
     plans = provider._announce_plans
-    now_ms = int(cli_clock_time() * 1000)
+    now_ms = int(cli_clock_time(player.mass.timeline_clock) * 1000)
     # prune settled plans so the registry cannot grow with announcement history
     for key in [key for key, at_ms in plans.items() if at_ms <= now_ms]:
         del plans[key]
@@ -379,22 +383,26 @@ def _resolve_announce_instant(
     # the instant must clear EVERY session member's span: the sibling calls of
     # a group fan-out reuse it for their own members
     at_unix_ms = _shared_announce_instant(
-        member.stream for member in session_members if member.stream is not None
+        (member.stream for member in session_members if member.stream is not None),
+        player.mass.timeline_clock,
     )
     plans[plan_key] = at_unix_ms
     return at_unix_ms
 
 
-def _shared_announce_instant(streams: Iterable[AirPlayStream]) -> int:
+def _shared_announce_instant(streams: Iterable[AirPlayStream], clock: TimelineClock) -> int:
     """
     Return the shared audible instant (unix ms) for arming an announcement.
 
     Every member must mix the clip into audio it has not delivered yet; its
     span is how far ahead of the audible position that delivery head runs, so
     the shared instant sits past the largest member span plus a fan-out margin.
+
+    :param streams: The streams of the members that mix the clip.
+    :param clock: The timeline clock of the server.
     """
     max_span_ms = max(_member_span_ms(stream) for stream in streams)
-    return int(cli_clock_time() * 1000) + max_span_ms + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
+    return int(cli_clock_time(clock) * 1000) + max_span_ms + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
 
 
 def _owning_group_entity(player: AirPlayPlayer) -> str | None:
@@ -485,9 +493,10 @@ async def _volume_around_clip(
     :param content_end_unix_ms: End of the latest member's announcement audio.
     :param bumped: Mapping that tracks which players still need restoring.
     """
-    await _hold_until(lead_in_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS)
+    clock = player.mass.timeline_clock
+    await _hold_until(lead_in_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS, clock)
     await _apply_announcement_volume(armed, volume_level, bumped)
-    await _hold_until(content_end_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS)
+    await _hold_until(content_end_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS, clock)
     await _restore_announcement_volume(player, bumped)
 
 
@@ -545,9 +554,14 @@ async def _restore_announcement_volume(player: AirPlayPlayer, bumped: dict[str, 
         del bumped[player_id]
 
 
-async def _hold_until(unix_ms: float) -> None:
-    """Wait for the given cliairplay instant (unix ms) to arrive."""
-    await asyncio.sleep(max(0.0, unix_ms / 1000 - cli_clock_time()))
+async def _hold_until(unix_ms: float, clock: TimelineClock) -> None:
+    """
+    Wait for the given cliairplay instant (unix ms) to arrive.
+
+    :param unix_ms: The instant on the cliairplay timeline, in unix ms.
+    :param clock: The timeline clock of the server.
+    """
+    await asyncio.sleep(max(0.0, unix_ms / 1000 - cli_clock_time(clock)))
 
 
 async def _render_clip_file(render: AnnouncementRender, pcm_format: AudioFormat) -> str:

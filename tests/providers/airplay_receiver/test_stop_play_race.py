@@ -93,6 +93,20 @@ async def test_play_without_pending_stop_starts_immediately(provider: MagicMock)
     provider.mass.player_queues.play_media.assert_awaited_once_with("player1", "airplay://source")
 
 
+async def test_a_new_session_plays_on_the_receivers_own_player(provider: MagicMock) -> None:
+    """A new session plays on the receiver's own player, not on one an earlier session moved to."""
+    provider.daemon.in_use_by_player = None
+    # left behind when shairport-sync restarted without ending the earlier session
+    provider.daemon.active_player_id = "player2"
+    provider.mass.player_queues.play_media = AsyncMock()
+
+    _handle(provider, "playing")
+    await asyncio.sleep(0.01)
+
+    provider.mass.player_queues.play_media.assert_awaited_once_with("player1", "airplay://source")
+    assert provider.daemon.active_player_id == "player1"
+
+
 async def test_play_starts_on_the_player_the_connected_one_was_merged_into(
     provider: MagicMock,
 ) -> None:

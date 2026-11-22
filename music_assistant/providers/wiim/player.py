@@ -620,6 +620,7 @@ class WiimPlayer(PlayerProtocol):
         self._republish_peers_if_availability_changed(was_available)
         if self._device is not None and self._device.name != self._attr_name:
             self._attr_name = self._device.name
+        self._update_channel_layout()
 
         if not self._attr_available:
             self._attr_current_media = None
@@ -908,6 +909,13 @@ class WiimPlayer(PlayerProtocol):
             self.logger.warning(
                 "Failed to resume %s after the stream restart: %s", self._attr_name, err
             )
+
+    def _update_channel_layout(self) -> None:
+        """Take over the layout of the native set this speaker leads, and its type."""
+        self._attr_channel_layout = self._native_groups.channel_layout_of(self.protocol_id)
+        self._attr_type = (
+            PlayerType.PLAYER if self._attr_channel_layout is None else PlayerType.MULTI_CHANNEL
+        )
 
     def _update_volume_from_sdk_cache(self) -> None:
         """Update the level and mute from the SDK cache, keeping a level set while muted."""

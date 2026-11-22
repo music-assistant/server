@@ -27,6 +27,7 @@
   "errors": {
     "group_not_dynamic": "Group {0} does not allow dynamically adding or removing members.",
     "cannot_add_group_to_itself": "Cannot add {0} to itself as a member.",
-    "cannot_remove_group_from_itself": "Cannot remove {0} from itself as a member."
+    "cannot_remove_group_from_itself": "Cannot remove {0} from itself as a member.",
+    "no_member_can_play": "None of the members of {0} can play right now."
   }
 }

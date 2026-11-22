@@ -39,6 +39,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import DB_TABLE_TRACKS
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.constants import MATCH_SEARCH_LIMIT
 from music_assistant.controllers.music.media.tracks import (
     DEFAULT_RATE_LIMIT_PAUSE,
     MAX_CONSECUTIVE_PROVIDER_FAILURES,
@@ -275,7 +276,7 @@ async def test_match_provider_isrc_hit_must_pass_track_comparison(
         mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
 
     assert mappings == []
-    search.assert_awaited_once_with("Test Artist - Test Track", "qobuz")
+    search.assert_awaited_once_with("Test Artist - Test Track", "qobuz", limit=MATCH_SEARCH_LIMIT)
 
 
 async def test_match_provider_rejects_an_isrc_hit_for_another_song(
@@ -292,7 +293,7 @@ async def test_match_provider_rejects_an_isrc_hit_for_another_song(
         mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
 
     assert mappings == []
-    search.assert_awaited_once_with("Test Artist - Test Track", "qobuz")
+    search.assert_awaited_once_with("Test Artist - Test Track", "qobuz", limit=MATCH_SEARCH_LIMIT)
 
 
 async def test_match_provider_skips_an_unavailable_isrc_hit(music: MusicController) -> None:

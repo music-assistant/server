@@ -117,14 +117,13 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         """Close the provider's session and, on removal, delete its stored cookies."""
         self.logger.debug("Closing BBC Sounds provider session...")
         try:
-            client = getattr(self, "client", None)
+            client: SoundsClient | None = getattr(self, "client", None)
             if client:
                 await client.close()
             # If the provider has been removed, clean up the cookie jar
             if client and is_removed:
-                jar = client.cookie_path
-                jar.unlink(missing_ok=True)
-                jar.with_name(f"{jar.name}.owner").unlink(missing_ok=True)
+                client.delete_stored_cookies()
+                self.logger.debug("Deleted any stored cookies.")
         finally:
             await super().unload(is_removed)
 

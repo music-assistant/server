@@ -77,6 +77,31 @@ async def test_play_when_already_playing_is_ignored(
     mock_mass.players.cmd_play.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("path", "cmd"),
+    [("/ctrl-int/1/play", "cmd_play"), ("/ctrl-int/1/playpause", "cmd_play_pause")],
+)
+async def test_play_while_own_stream_starts_is_ignored(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock, path: str, cmd: str
+) -> None:
+    """Play before MA's starting stream reports playing is an echo of that start."""
+    player = make_player(mock_mass, playing=False)
+    player.stream.start_pending = True
+    await replay(airplay_provider, build_dacp_request(path))
+    getattr(mock_mass.players, cmd).assert_not_called()
+
+
+async def test_play_after_a_start_that_was_stopped_dispatches_play(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """A stream stopped before it ever played does not swallow a later play press."""
+    player = make_player(mock_mass, playing=False)
+    player.stream.start_pending = True
+    player.stream.running = False
+    await replay(airplay_provider, build_dacp_request("/ctrl-int/1/play"))
+    mock_mass.players.cmd_play.assert_called_once_with(player.player.player_id)
+
+
 async def test_pause_when_playing_dispatches_pause(
     airplay_provider: AirPlayProvider, mock_mass: MagicMock
 ) -> None:
