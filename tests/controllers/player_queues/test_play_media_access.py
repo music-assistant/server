@@ -228,6 +228,39 @@ async def test_a_fully_refused_request_leaves_the_queue_with_its_user(
     assert cast("PlayerQueueData", ctrl._queue_data["q1"]).userid == OTHER_USER_ID
 
 
+@pytest.mark.parametrize(
+    ("option", "expected_userids", "expected_owner"),
+    [
+        (QueueOption.ADD, {"t1": USER_ID, "t3": OTHER_USER_ID}, USER_ID),
+        (QueueOption.NEXT, {"t1": USER_ID, "t3": OTHER_USER_ID}, USER_ID),
+        (QueueOption.REPLACE, {"t3": OTHER_USER_ID}, OTHER_USER_ID),
+    ],
+)
+@patch(GET_CURRENT_USER)
+async def test_each_item_plays_for_whom_enqueued_it(
+    mock_get_user: Mock,
+    option: QueueOption,
+    expected_userids: dict[str, str],
+    expected_owner: str,
+) -> None:
+    """Adding to someone's queue keeps it theirs; only replacing its content changes the owner."""
+    mock_get_user.return_value = User(user_id=USER_ID, username=USER_ID, role=UserRole.USER)
+    ctrl = _controller()
+    _set_sources(ctrl)
+    await ctrl.play_media("q1", _track("t1", OWN_INSTANCE, OWN_INSTANCE), QueueOption.REPLACE)
+
+    mock_get_user.return_value = User(
+        user_id=OTHER_USER_ID, username=OTHER_USER_ID, role=UserRole.USER
+    )
+    await ctrl.play_media("q1", _track("t3", BLOCKED_INSTANCE, BLOCKED_INSTANCE), option)
+
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    assert {
+        item.media_item.item_id: item.userid for item in queue_data.items if item.media_item
+    } == expected_userids
+    assert queue_data.userid == expected_owner
+
+
 @patch(GET_CURRENT_USER)
 async def test_anonymous_playback_reaches_the_household_sources_only(mock_get_user: Mock) -> None:
     """A queue without a user plays what is shared with everyone, and nothing private."""

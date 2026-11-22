@@ -3734,7 +3734,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             ):
                 stored_speed = await self.mass.music.get_playback_speed(
                     cast("Audiobook | PodcastEpisode", queue_item.media_item),
-                    userid=queue_data.userid,
+                    userid=queue_item.userid,
                 )
                 if stored_speed != 1.0:
                     queue_item.extra_attributes["playback_speed"] = stored_speed

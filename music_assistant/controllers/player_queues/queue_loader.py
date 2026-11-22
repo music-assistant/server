@@ -708,7 +708,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         unplayed = max(len(queue_data.items) - played, 0)
         headroom = max(MANAGED_POOL_MAX - unplayed, 0)
         queue_items = [
-            build_queue_item(queue_id, x) for x in pool_tracks[:headroom] if can_be_enqueued(x)
+            build_queue_item(queue_id, x, userid=queue_data.userid)
+            for x in pool_tracks[:headroom]
+            if can_be_enqueued(x)
         ]
         if not queue_items:
             return
@@ -734,16 +736,19 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         last_item = queue_data.items[-1]
         if last_item.media_type in AUTOPLAY_EXCLUDED_MEDIA_TYPES:
             return
-        # Restore the queue owner's user context so their music sources, library access and
-        # resume positions are respected during this background refill, mirroring
-        # _fill_dynamic_tracks.
+        # Restore the user context so their music sources, library access and resume positions
+        # are respected during this background refill, mirroring _fill_dynamic_tracks. The next
+        # episode/book continues for whoever the one it follows plays for, music for the owner.
+        refill_userid = (
+            last_item.userid
+            if last_item.media_type in AUTOPLAY_SERIES_MEDIA_TYPES
+            else queue_data.userid
+        )
         playback_user = (
-            await self.mass.webserver.auth.get_user(queue_data.userid)
-            if queue_data.userid
-            else None
+            await self.mass.webserver.auth.get_user(refill_userid) if refill_userid else None
         )
         set_current_user(playback_user)
-        # the refill runs as the owner, not as a user the scheduling call impersonated
+        # the refill runs as that user, not as a user the scheduling call impersonated
         set_impersonated_user(None)
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while the user context was restored
@@ -771,11 +776,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         try:
             if isinstance(media_item, PodcastEpisode):
                 next_item = await self._media_resolver.get_next_podcast_episode(
-                    media_item, userid=queue_data.userid
+                    media_item, userid=last_item.userid
                 )
             elif isinstance(media_item, Audiobook):
                 next_item = await self._media_resolver.get_next_audiobook(
-                    media_item, userid=queue_data.userid
+                    media_item, userid=last_item.userid
                 )
             else:
                 return
@@ -799,7 +804,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         await self.load(
             queue_id,
-            [build_queue_item(queue_id, next_item)],
+            [build_queue_item(queue_id, next_item, userid=last_item.userid)],
             insert_at_index=len(queue_data.items) + 1,
         )
 
@@ -857,7 +862,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             [track for track in tracks if isinstance(track, Track)], snapshot, windows
         )
         tracks = await without_disliked_tracks(self.mass, queue_data.userid, tracks)
-        queue_items = [build_queue_item(queue_id, x) for x in tracks if x.available]
+        queue_items = [
+            build_queue_item(queue_id, x, userid=queue_data.userid) for x in tracks if x.available
+        ]
         if not queue_items:
             self.logger.info("Autoplay found no new tracks to add for queue %s", queue.display_name)
             return
@@ -902,7 +909,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 )
                 continue
             queue_items = [
-                build_queue_item(queue_id, track, origin=origin_for(artist, track, pin=False))
+                build_queue_item(
+                    queue_id,
+                    track,
+                    userid=queue_data.userid,
+                    origin=origin_for(artist, track, pin=False),
+                )
                 for track in tracks
                 if can_be_enqueued(track)
             ]
@@ -1205,8 +1217,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # but only after the queue's sources and shuffle have been settled above
             raise last_item_error
 
-        # something the caller asked for made it through, so the queue plays for them now
-        queue_data.userid = playback_userid
+        # something the caller asked for made it through: replacing what the queue plays (or
+        # starting it) makes it theirs, adding to someone else's queue does not
+        if replace_sources or not queue_data.items:
+            queue_data.userid = playback_userid
 
         if queue.is_dynamic:
             if replace_sources or new_sources:
@@ -1226,7 +1240,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # only add valid/available items
         queue_items: list[QueueItem] = [
             build_queue_item(
-                queue_id, cast("PlayableMediaItemType", resolved.item), origin=resolved.origin
+                queue_id,
+                cast("PlayableMediaItemType", resolved.item),
+                userid=playback_userid,
+                origin=resolved.origin,
             )
             for resolved in media_items
             if can_be_enqueued(resolved.item)
@@ -1416,7 +1433,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if track not in held and held_songs.isdisjoint(song_keys(track))
                 ]
             queue_items = [
-                build_queue_item(queue_id, track) for track in pool_tracks if can_be_enqueued(track)
+                build_queue_item(queue_id, track, userid=queue_data.userid)
+                for track in pool_tracks
+                if can_be_enqueued(track)
             ]
             if not queue_items:
                 raise MediaNotFoundError(

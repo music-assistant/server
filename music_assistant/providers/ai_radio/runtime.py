@@ -509,7 +509,8 @@ class AIRadioRuntimeMixin:
                 )
             ]
         )
-        queue_item = build_queue_item(queue_id, clip)
+        # a sound effect is never recorded as played, so it plays for nobody
+        queue_item = build_queue_item(queue_id, clip, userid=None)
         # the section name already travels as the item's own name, so it is not duplicated here
         queue_item.extra_attributes.update(
             {

@@ -243,7 +243,8 @@ async def test_an_album_folder_play_counts_as_a_play_of_the_album(mass: MusicAss
     with patch.object(mass.music, "browse", AsyncMock(return_value=files)):
         resolved = await mass.player_queues._media_resolver._resolve_media_items(album_folder)
     items = [
-        build_queue_item("q1", cast("Track", entry.item), origin=entry.origin) for entry in resolved
+        build_queue_item("q1", cast("Track", entry.item), userid=user.user_id, origin=entry.origin)
+        for entry in resolved
     ]
     queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
     queue_data = PlayerQueueData(queue=queue, items=items, userid=user.user_id)
@@ -252,7 +253,9 @@ async def test_an_album_folder_play_counts_as_a_play_of_the_album(mass: MusicAss
     credit = tracker._claim_album_credit(queue_data, items[0])
     assert credit is not None
     assert tracker._claim_album_credit(queue_data, items[1]) is None
-    await tracker._mark_album_played(credit, cast("Track", items[0].media_item), queue_data)
+    await tracker._mark_album_played(
+        credit, cast("Track", items[0].media_item), queue_data, items[0].userid
+    )
 
     row = await mass.music.database.get_row(DB_TABLE_ALBUMS, {"item_id": album.item_id})
     assert row is not None
@@ -274,7 +277,9 @@ async def test_an_album_folder_played_with_its_parent_is_no_album_play(
     )
     with patch.object(mass.music, "browse", browse):
         resolved = await mass.player_queues._media_resolver._resolve_media_items(parent)
-    item = build_queue_item("q1", cast("Track", resolved[0].item), origin=resolved[0].origin)
+    item = build_queue_item(
+        "q1", cast("Track", resolved[0].item), userid=None, origin=resolved[0].origin
+    )
     queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
     queue_data = PlayerQueueData(queue=queue, items=[item])
 

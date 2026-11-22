@@ -289,6 +289,28 @@ def test_from_cache_reads_legacy_flat_layout() -> None:
     assert restored.userid == "user-1"
 
 
+@pytest.mark.parametrize(
+    ("cached_user", "expected_userid"),
+    [
+        pytest.param({"userid": None}, None, id="anonymous item stays anonymous"),
+        pytest.param({"userid": "user-2"}, "user-2", id="item keeps its own user"),
+        pytest.param({}, "user-1", id="item cached without a user plays for the owner"),
+    ],
+)
+def test_cache_restores_the_user_of_each_item(
+    cached_user: dict[str, str | None], expected_userid: str | None
+) -> None:
+    """Items keep their user; ones cached before items carried a user get the queue's owner."""
+    data = _data_with_dynamic_source()
+    items_data = data.items_to_cache()
+    del items_data[0]["userid"]
+    items_data[0].update(cached_user)
+
+    restored = PlayerQueueData.from_cache(data.to_cache(), items_data)
+
+    assert restored.items[0].userid == expected_userid
+
+
 def test_cache_significant_ignores_playback_progress() -> None:
     """Change detection ignores volatile playback-progress fields but catches real changes."""
     data = _data_with_dynamic_source()
