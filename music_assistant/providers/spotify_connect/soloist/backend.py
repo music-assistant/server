@@ -253,14 +253,6 @@ class SoloistBackend(SpotifyConnectBackend):
         return replace(self._capture_format)
 
     @property
-    def stream_ends_on_pause(self) -> bool:
-        """The pipe sink never signals end of stream; the provider stops the player."""
-        # the sink renders only while a client is connected: silence while the daemon
-        # holds its stream open, nothing at all once the daemon drops it. A reader
-        # therefore sees neither audio nor EOF, so MA has to end the stream itself.
-        return False
-
-    @property
     def supports_queue_control(self) -> bool:
         """The soloist session implements the queue verbs and queue/options events."""
         return True

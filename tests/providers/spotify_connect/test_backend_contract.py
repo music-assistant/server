@@ -193,6 +193,8 @@ def _make_provider(
     mass.create_task.side_effect = _create_task
     # awaited inline by the deferred play_media trigger
     mass.player_queues.play_media = AsyncMock()
+    # no live source session yet: every stream request starts a fresh selection
+    mass.players.get_audio_source_session.return_value = None
     provider = object.__new__(SpotifyConnectProvider)
     provider.mass = mass
     provider.logger = MagicMock()
@@ -219,6 +221,14 @@ def _make_provider(
     daemon.last_track_uri = last_track_uri
     provider._daemons = {_PLAYER_ID: daemon}
     return provider, daemon, mass
+
+
+def _source_session(mass: MagicMock, owner_player_id: str, playback_session_id: str) -> None:
+    """Give the given player a live source session with the given playback session id."""
+    session = MagicMock(playback_session_id=playback_session_id)
+    mass.players.get_audio_source_session.side_effect = lambda player_id: (
+        session if player_id == owner_player_id else None
+    )
 
 
 def _player_with_volume(mass: MagicMock, volume_level: int) -> MagicMock:
@@ -868,6 +878,87 @@ async def test_source_selected_resumes_active_session_via_backend() -> None:
     assert backend.calls == [("resume", None), ("set_volume", 25)]
 
 
+@pytest.mark.parametrize(
+    "session_active",
+    [True, False],
+    ids=["paused_session_not_resumed", "playback_not_taken_back"],
+)
+async def test_reopened_stream_leaves_paused_playback_alone(session_active: bool) -> None:
+    """A renderer reopening a stream it already played (Sonos) is served but starts nothing."""
+    backend = FakeBackend()
+    provider, daemon, mass = _make_provider(
+        backend,
+        session_active=session_active,
+        last_context_uri="spotify:playlist:ctx",
+    )
+    _player_with_volume(mass, 25)
+    # the same selection the provider streamed before
+    daemon.streamed_playback_session_id = "pb1"
+    _source_session(mass, "queue1", "pb1")
+
+    await provider.on_source_selected(_PLAYER_ID, "proto1", "queue1", "sess2")
+
+    assert daemon.playing is False
+    assert backend.calls == [("set_volume", 25)]
+    assert daemon.in_use_by_player == "queue1"
+    assert daemon.active_session_id == "sess2"
+
+
+async def test_reselected_source_resumes_paused_session() -> None:
+    """Selecting the source again on its player starts a fresh selection, which resumes."""
+    backend = FakeBackend()
+    provider, daemon, mass = _make_provider(backend, session_active=True)
+    _player_with_volume(mass, 25)
+    # a reselect starts a new playback session on the same player
+    daemon.streamed_playback_session_id = "pb1"
+    _source_session(mass, "queue1", "pb2")
+
+    def _mark_playing() -> None:
+        daemon.playing = True
+
+    backend.on_acquire = _mark_playing
+
+    await provider.on_source_selected(_PLAYER_ID, "proto1", "queue1", "sess2")
+
+    assert backend.calls == [("resume", None), ("set_volume", 25)]
+
+
+async def test_stream_reopened_during_pause_stop_keeps_spotify_paused() -> None:
+    """A Sonos reopening its stream while it is stopped after a pause keeps the pause."""
+    backend = FakeBackend()
+    provider, daemon, mass = _make_provider(
+        backend,
+        playing=True,
+        session_active=True,
+        active_player_id="queue1",
+        in_use_by_queue="queue1",
+        active_session_id="sess1",
+    )
+    _player_with_volume(mass, 25)
+    daemon.streamed_playback_session_id = "pb1"
+    _source_session(mass, "queue1", "pb1")
+    stopped: list[str] = []
+
+    async def _cmd_stop(player_id: str) -> None:
+        stopped.append(player_id)
+        # the speaker drops its stream on the stop and requests it again at once
+        await provider.on_source_unselected(_PLAYER_ID, "queue1", "sess1")
+        await provider.on_source_selected(_PLAYER_ID, "proto1", "queue1", "sess2")
+        await provider.on_source_unselected(_PLAYER_ID, "queue1", "sess2")
+
+    mass.players.cmd_stop = _cmd_stop
+
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PAUSED))
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    assert stopped == ["queue1"]
+    assert daemon.playing is False
+    assert ("resume", None) not in backend.calls
+    assert ("deactivate", None) not in backend.calls
+    assert daemon.pending_pause_stop_task is None
+
+
 async def test_get_stream_details_built_from_backend_stream_source() -> None:
     """StreamDetails mirror the backend's stream source, formats and live metadata."""
     backend = FakeBackend()
@@ -1011,15 +1102,9 @@ def test_translate_event_volume_without_value_is_other() -> None:
     assert event.volume is None
 
 
-async def test_paused_stops_player_when_stream_does_not_end() -> None:
-    """A pipe-fed backend (no EOF on pause) gets its player actively stopped."""
-
-    class _PipeFedBackend(FakeBackend):
-        @property
-        def stream_ends_on_pause(self) -> bool:
-            return False
-
-    backend = _PipeFedBackend()
+async def test_paused_stops_player() -> None:
+    """A pause stops the consuming player actively, also on a backend whose stream ends."""
+    backend = FakeBackend()
     provider, daemon, mass = _make_provider(backend, playing=True, active_player_id="player-1")
     stopped: list[str] = []
 
@@ -1042,13 +1127,7 @@ async def test_paused_stops_player_when_stream_does_not_end() -> None:
 
 async def test_duplicate_paused_events_stop_player_once() -> None:
     """The backend reports a pause via multiple events; only one stop is issued."""
-
-    class _PipeFedBackend(FakeBackend):
-        @property
-        def stream_ends_on_pause(self) -> bool:
-            return False
-
-    backend = _PipeFedBackend()
+    backend = FakeBackend()
     provider, daemon, mass = _make_provider(backend, playing=True, active_player_id="player-1")
     stopped: list[str] = []
 
@@ -1066,13 +1145,7 @@ async def test_duplicate_paused_events_stop_player_once() -> None:
 
 async def test_playing_cancels_pending_pause_stop() -> None:
     """A quick resume cancels the in-flight pause-stop so it can't kill the new stream."""
-
-    class _PipeFedBackend(FakeBackend):
-        @property
-        def stream_ends_on_pause(self) -> bool:
-            return False
-
-    backend = _PipeFedBackend()
+    backend = FakeBackend()
     provider, daemon, mass = _make_provider(
         backend, playing=True, active_player_id="player-1", in_use_by_queue="queue1"
     )
@@ -1103,13 +1176,7 @@ async def test_playing_cancels_pending_pause_stop() -> None:
 
 async def test_paused_replaces_pending_pause_stop() -> None:
     """A new pause-stop supersedes a still-pending one instead of piling up."""
-
-    class _PipeFedBackend(FakeBackend):
-        @property
-        def stream_ends_on_pause(self) -> bool:
-            return False
-
-    backend = _PipeFedBackend()
+    backend = FakeBackend()
     provider, daemon, mass = _make_provider(backend, playing=True, active_player_id="player-1")
     mass.players.cmd_stop = AsyncMock()
     stale: Any = MagicMock()

@@ -60,8 +60,9 @@ single pacing authority, while stdout backpressure keeps the daemon only a fract
 second ahead so transport commands land quickly.
 
 **Pause → clean EOF**: the daemon keeps the pipe open while paused (it just stops
-writing), so the reader detects the gap and ends the stream — the player leaves the
-playing state and the next `playing` event re-streams (`stream_ends_on_pause` is True).
+writing), so the reader detects the gap and ends the stream. The provider stops the
+player as well (a renderer may reopen an ended stream), and the next `playing` event
+re-streams.
 
 `audio_format` carries the source codec (Ogg Vorbis, for display) while
 `decoded_audio_format` is the s16le PCM actually delivered; MA resamples per player.
