@@ -2236,7 +2236,7 @@ async def test_solo_resume_retries_with_backoff_and_cancels_on_stop() -> None:
         assert resumes == ["q1", "q1"]
         await player.stop()
         assert player._resume_task is None
-        assert player._last_solo_resume_at is None
+        assert vars(player)["_last_solo_resume_at"] is None
         with contextlib.suppress(asyncio.CancelledError):
             await resume_task
         assert resume_task.cancelled()
@@ -2258,7 +2258,7 @@ async def test_solo_resume_aborts_when_queue_stopped_or_powered_off() -> None:
         assert player._resume_task is not None
         await asyncio.wait_for(player._resume_task, timeout=1)
     mass.player_queues.resume.assert_not_awaited()
-    assert player._resume_task is None
+    assert vars(player)["_resume_task"] is None
 
     _queue, _queue_data = _configure_solo_resume_mocks(player)
     assert player.player is not None
@@ -2298,7 +2298,7 @@ async def test_solo_resume_succeeds_on_retry_and_respects_repeat_guard() -> None
         assert player._resume_task is not None
         await player._resume_task
     assert attempts == 2
-    assert player._resume_task is None
+    assert vars(player)["_resume_task"] is None
     assert player._last_solo_resume_at is not None
 
     # A second immediate drop within 30s is skipped by the rapid-repeat guard,
@@ -2307,7 +2307,7 @@ async def test_solo_resume_succeeds_on_retry_and_respects_repeat_guard() -> None
     now = player._last_solo_resume_at
     with patch("music_assistant.providers.airplay.player.time.monotonic", return_value=now + 5.0):
         player.schedule_solo_resume("q1")
-    assert player._resume_task is None
+    assert vars(player)["_resume_task"] is None
     with (
         patch("music_assistant.providers.airplay.player.time.monotonic", return_value=now + 31.0),
         patch(_NO_DELAYS, (60,)),
@@ -2316,7 +2316,7 @@ async def test_solo_resume_succeeds_on_retry_and_respects_repeat_guard() -> None
         task = player._resume_task
         assert task is not None
         player.cancel_recovery()
-        assert player._resume_task is None
+        assert vars(player)["_resume_task"] is None
         with contextlib.suppress(asyncio.CancelledError):
             await task
         assert task.cancelled()
@@ -2338,7 +2338,7 @@ async def test_solo_resume_exhausts_attempts_and_logs_warning() -> None:
         player.schedule_solo_resume("q1")
         assert player._resume_task is not None
         await player._resume_task
-    assert player._resume_task is None
+    assert vars(player)["_resume_task"] is None
     assert player._last_solo_resume_at is None
     assert mass.player_queues.resume.await_count == 2
     warning_calls = cast("MagicMock", player.logger).warning.call_args_list

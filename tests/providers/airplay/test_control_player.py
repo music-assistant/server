@@ -1759,13 +1759,17 @@ async def test_control_player_stop_while_idle_cancels_solo_resume_and_clears_gua
     player._resume_task = task
 
     with (
-        patch.object(player, "_device_for_feature", return_value=MagicMock(remote_control=MagicMock(home=AsyncMock()))),
+        patch.object(
+            player,
+            "_device_for_feature",
+            return_value=MagicMock(remote_control=MagicMock(home=AsyncMock())),
+        ),
         patch.object(player, "_run_control_command", new_callable=AsyncMock),
     ):
         await player.stop()
 
-    assert player._resume_task is None
-    assert player._last_solo_resume_at is None
+    assert vars(player)["_resume_task"] is None
+    assert vars(player)["_last_solo_resume_at"] is None
     with pytest.raises(asyncio.CancelledError):
         await task
     assert task.cancelled()

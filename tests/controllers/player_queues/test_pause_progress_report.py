@@ -151,7 +151,7 @@ async def test_pause_keeps_the_last_played_position(
 async def test_pause_while_idle_marks_active_queue_halted() -> None:
     """A pause request while the active queue is IDLE still records halted_by_command."""
     ctrl = _controller(_book())
-    ctrl.mass.players._handle_cmd_pause = AsyncMock()
+    ctrl.mass.players._handle_cmd_pause = AsyncMock()  # type: ignore[method-assign]
     await ctrl.play_index(QUEUE_ID, 0)
     _player_reports(ctrl, PlaybackState.IDLE, 0)
     assert ctrl._queue_data[QUEUE_ID].queue.state == PlaybackState.IDLE

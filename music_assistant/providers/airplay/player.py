@@ -1394,6 +1394,60 @@ class AirPlayPlayer(PlayerProtocol):
         self.cancel_group_rejoin()
         self.cancel_solo_resume()
 
+    def get_resumable_solo_queue_id(self, *, expected_state: PlaybackState) -> str | None:
+        """Return the queue id if this solo AirPlay player is eligible for auto-resume."""
+        if (
+            self.group_members
+            or self.synced_to
+            or self.playback_state != expected_state
+            or (expected_state == PlaybackState.IDLE and self.stream and self.stream.running)
+        ):
+            return None
+        parent = self.player
+        if (
+            not self.available
+            or parent is None
+            or not parent.enabled
+            or not parent.available
+            or parent.powered is False
+            or parent.offline_by_power_control
+        ):
+            return None
+        active_output = parent.active_output_protocol
+        output_is_self = (
+            active_output == self.protocol_id
+            or (active_output == "native" and parent.own_protocol is self)
+            or (active_output is None and parent.own_protocol in (None, self))
+        )
+        if (
+            parent.synced_to
+            or parent.active_group
+            or parent.group_members
+            or parent.playback_state != expected_state
+            or not output_is_self
+        ):
+            return None
+        queue = self.mass.player_queues.get(parent.player_id)
+        if queue is None:
+            return None
+        queue_state_ok = (
+            queue.state == PlaybackState.PLAYING
+            if expected_state == PlaybackState.PLAYING
+            else queue.state != PlaybackState.PAUSED
+        )
+        if (
+            parent.active_source not in (queue.queue_id, None)
+            or not queue.active
+            or queue.ended
+            or queue.current_item is None
+            or not queue_state_ok
+        ):
+            return None
+        queue_data = self.mass.player_queues.queue_data_or_none(queue.queue_id)
+        if queue_data is None or queue_data.halted_by_command or queue_data.session_id is None:
+            return None
+        return queue.queue_id
+
     def on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""
         # the speakers of a set play the media of their set
@@ -1799,10 +1853,7 @@ class AirPlayPlayer(PlayerProtocol):
         try:
             for attempt, delay in enumerate(AIRPLAY_REJOIN_ATTEMPT_DELAYS, start=1):
                 await asyncio.sleep(delay)
-                if (
-                    self.get_resumable_solo_queue_id(expected_state=PlaybackState.IDLE)
-                    != queue_id
-                ):
+                if self.get_resumable_solo_queue_id(expected_state=PlaybackState.IDLE) != queue_id:
                     return
                 if await self._attempt_solo_resume(queue_id, attempt, max_attempts):
                     return
@@ -1847,60 +1898,6 @@ class AirPlayPlayer(PlayerProtocol):
             max_attempts,
         )
         return False
-
-    def get_resumable_solo_queue_id(self, *, expected_state: PlaybackState) -> str | None:
-        """Return the queue id if this solo AirPlay player is eligible for auto-resume."""
-        if (
-            self.group_members
-            or self.synced_to
-            or self.playback_state != expected_state
-            or (expected_state == PlaybackState.IDLE and self.stream and self.stream.running)
-        ):
-            return None
-        parent = self.player
-        if (
-            not self.available
-            or parent is None
-            or not parent.enabled
-            or not parent.available
-            or parent.powered is False
-            or parent.offline_by_power_control
-        ):
-            return None
-        active_output = parent.active_output_protocol
-        output_is_self = (
-            active_output == self.protocol_id
-            or (active_output == "native" and parent.own_protocol is self)
-            or (active_output is None and parent.own_protocol in (None, self))
-        )
-        if (
-            parent.synced_to
-            or parent.active_group
-            or parent.group_members
-            or parent.playback_state != expected_state
-            or not output_is_self
-        ):
-            return None
-        queue = self.mass.player_queues.get(parent.player_id)
-        if queue is None:
-            return None
-        queue_state_ok = (
-            queue.state == PlaybackState.PLAYING
-            if expected_state == PlaybackState.PLAYING
-            else queue.state != PlaybackState.PAUSED
-        )
-        if (
-            parent.active_source not in (queue.queue_id, None)
-            or not queue.active
-            or queue.ended
-            or queue.current_item is None
-            or not queue_state_ok
-        ):
-            return None
-        queue_data = self.mass.player_queues.queue_data_or_none(queue.queue_id)
-        if queue_data is None or queue_data.halted_by_command or queue_data.session_id is None:
-            return None
-        return queue.queue_id
 
     async def _group_rejoin_attempts(self, candidate_ids: list[str]) -> None:
         """Re-join this player to its group's live session after a bounded backoff."""
