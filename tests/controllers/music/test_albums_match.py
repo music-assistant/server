@@ -24,6 +24,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.controllers.music.constants import MATCH_SEARCH_LIMIT
 from music_assistant.controllers.music.media.albums import AlbumsController
 from music_assistant.helpers.compare import AlbumMatchEvidence
 from music_assistant.providers.musicbrainz.models import (
@@ -325,7 +326,9 @@ async def test_search_string_combines_artist_and_album_name() -> None:
     with _harness(search_results=[], provider_items={}) as harness:
         await harness.match(_library_album())
 
-    harness.search.assert_awaited_once_with("Sigur Rós - ( )", "spotify_1")
+    harness.search.assert_awaited_once_with(
+        "Sigur Rós - ( )", "spotify_1", limit=MATCH_SEARCH_LIMIT
+    )
 
 
 async def test_album_without_artists_searches_on_name_only() -> None:
@@ -336,7 +339,7 @@ async def test_album_without_artists_searches_on_name_only() -> None:
         matches = await harness.match(base)
 
     assert matches == []
-    harness.search.assert_awaited_once_with("( )", "spotify_1")
+    harness.search.assert_awaited_once_with("( )", "spotify_1", limit=MATCH_SEARCH_LIMIT)
 
 
 async def test_insufficient_search_result_proceeds_to_one_full_fetch() -> None:
@@ -441,7 +444,9 @@ async def test_barcode_hit_without_match_evidence_falls_back_to_search() -> None
         matches = await harness.match(base)
 
     assert matches == []
-    harness.search.assert_awaited_once_with("Sigur Rós - ( )", "spotify_1")
+    harness.search.assert_awaited_once_with(
+        "Sigur Rós - ( )", "spotify_1", limit=MATCH_SEARCH_LIMIT
+    )
 
 
 async def test_unavailable_barcode_hit_falls_back_to_search() -> None:

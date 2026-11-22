@@ -9,6 +9,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import RetriesExhausted
 
 from music_assistant.providers.spotify import provider as provider_module
+from music_assistant.providers.spotify.constants import GLOBAL_SEARCH_LIMIT
 from music_assistant.providers.spotify.provider import SpotifyProvider
 from tests.common import use_real_create_task
 
@@ -83,6 +84,19 @@ def _respond(_endpoint: str, **kwargs: Any) -> dict[str, Any]:
         result["tracks"] = {"items": [_make_track_obj("t1", "Track")]}
     if "playlist" in types:
         result["playlists"] = {"items": [_make_playlist_obj("p1", "Playlist")]}
+    return result
+
+
+def _respond_full_pages(_endpoint: str, **kwargs: Any) -> dict[str, Any]:
+    """Answer a search request with a full page per requested type, from a deep catalogue."""
+    offset = kwargs["offset"]
+    ids = range(offset, offset + kwargs["limit"])
+    result: dict[str, Any] = {}
+    types = kwargs["type"].split(",")
+    if "track" in types:
+        result["tracks"] = {"items": [_make_track_obj(f"t{i}", "Track") for i in ids]}
+    if "playlist" in types:
+        result["playlists"] = {"items": [_make_playlist_obj(f"p{i}", "Playlist") for i in ids]}
     return result
 
 
@@ -223,12 +237,12 @@ async def test_search_playlists_fallback_keeps_earlier_global_pages(
 async def test_search_playlists_keep_throttled_global_pages_past_the_deadline(
     provider: SpotifyProvider, get_data: AsyncMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Global pages fetched before the deadline are kept and topped up by the dev session."""
+    """Global pages fetched before the deadline are kept, the dev session continues after them."""
     provider.dev_session_active = True
     monkeypatch.setattr(provider_module, "GLOBAL_SEARCH_TIMEOUT", 0.05)
 
     async def side_effect(_endpoint: str, **kwargs: Any) -> dict[str, Any]:
-        if (result := _respond_global_pages(20, **kwargs)) is None:
+        if (result := _respond_global_pages(10, **kwargs)) is None:
             # the global session serves one request per 2 seconds
             await asyncio.sleep(2)
             return {"playlists": {"items": []}}
@@ -236,11 +250,41 @@ async def test_search_playlists_keep_throttled_global_pages_past_the_deadline(
 
     get_data.side_effect = side_effect
 
-    result = await provider.search("chill", [MediaType.PLAYLIST], limit=25)
+    result = await provider.search("chill", [MediaType.PLAYLIST], limit=20)
 
-    assert [p.item_id for p in result.playlists] == [*(f"g{i}" for i in range(20)), "p1"]
+    assert [p.item_id for p in result.playlists] == [*(f"g{i}" for i in range(10)), "p1"]
     dev_calls = [c.kwargs for c in get_data.await_args_list if not c.kwargs["use_global_session"]]
-    assert [(c["offset"], c["limit"]) for c in dev_calls] == [(0, 5)]
+    assert [(c["offset"], c["limit"]) for c in dev_calls] == [(10, 10)]
+
+
+@pytest.mark.asyncio
+async def test_search_on_global_session_stops_at_its_depth(
+    provider: SpotifyProvider, get_data: AsyncMock
+) -> None:
+    """Without a custom client ID a deep search stops at the depth of the global session."""
+    get_data.side_effect = _respond_full_pages
+
+    result = await provider.search("chill", [MediaType.TRACK], limit=50)
+
+    offsets = [call.kwargs["offset"] for call in get_data.await_args_list]
+    assert offsets == list(range(0, GLOBAL_SEARCH_LIMIT, 10))
+    assert len(result.tracks) == GLOBAL_SEARCH_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_search_with_dev_session_only_limits_global_playlists(
+    provider: SpotifyProvider, get_data: AsyncMock
+) -> None:
+    """With a custom client ID only the playlists, searched on the global session, stop early."""
+    provider.dev_session_active = True
+    get_data.side_effect = _respond_full_pages
+
+    result = await provider.search("chill", [MediaType.TRACK, MediaType.PLAYLIST], limit=50)
+
+    assert len(result.tracks) == 50
+    assert len(result.playlists) == GLOBAL_SEARCH_LIMIT
+    global_calls = [c for c in get_data.await_args_list if c.kwargs["use_global_session"]]
+    assert len(global_calls) == GLOBAL_SEARCH_LIMIT // 10
 
 
 @pytest.mark.asyncio
