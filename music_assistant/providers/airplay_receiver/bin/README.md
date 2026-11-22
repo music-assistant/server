@@ -1,7 +1,8 @@
 # shairport-sync
 
-The AirPlay Receiver runs [shairport-sync](https://github.com/mikebrady/shairport-sync)
-5.6.3 or newer, built with metadata support, and finds it on the system `PATH`.
+The AirPlay Receiver runs a classic AirPlay build (not AirPlay 2) of
+[shairport-sync](https://github.com/mikebrady/shairport-sync) 5.6.3 or newer, built with
+metadata support, and finds it on the system `PATH`.
 `shairport-sync.conf` in this directory is the configuration template for each receiver.
 
 ## Docker
@@ -12,8 +13,9 @@ source against the image's own FFmpeg. The version and commit are pinned there.
 ## Local development
 
 - **macOS:** `brew install shairport-sync`
-- **Linux:** install your distribution's package if it is 5.6.3 or newer. Otherwise build
-  it from source with the `./configure` flags of the `shairport-builder` stage in
-  `Dockerfile.base`, then `make install`.
+- **Linux:** install your distribution's package if it is 5.6.3 or newer and not built for
+  AirPlay 2. Otherwise build it from source with the `./configure` flags of the
+  `shairport-builder` stage in `Dockerfile.base`, then `make install`.
 
-`shairport-sync --version` must report 5.6.3 or newer and list `metadata`.
+`shairport-sync --version` must report 5.6.3 or newer, list `metadata` and not list
+`AirPlay2`.

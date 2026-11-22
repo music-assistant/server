@@ -39,6 +39,11 @@ async def test_a_recent_build_with_metadata_support_is_used(version: str) -> Non
     [
         pytest.param("4.3.7-OpenSSL-tinysvcmdns-stdout-pipe-metadata-sysconfdir:/etc", id="old"),
         pytest.param("5.6.3-FFmpeg-OpenSSL-stdout-pipe-sysconfdir:/etc", id="no-metadata"),
+        # an AirPlay 2 build pipes 48 kHz 32-bit audio
+        pytest.param(
+            "5.6.3-AirPlay2-smi11-OpenSSL-Avahi-ALSA-stdout-pipe-soxr-metadata-sysconfdir:/etc",
+            id="airplay2",
+        ),
         # a build from a git checkout without tags reports its commit instead of a version
         pytest.param("7ce90d8-FFmpeg-OpenSSL-stdout-pipe-metadata-sysconfdir:/etc", id="commit"),
     ],

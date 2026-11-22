@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import ifaddr
 import pytest
 from music_assistant_models.enums import ContentType, EventType, MediaType, PlayerType
 from music_assistant_models.errors import AudioError, PlayerCommandFailed, PlayerUnavailableError
@@ -847,6 +849,8 @@ async def test_receiver_config_hands_the_mdns_service_over(tmp_path: Path) -> No
 
 # --- mDNS publishing -------------------------------------------------------------
 
+_PROVIDER = "music_assistant.providers.airplay_receiver.provider"
+
 _SERVICE = MdnsService(
     service_type="_raop._tcp",
     name="0A1B2C3D4E5F@Kitchen | Music Assistant",
@@ -854,38 +858,55 @@ _SERVICE = MdnsService(
     txt={"am": "ShairportSync", "sf": "0x4"},
 )
 
+# a host with a LAN interface, a second LAN interface, a Docker bridge and a VPN tunnel
+_HOST_ADAPTERS = [
+    ifaddr.Adapter("lo", "lo", [ifaddr.IP("127.0.0.1", 8, "lo")]),
+    ifaddr.Adapter("docker0", "docker0", [ifaddr.IP("172.17.0.1", 16, "docker0")]),
+    ifaddr.Adapter(
+        "eth0",
+        "eth0",
+        [ifaddr.IP("192.168.1.10", 24, "eth0"), ifaddr.IP(("2001:db8::10", 0, 2), 64, "eth0")],
+    ),
+    ifaddr.Adapter("eth1", "eth1", [ifaddr.IP("192.168.2.10", 24, "eth1")]),
+    ifaddr.Adapter("wg0", "wg0", [ifaddr.IP("10.8.0.2", 24, "wg0")]),
+]
 
-def _mdns_provider() -> tuple[AirPlayReceiverProvider, MagicMock, MagicMock]:
+
+@pytest.fixture
+def mdns_receiver() -> Iterator[tuple[AirPlayReceiverProvider, MagicMock, MagicMock]]:
     """
-    Build a provider whose receiver's shairport-sync runs, with a mocked zeroconf.
+    Yield a provider whose receiver's shairport-sync runs, with a mocked zeroconf.
 
-    Returns the provider, the running shairport-sync process and the zeroconf mock.
+    Yields the provider, the running shairport-sync process and the zeroconf mock, on a host
+    with the interfaces of _HOST_ADAPTERS.
     """
     prov, mocks = _session_provider("p1", {"p1": "Kitchen"})
     mocks.mass.server_id = "0123456789abcdef0123456789abcdef"
     mocks.mass.streams.get_source_ip = AsyncMock(return_value=None)
     mocks.mass.streams.publish_ip = "192.168.1.10"
     aiozc = mocks.mass.discovery.aiozc
-    aiozc.async_register_service = AsyncMock()
-    aiozc.async_update_service = AsyncMock()
-    aiozc.async_unregister_service = AsyncMock()
+    for method in ("async_register_service", "async_update_service", "async_unregister_service"):
+        # zeroconf hands back the broadcast of the announcements (or goodbyes) to await
+        setattr(aiozc, method, AsyncMock(side_effect=lambda *_args, **_kwargs: asyncio.sleep(0)))
     proc = MagicMock(closed=False)
     prov._daemons["p1"].shairport_proc = proc
-    return prov, proc, aiozc
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=_HOST_ADAPTERS):
+        yield prov, proc, aiozc
 
 
-async def test_the_handed_over_mdns_service_is_published_on_the_address_ma_is_reached_on() -> None:
-    """The service shairport-sync hands over is announced on the stream server's address."""
-    prov, _proc, aiozc = _mdns_provider()
+async def test_the_handed_over_mdns_service_is_published(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
+    """The service shairport-sync hands over is announced with its records."""
+    prov, _proc, aiozc = mdns_receiver
     daemon = prov._daemons["p1"]
 
     prov._on_metadata_update(daemon, {"mdns_service": _SERVICE})
 
     async with asyncio.timeout(2):
-        while daemon.mdns_info is None:
+        while not aiozc.async_register_service.await_count:
             await asyncio.sleep(0.01)
     info = aiozc.async_register_service.await_args.args[0]
-    assert info is daemon.mdns_info
     assert info.name == "0A1B2C3D4E5F@Kitchen | Music Assistant._raop._tcp.local."
     assert (info.port, info.parsed_addresses()) == (7000, ["192.168.1.10"])
     assert info.decoded_properties == {"am": "ShairportSync", "sf": "0x4"}
@@ -894,9 +915,42 @@ async def test_the_handed_over_mdns_service_is_published_on_the_address_ma_is_re
     assert aiozc.async_register_service.await_args.kwargs == {"cooperating_responders": True}
 
 
-async def test_a_new_hand_over_refreshes_the_published_service() -> None:
+@pytest.mark.parametrize(
+    ("bind_ip", "publish_ip", "expected"),
+    [
+        pytest.param(None, "192.168.1.10", ["192.168.1.10"], id="publish-ip-when-binding-all"),
+        pytest.param(None, "2001:DB8::10", ["2001:db8::10"], id="ipv6-publish-ip"),
+        pytest.param("192.168.2.10", "192.168.1.10", ["192.168.2.10"], id="explicit-bind-ip"),
+        # e.g. a port-forwarded address configured as publish IP
+        pytest.param(
+            None, "203.0.113.5", ["192.168.1.10", "192.168.2.10"], id="publish-ip-not-on-this-host"
+        ),
+    ],
+)
+async def test_the_service_is_announced_on_the_address_music_assistant_is_reached_on(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+    bind_ip: str | None,
+    publish_ip: str,
+    expected: list[str],
+) -> None:
+    """Senders learn the bind or publish IP, or this host's LAN addresses when it is not local."""
+    prov, proc, aiozc = mdns_receiver
+    streams = cast("MagicMock", prov.mass).streams
+    streams.get_source_ip = AsyncMock(return_value=bind_ip)
+    streams.publish_ip = publish_ip
+    lan_addresses = AsyncMock(return_value=("192.168.1.10", "192.168.2.10"))
+
+    with patch(f"{_PROVIDER}.get_publish_ip_candidates", lan_addresses):
+        await prov._publish_mdns_service(prov._daemons["p1"], proc, _SERVICE)
+
+    assert aiozc.async_register_service.await_args.args[0].parsed_addresses() == expected
+
+
+async def test_a_new_hand_over_refreshes_the_published_service(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
     """shairport-sync hands its service over again when its TXT records change."""
-    prov, proc, aiozc = _mdns_provider()
+    prov, proc, aiozc = mdns_receiver
     daemon = prov._daemons["p1"]
     await prov._publish_mdns_service(daemon, proc, _SERVICE)
 
@@ -908,9 +962,11 @@ async def test_a_new_hand_over_refreshes_the_published_service() -> None:
 
 
 @pytest.mark.parametrize("ended", ["exited", "replaced"])
-async def test_a_hand_over_from_a_process_that_is_gone_is_not_published(ended: str) -> None:
+async def test_a_hand_over_from_a_process_that_is_gone_is_not_published(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock], ended: str
+) -> None:
     """A hand-over handled after its process exited, or was restarted, announces nothing."""
-    prov, proc, aiozc = _mdns_provider()
+    prov, proc, aiozc = mdns_receiver
     daemon = prov._daemons["p1"]
     if ended == "exited":
         proc.closed = True
@@ -923,9 +979,24 @@ async def test_a_hand_over_from_a_process_that_is_gone_is_not_published(ended: s
     assert daemon.mdns_info is None
 
 
-async def test_a_long_receiver_name_is_cut_to_a_single_dns_label() -> None:
+async def test_dots_in_the_receiver_name_stay_within_its_dns_label(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
+    """A dot would split the instance name in two labels: a look-alike takes its place."""
+    prov, proc, aiozc = mdns_receiver
+    service = replace(_SERVICE, name="0A1B2C3D4E5F@Living Rm. Speaker 2.0")
+
+    await prov._publish_mdns_service(prov._daemons["p1"], proc, service)
+
+    name = aiozc.async_register_service.await_args.args[0].name
+    assert name == "0A1B2C3D4E5F@Living Rm\u2024 Speaker 2\u20240._raop._tcp.local."
+
+
+async def test_a_long_receiver_name_is_cut_to_a_single_dns_label(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
     """A name over the 63-byte DNS label limit is shortened instead of not announced."""
-    prov, proc, aiozc = _mdns_provider()
+    prov, proc, aiozc = mdns_receiver
     long_name = "0A1B2C3D4E5F@Woonkamer Sonos Arc Ultra (links) | Music Assistant"
     service = replace(_SERVICE, name=long_name)
 
@@ -938,9 +1009,11 @@ async def test_a_long_receiver_name_is_cut_to_a_single_dns_label() -> None:
     assert service.name.startswith(instance)
 
 
-async def test_a_failed_announcement_leaves_the_receiver_running() -> None:
+async def test_a_failed_announcement_leaves_the_receiver_running(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
     """A service that cannot be announced is logged, not raised."""
-    prov, proc, aiozc = _mdns_provider()
+    prov, proc, aiozc = mdns_receiver
     aiozc.async_register_service.side_effect = NonUniqueNameException
     daemon = prov._daemons["p1"]
 
@@ -950,9 +1023,11 @@ async def test_a_failed_announcement_leaves_the_receiver_running() -> None:
     cast("MagicMock", prov.logger).warning.assert_called_once()
 
 
-async def test_withdrawing_the_service_says_goodbye_once() -> None:
+async def test_withdrawing_the_service_says_goodbye_once(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
     """The published service is withdrawn once, however often the receiver stops."""
-    prov, proc, aiozc = _mdns_provider()
+    prov, proc, aiozc = mdns_receiver
     daemon = prov._daemons["p1"]
     await prov._publish_mdns_service(daemon, proc, _SERVICE)
     info = daemon.mdns_info
@@ -961,6 +1036,29 @@ async def test_withdrawing_the_service_says_goodbye_once() -> None:
     await prov._unpublish_mdns_service(daemon)
 
     aiozc.async_unregister_service.assert_awaited_once_with(info)
+    assert daemon.mdns_info is None
+
+
+async def test_the_goodbye_follows_the_announcements_in_flight(
+    mdns_receiver: tuple[AirPlayReceiverProvider, MagicMock, MagicMock],
+) -> None:
+    """A receiver stopped while it is announced says goodbye once the announcements are out."""
+    prov, proc, aiozc = mdns_receiver
+    daemon = prov._daemons["p1"]
+    announced = asyncio.Event()
+    aiozc.async_register_service.side_effect = lambda *_args, **_kwargs: announced.wait()
+    publishing = asyncio.ensure_future(prov._publish_mdns_service(daemon, proc, _SERVICE))
+    async with asyncio.timeout(2):
+        while not aiozc.async_register_service.await_count:
+            await asyncio.sleep(0.01)
+
+    withdrawing = asyncio.ensure_future(prov._unpublish_mdns_service(daemon))
+    await asyncio.sleep(0.05)
+    aiozc.async_unregister_service.assert_not_awaited()
+
+    announced.set()
+    await asyncio.gather(publishing, withdrawing)
+    aiozc.async_unregister_service.assert_awaited_once()
     assert daemon.mdns_info is None
 
 

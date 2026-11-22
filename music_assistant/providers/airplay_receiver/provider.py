@@ -52,7 +52,11 @@ from music_assistant.helpers.player import (
     get_available_player,
 )
 from music_assistant.helpers.process import AsyncProcess, check_output
-from music_assistant.helpers.util import get_ip_pton
+from music_assistant.helpers.util import (
+    get_ip_pton,
+    get_publish_ip_candidates,
+    interface_name_for_ip,
+)
 from music_assistant.models.media_capabilities import SourceControlValue
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.airplay_receiver.helpers import get_shairport_sync_binary
@@ -836,11 +840,17 @@ class AirPlayReceiverProvider(PluginProvider):
             if proc is None or proc is not daemon.shairport_proc or proc.closed:
                 return
             service_type = f"{service.service_type}.local."
-            # an mDNS instance name is a single DNS label of at most 63 bytes
-            name = service.name.encode()[:63].decode("utf-8", "ignore")
+            # the instance name is a single DNS label of at most 63 bytes, and zeroconf
+            # splits names at every dot: a one dot leader looks the same as a dot
+            name = service.name.replace(".", "\u2024").encode()[:63].decode("utf-8", "ignore")
             # senders only learn the address Music Assistant is reached on, not those of
-            # unrelated interfaces (e.g. Docker or VPN)
+            # unrelated interfaces (e.g. Docker or VPN), unless no interface of this host
+            # holds that address (e.g. a port-forwarded publish IP)
             ip = await self.mass.streams.get_source_ip() or self.mass.streams.publish_ip
+            if interface_name_for_ip(ip):
+                ips: tuple[str, ...] = (ip,)
+            else:
+                ips = await get_publish_ip_candidates(include_ipv6=True)
             aiozc = self.mass.discovery.aiozc
             try:
                 info = AsyncServiceInfo(
@@ -848,7 +858,7 @@ class AirPlayReceiverProvider(PluginProvider):
                     f"{name}.{service_type}",
                     port=service.port,
                     properties=service.txt,
-                    addresses=[await get_ip_pton(ip)],
+                    addresses=[await get_ip_pton(address) for address in ips],
                     # a host name of our own: other mDNS responders on this host also
                     # answer for its host name, with addresses senders may not reach
                     server=f"ma-airplay-receiver-{self.mass.server_id[:8]}.local.",
@@ -856,17 +866,21 @@ class AirPlayReceiverProvider(PluginProvider):
                 if daemon.mdns_info is None:
                     # no probing: the name derives from this host's MAC address, and a
                     # restart would otherwise trip over the previous process's goodbye
-                    await aiozc.async_register_service(info, cooperating_responders=True)
+                    announcing = await aiozc.async_register_service(
+                        info, cooperating_responders=True
+                    )
                 else:
-                    await aiozc.async_update_service(info)
+                    announcing = await aiozc.async_update_service(info)
+                daemon.mdns_info = info
+                # hold the lock until the announcements are out: one sent after a later
+                # goodbye would bring the withdrawn service back in the senders' caches
+                await announcing
             except Exception as err:  # noqa: BLE001 - a failed announcement must not stop the receiver
                 self.logger.warning(
                     "Unable to announce AirPlay receiver '%s' on the network: %s",
                     daemon.airplay_name,
                     err,
                 )
-                return
-            daemon.mdns_info = info
 
     async def _unpublish_mdns_service(self, daemon: _ReceiverDaemon) -> None:
         """Withdraw the mDNS service published for a receiver, if any."""
@@ -875,7 +889,9 @@ class AirPlayReceiverProvider(PluginProvider):
                 return
             info, daemon.mdns_info = daemon.mdns_info, None
             try:
-                await self.mass.discovery.aiozc.async_unregister_service(info)
+                # wait for the goodbyes, so a receiver started right after (e.g. on a reload)
+                # announces its service after them
+                await (await self.mass.discovery.aiozc.async_unregister_service(info))
             except Exception as err:  # noqa: BLE001 - e.g. zeroconf already closed at shutdown
                 self.logger.debug("Unable to withdraw mDNS service %s: %s", info.name, err)
 

@@ -15,8 +15,8 @@ async def get_shairport_sync_binary() -> str:
     """
     Return the path of the installed shairport-sync binary.
 
-    :raises RuntimeError: When shairport-sync is not installed, too old, or built without
-        metadata support.
+    :raises RuntimeError: When shairport-sync is not installed, too old, built for AirPlay 2,
+        or built without metadata support.
     """
     min_version = ".".join(str(part) for part in MIN_SHAIRPORT_SYNC_VERSION)
     if not (binary := shutil.which("shairport-sync")):
@@ -29,8 +29,8 @@ async def get_shairport_sync_binary() -> str:
     version = output.decode(errors="ignore").strip()
     if returncode != 0 or not _is_supported_version(version):
         msg = (
-            f"shairport-sync {version} can not be used: the AirPlay Receiver needs "
-            f"version {min_version}+, built with metadata support."
+            f"shairport-sync {version} can not be used: the AirPlay Receiver needs a classic "
+            f"AirPlay build (not AirPlay 2) of version {min_version}+, with metadata support."
         )
         raise RuntimeError(msg)
     return binary
@@ -38,7 +38,7 @@ async def get_shairport_sync_binary() -> str:
 
 def _is_supported_version(version: str) -> bool:
     """
-    Return whether a shairport-sync build can hand its mDNS service over as metadata.
+    Return whether a shairport-sync build can run the receivers.
 
     :param version: The version string the binary prints, e.g.
         "5.6.3-FFmpeg-OpenSSL-stdout-pipe-metadata-sysconfdir:/etc".
@@ -46,4 +46,9 @@ def _is_supported_version(version: str) -> bool:
     if not (match := re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", version)):
         return False
     release = tuple(int(part or 0) for part in match.groups())
-    return release >= MIN_SHAIRPORT_SYNC_VERSION and "-metadata" in version
+    # an AirPlay 2 build pipes 48 kHz 32-bit audio and may advertise a second service
+    return (
+        release >= MIN_SHAIRPORT_SYNC_VERSION
+        and "-metadata" in version
+        and "-AirPlay2" not in version
+    )
