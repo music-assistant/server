@@ -579,6 +579,108 @@ async def test_ptp_daemon_restart_stops_at_unload() -> None:
     start.assert_not_awaited()
 
 
+async def test_unload_waits_for_a_running_ptp_daemon_restart() -> None:
+    """Unload returns only once a restart in flight is done, so no daemon outlives it."""
+    prov, clock, _ = _timeline_provider()
+    prov._dacp_server = MagicMock()
+    prov._dacp_server.__bool__.return_value = False
+    prov._dacp_info = MagicMock()
+    prov._dacp_info.__bool__.return_value = False
+    prov._ptp_daemon = daemon = _live_ptp_daemon()
+    release = asyncio.Event()
+    daemon.close = AsyncMock(side_effect=release.wait)
+
+    with patch.object(prov, "_start_ptp_daemon", new_callable=AsyncMock) as start:
+        # the restart runs up to closing the old daemon
+        clock.set_rate(857_000)
+        unload = asyncio.create_task(prov.unload())
+        await asyncio.sleep(0)
+        unloaded_early = unload.done()
+        release.set()
+        await unload
+
+    assert not unloaded_early
+    start.assert_not_awaited()
+
+
+def _spawning_provider() -> tuple[AirPlayProvider, TimelineClock]:
+    """Build a bare provider that spawns its PTP daemon on a timeline clock."""
+    prov = _ptp_provider()
+    prov.dacp_id = "AABBCCDD11223344"
+    prov.mass = MagicMock()
+    prov.mass.streams.get_source_ip = AsyncMock(return_value=None)
+    prov.mass.timeline_clock = clock = TimelineClock()
+    prov.logger.setLevel(logging.INFO)
+
+    def _consume_task(coro: object) -> MagicMock:
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        return MagicMock()
+
+    prov.mass.create_task.side_effect = _consume_task
+    return prov, clock
+
+
+def _spawned_ptp_daemon() -> MagicMock:
+    """Build a process mock for a daemon the provider spawns."""
+    daemon = _live_ptp_daemon()
+    daemon.start = AsyncMock(return_value=None)
+    daemon.close = AsyncMock(return_value=None)
+    return daemon
+
+
+async def test_ptp_daemon_spawned_on_an_old_rate_starts_over() -> None:
+    """A new rate while the daemon spawns, with no daemon yet to restart, starts it over."""
+    prov, clock = _spawning_provider()
+    first, second = _spawned_ptp_daemon(), _spawned_ptp_daemon()
+
+    async def _keeper_applies_a_rate() -> None:
+        clock.set_rate(857_000)
+
+    first.start = AsyncMock(side_effect=_keeper_applies_a_rate)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.provider.get_cli_binary",
+            AsyncMock(return_value="/bin/cliairplay"),
+        ),
+        patch(
+            "music_assistant.providers.airplay.provider.AsyncProcess", side_effect=[first, second]
+        ) as process_cls,
+    ):
+        await prov._start_ptp_daemon()
+
+    first_args, second_args = (call.args[0] for call in process_cls.call_args_list)
+    assert first_args[first_args.index("--clock-rate-ppb") + 1] == "0"
+    assert second_args[second_args.index("--clock-rate-ppb") + 1] == "857000"
+    first.close.assert_awaited_once()
+    assert prov._ptp_daemon is second
+
+
+async def test_ptp_daemon_spawned_during_unload_is_closed() -> None:
+    """A daemon that the unload of the provider overtakes while it spawns is closed again."""
+    prov, _ = _spawning_provider()
+    daemon = _spawned_ptp_daemon()
+
+    async def _provider_unloads() -> None:
+        prov._ptp_daemon_stop_requested = True
+
+    daemon.start = AsyncMock(side_effect=_provider_unloads)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.provider.get_cli_binary",
+            AsyncMock(return_value="/bin/cliairplay"),
+        ),
+        patch("music_assistant.providers.airplay.provider.AsyncProcess", return_value=daemon),
+    ):
+        await prov._start_ptp_daemon()
+
+    daemon.close.assert_awaited_once()
+    assert prov._ptp_daemon is None
+    cast("MagicMock", prov.mass.create_task).assert_not_called()
+
+
 def test_running_stream_pins_the_timeline_rate() -> None:
     """The rate of the timeline waits while a cliairplay stream process runs."""
     prov, clock, _ = _timeline_provider()
