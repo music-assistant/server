@@ -215,7 +215,11 @@ def programme_source(item: PlayableItem) -> str | None:
     """Return the programme an item is from, else its station, if either says anything."""
     if item.container and item.container.title:
         return item.container.title
-    if item.network and item.network.id not in GENERIC_NETWORKS:
+    if (
+        item.network
+        and item.network.id not in GENERIC_NETWORKS
+        and item.network.short_title is not None
+    ):
         return full_station_name(station_name_string=item.network.short_title)
     return None
 
