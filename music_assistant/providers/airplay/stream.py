@@ -207,6 +207,9 @@ class AirPlayStream:
         # post-commit correction log level (a corrected join is the routine
         # landing path, a corrected origin start is a loud signal).
         self._start_was_join = False
+        # Whether a START still waits for the binary's first state report. A receiver can
+        # echo a play command for that start before it arrives.
+        self.start_pending: bool = False
         # Receiver storm guard state: last-honored monotonic time per remote
         # transport command, plus a counter of suppressed repeats.
         self._remote_command_last: dict[str, float] = {}
@@ -702,6 +705,7 @@ class AirPlayStream:
         # the previous anchor (this also covers the warm-seek FLUSH->refill->START
         # path) to keep the server and binary baselines aligned.
         self.reset_reanchor_shift()
+        self.start_pending = True
         # Whatever was pending belongs to the anchor being replaced here; a later
         # report describes what this start cycle was handed.
         self.audio_pending_ms = 0
@@ -1623,6 +1627,7 @@ class AirPlayStream:
             else:
                 self._update_elapsed(millis / 1000)
         elif "[STATUS] paused" in line:
+            self.start_pending = False
             player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
         elif "[STATUS] started " in line:
             try:
@@ -1739,6 +1744,7 @@ class AirPlayStream:
         elapsed_time += self._start_position
         # The binary only emits this status while actually playing, so it is
         # also the signal that drives the player into the PLAYING state.
+        self.start_pending = False
         self.player.set_state_from_stream(
             state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
         )
