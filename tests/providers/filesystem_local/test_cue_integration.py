@@ -1095,3 +1095,23 @@ class TestBrowseCueSheets:
         )
 
         assert item_ids == ["12 Song to Woody.flac", "13 See That My Grave Is Kept Clean.flac"]
+
+    @pytest.mark.asyncio
+    async def test_per_track_cue_keeps_its_same_named_track(self, tmp_path: Path) -> None:
+        """A CUE with a FILE entry per track does not hide the track that shares its name."""
+        (tmp_path / "12 Song to Woody.cue").write_text(
+            PER_TRACK_CUE.replace(".wav", ".flac"), encoding="utf-8"
+        )
+        (tmp_path / "12 Song to Woody.flac").write_bytes(b"fake")
+        (tmp_path / "13 See That My Grave Is Kept Clean.flac").write_bytes(b"fake")
+
+        item_ids = await self._browse(
+            tmp_path,
+            [
+                "12 Song to Woody.cue",
+                "12 Song to Woody.flac",
+                "13 See That My Grave Is Kept Clean.flac",
+            ],
+        )
+
+        assert item_ids == ["12 Song to Woody.flac", "13 See That My Grave Is Kept Clean.flac"]

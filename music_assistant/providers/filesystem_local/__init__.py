@@ -501,12 +501,15 @@ class LocalFileSystemProvider(MusicProvider):
             for item in scanned:
                 if item.ext not in CUE_EXTENSIONS:
                     continue
-                cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
                 try:
                     cue_sheet = await self._cue.load_cue_sheet(item)
                 except InvalidDataError as err:
+                    cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
                     self.logger.warning("Unable to parse CUE sheet %s: %s", item.relative_path, err)
                     continue
+                if is_multi_file_cue(cue_sheet):
+                    continue
+                cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
                 if await self._cue.find_audio_file(item, cue_sheet) is None:
                     self.logger.debug(
                         "Skipping CUE sheet with missing companion audio file: %s",
@@ -706,6 +709,10 @@ class LocalFileSystemProvider(MusicProvider):
                     try:
                         cue_sheet = await self._cue.load_cue_sheet(cue_item)
                     except InvalidDataError:
+                        continue
+                    if is_multi_file_cue(cue_sheet):
+                        # ignored, so its same-named audio file is a regular track
+                        cue_stems.discard(cue_item.absolute_path.rsplit(".", 1)[0])
                         continue
                     if companion_stem := cue_referenced_audio_stem(cue_item, cue_sheet):
                         cue_stems.add(companion_stem)
@@ -2489,8 +2496,10 @@ class LocalFileSystemProvider(MusicProvider):
                 # excluding its same-named companion here would lose that otherwise
                 # playable file entirely, since this CUE itself yields nothing below
                 continue
-            cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
             cue_sheets[item.relative_path] = cue_sheet
+            if is_multi_file_cue(cue_sheet):
+                continue
+            cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
             if companion_stem := cue_referenced_audio_stem(item, cue_sheet):
                 cue_stems.add(companion_stem)
         for item in items:
